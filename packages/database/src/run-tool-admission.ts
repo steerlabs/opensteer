@@ -15,11 +15,10 @@ import {
   type TriggerWatchActivationId,
   type UserId,
 } from "@opensteer/core";
-import { sql, type Kysely, type Transaction } from "kysely";
+import type { Kysely, Transaction } from "kysely";
 import { assertActiveGrant } from "./execution-authority.js";
 import { admitExecution, bindingAgentConnectionId } from "./resource-access.js";
 import { lockLineageConnection } from "./thread-caller.js";
-import { WATCH_OBSERVATIONS_PER_HOUR } from "@opensteer/triggers";
 import { assertActiveTriggerExecutionBinding, assertActiveWatchBinding } from "./trigger-store.js";
 import type { DatabaseSchema } from "./schema.js";
 export const runToolMaxDelegationDepth = agentDelegationMaxDepth;
@@ -96,7 +95,6 @@ export interface WatchControlAdmissionInput {
   readonly createdBy: UserId;
   readonly environmentId: EnvironmentId;
   readonly executionGeneration: number;
-  readonly observationId: string;
   readonly requestFingerprint: string;
   readonly requestId: string;
   readonly revisionId: TriggerRevisionId;
@@ -376,72 +374,9 @@ export async function admitWatchControlRequestInTransaction(
     { ...input, requestedBy: input.createdBy },
     `watch:${input.activationId}`,
   );
-  const existing = await transaction
-    .selectFrom("watchControlRequests")
-    .selectAll()
-    .where("activationId", "=", input.activationId)
-    .where("observationId", "=", input.observationId)
-    .executeTakeFirst();
-  if (existing) {
-    if (
-      existing.action !== input.action ||
-      existing.requestFingerprint !== input.requestFingerprint
-    ) {
-      throw new OpensteerError({
-        code: "conflict",
-        details: {
-          observationId: input.observationId,
-        },
-        message: "Watch observation ID was already used with different input",
-      });
-    }
-    return {
-      wasDuplicate: true,
-    };
-  }
-  const window = await transaction
-    .selectFrom("watchControlRequests")
-    .select(({ fn }) => fn.countAll<string>().as("count"))
-    .where("activationId", "=", input.activationId)
-    // created_at is the database's default: compare it on the database's clock.
-    .where("createdAt", ">=", sql<Date>`now() - interval '1 hour'`)
-    .executeTakeFirstOrThrow();
-  if (safeCount(window.count) >= WATCH_OBSERVATIONS_PER_HOUR) {
-    throw new OpensteerError({
-      code: "resource_exhausted",
-      details: {
-        limit: WATCH_OBSERVATIONS_PER_HOUR,
-      },
-      message: `Watch observation limit of ${WATCH_OBSERVATIONS_PER_HOUR} per hour was reached for this activation`,
-    });
-  }
-  if (mode === "check")
-    return {
-      wasDuplicate: false,
-    };
-  await transaction
-    .insertInto("watchControlRequests")
-    .values({
-      action: input.action,
-      activationId: input.activationId,
-      observationId: input.observationId,
-      requestFingerprint: input.requestFingerprint,
-      requestId: input.requestId,
-    })
-    .executeTakeFirstOrThrow();
   return {
     wasDuplicate: false,
   };
-}
-function safeCount(value: string): number {
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 0) {
-    throw new OpensteerError({
-      code: "internal",
-      message: "Invalid admission count",
-    });
-  }
-  return parsed;
 }
 function requestIdConflict(requestId: string): OpensteerError {
   return new OpensteerError({

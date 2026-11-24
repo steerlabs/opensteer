@@ -170,7 +170,6 @@ export function toolsFor(caller: {
     (tool) =>
       tool.callers.some((kind) => kind === caller.kind) &&
       (caller.personalContext !== false || !tool.name.startsWith("opensteer_automation_")) &&
-      (caller.program?.kind !== "watch" || tool.name !== "app_access_request") &&
       (!("capability" in tool) ||
         !caller.capabilities ||
         caller.capabilities[tool.capability] === true) &&

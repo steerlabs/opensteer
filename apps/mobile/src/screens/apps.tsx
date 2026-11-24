@@ -205,12 +205,13 @@ const AppRow = memo(function AppRow(props: {
     [app.computerId],
   );
   const computer = useHostSelector(hostClient, selectComputer) ?? "Removed computer";
-  const selectOrigin = useCallback(
+  const selectMadeIn = useCallback(
     (snapshot: HostSnapshot) =>
       app.taskId === null ? null : (threadInDirectory(app.taskId, snapshot)?.title.trim() ?? ""),
     [app.taskId],
   );
-  const origin = useHostSelector(hostClient, selectOrigin);
+  // The chat that made this app, by its title.
+  const madeIn = useHostSelector(hostClient, selectMadeIn);
   const server = app.kind === "server";
   const detail = [
     server ? "Server" : "HTML",
@@ -288,7 +289,7 @@ const AppRow = memo(function AppRow(props: {
           style={styles.origin}
         >
           <AppText numberOfLines={1} role="caption" tone="ember">
-            {origin ? `From “${origin}”` : "Open its chat"}
+            {madeIn ? `From “${madeIn}”` : "Open its chat"}
           </AppText>
         </Pressable>
       )}
@@ -355,7 +356,6 @@ const AppRow = memo(function AppRow(props: {
             void list.reload();
             list.dismissFailure(app.appId);
           })}
-          numberOfLines={2}
         />
       )}
     </View>

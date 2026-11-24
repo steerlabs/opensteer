@@ -816,7 +816,7 @@ export async function connectCallerMachine(
       ...(input.voice ? ["voice-run-v1"] : []),
       ...(input.restartsRuns ? ["attempts-v1"] : []),
       ...(input.runFileProof || input.holdAgentHomeReport ? [agentHomeFilesCapability] : []),
-      ...(input.triggerPrograms ? ["trigger-program-v5"] : []),
+      ...(input.triggerPrograms ? ["automation-script-v1"] : []),
     ],
     modules: {
       ...(input.integrations ? { integrations: input.integrations } : {}),

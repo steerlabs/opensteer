@@ -46,15 +46,16 @@ import {
 } from "./app-proxy.js";
 import { AppTunnelError, type AppRunnerConnection, type AppTunnelHub } from "./app-tunnel-hub.js";
 
-/** Who asks: the person from a client, or an agent from its Run. */
+/** Who asks: the person from a client, an agent from its Run, or an automation script. */
 export type AppActor =
   | { readonly kind: "person"; readonly ownerId: UserId }
-  | { readonly kind: "run"; readonly claims: RunToolScope };
+  | { readonly kind: "run"; readonly claims: RunToolScope }
+  | { readonly kind: "program"; readonly caller: ProgramCaller };
 
-type AppReader =
-  | AppActor
-  | { kind: "connection"; caller: ConnectionCaller }
-  | { kind: "program"; caller: ProgramCaller };
+type AppReader = AppActor | { kind: "connection"; caller: ConnectionCaller };
+type AppPublishActor =
+  | { readonly kind: "run"; readonly claims: RunToolScope }
+  | { readonly kind: "program"; readonly caller: ProgramCaller };
 
 export interface AppCallLifetime {
   readonly signal?: AbortSignal;
@@ -115,41 +116,49 @@ export class AppService {
 
   /** Publishes HTML, or starts and verifies a server on its fixed port before committing. */
   async publish(
-    scope: RunToolScope,
+    scopeOrActor: RunToolScope | { readonly kind: "program"; readonly caller: ProgramCaller },
     operationKey: string,
     input: AppPublishInput,
     lifetime: AppCallLifetime = {},
   ): Promise<{ appId: AppId; version: number }> {
     input = AppPublishInputSchema.parse(input);
-    return this.#locks.run(input.appId ?? `${scope.runId}:${operationKey}`, async () => {
-      await this.#admit({ kind: "run", claims: scope }, lifetime, input.start !== undefined);
-      const replay = await this.#options.apps.publication(scope.runId, operationKey);
+    const actor: AppPublishActor =
+      "kind" in scopeOrActor ? scopeOrActor : { kind: "run", claims: scopeOrActor };
+    const scope = actor.kind === "run" ? runScope(actor.claims) : programScope(actor.caller);
+    const publishKey = actor.kind === "run" ? operationKey : `${actor.caller.key}:${operationKey}`;
+    const lockKey =
+      input.appId ??
+      `${actor.kind === "run" ? actor.claims.runId : actor.caller.key}:${operationKey}`;
+    return this.#locks.run(lockKey, async () => {
+      await this.#admit(actor, lifetime, input.start !== undefined);
+      const replay = await this.#options.apps.publication(scope.runId, publishKey);
       if (replay) return { appId: AppIdSchema.parse(replay.appId), version: replay.version };
-      const run = runScope(scope);
-      const { agentHome } = await this.#options.apps.authorizeRun(run, input.start !== undefined);
+      const { agentHome } = await this.#options.apps.authorizeRun(scope, input.start !== undefined);
       const previous = input.appId
-        ? await this.#options.apps.get(scope.requestedBy, input.appId)
+        ? await this.#options.apps.get(scope.userId, input.appId)
         : undefined;
       const result =
         input.start === undefined
-          ? await this.#publishHtml(scope, operationKey, input, previous, lifetime)
+          ? await this.#publishHtml(actor, scope, publishKey, input, previous, lifetime)
           : await this.#publishServer(
+              actor,
               scope,
-              operationKey,
+              publishKey,
               input,
               input.start,
               agentHome,
               previous,
               lifetime,
             );
-      this.#options.changed(scope.requestedBy, [result.appId]);
+      this.#options.changed(scope.userId, [result.appId]);
       return { appId: result.appId, version: result.version };
     });
   }
 
   async #publishServer(
-    scope: RunToolScope,
-    operationKey: string,
+    actor: AppPublishActor,
+    run: ReturnType<typeof runScope> | ReturnType<typeof programScope>,
+    publishKey: string,
     input: AppPublishInput,
     start: string,
     agentHome: ComputerFolder,
@@ -173,8 +182,7 @@ export class AppService {
       command: start,
     };
     await this.#ready(agentHome.computerId, lifetime.signal);
-    await this.#admit({ kind: "run", claims: scope }, lifetime, true);
-    const run = runScope(scope);
+    await this.#admit(actor, lifetime, true);
     const reservation = previous
       ? await this.#options.apps.prepareServer(
           {
@@ -182,18 +190,18 @@ export class AppService {
             appId: previous.id,
             computerId: agentHome.computerId,
           },
-          this.#authorize({ kind: "run", claims: scope }, lifetime),
+          this.#authorize(actor, lifetime),
         )
       : await this.#options.apps.reserve(
           {
             scope: run,
-            creationKey: `${scope.runId}:${operationKey}`,
+            creationKey: `${run.runId ?? run.callerKey ?? "program"}:${publishKey}`,
             name: input.name,
             computerId: agentHome.computerId,
           },
-          this.#authorize({ kind: "run", claims: scope }, lifetime),
+          this.#authorize(actor, lifetime),
         );
-    if (previous) this.#options.changed(scope.requestedBy, [previous.id]);
+    if (previous) this.#options.changed(run.userId, [previous.id]);
     const spec: AppRuntimeSpec = {
       appId: reservation.appId,
       version: (previous?.version.version ?? 0) + 1,
@@ -209,10 +217,10 @@ export class AppService {
         await this.#halt(spec.folder.computerId, spec.appId, spec.generation).catch(
           () => undefined,
         );
-        this.#options.changed(scope.requestedBy, [spec.appId]);
+        this.#options.changed(run.userId, [spec.appId]);
       } else {
         const record = await this.#options.apps.markDeleting(
-          scope.requestedBy,
+          run.userId,
           spec.appId,
           this.#options.tabs.removeTabs,
         );
@@ -220,30 +228,30 @@ export class AppService {
           await this.#halt(record.computerId, record.id, record.server!.generation);
           await this.#remove(record);
         } catch {
-          this.#options.changed(scope.requestedBy, [spec.appId]);
+          this.#options.changed(run.userId, [spec.appId]);
         }
       }
     };
     try {
-      await this.#launch(scope.requestedBy, spec, { kind: "run", claims: scope }, lifetime);
+      await this.#launch(run.userId, spec, actor, lifetime);
     } catch (error) {
       await abandon();
       lifetime.signal?.throwIfAborted();
       throw startFailure(error);
     }
     try {
-      await this.#admit({ kind: "run", claims: scope }, lifetime, true);
+      await this.#admit(actor, lifetime, true);
       return await this.#options.apps.commit(
         {
           scope: run,
           appId: spec.appId,
           name: input.name,
-          publishKey: operationKey,
+          publishKey,
           expectedVersion: spec.version,
           server,
           serverGeneration: spec.generation,
         },
-        this.#authorize({ kind: "run", claims: scope }, lifetime),
+        this.#authorize(actor, lifetime),
       );
     } catch (error) {
       await abandon();
@@ -252,8 +260,9 @@ export class AppService {
   }
 
   async #publishHtml(
-    scope: RunToolScope,
-    operationKey: string,
+    actor: AppPublishActor,
+    scope: ReturnType<typeof runScope> | ReturnType<typeof programScope>,
+    publishKey: string,
     input: AppPublishInput,
     previous: PublishedApp | undefined,
     lifetime: AppCallLifetime,
@@ -342,23 +351,23 @@ export class AppService {
     } catch {
       throw new OpensteerError({ code: "bad_request", message: "App HTML must be UTF-8" });
     }
-    await this.#admit({ kind: "run", claims: scope }, lifetime, false);
+    await this.#admit(actor, lifetime, false);
     const sha256 = createHash("sha256").update(bytes).digest("hex");
     // A digest names complete immutable bytes; interrupted writes cannot replace another version.
     await createPrivateFileAtomically(
       join(this.#directory, sha256),
       Buffer.from(bytes).toString("utf8"),
     );
-    await this.#admit({ kind: "run", claims: scope }, lifetime, false);
+    await this.#admit(actor, lifetime, false);
     const result = await this.#options.apps.commit(
       {
-        scope: runScope(scope),
+        scope,
         ...(previous ? { appId: previous.id } : {}),
         name: input.name,
-        publishKey: operationKey,
+        publishKey,
         html: { sha256, sizeBytes: bytes.byteLength },
       },
-      this.#authorize({ kind: "run", claims: scope }, lifetime),
+      this.#authorize(actor, lifetime),
     );
     // Publishing HTML over a server stops it; its port stays reserved for the app.
     if (previous && result.retiredServer)
@@ -415,7 +424,7 @@ export class AppService {
       await this.#admit(actor, lifetime, true);
       const app = await this.#options.apps.get(ownerId, id);
       if (this.#computers.has(app.computerId)) await this.#ready(app.computerId, lifetime.signal);
-      else if (actor.kind === "run") throw startFailure(new ComputerOfflineError());
+      else if (actor.kind !== "person") throw startFailure(new ComputerOfflineError());
       await this.#admit(actor, lifetime, true);
       const record = await this.#options.apps.setDesiredState(
         ownerId,
@@ -443,7 +452,7 @@ export class AppService {
         const current = await this.#options.apps.get(ownerId, id);
         // A Stop or Delete that overtook this start owns the outcome.
         if (
-          actor.kind === "run" &&
+          actor.kind !== "person" &&
           current.server?.generation === record.server.generation &&
           !(error instanceof ComputerOfflineError)
         )
@@ -776,6 +785,8 @@ export class AppService {
         throw missing();
       if (actor.kind === "run")
         await this.#options.apps.authorizeRun(runScope(actor.claims), fullAccess, database);
+      if (actor.kind === "program")
+        await this.#options.apps.authorizeRun(programScope(actor.caller), fullAccess, database);
       if (!access || (required === "read-write" && access !== "read-write"))
         throw new OpensteerError({
           code: "forbidden",
@@ -1065,5 +1076,15 @@ function runScope(scope: RunToolScope) {
     runId: scope.runId,
     userId: scope.requestedBy,
     environmentId: scope.environmentId,
+  };
+}
+function programScope(caller: ProgramCaller) {
+  return {
+    threadId: caller.anchor.id,
+    runId: null,
+    userId: caller.userId,
+    environmentId: caller.anchor.environmentId,
+    accessMode: caller.accessMode,
+    callerKey: caller.key,
   };
 }

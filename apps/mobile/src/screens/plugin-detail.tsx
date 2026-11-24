@@ -55,6 +55,7 @@ import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings
 import { pluginFormRows, type PluginFormAnswers } from "./plugin-form-rows.js";
 import { engineSection, pluginTone, usePluginAction } from "./plugins.js";
 import { usePluginRead } from "./use-plugin-read.js";
+import { addressDetail } from "../ui/sentence-parts.js";
 
 type Workflow = NonNullable<InstalledPluginView["workflows"]>[number];
 const when = (value: string) =>
@@ -827,7 +828,7 @@ function WebhookSetup(props: {
                 key: "url",
                 kind: "button" as const,
                 label: copied === "url" ? "Address copied" : "Copy the address to give the service",
-                detail: data.callbackUrl,
+                ...addressDetail(data.callbackUrl),
                 onPress: () => copy("url", data.callbackUrl),
               },
             ]

@@ -203,7 +203,7 @@ describe("the command table", () => {
       return row.faces[row.face?.({ type, ...input }) ?? 0]!;
     };
     expect(faceOf("trigger.create", { input: {} }).fullAccess).toBe(true);
-    expect(faceOf("trigger.update", { input: { program: {} } }).fullAccess).toBe(true);
+    expect(faceOf("trigger.update", { input: { script: {} } }).fullAccess).toBe(true);
     // Today's tool refuses a Supervised agent even a rename (D0a).
     expect(faceOf("trigger.update", { input: { name: "New" } }).fullAccess).toBe(true);
   });

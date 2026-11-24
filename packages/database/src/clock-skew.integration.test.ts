@@ -214,10 +214,10 @@ describeStore("Host and PostgreSQL clocks 30 s apart", (it) => {
           createdBy: task.userId,
           idempotencyKey: `skew-schedule-${offset}`,
           name: "Skew schedule",
-          program: {
-            toolContractVersion: 5,
-            language: "javascript",
-            source: "export default async () => null",
+          script: {
+            interpreter: null,
+
+            text: "console.log('ok')",
           },
           source: {
             kind: "schedule",

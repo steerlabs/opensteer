@@ -1264,6 +1264,12 @@ it("parks under a running Trigger and a live Watch with no browser, and is vetoe
   try {
     const home = await j.startHome();
     const owner = { ownerId: j.task.userId, environmentId: j.task.environmentId };
+    await j.fixture.store.createBrowserProfile({
+      name: "Pool browser profile",
+      ownerId: j.task.userId,
+      homeRunnerId: j.task.runnerId,
+      idempotencyKey: "pool-program-browser-profile",
+    });
     // A running Trigger occurrence and a live Watch activation, neither with a browser yet.
     const occurrence = await j.fixture.startTriggerOccurrence(j.task, "pool-program");
     const watch = await j.fixture.triggers.create({
@@ -1272,10 +1278,9 @@ it("parks under a running Trigger and a live Watch with no browser, and is vetoe
       createdBy: j.task.userId,
       idempotencyKey: "pool-watch",
       name: "Pool Watch",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => new Promise(() => setInterval(() => {}, 1000))",
+      script: {
+        interpreter: null,
+        text: "await new Promise(() => setInterval(() => {}, 1000));",
       },
       source: { kind: "watch" },
     });

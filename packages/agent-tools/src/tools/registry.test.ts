@@ -49,7 +49,7 @@ describe("Opensteer tool registry", () => {
       .map((t) => t.name);
     expect(programs).toContain("opensteer_task_delegate");
     expect(programs).not.toContain("show_to_person");
-    expect(programs).not.toContain("computer_use");
+    expect(programs).toContain("computer_use");
   });
   it("exposes bounded waiting and connection work without human-only controls", () => {
     const connections = agentTools.filter((t) => t.callers.some((c) => c === "connection"));
@@ -125,7 +125,7 @@ describe("Opensteer tool registry", () => {
       }).success,
     ).toBe(false);
   });
-  it("retains safe Trigger details and cancellation receipts", () => {
+  it("retains safe Trigger details, cancellation receipts, and pending Request outcomes", () => {
     const detail = {
       activation: null,
       taskTitle: "Anchor",
@@ -137,6 +137,14 @@ describe("Opensteer tool registry", () => {
     expect(
       opensteer_automation_create.output.parse({ ...detail, unnamedSecret: "hidden" }),
     ).toEqual(detail);
+    const pending = {
+      status: "pending",
+      requestId: "req_11111111-1111-4111-8111-111111111111",
+      next: "Wait for the person to review this Request.",
+    };
+    expect(
+      opensteer_automation_create.output.parse({ ...pending, unnamedSecret: "hidden" }),
+    ).toEqual(pending);
   });
   it("preserves the image detail hint while stripping unnamed metadata", () => {
     const image = {
@@ -170,12 +178,18 @@ describe("Opensteer tool registry", () => {
     };
     expect(saved_login_request.output.parse({ ...ready, password: "hidden" })).toEqual(ready);
   });
-  it("returns webhook setup credentials on writes and excludes them from reads", () => {
-    const result = {
-      webhook: { secret: "oswh_private", url: "https://example.test/private" },
-    };
-    expect(opensteer_automation_create.output.parse(result)).toEqual(result);
-    expect(opensteer_automation_list.output.parse(result)).toEqual({});
+  it("returns webhook address without any legacy secret on writes and allows address state on reads", () => {
+    const address = { scope: "public" as const, url: "https://example.test/hooks/v1/whk_abc" };
+    expect(
+      opensteer_automation_create.output.parse({
+        webhook: { ...address, secret: "oswh_private" },
+      }),
+    ).toEqual({ webhook: address });
+    expect(
+      opensteer_automation_list.output.parse({
+        webhook: { scope: "public", url: null, secret: "oswh_private" },
+      }),
+    ).toEqual({ webhook: { scope: "public", url: null } });
   });
 });
 

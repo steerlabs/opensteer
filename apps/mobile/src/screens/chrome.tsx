@@ -30,6 +30,7 @@ import {
 } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
+import { CopyableAddressText } from "../ui/copyable-address-text.js";
 
 export type ChromeDestination = { readonly deploymentId: string };
 
@@ -60,7 +61,7 @@ export function ChromeScreen({ route }: StaticScreenProps<ChromeDestination>): R
               ? "This deployment is no longer on this phone."
               : `Open ${row.name} to manage its Chrome.`}
           </AppText>
-          {failure === null ? null : <ActionLine line={failure} numberOfLines={2} />}
+          {failure === null ? null : <ActionLine line={failure} />}
           {row === undefined ? null : (
             <SecondaryButton
               busy={opening}
@@ -392,11 +393,7 @@ function SourceRow(props: {
         </>
       )}
       {line === null ? null : (
-        <ActionLine
-          line={line}
-          numberOfLines={2}
-          onDismiss={renaming.line ? renaming.dismiss : revoking.dismiss}
-        />
+        <ActionLine line={line} onDismiss={renaming.line ? renaming.dismiss : revoking.dismiss} />
       )}
     </View>
   );
@@ -423,6 +420,7 @@ function SiteRow(props: {
         site: grant.site,
         type: "browser.site.remove",
       });
+      // Spoken, not drawn: VoiceOver reads the site as it is.
       props.onRemoved(`${domain} removed. Your agent asks before using it again.`);
     },
     reconcile: async () =>
@@ -435,16 +433,15 @@ function SiteRow(props: {
     <View style={styles.siteRow}>
       <Symbol name="globe" size={17} tint={color.textSoft} />
       <View style={styles.rowText}>
-        <AppText role="body" selectable>
-          {domain}
-        </AppText>
+        {/* Once selectable: Copy in the system's menu gives the site exactly. */}
+        <CopyableAddressText role="body" value={domain} />
         <AppText role="caption" tone="muted">
           {grant.lastSignedInAt === null
             ? "Not used yet"
             : `Last signed in ${formatRelativeTime(grant.lastSignedInAt)}`}
         </AppText>
         {removal.line === null ? null : (
-          <ActionLine line={removal.line} numberOfLines={2} onDismiss={removal.dismiss} />
+          <ActionLine line={removal.line} onDismiss={removal.dismiss} />
         )}
       </View>
       <SecondaryButton

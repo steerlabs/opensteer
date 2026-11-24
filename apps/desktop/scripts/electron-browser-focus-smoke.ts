@@ -117,10 +117,11 @@ async function run(): Promise<void> {
       );
     };
 
+    const sessionId = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000072");
     const request: BrowserLaunchRequest = {
       initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
       partitionKey: "profile:bpr_00000000-0000-4000-8000-000000000071",
-      sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000072"),
+      sessionId,
       storage: { kind: "guest" },
     };
     let browser = await launcher.launch(request);
@@ -132,15 +133,15 @@ async function run(): Promise<void> {
     // page the ledger registers for it.
     const router = new SessionCdpRouter(browser.cdp);
     cleanup.push(() => router.close());
-    const sessionFiles = new SessionFiles(path.join(temporaryDirectory, request.sessionId));
+    const sessionFiles = new SessionFiles(path.join(temporaryDirectory, sessionId));
     const sessionLedger = new SurfaceLedger(browser.context, {
-      claimTarget: (targetId) => router.claimTarget(request.sessionId, targetId),
+      claimTarget: (targetId) => router.claimTarget(sessionId, targetId),
       initialViewport: request.initialViewport,
     });
     let ledger = sessionLedger;
     cleanup.push(() => sessionLedger.close());
     router.registerSession(
-      request.sessionId,
+      sessionId,
       await page.targetId(),
       (targetId) => sessionLedger.resolveTarget(targetId),
       sessionFiles.root,
@@ -149,7 +150,9 @@ async function run(): Promise<void> {
     await assertBackground("initial surface selection");
     let pageCdp = await page.cdp();
     await pageCdp.send("Page.navigate", { url: origin });
-    await waitFor(() => page.url() === `${origin}/`);
+    // The root page as it is now: `page` is reassigned below, so the wait holds this one.
+    const rootPage = page;
+    await waitFor(() => rootPage.url() === `${origin}/`);
 
     const messages: BrowserRuntimeServerMessage[] = [];
     const frames: BrowserFrame[] = [];
@@ -176,14 +179,7 @@ async function run(): Promise<void> {
       files: sessionFiles,
       replaceSiteCookies: (site, cookies, deadline) =>
         browser.replaceSiteCookies(site, cookies, deadline),
-      signIns: new HostSignIns({
-        state: { run: (work) => work() },
-        writeCookies: () => Promise.resolve(),
-        deliveryTimeoutMs: 1_000,
-        executor: undefined,
-        fresh: true,
-        runtimeId: "electron-smoke",
-      }),
+      signIns: new HostSignIns({ authority: undefined, runtimeId: "electron-smoke" }),
       ledger,
       sink: {
         sendFrame: async (frame) => {
@@ -640,8 +636,9 @@ workspaceNotifications.removeObserver(activationObserver)
 }
 
 async function readSentinelPid(child: ChildProcess): Promise<number> {
-  if (!child.stdout) throw new Error("Focus sentinel stdout missing.");
-  child.stdout.setEncoding("utf8");
+  const stdout = child.stdout;
+  if (!stdout) throw new Error("Focus sentinel stdout missing.");
+  stdout.setEncoding("utf8");
   return await new Promise<number>((resolve, reject) => {
     let output = "";
     const onData = (chunk: string) => {
@@ -658,10 +655,10 @@ async function readSentinelPid(child: ChildProcess): Promise<number> {
       reject(new Error("Focus sentinel exited before becoming ready."));
     };
     const cleanup = () => {
-      child.stdout?.off("data", onData);
+      stdout.off("data", onData);
       child.off("exit", onExit);
     };
-    child.stdout.on("data", onData);
+    stdout.on("data", onData);
     child.once("exit", onExit);
   });
 }

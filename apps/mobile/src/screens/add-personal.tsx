@@ -13,9 +13,12 @@ import { resetToDeployment } from "../navigation-ref.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { ActionLine } from "../ui/action-line.js";
-import { AppText, Field, PrimaryButton, RowGroup } from "../ui/primitives.js";
+import { AppText, DisplayTitle, Field, PrimaryButton, RowGroup } from "../ui/primitives.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
 import { DeploymentDoorSymbol } from "./add-deployment.js";
+import { AddressSentence, AddressText } from "../ui/address-text.js";
+import { sentence } from "../ui/sentence-parts.js";
+import { CopyableAddressText } from "../ui/copyable-address-text.js";
 
 /**
  * The personal-computer door.
@@ -110,10 +113,7 @@ export function AddPersonalScreen(): ReactNode {
 
   const failureNotice =
     failure === null ? null : (
-      <ActionLine
-        line={{ key: failure, text: failure, tone: "danger", haptic: "error" }}
-        numberOfLines={2}
-      />
+      <ActionLine line={{ key: failure, text: failure, tone: "danger", haptic: "error" }} />
     );
 
   if (confirming) {
@@ -129,12 +129,9 @@ export function AddPersonalScreen(): ReactNode {
           <RowGroup>
             {[
               <View key="address" style={styles.summary}>
-                <AppText numberOfLines={2} role="title" selectable>
-                  {hostOf(origin)}
-                </AppText>
-                <AppText numberOfLines={2} role="caption" selectable tone="muted">
-                  {origin}
-                </AppText>
+                {/* Once selectable: Copy in the system's menu gives each exactly. */}
+                <CopyableAddressText role="title" value={hostOf(origin)} />
+                <CopyableAddressText role="caption" tone="muted" value={origin} />
               </View>,
             ]}
           </RowGroup>
@@ -159,10 +156,12 @@ export function AddPersonalScreen(): ReactNode {
           <RowGroup>
             {[
               <View key="summary" style={styles.summary}>
-                <AppText role="title">{verified.discovery.canonicalOrigin}</AppText>
-                <AppText role="caption" tone="muted">
-                  Reached at {verified.endpoint.origin}
-                </AppText>
+                <AddressText role="title" value={verified.discovery.canonicalOrigin} />
+                <AddressSentence
+                  parts={sentence`Reached at ${verified.endpoint.origin}`}
+                  role="caption"
+                  tone="muted"
+                />
               </View>,
             ]}
           </RowGroup>
@@ -234,9 +233,9 @@ function Heading(props: { readonly title: string }): ReactNode {
       <View style={styles.headingMark}>
         <DeploymentDoorSymbol kind="computer" size={22} />
       </View>
-      <AppText role="displaySmall" style={styles.headingText}>
+      <DisplayTitle size="small" style={styles.headingText}>
         {props.title}
-      </AppText>
+      </DisplayTitle>
     </View>
   );
 }

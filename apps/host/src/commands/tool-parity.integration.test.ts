@@ -307,7 +307,7 @@ async function setUpParity() {
     await host.store.database
       .updateTable("runners")
       .set({
-        capabilities: sql`(select jsonb_agg(distinct value) from jsonb_array_elements_text(capabilities || '["trigger-program-v5"]'::jsonb))`,
+        capabilities: sql`(select jsonb_agg(distinct value) from jsonb_array_elements_text(capabilities || '["automation-script-v1"]'::jsonb))`,
       } as never)
       .where("id", "=", machine.runnerId)
       .execute();
@@ -1120,10 +1120,8 @@ export default defineApp({}, { tools: router({ tick }),
         args: (c) => ({
           taskId: callers[c].task,
           name: "Parity reminder",
-          program: {
-            language: "javascript",
-            source: "export default async () => null",
-            toolContractVersion: 5,
+          script: {
+            text: "console.log('ok')",
           },
           source: { kind: "schedule", cron: "0 9 * * *", timezone: "UTC" },
         }),
@@ -1132,10 +1130,9 @@ export default defineApp({}, { tools: router({ tick }),
           input: {
             anchorThreadId: callers[c].task,
             name: "Parity reminder",
-            program: {
-              language: "javascript",
-              source: "export default async () => null",
-              toolContractVersion: 5,
+            script: {
+              interpreter: null,
+              text: "console.log('ok')",
             },
             source: {
               kind: "schedule",
@@ -1163,10 +1160,9 @@ export default defineApp({}, { tools: router({ tick }),
           input: {
             anchorThreadId: threadId,
             name: "Person's reminder",
-            program: {
-              language: "javascript",
-              source: "export default async () => null",
-              toolContractVersion: 5,
+            script: {
+              interpreter: null,
+              text: "console.log('ok')",
             },
             source: {
               kind: "schedule",
@@ -1217,29 +1213,26 @@ export default defineApp({}, { tools: router({ tick }),
         }),
       },
       {
-        name: "trigger.update (program)",
+        name: "trigger.update (script)",
         tool: "opensteer_automation_update",
         args: async (c) => {
-          const made = await automationFor("trigger.update (program)", c);
+          const made = await automationFor("trigger.update (script)", c);
           return {
             automationId: made.id,
             expectedRevisionId: made.revision,
-            program: {
-              language: "javascript",
-              source: "export default async () => 1",
-              toolContractVersion: 5,
+            script: {
+              text: "console.log(1)",
             },
           };
         },
         command: (c) => ({
           type: "trigger.update",
-          triggerId: automations["trigger.update (program)"]?.[c]?.id,
+          triggerId: automations["trigger.update (script)"]?.[c]?.id,
           input: {
-            expectedRevisionId: automations["trigger.update (program)"]?.[c]?.revision,
-            program: {
-              language: "javascript",
-              source: "export default async () => 1",
-              toolContractVersion: 5,
+            expectedRevisionId: automations["trigger.update (script)"]?.[c]?.revision,
+            script: {
+              interpreter: null,
+              text: "console.log(1)",
             },
           },
         }),

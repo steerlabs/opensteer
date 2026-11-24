@@ -20,6 +20,7 @@ import { Dialog } from "../dialog.js";
 import { Icon, type IconName } from "../icon.js";
 import { ErrorNotice, OnboardingCard } from "../onboarding-card.js";
 import { OptionRow } from "../option-row.js";
+import { desktopFirstScreenWords } from "./desktop-first-screen-words.js";
 import { PlaceList } from "./place-list.js";
 import { PlaceAccountFooter, SignOutDialog } from "./place-account.js";
 import {
@@ -238,10 +239,37 @@ export function DesktopWelcome({
         run={run}
         startHere={
           onSetUpHere
-            ? startHere("on-this-mac", "Free. Works while this Mac is awake.", "On this Mac")
+            ? startHere(
+                "on-this-mac",
+                "Free. Works while this Mac is awake.",
+                desktopFirstScreenWords.onThisMac,
+              )
             : null
         }
       />
+    );
+  }
+
+  // macOS refused Opensteer this Mac's keychain (locked, a login from another computer, a
+  // managed Mac): the account can't keep a sign-in, so it reads as unavailable with an error.
+  // Saying so, and how to try again, rather than a welcome with Sign in silently gone.
+  if (!account.available && account.status === "error") {
+    return (
+      <OnboardingCard
+        bare
+        description="Opensteer keeps your sign-in in this Mac’s keychain, and the keychain isn’t letting it in. Unlock the login keychain in Keychain Access, or log in at the Mac itself instead of from another computer, then try again."
+        live
+        title={desktopFirstScreenWords.keychainTitle}
+      >
+        <ErrorNotice message={actionError ?? error} />
+        <button
+          className="btn btn--primary onboarding__primary"
+          onClick={() => run(() => bridge.signIn())}
+          type="button"
+        >
+          Try again
+        </button>
+      </OnboardingCard>
     );
   }
 
@@ -252,7 +280,7 @@ export function DesktopWelcome({
         bare
         description="Your AI agent, working on your computer."
         live
-        title="Welcome to Opensteer"
+        title={desktopFirstScreenWords.welcomeTitle}
       >
         <ErrorNotice message={actionError ?? error} />
         <div className="desktop-entry__rows">
@@ -261,7 +289,7 @@ export function DesktopWelcome({
             detail="It’s already running on another computer. Use its pairing code."
             icon="devices"
             onClick={() => onConnect("pairing")}
-            title="Connect to my Opensteer"
+            title={desktopFirstScreenWords.connectExisting}
           />
         </div>
         <SecondaryPaths onConnect={onConnect} />
@@ -298,7 +326,7 @@ export function DesktopWelcome({
       bare
       description="Sign in with your Opensteer account. Your phone and connected agents can then reach your Opensteer from anywhere."
       live
-      title="Welcome to Opensteer"
+      title={desktopFirstScreenWords.welcomeTitle}
     >
       <ErrorNotice message={actionError ?? error} />
       {account.status === "authorizing" ? (
@@ -319,7 +347,7 @@ export function DesktopWelcome({
           onClick={() => run(() => bridge.signIn())}
           type="button"
         >
-          Sign in
+          {desktopFirstScreenWords.signIn}
         </button>
       )}
       <p className="desktop-entry__links">
@@ -497,7 +525,7 @@ function DesktopWhere({
       description="Your browser profiles, apps, plugins, tasks and rules live in one Home. You can add devices to it later."
       {...(eyebrow ? { eyebrow } : {})}
       live
-      title="Where should your Opensteer live?"
+      title={desktopFirstScreenWords.whereTitle}
     >
       <ErrorNotice message={openFailure ?? error} />
       {waiting ? (

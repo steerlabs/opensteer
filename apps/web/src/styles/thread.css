@@ -53,6 +53,11 @@
   scroll-padding-bottom: var(--space-56);
 }
 
+/* Disable browser heuristic scroll anchoring only while useVirtualTranscript owns anchoring. */
+.transcript-scroll[data-virtualized="true"] {
+  overflow-anchor: none;
+}
+
 .transcript {
   max-width: var(--transcript-max-width);
   margin: 0 auto;
@@ -66,8 +71,9 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
-  /* Every loaded row stays in the document for Find, Tab, selection and assistive reading; the
-     browser skips laying out and painting the ones off screen, sized as last drawn. */
+  /* Short threads (<= 48 rows) keep every row mounted with content-visibility skipping;
+     long threads virtualize off-screen rows to a bounded DOM window and use ThreadFind (⌘F/Ctrl+F)
+     to search the full conversation. */
   content-visibility: auto;
   contain-intrinsic-block-size: auto 160px;
 }
@@ -81,6 +87,18 @@
 
 .transcript__row:empty {
   display: none;
+}
+
+.transcript__virtual-slot {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.transcript__spacer {
+  flex-shrink: 0;
+  pointer-events: none;
+  contain: strict;
 }
 
 .transcript__load-earlier {

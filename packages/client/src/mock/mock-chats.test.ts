@@ -369,10 +369,9 @@ describe("the chats preview", () => {
         input: {
           anchorThreadId: created.id,
           name: dirty,
-          program: {
-            language: "javascript",
-            source: "export default async () => null",
-            toolContractVersion: 5,
+          script: {
+            interpreter: null,
+            text: "console.log('ok')",
           },
           source: {
             kind: "schedule",

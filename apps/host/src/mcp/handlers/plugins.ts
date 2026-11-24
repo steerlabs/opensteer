@@ -21,7 +21,12 @@ import type { PluginChange, PluginResourceCategory } from "@opensteer/protocol";
 import type { OpensteerStore, PluginAgentStore } from "@opensteer/database";
 import type { AgentToolHandlers, ToolCall } from "./types.js";
 import { requireRun } from "../operations.js";
-import { callerLineage, type AgentCaller, type ConnectionCaller } from "../agent-caller.js";
+import {
+  callerLineage,
+  callerThread,
+  type AgentCaller,
+  type ConnectionCaller,
+} from "../agent-caller.js";
 import type { PluginService } from "../../plugins/plugin-service.js";
 import type { PluginAuthority } from "../../plugins/plugin-authority.js";
 import { pluginInputNext, type PluginExecutions } from "../../plugins/plugin-executions.js";
@@ -177,7 +182,7 @@ export class PluginToolHandlers {
                     reason: `${plugin.name} needs account setup.`,
                     requirements: plugin.requirements.accounts,
                     readiness: detail.readiness,
-                    canRequestAccount: c.caller.kind === "run",
+                    canRequestAccount: c.caller.kind === "run" || c.caller.kind === "program",
                     connection: c.caller.kind === "connection",
                   })
                 : undefined;
@@ -233,7 +238,9 @@ export class PluginToolHandlers {
             id: entry.app,
             name: entry.name,
             reason: entry.reason,
-            canRequestAccount: this.options.authority.caller(context.caller)?.kind === "run",
+            canRequestAccount:
+              this.options.authority.caller(context.caller)?.kind === "run" ||
+              this.options.authority.caller(context.caller)?.kind === "program",
             connection: this.options.authority.caller(context.caller)?.kind === "connection",
             requirements: detail?.plugin.requirements.accounts ?? {},
             readiness: detail?.readiness ?? {},
@@ -545,7 +552,7 @@ export class PluginToolHandlers {
     };
   }
   async #accountRequest(c: ToolCall<"plugin_account_request">) {
-    const caller = requireRun(c.caller);
+    const caller = c.caller.kind === "connection" ? requireRun(c.caller) : c.caller;
     const context = this.options.authority.admit(caller);
     await this.options.authority.assert(context, "account-request", c.input.pluginId);
     const target = {
@@ -578,12 +585,18 @@ export class PluginToolHandlers {
           ).get(`${target.plugin}\u0000${version}`)
         : undefined) ?? "agent";
     await this.options.authority.assert(context, "account-request", target.plugin);
+    const origin =
+      caller.kind === "run"
+        ? ({ originatingRunId: caller.claims.runId } as const)
+        : caller.program.kind === "trigger"
+          ? ({ originatingOccurrenceId: caller.program.occurrenceId } as const)
+          : ({ originatingWatchActivationId: caller.program.activationId } as const);
     const created = await this.options.store.requests.create({
       callId: `plugin-account:${c.operationKey}`,
       kind: "plugin.account",
       mode: "durable",
-      originatingRunId: caller.claims.runId,
-      originatingThreadId: caller.thread.id,
+      ...origin,
+      originatingThreadId: callerThread(caller).id,
       requestedBy: caller.userId,
       requiredActor: "owner",
       payload: { kind: "plugin.account", ...target, consent },

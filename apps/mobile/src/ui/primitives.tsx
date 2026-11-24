@@ -28,12 +28,15 @@ import {
   color,
   material,
   controlFontScaleLimit,
+  displayFontScaleLimit,
   radius,
   space,
   touchTarget,
   type,
 } from "../theme.js";
+import { AddressSentence } from "./address-text.js";
 import { useCopy } from "./copy-mark.js";
+import type { SentencePart } from "./sentence-parts.js";
 
 /**
  * The pieces every screen is built from.
@@ -54,6 +57,10 @@ export function AppText(props: {
   readonly ellipsizeMode?: "head" | "tail";
   /** Set only where a fixed-height control would clip the text it holds. */
   readonly maxFontSizeMultiplier?: number;
+  /** Never hyphenate on Android, whatever its default: set by `AddressText` (`address-text.tsx`). */
+  readonly noHyphens?: boolean;
+  /** Part of the text around it: no style or tone of its own, inheriting the surrounding text's. */
+  readonly inline?: boolean;
   readonly numberOfLines?: number;
   readonly selectable?: boolean;
   readonly role?: TextRole;
@@ -65,14 +72,41 @@ export function AppText(props: {
     <Text
       accessibilityHint={props.accessibilityHint}
       accessibilityLabel={props.accessibilityLabel}
+      {...(props.noHyphens === true ? { android_hyphenationFrequency: "none" as const } : {})}
       ellipsizeMode={props.ellipsizeMode}
       maxFontSizeMultiplier={props.maxFontSizeMultiplier}
       numberOfLines={props.numberOfLines}
       selectable={props.selectable}
-      style={[type[role], { color: textTone(props.tone ?? "default") }, props.style]}
+      style={
+        props.inline === true
+          ? props.style
+          : [type[role], { color: textTone(props.tone ?? "default") }, props.style]
+      }
     >
       {props.children}
     </Text>
+  );
+}
+
+/**
+ * A screen's display title, the only way one is drawn (`tests/mobile-display-title.test.ts`): it
+ * grows only as far as `displayFontScaleLimit`, where its widest word fits the narrowest phone, so
+ * it never breaks inside a word, at any text size.
+ */
+export function DisplayTitle(props: {
+  readonly children: ReactNode;
+  /** The type scale's large display title (the default) or its small one. */
+  readonly size?: "large" | "small";
+  readonly style?: StyleProp<TextStyle>;
+}): ReactNode {
+  return (
+    <AppText
+      maxFontSizeMultiplier={displayFontScaleLimit}
+      role={props.size === "small" ? "displaySmall" : "displayLarge"}
+      style={props.style}
+    >
+      {props.children}
+    </AppText>
   );
 }
 
@@ -204,10 +238,11 @@ export function SecondaryButton(props: {
       {props.busy === true ? (
         <ActivityIndicator color={danger ? color.red : color.ember} />
       ) : (
+        // A label a person reads whole: it wraps inside the button, which grows to hold it.
         <Text
           maxFontSizeMultiplier={controlFontScaleLimit}
-          numberOfLines={1}
           style={[
+            styles.centredLabel,
             props.compact === true ? type.secondaryMedium : type.action,
             danger ? styles.secondaryButtonDangerLabel : styles.secondaryButtonLabel,
           ]}
@@ -267,7 +302,7 @@ export function SwitchRow(props: {
       {props.detail ? (
         <View style={styles.switchLabel}>
           <AppText role="body">{props.label}</AppText>
-          <AppText numberOfLines={1} role="caption" tone="muted">
+          <AppText role="caption" tone="muted">
             {props.detail}
           </AppText>
         </View>
@@ -495,7 +530,8 @@ function FieldInput(props: {
  */
 export function Notice(props: {
   readonly action?: { readonly label: string; readonly onPress: () => void };
-  readonly detail: string;
+  /** Its sentence; one that holds an address comes as parts (`sentence-parts.ts`). */
+  readonly detail: string | readonly SentencePart[];
   readonly title: string;
   readonly tone?: "danger" | "neutral";
 }): ReactNode {
@@ -505,9 +541,13 @@ export function Notice(props: {
       <AppText role="secondaryMedium" tone={danger ? "danger" : "default"}>
         {props.title}
       </AppText>
-      <AppText role="secondary" tone="soft">
-        {props.detail}
-      </AppText>
+      {typeof props.detail === "string" ? (
+        <AppText role="secondary" tone="soft">
+          {props.detail}
+        </AppText>
+      ) : (
+        <AddressSentence parts={props.detail} role="secondary" tone="soft" />
+      )}
       {props.action === undefined ? null : (
         <SecondaryButton label={props.action.label} onPress={props.action.onPress} />
       )}
@@ -542,11 +582,7 @@ export function Chip(props: {
         disabled && styles.buttonDisabled,
       ]}
     >
-      <Text
-        maxFontSizeMultiplier={controlFontScaleLimit}
-        numberOfLines={1}
-        style={[type.caption, styles.chipLabel]}
-      >
+      <Text maxFontSizeMultiplier={controlFontScaleLimit} style={[type.caption, styles.chipLabel]}>
         {props.label}
       </Text>
     </Pressable>
@@ -570,7 +606,7 @@ export function CodeBlock(props: { readonly label?: string; readonly text: strin
   return (
     <View style={styles.codeBlock}>
       <View style={styles.codeHead}>
-        <AppText numberOfLines={1} role="caption" style={styles.codeLabel} tone="muted">
+        <AppText role="caption" style={styles.codeLabel} tone="muted">
           {props.label ?? ""}
         </AppText>
         <Pressable
@@ -693,6 +729,7 @@ const styles = StyleSheet.create({
     paddingVertical: space[12] - 1,
   },
   buttonProminent: { borderRadius: radius.full, minHeight: 50 },
+  centredLabel: { textAlign: "center" },
   primaryButtonLabel: { color: color.inkOnEmber },
   primaryButtonPressed: { ...material.accentPressed },
   rowPressed: { ...material.quiet },

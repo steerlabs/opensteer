@@ -67,6 +67,178 @@ it("drains on startup and commit, and retries at the durable deadline", async ()
   }
 });
 
+it("describes outcome-unknown notices as lost contact rather than interrupted (Z5 / Finding 9)", async () => {
+  vi.useFakeTimers();
+  const threadId = createId("thread");
+  const notice: PendingAutomationFailure = {
+    anchorThreadId: threadId,
+    anchorThreadTitle: "Task",
+    attempts: 0,
+    createdBy: createId("user"),
+    detail: "Outcome unknown: the computer reconnected without this firing.",
+    destinationThreadId: threadId,
+    id: crypto.randomUUID(),
+    reason: "outcome-unknown",
+    triggerId: createId("trigger"),
+    triggerName: "Nightly backup",
+  };
+  let delivered = false;
+  const enqueueThreadInput = vi.fn<CommandService["enqueueThreadInput"]>(
+    async () =>
+      ({
+        disposition: "queued",
+        inputId: createId("message"),
+        runId: null,
+      }) as never,
+  );
+  const service = new AutomationFailureService({
+    commands: { enqueueThreadInput },
+    onError: () => undefined,
+    store: {
+      listDue: vi.fn(async () => (delivered ? [] : [notice])),
+      nextDeadline: async () => null,
+      retryLater: vi.fn(async () => undefined),
+      settle: vi.fn(async () => {
+        delivered = true;
+      }),
+    },
+  });
+  try {
+    service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(enqueueThreadInput).toHaveBeenCalledOnce();
+    const text = enqueueThreadInput.mock.calls[0]?.[0]?.content
+      .map((part) => ("text" in part ? part.text : ""))
+      .join("");
+    expect(text).toMatch(/lost contact/iu);
+    expect(text).toMatch(/outcome is unknown/iu);
+    expect(text).not.toMatch(/was interrupted/iu);
+  } finally {
+    await service.close();
+    vi.useRealTimers();
+  }
+});
+
+it("does not promise schedule retries in started-failing notices (AA14.8)", async () => {
+  vi.useFakeTimers();
+  const threadId = createId("thread");
+  const notice: PendingAutomationFailure = {
+    anchorThreadId: threadId,
+    anchorThreadTitle: "Task",
+    attempts: 0,
+    createdBy: createId("user"),
+    detail: "exit 1",
+    destinationThreadId: threadId,
+    id: crypto.randomUUID(),
+    reason: "started-failing",
+    triggerId: createId("trigger"),
+    triggerName: "Deploy webhook",
+  };
+  let delivered = false;
+  const enqueueThreadInput = vi.fn<CommandService["enqueueThreadInput"]>(
+    async () =>
+      ({
+        disposition: "queued",
+        inputId: createId("message"),
+        runId: null,
+      }) as never,
+  );
+  const service = new AutomationFailureService({
+    commands: { enqueueThreadInput },
+    onError: () => undefined,
+    store: {
+      listDue: vi.fn(async () => (delivered ? [] : [notice])),
+      nextDeadline: async () => null,
+      retryLater: vi.fn(async () => undefined),
+      settle: vi.fn(async () => {
+        delivered = true;
+      }),
+    },
+  });
+  try {
+    service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    const text = enqueueThreadInput.mock.calls[0]?.[0]?.content
+      .map((part) => ("text" in part ? part.text : ""))
+      .join("");
+    expect(text).toContain("It is still active.");
+    expect(text).not.toContain("will keep trying on its schedule");
+  } finally {
+    await service.close();
+    vi.useRealTimers();
+  }
+});
+
+it("describes started-failing, overran-schedule, and watch-crash-loop without claiming the automation was paused (T8/T9/Y10)", async () => {
+  vi.useFakeTimers();
+  const threadId = createId("thread");
+  const triggerId = createId("trigger");
+  const cases: readonly {
+    readonly reason: PendingAutomationFailure["reason"];
+    readonly detail: string;
+    readonly match: RegExp;
+  }[] = [
+    { reason: "started-failing", detail: "exit 1", match: /started failing/iu },
+    { reason: "overran-schedule", detail: "still running", match: /still running/iu },
+    { reason: "watch-crash-loop", detail: "exit 137", match: /keeps stopping/iu },
+  ];
+  try {
+    for (const item of cases) {
+      let delivered = false;
+      const enqueueThreadInput = vi.fn<CommandService["enqueueThreadInput"]>(
+        async () =>
+          ({
+            disposition: "queued",
+            inputId: createId("message"),
+            runId: null,
+          }) as never,
+      );
+      const service = new AutomationFailureService({
+        commands: { enqueueThreadInput },
+        onError: () => undefined,
+        store: {
+          listDue: vi.fn(async () =>
+            delivered
+              ? []
+              : [
+                  {
+                    anchorThreadId: threadId,
+                    anchorThreadTitle: "Task",
+                    attempts: 0,
+                    createdBy: createId("user"),
+                    detail: item.detail,
+                    destinationThreadId: threadId,
+                    id: crypto.randomUUID(),
+                    reason: item.reason,
+                    triggerId,
+                    triggerName: "Check inbox",
+                  },
+                ],
+          ),
+          nextDeadline: async () => null,
+          retryLater: vi.fn(async () => undefined),
+          settle: vi.fn(async () => {
+            delivered = true;
+          }),
+        },
+      });
+      try {
+        service.start();
+        await vi.advanceTimersByTimeAsync(0);
+        const text = enqueueThreadInput.mock.calls[0]?.[0]?.content
+          .map((part) => ("text" in part ? part.text : ""))
+          .join("");
+        expect(text).toMatch(item.match);
+        expect(text).not.toMatch(/was paused/iu);
+      } finally {
+        await service.close();
+      }
+    }
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("backs off when a due notice cannot be listed, instead of spinning", async () => {
   vi.useFakeTimers();
   let reads = 0;
@@ -141,6 +313,111 @@ it("gives every due notice its turn when one notice's write keeps failing", asyn
     // The failure owes a retry with backoff, not a spin.
     expect(errors).toHaveLength(1);
     expect(vi.getTimerCount()).toBe(1);
+  } finally {
+    await service.close();
+    vi.useRealTimers();
+  }
+});
+
+it("sends the outcome-unknown sentence for started-unknown without wording it as failed (AB2)", async () => {
+  vi.useFakeTimers();
+  const threadId = createId("thread");
+  const notice: PendingAutomationFailure = {
+    anchorThreadId: threadId,
+    anchorThreadTitle: "Task",
+    attempts: 0,
+    createdBy: createId("user"),
+    detail: "Automation script exited with code 3: outcome unknown (an effect may have happened)",
+    destinationThreadId: threadId,
+    id: crypto.randomUUID(),
+    reason: "started-unknown",
+    triggerId: createId("trigger"),
+    triggerName: "Deploy webhook",
+  };
+  let delivered = false;
+  const enqueueThreadInput = vi.fn<CommandService["enqueueThreadInput"]>(
+    async () =>
+      ({
+        disposition: "queued",
+        inputId: createId("message"),
+        runId: null,
+      }) as never,
+  );
+  const service = new AutomationFailureService({
+    commands: { enqueueThreadInput },
+    onError: () => undefined,
+    store: {
+      listDue: vi.fn(async () => (delivered ? [] : [notice])),
+      nextDeadline: async () => null,
+      retryLater: vi.fn(async () => undefined),
+      settle: vi.fn(async () => {
+        delivered = true;
+      }),
+    },
+  });
+  try {
+    service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(enqueueThreadInput).toHaveBeenCalledOnce();
+    const text = enqueueThreadInput.mock.calls[0]?.[0]?.content
+      .map((part) => ("text" in part ? part.text : ""))
+      .join("");
+    expect(text).toContain("ended without saying whether its effect happened");
+    expect(text).toContain("was not run again");
+    expect(text).not.toContain("started failing");
+  } finally {
+    await service.close();
+    vi.useRealTimers();
+  }
+});
+
+it("explains watch-halted truthfully and tells the reader to pause and resume (AB3)", async () => {
+  vi.useFakeTimers();
+  const threadId = createId("thread");
+  const notice: PendingAutomationFailure = {
+    anchorThreadId: threadId,
+    anchorThreadTitle: "Task",
+    attempts: 0,
+    createdBy: createId("user"),
+    detail:
+      "exit 1: Watch stopped restarting because prior process containment could not be verified.",
+    destinationThreadId: threadId,
+    id: crypto.randomUUID(),
+    reason: "watch-halted",
+    triggerId: createId("trigger"),
+    triggerName: "Inbox watch",
+  };
+  let delivered = false;
+  const enqueueThreadInput = vi.fn<CommandService["enqueueThreadInput"]>(
+    async () =>
+      ({
+        disposition: "queued",
+        inputId: createId("message"),
+        runId: null,
+      }) as never,
+  );
+  const service = new AutomationFailureService({
+    commands: { enqueueThreadInput },
+    onError: () => undefined,
+    store: {
+      listDue: vi.fn(async () => (delivered ? [] : [notice])),
+      nextDeadline: async () => null,
+      retryLater: vi.fn(async () => undefined),
+      settle: vi.fn(async () => {
+        delivered = true;
+      }),
+    },
+  });
+  try {
+    service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(enqueueThreadInput).toHaveBeenCalledOnce();
+    const text = enqueueThreadInput.mock.calls[0]?.[0]?.content
+      .map((part) => ("text" in part ? part.text : ""))
+      .join("");
+    expect(text).toContain("will not restart on its own");
+    expect(text).toContain("pause and resume");
+    expect(text).not.toContain("retrying with backoff");
   } finally {
     await service.close();
     vi.useRealTimers();

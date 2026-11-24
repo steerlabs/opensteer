@@ -1,4 +1,5 @@
 import { browserSiteDomain, browserSiteFromUrl } from "@opensteer/browser-profile/source-state";
+import { named, plainSentence, sentence, type SentencePart } from "./said.js";
 import { isLoopbackHostname, type BrowserSourceId } from "@opensteer/core";
 import { decodeBrowserSourceInvitation } from "@opensteer/deployment-authority";
 import {
@@ -260,10 +261,15 @@ export function chromeSignInAvailability(
  */
 export type BrowserSignInContext = "browser" | "request" | "page";
 
-/** What is wrong, then the single action that fixes it, when there is one. */
+/**
+ * What is wrong, then the single action that fixes it, when there is one: as words, and as the
+ * parts they were made of (`said.ts`), the site an address, so a client draws it as one.
+ */
 export interface BrowserSignInProblemCopy {
   readonly fix: string | null;
+  readonly fixParts: readonly SentencePart[] | null;
   readonly title: string;
+  readonly titleParts: readonly SentencePart[];
 }
 
 /**
@@ -280,6 +286,23 @@ export function browserSignInProblemCopy(
     readonly sourceName: string | null;
   },
 ): BrowserSignInProblemCopy {
+  const words = problemWords(problem, input);
+  return {
+    fix: words.fix === null ? null : plainSentence(words.fix),
+    fixParts: words.fix,
+    title: plainSentence(words.title),
+    titleParts: words.title,
+  };
+}
+
+/** A problem's words, made with the site as an address and a Chrome's name as a name. */
+function problemWords(
+  problem: BrowserSignInProblem,
+  input: Parameters<typeof browserSignInProblemCopy>[1],
+): {
+  readonly fix: readonly SentencePart[] | null;
+  readonly title: readonly SentencePart[];
+} {
   const domain = browserSiteLabel(input.site);
   const chrome = input.sourceName ?? "Chrome";
   switch (problem) {
@@ -287,89 +310,105 @@ export function browserSignInProblemCopy(
       return {
         fix:
           input.connectHere === false
-            ? "Connect Chrome from Opensteer on your computer."
-            : "Connect Chrome to use your sign-in.",
-        title: "Chrome isn’t connected yet",
+            ? sentence`Connect Chrome from Opensteer on your computer.`
+            : sentence`Connect Chrome to use your sign-in.`,
+        title: sentence`Chrome isn’t connected yet`,
       };
     case "chrome-offline":
       return input.sourceName
-        ? { fix: "Open that browser on its computer.", title: `${input.sourceName} is offline` }
-        : { fix: "Open Chrome on that computer.", title: "Chrome is offline" };
+        ? {
+            fix: sentence`Open that browser on its computer.`,
+            title: sentence`${named(input.sourceName)} is offline`,
+          }
+        : { fix: sentence`Open Chrome on that computer.`, title: sentence`Chrome is offline` };
     case "choose-source":
       return {
-        fix: "Choose one.",
-        title: `More than one Chrome profile is signed in to ${domain}`,
+        fix: sentence`Choose one.`,
+        title: sentence`More than one Chrome profile is signed in to ${domain}`,
       };
     case "session-closed":
       return input.context === "request"
         ? {
-            fix: `Your agent signs in to ${domain} the next time it needs it.`,
-            title: "The agent’s browser closed",
+            fix: sentence`Your agent signs in to ${domain} the next time it needs it.`,
+            title: sentence`The agent’s browser closed`,
           }
         : {
-            fix: "Open it again to sign in.",
-            title: input.context === "page" ? "This page was closed" : "This browser closed",
+            fix: sentence`Open it again to sign in.`,
+            title:
+              input.context === "page"
+                ? sentence`This page was closed`
+                : sentence`This browser closed`,
           };
     case "runtime-outdated":
       return {
         fix:
           input.context === "page"
-            ? "Update Opensteer on the computer it runs on, then open the page again."
-            : "Update Opensteer on the computer it runs on, then open the browser again.",
+            ? sentence`Update Opensteer on the computer it runs on, then open the page again.`
+            : sentence`Update Opensteer on the computer it runs on, then open the browser again.`,
         title:
           input.context === "page"
-            ? "This page can’t take a Chrome sign-in yet"
-            : "This browser can’t take a Chrome sign-in yet",
+            ? sentence`This page can’t take a Chrome sign-in yet`
+            : sentence`This browser can’t take a Chrome sign-in yet`,
       };
     case "unsupported-operation":
       return {
-        fix: `Sign in to ${domain} on the page itself.`,
+        fix: sentence`Sign in to ${domain} on the page itself.`,
         title:
           input.context === "page"
-            ? "This page can’t take a Chrome sign-in"
-            : "This browser can’t take a Chrome sign-in",
+            ? sentence`This page can’t take a Chrome sign-in`
+            : sentence`This browser can’t take a Chrome sign-in`,
       };
     case "no-state":
       return input.sourceName
         ? {
-            fix: `Sign in to ${domain} in that Chrome.`,
-            title: `${chrome} isn’t signed in to ${domain}`,
+            fix: sentence`Sign in to ${domain} in that Chrome.`,
+            title: sentence`${named(chrome)} isn’t signed in to ${domain}`,
           }
-        : { fix: `Sign in to ${domain} in Chrome.`, title: `Chrome isn’t signed in to ${domain}` };
+        : {
+            fix: sentence`Sign in to ${domain} in Chrome.`,
+            title: sentence`Chrome isn’t signed in to ${domain}`,
+          };
     case "stopped":
       return {
-        fix: "Open the Opensteer extension in Chrome and choose Share again.",
-        title: `Sharing ${domain} is stopped in ${chrome}`,
+        fix: sentence`Open the Opensteer extension in Chrome and choose Share again.`,
+        title: sentence`Sharing ${domain} is stopped in ${named(chrome)}`,
       };
     case "chrome-blocked":
       return {
-        fix: "In Chrome, right-click the extension’s icon and set “This can read and change site data” to On all sites.",
-        title: `Chrome doesn’t let the Opensteer extension read ${domain}`,
+        fix: sentence`In Chrome, right-click the extension’s icon and set “This can read and change site data” to On all sites.`,
+        title: sentence`Chrome doesn’t let the Opensteer extension read ${domain}`,
       };
     case "limit":
       return {
-        fix: "Open the Opensteer extension in Chrome and choose Allow more today.",
-        title: `${chrome} reached today’s limit of new sites`,
+        fix: sentence`Open the Opensteer extension in Chrome and choose Allow more today.`,
+        title: sentence`${named(chrome)} reached today’s limit of new sites`,
       };
     case "not-allowed":
-      return { fix: null, title: "Opensteer can’t sign in to itself or to sites on this computer" };
+      return {
+        fix: null,
+        title: sentence`Opensteer can’t sign in to itself or to sites on this computer`,
+      };
     case "site-removed":
       return {
         fix:
-          input.context === "request" ? "Allow it again to sign in." : "Sign in again to allow it.",
-        title: `${domain} was removed from your allowed sites`,
+          input.context === "request"
+            ? sentence`Allow it again to sign in.`
+            : sentence`Sign in again to allow it.`,
+        title: sentence`${domain} was removed from your allowed sites`,
       };
     case "unsupported":
     case "too-large":
       return {
         fix:
           input.context === "request"
-            ? `Sign in to ${domain} yourself in the agent’s browser instead.`
-            : `Sign in to ${domain} in this ${input.context === "page" ? "page" : "browser"} instead.`,
+            ? sentence`Sign in to ${domain} yourself in the agent’s browser instead.`
+            : input.context === "page"
+              ? sentence`Sign in to ${domain} in this page instead.`
+              : sentence`Sign in to ${domain} in this browser instead.`,
         title:
           problem === "too-large"
-            ? `${domain}’s sign-in is too large to share`
-            : `${domain} can’t share its sign-in from Chrome`,
+            ? sentence`${domain}’s sign-in is too large to share`
+            : sentence`${domain} can’t share its sign-in from Chrome`,
       };
   }
 }

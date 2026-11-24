@@ -3628,16 +3628,17 @@ describe("RunnerRuntime", () => {
       dataDirectory: dirname(testPrivateStateRoot),
       privateStateDirectory: testPrivateStateRoot,
       projectContinuationIdentity,
-      programExecutor: {
-        execute: async ({ context, workspace }) => {
+      scriptExecutor: {
+        execute: async ({ firingId, script, workspace }) => {
           executions += 1;
-          expect(context).toEqual(command.context);
+          expect(firingId).toBe(command.context.occurrenceId);
+          expect(script).toEqual(command.context.script);
           expect(workspace.path).toBe("/runner/triggers/test/workspace");
           return {
             completedAt: new Date().toISOString(),
             error: null,
             exitCode: 0,
-            occurrenceId: context.occurrenceId,
+            occurrenceId: firingId,
             result: { delivered: true },
             status: "succeeded",
             stderr: "",
@@ -3711,8 +3712,8 @@ describe("RunnerRuntime", () => {
       dataDirectory: dirname(testPrivateStateRoot),
       privateStateDirectory: testPrivateStateRoot,
       containment,
-      programExecutor: {
-        execute: async ({ context, planLaunch, signal, workspace }) => {
+      scriptExecutor: {
+        execute: async ({ firingId, planLaunch, signal, workspace }) => {
           const plan = await planLaunch({
             environment: {},
             privateDirectory: testPrivateStateRoot,
@@ -3734,7 +3735,7 @@ describe("RunnerRuntime", () => {
             completedAt: new Date().toISOString(),
             error: "Trigger program was canceled",
             exitCode: null,
-            occurrenceId: context.occurrenceId,
+            occurrenceId: firingId,
             result: null,
             status: "canceled",
             stderr: "",
@@ -3858,7 +3859,7 @@ describe("RunnerRuntime", () => {
       maxConcurrentRuns: 2,
       dataDirectory: dirname(testPrivateStateRoot),
       privateStateDirectory: testPrivateStateRoot,
-      programExecutor: {
+      scriptExecutor: {
         execute: async () => {
           triggerExecutions += 1;
           throw new Error("Canceled Trigger must not execute");
@@ -6806,12 +6807,11 @@ function triggerCommand(
 
       mcp: { token: "trigger-mcp-token", url: "https://host.example/internal/v1/mcp" },
       occurrenceId,
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
-      },
       revisionId,
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
+      },
       triggerId,
     },
     correlationId: CorrelationIdSchema.parse("trigger-runtime-test"),

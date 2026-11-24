@@ -94,6 +94,7 @@ export const compose = {
     value: boolean;
     onCheckedChange?: (v: boolean) => void;
   }) => <input type="checkbox" checked={value} onChange={() => onCheckedChange?.(!value)} />,
+  // A text's own semantics description is its accessible name too, and weight marks layout fill.
   Text: ({
     children,
     modifiers,
@@ -101,7 +102,10 @@ export const compose = {
     readonly children?: ReactNode;
     readonly modifiers?: readonly Modifier[];
   }) => (
-    <span data-weight={modifiers?.some((modifier) => modifier.kind === "weight") || undefined}>
+    <span
+      aria-label={modifiers?.find((modifier) => modifier.kind === "label")?.label}
+      data-weight={modifiers?.some((modifier) => modifier.kind === "weight") || undefined}
+    >
       {children}
     </span>
   ),

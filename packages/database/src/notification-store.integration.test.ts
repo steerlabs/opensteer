@@ -1067,10 +1067,10 @@ integration("notification decision boundary", () => {
           createdBy: fixture.ownerId,
           idempotencyKey: randomUUID(),
           name: "Automatic work",
-          program: {
-            toolContractVersion: 5,
-            language: "javascript",
-            source: "export default async () => null",
+          script: {
+            interpreter: null,
+
+            text: "console.log('ok')",
           },
           source: {
             kind: "schedule",

@@ -90,6 +90,13 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   const triggers = new TriggerToolHandlers(
     { manage: async () => unavailable() },
     { triggerOrigins: async () => new Map() },
+    {
+      door: (_caller, registry) => ({
+        registry,
+        scope: async () => ({ scope: null, grant: null, mode: "full-access" }),
+        admit: async () => ({ answer: "now", face: 0, execution: null }),
+      }),
+    },
   );
   const handlers: AgentToolHandlers = {
     discover: async () => unavailable(),

@@ -742,7 +742,7 @@ export function Composer(props: {
             </AppText>
           </Pressable>
         </View>
-        {reopenLine === null ? null : <ActionLine line={reopenLine} numberOfLines={2} />}
+        {reopenLine === null ? null : <ActionLine line={reopenLine} />}
       </View>
     );
   return (
@@ -791,12 +791,12 @@ export function Composer(props: {
       )}
       {failure === null ? null : (
         <View style={styles.failure}>
-          <ActionLine line={failure} numberOfLines={2} onDismiss={() => setFailure(null)} />
+          <ActionLine line={failure} onDismiss={() => setFailure(null)} />
         </View>
       )}
       {stopAction.line === null ? null : (
         <View style={styles.failure}>
-          <ActionLine line={stopAction.line} numberOfLines={2} onDismiss={stopAction.dismiss} />
+          <ActionLine line={stopAction.line} onDismiss={stopAction.dismiss} />
         </View>
       )}
       {filesWait ? (
@@ -834,7 +834,6 @@ export function Composer(props: {
                 },
               },
             }}
-            numberOfLines={2}
           />
           <Pressable
             accessibilityRole="button"

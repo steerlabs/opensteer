@@ -27,6 +27,7 @@ import {
   View,
 } from "react-native";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
+import { useStackedLayout } from "../ui/stacked-layout.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import {
   deploymentStatusDetail,
@@ -73,6 +74,7 @@ import { Symbol } from "../ui/symbol.js";
 import { AccountIdentityRow } from "./add-deployment.js";
 import {
   accountDirectoryUnavailablePresentation,
+  accountSignInFailureText,
   accountIdentityLabel,
   accountFlowCanContinue,
   deploymentCanOpen,
@@ -121,105 +123,142 @@ export const DeploymentListRow = memo(function DeploymentListRow(props: {
   const remove = useCallback(() => props.onRemove(row), [props.onRemove, row]);
   const signOut = useCallback(() => props.onSignOut(row), [props.onSignOut, row]);
   const openable = deploymentCanOpen(row);
+  const stacked = useStackedLayout();
+
+  const mark = (
+    <View style={[styles.mark, { backgroundColor: tone.fill }]}>
+      <AppText
+        accessibilityLabel={`${row.name} mark`}
+        maxFontSizeMultiplier={controlFontScaleLimit}
+        role="title"
+        style={{ color: tone.ink }}
+      >
+        {deploymentInitial(row.name)}
+      </AppText>
+    </View>
+  );
+  const copy = (
+    <View style={styles.copy}>
+      {/* A Home's name wraps: cut to "Mock…" at a large text size, two Homes read alike. */}
+      <AppText role="title">{row.name}</AppText>
+      <View style={styles.statusLine}>
+        <StatusDot
+          live={row.status === "connecting" || row.status === "reconnecting"}
+          tone={statusTone(row.status)}
+        />
+        <AppText maxFontSizeMultiplier={statusFontScaleLimit} role="caption" tone="muted">
+          {deploymentStatusLabel(row.status)}
+        </AppText>
+        <AppText role="caption" tone="muted">
+          ·
+        </AppText>
+        {kind.cloud ? (
+          <View style={styles.cloudKind}>
+            <Symbol name="cloud" size={11} tint={color.muted} />
+            <KindText text={kind.label} />
+          </View>
+        ) : (
+          <RowKind
+            current={props.current}
+            kindLabel={row.kindLabel}
+            name={row.name}
+            read={props.attention}
+          />
+        )}
+      </View>
+      {detail === null ? null : (
+        <AppText role="caption" tone="muted">
+          {detail}
+        </AppText>
+      )}
+      <ComputerSignals
+        computerId={row.deploymentId}
+        current={props.current}
+        read={props.attention}
+      />
+    </View>
+  );
+  const opens = {
+    accessibilityHint: openable
+      ? "Opens this Opensteer and signs in when needed"
+      : "Explains what must be fixed before this Opensteer can open",
+    accessibilityLabel: deploymentOpenLabel(row),
+    accessibilityRole: "button" as const,
+    accessibilityState: { selected: props.current },
+    onPress: open,
+  };
+  const trailing =
+    row.signIn === "pairing-code" ? (
+      <Pressable
+        accessibilityLabel={`${deploymentRecoveryLabel(row)} for ${row.name}`}
+        accessibilityRole="button"
+        onPress={pair}
+        style={({ pressed }) => [styles.pair, pressed && styles.pressed]}
+      >
+        <AppText
+          maxFontSizeMultiplier={controlFontScaleLimit}
+          numberOfLines={2}
+          role="caption"
+          tone="ember"
+        >
+          {deploymentRecoveryLabel(row)}
+        </AppText>
+      </Pressable>
+    ) : (
+      <View style={styles.indicator}>
+        <Symbol
+          name={props.current ? "checkmark" : "chevron.right"}
+          size={props.current ? 15 : 13}
+          tint={props.current ? color.ember : color.mutedDim}
+          weight="semibold"
+        />
+      </View>
+    );
+  const menu = (
+    <DeploymentMenu
+      canRemove={!row.accountManaged}
+      canSignOut={signedInStatuses.has(row.status)}
+      name={row.name}
+      onDetails={details}
+      onRemove={remove}
+      onSignOut={signOut}
+    />
+  );
+
+  // At an accessibility text size the mark and the controls take the top line and the words
+  // the full width under them: beside them, a column narrower than "Opensteer" broke it.
+  if (stacked)
+    return (
+      <View style={styles.stackedRow}>
+        <View style={styles.stackedTop}>
+          <Pressable
+            accessible={false}
+            importantForAccessibility="no-hide-descendants"
+            onPress={open}
+            style={styles.stackedMark}
+          >
+            {mark}
+          </Pressable>
+          {trailing}
+          {menu}
+        </View>
+        <Pressable
+          {...opens}
+          style={({ pressed }) => [styles.stackedCopy, pressed && styles.pressed]}
+        >
+          {copy}
+        </Pressable>
+      </View>
+    );
 
   return (
     <View style={styles.row}>
-      <Pressable
-        accessibilityHint={
-          openable
-            ? "Opens this Opensteer and signs in when needed"
-            : "Explains what must be fixed before this Opensteer can open"
-        }
-        accessibilityLabel={deploymentOpenLabel(row)}
-        accessibilityRole="button"
-        accessibilityState={{ selected: props.current }}
-        onPress={open}
-        style={({ pressed }) => [styles.primary, pressed && styles.pressed]}
-      >
-        <View style={[styles.mark, { backgroundColor: tone.fill }]}>
-          <AppText
-            accessibilityLabel={`${row.name} mark`}
-            maxFontSizeMultiplier={controlFontScaleLimit}
-            role="title"
-            style={{ color: tone.ink }}
-          >
-            {deploymentInitial(row.name)}
-          </AppText>
-        </View>
-        <View style={styles.copy}>
-          {/* A Home's name wraps: cut to "Mock…" at a large text size, two Homes read alike. */}
-          <AppText role="title">{row.name}</AppText>
-          <View style={styles.statusLine}>
-            <StatusDot
-              live={row.status === "connecting" || row.status === "reconnecting"}
-              tone={statusTone(row.status)}
-            />
-            <AppText maxFontSizeMultiplier={statusFontScaleLimit} role="caption" tone="muted">
-              {deploymentStatusLabel(row.status)}
-            </AppText>
-            <AppText role="caption" tone="muted">
-              ·
-            </AppText>
-            {kind.cloud ? (
-              <View style={styles.cloudKind}>
-                <Symbol name="cloud" size={11} tint={color.muted} />
-                <KindText text={kind.label} />
-              </View>
-            ) : (
-              <RowKind
-                current={props.current}
-                kindLabel={row.kindLabel}
-                name={row.name}
-                read={props.attention}
-              />
-            )}
-          </View>
-          {detail === null ? null : (
-            <AppText numberOfLines={2} role="caption" tone="muted">
-              {detail}
-            </AppText>
-          )}
-          <ComputerSignals
-            computerId={row.deploymentId}
-            current={props.current}
-            read={props.attention}
-          />
-        </View>
+      <Pressable {...opens} style={({ pressed }) => [styles.primary, pressed && styles.pressed]}>
+        {mark}
+        {copy}
       </Pressable>
-      {row.signIn === "pairing-code" ? (
-        <Pressable
-          accessibilityLabel={`${deploymentRecoveryLabel(row)} for ${row.name}`}
-          accessibilityRole="button"
-          onPress={pair}
-          style={({ pressed }) => [styles.pair, pressed && styles.pressed]}
-        >
-          <AppText
-            maxFontSizeMultiplier={controlFontScaleLimit}
-            numberOfLines={2}
-            role="caption"
-            tone="ember"
-          >
-            {deploymentRecoveryLabel(row)}
-          </AppText>
-        </Pressable>
-      ) : (
-        <View style={styles.indicator}>
-          <Symbol
-            name={props.current ? "checkmark" : "chevron.right"}
-            size={props.current ? 15 : 13}
-            tint={props.current ? color.ember : color.mutedDim}
-            weight="semibold"
-          />
-        </View>
-      )}
-      <DeploymentMenu
-        canRemove={!row.accountManaged}
-        canSignOut={signedInStatuses.has(row.status)}
-        name={row.name}
-        onDetails={details}
-        onRemove={remove}
-        onSignOut={signOut}
-      />
+      {trailing}
+      {menu}
     </View>
   );
 });
@@ -271,9 +310,10 @@ function ShownKind(props: {
   return <KindText text={homeLine(shown, props.name) ?? props.kindLabel} />;
 }
 
+/** The Home's kind, or the Mac it lives on: wraps, and moves to its own line when it must. */
 function KindText(props: { readonly text: string }): ReactNode {
   return (
-    <AppText numberOfLines={1} role="caption" style={styles.kind} tone="muted">
+    <AppText role="caption" style={styles.kind} tone="muted">
       {props.text}
     </AppText>
   );
@@ -522,7 +562,7 @@ export function DeploymentsScreen(): ReactNode {
     })()
       .catch((error: unknown) => {
         if (!accountFlowIsCurrent(generation, expectedSelection)) return;
-        setFailure(failedLine(error, "Couldn't sign in to your Opensteer account."));
+        setFailure(failedLine(error, accountSignInFailureText(error)));
       })
       .finally(() => {
         if (mounted.current && accountFlowGeneration.current === generation) {
@@ -688,9 +728,7 @@ export function DeploymentsScreen(): ReactNode {
             {homePickerReason(opening)}
           </AppText>
         ) : null}
-        {failure === null ? null : (
-          <ActionLine line={failure} numberOfLines={2} onDismiss={() => setFailure(null)} />
-        )}
+        {failure === null ? null : <ActionLine line={failure} onDismiss={() => setFailure(null)} />}
         {identity === null ? null : (
           <RowGroup>
             {[
@@ -823,6 +861,16 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     minHeight: 60,
     paddingRight: space[4],
+  },
+  stackedCopy: { paddingBottom: space[10], paddingHorizontal: space[12] },
+  stackedMark: { flex: 1, paddingVertical: space[6] },
+  stackedRow: { minHeight: 60 },
+  stackedTop: {
+    alignItems: "center",
+    flexDirection: "row",
+    paddingLeft: space[12],
+    paddingRight: space[4],
+    paddingTop: space[4],
   },
   // At a large text size the status and kind move to the next line whole, never broken
   // inside a word.

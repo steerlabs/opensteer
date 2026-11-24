@@ -21,7 +21,6 @@ import {
   chatDraftRefusal,
   draftFromGrant,
   grantFromDraft,
-  agentWhoOriginParts,
   phoneSentence,
   toggleDraftResource,
   sameGrant,
@@ -54,6 +53,7 @@ import { readGateSections } from "./read-gate-sections.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
+import { addressDetail } from "../ui/sentence-parts.js";
 
 type Props = StaticScreenProps<{ readonly deploymentId: string; readonly connectionId: string }>;
 
@@ -418,13 +418,18 @@ export function connectedAgentSections(props: {
                               workSentence("who.verifiedAs", { name: { name: who.heading } }),
                             )
                         : who.heading,
-                      ...(detail.row.identity.who.origins.length ? {} : { detail: who.detail }),
+                      ...(detail.row.identity.who.origins.length ? {} : addressDetail(who.detail)),
                     },
                   ]),
               ...detail.row.identity.who.origins.map((origin): NativeSettingsRow => ({
                 key: origin.role,
                 kind: "text",
-                label: phoneSentence(agentWhoOriginParts(origin)),
+                // What the origin is (outside name quoted), then the origin under it, drawn as an address.
+                label:
+                  origin.name === null
+                    ? origin.roleLabel
+                    : phoneSentence([`${origin.roleLabel}: `, { name: origin.name }]),
+                ...addressDetail(origin.origin),
               })),
             ],
           },

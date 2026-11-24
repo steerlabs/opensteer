@@ -120,7 +120,11 @@ import {
   type BrowserSessionWithAttachmentCountRecord,
 } from "./browser-session-store.js";
 import * as commandStore from "./command-store.js";
-import { type ClaimedCommand, type RunnerControlInput } from "./command-store.js";
+import {
+  type BlockedCommandClaim,
+  type ClaimedCommand,
+  type RunnerControlInput,
+} from "./command-store.js";
 import * as computerUseStore from "./computer-use-store.js";
 import * as credentialStore from "./credential-store.js";
 import { type CredentialRecord } from "./credential-store.js";
@@ -157,9 +161,11 @@ import { OwnerProfileStore } from "./owner-profile-store.js";
 import {
   installPersonMessageWake,
   publishPersonMessage,
+  publishProgramPersonMessage,
   type PersonMessageReady,
   type PersonMessageInput,
   type PersonMessageResult,
+  type ProgramPersonMessageInput,
 } from "./person-message-store.js";
 import { RequestStore } from "./request-store.js";
 import { IntegrationRequestStore } from "./integration-request-store.js";
@@ -1700,10 +1706,20 @@ export class OpensteerStore {
   async listPendingCommands(limit = 500): Promise<readonly PendingCommandRow[]> {
     return commandStore.listPendingCommands(this.#database, limit);
   }
+  claimCommand(commandId: CommandRow["id"], dispatcherId: string): Promise<ClaimedCommand | null>;
+  claimCommand(
+    commandId: CommandRow["id"],
+    dispatcherId: string,
+    options?: { readonly includeBlocked?: boolean },
+  ): Promise<ClaimedCommand | BlockedCommandClaim | null>;
   async claimCommand(
     commandId: CommandRow["id"],
     dispatcherId: string,
-  ): Promise<ClaimedCommand | null> {
+    options?: { readonly includeBlocked?: boolean },
+  ): Promise<ClaimedCommand | BlockedCommandClaim | null> {
+    if (options) {
+      return commandStore.claimCommand(this.#database, commandId, dispatcherId, options);
+    }
     return commandStore.claimCommand(this.#database, commandId, dispatcherId);
   }
   async finalizeRunInitialContext(input: {
@@ -1736,8 +1752,15 @@ export class OpensteerStore {
   }> {
     return commandStore.loadSteerDispatchInput(this.#database, commandId);
   }
-  async retryCommand(commandId: CommandRow["id"], error: unknown): Promise<void> {
-    return commandStore.retryCommand(this.#database, this.#links, commandId, error);
+  async markCommandFrameSent(commandId: CommandRow["id"]): Promise<void> {
+    return commandStore.markCommandFrameSent(this.#database, commandId);
+  }
+  async retryCommand(
+    commandId: CommandRow["id"],
+    error: unknown,
+    options?: { readonly provenNotStarted?: boolean | undefined },
+  ): Promise<void> {
+    return commandStore.retryCommand(this.#database, this.#links, commandId, error, options);
   }
   async failCommand(
     commandId: CommandRow["id"],
@@ -1745,6 +1768,7 @@ export class OpensteerStore {
     queuedInputCancellation:
       "activation-input" | "authority-cohort" | "seed-input" = "activation-input",
     failureCode: "dispatch_failed" | "runner_restarted" = "dispatch_failed",
+    options?: { readonly provenNotStarted?: boolean | undefined },
   ): Promise<void> {
     return commandStore.failCommand(
       this.#database,
@@ -1753,6 +1777,7 @@ export class OpensteerStore {
       publicMessage,
       queuedInputCancellation,
       failureCode,
+      options,
     );
   }
   async refuseSteer(
@@ -1973,6 +1998,9 @@ export class OpensteerStore {
   publishPersonMessage(input: PersonMessageInput): Promise<PersonMessageResult> {
     return publishPersonMessage(this.#database, input);
   }
+  publishProgramPersonMessage(input: ProgramPersonMessageInput): Promise<PersonMessageResult> {
+    return publishProgramPersonMessage(this.#database, input);
+  }
   async personalMessageSendKeys(
     ownerId: UserId,
     sessionId: string,
@@ -2035,7 +2063,7 @@ export type { ThreadMutationAdmission } from "./thread-store.js";
 export type { AdmittedThreadInputRequest } from "./thread-store.js";
 export type { AdmittedThreadDelegationRequest } from "./thread-store.js";
 export type { RunnerControlInput } from "./command-store.js";
-export type { ClaimedCommand } from "./command-store.js";
+export type { BlockedCommandClaim, ClaimedCommand } from "./command-store.js";
 export type { RecoveredRunTarget } from "./execution-recovery.js";
 export type { BackgroundDeadlineStop } from "./execution-recovery.js";
 export type { AnnouncedExecution } from "./execution-recovery.js";

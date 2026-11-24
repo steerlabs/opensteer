@@ -6,6 +6,7 @@ import type {
   NativeSettingsStep,
   NativeSettingsTone,
 } from "./native-settings-page.types.js";
+import { addressDetail } from "../ui/sentence-parts.js";
 
 /**
  * "Remote access" on a phone. What it says and offers is the shared
@@ -64,7 +65,7 @@ export function remoteAccessSections(
       kind: "status",
       tone: tone(view),
       label: view.title,
-      ...(view.address === null ? {} : { detail: view.address }),
+      ...(view.address === null ? {} : addressDetail(view.address)),
       ...(view.steps === null
         ? {}
         : {
@@ -120,10 +121,9 @@ export function remoteAccessSections(
             kind: "button" as const,
             label:
               view.state === "on-private" ? "Private network address" : "Use a private network",
-            detail:
-              view.state === "on-private"
-                ? (view.address ?? "")
-                : "Your own VPN or network, instead of your Opensteer account",
+            ...(view.state === "on-private"
+              ? addressDetail(view.address ?? "")
+              : { detail: "Your own VPN or network, instead of your Opensteer account" }),
             onPress: () => act({ kind: "private" }),
           },
         ]

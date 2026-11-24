@@ -64,6 +64,8 @@ vi.mock("react-native", () => {
     View: (props: Children & { readonly accessibilityLabel?: string }) => (
       <div aria-label={props.accessibilityLabel}>{props.children}</div>
     ),
+    // The window as a phone at the default text size reports it.
+    useWindowDimensions: () => ({ fontScale: 1, height: 844, scale: 3, width: 390 }),
   };
 });
 vi.mock("react-native-reanimated", () => ({

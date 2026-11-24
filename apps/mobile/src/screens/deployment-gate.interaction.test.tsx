@@ -5,6 +5,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const navigation = vi.hoisted(() => ({ reset: vi.fn() }));
 
+vi.mock("@react-navigation/elements", async () => ({
+  // The bar's height a route's screens are given: none on a route without one.
+  HeaderHeightContext: (await import("react")).createContext<number | undefined>(undefined),
+}));
 vi.mock("react-native", () => ({
   Platform: { OS: "ios", Version: "26", select: (options: { ios?: unknown }) => options.ios },
   ScrollView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
@@ -20,11 +24,15 @@ vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileState: () => ({ rows: [], selection: { deploymentId: null, hostClient: null } }),
 }));
 vi.mock("../ui/shell-gate.js", () => ({ useShellGate: () => undefined }));
+vi.mock("../ui/pane.js", () => ({
+  useContentInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
+}));
 vi.mock("../ui/screen.js", () => ({
   Screen: ({ children }: { children?: ReactNode }) => <main>{children}</main>,
   useReadingColumn: () => ({}),
 }));
 vi.mock("../ui/primitives.js", () => ({
+  DisplayTitle: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   AppText: ({ children }: { children?: ReactNode }) => <p>{children}</p>,
   PrimaryButton: ({ label, onPress }: { label: string; onPress: () => void }) => (
     <button onClick={onPress}>{label}</button>

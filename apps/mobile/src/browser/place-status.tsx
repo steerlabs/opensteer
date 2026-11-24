@@ -26,6 +26,7 @@ import { AgentMarks } from "./agent-marks.js";
 import { ExternalAgentMark } from "../screens/external-agent-mark.js";
 import { useAgentSessionStop } from "../thread/agent-session-hooks.js";
 import { placeSessionLine, sessionTaskOf } from "../thread/agent-session-model.js";
+import { useStackedLayout } from "../ui/stacked-layout.js";
 
 /**
  * What a place says of the conversation it was opened from, under the page:
@@ -47,6 +48,7 @@ export const PlaceStatusRow = memo(function PlaceStatusRow(props: {
   readonly watch: ThreadWatch;
 }): ReactNode {
   const { watch } = props;
+  const stacked = useStackedLayout();
   const [stop, setStop] = useState<{ readonly runId: string; readonly failed: boolean } | null>(
     null,
   );
@@ -72,12 +74,12 @@ export const PlaceStatusRow = memo(function PlaceStatusRow(props: {
   const who = props.agent?.title ?? null;
   const words = props.named === true && who !== null ? `${who} · ${said}` : said;
   return (
-    <View style={styles.row} testID="place-status">
+    <View style={stacked ? styles.rowStacked : styles.row} testID="place-status">
       <View
         accessibilityLabel={who === null ? said : `${who}: ${said}`}
         accessibilityLiveRegion="polite"
         accessible
-        style={styles.said}
+        style={[styles.said, stacked && styles.saidStacked]}
       >
         {props.agent === null ? null : <AgentMarks agents={[props.agent]} size={16} />}
         <AppText
@@ -164,6 +166,15 @@ const styles = StyleSheet.create({
     minHeight: touchTarget,
     minWidth: 0,
   },
+  // At an accessibility text size the row stacks: the words the full width, the controls under
+  // them at the end. Beside Answer and Stop, "Claude" broke inside itself.
+  rowStacked: {
+    alignItems: "stretch",
+    gap: space[2],
+    paddingHorizontal: space[12],
+    paddingVertical: space[2],
+  },
+  saidStacked: { flexBasis: "auto" },
   words: { flexShrink: 1 },
 });
 
@@ -361,9 +372,14 @@ export function SessionStatusRow(props: {
   readonly session: NonNullable<ReturnType<typeof placeSessionLine>>;
 }): ReactNode {
   const { session } = props;
+  const stacked = useStackedLayout();
   return (
-    <View style={styles.row} testID="place-status">
-      <View accessibilityLiveRegion="polite" accessible style={styles.said}>
+    <View style={stacked ? styles.rowStacked : styles.row} testID="place-status">
+      <View
+        accessibilityLiveRegion="polite"
+        accessible
+        style={[styles.said, stacked && styles.saidStacked]}
+      >
         <ExternalAgentMark
           initial={session.agent.initial}
           providerId={session.agent.providerId}

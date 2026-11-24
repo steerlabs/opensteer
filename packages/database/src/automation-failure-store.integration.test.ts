@@ -20,7 +20,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { RunnerDescriptor } from "@opensteer/protocol";
-import { WATCH_AUTO_PAUSE_REASON, type TriggerOccurrence } from "@opensteer/triggers";
+import type { TriggerOccurrence } from "@opensteer/triggers";
 import { sql } from "kysely";
 import { describe, expect, it as baseIt } from "vitest";
 import { AutomationFailureStore, recordAutomationFailure } from "./automation-failure-store.js";
@@ -149,10 +149,9 @@ integration.sequential("automation failure notices", () => {
         .where("id", "=", input.runnerId)
         .execute();
     }
-    const program = {
-      language: "javascript",
-      source: "export default async () => null",
-      toolContractVersion: 5,
+    const script = {
+      interpreter: null,
+      text: "console.log('ok')",
     } as const;
     function createOneShotTrigger(fixture: Fixture, suffix: string) {
       return triggers.create({
@@ -161,7 +160,7 @@ integration.sequential("automation failure notices", () => {
         createdBy: fixture.userId,
         idempotencyKey: `one-shot-${suffix}`,
         name: `Reminder ${suffix}`,
-        program,
+        script,
         source: {
           kind: "schedule",
           schedule: {
@@ -178,7 +177,7 @@ integration.sequential("automation failure notices", () => {
         createdBy: fixture.userId,
         idempotencyKey: `cron-${suffix}`,
         name: `Daily ${suffix}`,
-        program,
+        script,
         source: {
           kind: "schedule",
           schedule: {
@@ -216,6 +215,7 @@ integration.sequential("automation failure notices", () => {
       fixture: Fixture,
       occurrence: TriggerOccurrence,
       runnerBootId: string,
+      options?: { readonly sent?: boolean },
     ): Promise<
       TriggerOccurrence & {
         readonly executionGeneration: number;
@@ -228,6 +228,9 @@ integration.sequential("automation failure notices", () => {
         runnerBootId,
         runnerId: fixture.runnerId,
       });
+      if (options?.sent !== false) {
+        await store.markCommandFrameSent(occurrence.commandId);
+      }
       return {
         ...occurrence,
         executionGeneration: started.executionGeneration,
@@ -340,7 +343,7 @@ integration.sequential("automation failure notices", () => {
       storedNotices,
       createFixture,
       enrollRunner,
-      program,
+      script,
       createOneShotTrigger,
       createCronTrigger,
       fireOneShot,
@@ -381,7 +384,7 @@ integration.sequential("automation failure notices", () => {
     expect(await storedNotices()).toEqual([
       {
         activationId: null,
-        detail: "Program failed",
+        detail: "Exit code 1: Program failed\nfailure",
         occurrenceId: occurrence.id,
         reason: "final-occurrence-failed",
         settledAt: null,
@@ -395,7 +398,7 @@ integration.sequential("automation failure notices", () => {
         destinationThreadId: fixture.threadId,
         attempts: 0,
         createdBy: fixture.userId,
-        detail: "Program failed",
+        detail: "Exit code 1: Program failed\nfailure",
         id: expect.any(String),
         reason: "final-occurrence-failed",
         triggerId: created.trigger.id,
@@ -498,7 +501,7 @@ integration.sequential("automation failure notices", () => {
   it("lists each Trigger with when it runs, how it last went and where it talks", async ({
     storeFixture,
   }) => {
-    const { createFixture, triggers, program, createCronTrigger, complete, fireManual, detail } =
+    const { createFixture, triggers, script, createCronTrigger, complete, fireManual, detail } =
       storeFixture;
     const fixture = await createFixture("summary");
     const at = new Date(Date.now() + 60_000).toISOString();
@@ -508,7 +511,7 @@ integration.sequential("automation failure notices", () => {
       createdBy: fixture.userId,
       idempotencyKey: "summary-once",
       name: "Reminder summary",
-      program,
+      script,
       source: {
         kind: "schedule",
         schedule: {
@@ -573,41 +576,55 @@ integration.sequential("automation failure notices", () => {
       "Anchor summary",
     );
   });
-  it("records nothing for a recurring failure below the threshold, and one auto-pause", async ({
+  it("records one started-failing notice without auto-pausing, and resets on recovery (T9)", async ({
     storeFixture,
   }) => {
-    const { createFixture, createCronTrigger, failManual, storedNotices, detail } = storeFixture;
+    const {
+      createFixture,
+      createCronTrigger,
+      failManual,
+      fireManual,
+      complete,
+      storedNotices,
+      detail,
+    } = storeFixture;
     const fixture = await createFixture("recurring");
     const created = await createCronTrigger(fixture, "recurring");
-    await failManual(fixture, created.trigger.id, "first");
-    await failManual(fixture, created.trigger.id, "second");
-    expect(await storedNotices()).toEqual([]);
-    const third = await failManual(fixture, created.trigger.id, "third");
+    const first = await failManual(fixture, created.trigger.id, "first");
     expect(await storedNotices()).toEqual([
       {
         activationId: null,
-        detail: "Program failed",
-        occurrenceId: third.id,
-        reason: "paused",
+        detail: "Exit code 1: Program failed\nfailure",
+        occurrenceId: first.id,
+        reason: "started-failing",
         settledAt: null,
         triggerId: created.trigger.id,
       },
     ]);
+    await failManual(fixture, created.trigger.id, "second");
+    await failManual(fixture, created.trigger.id, "third");
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      status: "paused",
+      status: "active",
     });
-
-    // A run that fails after the pause is not a second stop.
-    await failManual(fixture, created.trigger.id, "after-pause");
+    // Additional failures while already failing do not spam another notice.
     expect(await storedNotices()).toHaveLength(1);
+    // Recovery clears failureNotifiedAt so a later failure notifies once again.
+    await complete(fixture, await fireManual(fixture, created.trigger.id), "succeeded", "recover");
+    const nextFail = await failManual(fixture, created.trigger.id, "after-recovery");
+    expect(await storedNotices()).toHaveLength(2);
+    expect((await storedNotices())[1]).toMatchObject({
+      occurrenceId: nextFail.id,
+      reason: "started-failing",
+    });
   });
-  it("records a notice when a Runner disconnect or Host restart loses a one-shot's only run", async ({
+  it("marks unannounced firings unknown on attach for every lineage, notices one-shots, and lets a late proof settle unknown (T12)", async ({
     storeFixture,
   }) => {
     const {
       createFixture,
       createOneShotTrigger,
       createCronTrigger,
+      database,
       start,
       fireOneShot,
       triggers,
@@ -626,40 +643,727 @@ integration.sequential("automation failure notices", () => {
       }),
       "boot-a",
     );
+    // Also mark a connection-lineage firing on the same runner so Fault B is proved fixed:
+    // connection-lineage firings must settle to unknown instead of staying 'running' forever.
+    await database
+      .updateTable("triggerOccurrences")
+      .set({ connectionId: "acn_test_lineage" })
+      .where("id", "=", lostRecurring.id)
+      .execute();
 
-    // Both runs are lost together, as a disconnect loses every run it held.
-    await expect(
-      triggers.failActiveForRunnerDisconnect({
-        activeOccurrenceIds: [lostRecurring.id, lostOneShot.id],
-        runnerBootId: "boot-a",
-        runnerId: fixture.runnerId,
-      }),
-    ).resolves.toBe(2);
+    // New boot attaches without either firing: both personal and connection lineages settle to unknown.
+    const attached = await triggers.attachRunnerFirings({
+      dispatchingOccurrenceIds: [],
+      firings: [],
+      runnerBootId: "boot-b",
+      runnerId: fixture.runnerId,
+    });
+    expect(attached.settledUnknownCount).toBe(2);
+    expect(attached.results).toEqual([]);
 
-    // The recurring Trigger runs again on its schedule; the one-shot never will.
+    const rows = await database
+      .selectFrom("triggerOccurrences")
+      .select(["id", "status", "terminalEvidenceAt", "contactLostAt"])
+      .where("id", "in", [lostOneShot.id, lostRecurring.id])
+      .execute();
+    for (const row of rows) {
+      expect(row.status).toBe("unknown");
+    }
+    const connRow = rows.find((r) => r.id === lostRecurring.id)!;
+    expect(connRow.terminalEvidenceAt).not.toBeNull();
+    expect(connRow.contactLostAt).not.toBeNull();
+
+    // The recurring Trigger runs again on its schedule; the one-shot gets an outcome-unknown notice.
     expect(await storedNotices()).toEqual([
       {
         activationId: null,
-        detail: "The computer disconnected before the automation program finished",
+        detail: "Outcome unknown: the computer reconnected without this firing.",
         occurrenceId: lostOneShot.id,
-        reason: "final-occurrence-interrupted",
+        reason: "outcome-unknown",
         settledAt: null,
         triggerId: oneShot.trigger.id,
       },
     ]);
-    const restarted = await createOneShotTrigger(fixture, "restarted-one-shot");
-    const lostToRestart = await start(fixture, await fireOneShot(restarted.trigger.id), "boot-b");
-    await expect(triggers.failActiveAfterHostRestart()).resolves.toBe(1);
-    expect((await storedNotices()).at(-1)).toEqual({
-      activationId: null,
-      detail: "Host restarted before the automation program finished",
-      occurrenceId: lostToRestart.id,
-      reason: "final-occurrence-interrupted",
-      settledAt: null,
-      triggerId: restarted.trigger.id,
+
+    // Late proof with the exact (runnerId, runnerBootId, executionGeneration) settles unknown
+    // to its real exit code & outcome (Fault A fixed!).
+    const lateSettled = await triggers.completeExecution({
+      executionGeneration: lostOneShot.executionGeneration,
+      output: {
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: 0,
+        occurrenceId: lostOneShot.id,
+        result: null,
+        status: "succeeded",
+        stderr: "",
+        stdout: "finished before restart\n",
+      },
+      runnerBootId: "boot-a",
+      runnerId: fixture.runnerId,
+      verifiedContainment: true,
+    });
+    expect(lateSettled?.status).toBe("succeeded");
+    expect(lateSettled?.exitCode).toBe(0);
+    expect(lateSettled?.stdout).toBe("finished before restart\n");
+    // Finding 9: late proof withdraws the undelivered outcome-unknown notice so the anchor is not
+    // woken with a stale "it may not have finished" prompt.
+    const noticesAfterLateProof = await storedNotices();
+    expect(noticesAfterLateProof).toHaveLength(1);
+    expect(noticesAfterLateProof[0]?.settledAt).not.toBeNull();
+    expect(await storeFixture.notices.listDue()).toEqual([]);
+  });
+
+  it("resets unsent firings (frame_sent_at IS NULL) to pending on attach and restores active unknown firings (Z5 / Finding 12)", async ({
+    storeFixture,
+  }) => {
+    const {
+      createFixture,
+      createOneShotTrigger,
+      database,
+      detail,
+      fireOneShot,
+      notices,
+      start,
+      storedNotices,
+      triggers,
+    } = storeFixture;
+    const fixture = await createFixture("z5-unsent-and-restore");
+    const unsentTrigger = await createOneShotTrigger(fixture, "z5-unsent");
+    const unsent = await start(fixture, await fireOneShot(unsentTrigger.trigger.id), "boot-a", {
+      sent: false,
+    });
+
+    // Home crashed after startExecution and before markCommandFrameSent: attach sees frame_sent_at IS NULL
+    // and returns the firing to pending with zero notices and settledUnknownCount === 0.
+    const attachedUnsent = await triggers.attachRunnerFirings({
+      dispatchingOccurrenceIds: [],
+      firings: [],
+      runnerBootId: "boot-a",
+      runnerId: fixture.runnerId,
+    });
+    expect(attachedUnsent.settledUnknownCount).toBe(0);
+    expect(await storedNotices()).toEqual([]);
+    const unsentRow = await database
+      .selectFrom("triggerOccurrences")
+      .select(["runnerBootId", "runnerId", "startedAt", "status"])
+      .where("id", "=", unsent.id)
+      .executeTakeFirstOrThrow();
+    expect(unsentRow).toEqual({
+      runnerBootId: null,
+      runnerId: null,
+      startedAt: null,
+      status: "pending",
+    });
+    const unsentCommand = await database
+      .selectFrom("commands")
+      .select(["dispatcherId", "frameSentAt", "status"])
+      .where("id", "=", unsent.commandId)
+      .executeTakeFirstOrThrow();
+    expect(unsentCommand).toEqual({
+      dispatcherId: null,
+      frameSentAt: null,
+      status: "pending",
+    });
+
+    // Finding 12: if a sent firing was settled unknown, and the exact (runner, boot, generation)
+    // later reattaches announcing it is still running (terminal: false), restore running and
+    // withdraw the undelivered outcome-unknown notice so its tools and renewals work again.
+    const lateTrigger = await createOneShotTrigger(fixture, "z5-restore");
+    const sent = await start(fixture, await fireOneShot(lateTrigger.trigger.id), "boot-b", {
+      sent: true,
+    });
+    const settledUnknown = await triggers.attachRunnerFirings({
+      dispatchingOccurrenceIds: [],
+      firings: [],
+      runnerBootId: "boot-b",
+      runnerId: fixture.runnerId,
+    });
+    expect(settledUnknown.settledUnknownCount).toBe(1);
+    expect(await notices.listDue()).toHaveLength(1);
+
+    const restored = await triggers.attachRunnerFirings({
+      dispatchingOccurrenceIds: [],
+      firings: [
+        {
+          environmentId: fixture.environmentId,
+          executionGeneration: sent.executionGeneration,
+          occurrenceId: sent.id,
+          terminal: false,
+        },
+      ],
+      runnerBootId: "boot-b",
+      runnerId: fixture.runnerId,
+    });
+    expect(restored.results).toEqual([{ occurrenceId: sent.id, status: "attached" }]);
+    expect((await detail(lateTrigger.trigger.id, fixture.userId)).occurrences[0]?.status).toBe(
+      "running",
+    );
+    await expect(
+      triggers.assertActiveExecutionBinding({
+        environmentId: fixture.environmentId,
+        executionGeneration: sent.executionGeneration,
+        occurrenceId: sent.id,
+        requestedBy: fixture.userId,
+        runnerBootId: "boot-b",
+        runnerId: fixture.runnerId,
+        threadId: fixture.threadId,
+      }),
+    ).resolves.toBeUndefined();
+    expect(await notices.listDue()).toEqual([]);
+  });
+
+  it("refuses token renewal, tool binding, and reattach when paused, removed, task stopped, disconnected, or grant narrowed mid-run (Z6)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createCronTrigger, database, start, triggers } = storeFixture;
+    const fixture = await createFixture("z6-renewal-authority");
+    const assertRefusedEverywhere = async (
+      started: { readonly id: TriggerOccurrence["id"]; readonly executionGeneration: number },
+      runnerBootId: string,
+    ) => {
+      expect(
+        await triggers.activeFiringCapabilityScope({
+          executionGeneration: started.executionGeneration,
+          occurrenceId: started.id,
+          runnerBootId,
+          runnerId: fixture.runnerId,
+        }),
+      ).toBeNull();
+      await expect(
+        triggers.assertActiveExecutionBinding({
+          environmentId: fixture.environmentId,
+          executionGeneration: started.executionGeneration,
+          occurrenceId: started.id,
+          requestedBy: fixture.userId,
+          runnerBootId,
+          runnerId: fixture.runnerId,
+          threadId: fixture.threadId,
+        }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      const attached = await triggers.attachRunnerFirings({
+        dispatchingOccurrenceIds: [],
+        firings: [
+          {
+            environmentId: fixture.environmentId,
+            executionGeneration: started.executionGeneration,
+            occurrenceId: started.id,
+            terminal: false,
+          },
+        ],
+        runnerBootId,
+        runnerId: fixture.runnerId,
+      });
+      expect(attached.results).toEqual([
+        expect.objectContaining({ occurrenceId: started.id, status: "revoked" }),
+      ]);
+      // Simulate the Runner stopping the revoked firing and reporting cancellation.
+      await triggers.completeExecution({
+        executionGeneration: started.executionGeneration,
+        output: {
+          completedAt: new Date().toISOString(),
+          error: "Revoked on attach",
+          exitCode: null,
+          occurrenceId: started.id,
+          result: null,
+          status: "canceled",
+          stderr: "",
+          stdout: "",
+        },
+        runnerBootId,
+        runnerId: fixture.runnerId,
+        verifiedContainment: true,
+      });
+    };
+
+    // 1. Paused mid-run
+    const pausedTrigger = await createCronTrigger(fixture, "z6-paused");
+    const pausedRun = await start(
+      fixture,
+      await triggers.enqueueManual({
+        actorThreadId: null,
+        ownerId: fixture.userId,
+        triggerId: pausedTrigger.trigger.id,
+      }),
+      "boot-z6-1",
+    );
+    expect(
+      await triggers.activeFiringCapabilityScope({
+        executionGeneration: pausedRun.executionGeneration,
+        occurrenceId: pausedRun.id,
+        runnerBootId: "boot-z6-1",
+        runnerId: fixture.runnerId,
+      }),
+    ).not.toBeNull();
+    await triggers.setStatus({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "paused",
+      triggerId: pausedTrigger.trigger.id,
+    });
+    await assertRefusedEverywhere(pausedRun, "boot-z6-1");
+
+    // 2. Removed (archived) mid-run
+    const archivedTrigger = await createCronTrigger(fixture, "z6-archived");
+    const archivedRun = await start(
+      fixture,
+      await triggers.enqueueManual({
+        actorThreadId: null,
+        ownerId: fixture.userId,
+        triggerId: archivedTrigger.trigger.id,
+      }),
+      "boot-z6-2",
+    );
+    await triggers.setStatus({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "archived",
+      triggerId: archivedTrigger.trigger.id,
+    });
+    await assertRefusedEverywhere(archivedRun, "boot-z6-2");
+
+    // 3. Connected agent disconnected mid-run
+    const conn1 = `mcn_${randomUUID()}`;
+    await database
+      .insertInto("agentConnections")
+      .values({
+        accessMode: "full-access",
+        clientFingerprint: null,
+        clientName: "z6-agent-1",
+        consentVersion: 2,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 86_400_000),
+        grant: jsonValue({ scope: "everything" }),
+        id: conn1,
+        label: "Z6 Agent 1",
+        lastUsedAt: null,
+        resource: "https://example.test/mcp",
+        revokedAt: null,
+        tokenHash: `hash_${randomUUID()}`,
+        userId: fixture.userId,
+      })
+      .execute();
+    const conn1Trigger = await triggers.create({
+      actorConnectionId: conn1,
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "z6-conn1",
+      name: "Z6 Disconnected",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
+      },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+      },
+    });
+    const conn1Run = await start(
+      fixture,
+      await triggers.enqueueManual({
+        actorConnectionId: conn1,
+        actorThreadId: null,
+        ownerId: fixture.userId,
+        triggerId: conn1Trigger.trigger.id,
+      }),
+      "boot-z6-3",
+    );
+    expect(
+      await triggers.activeFiringCapabilityScope({
+        executionGeneration: conn1Run.executionGeneration,
+        occurrenceId: conn1Run.id,
+        runnerBootId: "boot-z6-3",
+        runnerId: fixture.runnerId,
+      }),
+    ).not.toBeNull();
+    await database
+      .updateTable("agentConnections")
+      .set({ revokedAt: new Date() })
+      .where("id", "=", conn1)
+      .execute();
+    await assertRefusedEverywhere(conn1Run, "boot-z6-3");
+
+    // 4. Connected agent grant narrowed mid-run
+    const conn2 = `mcn_${randomUUID()}`;
+    await database
+      .insertInto("agentConnections")
+      .values({
+        accessMode: "full-access",
+        clientFingerprint: null,
+        clientName: "z6-agent-2",
+        consentVersion: 2,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 86_400_000),
+        grant: jsonValue({ scope: "everything" }),
+        id: conn2,
+        label: "Z6 Agent 2",
+        lastUsedAt: null,
+        resource: "https://example.test/mcp",
+        revokedAt: null,
+        tokenHash: `hash_${randomUUID()}`,
+        userId: fixture.userId,
+      })
+      .execute();
+    const conn2Trigger = await triggers.create({
+      actorConnectionId: conn2,
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "z6-conn2",
+      name: "Z6 Narrowed",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
+      },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+      },
+    });
+    const conn2Run = await start(
+      fixture,
+      await triggers.enqueueManual({
+        actorConnectionId: conn2,
+        actorThreadId: null,
+        ownerId: fixture.userId,
+        triggerId: conn2Trigger.trigger.id,
+      }),
+      "boot-z6-4",
+    );
+    await database
+      .updateTable("agentConnections")
+      .set({
+        cleanupMinimumGrantRevision: 2,
+        grant: jsonValue({ resources: [], scope: "selected", tasks: true }),
+        grantRevision: 2,
+      })
+      .where("id", "=", conn2)
+      .execute();
+    await assertRefusedEverywhere(conn2Run, "boot-z6-4");
+
+    // 5. Anchor task stopped (marked done) mid-run
+    const doneTrigger = await createCronTrigger(fixture, "z6-task-done");
+    const doneRun = await start(
+      fixture,
+      await triggers.enqueueManual({
+        actorThreadId: null,
+        ownerId: fixture.userId,
+        triggerId: doneTrigger.trigger.id,
+      }),
+      "boot-z6-5",
+    );
+    await database
+      .updateTable("threads")
+      .set({ doneAt: new Date() })
+      .where("id", "=", fixture.threadId)
+      .execute();
+    await assertRefusedEverywhere(doneRun, "boot-z6-5");
+  });
+
+  it("locks mixed personal and connection firings in one ascending-id pass on attach (Z7)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createCronTrigger, database, start, triggers } = storeFixture;
+    const fixture = await createFixture("z7-lock-order");
+    const connId = `mcn_${randomUUID()}`;
+    await database
+      .insertInto("agentConnections")
+      .values({
+        accessMode: "full-access",
+        clientFingerprint: null,
+        clientName: "z7-agent",
+        consentVersion: 2,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 86_400_000),
+        grant: jsonValue({ scope: "everything" }),
+        id: connId,
+        label: "Z7 Agent",
+        lastUsedAt: null,
+        resource: "https://example.test/mcp",
+        revokedAt: null,
+        tokenHash: `hash_${randomUUID()}`,
+        userId: fixture.userId,
+      })
+      .execute();
+    const personalTrigger = await createCronTrigger(fixture, "z7-personal");
+    const connTrigger = await triggers.create({
+      actorConnectionId: connId,
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "z7-conn",
+      name: "Z7 Connection",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
+      },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+      },
+    });
+    const first = await start(
+      fixture,
+      await triggers.enqueueManual({
+        actorThreadId: null,
+        ownerId: fixture.userId,
+        triggerId: personalTrigger.trigger.id,
+      }),
+      "boot-z7",
+    );
+    const second = await start(
+      fixture,
+      await triggers.enqueueManual({
+        actorConnectionId: connId,
+        actorThreadId: null,
+        ownerId: fixture.userId,
+        triggerId: connTrigger.trigger.id,
+      }),
+      "boot-z7",
+    );
+    // Announce ONLY the higher-id occurrence so the unannounced occurrence has a strictly lower id.
+    const [lower, higher] = [first, second].toSorted((a, b) => a.id.localeCompare(b.id)) as [
+      typeof first,
+      typeof second,
+    ];
+    expect(lower.id < higher.id).toBe(true);
+
+    const attached = await triggers.attachRunnerFirings({
+      dispatchingOccurrenceIds: [],
+      firings: [
+        {
+          environmentId: fixture.environmentId,
+          executionGeneration: higher.executionGeneration,
+          occurrenceId: higher.id,
+          terminal: false,
+        },
+      ],
+      runnerBootId: "boot-z7",
+      runnerId: fixture.runnerId,
+    });
+    expect(attached.results).toEqual([{ occurrenceId: higher.id, status: "attached" }]);
+    expect(attached.settledUnknownCount).toBe(1);
+    const rows = await database
+      .selectFrom("triggerOccurrences")
+      .select(["id", "status"])
+      .where("id", "in", [lower.id, higher.id])
+      .execute();
+    expect(rows.find((row) => row.id === lower.id)).toEqual({
+      id: lower.id,
+      status: "unknown",
+    });
+    expect(rows.find((row) => row.id === higher.id)).toEqual({
+      id: higher.id,
+      status: "running",
     });
   });
-  it("records one notice when a crash-looping watch is auto-paused", async ({ storeFixture }) => {
+
+  it("handles dispatch racing attach in both orders and isolates a week-gone computer's firing to its own automation", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, database, detail, start, store, triggers } = storeFixture;
+    const fixture = await createFixture("dispatch-attach-race");
+    const makeCron = (key: string, name: string) =>
+      triggers.create({
+        actorThreadId: null,
+        anchorThreadId: fixture.threadId,
+        createdBy: fixture.userId,
+        idempotencyKey: key,
+        name,
+        script: {
+          interpreter: null,
+          text: "console.log('ok')",
+        },
+        source: {
+          kind: "schedule",
+          schedule: { expression: "0 * * * *", kind: "cron", timezone: "UTC" },
+        },
+      });
+    const racingTrigger = await makeCron("race-trigger", "Racing trigger");
+    const siblingTrigger = await makeCron("sibling-trigger", "Sibling trigger");
+
+    const racingRun = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: racingTrigger.trigger.id,
+    });
+    const started = await start(fixture, racingRun, "boot-same");
+
+    // Order A: dispatch is still in flight on the same boot when attach arrives without it.
+    // The firing must NOT be settled unknown; when it finishes it commits succeeded.
+    const sameBootAttach = await triggers.attachRunnerFirings({
+      dispatchingOccurrenceIds: [started.id],
+      firings: [],
+      runnerBootId: "boot-same",
+      runnerId: fixture.runnerId,
+    });
+    expect(sameBootAttach.settledUnknownCount).toBe(0);
+    const stillRunning = await detail(racingTrigger.trigger.id, fixture.userId);
+    expect(stillRunning.occurrences[0]?.status).toBe("running");
+
+    // If the computer disconnects without returning, contactLostAt is stamped on the running firing
+    // while leaving sibling automations on the same computer completely unblocked.
+    await store.markConnectionAttemptsContactLost({
+      runnerBootId: "boot-same",
+      runnerId: fixture.runnerId,
+    });
+    const summaries = await triggers.listForOwner({
+      ownerId: fixture.userId,
+      reader: personTaskReader,
+    });
+    const racingSummary = summaries.find((item) => item.id === racingTrigger.trigger.id)!;
+    expect(racingSummary.latestOccurrence?.status).toBe("running");
+    expect(racingSummary.latestOccurrence?.contactLostAt).toBeTruthy();
+
+    // Sibling automation is completely unaffected and can enqueue & run normally.
+    const siblingRun = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: siblingTrigger.trigger.id,
+    });
+    expect(siblingRun.status).toBe("pending");
+
+    // Reattaching on the same boot with the firing clears contactLostAt.
+    const reattached = await triggers.attachRunnerFirings({
+      dispatchingOccurrenceIds: [],
+      firings: [
+        {
+          environmentId: fixture.environmentId,
+          executionGeneration: started.executionGeneration,
+          occurrenceId: started.id,
+          terminal: false,
+        },
+      ],
+      runnerBootId: "boot-same",
+      runnerId: fixture.runnerId,
+    });
+    expect(reattached.results).toEqual([{ occurrenceId: started.id, status: "attached" }]);
+    const clearedDetail = await detail(racingTrigger.trigger.id, fixture.userId);
+    expect(clearedDetail.occurrences[0]?.contactLostAt).toBeNull();
+
+    // Order B (opposite): Runner restarts with a new boot (even if an old dispatch was unwinding);
+    // attach settles the old-boot firing to unknown, and a stale beforeSend authority check is refused.
+    const newBootAttach = await triggers.attachRunnerFirings({
+      dispatchingOccurrenceIds: [started.id],
+      firings: [],
+      runnerBootId: "boot-restarted",
+      runnerId: fixture.runnerId,
+    });
+    expect(newBootAttach.settledUnknownCount).toBe(1);
+    const settledDetail = await detail(racingTrigger.trigger.id, fixture.userId);
+    expect(settledDetail.occurrences[0]?.status).toBe("unknown");
+    await expect(
+      triggers.assertActiveExecutionBinding({
+        environmentId: fixture.environmentId,
+        executionGeneration: started.executionGeneration,
+        occurrenceId: started.id,
+        requestedBy: fixture.userId,
+        runnerBootId: "boot-same",
+        runnerId: fixture.runnerId,
+        threadId: fixture.threadId,
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+
+    // Confirm raw row status in DB is unknown.
+    const raw = await database
+      .selectFrom("triggerOccurrences")
+      .select(["status"])
+      .where("id", "=", started.id)
+      .executeTakeFirstOrThrow();
+    expect(raw.status).toBe("unknown");
+  });
+
+  it("transitions occurrence status cleanly across failCommand, cancelPendingOccurrences, and unsent Runner removal (Z3 / AA3)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createCronTrigger, database, detail, start, store, triggers } =
+      storeFixture;
+    const fixture = await createFixture("z3-single-writer");
+    const created = await createCronTrigger(fixture, "z3-writer");
+
+    // 1. startExecution -> failCommand must surface as "failed", never stale "running".
+    const first = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    const startedFirst = await start(fixture, first, "boot-z3");
+    await store.failCommand(
+      startedFirst.commandId,
+      "program refused before send",
+      undefined,
+      undefined,
+      { provenNotStarted: true },
+    );
+    const afterFail = await detail(created.trigger.id, fixture.userId);
+    expect(afterFail.occurrences[0]?.status).toBe("failed");
+    const listAfterFail = await triggers.listForOwner({
+      ownerId: fixture.userId,
+      reader: personTaskReader,
+    });
+    expect(
+      listAfterFail.find((item) => item.id === created.trigger.id)?.latestOccurrence?.status,
+    ).toBe("failed");
+
+    // 2. startExecution -> retryCommand(provenNotStarted) -> cancelPendingOccurrences must surface as "canceled" with sent=false.
+    const second = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    const startedSecond = await start(fixture, second, "boot-z3");
+    await store.retryCommand(startedSecond.commandId, "runner busy", { provenNotStarted: true });
+    const canceled = await triggers.cancelPendingOccurrences(fixture.userId, {
+      actorThreadId: null,
+      occurrenceId: second.id,
+      triggerId: created.trigger.id,
+    });
+    expect(canceled.canceledOccurrenceIds).toEqual([second.id]);
+    const afterCancel = await detail(created.trigger.id, fixture.userId);
+    expect(afterCancel.occurrences.find((o) => o.id === second.id)?.status).toBe("canceled");
+    expect(afterCancel.occurrences.find((o) => o.id === second.id)?.sent).toBe(false);
+    const listAfterCancel = await triggers.listForOwner({
+      ownerId: fixture.userId,
+      reader: personTaskReader,
+    });
+    expect(
+      listAfterCancel.find((item) => item.id === created.trigger.id)?.latestOccurrence?.status,
+    ).toBe("canceled");
+
+    // 3. AA3(b) / Z5: a running firing that never left the Home (frame_sent_at IS NULL) becomes
+    // "canceled" on computer removal, never "unknown".
+    const unsentOnRemove = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    await start(fixture, unsentOnRemove, "boot-z3");
+    await database
+      .updateTable("commands")
+      .set({ frameSentAt: null })
+      .where("id", "=", unsentOnRemove.commandId)
+      .execute();
+    await database
+      .updateTable("triggerOccurrences")
+      .set({ frameSentAt: null })
+      .where("id", "=", unsentOnRemove.id)
+      .execute();
+    await database
+      .updateTable("runners")
+      .set({ kind: "local", ownerKind: "user", ownerUserId: fixture.userId })
+      .where("id", "=", fixture.runnerId)
+      .execute();
+    await store.revokeRunner(fixture.runnerId, fixture.userId);
+    const afterRemove = await detail(created.trigger.id, fixture.userId);
+    const removedRow = afterRemove.occurrences.find((o) => o.id === unsentOnRemove.id);
+    expect(removedRow?.status).toBe("canceled");
+    expect(removedRow?.sent).toBe(false);
+  });
+  it("records one watch-crash-loop notice without auto-pausing (Y10)", async ({ storeFixture }) => {
     const { createFixture, triggers, storedNotices, detail } = storeFixture;
     const fixture = await createFixture("watch");
     const created = await triggers.create({
@@ -668,10 +1372,9 @@ integration.sequential("automation failure notices", () => {
       createdBy: fixture.userId,
       idempotencyKey: "watch-crash-loop",
       name: "Inbox watch",
-      program: {
-        language: "javascript",
-        source: "export default async () => new Promise(() => setInterval(() => {}, 1000))",
-        toolContractVersion: 5,
+      script: {
+        interpreter: null,
+        text: "setInterval(() => {}, 1000);",
       },
       source: {
         kind: "watch",
@@ -701,24 +1404,24 @@ integration.sequential("automation failure notices", () => {
         stderrTail: "failed\n",
         stdoutTail: "",
       });
-    expect((await report(1)).autoPaused).toBe(false);
-    expect((await report(2)).autoPaused).toBe(false);
+    expect((await report(1)).activation.desired).toBe("active");
+    expect((await report(2)).activation.desired).toBe("active");
     expect(await storedNotices()).toEqual([]);
-    expect((await report(3)).autoPaused).toBe(true);
+    expect((await report(3)).activation.desired).toBe("active");
     await report(4);
     expect(await storedNotices()).toEqual([
       {
         activationId: activation.id,
-        detail: "program exited with code 1",
+        detail: "exit 1: program exited with code 1",
         occurrenceId: null,
-        reason: "paused",
+        reason: "watch-crash-loop",
         settledAt: null,
         triggerId: created.trigger.id,
       },
     ]);
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      pauseReason: WATCH_AUTO_PAUSE_REASON,
-      status: "paused",
+      pauseReason: null,
+      status: "active",
     });
   });
   it("records one notice per Occurrence, with a bounded detail", async ({ storeFixture }) => {
@@ -729,6 +1432,7 @@ integration.sequential("automation failure notices", () => {
       database,
       fireManual,
       storedNotices,
+      triggers,
     } = storeFixture;
     const fixture = await createFixture("bounded");
     const created = await createOneShotTrigger(fixture, "bounded");
@@ -766,6 +1470,11 @@ integration.sequential("automation failure notices", () => {
           }),
         );
       }
+      await triggers.cancelPendingOccurrences(fixture.userId, {
+        actorThreadId: null,
+        occurrenceId: occurrence.id,
+        triggerId: created.trigger.id,
+      });
       const manual = await fireManual(fixture, created.trigger.id);
       await commitPersonalMutation(database, (transaction) =>
         recordAutomationFailure(transaction, {
