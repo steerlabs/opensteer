@@ -1,5 +1,5 @@
 import { RetainedToolImage } from "./asset-image.js";
-import { rowHeights, useVirtualTranscript } from "./virtual-transcript.js";
+import { useVirtualTranscript } from "./virtual-transcript.js";
 import { useWindowedRows } from "./workspace/windowed-rows.js";
 import {
   hostMessageOutbox,
@@ -173,8 +173,7 @@ const Markdown = lazy(() => markdownChunk);
  * flicker: a screen's height of them, at most eight. A long report is a screen by itself, so a
  * research task holds only its last reply.
  */
-const tailPinRows = 8;
-const tailPinPx = 900;
+const transcriptTail = { rows: 8, px: 900 } as const;
 
 const TranscriptLive = createContext(true);
 /**
@@ -348,12 +347,17 @@ const noAssignments: Readonly<Record<string, AssignmentSummary>> = {};
 const noBrowserUses: readonly BrowserSessionUseSummary[] = [];
 const noPinnedRowKeys: readonly string[] = [];
 
-/**
- * The agent's side of the conversation.
- *
- * Prose and compact tool rows share the reading stream. The run's status is
- * a separate line: it never controls whether the agent's words are visible.
- */
+/** The one or two rows live work appended after `before`, each of whose rows stands where it was. */
+function appendedKeys(before: readonly string[] | null, after: readonly string[]): string[] {
+  if (before === null || before.length === 0) return [];
+  const added = after.length - before.length;
+  if (added < 1 || added > 2) return [];
+  for (let index = 0; index < before.length; index++) {
+    if (after[index] !== before[index]) return [];
+  }
+  return after.slice(before.length);
+}
+
 /** The arrival motion, set on the element itself so later renders of the row never cut it short. */
 function riseIn(element: HTMLElement) {
   element.classList.add("transcript__virtual-slot--arrived");
@@ -364,7 +368,13 @@ function riseIn(element: HTMLElement) {
   );
 }
 
-export function AgentTranscript({
+/**
+ * The agent's side of the conversation.
+ *
+ * Prose and compact tool rows share the reading stream. The run's status is
+ * a separate line: it never controls whether the agent's words are visible.
+ */
+export const AgentTranscript = memo(function AgentTranscript({
   activity = "idle",
   attachmentReader = null,
   conversation = false,
@@ -650,16 +660,6 @@ export function AgentTranscript({
   const disclosures = useMemo(() => new Map<string, boolean>(), [threadId]);
   const allPinnedKeys = useMemo(() => {
     const pinned = new Set<string>(pinnedRowKeys);
-    let tail = 0;
-    for (
-      let index = rows.length - 1;
-      index >= Math.max(0, rows.length - tailPinRows) && tail < tailPinPx;
-      index--
-    ) {
-      const { key } = rows[index]!;
-      pinned.add(key);
-      tail += rowHeights.peek(key) ?? estimateRowHeight(index);
-    }
     if (ownerTurn !== undefined) pinned.add(ownerTurn);
     const wantedMessages = new Set<string>(pinnedMessageIds);
     if (revealMessage !== null) wantedMessages.add(revealMessage.id);
@@ -678,44 +678,36 @@ export function AgentTranscript({
     }
     if (focusedRowKey !== null) pinned.add(focusedRowKey);
     return [...pinned];
-  }, [
-    estimateRowHeight,
-    focusedRowKey,
-    ownerTurn,
-    pinnedMessageIds,
-    pinnedRowKeys,
-    revealMessage,
-    rows,
-  ]);
+  }, [focusedRowKey, ownerTurn, pinnedMessageIds, pinnedRowKeys, revealMessage, rows]);
   const virtual = useVirtualTranscript({
     scroller,
     keys: rowKeys,
     estimate: estimateRowHeight,
     pinnedKeys: allPinnedKeys,
+    tail: transcriptTail,
     followTail,
     initialAtTail:
       pinnedRowKeys.length === 0 && pinnedMessageIds.length === 0 && revealMessage === null,
   });
-  // Only a row that live work appends while the transcript is shown rises in. Rows there when it
-  // was shown (a task opened or returned to), a page of history, a jump or a new cut hold still, as
-  // do rows scrolled back into view: animating a whole turn makes the browser composite it, which
-  // for a long report costs hundreds of milliseconds.
-  const knownKeys = useRef(new Set<string>());
-  const arrivingKeys = useRef(new Set<string>());
-  const fresh = rowKeys.filter((key) => !knownKeys.current.has(key));
-  if (fresh.length) {
-    const appended =
-      knownKeys.current.size > 0 &&
-      fresh.length <= 2 &&
-      fresh.every((key, index) => rowKeys[rowKeys.length - fresh.length + index] === key);
-    for (const key of fresh) {
-      knownKeys.current.add(key);
-      if (appended) arrivingKeys.current.add(key);
+  // Only a row that live work appends while the transcript is shown rises in: the rows committed
+  // last, each in place, with one or two more after them. Rows there when it was shown (a task
+  // opened or returned to), a page of history, a jump or a new cut hold still, as do rows scrolled
+  // back into view: animating a whole turn makes the browser composite it, which for a long report
+  // costs hundreds of milliseconds.
+  const slots = useRef(new Map<string, HTMLElement>());
+  const committedKeys = useRef<readonly string[] | null>(null);
+  useLayoutEffect(() => {
+    const before = committedKeys.current;
+    committedKeys.current = rowKeys;
+    for (const key of appendedKeys(before, rowKeys)) {
+      const slot = slots.current.get(key);
+      if (slot) riseIn(slot);
     }
-  }
+  }, [rowKeys]);
   const observeSlot = (key: string, element: HTMLElement | null) => {
     virtual.observeRow(key, element);
-    if (element && arrivingKeys.current.delete(key)) riseIn(element);
+    if (element) slots.current.set(key, element);
+    else slots.current.delete(key);
   };
   const renderRowAt = (index: number) => {
     const { group, key } = rows[index]!;
@@ -814,7 +806,7 @@ export function AgentTranscript({
       </DeliveryFeedback>
     </TranscriptDisclosures>
   );
-}
+});
 
 /* ---- A turn ---- */
 
@@ -1701,7 +1693,7 @@ function Typing({ turnKey = null }: { turnKey?: string | null }) {
  * narrow screen it is a sheet. Its steps are drawn as the turn draws them
  * anywhere, without timings or what they consumed.
  */
-export function ConversationActivity({
+export const ConversationActivity = memo(function ConversationActivity({
   anchor,
   browserSessions = noTabs,
   browserUses = noBrowserUses,
@@ -1833,7 +1825,7 @@ export function ConversationActivity({
       {body}
     </Popover>
   );
-}
+});
 
 function TurnContent({
   reveal = null,
@@ -2805,7 +2797,11 @@ function OwnMessage({
 }) {
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
-  const [open, setOpen] = useState(reveal !== null);
+  // Opened, it stays open when its row is drawn again.
+  const [open, setOpen] = usePersistentDisclosure(
+    `message:${previewMessage.clientSendKey ?? previewMessage.id}`,
+    reveal !== null,
+  );
   const message = useTranscriptMessage(client, threadId, previewMessage, open);
   const outbox = client ? hostMessageOutbox(client) : null;
   const computer = useClientConnectionName(client?.connection ?? null);
@@ -3032,7 +3028,8 @@ function RecoveryNote({
 }) {
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
-  const [open, setOpen] = useState(reveal !== null);
+  // Opened, it stays open when its row is drawn again.
+  const [open, setOpen] = usePersistentDisclosure(`message:${previewMessage.id}`, reveal !== null);
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
   }, [reveal]);
@@ -3148,7 +3145,11 @@ function InputMessage({
   const conversation = useContext(ConversationMode);
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
-  const [open, setOpen] = useState(reveal !== null);
+  // Opened, it stays open when its row is drawn again.
+  const [open, setOpen] = usePersistentDisclosure(
+    `message:${previewMessage.clientSendKey ?? previewMessage.id}`,
+    reveal !== null,
+  );
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
   }, [reveal]);

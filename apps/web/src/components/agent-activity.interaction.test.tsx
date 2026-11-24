@@ -1283,9 +1283,125 @@ describe("arrival motion", () => {
     });
     await show(range(0, 21));
     expect(moving()).toEqual([]);
+    // Two at once rise in too; more than that is a catch-up, not live work.
+    await show(range(0, 23));
+    expect(moving()).toEqual(["arrival-21", "arrival-22"]);
+    for (const slot of scroller.querySelectorAll(".transcript__virtual-slot--arrived"))
+      act(() => {
+        slot.dispatchEvent(new Event("animationend"));
+      });
+    await show(range(0, 26));
+    expect(moving()).toEqual([]);
     // A jump or a new cut replaces the window: none of its rows arrive.
     await show(range(40, 50));
     expect(moving()).toEqual([]);
+    // Nor when the new window overlaps the old and ends in a row never shown: rows left the front.
+    await show(range(42, 51));
+    expect(moving()).toEqual([]);
+    // Nor when it moves back over rows shown before and ends past them.
+    await show(range(30, 52));
+    expect(moving()).toEqual([]);
+    await show(range(30, 53));
+    expect(moving()).toEqual(["arrival-52"]);
+  });
+});
+
+describe("a message the reader opened", () => {
+  // Failure mode: every transcript is virtualized, so a message opened with Show more folds again
+  // once focus has moved on and its row scrolls out of view and back.
+  it("stays open when its row scrolls out of view and is drawn again", async () => {
+    const at = (minute: number) => new Date(Date.UTC(2026, 7, 16, 10, minute)).toISOString();
+    const words = "Check every shard, then the flaky ones again. ".repeat(40);
+    const viewer = createId("user");
+    const sam = createId("user");
+    const opened: MessageEntry[] = [
+      {
+        ...note,
+        author: { displayName: "Me", kind: "human", principalId: viewer, userId: viewer },
+        body: words,
+        createdAt: at(0),
+        id: "opened-own",
+        messageKind: "input",
+        previewTruncated: true,
+        runId: null,
+      },
+      {
+        ...note,
+        author: { displayName: "Sam", kind: "human", principalId: sam, userId: sam },
+        body: words,
+        createdAt: at(1),
+        id: "opened-input",
+        messageKind: "input",
+        previewTruncated: true,
+        runId: null,
+      },
+      {
+        ...note,
+        author: { cause: "run-recovery", kind: "platform" },
+        body: words,
+        createdAt: at(2),
+        id: "opened-recovery",
+        messageKind: "input",
+        runId: null,
+      },
+    ];
+    const after = Array.from({ length: 120 }, (_, index): MessageEntry => ({
+      ...note,
+      body: `Update ${index}`,
+      createdAt: at(3 + index),
+      id: `opened-after-${index}`,
+      runId: null,
+    }));
+    const scroller = document.createElement("div");
+    let scrollTop = 0;
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, value: 800 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      },
+    });
+    const elsewhere = document.createElement("button");
+    document.body.append(scroller, elsewhere);
+    const root = createRoot(scroller);
+    roots.push(root);
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/tasks/opened"]}>
+          <AgentTranscript
+            entries={[...opened, ...after]}
+            scroller={() => scroller}
+            viewerUserId={viewer}
+          />
+        </MemoryRouter>,
+      );
+      await import("./markdown.js");
+    });
+    const row = (id: string) => scroller.querySelector<HTMLElement>(`[data-message-id="${id}"]`);
+    const toggle = (id: string) =>
+      row(id)?.querySelector<HTMLButtonElement>(".message-fold__toggle, .update-line__toggle");
+    const scrollTo = (top: number) =>
+      act(async () => {
+        scrollTop = top;
+        scroller.dispatchEvent(new Event("scroll"));
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      });
+    for (const { id } of opened) {
+      expect(toggle(id)?.getAttribute("aria-expanded"), id).toBe("false");
+      act(() => {
+        toggle(id)!.focus();
+        toggle(id)!.click();
+      });
+      expect(toggle(id)?.getAttribute("aria-expanded"), id).toBe("true");
+    }
+    act(() => elsewhere.focus());
+    await scrollTo(6000);
+    for (const { id } of opened) expect(row(id), id).toBeNull();
+    await scrollTo(0);
+    for (const { id } of opened) expect(toggle(id)?.getAttribute("aria-expanded"), id).toBe("true");
   });
 });
 
