@@ -706,6 +706,36 @@ interface ConversationRowOptions {
 }
 
 /**
+ * The item a transcript row stands for, which is what a reading position names and a new cut
+ * centres on: what the row shows the reader, so the cut holds it.
+ */
+export function transcriptRowItemId(group: TranscriptGroup): string | undefined {
+  // A turn folds its steps under what the agent said: that is the row's place, however many steps
+  // fold above it.
+  const entry =
+    group.kind === "turn"
+      ? (group.turn.reply ??
+        group.turn.work.findLast((step) => step.kind === "message") ??
+        group.turn.work[0] ??
+        group.turn.run)
+      : group.entry;
+  return entry ? entryItemId(entry) : undefined;
+}
+
+/** Whether the row draws the item `itemId`, wherever in it the item stands. */
+export function transcriptRowHolds(group: TranscriptGroup, itemId: string): boolean {
+  if (group.kind !== "turn") return entryItemId(group.entry) === itemId;
+  const { turn } = group;
+  return [turn.run, turn.reply, ...turn.work, ...turn.assignments].some(
+    (entry) => entry !== null && entryItemId(entry) === itemId,
+  );
+}
+
+function entryItemId(entry: TranscriptEntry): string | undefined {
+  return ("itemId" in entry ? (entry.itemId ?? entry.id) : entry.id) || undefined;
+}
+
+/**
  * What a conversation draws, in order: every group except a turn with nothing
  * of its own to show. The stretch of a reply before a message that joined it,
  * or a reply waiting on an approval, holds only steps, which that reply's

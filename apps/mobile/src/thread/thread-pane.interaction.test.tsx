@@ -140,6 +140,8 @@ const harness = vi.hoisted(() => ({
   /** Where the screen's bar options go, as the native stack would take them. */
   /** The snapshots the fake transcript view says were installed: a test bumps it for a new cut. */
   cuts: 0,
+  /** Whether the fake transcript view's window stops short of the latest. */
+  newer: false,
   setOptions: null as ((options: Record<string, unknown>) => void) | null,
   /** The transcript list's props as last rendered, to drive its native events. */
   list: null as null | {
@@ -151,6 +153,8 @@ const harness = vi.hoisted(() => ({
     readonly onScroll?: (event: object) => void;
     readonly onScrollBeginDrag?: () => void;
     readonly onScrollEndDrag?: () => void;
+    readonly onMomentumScrollBegin?: () => void;
+    readonly onMomentumScrollEnd?: () => void;
     readonly onViewableItemsChanged?: (info: {
       viewableItems: readonly { item: unknown }[];
     }) => void;
@@ -853,6 +857,7 @@ afterEach(() => {
   harness.layouts.clear();
   harness.list = null;
   harness.cuts = 0;
+  harness.newer = false;
   harness.setOptions = null;
 });
 
@@ -1318,7 +1323,17 @@ function fakeHost(initial: FixtureHostSnapshot) {
   }));
   const stopRun = vi.fn(async (_threadId: string) => undefined);
   const resumeThreadInputQueue = vi.fn(async (_threadId: string) => undefined);
-  const loadTranscriptAround = vi.fn(async (_threadId: string, _messageId: string) => true);
+  // A read around a target lands the page the Host holds, as an earlier page does.
+  const loadTranscriptAround = vi.fn(async (_threadId: string, _target: string) => {
+    if (earlierPage !== null) {
+      snapshot = { ...earlierPage, deploymentId };
+      earlierPage = null;
+      for (const listener of listeners) listener();
+    }
+    return true;
+  });
+  const loadNewerTranscript = vi.fn(async (_threadId: string) => undefined);
+  const loadLatestTranscript = vi.fn(async (_threadId: string) => true);
   const loadEarlierTranscript = vi.fn(async (_threadId: string) => {
     if (earlierPage === null) return;
     snapshot = { ...earlierPage, deploymentId };
@@ -1395,7 +1410,7 @@ function fakeHost(initial: FixtureHostSnapshot) {
       inputQueue: inputQueue ?? null,
       synchronized: value.connection === "connected",
       hasMore: value.transcriptWindows[id]?.hasMore ?? false,
-      hasNewer: false,
+      hasNewer: harness.newer,
       moreRequests: false,
       cuts: harness.cuts,
     };
@@ -1410,6 +1425,7 @@ function fakeHost(initial: FixtureHostSnapshot) {
       existing.inputQueue === next.inputQueue &&
       existing.synchronized === next.synchronized &&
       existing.hasMore === next.hasMore &&
+      existing.hasNewer === next.hasNewer &&
       existing.cuts === next.cuts &&
       existing.runQueue.length === next.runQueue.length &&
       existing.runQueue.every((run, index) => run === next.runQueue[index])
@@ -1426,9 +1442,12 @@ function fakeHost(initial: FixtureHostSnapshot) {
     observeThread: () => () => {},
     getThreadItemText: () => undefined,
     setTranscriptPosition: vi.fn(
-      (_threadId: string, _measure: (() => string | undefined) | null) => {},
+      (_threadId: string, _measure: () => string | undefined | null) => () => undefined,
     ),
     revealedTranscriptMove: vi.fn((_threadId: string) => {}),
+    setTranscriptFollowing: vi.fn(
+      (_threadId: string, _following: () => boolean) => () => undefined,
+    ),
     watchPersonalResource: () => () => {},
     getThreadTranscript: (id: string) => {
       return {
@@ -1501,7 +1520,8 @@ function fakeHost(initial: FixtureHostSnapshot) {
     getSnapshot: () => snapshot,
     load: vi.fn(async () => undefined),
     loadEarlierTranscript,
-    loadLatestTranscript: vi.fn(async () => true),
+    loadNewerTranscript,
+    loadLatestTranscript,
     loadTranscriptAround,
     readAttachment: vi.fn(async () => new Blob()),
     discardAttachment: vi.fn(async () => undefined),
@@ -1570,6 +1590,8 @@ function fakeHost(initial: FixtureHostSnapshot) {
       earlierPage = next;
     },
     loadEarlierTranscript,
+    loadNewerTranscript,
+    loadLatestTranscript,
     loadTranscriptAround,
     move(next: FixtureHostSnapshot) {
       snapshot = { ...next, deploymentId } as TranscriptFixtureSnapshot;
@@ -2578,6 +2600,553 @@ describe("a link into Chat", () => {
     expect(harness.scrollToIndex).toHaveBeenCalledWith(expect.objectContaining({ index: 1 }));
   });
 
+  it("pages earlier only as the reader moves toward older messages, never as they read on down", async () => {
+    const chat = chatAtWork();
+    const host = fakeHost(
+      snapshotFor({ earlier: true, entries: chat.entries, run: null, threadId: conversationId }),
+    );
+    await mount(host, conversationId);
+    const list = () => harness.list!;
+    const scroll = (y: number, own = true) =>
+      act(() => {
+        if (own) list().onScrollBeginDrag?.();
+        list().onScroll?.({
+          nativeEvent: {
+            contentOffset: { x: 0, y },
+            contentSize: { height: 2000, width: 390 },
+            layoutMeasurement: { height: 600, width: 390 },
+          },
+        });
+        if (own) list().onScrollEndDrag?.();
+      });
+    act(() => {
+      list().onLayout?.({ nativeEvent: { layout: { height: 600, width: 390 } } });
+      list().onContentSizeChange?.(390, 2000);
+    });
+    // At the foot, then the reader drags up into the top screen: the past is asked for.
+    scroll(1400, false);
+    scroll(500);
+    await settle();
+    expect(host.loadEarlierTranscript).toHaveBeenCalledTimes(1);
+    // Reading on down within that same screen asks for nothing: a window of folded turns can sit
+    // within a screen of its top wherever the reader is.
+    scroll(560);
+    scroll(590);
+    await settle();
+    expect(host.loadEarlierTranscript).toHaveBeenCalledTimes(1);
+    scroll(540);
+    await settle();
+    expect(host.loadEarlierTranscript).toHaveBeenCalledTimes(2);
+    // The reader flings down; mid-fling, rows given up above shrink the content and pull the
+    // offset up to hold their place: that is no motion toward older messages.
+    scroll(560);
+    await act(async () =>
+      host.move(
+        snapshotFor({
+          earlier: true,
+          entries: chat.entries.slice(1),
+          run: null,
+          threadId: conversationId,
+        }),
+      ),
+    );
+    act(() => {
+      list().onMomentumScrollBegin?.();
+      list().onScroll?.({
+        nativeEvent: {
+          contentOffset: { x: 0, y: 300 },
+          contentSize: { height: 1700, width: 390 },
+          layoutMeasurement: { height: 600, width: 390 },
+        },
+      });
+      list().onMomentumScrollEnd?.();
+    });
+    await settle();
+    expect(host.loadEarlierTranscript).toHaveBeenCalledTimes(2);
+    // Nor is a change of rows that leaves the content's height as it was: the offset the list moves
+    // to hold the reader's place is no motion of theirs.
+    scroll(700);
+    await act(async () =>
+      host.move(
+        snapshotFor({
+          earlier: true,
+          entries: chat.entries.slice(7),
+          run: null,
+          threadId: conversationId,
+        }),
+      ),
+    );
+    act(() => {
+      list().onMomentumScrollBegin?.();
+      list().onScroll?.({
+        nativeEvent: {
+          contentOffset: { x: 0, y: 400 },
+          contentSize: { height: 2000, width: 390 },
+          layoutMeasurement: { height: 600, width: 390 },
+        },
+      });
+      list().onMomentumScrollEnd?.();
+    });
+    await settle();
+    expect(host.loadEarlierTranscript).toHaveBeenCalledTimes(2);
+    // Text streaming into rows in place, with a new row array every event, leaves an upward drag
+    // the reader's own.
+    scroll(1400, false);
+    for (const y of [1200, 900, 500]) {
+      await act(async () =>
+        host.move(
+          snapshotFor({
+            earlier: true,
+            entries: chat.entries.slice(7),
+            run: null,
+            threadId: conversationId,
+          }),
+        ),
+      );
+      scroll(y);
+    }
+    await settle();
+    expect(host.loadEarlierTranscript).toHaveBeenCalledTimes(3);
+    // Nor is a row above the reader redrawn in place, as when the window gives up the start of a
+    // long turn: as many rows, the same keys, but the offset moves to hold the reader's place.
+    scroll(700);
+    await act(async () =>
+      host.move(
+        snapshotFor({
+          earlier: true,
+          entries: [...chat.entries.slice(7), command(chat.runB, "send note")],
+          run: null,
+          threadId: conversationId,
+        }),
+      ),
+    );
+    act(() => {
+      list().onMomentumScrollBegin?.();
+      list().onScroll?.({
+        nativeEvent: {
+          contentOffset: { x: 0, y: 400 },
+          contentSize: { height: 2000, width: 390 },
+          layoutMeasurement: { height: 600, width: 390 },
+        },
+      });
+      list().onMomentumScrollEnd?.();
+    });
+    await settle();
+    expect(host.loadEarlierTranscript).toHaveBeenCalledTimes(3);
+    // Nor is a bounce past the foot springing back, on a list barely taller than the screen.
+    act(() => {
+      for (const y of [300, 380, 340, 300]) {
+        if (y === 380) list().onMomentumScrollBegin?.();
+        list().onScroll?.({
+          nativeEvent: {
+            contentOffset: { x: 0, y },
+            contentSize: { height: 900, width: 390 },
+            layoutMeasurement: { height: 600, width: 390 },
+          },
+        });
+      }
+      list().onMomentumScrollEnd?.();
+    });
+    await settle();
+    expect(host.loadEarlierTranscript).toHaveBeenCalledTimes(3);
+  });
+
+  it("at the foot of a window short of the latest, measures the reader's row and reads on into Load newer", async () => {
+    const chat = chatAtWork();
+    harness.newer = true;
+    const host = fakeHost(
+      snapshotFor({ earlier: true, entries: chat.entries, run: null, threadId: conversationId }),
+    );
+    const { container } = await mount(host, conversationId);
+    const list = () => harness.list!;
+    const position = host.client.setTranscriptPosition as unknown as ReturnType<typeof vi.fn>;
+    const measure = () => (position.mock.calls.at(-1)![1] as () => string | undefined | null)();
+    const rows = list().data! as readonly { kind?: string; key: string }[];
+    const last = rows.findLastIndex((row) => row.kind === "group");
+    act(() => list().onViewableItemsChanged?.({ viewableItems: [{ item: rows[last] }] }));
+    // At the foot, following nothing live: a new cut centres on the row in view, not the latest.
+    expect(measure()).toEqual(expect.any(String));
+    // Load newer leaves the reader on the rows they read, to read on into the page below.
+    harness.scrollToOffset.mockClear();
+    const pill = [...container.querySelectorAll("[role=button], button")].find(
+      (element) => element.textContent === "Load newer",
+    );
+    expect(pill, "the Load newer pill").toBeDefined();
+    await act(async () => (pill as HTMLElement).click());
+    expect(host.loadNewerTranscript).toHaveBeenCalledTimes(1);
+    act(() => list().onContentSizeChange?.(390, 3000));
+    expect(harness.scrollToOffset).not.toHaveBeenCalled();
+    // More stays past the page: the way to the live conversation is a read of it, not a scroll.
+    const jump = container.querySelector('[aria-label="Jump to latest"]');
+    expect(jump, "the jump pill").not.toBeNull();
+    await act(async () => (jump as HTMLElement).click());
+    expect(host.loadLatestTranscript).toHaveBeenCalledTimes(1);
+  });
+
+  it("puts a reader measured in a paged window back on their row when the new cut reaches the latest", async () => {
+    const chat = chatAtWork();
+    harness.newer = true;
+    const host = fakeHost(
+      snapshotFor({ earlier: true, entries: chat.entries, run: null, threadId: conversationId }),
+    );
+    await mount(host, conversationId);
+    const list = () => harness.list!;
+    const position = host.client.setTranscriptPosition as unknown as ReturnType<typeof vi.fn>;
+    const measure = () => (position.mock.calls.at(-1)![1] as () => string | undefined | null)();
+    const rows = list().data! as readonly { kind?: string; key: string }[];
+    const at = rows.findIndex((row, index) => index > 0 && row.kind === "group");
+    act(() => list().onViewableItemsChanged?.({ viewableItems: [{ item: rows[at] }] }));
+    expect(measure()).toEqual(expect.any(String));
+    // The reconnect's cut reaches the latest: nothing newer is left, yet the reader goes back.
+    harness.scrollToIndex.mockClear();
+    harness.newer = false;
+    harness.cuts = 1;
+    await act(async () =>
+      host.move(
+        snapshotFor({ earlier: true, entries: chat.entries, run: null, threadId: conversationId }),
+      ),
+    );
+    expect(harness.scrollToIndex).toHaveBeenLastCalledWith({
+      animated: false,
+      index: at,
+      viewPosition: 0,
+    });
+  });
+
+  it("pages earlier on an upward fling that crosses rows, and a jump outranks a place measured before it", async () => {
+    const chat = chatAtWork();
+    const host = fakeHost(
+      snapshotFor({ earlier: true, entries: chat.entries, run: null, threadId: conversationId }),
+    );
+    await mount(host, conversationId);
+    const list = () => harness.list!;
+    const rows = list().data! as readonly { kind?: string; key: string }[];
+    const groups = rows.flatMap((row, index) => (row.kind === "group" ? [index] : []));
+    const fling = (y: number, first: number) =>
+      act(() => {
+        list().onViewableItemsChanged?.({ viewableItems: [{ item: rows[first] }] });
+        list().onScroll?.({
+          nativeEvent: {
+            contentOffset: { x: 0, y },
+            contentSize: { height: 2000, width: 390 },
+            layoutMeasurement: { height: 600, width: 390 },
+          },
+        });
+      });
+    act(() => {
+      list().onLayout?.({ nativeEvent: { layout: { height: 600, width: 390 } } });
+      list().onContentSizeChange?.(390, 2000);
+    });
+    fling(1400, groups.at(-1)!);
+    act(() => list().onMomentumScrollBegin?.());
+    // Each sample finds a new row at the top of the screen; the transcript itself is unchanged.
+    fling(1000, groups.at(-1)!);
+    fling(700, groups.at(-2)!);
+    fling(400, groups.at(-3)!);
+    act(() => list().onMomentumScrollEnd?.());
+    await settle();
+    expect(host.loadEarlierTranscript).toHaveBeenCalledTimes(1);
+
+    // A reconnect measures the reader here; they jump to the latest before its cut arrives.
+    const position = host.client.setTranscriptPosition as unknown as ReturnType<typeof vi.fn>;
+    expect((position.mock.calls.at(-1)![1] as () => string | undefined | null)()).toEqual(
+      expect.any(String),
+    );
+    harness.scrollToIndex.mockClear();
+    const jump = document.querySelector('[aria-label="Jump to latest"]');
+    expect(jump, "the jump pill").not.toBeNull();
+    await act(async () => (jump as HTMLElement).click());
+    harness.cuts = 1;
+    await act(async () =>
+      host.move(
+        snapshotFor({ earlier: true, entries: chat.entries, run: null, threadId: conversationId }),
+      ),
+    );
+    expect(harness.scrollToIndex).not.toHaveBeenCalled();
+  });
+
+  it("stops putting the reader back on a lost row's neighbour once they jump to the latest", async () => {
+    const chat = chatAtWork();
+    const host = fakeHost(
+      snapshotFor({ earlier: true, entries: chat.entries, run: null, threadId: conversationId }),
+    );
+    await mount(host, conversationId);
+    const list = () => harness.list!;
+    act(() => {
+      list().onLayout?.({ nativeEvent: { layout: { height: 600, width: 390 } } });
+      list().onContentSizeChange?.(390, 2000);
+      list().onScroll?.({
+        nativeEvent: {
+          contentOffset: { x: 0, y: 1400 },
+          contentSize: { height: 2000, width: 390 },
+          layoutMeasurement: { height: 600, width: 390 },
+        },
+      });
+      list().onScrollBeginDrag?.();
+      list().onScroll?.({
+        nativeEvent: {
+          contentOffset: { x: 0, y: 900 },
+          contentSize: { height: 2000, width: 390 },
+          layoutMeasurement: { height: 600, width: 390 },
+        },
+      });
+      list().onScrollEndDrag?.();
+    });
+    const rows = list().data! as readonly { kind?: string; key: string }[];
+    const askB = rows.findIndex((row) => row.key === chat.askB.id);
+    expect(askB, "the second question's row").toBeGreaterThan(0);
+    act(() => list().onViewableItemsChanged?.({ viewableItems: [{ item: rows[askB] }] }));
+    const position = host.client.setTranscriptPosition as unknown as ReturnType<typeof vi.fn>;
+    expect((position.mock.calls.at(-1)![1] as () => string | undefined | null)()).toBe(
+      chat.askB.id,
+    );
+    // The reconnect's cut lost that row: the reader is put on its neighbour, the row still sought.
+    const without = chat.entries.filter((entry) => entry !== chat.askB);
+    harness.scrollToIndex.mockClear();
+    harness.cuts = 1;
+    await act(async () =>
+      host.move(
+        snapshotFor({ earlier: true, entries: without, run: null, threadId: conversationId }),
+      ),
+    );
+    expect(harness.scrollToIndex).toHaveBeenCalled();
+    // They jump to the latest; the next update moves them nowhere.
+    const jump = document.querySelector('[aria-label="Jump to latest"]');
+    expect(jump, "the jump pill").not.toBeNull();
+    await act(async () => (jump as HTMLElement).click());
+    harness.scrollToIndex.mockClear();
+    await act(async () =>
+      host.move(
+        snapshotFor({
+          earlier: true,
+          entries: [...without, wrote("One more thing.", chat.runB)],
+          run: null,
+          threadId: conversationId,
+        }),
+      ),
+    );
+    expect(harness.scrollToIndex).not.toHaveBeenCalled();
+  });
+
+  it("keeps paging earlier through a drag up while the rows above update in place", async () => {
+    const chat = chatAtWork();
+    const host = fakeHost(
+      snapshotFor({ earlier: true, entries: chat.entries, run: null, threadId: conversationId }),
+    );
+    await mount(host, conversationId);
+    const list = () => harness.list!;
+    const sample = (y: number) =>
+      act(() =>
+        list().onScroll?.({
+          nativeEvent: {
+            contentOffset: { x: 0, y },
+            contentSize: { height: 2000, width: 390 },
+            layoutMeasurement: { height: 600, width: 390 },
+          },
+        }),
+      );
+    act(() => {
+      list().onLayout?.({ nativeEvent: { layout: { height: 600, width: 390 } } });
+      list().onContentSizeChange?.(390, 2000);
+    });
+    sample(1400);
+    act(() => list().onScrollBeginDrag?.());
+    sample(1300);
+    // A Run streams into the rows as the reader drags up: every sample finds a row redrawn at the
+    // same height. The drag is still theirs, toward older messages.
+    for (const [index, y] of [1000, 700, 400].entries()) {
+      await act(async () =>
+        host.move(
+          snapshotFor({
+            earlier: true,
+            entries: [
+              ...chat.entries.slice(0, -1),
+              command(chat.runB, `draft note ${index}`, true),
+            ],
+            run: null,
+            threadId: conversationId,
+          }),
+        ),
+      );
+      sample(y);
+    }
+    act(() => list().onScrollEndDrag?.());
+    await settle();
+    expect(host.loadEarlierTranscript).toHaveBeenCalledTimes(1);
+  });
+
+  it("pages earlier on a drag up the rows above it redraw throughout, from its first sample", async () => {
+    const chat = chatAtWork();
+    const host = fakeHost(
+      snapshotFor({ earlier: true, entries: chat.entries, run: null, threadId: conversationId }),
+    );
+    await mount(host, conversationId);
+    const list = () => harness.list!;
+    act(() => {
+      list().onLayout?.({ nativeEvent: { layout: { height: 600, width: 390 } } });
+      list().onContentSizeChange?.(390, 2000);
+      list().onScroll?.({
+        nativeEvent: {
+          contentOffset: { x: 0, y: 900 },
+          contentSize: { height: 2000, width: 390 },
+          layoutMeasurement: { height: 600, width: 390 },
+        },
+      });
+    });
+    act(() => list().onScrollBeginDrag?.());
+    for (const [index, y] of [700, 500, 300].entries()) {
+      // A redraw above the reader lands before every sample, the first included.
+      await act(async () =>
+        host.move(
+          snapshotFor({
+            earlier: true,
+            entries: [
+              ...chat.entries.slice(0, -1),
+              command(chat.runB, `draft note ${index}`, true),
+            ],
+            run: null,
+            threadId: conversationId,
+          }),
+        ),
+      );
+      act(() =>
+        list().onScroll?.({
+          nativeEvent: {
+            contentOffset: { x: 0, y },
+            contentSize: { height: 2000, width: 390 },
+            layoutMeasurement: { height: 600, width: 390 },
+          },
+        }),
+      );
+    }
+    act(() => list().onScrollEndDrag?.());
+    await settle();
+    expect(host.loadEarlierTranscript).toHaveBeenCalled();
+  });
+
+  it("names a turn row by the reply it shows, so a new cut centres on what the reader reads", async () => {
+    const chat = chatAtWork();
+    const host = fakeHost(
+      snapshotFor({ earlier: true, entries: chat.entries, run: null, threadId: conversationId }),
+    );
+    await mount(host, conversationId);
+    const list = () => harness.list!;
+    act(() => {
+      list().onLayout?.({ nativeEvent: { layout: { height: 600, width: 390 } } });
+      list().onContentSizeChange?.(390, 2000);
+      list().onScroll?.({
+        nativeEvent: {
+          contentOffset: { x: 0, y: 1400 },
+          contentSize: { height: 2000, width: 390 },
+          layoutMeasurement: { height: 600, width: 390 },
+        },
+      });
+      list().onScrollBeginDrag?.();
+      list().onScroll?.({
+        nativeEvent: {
+          contentOffset: { x: 0, y: 900 },
+          contentSize: { height: 2000, width: 390 },
+          layoutMeasurement: { height: 600, width: 390 },
+        },
+      });
+      list().onScrollEndDrag?.();
+    });
+    const rows = list().data! as readonly {
+      kind?: string;
+      key: string;
+      group?: { kind: string; turn?: { runId: string | null } };
+    }[];
+    const turn = rows.findIndex(
+      (row) => row.group?.kind === "turn" && row.group.turn?.runId === chat.runA,
+    );
+    expect(turn, "the first turn's row").toBeGreaterThanOrEqual(0);
+    act(() => list().onViewableItemsChanged?.({ viewableItems: [{ item: rows[turn] }] }));
+    const position = host.client.setTranscriptPosition as unknown as ReturnType<typeof vi.fn>;
+    const measure = () => (position.mock.calls.at(-1)![1] as () => string | undefined | null)();
+    expect(measure()).toBe(chat.replyA.id);
+
+    // The second turn is on screen while it works; its reply lands under the same row, and the
+    // list reports nothing new. Asked now, the place is the reply it shows.
+    const second = rows.findIndex(
+      (row) => row.group?.kind === "turn" && row.group.turn?.runId === chat.runB,
+    );
+    act(() => list().onViewableItemsChanged?.({ viewableItems: [{ item: rows[second] }] }));
+    expect(measure()).toBe(chat.preambleB.id);
+    const replyB = wrote("Drafted it; ready to send.", chat.runB);
+    await act(async () =>
+      host.move(
+        snapshotFor({
+          earlier: true,
+          entries: [...chat.entries, replyB],
+          run: null,
+          threadId: conversationId,
+        }),
+      ),
+    );
+    expect(measure()).toBe(replyB.id);
+  });
+
+  it("takes the Thread's reading place back as it comes into view again, releasing only its own", async () => {
+    const chat = chatAtWork();
+    const host = fakeHost(
+      snapshotFor({ earlier: true, entries: chat.entries, run: null, threadId: conversationId }),
+    );
+    const releases: ReturnType<typeof vi.fn>[] = [];
+    const following = host.client.setTranscriptFollowing as unknown as ReturnType<typeof vi.fn>;
+    following.mockImplementation(() => {
+      const release = vi.fn();
+      releases.push(release);
+      return release;
+    });
+    const { root, pane } = await mount(host, conversationId);
+    expect(following).toHaveBeenCalledTimes(1);
+    // Another screen of this Thread covers the pane: it stays mounted, out of view, still in line.
+    harness.inView = false;
+    await act(async () => root.render(pane(() => undefined)));
+    expect(releases[0]).not.toHaveBeenCalled();
+    // Back in view (the screen over it closed), it answers again: registered anew, on top.
+    harness.inView = true;
+    await act(async () => root.render(pane(() => undefined)));
+    expect(following).toHaveBeenCalledTimes(2);
+    expect(releases[0]).toHaveBeenCalledTimes(1);
+    expect(releases[1]).not.toHaveBeenCalled();
+    act(() => root.unmount());
+    expect(releases[1]).toHaveBeenCalledTimes(1);
+  });
+
+  it("tells the client whether the reader follows the live latest", async () => {
+    const chat = chatAtWork();
+    const host = fakeHost(
+      snapshotFor({ earlier: true, entries: chat.entries, run: null, threadId: conversationId }),
+    );
+    await mount(host, conversationId);
+    const list = () => harness.list!;
+    const following = host.client.setTranscriptFollowing as unknown as ReturnType<typeof vi.fn>;
+    const read = () => (following.mock.calls.at(-1)![1] as () => boolean)();
+    expect(read()).toBe(true);
+    act(() => {
+      list().onLayout?.({ nativeEvent: { layout: { height: 600, width: 390 } } });
+      list().onContentSizeChange?.(390, 2000);
+      list().onScroll?.({
+        nativeEvent: {
+          contentOffset: { x: 0, y: 1400 },
+          contentSize: { height: 2000, width: 390 },
+          layoutMeasurement: { height: 600, width: 390 },
+        },
+      });
+      list().onScrollBeginDrag?.();
+      list().onScroll?.({
+        nativeEvent: {
+          contentOffset: { x: 0, y: 900 },
+          contentSize: { height: 2000, width: 390 },
+          layoutMeasurement: { height: 600, width: 390 },
+        },
+      });
+      list().onScrollEndDrag?.();
+    });
+    expect(read()).toBe(false);
+  });
+
   it("after a new cut puts the reader back on the row measured before it, or at the latest when it is gone", async () => {
     const chat = chatAtWork();
     const initial = snapshotFor({ entries: chat.entries, run: null, threadId: conversationId });
@@ -2893,7 +3462,38 @@ describe("a link to an approval", () => {
     expect(host.loadEarlierTranscript).not.toHaveBeenCalled();
   });
 
-  it("pages back to an answer on an earlier page, then stops paging", async () => {
+  it("offers to try an answer's link again when reading around its receipt fails on the way", async () => {
+    const first = joinedExchange("Plan the trip", "Also book the hotel", "Booked both.");
+    const second = exchange("Send Maya the agenda", "Sent it.");
+    const host = fakeHost(
+      snapshotFor({ earlier: true, entries: second.entries, run: null, threadId: conversationId }),
+    );
+    host.holdEarlier(
+      snapshotFor({
+        earlier: true,
+        entries: [...first.entries, ...second.entries],
+        run: null,
+        threadId: conversationId,
+      }),
+    );
+    host.loadTranscriptAround.mockImplementationOnce(async () => {
+      throw new TypeError("The connection was lost.");
+    });
+    const { container } = await mount(host, conversationId, {
+      requestId: first.receipt.requestId,
+    });
+    await settle();
+    expect(host.loadTranscriptAround).toHaveBeenCalledTimes(1);
+    await press(container, "Try again");
+    await settle();
+    expect(host.loadTranscriptAround).toHaveBeenCalledTimes(2);
+    expect(harness.navigate).toHaveBeenCalledWith(
+      "ConversationActivity",
+      expect.objectContaining({ messageId: first.receipt.id }),
+    );
+  });
+
+  it("reads once around an answer's receipt on a page not loaded, never paging through history", async () => {
     const first = joinedExchange("Plan the trip", "Also book the hotel", "Booked both.");
     const second = exchange("Send Maya the agenda", "Sent it.");
     const host = fakeHost(
@@ -2909,7 +3509,13 @@ describe("a link to an approval", () => {
     );
     await mount(host, conversationId, { requestId: first.receipt.requestId });
 
-    expect(host.loadEarlierTranscript).toHaveBeenCalledTimes(1);
+    expect(host.loadEarlierTranscript).not.toHaveBeenCalled();
+    expect(host.loadTranscriptAround).toHaveBeenCalledTimes(1);
+    expect(host.loadTranscriptAround).toHaveBeenCalledWith(
+      conversationId,
+      `request:${first.receipt.requestId}`,
+    );
+    expect(host.client.revealedTranscriptMove).toHaveBeenCalled();
     expect(harness.navigate).toHaveBeenCalledWith("ConversationActivity", {
       messageId: first.receipt.id,
       deploymentId,

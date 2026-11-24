@@ -949,6 +949,46 @@ describe("page rail", () => {
   });
 });
 
+it("reports its rows as drawn, so a reading position is measured on the rows on screen", () => {
+  const asked = {
+    author: { displayName: "Me", kind: "human", userId: "me" },
+    body: "Map the subreddits",
+    createdAt: "2026-08-16T10:00:00.000Z",
+    id: "message-asked",
+    kind: "message",
+    messageKind: "input",
+    runId: "run-a",
+  } as MessageEntry;
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  roots.push(root);
+  const rowItems = {
+    current: new Map<string, string | undefined>() as ReadonlyMap<string, string | undefined>,
+  };
+  for (const conversation of [false, true]) {
+    act(() =>
+      root.render(
+        <MemoryRouter>
+          <AgentTranscript
+            conversation={conversation}
+            entries={[asked, { ...run, replyMessageId: note.id }, note]}
+            rowItemsRef={rowItems}
+          />
+        </MemoryRouter>,
+      ),
+    );
+    const drawn = [...container.querySelectorAll<HTMLElement>("[data-transcript-row]")].map(
+      (row) => row.dataset.transcriptRow,
+    );
+    // A conversation draws the reply that answers a message under a key of its own.
+    expect([...rowItems.current.keys()]).toEqual(drawn);
+    expect(rowItems.current.get(drawn[0]!)).toBe(asked.id);
+    expect(rowItems.current.get(drawn.at(-1)!)).toEqual(expect.any(String));
+  }
+  expect([...rowItems.current.keys()].some((key) => key.startsWith("turn:after:"))).toBe(true);
+});
+
 it("draws nothing for a silent automatic turn, and its source and failure when it fails", () => {
   const container = document.createElement("div");
   document.body.append(container);

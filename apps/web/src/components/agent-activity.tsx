@@ -64,6 +64,7 @@ import {
   conversationActivityTurn,
   conversationPlaces,
   conversationRows,
+  transcriptRowItemId,
   passwordsSetupOffer,
   type PasswordsSetupOffer,
   conversationTurn,
@@ -418,6 +419,7 @@ export function AgentTranscript({
   followTail = false,
   pinnedRowKeys = noPinnedRowKeys,
   pinnedMessageIds = noPinnedRowKeys,
+  rowItemsRef,
 }: {
   /** What the Thread is doing, which decides the line under its transcript. */
   activity?: ThreadActivity;
@@ -488,6 +490,12 @@ export function AgentTranscript({
   pinnedRowKeys?: readonly string[];
   /** Message IDs whose containing row must stay mounted (survives turn-row renames on prepend). */
   pinnedMessageIds?: readonly string[];
+  /**
+   * Given, holds the rows as drawn, in order, each by its key and the item it starts at. A
+   * reading position is measured on these: the rows a conversation draws can differ from the
+   * transcript's groups.
+   */
+  rowItemsRef?: { current: ReadonlyMap<string, string | undefined> };
 }) {
   const groups = useMemo(
     () => groupTranscriptEntries(entries, { inputQueuePaused, startHold, assignments }),
@@ -628,6 +636,13 @@ export function AgentTranscript({
     [attachmentReader, threadId],
   );
   const rowKeys = useMemo(() => rows.map(({ key }) => key), [rows]);
+  const drawnRowItems = useMemo(
+    () => new Map(rows.map(({ group, key }) => [key, transcriptRowItemId(group)] as const)),
+    [rows],
+  );
+  useLayoutEffect(() => {
+    if (rowItemsRef) rowItemsRef.current = drawnRowItems;
+  }, [drawnRowItems, rowItemsRef]);
   const estimateRowHeight = useCallback(
     (index: number) => {
       const row = rows[index];

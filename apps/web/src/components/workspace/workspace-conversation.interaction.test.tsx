@@ -921,6 +921,42 @@ describe("a conversation's foot", () => {
     expect(scroller.scrollTop, "A scroll up beside a reflow was taken for the reflow").toBe(1850);
   });
 
+  it("a window that stops short of the latest offers Load newer and the way back to the latest", async () => {
+    const long = "thr_00000000-0000-4000-8000-000000000005";
+    let latest!: ReturnType<typeof vi.fn>;
+    const watch = (source: MockHostClient) => {
+      const real = source.getThreadTranscript.bind(source);
+      const views = new WeakMap<object, object>();
+      vi.spyOn(source, "getThreadTranscript").mockImplementation((threadId) => {
+        const view = real(threadId);
+        return {
+          subscribe: view.subscribe,
+          getSnapshot: () => {
+            const current = view.getSnapshot();
+            if (!views.has(current)) views.set(current, { ...current, hasNewer: true });
+            return views.get(current) as typeof current;
+          },
+        };
+      });
+      latest = vi.fn(async () => true);
+      source.loadLatestTranscript = latest as typeof source.loadLatestTranscript;
+      return source;
+    };
+    await mount(`/tasks/${long}`, { hostClient: watch });
+    const jumps = () =>
+      [...document.querySelectorAll<HTMLButtonElement>(".transcript__jump")].map((button) =>
+        button.textContent?.trim(),
+      );
+    expect(jumps()).toEqual(["Load newer", "Back to latest"]);
+    // One floating group, so neither button covers the other.
+    expect(document.querySelector(".transcript__jumps")?.children).toHaveLength(2);
+    const back = [...document.querySelectorAll<HTMLButtonElement>(".transcript__jump")].find(
+      (button) => button.textContent?.includes("Back to latest"),
+    )!;
+    await act(async () => back.click());
+    expect(latest).toHaveBeenCalledTimes(1);
+  });
+
   it("a link overtaken by a newer link in the same task reports nothing missing and leaves the reader at the newer one", async () => {
     const long = "thr_00000000-0000-4000-8000-000000000005";
     const messages = () =>
@@ -985,6 +1021,7 @@ describe("a conversation's foot", () => {
       // The one-shot measurement the view gives the client, and any report it might make.
       vi.spyOn(source, "setTranscriptPosition").mockImplementation((_threadId, given) => {
         measure = given;
+        return () => undefined;
       });
       Object.assign(source, { setTranscriptAnchor: anchors });
       return source;
@@ -1060,6 +1097,7 @@ describe("a conversation's foot", () => {
       // The one-shot measurement the view gives the client, and any report it might make.
       vi.spyOn(source, "setTranscriptPosition").mockImplementation((_threadId, given) => {
         measure = given;
+        return () => undefined;
       });
       Object.assign(source, { setTranscriptAnchor: anchors });
       return source;
