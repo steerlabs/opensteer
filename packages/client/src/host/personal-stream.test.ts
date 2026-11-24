@@ -5083,10 +5083,8 @@ test("browser usage retention follows reader eviction, drops on task tombstone, 
           if (message.interests.includes("browser-profile")) {
             socket.deliver({
               type: "host.resource",
-              scope: shellScope,
               subscriptionId: "shell",
               generation: shellGen,
-              throughSequence: String(shellSeq),
               revisions: { "browser-profile": profileArchived ? "2" : "1" },
               reply: true,
             } as never);
@@ -5248,10 +5246,8 @@ test("browser usage retention follows reader eviction, drops on task tombstone, 
     const callsBeforeProfileBump = usageCalls.length;
     socket.deliver({
       type: "host.resource",
-      scope: shellScope,
       subscriptionId: "shell",
       generation: shellGen,
-      throughSequence: String(shellSeq),
       revisions: { "browser-profile": "2" },
     } as never);
     await vi.waitFor(() => expect(usageCalls.length).toBeGreaterThan(callsBeforeProfileBump));
@@ -5273,6 +5269,504 @@ test("browser usage retention follows reader eviction, drops on task tombstone, 
     client.activateThread(retainedTarget);
     await vi.waitFor(() => expect(usageCalls.length).toBe(afterReconnectCalls + 1));
     expect(usageCalls.at(-1)).toBe(retainedTarget);
+  } finally {
+    client.dispose();
+  }
+});
+
+test("archiving a browser profile while initial profile inventory and usage reads are in flight re-reads usage and does not mark the stale read fresh", async () => {
+  const threadA = createId("thread");
+  const runA = createId("run");
+  const messageId = createId("message");
+  const sessionId = `bsn_${crypto.randomUUID()}`;
+  const profileId = `bpr_${crypto.randomUUID()}`;
+  const taskA = { ...task, id: threadA, title: "Task A" };
+  const detailItems = [
+    {
+      ...item,
+      id: messageId,
+      messageId,
+      runId: runA,
+      position: "1",
+      revision: "1",
+      view: { preview: "Hello" },
+    },
+  ];
+  let profileArchived = false;
+  let holdInitialInventory = true;
+  let releaseInitialInventory: (() => void) | null = null;
+  let heldUsageCount = 2;
+  const releaseUsage: (() => void)[] = [];
+  const usageCalls: { threadId: string; runIds: string[] }[] = [];
+  let profileReads = 0;
+
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+    const url = new URL(String(input));
+    const name = url.pathname.slice("/v1/rpc/".length);
+    if (name === "thread.assignments.list") {
+      return Response.json({
+        ok: true,
+        data: {
+          assignments: [],
+          threadId: url.searchParams.get("threadId")!,
+          window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
+        },
+      });
+    }
+    if (name === "resources.detail.get") {
+      const asked = JSON.parse(url.searchParams.get("input")!) as { kind: string };
+      if (asked.kind === "browser-profile") {
+        profileReads += 1;
+        const archivedAtCall = profileArchived;
+        if (holdInitialInventory) {
+          holdInitialInventory = false;
+          await new Promise<void>((resolve) => {
+            releaseInitialInventory = resolve;
+          });
+        }
+        return Response.json({
+          ok: true,
+          data: {
+            kind: "browser-profile",
+            revision: archivedAtCall ? "2" : "1",
+            next: null,
+            data: {
+              kind: "browser-profile",
+              profiles: archivedAtCall
+                ? []
+                : [{ id: profileId, name: "Work", homeRunnerId: null, revision: 1 }],
+              deletions: [],
+            },
+          },
+        });
+      }
+    }
+    if (name === "thread.browserUsage.get") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { threadId: string; runIds: string[] };
+      usageCalls.push(body);
+      const archivedAtCall = profileArchived;
+      if (heldUsageCount > 0) {
+        heldUsageCount -= 1;
+        await new Promise<void>((resolve) => {
+          releaseUsage.push(resolve);
+        });
+      }
+      return Response.json({
+        ok: true,
+        data: {
+          threadId: body.threadId,
+          uses: archivedAtCall
+            ? []
+            : [
+                {
+                  sessionId,
+                  threadId: body.threadId,
+                  runId: runA,
+                  tabId: null,
+                  pageTitle: "Pre-archive page",
+                  pageSite: "https://example.test",
+                  firstUsedAt: "2026-11-23T00:00:00.000Z",
+                  lastUsedAt: "2026-11-23T00:00:01.000Z",
+                },
+              ],
+        },
+      });
+    }
+    return Response.json(
+      { ok: false, error: { code: "not_found", message: "Unavailable", retryable: false } },
+      { status: 404 },
+    );
+  });
+
+  let socket!: MockPersonalSocket;
+  let shellGen = 0;
+  let connects = 0;
+  const connect = () => {
+    connects += 1;
+    return (socket = new MockPersonalSocket((raw) => {
+      const message = JSON.parse(raw) as ScopedClientMessage;
+      queueMicrotask(() => {
+        if (message.type === "client.subscribe" && message.scope.kind === "thread") {
+          const address = {
+            scope: message.scope,
+            subscriptionId: message.subscriptionId,
+            generation: message.generation,
+            throughSequence: "1",
+          };
+          socket.deliver({
+            ...address,
+            type: "host.snapshot",
+            snapshot: {
+              thread: detailThread(taskA),
+              items: detailItems,
+              activeItems: [],
+              pendingRequests: [],
+              nextBefore: null,
+            },
+          } as never);
+          socket.deliver({ ...address, type: "host.synchronized" } as never);
+          return;
+        }
+        if (message.type === "client.resources.watch") {
+          if (message.interests.includes("browser-profile")) {
+            socket.deliver({
+              type: "host.resource",
+              subscriptionId: "shell",
+              generation: shellGen,
+              revisions: { "browser-profile": profileArchived ? "2" : "1" },
+              reply: true,
+            } as never);
+          }
+          return;
+        }
+        if (message.type !== "client.attach") return;
+        shellGen = message.generation;
+        const shell = {
+          scope: shellScope,
+          subscriptionId: "shell" as const,
+          generation: message.generation,
+          throughSequence: "1",
+        };
+        socket.deliver({
+          ...shell,
+          type: "host.snapshot",
+          snapshot: {
+            deploymentId,
+            viewerId,
+            epoch,
+            session,
+            tasks: [taskA],
+            visits: [],
+            attention: [],
+            counts,
+            ...shellLists,
+          },
+        });
+        socket.deliver({ ...shell, type: "host.synchronized" });
+      });
+    }));
+  };
+
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch,
+    webSocketFactory: connect,
+  });
+  try {
+    await client.load();
+    client.activateThread(threadA);
+    const stopProfileWatch = client.subscribe(() => void client.getSnapshot().browserProfiles);
+    void client.getSnapshot().browserProfiles;
+
+    // Wait until BOTH the initial profile inventory read and the initial usage read are in flight.
+    await vi.waitFor(() => {
+      expect(releaseInitialInventory).not.toBeNull();
+      expect(releaseUsage).toHaveLength(1);
+    });
+    expect(client.getSnapshot().loadedResources).not.toContain("browser-profile");
+    expect(client.getSnapshot().browserUsage?.[threadA]).toEqual({ loading: true, error: null });
+
+    // Archive the profile while no profile inventory is installed yet.
+    profileArchived = true;
+    socket.deliver({
+      type: "host.resource",
+      subscriptionId: "shell",
+      generation: shellGen,
+      revisions: { "browser-profile": "2" },
+    } as never);
+
+    // Release both the stale initial inventory read and the stale initial usage read.
+    releaseInitialInventory!();
+    releaseUsage[0]!();
+
+    // The stale usage read must NOT mark coverage fresh or install pre-archive data,
+    // and a full post-archive usage re-read must start immediately.
+    await vi.waitFor(() => expect(usageCalls).toHaveLength(2));
+    expect(usageCalls[1]).toEqual({ threadId: threadA, runIds: [runA] });
+    expect(client.getSnapshot().browserUsage?.[threadA]).toEqual({ loading: true, error: null });
+    expect(client.getSnapshot().browserUses).toEqual([]);
+
+    // The inventory retry installs the archived (empty) list without triggering a 3rd usage read.
+    await vi.waitFor(() => expect(profileReads).toBe(2));
+    await vi.waitFor(() =>
+      expect(client.getSnapshot().loadedResources).toContain("browser-profile"),
+    );
+    expect(client.getSnapshot().browserProfiles).toEqual([]);
+
+    // Release the post-archive usage read and verify final settled state.
+    await vi.waitFor(() => expect(releaseUsage).toHaveLength(2));
+    releaseUsage[1]!();
+    await vi.waitFor(() =>
+      expect(client.getSnapshot().browserUsage?.[threadA]).toEqual({ loading: false, error: null }),
+    );
+    expect(client.getSnapshot().browserUses).toEqual([]);
+    expect(usageCalls).toHaveLength(2);
+    expect(connects).toBe(1);
+    stopProfileWatch();
+  } finally {
+    client.dispose();
+  }
+});
+
+test("a watch-reply browser-profile revision advance invalidates shown browser usage once without redundant reads when unchanged", async () => {
+  const threadA = createId("thread");
+  const runA = createId("run");
+  const messageId = createId("message");
+  const sessionId = `bsn_${crypto.randomUUID()}`;
+  const profileId = `bpr_${crypto.randomUUID()}`;
+  const taskA = { ...task, id: threadA, title: "Task A" };
+  const detailItems = [
+    {
+      ...item,
+      id: messageId,
+      messageId,
+      runId: runA,
+      position: "1",
+      revision: "1",
+      view: { preview: "Hello" },
+    },
+  ];
+  let profileArchived = false;
+  const usageCalls: { threadId: string; runIds: string[] }[] = [];
+
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+    const url = new URL(String(input));
+    const name = url.pathname.slice("/v1/rpc/".length);
+    if (name === "thread.assignments.list") {
+      return Response.json({
+        ok: true,
+        data: {
+          assignments: [],
+          threadId: url.searchParams.get("threadId")!,
+          window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
+        },
+      });
+    }
+    if (name === "resources.detail.get") {
+      const asked = JSON.parse(url.searchParams.get("input")!) as { kind: string };
+      if (asked.kind === "browser-profile") {
+        return Response.json({
+          ok: true,
+          data: {
+            kind: "browser-profile",
+            revision: profileArchived ? "2" : "1",
+            next: null,
+            data: {
+              kind: "browser-profile",
+              profiles: profileArchived
+                ? []
+                : [{ id: profileId, name: "Work", homeRunnerId: null, revision: 1 }],
+              deletions: [],
+            },
+          },
+        });
+      }
+      if (asked.kind === "identity") {
+        return Response.json({
+          ok: true,
+          data: {
+            kind: "identity",
+            revision: "1",
+            next: null,
+            data: { kind: "identity", identity: null },
+          },
+        });
+      }
+      if (asked.kind === "owner-profile") {
+        return Response.json({
+          ok: true,
+          data: {
+            kind: "owner-profile",
+            revision: "1",
+            next: null,
+            data: { kind: "owner-profile", ownerProfile: null },
+          },
+        });
+      }
+    }
+    if (name === "thread.browserUsage.get") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { threadId: string; runIds: string[] };
+      usageCalls.push(body);
+      return Response.json({
+        ok: true,
+        data: {
+          threadId: body.threadId,
+          uses: profileArchived
+            ? []
+            : [
+                {
+                  sessionId,
+                  threadId: body.threadId,
+                  runId: runA,
+                  tabId: null,
+                  pageTitle: "Active profile page",
+                  pageSite: "https://example.test",
+                  firstUsedAt: "2026-11-23T00:00:00.000Z",
+                  lastUsedAt: "2026-11-23T00:00:01.000Z",
+                },
+              ],
+        },
+      });
+    }
+    return Response.json(
+      { ok: false, error: { code: "not_found", message: "Unavailable", retryable: false } },
+      { status: 404 },
+    );
+  });
+
+  let socket!: MockPersonalSocket;
+  let shellGen = 0;
+  let watchReplies = 0;
+  let connects = 0;
+  const connect = () => {
+    connects += 1;
+    return (socket = new MockPersonalSocket((raw) => {
+      const message = JSON.parse(raw) as ScopedClientMessage;
+      queueMicrotask(() => {
+        if (message.type === "client.subscribe" && message.scope.kind === "thread") {
+          const address = {
+            scope: message.scope,
+            subscriptionId: message.subscriptionId,
+            generation: message.generation,
+            throughSequence: "1",
+          };
+          socket.deliver({
+            ...address,
+            type: "host.snapshot",
+            snapshot: {
+              thread: detailThread(taskA),
+              items: detailItems,
+              activeItems: [],
+              pendingRequests: [],
+              nextBefore: null,
+            },
+          } as never);
+          socket.deliver({ ...address, type: "host.synchronized" } as never);
+          return;
+        }
+        if (message.type === "client.resources.watch") {
+          const revisions: Record<string, string> = {};
+          if (message.interests.includes("browser-profile"))
+            revisions["browser-profile"] = profileArchived ? "2" : "1";
+          if (message.interests.includes("identity")) revisions.identity = "1";
+          if (message.interests.includes("owner-profile")) revisions["owner-profile"] = "1";
+          watchReplies += 1;
+          socket.deliver({
+            type: "host.resource",
+            subscriptionId: "shell",
+            generation: shellGen,
+            revisions,
+            reply: true,
+          } as never);
+          return;
+        }
+        if (message.type !== "client.attach") return;
+        shellGen = message.generation;
+        const shell = {
+          scope: shellScope,
+          subscriptionId: "shell" as const,
+          generation: message.generation,
+          throughSequence: "1",
+        };
+        socket.deliver({
+          ...shell,
+          type: "host.snapshot",
+          snapshot: {
+            deploymentId,
+            viewerId,
+            epoch,
+            session,
+            tasks: [taskA],
+            visits: [],
+            attention: [],
+            counts,
+            ...shellLists,
+          },
+        });
+        socket.deliver({ ...shell, type: "host.synchronized" });
+        if (message.interests?.includes("browser-profile")) {
+          socket.deliver({
+            type: "host.resource",
+            subscriptionId: "shell",
+            generation: message.generation,
+            revisions: { "browser-profile": profileArchived ? "2" : "1" },
+            reply: true,
+          } as never);
+        }
+        if (message.selected?.scope.kind === "thread") {
+          const address = {
+            scope: message.selected.scope,
+            subscriptionId: message.selected.subscriptionId,
+            generation: message.selected.generation,
+            throughSequence: "1",
+          };
+          socket.deliver({
+            ...address,
+            type: "host.snapshot",
+            snapshot: {
+              thread: detailThread(taskA),
+              items: detailItems,
+              activeItems: [],
+              pendingRequests: [],
+              nextBefore: null,
+            },
+          } as never);
+          socket.deliver({ ...address, type: "host.synchronized" } as never);
+        }
+      });
+    }));
+  };
+
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch,
+    webSocketFactory: connect,
+    reconnectBaseDelayMs: 5,
+    reconnectMaxDelayMs: 10,
+  });
+  try {
+    await client.load();
+    client.activateThread(threadA);
+    const stopProfileWatch = client.subscribe(() => void client.getSnapshot().browserProfiles);
+    void client.getSnapshot().browserProfiles;
+
+    await vi.waitFor(() => {
+      expect(client.getSnapshot().browserProfiles).toHaveLength(1);
+      expect(client.getSnapshot().browserUsage?.[threadA]).toEqual({ loading: false, error: null });
+    });
+    expect(client.getSnapshot().browserUses).toHaveLength(1);
+    // Cold load: exactly 1 usage read.
+    expect(usageCalls).toHaveLength(1);
+
+    // 1. A watch reply carrying the same browser-profile revision causes NO redundant usage read.
+    const stopIdentityWatch = client.subscribe(() => void client.getSnapshot().identityConfig);
+    void client.getSnapshot().identityConfig;
+    await vi.waitFor(() => expect(watchReplies).toBe(2));
+    await Promise.resolve();
+    expect(usageCalls).toHaveLength(1);
+
+    // 2. Archive the profile with no live push; the next watch reply advances revision "1" -> "2"
+    //    and invalidates shown usage exactly once.
+    profileArchived = true;
+    const stopOwnerWatch = client.subscribe(() => void client.getSnapshot().ownerProfile);
+    void client.getSnapshot().ownerProfile;
+    await vi.waitFor(() => expect(watchReplies).toBe(3));
+    await vi.waitFor(() => expect(usageCalls).toHaveLength(2));
+    await vi.waitFor(() => expect(client.getSnapshot().browserUses).toEqual([]));
+    await vi.waitFor(() => expect(client.getSnapshot().browserProfiles).toEqual([]));
+    expect(usageCalls).toHaveLength(2);
+    expect(connects).toBe(1);
+
+    // 3. Reconnect when nothing changed causes only the single normal revalidation read.
+    socket.close();
+    await vi.waitFor(() => expect(usageCalls).toHaveLength(3));
+    await Promise.resolve();
+    expect(usageCalls).toHaveLength(3);
+    expect(connects).toBe(2);
+
+    stopOwnerWatch();
+    stopIdentityWatch();
+    stopProfileWatch();
   } finally {
     client.dispose();
   }

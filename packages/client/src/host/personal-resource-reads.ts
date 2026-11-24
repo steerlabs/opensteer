@@ -66,7 +66,13 @@ export interface PersonalResourceReadOptions {
   /** A kind's first complete read for this viewer landed. */
   loaded?(kind: PersonalResourceKind): void;
   /** The Host moved past what this client installed; its next read is coming. */
-  behind?(kind: PersonalResourceKind, reply?: boolean): void;
+  behind?(kind: PersonalResourceKind): void;
+  /**
+   * The client learned of a newer revision for a kind (a live push, a watch/attach reply ahead of
+   * a prior revision, or an in-flight read proven older than the Host's revision), whether or not
+   * an inventory has been installed yet. Fires at most once per revision.
+   */
+  revisionAdvanced?(kind: PersonalResourceKind): void;
   /** Whether a kind's newest read could not be installed (too large, or malformed). */
   unreadable?(kind: PersonalResourceKind, unreadable: boolean): void;
 }
@@ -98,6 +104,8 @@ export class PersonalResourceReads implements PersonalResourcePort {
   readonly #settling = new Map<PersonalResourceKind, ReturnType<typeof setTimeout>>();
   /** The older revision a read last answered after a newer push, so it is not reread forever. */
   readonly #behind = new Map<PersonalResourceKind, string>();
+  /** Newest revision for which `revisionAdvanced` already fired for this viewer. */
+  readonly #notifiedAdvance = new Map<PersonalResourceKind, string>();
   #viewer = 0;
   readonly #reads = new FencedReads({ epoch: () => String(this.#viewer) });
 
@@ -141,10 +149,16 @@ export class PersonalResourceReads implements PersonalResourcePort {
    */
   changed(revisions: PersonalResourceRevisions, reply = false) {
     for (const [kind, revision] of Object.entries(revisions) as [PersonalResourceKind, string][]) {
+      const previous = this.#known.get(kind);
       this.#known.set(kind, revision);
       if (signalKinds.has(kind)) this.#installed.set(kind, revision);
       else if (this.#installed.has(kind) && this.#installed.get(kind) !== revision)
-        this.#options.behind?.(kind, reply);
+        this.#options.behind?.(kind);
+      if (
+        (!reply && (previous === undefined || !newerRevision(previous, revision))) ||
+        (previous !== undefined && newerRevision(revision, previous))
+      )
+        this.#notifyAdvance(kind, revision);
       // What flies is judged when it lands: older than this push, it installs nothing.
       const installed = this.#installed.get(kind);
       // Only a live push of a Runner kind waits; the Host's reply to an attach is read at once.
@@ -268,6 +282,7 @@ export class PersonalResourceReads implements PersonalResourcePort {
     this.#known.clear();
     this.#installed.clear();
     this.#behind.clear();
+    this.#notifiedAdvance.clear();
     // The next viewer or history reports its own failures.
     this.#unreadableKinds.clear();
     this.#failures.clear();
@@ -398,6 +413,7 @@ export class PersonalResourceReads implements PersonalResourcePort {
     // The Host pushed something newer while this read flew: it paints nothing and reads again,
     // once; a second identical answer waits for the next push rather than spin.
     if (known !== undefined && newerRevision(known, revision)) {
+      this.#notifyAdvance(kind, known);
       if (this.#behind.get(kind) !== revision) {
         this.#behind.set(kind, revision);
         this.#reads.changed(kind);
@@ -411,7 +427,15 @@ export class PersonalResourceReads implements PersonalResourcePort {
     this.#installed.set(kind, revision);
     // Installed with no push since it began, so it is at least as new as anything pushed before.
     this.#known.set(kind, revision);
+    if (known !== undefined && newerRevision(revision, known)) this.#notifyAdvance(kind, revision);
     if (first) this.#options.loaded?.(kind);
+  }
+
+  #notifyAdvance(kind: PersonalResourceKind, revision: string) {
+    const notified = this.#notifiedAdvance.get(kind);
+    if (notified !== undefined && !newerRevision(revision, notified)) return;
+    this.#notifiedAdvance.set(kind, revision);
+    this.#options.revisionAdvanced?.(kind);
   }
 }
 

@@ -620,3 +620,72 @@ test("a read the attachment cut off is a cancel: the kind stays readable and not
   expect(unreadable).toEqual([]);
   release();
 });
+
+test("revisionAdvanced fires once per advance across live pushes, watch replies, and superseded initial reads, and stays silent when unchanged", async () => {
+  const pending: {
+    kind: PersonalResourceKind;
+    answer: (revision: string) => void;
+  }[] = [];
+  const advanced: PersonalResourceKind[] = [];
+  const reads = new PersonalResourceReads({
+    read: (kind) => {
+      const deferred = Promise.withResolvers<Read>();
+      pending.push({
+        kind,
+        answer: (revision) =>
+          deferred.resolve({
+            ok: true,
+            data: { revision, next: null, data: { kind } as never },
+          }),
+      });
+      return deferred.promise;
+    },
+    apply: () => undefined,
+    canRead: () => true,
+    watchChanged: () => undefined,
+    revisionAdvanced: (kind) => advanced.push(kind),
+  });
+
+  // 1. Cold watch: initial watch reply "1" while initial read is in flight is not an advance.
+  const release = reads.watch("browser-profile", () => {});
+  expect(pending).toHaveLength(1);
+  reads.changed({ "browser-profile": "1" }, true);
+  expect(advanced).toEqual([]);
+
+  // 2. Live push "2" while initial inventory read has NOT installed yet fires once.
+  reads.changed({ "browser-profile": "2" }, false);
+  expect(advanced).toEqual(["browser-profile"]);
+
+  // Releasing stale initial read ("1") and its retry ("2") must not fire a second time for "2".
+  pending[0]!.answer("1");
+  await vi.waitFor(() => expect(pending).toHaveLength(2));
+  pending[1]!.answer("2");
+  await vi.waitFor(() => expect(reads.interests().installed).toEqual({ "browser-profile": "2" }));
+  expect(advanced).toEqual(["browser-profile"]);
+
+  // 3. Reconnect/watch reply with unchanged "2" does not fire.
+  reads.changed({ "browser-profile": "2" }, true);
+  expect(advanced).toEqual(["browser-profile"]);
+
+  // 4. Watch reply advancing revision to "3" DOES fire once.
+  reads.changed({ "browser-profile": "3" }, true);
+  expect(advanced).toEqual(["browser-profile", "browser-profile"]);
+  await vi.waitFor(() => expect(pending).toHaveLength(3));
+  pending[2]!.answer("3");
+  await vi.waitFor(() => expect(reads.interests().installed).toEqual({ "browser-profile": "3" }));
+  expect(advanced).toEqual(["browser-profile", "browser-profile"]);
+
+  // 5. After reset, a cold watch reply "5" that proves an in-flight initial read ("4") stale fires once.
+  reads.reset();
+  reads.resume();
+  await vi.waitFor(() => expect(pending).toHaveLength(4));
+  reads.changed({ "browser-profile": "5" }, true);
+  expect(advanced).toEqual(["browser-profile", "browser-profile"]);
+  pending[3]!.answer("4");
+  await vi.waitFor(() => expect(pending).toHaveLength(5));
+  expect(advanced).toEqual(["browser-profile", "browser-profile", "browser-profile"]);
+  pending[4]!.answer("5");
+  await vi.waitFor(() => expect(reads.interests().installed).toEqual({ "browser-profile": "5" }));
+  expect(advanced).toEqual(["browser-profile", "browser-profile", "browser-profile"]);
+  release();
+});
