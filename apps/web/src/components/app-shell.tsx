@@ -143,7 +143,7 @@ import { AccountSignInDialog, type AddHarnessAccount } from "./account-sign-in-d
 import { useToast } from "./toast.js";
 import { useTeams } from "../team/team-attachments.js";
 import { presentFailure } from "./use-action.js";
-import { appLinkLabel, openAppLink, watchAppInput } from "./apps/app-links.js";
+import { openAppLink } from "./apps/app-links.js";
 
 interface TaskStartDraft {
   readonly draftKey: string | null;
@@ -435,24 +435,18 @@ export function AppShell({
     [hostClient, nav, location.state, thisMachineId],
   );
   // A window an app opened or a navigation of its frame reaches main, which hands it back here.
-  useEffect(() => {
-    watchAppInput();
-    return localBridge?.onAppLink?.(({ url, source }) => {
-      openAppLink(
-        url,
-        {
+  useEffect(
+    () =>
+      localBridge?.onAppLink?.(({ url, source }) => {
+        openAppLink(
+          url,
           // Settings and setup fill the window, where a tab would open out of sight.
-          open: fullWindowRef.current ? null : openWebLink,
-          ask: (address, open) =>
-            toast.success(`This app wants to open ${appLinkLabel(address)}`, {
-              label: "Open",
-              run: open,
-            }),
-        },
-        { kind: "window", source },
-      );
-    });
-  }, [localBridge, openWebLink, toast]);
+          { open: fullWindowRef.current ? null : openWebLink },
+          { kind: "window", source },
+        );
+      }),
+    [localBridge, openWebLink],
+  );
   // A link binds its computer for good, so it waits while this Mac is still saying whether it is one.
   const localWorker = viewedLocalExecutionStatus?.runner;
   const webLinkHereKnown =

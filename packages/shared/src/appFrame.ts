@@ -142,9 +142,16 @@ export function prepareAppHtml(html: string, theme: AppTheme, realOrigin = false
   // A phone's WebView opens a window only for a person's tap, and its native side decides where.
   // In a frame, this asks the page around the app, and only for a press inside this frame, which
   // is this frame's own user activation: the app cannot fake it, and a press outside never gives it.
+  // A browser spends a press on the window it opens: one press, one page. Presses are counted here,
+  // before any of the app's listeners, and only the browser's own: the app can neither make one up
+  // nor keep one from this count, and a press spent on a page opens no second one.
+  let presses=0,spent=0;
+  const press=e=>{if(e.isTrusted&&!e.repeat)presses++};
+  addEventListener('pointerdown',press,true);addEventListener('keydown',press,true);
   const leave=(href,trusted)=>{
     if(native()){apply(nativeOpen,window,[href,'_blank','noopener']);return}
     if(!(isActive?apply(isActive,activation,[]):trusted))return;
+    if(spent===presses)return;spent=presses;
     // Before the port arrives, the window goes where this frame's windows always went.
     if(port)apply(portPost,port,[{url:href}]);else apply(nativeOpen,window,[href,'_blank','noopener']);
   };
