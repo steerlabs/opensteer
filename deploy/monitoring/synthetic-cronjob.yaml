@@ -1,0 +1,62 @@
+# Runs the synthetic purchase (scripts/synthetic-cloud-computer.mjs) every six hours in the same
+# cluster as the account service, so its JSON lines reach Cloud Logging and
+# policies/page-synthetic-failed-twice.yaml can count them. Point it at a STAGING account service
+# in Stripe test mode, never at production. The script has no dependencies: it is mounted from a
+# ConfigMap into the pinned Node image the Home images build from.
+#
+#   kubectl -n opensteer-system create configmap opensteer-synthetic-script \
+#     --from-file=synthetic-cloud-computer.mjs=scripts/synthetic-cloud-computer.mjs \
+#     --dry-run=client -o yaml | kubectl apply -f -
+#   kubectl -n opensteer-system create secret generic opensteer-synthetic \
+#     --from-literal=OPENSTEER_SYNTHETIC_ACCOUNT_URL=https://account.staging.example.com \
+#     --from-literal=OPENSTEER_SYNTHETIC_REVIEW_EMAIL=... \
+#     --from-literal=OPENSTEER_SYNTHETIC_REVIEW_PASSWORD=... \
+#     --from-literal=OPENSTEER_SYNTHETIC_STRIPE_PUBLISHABLE_KEY=pk_test_... \
+#     --from-literal=OPENSTEER_SYNTHETIC_HEARTBEAT_URL=https://...
+#   kubectl apply -f deploy/monitoring/synthetic-cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: opensteer-synthetic-purchase
+  namespace: opensteer-system
+spec:
+  schedule: "17 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 4
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 4200
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: synthetic
+              image: node:24.22.2-bookworm-slim@sha256:c86ecead9e55a5210ac1727de38a4ca840bf03dcaf34dc9749addbf383b1920c
+              command: ["node", "/synthetic/synthetic-cloud-computer.mjs"]
+              envFrom:
+                - secretRef:
+                    name: opensteer-synthetic
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                limits: { memory: 128Mi }
+              volumeMounts:
+                - name: script
+                  mountPath: /synthetic
+                  readOnly: true
+          volumes:
+            - name: script
+              configMap:
+                name: opensteer-synthetic-script
