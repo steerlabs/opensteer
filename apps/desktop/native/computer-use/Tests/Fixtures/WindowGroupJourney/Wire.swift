@@ -472,8 +472,10 @@ extension WireJourney {
     }
     func source(_ view: String) -> [String: Any] { ["kind": "owner-view", "viewId": view, "generation": 1] }
     start("capture-ready")
+    let stressMode = ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_REDO_STRESS"] == "1"
+    let viewLeaseMs = stressMode ? 1_800_000 : 300_000
     for (wire, view, window, stream, media) in [(self, viewA, aWindowId, streamA, mediaA), (other, viewB, bWindowId, streamB, mediaB)] {
-      _ = try await wire.request("view.open", ["viewId": view, "generation": 1, "leaseDurationMs": 300_000,
+      _ = try await wire.request("view.open", ["viewId": view, "generation": 1, "leaseDurationMs": viewLeaseMs,
         "target": ["kind": "app", "app": identity, "windowId": window]])
       let resolved = try await wire.request("display.resolve", ["source": source(view), "ownerInputVersion": 2])
       let target = try (resolved["target"] as? [String: Any]).unwrap("video target")
@@ -611,96 +613,57 @@ extension WireJourney {
         try await Contracts.command(out, "owner-clear")
         _ = try await input([["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]])
         var currentCtx = try await activeContext(after: beforeClearMark)
-        var expectedLen = 0
+        // Seed one character so the undo stack is non-empty for the first type->undo->redo trial.
+        let seedKU = try keyUpCount()
+        let beforeSeedMark = editingMark
+        _ = try await input([
+          ["kind": "key", "action": "down", "code": "KeyS", "key": "s", "modifiers": [], "text": "s"],
+          ["kind": "key", "action": "up", "code": "KeyS", "key": "s", "modifiers": []],
+        ])
+        try await waitKeyUp(after: seedKU)
+        currentCtx = try await activeContext(after: beforeSeedMark)
+        var expectedLen = 1
         var hits = 0
         var misses = 0
-        var staleUndos = 0
+        var undoMisses = 0
         var staleRedos = 0
         var missDetails: [[String: Any]] = []
         for i in 0..<iterations {
           let beforeKU = try keyUpCount()
+          let beforeTypeMark = editingMark
           let typed = try await input([
             ["kind": "key", "action": "down", "code": "KeyA", "key": "a", "modifiers": [], "text": "a"],
             ["kind": "key", "action": "up", "code": "KeyA", "key": "a", "modifiers": []],
           ])
-          try require(typed["outcome"] as? String == "dispatched", "stress type refused at gap=\(gapMs) iter=\(i)")
+          try require(typed["outcome"] as? String == "dispatched", "stress type refused at gap=\(gapMs) iter=\(i): \(typed)")
           try await waitKeyUp(after: beforeKU)
-          let beforeUndoMark = editingMark
-          var undoRes = try await input([["kind": "command", "command": "undo", "contextId": currentCtx]])
-          if undoRes["outcome"] as? String == "stale" {
-            staleUndos += 1
-            currentCtx = try await activeContext()
-            let retryUndoMark = editingMark
-            undoRes = try await input([["kind": "command", "command": "undo", "contextId": currentCtx]])
-            let undoDoneUsRetry = DispatchTime.now().uptimeNanoseconds / 1000
+          currentCtx = try await activeContext(after: beforeTypeMark)
+          // Ensure Undo itself runs (retry if Undo hits the same lazy-menu miss or stale context).
+          var undoDoneUs: UInt64 = 0
+          var undoMark = editingMark
+          for attempt in 0..<5 {
+            undoMark = editingMark
+            let undoOff = diagOffset()
+            let undoRes = try await input([["kind": "command", "command": "undo", "contextId": currentCtx]])
+            undoDoneUs = DispatchTime.now().uptimeNanoseconds / 1000
+            if undoRes["outcome"] as? String == "stale" {
+              currentCtx = try await activeContext(after: undoMark)
+              continue
+            }
             try require(undoRes["outcome"] as? String == "dispatched", "stress undo refused at gap=\(gapMs) iter=\(i): \(undoRes)")
-            let redoCtx = try await activeContext(after: retryUndoMark)
-            if gapMs > 0 {
-              let targetUs = undoDoneUsRetry + UInt64(gapMs) * 1000
-              let nowUs = DispatchTime.now().uptimeNanoseconds / 1000
-              if targetUs > nowUs { try await Task.sleep(nanoseconds: (targetUs - nowUs) * 1000) }
-            }
-            let dOff = diagOffset()
-            let rawBefore = try rawRedoCount()
-            let redoSendUs = DispatchTime.now().uptimeNanoseconds / 1000
-            let beforeRedoMark = editingMark
-            let redoRes = try await input([["kind": "command", "command": "redo", "contextId": redoCtx]])
-            let redoDoneUs = DispatchTime.now().uptimeNanoseconds / 1000
-            let diags = diagShortcutEvents(since: dOff).filter { ($0["combo"] as? String) == "cmd+shift+z" }
-            let rawAfter = try rawRedoCount()
-            let state = try await readState()
-            let textLen = (state["text"] as? String)?.count ?? -1
-            let isHit = redoRes["outcome"] as? String == "dispatched"
-              && textLen == expectedLen + 1
-              && rawAfter == rawBefore
-              && !diags.contains(where: { ($0["event"] as? String) == "owner-menu-shortcut-miss" })
-            if redoRes["outcome"] as? String == "stale" { staleRedos += 1 }
-            if isHit {
-              hits += 1
-              expectedLen += 1
-              currentCtx = try await activeContext(after: beforeRedoMark)
-            } else {
-              misses += 1
-              totalMisses += 1
-              let firstProbe = probeRedoAX()
-              var enabledAfterUndoMs: Double = -1
-              if (firstProbe["enabled"] as? Bool) == true {
-                enabledAfterUndoMs = Double(DispatchTime.now().uptimeNanoseconds / 1000 - undoDoneUsRetry) / 1000.0
-              } else {
-                let deadline = Date().addingTimeInterval(1.0)
-                while Date() < deadline {
-                  try await Task.sleep(nanoseconds: 2_000_000)
-                  let p = probeRedoAX()
-                  if (p["enabled"] as? Bool) == true {
-                    enabledAfterUndoMs = Double(DispatchTime.now().uptimeNanoseconds / 1000 - undoDoneUsRetry) / 1000.0
-                    break
-                  }
-                }
+            let uDiags = diagShortcutEvents(since: undoOff).filter { ($0["combo"] as? String) == "cmd+z" }
+            if uDiags.contains(where: { ($0["event"] as? String) == "owner-menu-shortcut-miss" }) {
+              undoMisses += 1
+              if attempt < 4 {
+                try await Task.sleep(nanoseconds: 50_000_000)
+                currentCtx = try await activeContext(after: undoMark)
+                continue
               }
-              if missDetails.count < 50 {
-                missDetails.append([
-                  "iter": i,
-                  "actualGapMs": Double(redoSendUs - undoDoneUsRetry) / 1000.0,
-                  "redoElapsedMs": Double(redoDoneUs - redoSendUs) / 1000.0,
-                  "redoOutcome": redoRes["outcome"] as? String ?? "unknown",
-                  "redoReason": redoRes["reason"] as? String ?? "",
-                  "rawKeyPosted": rawAfter > rawBefore,
-                  "textLen": textLen,
-                  "expectedLen": expectedLen + 1,
-                  "ownerState": state,
-                  "diags": diags,
-                  "firstAxProbe": firstProbe,
-                  "enabledAfterUndoMs": enabledAfterUndoMs,
-                ])
-              }
-              expectedLen = max(0, textLen)
-              currentCtx = try await activeContext(after: beforeRedoMark)
             }
-            continue
+            break
           }
-          let undoDoneUs = DispatchTime.now().uptimeNanoseconds / 1000
-          try require(undoRes["outcome"] as? String == "dispatched", "stress undo refused at gap=\(gapMs) iter=\(i): \(undoRes)")
-          let redoCtx = try await activeContext(after: beforeUndoMark)
+          // Wait for the post-undo editing context (as fast as the wire allows).
+          var redoCtx = try await activeContext(after: undoMark)
           if gapMs > 0 {
             let targetUs = undoDoneUs + UInt64(gapMs) * 1000
             let nowUs = DispatchTime.now().uptimeNanoseconds / 1000
@@ -708,11 +671,20 @@ extension WireJourney {
               try await Task.sleep(nanoseconds: (targetUs - nowUs) * 1000)
             }
           }
-          let dOff = diagOffset()
-          let rawBefore = try rawRedoCount()
-          let redoSendUs = DispatchTime.now().uptimeNanoseconds / 1000
-          let beforeRedoMark = editingMark
-          let redoRes = try await input([["kind": "command", "command": "redo", "contextId": redoCtx]])
+          var dOff = diagOffset()
+          var rawBefore = try rawRedoCount()
+          var redoSendUs = DispatchTime.now().uptimeNanoseconds / 1000
+          var beforeRedoMark = editingMark
+          var redoRes = try await input([["kind": "command", "command": "redo", "contextId": redoCtx]])
+          if redoRes["outcome"] as? String == "stale" {
+            staleRedos += 1
+            redoCtx = try await activeContext(after: beforeRedoMark)
+            dOff = diagOffset()
+            rawBefore = try rawRedoCount()
+            redoSendUs = DispatchTime.now().uptimeNanoseconds / 1000
+            beforeRedoMark = editingMark
+            redoRes = try await input([["kind": "command", "command": "redo", "contextId": redoCtx]])
+          }
           let redoDoneUs = DispatchTime.now().uptimeNanoseconds / 1000
           let diags = diagShortcutEvents(since: dOff).filter { ($0["combo"] as? String) == "cmd+shift+z" }
           let rawAfter = try rawRedoCount()
@@ -722,7 +694,6 @@ extension WireJourney {
             && textLen == expectedLen + 1
             && rawAfter == rawBefore
             && !diags.contains(where: { ($0["event"] as? String) == "owner-menu-shortcut-miss" })
-          if redoRes["outcome"] as? String == "stale" { staleRedos += 1 }
           if isHit {
             hits += 1
             expectedLen += 1
@@ -735,9 +706,9 @@ extension WireJourney {
             if (firstProbe["enabled"] as? Bool) == true {
               enabledAfterUndoMs = Double(DispatchTime.now().uptimeNanoseconds / 1000 - undoDoneUs) / 1000.0
             } else {
-              let deadline = Date().addingTimeInterval(1.0)
+              let deadline = Date().addingTimeInterval(0.5)
               while Date() < deadline {
-                try await Task.sleep(nanoseconds: 2_000_000)
+                try await Task.sleep(nanoseconds: 5_000_000)
                 let p = probeRedoAX()
                 if (p["enabled"] as? Bool) == true {
                   enabledAfterUndoMs = Double(DispatchTime.now().uptimeNanoseconds / 1000 - undoDoneUs) / 1000.0
@@ -770,7 +741,7 @@ extension WireJourney {
           "iterations": iterations,
           "hits": hits,
           "misses": misses,
-          "staleUndos": staleUndos,
+          "undoMisses": undoMisses,
           "staleRedos": staleRedos,
           "missDetails": missDetails,
         ])
