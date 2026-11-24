@@ -358,3 +358,17 @@ it("requires every folded smoke in order under the explicit journey output", () 
     rmSync(out, { recursive: true, force: true });
   }
 });
+
+it("stops only recorded process trees when the quit driver's watchdog fires", () => {
+  const source = readFileSync("apps/desktop/scripts/test-electron-quit.ts", "utf8");
+  const start = source.indexOf("const cleanupOwnedChildren = () => {");
+  expect(start).toBeGreaterThan(-1);
+  const body = source.slice(start, source.indexOf("\n};\n", start));
+  expect(body).toContain("activeChildPids");
+  expect(body).not.toContain("pgrep");
+  expect(body).not.toContain("processInventory");
+  expect(body).not.toContain("command.startsWith");
+  expect(source).toMatch(
+    /installProcessSmokeGuard\("quit", aggregateTimeoutMs, cleanupOwnedChildren\)/u,
+  );
+});

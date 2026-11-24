@@ -35,9 +35,6 @@ const trials = restoreOnly
       "quit-completely",
     ]);
 const activeChildPids = new Set<number>();
-let cleanupExecutable: string | undefined;
-let cleanupResources: string | undefined;
-let cleanupFixture: ReturnType<typeof createServer> | undefined;
 const processInventory = () =>
   execFileSync("ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" })
     .trim()
@@ -68,10 +65,9 @@ const alive = (pid: number) => {
     return false;
   }
 };
+// The watchdog path: stop only the process trees of the children this driver started and recorded.
+// It never matches a process by name or command line; the `finally` below keeps its own sweep.
 const cleanupOwnedChildren = () => {
-  cleanupFixture?.closeAllConnections();
-  cleanupFixture?.close();
-  // Never address a process outside the children and isolated bundle this driver started.
   for (const pid of activeChildPids) {
     for (const entry of processTree(pid).toReversed()) {
       if (alive(entry.pid)) {
@@ -84,34 +80,6 @@ const cleanupOwnedChildren = () => {
     }
   }
   activeChildPids.clear();
-  if (cleanupExecutable) {
-    let remaining = "";
-    try {
-      remaining = execFileSync("pgrep", ["-f", cleanupExecutable], { encoding: "utf8" }).trim();
-    } catch {
-      /* No owned processes remain. */
-    }
-    for (const pid of remaining.split(/\s+/u).filter(Boolean).map(Number)) {
-      if (alive(pid)) {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          /* The owned process exited meanwhile. */
-        }
-      }
-    }
-  }
-  if (cleanupResources) {
-    for (const { pid } of processInventory().filter(({ command }) =>
-      command.startsWith(`${cleanupResources}/`),
-    )) {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        /* The owned process exited meanwhile. */
-      }
-    }
-  }
 };
 const perTrialBudgetMs =
   120_000 + (desktopShutdownTimeoutMs + 1_000) + 3_000 + (restoreOnly ? 5_000 : 10_000);
@@ -135,7 +103,6 @@ mkdirSync(directory, { recursive: true, mode: 0o700 });
 const root = realpathSync(mkdtempSync(path.join(directory, "quit-")));
 const sourceResources = z.string().min(1).parse(process.env.OPENSTEER_PERSONAL_E2E_RESOURCES);
 const resources = path.join(root, "resources");
-cleanupResources = resources;
 mkdirSync(resources, { mode: 0o700 });
 for (const name of ["personal-runtime", "process-supervisor"]) {
   execFileSync("cp", ["-cR", path.join(sourceResources, name), resources]);
@@ -165,7 +132,6 @@ writeFileSync(
 );
 execFileSync("codesign", ["--force", "--deep", "--sign", "-", bundle]);
 const executable = path.join(bundle, "Contents", "MacOS", path.basename(electron));
-cleanupExecutable = executable;
 progress("app-signed");
 const data = path.join(root, "data");
 mkdirSync(data, { mode: 0o700 });
@@ -315,7 +281,6 @@ const fixture = createServer((request, response) => {
     `<title>Restore ${pathname}</title><link rel="icon" href="/icon.svg?color=${pathname === "/p1" ? "blue" : pathname === "/pop" ? "green" : "red"}"><button id="popup" onclick="window.open('/pop#/document/42')">Popup</button>${seed ? "<script>document.cookie='restore-proof=saved;path=/;max-age=86400';localStorage.setItem('restore-proof','saved')</script>" : ""}`,
   );
 });
-cleanupFixture = fixture;
 if (restoreOnly) await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
 const fixtureAddress = fixture.address();
 const fixtureUrl =
@@ -591,5 +556,24 @@ try {
   }
   process.stdout.write(`${root}/${restoreOnly ? "tab-restore" : "quit-smoke"}.json\n`);
 } finally {
-  cleanupOwnedChildren();
+  fixture.closeAllConnections();
+  fixture.close();
+  // Never address a process outside the isolated app's tree.
+  let remaining = "";
+  try {
+    remaining = execFileSync("pgrep", ["-f", executable], { encoding: "utf8" }).trim();
+  } catch {
+    /* No owned processes remain. */
+  }
+  for (const pid of remaining.split(/\s+/u).filter(Boolean).map(Number))
+    if (alive(pid)) process.kill(pid, "SIGKILL");
+  for (const { pid } of processInventory().filter(({ command }) =>
+    command.startsWith(`${resources}/`),
+  )) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* The owned process exited meanwhile. */
+    }
+  }
 }
