@@ -736,10 +736,10 @@ export async function latestConnectionUncertainty(
       taskId: latest.threadId,
       reason:
         latest.kind === "shell"
-          ? "Contact with this computer was lost before it confirmed the agent's shell there closed."
+          ? "Contact with this device was lost before it confirmed that the connected agent's shell there had closed."
           : latest.kind === "notification"
-            ? "A phone alert about this agent's work may have been sent; the Opensteer account did not confirm it."
-            : "Contact was lost before this attempt confirmed it ended.",
+            ? "A phone alert about this connected agent's work may have been sent; your Opensteer account did not confirm it."
+            : "Contact was lost before this action confirmed it had ended.",
       ...(latest.runnerId
         ? {
             device:
