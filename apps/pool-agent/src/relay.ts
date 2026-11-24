@@ -64,7 +64,11 @@ export function createRelayServer(options: RelayServerOptions): Server {
     (socket) => void tunnel(socket, options),
   );
   server.maxConnections = relayMaximumConnections;
-  limitConnectionsPerSource(server, relayConnectionsPerSource);
+  limitConnectionsPerSource(
+    server,
+    relayConnectionsPerSource,
+    options.log ? { listener: "relay", log: options.log } : undefined,
+  );
   // A failed handshake is the client's; it never stops the listener.
   server.on("tlsClientError", () => undefined);
   return server;

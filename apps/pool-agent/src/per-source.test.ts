@@ -138,3 +138,33 @@ it("keeps the relay's own question to the agent, over its Unix socket, out of an
   expect(JSON.parse(await answer)).toEqual({ ok: false, code: "parked" });
   rmSync(directory, { recursive: true, force: true });
 });
+
+it("counts what each source's share refuses, in one line per source per minute at most", () => {
+  const server = new EventEmitter();
+  const lines: Record<string, unknown>[] = [];
+  let clock = 0;
+  limitConnectionsPerSource(server as never, 1, {
+    listener: "relay",
+    log: (line) => lines.push({ ...line }),
+    now: () => clock,
+  });
+  const open = (address: string) => server.emit("connection", new FakeSocket(address));
+  open("10.0.0.5");
+  for (let index = 0; index < 5; index += 1) open("10.0.0.5"); // five refused
+  open("10.0.0.6");
+  open("10.0.0.6"); // one refused
+  // The first refusal of each source is said at once; the rest of the minute only counted.
+  expect(lines).toEqual([
+    { event: "pool.share.refused", listener: "relay", source: "10.0.0.5", share: 1, refused: 1 },
+    { event: "pool.share.refused", listener: "relay", source: "10.0.0.6", share: 1, refused: 1 },
+  ]);
+  clock = 60_000;
+  open("10.0.0.5");
+  expect(lines.at(-1)).toEqual({
+    event: "pool.share.refused",
+    listener: "relay",
+    source: "10.0.0.5",
+    share: 1,
+    refused: 5,
+  });
+});
