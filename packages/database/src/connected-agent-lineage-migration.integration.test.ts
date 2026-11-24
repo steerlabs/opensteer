@@ -11,6 +11,7 @@ import {
 } from "./connection-disconnect.js";
 import { migrateToLatest, migrationProvider } from "./migrations.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
+import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
 import { runContextLineage, threadContextLineage } from "./run-personal-context.js";
 import { testReadyHarnessCatalog } from "./store.integration.test-support.js";
 import { OpensteerStore } from "./store.js";
@@ -115,7 +116,7 @@ async function mainInput(
   sequences.set(thread, sequence + 1);
   const author = input.connectionId
     ? { kind: "connection", connectionId: input.connectionId, displayName: "Research agent" }
-    : { kind: "human", displayName: "Alex" };
+    : { kind: "human", displayName: "Alex", principalId: home.principal, userId: home.userId };
   const authority = input.connectionId
     ? {
         kind: "connection",
@@ -137,6 +138,10 @@ async function mainInput(
       ${`input-${message}`}, 'queue', ${sequence}, 'fixture', ${home.userId}, ${state},
       ${input.state === "delivered" ? new Date() : null},
       ${state === "cancelled" ? "fixture" : null})`.execute(database);
+  // As main's writer does, the task's next message number moves past this one.
+  await sql`update threads set next_message_sequence = ${sequence + 1} where id = ${thread}`.execute(
+    database,
+  );
   let runId = input.runId ?? null;
   if (reachedRun && input.state !== "cancelled-before-run" && !runId) {
     runId = await mainRun(home, thread, message, chain, authority, "completed");
@@ -167,6 +172,7 @@ async function mainRun(
       ${seed}, ${seed}, ${chain}, ${status === "queued" ? null : 1},
       ${status === "queued" ? null : new Date()}, ${status === "completed" ? new Date() : null})
   `.execute(database);
+  await sql`update threads set next_run_ordinal = ${ordinal} where id = ${thread}`.execute(database);
   return run;
 }
 
@@ -353,6 +359,11 @@ describe("a connected agent's work from before the update", () => {
     ]);
     // ... and the Runner is told it is not the person's own, so the engine starts without it.
     expect((await runContextLineage(database, next.run.id)).personLineage).toBe(false);
+    if (!next.command) throw new Error("Expected the owner's next Run to be dispatched");
+    await startPersonalQueuedRunFixture(store, next.run.id);
+    const dispatched = await store.loadRunDispatchContext(next.command.id);
+    expect(dispatched.lineage.personLineage).toBe(false);
+    expect(dispatched.personalContext).toBe(true);
   });
 
   it("binds an unfinished Run and its attempt to the connection so Disconnect finds them", async () => {
@@ -364,7 +375,6 @@ describe("a connected agent's work from before the update", () => {
       const seed = await mainInput(home, thread, {
         state: "claimed",
         connectionId: connection,
-        runId: undefined,
       });
       const run = seed.runId!;
       await sql`update runs set status = 'running', completed_at = null where id = ${run}`.execute(
@@ -426,13 +436,18 @@ describe("a connected agent's work from before the update", () => {
     // The carrier's cleanup, already open, waits on the gone connection's attempt.
     const gone = bound.find(({ fate }) => fate === "gone")!;
     expect(await held(carrier)).toEqual([gone.attempt]);
-    // An attempt that names its connection ends with its Runner's old boot.
+    // An attempt that names its connection is recorded as contact lost with its Runner's old
+    // boot, which counts as its end for the connection.
     await markConnectionAttemptsContactLost(database, {
       runnerId: home.runnerId as never,
       runnerBootId: "boot-before-update",
     });
-    expect(await held(live.connection)).toEqual([]);
-    expect(await held(carrier)).toEqual([]);
+    const lost = async (connectionId: string) =>
+      (await connectionAttempts(database, connectionId))
+        .filter(({ kind }) => kind === "run-attempt")
+        .map(({ id, contactLostAt }) => ({ id, lost: contactLostAt !== null }));
+    expect(await lost(live.connection)).toEqual([{ id: live.attempt, lost: true }]);
+    expect(await lost(carrier)).toEqual([{ id: gone.attempt, lost: true }]);
   });
 
   it("does not trust a stored connection that belongs to someone else", async () => {
