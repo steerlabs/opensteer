@@ -335,6 +335,19 @@ it("opens a person's clicks out of an app as workspace tabs at once, never asks,
     expect(context.pages()).toHaveLength(1);
     expect(new URL(frame.url()).pathname).toBe(appPrefix);
 
+    // That press is spent: the app asking for more while it keeps focus, long past any timer,
+    // opens nothing, though the browser still calls the press under way.
+    await frame.evaluate(() => {
+      Reflect.set(
+        window,
+        "again",
+        setInterval(() => window.open("https://again.test/"), 50),
+      );
+    });
+    await tab.waitForTimeout(1_500);
+    await frame.evaluate(() => clearInterval(Reflect.get(window, "again") as number));
+    expect(await opened()).toEqual(["https://www.linkedin.com/in/someone"]);
+
     // One press opens one page; what else the app asks for at the same moment opens nothing,
     // and nothing asks.
     await tab.waitForTimeout(800);

@@ -3,13 +3,10 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const appUrl = `opensteer-app://view/v1/apps/app_11111111-1111-4111-8111-111111111111/dark/${"a".repeat(43)}/`;
 let active: boolean | null = true;
-let clock = 100_000;
 
 beforeEach(() => {
   vi.resetModules();
   active = true;
-  clock += 60_000;
-  vi.spyOn(performance, "now").mockImplementation(() => clock);
   // Frames load only a blank page here, which the test DOM would otherwise report it refuses.
   Reflect.set(Reflect.get(window, "happyDOM").settings, "enableIframePageLoading", true);
   Object.defineProperty(navigator, "userActivation", {
@@ -40,75 +37,90 @@ async function links() {
   return { ...module, open, places: { open } };
 }
 
-it("opens a page an app asks for at once while a press is under way and the app holds focus", async () => {
-  const { openAppLink, open, places } = await links();
+it("opens a page an app asks for at once for a press in it, and nothing asks", async () => {
+  const { openAppLink, noteAppPress, open, places } = await links();
   const app = frame();
   // Another app on screen, a key rather than a pointer, a press on the page just before: none of
   // it stops a page opening, and nothing asks.
   frame("opensteer-app://view/v1/apps/app_2/dark/b/");
   focus(app);
   const proof = { kind: "frame", frame: app } as const;
+  noteAppPress(app);
   expect(openAppLink("https://www.linkedin.com/in/someone", places, proof)).toBe("opened");
   expect(open).toHaveBeenCalledExactlyOnceWith("https://www.linkedin.com/in/someone");
-  clock += 1_000;
+  noteAppPress(app);
   expect(openAppLink("https://www.reddit.com/", places, proof)).toBe("opened");
   expect(open).toHaveBeenCalledTimes(2);
 });
 
-it("opens one page at a time, however often an app asks while a press lasts", async () => {
-  const { openAppLink, open, places } = await links();
-  const app = frame();
+it("opens one page per press, however the app asks for more", async () => {
+  const { openAppLink, noteAppPress, open, places } = await links();
+  const app = frame(appUrl + "start");
   focus(app);
-  const proof = { kind: "frame", frame: app } as const;
-  expect(openAppLink("https://example.com/a", places, proof)).toBe("opened");
-  clock += 100;
-  expect(openAppLink("https://example.com/b", places, proof)).toBe("ignored");
-  clock += 600;
-  expect(openAppLink("https://example.com/c", places, proof)).toBe("opened");
+  const fromFrame = { kind: "frame", frame: app } as const;
+  // A navigation desktop main caught for this app.
+  const fromWindow = { kind: "window", source: appUrl + "start" } as const;
+  noteAppPress(app);
+  expect(openAppLink("https://example.com/a", places, fromFrame)).toBe("opened");
+  // The same press, long after, by the port or by a navigation, opens nothing more.
+  expect(openAppLink("https://example.com/b", places, fromFrame)).toBe("ignored");
+  expect(openAppLink("https://example.com/c", places, fromWindow)).toBe("ignored");
+  // A new press opens one page, by either way.
+  noteAppPress(app);
+  expect(openAppLink("https://example.com/d", places, fromWindow)).toBe("opened");
+  expect(openAppLink("https://example.com/e", places, fromFrame)).toBe("ignored");
+  // A press in another app is that app's own.
+  noteAppPress(frame("opensteer-app://view/v1/apps/app_2/dark/b/"));
+  expect(openAppLink("https://example.com/f", places, fromFrame)).toBe("ignored");
   expect(open.mock.calls.map(([url]) => url)).toEqual([
     "https://example.com/a",
-    "https://example.com/c",
+    "https://example.com/d",
   ]);
 });
 
-it("does nothing for an app asking with no press at all, or without focus", async () => {
-  const { openAppLink, open, places } = await links();
+it("does nothing for an app asking with no press of its own, no press under way, or without focus", async () => {
+  const { openAppLink, noteAppPress, open, places } = await links();
   const app = frame();
+  const proof = { kind: "frame", frame: app } as const;
+  focus(app);
+  expect(openAppLink("https://alone.test/", places, proof)).toBe("ignored");
+  noteAppPress(app);
   focus(document.body);
-  expect(openAppLink("https://alone.test/", places, { kind: "frame", frame: app })).toBe("ignored");
+  expect(openAppLink("https://alone.test/", places, proof)).toBe("ignored");
   focus(app);
   active = false;
-  expect(openAppLink("https://alone.test/", places, { kind: "frame", frame: app })).toBe("ignored");
+  expect(openAppLink("https://alone.test/", places, proof)).toBe("ignored");
   // Another app's frame holding focus is not this app's.
   active = true;
   focus(frame("opensteer-app://view/v1/apps/app_2/dark/b/"));
-  expect(openAppLink("https://alone.test/", places, { kind: "frame", frame: app })).toBe("ignored");
+  expect(openAppLink("https://alone.test/", places, proof)).toBe("ignored");
   expect(open).not.toHaveBeenCalled();
 });
 
-it("opens what desktop main caught for the focused frame of the app named, and nothing for another", async () => {
-  const { openAppLink, open, places } = await links();
+it("opens what desktop main caught only for the focused frame of the app named", async () => {
+  const { openAppLink, noteAppPress, open, places } = await links();
   const app = frame();
   focus(app);
-  expect(
-    openAppLink("https://example.com/", places, { kind: "window", source: appUrl + "settings" }),
-  ).toBe("opened");
-  clock += 2_000;
+  noteAppPress(app);
   expect(
     openAppLink("https://example.com/", places, {
       kind: "window",
       source: "opensteer-app://view/v1/apps/app_2/dark/b/",
     }),
   ).toBe("ignored");
+  expect(
+    openAppLink("https://example.com/", places, { kind: "window", source: appUrl + "settings" }),
+  ).toBe("opened");
   expect(open).toHaveBeenCalledExactlyOnceWith("https://example.com/");
 });
 
 it("goes to the person's own browser without a workspace, or for a page the workspace cannot open", async () => {
-  const { openAppLink } = await links();
+  const { openAppLink, noteAppPress } = await links();
   const app = frame();
   focus(app);
   const open = vi.spyOn(window, "open").mockReturnValue(null);
   const proof = { kind: "frame", frame: app } as const;
+  noteAppPress(app);
   expect(openAppLink("https://example.com/", { open: null }, proof)).toBe("opened");
   expect(open).toHaveBeenCalledExactlyOnceWith(
     "https://example.com/",
@@ -117,11 +129,11 @@ it("goes to the person's own browser without a workspace, or for a page the work
   );
   const openExternalUrl = vi.fn(async () => ({}));
   Reflect.set(window, "opensteerDesktop", { openExternalUrl });
-  clock += 2_000;
+  noteAppPress(app);
   openAppLink("https://example.com/desktop", { open: null }, proof);
   expect(openExternalUrl).toHaveBeenCalledExactlyOnceWith({ url: "https://example.com/desktop" });
   const workspace = vi.fn();
-  clock += 2_000;
+  noteAppPress(app);
   openAppLink("mailto:someone@example.com", { open: workspace }, proof);
   expect(workspace).not.toHaveBeenCalled();
   expect(openExternalUrl).toHaveBeenLastCalledWith({ url: "mailto:someone@example.com" });

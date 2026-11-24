@@ -4,6 +4,7 @@ import {
   appFrameSandbox,
   appLinkPortMessage,
   appLinkRequest,
+  appPressReport,
   appOriginFrameSandbox,
   isAppOriginUrl,
   appFrameScheme,
@@ -11,7 +12,7 @@ import {
 } from "@opensteer/shared/appFrame";
 import { useEffect, useRef, useState } from "react";
 import { useOptionalWorkspace } from "../workspace/workspace-context.js";
-import { openAppLink, type AppLinkPlaces } from "./app-links.js";
+import { noteAppPress, openAppLink, type AppLinkPlaces } from "./app-links.js";
 
 export function useAppTheme(): AppTheme {
   const [theme, setTheme] = useState<AppTheme>(currentTheme);
@@ -131,6 +132,10 @@ export function AppFrame({
     const givePort = (target: Window) => {
       const channel = new MessageChannel();
       channel.port1.onmessage = (event: MessageEvent) => {
+        if (appPressReport(event.data)) {
+          noteAppPress(frame.current);
+          return;
+        }
         const link = appLinkRequest(event.data);
         if (link !== null)
           openAppLink(link, linkPlaces.current, { kind: "frame", frame: frame.current });

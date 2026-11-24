@@ -144,9 +144,11 @@ export function prepareAppHtml(html: string, theme: AppTheme, realOrigin = false
   // is this frame's own user activation: the app cannot fake it, and a press outside never gives it.
   // A browser spends a press on the window it opens: one press, one page. Presses are counted here,
   // before any of the app's listeners, and only the browser's own: the app can neither make one up
-  // nor keep one from this count, and a press spent on a page opens no second one.
+  // nor keep one from this count, and a press spent on a page opens no second one. Each is also told
+  // to the page around the app on this script's own port, which the app cannot write to, so a page
+  // the app leaves for by any other way (a navigation desktop main catches) spends one too.
   let presses=0,spent=0;
-  const press=e=>{if(e.isTrusted&&!e.repeat)presses++};
+  const press=e=>{if(!e.isTrusted||e.repeat)return;presses++;if(port)apply(portPost,port,[{press:true}])};
   addEventListener('pointerdown',press,true);addEventListener('keydown',press,true);
   const leave=(href,trusted)=>{
     if(native()){apply(nativeOpen,window,[href,'_blank','noopener']);return}
@@ -270,6 +272,11 @@ export function appDeparture(value: string, document: string): string | null {
 }
 
 /** The web address an app frame's bootstrap asked to open, or null for anything else. */
+/** Whether a message on an app's link port reports a press of the person's in that app's frame. */
+export function appPressReport(value: unknown): boolean {
+  return !!value && typeof value === "object" && "press" in value && value.press === true;
+}
+
 export function appLinkRequest(value: unknown): string | null {
   if (
     !value ||

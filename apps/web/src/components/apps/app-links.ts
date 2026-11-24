@@ -23,13 +23,19 @@ export type AppLinkProof =
 
 export type AppLinkOutcome = "opened" | "ignored";
 
-/** At most one page per this long, however often an app asks while a press lasts. */
-const openMs = 700;
+/**
+ * Each app frame's presses, as its bootstrap reported them, and how many have opened a page. One
+ * press opens one page, however the app asks for it: on its bootstrap's port, or by a window or a
+ * navigation desktop main caught.
+ */
+const presses = new WeakMap<HTMLIFrameElement, { pressed: number; spent: number }>();
 
-let lastOpenedAt = Number.NEGATIVE_INFINITY;
-
-function now(): number {
-  return performance.now();
+/** A press of the person's in `frame`, as that frame's bootstrap reported it on its private port. */
+export function noteAppPress(frame: HTMLIFrameElement | null): void {
+  if (!frame) return;
+  const count = presses.get(frame);
+  if (count) count.pressed += 1;
+  else presses.set(frame, { pressed: 1, spent: 0 });
 }
 
 /** The frame on this page the request speaks for, while it holds focus. */
@@ -54,10 +60,10 @@ function openOutside(url: string): void {
  * A web page a person followed out of an app opens where a reply's link does:
  * a tab in the workspace, in the profile the start page would choose, or the
  * person's own browser where there is no workspace. It opens at once, without
- * asking, whenever a press is under way and the app holds focus, which a press
- * in it leaves there. An app asking with no press under way, or while it lacks
- * focus, pressed nothing, and nothing happens; nor does a second page within
- * `openMs`, so one press cannot open a stream of them.
+ * asking, for a press in that app's frame that no page has opened for yet,
+ * while the press is under way and the app holds focus, which a press in it
+ * leaves there. Anything else, an app asking on its own, for a press elsewhere
+ * or for a press already spent, opens nothing.
  */
 export function openAppLink(
   url: string,
@@ -67,10 +73,10 @@ export function openAppLink(
   if (typeof document === "undefined") return "ignored";
   const activation = (globalThis.navigator as Navigator | undefined)?.userActivation;
   if (activation && !activation.isActive) return "ignored";
-  if (!requestingFrame(proof)) return "ignored";
-  const at = now();
-  if (at - lastOpenedAt < openMs) return "ignored";
-  lastOpenedAt = at;
+  const frame = requestingFrame(proof);
+  const count = frame ? presses.get(frame) : undefined;
+  if (!count || count.spent >= count.pressed) return "ignored";
+  count.spent = count.pressed;
   if (places.open && PageOpenUrlSchema.safeParse(url).success) places.open(url);
   else openOutside(url);
   return "opened";
