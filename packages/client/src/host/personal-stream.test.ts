@@ -4564,3 +4564,444 @@ test("a repair snapshot retires stale live text for finalized items and checkpoi
   expect(saved!.items.at(-1)?.id).toBe(largeItems.at(-1)!.id);
   expect(saved!.nextBefore?.beforeId).toBe(saved!.items[0]?.id);
 });
+
+test("retains browser usage across task switches, skips unchanged revisits, refreshes after invalidation in one snapshot update, and merges incremental runs without duplicating thread summaries", async () => {
+  const threadA = createId("thread");
+  const threadB = createId("thread");
+  const sessionId = `bsn_${crypto.randomUUID()}`;
+  const runsA = Array.from({ length: 24 }, () => createId("run"));
+  const sortedRunsA = [...runsA].sort();
+  const extraRunA = createId("run");
+  const itemsFor = (runIds: readonly ReturnType<typeof createId<"run">>[]) =>
+    runIds.map((runId, index) => {
+      const id = createId("message");
+      return {
+        ...item,
+        id,
+        messageId: id,
+        runId,
+        position: String(index + 1),
+        revision: "1",
+        view: { preview: `Turn ${index + 1}` },
+      };
+    });
+  const itemsA = itemsFor(runsA);
+  const itemsB = itemsFor([createId("run")]);
+  const taskA = { ...task, id: threadA, title: "Task A" };
+  const taskB = { ...task, id: threadB, title: "Task B" };
+  const makeUse = (tid: string, runId: string | null, tabId: string | null, title: string) => ({
+    sessionId,
+    threadId: tid,
+    runId,
+    tabId,
+    pageTitle: title,
+    pageSite: tabId ? "https://docs.example" : null,
+    firstUsedAt: "2026-11-23T00:00:00.000Z",
+    lastUsedAt: "2026-11-23T00:00:01.000Z",
+  });
+  let versionA = 1;
+  const usageCalls: { threadId: string; runIds: string[] }[] = [];
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+    const name = new URL(String(input)).pathname.slice("/v1/rpc/".length);
+    if (name === "thread.assignments.list") {
+      const tid = new URL(String(input)).searchParams.get("threadId")!;
+      return Response.json({
+        ok: true,
+        data: {
+          assignments: [],
+          threadId: tid,
+          window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
+        },
+      });
+    }
+    if (name === "thread.browserUsage.get") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        threadId: string;
+        runIds: string[];
+      };
+      expect("runsOnly" in body).toBe(false);
+      expect(body.runIds.length).toBeLessThanOrEqual(16);
+      usageCalls.push(body);
+      if (body.threadId === threadA) {
+        const membership = makeUse(threadA, null, null, `V${versionA}`);
+        const runUses = body.runIds.map((rid) =>
+          makeUse(threadA, rid, `tab-${rid.slice(-6)}`, `V${versionA}-${rid.slice(-4)}`),
+        );
+        return Response.json({
+          ok: true,
+          data: {
+            threadId: threadA,
+            uses: [membership, ...runUses],
+          },
+        });
+      }
+      return Response.json({ ok: true, data: { threadId: body.threadId, uses: [] } });
+    }
+    return Response.json(
+      { ok: false, error: { code: "not_found", message: "Unavailable", retryable: false } },
+      { status: 404 },
+    );
+  });
+  let socket!: MockPersonalSocket;
+  let lastDetailA: Extract<ScopedClientMessage, { type: "client.subscribe" }> | undefined;
+  let detailASyncs = 0;
+  const connect = () =>
+    (socket = new MockPersonalSocket((raw) => {
+      const message = JSON.parse(raw) as ScopedClientMessage;
+      queueMicrotask(() => {
+        if (message.type === "client.subscribe" && message.scope.kind === "thread") {
+          const tid = message.scope.threadId;
+          if (tid === threadA) lastDetailA = message;
+          const address = {
+            scope: message.scope,
+            subscriptionId: message.subscriptionId,
+            generation: message.generation,
+            throughSequence: "1",
+          };
+          socket.deliver({
+            ...address,
+            type: "host.snapshot",
+            snapshot: {
+              thread: detailThread(tid === threadA ? taskA : taskB),
+              items: tid === threadA ? itemsA : itemsB,
+              activeItems: [],
+              pendingRequests: [],
+              nextBefore: null,
+            },
+          } as never);
+          socket.deliver({ ...address, type: "host.synchronized" } as never);
+          if (tid === threadA) detailASyncs += 1;
+        }
+        if (message.type !== "client.attach") return;
+        const shell = {
+          scope: shellScope,
+          subscriptionId: "shell" as const,
+          generation: message.generation,
+          throughSequence: "1",
+        };
+        socket.deliver({
+          ...shell,
+          type: "host.snapshot",
+          snapshot: {
+            deploymentId,
+            viewerId,
+            epoch,
+            session,
+            tasks: [taskA, taskB],
+            visits: [],
+            attention: [],
+            counts,
+            ...shellLists,
+          },
+        });
+        socket.deliver({ ...shell, type: "host.synchronized" });
+      });
+    }));
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch,
+    webSocketFactory: connect,
+  });
+  try {
+    await client.load();
+    // 1. Opening task A with 24 runs batches by 16 (16 + 8) and deduplicates thread-level summaries.
+    client.activateThread(threadA);
+    await vi.waitFor(() => expect(usageCalls).toHaveLength(2));
+    expect(usageCalls).toEqual([
+      { threadId: threadA, runIds: sortedRunsA.slice(0, 16) },
+      { threadId: threadA, runIds: sortedRunsA.slice(16) },
+    ]);
+    await vi.waitFor(() =>
+      expect(client.getSnapshot().browserUsage?.[threadA]).toEqual({ loading: false, error: null }),
+    );
+    const initialUsesA = client.getSnapshot().browserUses.filter((use) => use.threadId === threadA);
+    expect(initialUsesA).toHaveLength(1 + runsA.length);
+
+    // 2. Switching away to task B keeps task A's browserUses retained in the snapshot.
+    client.activateThread(threadB);
+    await vi.waitFor(() => expect(usageCalls).toHaveLength(3));
+    expect(client.getSnapshot().browserUses.filter((use) => use.threadId === threadA)).toEqual(
+      initialUsesA,
+    );
+
+    // 3. Revisiting unchanged task A shows retained uses immediately and makes ZERO RPC calls.
+    client.activateThread(threadA);
+    await vi.waitFor(() => expect(detailASyncs).toBe(2));
+    await Promise.resolve();
+    expect(usageCalls).toHaveLength(3);
+    expect(client.getSnapshot().browserUses.filter((use) => use.threadId === threadA)).toEqual(
+      initialUsesA,
+    );
+
+    // 4. Leaving task A, receiving host.browser-usage-changed for A while away, then revisiting A:
+    //    - last known V1 uses stay visible immediately (never blanked or set loading: true)
+    //    - one refresh runs (2 batches for 24 runs) and lands in ONE snapshot update with V2 uses.
+    client.activateThread(threadB);
+    versionA = 2;
+    socket.deliver({ type: "host.browser-usage-changed", threadIds: [threadA] } as never);
+    // Not shown -> no RPC yet, and last known data stays visible.
+    expect(usageCalls).toHaveLength(3);
+    expect(client.getSnapshot().browserUses.filter((use) => use.threadId === threadA)).toEqual(
+      initialUsesA,
+    );
+    let usageUpdates = 0;
+    let lastBrowserUses = client.getSnapshot().browserUses;
+    const stopCounting = client.subscribe(() => {
+      const snap = client.getSnapshot();
+      expect(snap.browserUsage?.[threadA]?.loading).toBe(false);
+      if (snap.browserUses !== lastBrowserUses) {
+        lastBrowserUses = snap.browserUses;
+        usageUpdates += 1;
+      }
+    });
+    client.activateThread(threadA);
+    await vi.waitFor(() => expect(usageCalls).toHaveLength(5));
+    await vi.waitFor(() =>
+      expect(
+        client
+          .getSnapshot()
+          .browserUses.find((use) => use.threadId === threadA && use.runId === null)?.pageTitle,
+      ).toBe("V2"),
+    );
+    stopCounting();
+    expect(usageUpdates).toBe(1);
+    expect(usageCalls.slice(3, 5)).toEqual([
+      { threadId: threadA, runIds: sortedRunsA.slice(0, 16) },
+      { threadId: threadA, runIds: sortedRunsA.slice(16) },
+    ]);
+
+    // 5. A new Run arriving in shown task A triggers ONE incremental read whose response
+    //    replaces thread-level rows (no duplicates) while preserving prior Runs' uses.
+    versionA = 3;
+    const extraMessageId = createId("message");
+    socket.deliver({
+      type: "host.changes",
+      subscriptionId: lastDetailA!.subscriptionId,
+      generation: lastDetailA!.generation,
+      scope: lastDetailA!.scope,
+      fromSequence: "1",
+      throughSequence: "2",
+      changes: [
+        {
+          sequence: "2",
+          ordinal: 0,
+          entityKind: "item",
+          entityId: extraMessageId,
+          operation: "upsert",
+          value: {
+            ...item,
+            id: extraMessageId,
+            messageId: extraMessageId,
+            runId: extraRunA,
+            position: String(runsA.length + 1),
+            revision: "2",
+            view: { preview: "Extra turn" },
+          },
+        },
+      ],
+    } as never);
+    await vi.waitFor(() => expect(usageCalls).toHaveLength(6));
+    expect(usageCalls[5]).toEqual({
+      threadId: threadA,
+      runIds: [extraRunA],
+    });
+    await vi.waitFor(() =>
+      expect(
+        client
+          .getSnapshot()
+          .browserUses.some((use) => use.threadId === threadA && use.runId === extraRunA),
+      ).toBe(true),
+    );
+    const finalUsesA = client.getSnapshot().browserUses.filter((use) => use.threadId === threadA);
+    const finalMembershipsA = finalUsesA.filter((use) => use.runId === null);
+    expect(finalMembershipsA).toHaveLength(1);
+    expect(finalMembershipsA[0]?.pageTitle).toBe("V3");
+    expect(finalUsesA).toHaveLength(1 + runsA.length + 1);
+  } finally {
+    client.dispose();
+  }
+});
+
+test("evicts oldest retained browser usage past the bounded cap and invalidates retained usage on reconnect", async () => {
+  const threads = Array.from({ length: 18 }, (_, index) => ({
+    ...task,
+    id: createId("thread"),
+    title: `Task ${index}`,
+  }));
+  const sessionId = `bsn_${crypto.randomUUID()}`;
+  const runsByThread = new Map(threads.map((t) => [t.id, createId("run")]));
+  const itemsByThread = new Map(
+    threads.map((t) => {
+      const id = createId("message");
+      return [
+        t.id,
+        [
+          {
+            ...item,
+            id,
+            messageId: id,
+            runId: runsByThread.get(t.id)!,
+            position: "1",
+            revision: "1",
+            view: { preview: t.title },
+          },
+        ],
+      ];
+    }),
+  );
+  const usageCalls: string[] = [];
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+    const name = new URL(String(input)).pathname.slice("/v1/rpc/".length);
+    if (name === "thread.assignments.list") {
+      const tid = new URL(String(input)).searchParams.get("threadId")!;
+      return Response.json({
+        ok: true,
+        data: {
+          assignments: [],
+          threadId: tid,
+          window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
+        },
+      });
+    }
+    if (name === "thread.browserUsage.get") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { threadId: string; runIds: string[] };
+      usageCalls.push(body.threadId);
+      return Response.json({
+        ok: true,
+        data: {
+          threadId: body.threadId,
+          uses: [
+            {
+              sessionId,
+              threadId: body.threadId,
+              runId: null,
+              tabId: null,
+              pageTitle: `Use ${body.threadId.slice(-4)}`,
+              pageSite: "https://example.test",
+              firstUsedAt: "2026-11-23T00:00:00.000Z",
+              lastUsedAt: "2026-11-23T00:00:01.000Z",
+            },
+          ],
+        },
+      });
+    }
+    return Response.json(
+      { ok: false, error: { code: "not_found", message: "Unavailable", retryable: false } },
+      { status: 404 },
+    );
+  });
+  let socket!: MockPersonalSocket;
+  const connect = () =>
+    (socket = new MockPersonalSocket((raw) => {
+      const message = JSON.parse(raw) as ScopedClientMessage;
+      queueMicrotask(() => {
+        if (message.type === "client.subscribe" && message.scope.kind === "thread") {
+          const tid = message.scope.threadId;
+          const t = threads.find((entry) => entry.id === tid)!;
+          const address = {
+            scope: message.scope,
+            subscriptionId: message.subscriptionId,
+            generation: message.generation,
+            throughSequence: "1",
+          };
+          socket.deliver({
+            ...address,
+            type: "host.snapshot",
+            snapshot: {
+              thread: detailThread(t),
+              items: itemsByThread.get(tid)!,
+              activeItems: [],
+              pendingRequests: [],
+              nextBefore: null,
+            },
+          } as never);
+          socket.deliver({ ...address, type: "host.synchronized" } as never);
+        }
+        if (message.type !== "client.attach") return;
+        const shell = {
+          scope: shellScope,
+          subscriptionId: "shell" as const,
+          generation: message.generation,
+          throughSequence: "1",
+        };
+        socket.deliver({
+          ...shell,
+          type: "host.snapshot",
+          snapshot: {
+            deploymentId,
+            viewerId,
+            epoch,
+            session,
+            tasks: threads,
+            visits: [],
+            attention: [],
+            counts,
+            ...shellLists,
+          },
+        });
+        socket.deliver({ ...shell, type: "host.synchronized" });
+        if (message.selected?.scope.kind === "thread") {
+          const tid = message.selected.scope.threadId;
+          const t = threads.find((entry) => entry.id === tid)!;
+          const address = {
+            scope: message.selected.scope,
+            subscriptionId: message.selected.subscriptionId,
+            generation: message.selected.generation,
+            throughSequence: "1",
+          };
+          socket.deliver({
+            ...address,
+            type: "host.snapshot",
+            snapshot: {
+              thread: detailThread(t),
+              items: itemsByThread.get(tid)!,
+              activeItems: [],
+              pendingRequests: [],
+              nextBefore: null,
+            },
+          } as never);
+          socket.deliver({ ...address, type: "host.synchronized" } as never);
+        }
+      });
+    }));
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch,
+    webSocketFactory: connect,
+    reconnectBaseDelayMs: 5,
+    reconnectMaxDelayMs: 10,
+  });
+  try {
+    await client.load();
+    // Visit 18 threads sequentially: retention stays bounded to 16, evicting the oldest 2.
+    for (let index = 0; index < threads.length; index++) {
+      client.activateThread(threads[index]!.id);
+      await vi.waitFor(() => expect(usageCalls).toHaveLength(index + 1));
+      await vi.waitFor(() =>
+        expect(client.getSnapshot().browserUsage?.[threads[index]!.id]?.loading).toBe(false),
+      );
+    }
+    const retainedIds = new Set(client.getSnapshot().browserUses.map((use) => use.threadId));
+    expect(retainedIds.size).toBe(16);
+    expect(retainedIds.has(threads[0]!.id)).toBe(false);
+    expect(retainedIds.has(threads[1]!.id)).toBe(false);
+    expect(retainedIds.has(threads[2]!.id)).toBe(true);
+    expect(retainedIds.has(threads[17]!.id)).toBe(true);
+
+    // Reconnect: retained threads keep last known data visible, but revisit refreshes after gap.
+    const retainedTarget = threads[16]!.id;
+    const beforeReconnectCalls = usageCalls.length;
+    socket.close();
+    // Wait for reconnect + re-read of currently active thread (threads[17]).
+    await vi.waitFor(() => expect(usageCalls.length).toBeGreaterThan(beforeReconnectCalls));
+    expect(client.getSnapshot().browserUses.some((use) => use.threadId === retainedTarget)).toBe(
+      true,
+    );
+    const afterReconnectCalls = usageCalls.length;
+    client.activateThread(retainedTarget);
+    await vi.waitFor(() => expect(usageCalls.length).toBe(afterReconnectCalls + 1));
+    expect(usageCalls.at(-1)).toBe(retainedTarget);
+  } finally {
+    client.dispose();
+  }
+});

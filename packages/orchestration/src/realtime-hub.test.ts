@@ -142,17 +142,22 @@ it("delivers notices to healthy sockets even when another fails", async () => {
   expect(broken.close).toHaveBeenCalledExactlyOnceWith(1011, "Personal notice delivery failed");
 });
 
-it("gives scoped browser usage notices only to a synchronized viewer of that task", async () => {
+it("broadcasts deduplicated browser usage notices to attached viewers so retained task usage invalidates", async () => {
   const hub = new RealtimeHub();
   const ownerId = createId("user");
   const selected = connect(hub, ownerId);
   const elsewhere = connect(hub, ownerId);
+  const unattached = connect(hub, ownerId);
   await Promise.all([selected.attach(true), elsewhere.attach(true)]);
   hub.publishBrowserUsageChanged([selected.threadId, selected.threadId]);
   expect(selected.messages).toEqual([
     { type: "host.browser-usage-changed", threadIds: [selected.threadId] },
   ]);
-  expect(elsewhere.messages).toEqual([]);
+  expect(elsewhere.messages).toEqual([
+    { type: "host.browser-usage-changed", threadIds: [selected.threadId] },
+  ]);
+  expect(unattached.messages).toEqual([]);
+  unattached.unregister();
   elsewhere.unregister();
   selected.unregister();
   hub.publishBrowserUsageChanged([selected.threadId]);

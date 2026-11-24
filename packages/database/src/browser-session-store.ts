@@ -1539,100 +1539,128 @@ export async function getThreadBrowserUsage(
   if (input.runIds.length > browserUsageRunBatchSize) {
     throw new OpensteerError({ code: "bad_request", message: "Too many browser Run references" });
   }
+  const runIds = [...new Set(input.runIds)];
   return withPersonalReadTransaction(
     database,
     async (tx) => {
-      const topSessionRows = await tx
-        .selectFrom("browserSessionUses")
-        .innerJoin("browserSessions", "browserSessions.id", "browserSessionUses.sessionId")
-        .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
-        .innerJoin("threads", "threads.id", "browserSessionUses.threadId")
-        .where("browserSessionUses.threadId", "=", input.threadId)
-        .where((eb) => ownedBrowserSession(eb, input.ownerId))
-        .where("threads.createdBy", "=", input.ownerId)
-        .select("browserSessionUses.sessionId")
-        .groupBy("browserSessionUses.sessionId")
-        .orderBy((eb) => eb.fn.max("browserSessionUses.lastUsedAt"), "desc")
-        .orderBy("browserSessionUses.sessionId")
-        .limit(browserUsageSessionsPerRead)
-        .execute(databaseOperationOptions());
-      const topSessionIds = topSessionRows.map((row) => row.sessionId);
-      if (topSessionIds.length === 0) return [];
-      // Within one repeatable-read snapshot, reuse the authorized session IDs so neither
-      // query repeats the 4-table authorization join or recomputes the grouped subquery.
-      const uses = tx
-        .selectFrom("browserSessionUses")
-        .where("browserSessionUses.threadId", "=", input.threadId)
-        .where("browserSessionUses.sessionId", "in", topSessionIds);
       const latestSeen = (column: "page_site" | "page_title") =>
         sql<
           string | null
         >`(array_agg(${sql.ref(`browser_session_uses.${column}`)} order by browser_session_uses.last_used_at desc, browser_session_uses.id desc) filter (where browser_session_uses.page_site is not null))[1]`;
-      const ranked = uses
+      const rows = await tx
+        .with("threadSessions", (qb) =>
+          qb
+            .selectFrom("browserSessionUses")
+            .where("browserSessionUses.threadId", "=", input.threadId)
+            .select("browserSessionUses.sessionId")
+            .select(({ fn }) => [
+              fn.min<Date>("browserSessionUses.firstUsedAt").as("firstUsedAt"),
+              fn.max<Date>("browserSessionUses.lastUsedAt").as("lastUsedAt"),
+              latestSeen("page_title").as("pageTitle"),
+              latestSeen("page_site").as("pageSite"),
+            ])
+            .groupBy("browserSessionUses.sessionId"),
+        )
+        .selectFrom("threadSessions")
+        .innerJoin("browserSessions", "browserSessions.id", "threadSessions.sessionId")
+        .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+        .innerJoin("threads", (join) => join.on((eb) => eb("threads.id", "=", input.threadId)))
+        .where((eb) => ownedBrowserSession(eb, input.ownerId))
+        .where("threads.createdBy", "=", input.ownerId)
         .select([
-          "browserSessionUses.sessionId",
-          "browserSessionUses.threadId",
-          "browserSessionUses.runId",
-          "browserSessionUses.tabId",
-          "browserSessionUses.pageTitle",
-          "browserSessionUses.pageSite",
-          "browserSessionUses.firstUsedAt",
-          "browserSessionUses.lastUsedAt",
-          sql<number>`row_number() over (partition by browser_session_uses.session_id, browser_session_uses.run_id order by (browser_session_uses.tab_id is not null) desc, browser_session_uses.last_used_at desc, browser_session_uses.id desc)`.as(
+          "threadSessions.sessionId",
+          "threadSessions.firstUsedAt",
+          "threadSessions.lastUsedAt",
+          "threadSessions.pageTitle",
+          "threadSessions.pageSite",
+        ])
+        .orderBy("threadSessions.lastUsedAt", "desc")
+        .orderBy("threadSessions.sessionId")
+        .limit(browserUsageSessionsPerRead)
+        .execute(databaseOperationOptions());
+      if (rows.length === 0) return [];
+      const topSessionIds = rows.map((row) => row.sessionId);
+      const memberships = rows
+        .map((row) => ({
+          sessionId: row.sessionId,
+          threadId: input.threadId,
+          firstUsedAt: row.firstUsedAt,
+          lastUsedAt: row.lastUsedAt,
+          pageTitle: row.pageTitle,
+          pageSite: row.pageSite,
+        }))
+        .sort((left, right) => left.sessionId.localeCompare(right.sessionId));
+      const pageColumns = [
+        "browserSessionUses.id",
+        "browserSessionUses.sessionId",
+        "browserSessionUses.threadId",
+        "browserSessionUses.runId",
+        "browserSessionUses.tabId",
+        "browserSessionUses.pageTitle",
+        "browserSessionUses.pageSite",
+        "browserSessionUses.firstUsedAt",
+        "browserSessionUses.lastUsedAt",
+      ] as const;
+      const threadPageBranch = tx
+        .selectFrom("browserSessionUses")
+        .select(pageColumns)
+        .where("browserSessionUses.threadId", "=", input.threadId)
+        .where("browserSessionUses.sessionId", "in", topSessionIds)
+        .where("browserSessionUses.runId", "is", null)
+        .where("browserSessionUses.tabId", "is not", null);
+      const source =
+        runIds.length > 0
+          ? threadPageBranch.unionAll(
+              tx
+                .selectFrom("browserSessionUses")
+                .select(pageColumns)
+                .where("browserSessionUses.threadId", "=", input.threadId)
+                .where("browserSessionUses.sessionId", "in", topSessionIds)
+                .where("browserSessionUses.runId", "in", runIds),
+            )
+          : threadPageBranch;
+      const ranked = tx
+        .selectFrom(source.as("scoped"))
+        .select([
+          "scoped.sessionId",
+          "scoped.threadId",
+          "scoped.runId",
+          "scoped.tabId",
+          "scoped.pageTitle",
+          "scoped.pageSite",
+          "scoped.firstUsedAt",
+          "scoped.lastUsedAt",
+          sql<number>`row_number() over (partition by scoped.session_id, scoped.run_id order by (scoped.tab_id is not null) desc, scoped.last_used_at desc, scoped.id desc)`.as(
             "recency",
           ),
-          sql<boolean>`bool_or(browser_session_uses.tab_id is not null) over (partition by browser_session_uses.session_id, browser_session_uses.run_id)`.as(
+          sql<boolean>`bool_or(scoped.tab_id is not null) over (partition by scoped.session_id, scoped.run_id)`.as(
             "hasPages",
           ),
+        ]);
+      const pages = await tx
+        .selectFrom(ranked.as("ranked"))
+        .select([
+          "ranked.sessionId",
+          "ranked.threadId",
+          "ranked.runId",
+          "ranked.tabId",
+          "ranked.pageTitle",
+          "ranked.pageSite",
+          "ranked.firstUsedAt",
+          "ranked.lastUsedAt",
         ])
+        .where("ranked.recency", "<=", browserUsageTabsPerRun)
+        // A Run's use of the session stands in for its pages only when it chose none.
         .where((expression) =>
           expression.or([
-            expression.and([
-              expression("browserSessionUses.runId", "is", null),
-              expression("browserSessionUses.tabId", "is not", null),
-            ]),
-            ...(input.runIds.length > 0
-              ? [expression("browserSessionUses.runId", "in", input.runIds)]
-              : []),
+            expression("ranked.tabId", "is not", null),
+            expression.not(expression.ref("ranked.hasPages")),
           ]),
-        );
-      const [memberships, pages] = await Promise.all([
-        uses
-          .select(["browserSessionUses.sessionId", "browserSessionUses.threadId"])
-          .select(({ fn }) => [
-            fn.min<Date>("browserSessionUses.firstUsedAt").as("firstUsedAt"),
-            fn.max<Date>("browserSessionUses.lastUsedAt").as("lastUsedAt"),
-            latestSeen("page_title").as("pageTitle"),
-            latestSeen("page_site").as("pageSite"),
-          ])
-          .groupBy(["browserSessionUses.sessionId", "browserSessionUses.threadId"])
-          .orderBy("browserSessionUses.sessionId")
-          .execute(databaseOperationOptions()),
-        tx
-          .selectFrom(ranked.as("ranked"))
-          .select([
-            "ranked.sessionId",
-            "ranked.threadId",
-            "ranked.runId",
-            "ranked.tabId",
-            "ranked.pageTitle",
-            "ranked.pageSite",
-            "ranked.firstUsedAt",
-            "ranked.lastUsedAt",
-          ])
-          .where("ranked.recency", "<=", browserUsageTabsPerRun)
-          // A Run's use of the session stands in for its pages only when it chose none.
-          .where((expression) =>
-            expression.or([
-              expression("ranked.tabId", "is not", null),
-              expression.not(expression.ref("ranked.hasPages")),
-            ]),
-          )
-          .orderBy("ranked.sessionId")
-          .orderBy("ranked.runId")
-          .orderBy("ranked.recency")
-          .execute(databaseOperationOptions()),
-      ]);
+        )
+        .orderBy("ranked.sessionId")
+        .orderBy("ranked.runId")
+        .orderBy("ranked.recency")
+        .execute(databaseOperationOptions());
       return [...memberships.map((row) => ({ ...row, runId: null, tabId: null })), ...pages].map(
         (row) => ({
           ...row,
