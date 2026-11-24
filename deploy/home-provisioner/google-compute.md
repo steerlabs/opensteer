@@ -1,10 +1,7 @@
 # Google Compute Engine for Opensteer Cloud Computers
 
 Use a dedicated Compute project and VPC. A provisioner deployment manages one
-provider and one Compute zone. Account must run the server-reference migration
-before the provisioner switches to Google. Give the new deployment its own
-Account desired state and DNS configuration if the existing deployment has
-Hetzner computers.
+Compute zone.
 
 Keep the configured zone fixed while the project has managed VMs. Every pass
 also lists the project's instances in all zones. A managed VM outside the
@@ -192,7 +189,6 @@ cluster.
 
 | Provisioner variable              | Value                                                                                                                                                                             |
 | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `OPENSTEER_HOME_PROVIDER`         | `google`. Omit it for Hetzner.                                                                                                                                                    |
 | `OPENSTEER_HOME_GCP_PROJECT`      | Required Compute project ID.                                                                                                                                                      |
 | `OPENSTEER_HOME_GCP_ZONE`         | Required zone, such as `us-central1-a`. This also selects the region.                                                                                                             |
 | `OPENSTEER_HOME_GCP_NETWORK`      | Required VPC name.                                                                                                                                                                |
@@ -205,7 +201,7 @@ cluster.
 Keep `OPENSTEER_ACCOUNT_URL`, `OPENSTEER_HOME_CLOUDFLARE_ZONE_ID` and
 `OPENSTEER_HOME_CLOUDFLARE_TOKEN` (or its `_FILE` variant). The Google
 deployment gets its access token from attached Workload Identity. It requires
-no Google key or Hetzner token.
+no Google key.
 
 Set Account's `OPENSTEER_CLOUD_COMPUTER_REGION` to the same region or zone and
 `OPENSTEER_CLOUD_COMPUTER_SERVER_TYPE=default` to delegate sizing to the

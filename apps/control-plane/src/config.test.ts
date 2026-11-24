@@ -37,8 +37,8 @@ it("loads optional managed Home settings from the Account runtime directory", ()
     const files = {
       OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL: "home@example.iam.gserviceaccount.com",
       OPENSTEER_CLOUD_COMPUTER_DOMAIN: "homes.example.com",
-      OPENSTEER_CLOUD_COMPUTER_REGION: "ash",
-      OPENSTEER_CLOUD_COMPUTER_SERVER_TYPE: "cpx22",
+      OPENSTEER_CLOUD_COMPUTER_REGION: "us-central1-a",
+      OPENSTEER_CLOUD_COMPUTER_SERVER_TYPE: "e2-standard-4",
       OPENSTEER_CLOUD_COMPUTER_RELEASE_JSON: JSON.stringify({
         version: "1.0.0",
         installerUrl: "https://releases.example.com/install",
@@ -63,13 +63,13 @@ it("loads optional managed Home settings from the Account runtime directory", ()
     }
     const config = loadControlPlaneConfig({
       ...environment,
-      OPENSTEER_CLOUD_COMPUTER_REGION: "hel1",
+      OPENSTEER_CLOUD_COMPUTER_REGION: "europe-west3-a",
     });
     expect(config.cloudComputers).toMatchObject({
       stripeKey: files.OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY,
       stripeWebhookSecret: files.OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET,
       releaseManifestUrl: files.OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL,
-      region: "hel1",
+      region: "europe-west3-a",
     });
     expect(() =>
       loadControlPlaneConfig({

@@ -48,7 +48,7 @@ const plan: CloudComputerListResponse["plan"] = {
 export const mockCloudComputerDeploymentId = DeploymentIdSchema.parse(
   "dep_00000000-0000-4000-8000-0000000000c1",
 );
-const region = { id: "ash", label: "Ashburn, Virginia" } as const;
+const region = { id: "us-central1-a", label: "Council Bluffs, Iowa" } as const;
 
 function view(
   status: CloudComputerView["status"],

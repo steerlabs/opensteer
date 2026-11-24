@@ -214,7 +214,6 @@ describe("Google Compute pool host provider", () => {
 
     const baseEnv = {
       OPENSTEER_ACCOUNT_URL: "https://account.example.test",
-      OPENSTEER_HOME_PROVIDER: "google",
       OPENSTEER_HOME_CLOUDFLARE_ZONE_ID: "a".repeat(32),
       OPENSTEER_HOME_CLOUDFLARE_TOKEN: "c".repeat(32),
       OPENSTEER_HOME_GCP_PROJECT: "test-project",
@@ -223,7 +222,7 @@ describe("Google Compute pool host provider", () => {
       OPENSTEER_HOME_GCP_SUBNET: "home-subnet",
     };
     const withoutPool = loadConfig(baseEnv);
-    expect(withoutPool.provider === "google" && withoutPool.pool).toBeUndefined();
+    expect(withoutPool.pool).toBeUndefined();
 
     const withPool = loadConfig({
       ...baseEnv,
@@ -232,15 +231,12 @@ describe("Google Compute pool host provider", () => {
       OPENSTEER_POOL_PROVISIONER_CIDR: "10.50.0.0/24",
       OPENSTEER_POOL_LOCAL_SSD_COUNT: "2",
     });
-    expect(withPool.provider).toBe("google");
-    if (withPool.provider === "google") {
-      expect(withPool.pool).toMatchObject({
-        provisionerPublicKeySpki: provisionerKeySpki,
-        homeCidr: "10.40.0.0/20",
-        provisionerCidr: "10.50.0.0/24",
-        localSsdCount: 2,
-        adminPort: 7311,
-      });
-    }
+    expect(withPool.pool).toMatchObject({
+      provisionerPublicKeySpki: provisionerKeySpki,
+      homeCidr: "10.40.0.0/20",
+      provisionerCidr: "10.50.0.0/24",
+      localSsdCount: 2,
+      adminPort: 7311,
+    });
   });
 });

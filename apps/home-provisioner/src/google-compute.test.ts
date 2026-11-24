@@ -441,7 +441,7 @@ it("takes an ADC client from local test composition without looking for machine 
   expect(fake.metadataCalls).toBe(0);
 });
 
-it("keeps Hetzner defaults and selects a four-vCPU Google machine with one override", () => {
+it("selects a four-vCPU Google machine by default and another with one override", () => {
   const shared = {
     OPENSTEER_ACCOUNT_URL: "https://account.test",
     OPENSTEER_HOME_CLOUDFLARE_TOKEN: "cloudflare_token_for_tests",
@@ -450,23 +450,12 @@ it("keeps Hetzner defaults and selects a four-vCPU Google machine with one overr
   expect(
     loadConfig({
       ...shared,
-      OPENSTEER_HOME_DEFAULT_REGION: "fsn1",
-      OPENSTEER_HOME_DEFAULT_SERVER_TYPE: "cpx22",
-      OPENSTEER_HOME_IMAGE: "123",
-      OPENSTEER_HOME_HETZNER_TOKEN: "hetzner_test_token_deliberately_fake",
-    }),
-  ).toMatchObject({ provider: "hetzner", region: "fsn1", serverType: "cpx22", image: 123 });
-  expect(
-    loadConfig({
-      ...shared,
-      OPENSTEER_HOME_PROVIDER: "google",
       OPENSTEER_HOME_GCP_PROJECT: "test-project",
       OPENSTEER_HOME_GCP_ZONE: "us-central1-a",
       OPENSTEER_HOME_GCP_NETWORK: "home-net",
       OPENSTEER_HOME_GCP_SUBNET: "home-subnet",
     }),
   ).toMatchObject({
-    provider: "google",
     region: "us-central1-a",
     serverType: "e2-standard-4",
     diskType: "pd-balanced",
@@ -475,7 +464,6 @@ it("keeps Hetzner defaults and selects a four-vCPU Google machine with one overr
   expect(
     loadConfig({
       ...shared,
-      OPENSTEER_HOME_PROVIDER: "google",
       OPENSTEER_HOME_GCP_PROJECT: "test-project",
       OPENSTEER_HOME_GCP_ZONE: "us-central1-a",
       OPENSTEER_HOME_GCP_NETWORK: "home-net",

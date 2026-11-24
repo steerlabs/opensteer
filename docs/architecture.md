@@ -698,8 +698,8 @@ The same Home on a Linux server, packaged in `deploy/home` ([operator guide](../
 
 ### The Opensteer Cloud Computer
 
-A Linux Home on a server Opensteer runs for one person: one VM per person (Hetzner Cloud in the
-current provisioner), bought through web checkout with Stripe. The account service holds a
+A Linux Home on a server Opensteer runs for one person: one Google Compute Engine VM per person,
+bought through web checkout with Stripe. The account service holds a
 desired state; a reconciler outside the Home (`apps/home-provisioner`) makes it true, journals
 each provider write, and reports back. See [cloud-computer-operations.md](cloud-computer-operations.md).
 

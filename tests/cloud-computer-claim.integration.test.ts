@@ -297,8 +297,8 @@ const stripe = {
 const config = loadCloudComputerConfig({
   OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL: provisionerEmail,
   OPENSTEER_CLOUD_COMPUTER_DOMAIN: domain,
-  OPENSTEER_CLOUD_COMPUTER_REGION: "ash",
-  OPENSTEER_CLOUD_COMPUTER_SERVER_TYPE: "cpx22",
+  OPENSTEER_CLOUD_COMPUTER_REGION: "us-central1-a",
+  OPENSTEER_CLOUD_COMPUTER_SERVER_TYPE: "e2-standard-4",
   OPENSTEER_CLOUD_COMPUTER_RELEASE_JSON: JSON.stringify({
     version: "1.2.3",
     installerUrl: "https://releases.example.test/install.sh",
