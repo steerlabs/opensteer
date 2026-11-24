@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
+  CloudComputerHealthViewSchema,
   HomeHealthReportSchema,
   MachineStatusSchema,
   ProblemSchema,
@@ -96,6 +97,7 @@ describe("problems", () => {
     for (const [name, schema] of [
       ["report", HomeHealthReportSchema],
       ["machine status", MachineStatusSchema],
+      ["the owner's view", CloudComputerHealthViewSchema],
     ] as const) {
       const leaves: string[] = [];
       freeTextLeaves(schema, name, leaves);

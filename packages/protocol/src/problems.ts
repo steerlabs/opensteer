@@ -268,6 +268,31 @@ export const HomeHealthReportSchema = z.strictObject({
 });
 export type HomeHealthReport = z.infer<typeof HomeHealthReportSchema>;
 
+/**
+ * What Opensteer can see about one person's Cloud Computer, shown on its page: the latest health
+ * report it sent, exactly as received, and the account's own record of its setup.
+ */
+export const CloudComputerHealthViewSchema = z.strictObject({
+  setup: z.strictObject({
+    phase: z.enum([
+      "provisioning",
+      "booting",
+      "claiming",
+      "ready",
+      "suspended",
+      "deleting",
+      "deleted",
+      "failed",
+    ]),
+    failure: CloudComputerSetupFailureSchema.optional(),
+  }),
+  receivedAt: z.iso.datetime().optional(),
+  report: HomeHealthReportSchema.optional(),
+});
+export type CloudComputerHealthView = z.infer<typeof CloudComputerHealthViewSchema>;
+export const accountCloudComputerHealthPath = (id: string) =>
+  `/v1/account/cloud-computers/${id}/health`;
+
 /** The bucket a used share of a disk falls in. */
 export function diskBucket(usedFraction: number): DiskBucket {
   if (usedFraction >= 0.95) return "over-95";

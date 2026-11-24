@@ -1,4 +1,5 @@
 import { agentDirectoryMigration } from "../agent-directory/migration.js";
+import { problemReportsMigration } from "../cloud-computers/health-migration.js";
 import { cloudComputerViewMigration } from "../cloud-computers/view-migration.js";
 import { onePersonAccountMigrations } from "./one-person-account-migration.js";
 import { platformVerificationRemovalMigration } from "../agent-directory/platform-verification-removal-migration.js";
@@ -534,6 +535,7 @@ const migrationProvider = {
       // A Cloud Computer is one person's, bought and paid by that person.
       ...onePersonAccountMigrations,
       "0038_remove_platform_verification": platformVerificationRemovalMigration,
+      "0039_problem_reports": problemReportsMigration,
     };
   },
 };

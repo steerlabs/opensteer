@@ -6,7 +6,14 @@ import {
 } from "./billing-error.js";
 import { freeBackupTargets } from "./backup-capacity.js";
 import { cloudComputerSetupFailure } from "../server/events.js";
-import type { CloudComputerSetupFailure } from "@opensteer/protocol/problems";
+import {
+  CloudComputerHealthViewSchema,
+  problemTable,
+  type CloudComputerHealthView,
+  type CloudComputerSetupFailure,
+  type HomeHealthReport,
+  type ProblemCode,
+} from "@opensteer/protocol/problems";
 import { deletionView } from "./deletion-view.js";
 import { SecretManagerBackupKeyVault, type BackupKeyVault } from "./backup-vault.js";
 import { purgeBackupObjects, type BackupPurgeStep } from "./backup-purge.js";
@@ -113,6 +120,8 @@ const dispatchedWriteGraceMs = 15 * 60_000;
 const backupOverdueMs = 36 * 60 * 60_000;
 /** A pool with fewer free entries than this is about to stop checkout or browsing. */
 const lowPoolEntries = 2;
+/** A ready Cloud Computer reports every 15 minutes; an hour without one is missing. */
+const reportMissingMs = 60 * 60_000;
 
 /** One thing the watch found wrong; each is logged as its own stable event. */
 export type CloudComputerFinding =
@@ -122,6 +131,11 @@ export type CloudComputerFinding =
       readonly phase: "provisioning" | "booting" | "claiming" | "failed";
       readonly minutes: number;
       readonly code?: CloudComputerSetupFailure;
+    }
+  | {
+      readonly event: "account.cloud_computer.report_missing";
+      readonly computerId: CloudComputerId;
+      readonly minutes: number;
     }
   | {
       readonly event: "account.cloud_computer.backup_overdue";
@@ -951,6 +965,7 @@ export class CloudComputerStore {
     const findings: CloudComputerFinding[] = [];
     const rows = await this.#db
       .selectFrom("cloudComputers")
+      .leftJoin("cloudComputerHealth", "cloudComputerHealth.computerId", "cloudComputers.id")
       .select([
         "id",
         "phase",
@@ -960,6 +975,7 @@ export class CloudComputerStore {
         "bootstrapReceiptAt",
         "bootCompletedAt",
         "lastBackupAt",
+        "cloudComputerHealth.receivedAt as healthReceivedAt",
       ])
       .where("state", "=", "active")
       .where("billingStatus", "=", "active")
@@ -994,6 +1010,13 @@ export class CloudComputerStore {
         });
         continue;
       }
+      const reported = row.healthReceivedAt ?? row.bootstrapReceiptAt;
+      if (row.phase === "ready" && reported && now - reported.getTime() >= reportMissingMs)
+        findings.push({
+          event: "account.cloud_computer.report_missing",
+          computerId: row.id,
+          minutes: minutesSince(reported),
+        });
       const backedUp = row.lastBackupAt ?? row.bootCompletedAt;
       if (
         row.phase === "ready" &&
@@ -1964,6 +1987,89 @@ export class CloudComputerStore {
     });
   }
 
+  /**
+   * Keeps a Cloud Computer's latest health report, sent with the credentials its backup report
+   * uses, in place of the one before. Returns the codes in it that need someone now.
+   */
+  async reportHealthForHome(
+    id: CloudComputerId,
+    authorization: string | undefined,
+    report: HomeHealthReport,
+  ): Promise<ProblemCode[]> {
+    await this.#db.transaction().execute(async (tx) => {
+      await this.#requireBootedHome(tx, id, authorization, "share");
+      const receivedAt = this.#now();
+      await tx
+        .insertInto("cloudComputerHealth")
+        .values({ computerId: id, receivedAt, report: JSON.stringify(report) })
+        .onConflict((conflict) =>
+          conflict.column("computerId").doUpdateSet({ receivedAt, report: JSON.stringify(report) }),
+        )
+        .execute();
+    });
+    return [
+      ...new Set(
+        report.problems
+          .filter(({ code }) => problemTable[code].severity === "needs-you")
+          .map(({ code }) => code),
+      ),
+    ];
+  }
+
+  /** Adds one report from a person's own Home to the counts per code; nothing else is kept. */
+  async countProblemReport(report: HomeHealthReport): Promise<void> {
+    const day = this.#now().toISOString().slice(0, 10);
+    const counts = new Map<ProblemCode, number>();
+    for (const problem of report.problems)
+      counts.set(problem.code, (counts.get(problem.code) ?? 0) + problem.count);
+    if (!counts.size) return;
+    await this.#db
+      .insertInto("problemReportCounts")
+      .values([...counts].map(([code, total]) => ({ day, code, reports: 1, total })))
+      .onConflict((conflict) =>
+        conflict.columns(["day", "code"]).doUpdateSet((eb) => ({
+          reports: eb("problemReportCounts.reports", "+", 1),
+          total: eb("problemReportCounts.total", "+", eb.ref("excluded.total")),
+        })),
+      )
+      .execute();
+  }
+
+  /**
+   * What Opensteer can see about one person's Cloud Computer: the latest health report it sent,
+   * exactly as stored, and the account's own record of its setup.
+   */
+  async healthForAccount(
+    id: CloudComputerId,
+    accountId: ControlPlaneAccountId,
+  ): Promise<CloudComputerHealthView> {
+    const row = await this.#db
+      .selectFrom("cloudComputers")
+      .leftJoin("cloudComputerHealth", "cloudComputerHealth.computerId", "cloudComputers.id")
+      .select([
+        "cloudComputers.phase",
+        "cloudComputers.lastError",
+        "cloudComputers.claimError",
+        "cloudComputers.bootstrapReceiptAt",
+        "cloudComputerHealth.receivedAt",
+        "cloudComputerHealth.report",
+      ])
+      .where("cloudComputers.id", "=", id)
+      .where("cloudComputers.accountId", "=", accountId)
+      .executeTakeFirst();
+    if (!row) throw missing();
+    const failure = cloudComputerSetupFailure(row.lastError, operatorClaimError(row.claimError));
+    return CloudComputerHealthViewSchema.parse({
+      setup: {
+        phase: row.phase === "ready" && row.bootstrapReceiptAt === null ? "claiming" : row.phase,
+        ...(failure ? { failure } : {}),
+      },
+      ...(row.receivedAt && row.report
+        ? { receivedAt: row.receivedAt.toISOString(), report: row.report }
+        : {}),
+    });
+  }
+
   async setupCodeForReadyHome(
     id: CloudComputerId,
     generation: number,
@@ -2388,6 +2494,12 @@ export class CloudComputerStore {
       },
       lastError: row.lastError,
       updatedAt: row.updatedAt,
+      health:
+        (await this.#db
+          .selectFrom("cloudComputerHealth")
+          .select(["receivedAt", "report"])
+          .where("computerId", "=", row.id)
+          .executeTakeFirst()) ?? null,
     };
   }
 

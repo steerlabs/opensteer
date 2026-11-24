@@ -59,6 +59,11 @@ import type { ControlPlaneAuthenticator } from "../auth/auth.js";
 import type { ControlPlaneStore } from "../database/store.js";
 import { toWebHeaders } from "../portal/routes.js";
 import { cloudComputerSetupFailure, logAccountEvent } from "../server/events.js";
+import {
+  CloudComputerHealthViewSchema,
+  HomeHealthReportSchema,
+  problemReportsPath,
+} from "@opensteer/protocol/problems";
 import { ControlPlaneError } from "../server/errors.js";
 import { PoolSlotEgressRateLimitedError } from "./pool-store.js";
 import type { CloudComputerStore } from "./store.js";
@@ -225,6 +230,51 @@ export function registerCloudComputerRoutes(
       request.headers.authorization,
       CloudComputerBackupReportSchema.parse(request.body),
     );
+    return reply.code(204).send();
+  });
+
+  // A Cloud Computer's health report, with the credentials of its backup report: the latest one
+  // is kept, and a problem that needs someone is logged for the operator's digest.
+  app.post(`${provisionerPath}/health`, { bodyLimit: 16_384 }, async (request, reply) => {
+    privateResponse(reply);
+    const { id } = params.parse(request.params);
+    const report = HomeHealthReportSchema.safeParse(request.body);
+    if (!report.success || report.data.home !== "cloud-computer")
+      throw new ControlPlaneError("bad_request", "Invalid Cloud Computer health report");
+    const codes = await store.reportHealthForHome(id, request.headers.authorization, report.data);
+    const unhealthy = Object.values(report.data.services ?? {}).some(
+      (health) => health === "unhealthy" || health === "stopped",
+    );
+    if (codes.length || unhealthy)
+      logAccountEvent(request.log, "account.cloud_computer.unhealthy", {
+        computerId: id,
+        codes,
+        version: report.data.version,
+      });
+    return reply.code(204).send();
+  });
+
+  // A report from a person's own Home, sent only while they turned it on. Anonymous: it carries
+  // no account, and only its codes and counts are kept.
+  const problemReportLimit = new BootRateLimit(10);
+  app.post(problemReportsPath, { bodyLimit: 16_384 }, async (request, reply) => {
+    privateResponse(reply);
+    if (!problemReportLimit.allow("problem-report", request.ip))
+      return reply
+        .code(429)
+        .header("retry-after", "60")
+        .send({
+          error: { code: "rate_limited", message: "Too many problem reports" },
+        });
+    const report = HomeHealthReportSchema.safeParse(request.body);
+    if (!report.success || report.data.home === "cloud-computer")
+      throw new ControlPlaneError("bad_request", "Invalid problem report");
+    await store.countProblemReport(report.data);
+    logAccountEvent(request.log, "account.problem_report.received", {
+      home: report.data.home,
+      version: report.data.version,
+      codes: report.data.problems.map(({ code }) => code),
+    });
     return reply.code(204).send();
   });
 
@@ -415,6 +465,14 @@ export function registerCloudComputerRoutes(
     const { accountId } = await read(request);
     return CloudComputerViewSchema.parse(
       await store.show(params.parse(request.params).id, accountId),
+    );
+  });
+  // What Opensteer can see about the person's own Cloud Computer.
+  app.get(`${ownerPath}/health`, async (request, reply) => {
+    privateResponse(reply);
+    const { accountId } = await read(request);
+    return CloudComputerHealthViewSchema.parse(
+      await store.healthForAccount(params.parse(request.params).id, accountId),
     );
   });
   app.post(accountCloudComputerCheckoutPath, async (request, reply) => {

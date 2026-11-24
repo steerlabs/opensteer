@@ -523,6 +523,8 @@ export interface ControlPlaneDatabaseSchema {
   cloudComputerBackupTargets: CloudComputerBackupTargetTable;
   cloudComputerBackupNamespaces: CloudComputerBackupNamespaceTable;
   cloudComputerCheckouts: CloudComputerCheckoutTable;
+  cloudComputerHealth: import("../cloud-computers/tables.js").CloudComputerHealthTable;
+  problemReportCounts: import("../cloud-computers/tables.js").ProblemReportCountTable;
   cloudComputerEgressEndpoints: CloudComputerEgressEndpointTable;
   cloudComputerStripeEvents: CloudComputerStripeEventTable;
   cloudDeploymentOperations: CloudDeploymentOperationTable;

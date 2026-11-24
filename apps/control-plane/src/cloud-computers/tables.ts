@@ -89,6 +89,21 @@ export interface CloudComputerTable {
   tombstonedAt: NullableTimestamp;
 }
 
+/** The latest health report a Cloud Computer sent; see health-migration.ts. */
+export interface CloudComputerHealthTable {
+  computerId: CloudComputerId;
+  receivedAt: Timestamp;
+  report: ColumnType<import("@opensteer/protocol/problems").HomeHealthReport, string, string>;
+}
+
+/** How many reports from people's own Homes named each problem code, by day. */
+export interface ProblemReportCountTable {
+  day: ColumnType<string, string, string>;
+  code: string;
+  reports: number;
+  total: number;
+}
+
 export interface CloudComputerCheckoutTable {
   accountId: ControlPlaneAccountId;
   requestId: string;
