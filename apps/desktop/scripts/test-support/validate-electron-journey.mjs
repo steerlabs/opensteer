@@ -69,10 +69,25 @@ try {
         "known-main-fault",
         `extensions section extension-lifecycle failed: ${lifecycle.error ?? JSON.stringify(lifecycle)}`,
       );
+      assert.equal(lifecycle.passed, false);
+      assert.equal(report.lifecyclePassed, false);
+      assert.equal(
+        lifecycle.error,
+        undefined,
+        `extensions section extension-lifecycle recorded an unexpected error alongside knownMainFault: ${lifecycle.error}`,
+      );
+      assert.equal(
+        report.error,
+        undefined,
+        `extensions aggregate report recorded an unexpected error alongside knownMainFault: ${report.error}`,
+      );
       assert.equal(report.lifecycleStatus, "known-main-fault");
       assert.equal(lifecycle.knownMainFault?.step, KNOWN_STEP);
       assert.equal(lifecycle.knownMainFault?.refusal, KNOWN_REFUSAL);
       assert.deepEqual(lifecycle.knownMainFault?.phases, ["install", "reopen"]);
+      assert.equal(report.knownMainFault?.step, KNOWN_STEP);
+      assert.equal(report.knownMainFault?.refusal, KNOWN_REFUSAL);
+      assert.deepEqual(report.knownMainFault?.phases, ["install", "reopen"]);
       console.log(
         `[journey] extensions: PASS (5/5 boundary sections passed; extension-lifecycle = knownMainFault at "${KNOWN_STEP}" — ${KNOWN_REFUSAL})`,
       );

@@ -86,15 +86,20 @@ chrome.contextMenus.removeAll(() => chrome.contextMenus.create({ id: "smoke", ti
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (message.open) chrome.tabs.create({ url: message.open, active: false }).then((tab) => reply({ opened: tab.id }));
   else if (message.window)
-    chrome.windows
-      .create({ url: message.window })
-      .then(async (created) => {
+    (async () => {
+      let stage = "create";
+      try {
+        const created = await chrome.windows.create({ url: message.window });
+        stage = "remove";
         await new Promise((resolve) => setTimeout(resolve, 500));
         await chrome.windows.remove(created.id);
+        stage = "query";
         const current = await chrome.tabs.query({ active: true, currentWindow: true });
         reply({ current: current.length });
-      })
-      .catch((error) => reply({ error: error?.message ?? String(error) }));
+      } catch (error) {
+        reply({ error: error?.message ?? String(error), stage });
+      }
+    })();
   else chrome.storage.local.get(null).then((stored) => reply({ tabId: sender.tab?.id ?? null, stored }));
   return true;
 });`,
@@ -317,15 +322,23 @@ async function main(): Promise<void> {
     const windowed = JSON.parse(await waitForDataset(page, "windowReply")) as {
       current?: number;
       error?: string;
+      stage?: string;
     };
     let knownMainFault: KnownMainFault | undefined;
-    if (windowed.error === KNOWN_MAIN_WINDOWS_REFUSAL) {
+    if (windowed.stage === "create" && windowed.error === KNOWN_MAIN_WINDOWS_REFUSAL) {
+      assert.equal(
+        browser.context.pages().length,
+        open,
+        "chrome.windows.create refusal unexpectedly produced a tab",
+      );
       knownMainFault = { step: KNOWN_MAIN_WINDOWS_STEP, refusal: KNOWN_MAIN_WINDOWS_REFUSAL };
       console.log(
         `[extensions-smoke] ${phase}: KNOWN MAIN FAULT at "${KNOWN_MAIN_WINDOWS_STEP}": ${KNOWN_MAIN_WINDOWS_REFUSAL}`,
       );
     } else if (windowed.error !== undefined) {
-      throw new Error(`${KNOWN_MAIN_WINDOWS_STEP} failed with unexpected error: ${windowed.error}`);
+      throw new Error(
+        `${KNOWN_MAIN_WINDOWS_STEP} failed at stage "${windowed.stage ?? "unknown"}" with unexpected error: ${windowed.error}`,
+      );
     } else {
       assert.equal(windowed.current, 1, "the profile's window stopped being current");
       await waitFor(() => browser.context.pages().length === open);

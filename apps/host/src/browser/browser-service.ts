@@ -6142,11 +6142,75 @@ export class BrowserService {
       )
         throw new BrowserCdpConnectionEnded("This browser attachment has ended.");
     };
+    const filterTargetEvents =
+      connectionWork && !(scriptAttachmentId !== undefined && runtimeHoldsConnection);
+    const visibleRootTargets = new Set<string>();
+    const attachedTargets = new Set<string>();
+    const attachedSessions = new Set<string>();
+    const pendingTerminalEvents: Extract<BrowserServerMessage, { type: "cdp.event" }>["event"][] =
+      [];
+    let pendingAttaches = 0;
+    const rememberBounded = (set: Set<string>, id: string) => {
+      if (!set.has(id) && set.size >= 4_096) {
+        const oldest = set.values().next().value;
+        if (oldest !== undefined) set.delete(oldest);
+      }
+      set.add(id);
+    };
+    const recordTerminalCandidate = (
+      event: Extract<BrowserServerMessage, { type: "cdp.event" }>["event"],
+    ) => {
+      if (pendingTerminalEvents.length >= 64) pendingTerminalEvents.shift();
+      pendingTerminalEvents.push(event);
+    };
+    const releasePendingAttach = () => {
+      pendingAttaches = Math.max(0, pendingAttaches - 1);
+      if (pendingAttaches === 0) pendingTerminalEvents.length = 0;
+    };
+    const flushPendingTerminalEvents = (
+      matchedSessionId: string | undefined,
+      matchedTargetId: string | undefined,
+    ) => {
+      if (pendingTerminalEvents.length === 0) return;
+      const remaining: Extract<BrowserServerMessage, { type: "cdp.event" }>["event"][] = [];
+      for (const buffered of pendingTerminalEvents) {
+        const bufferedParams = buffered.parameters as
+          { sessionId?: unknown; targetId?: unknown } | undefined;
+        const bufferedSessionId =
+          typeof bufferedParams?.sessionId === "string" ? bufferedParams.sessionId : undefined;
+        const bufferedTargetId =
+          typeof bufferedParams?.targetId === "string" ? bufferedParams.targetId : undefined;
+        const matchesDetach =
+          buffered.method === "Target.detachedFromTarget" &&
+          matchedSessionId !== undefined &&
+          bufferedSessionId === matchedSessionId;
+        const matchesDestroy =
+          buffered.method === "Target.targetDestroyed" &&
+          matchedTargetId !== undefined &&
+          bufferedTargetId === matchedTargetId;
+        if (matchesDetach || matchesDestroy) {
+          if (matchesDetach && matchedSessionId) attachedSessions.delete(matchedSessionId);
+          if (matchesDestroy && matchedTargetId) {
+            attachedTargets.delete(matchedTargetId);
+            visibleRootTargets.delete(matchedTargetId);
+          }
+          if (!attachmentClosed) onEvent(buffered);
+        } else {
+          remaining.push(buffered);
+        }
+      }
+      pendingTerminalEvents.length = 0;
+      pendingTerminalEvents.push(...remaining);
+    };
     const close = () => {
       if (attachmentClosed) return;
       attachmentClosed = true;
       this.#deviceAttachments.delete(deviceAttachmentId);
       unsubscribe();
+      visibleRootTargets.clear();
+      attachedTargets.clear();
+      attachedSessions.clear();
+      pendingTerminalEvents.length = 0;
       if (scriptAttachmentId && scriptOpening) {
         void broker
           .sendScriptCleanup({
@@ -6170,33 +6234,58 @@ export class BrowserService {
       if (pooledRelay) void pooledRelay.close().catch(this.#onError);
       onClosed?.();
     };
-    const visibleRootTargets = new Set<string>();
     const unsubscribe = broker.subscribeCdp((event) => {
       if (event.scriptAttachmentId !== scriptAttachmentId) return;
-      if (connectionWork && event.method.startsWith("Target.")) {
+      if (filterTargetEvents && event.method.startsWith("Target.")) {
         const params = event.parameters as
-          { targetId?: unknown; targetInfo?: { targetId?: unknown; url?: unknown } } | undefined;
+          | {
+              sessionId?: unknown;
+              targetId?: unknown;
+              targetInfo?: { targetId?: unknown; url?: unknown };
+            }
+          | undefined;
         const targetId =
           typeof params?.targetInfo?.targetId === "string"
             ? params.targetInfo.targetId
             : typeof params?.targetId === "string"
               ? params.targetId
               : undefined;
+        const eventSessionId = typeof params?.sessionId === "string" ? params.sessionId : undefined;
         if (params?.targetInfo !== undefined) {
           if (isChromeExtensionUrl(params.targetInfo.url)) {
             if (targetId) visibleRootTargets.delete(targetId);
             return;
           }
-          if (targetId) {
-            if (!visibleRootTargets.has(targetId) && visibleRootTargets.size >= 4_096) {
-              const oldest = visibleRootTargets.values().next().value;
-              if (oldest !== undefined) visibleRootTargets.delete(oldest);
+          if (targetId) rememberBounded(visibleRootTargets, targetId);
+          if (event.method === "Target.attachedToTarget" && eventSessionId) {
+            rememberBounded(attachedSessions, eventSessionId);
+          }
+        } else if (event.method === "Target.detachedFromTarget") {
+          if (eventSessionId && attachedSessions.has(eventSessionId)) {
+            attachedSessions.delete(eventSessionId);
+          } else if (
+            targetId &&
+            (attachedTargets.has(targetId) || visibleRootTargets.has(targetId))
+          ) {
+            // Terminal detach for a discovered or attached target passes through.
+          } else {
+            if (pendingAttaches > 0 && (eventSessionId !== undefined || targetId !== undefined)) {
+              recordTerminalCandidate(event);
             }
-            visibleRootTargets.add(targetId);
+            return;
+          }
+        } else if (event.method === "Target.targetDestroyed") {
+          if (targetId && (attachedTargets.has(targetId) || visibleRootTargets.has(targetId))) {
+            attachedTargets.delete(targetId);
+            visibleRootTargets.delete(targetId);
+          } else {
+            if (pendingAttaches > 0 && targetId !== undefined) {
+              recordTerminalCandidate(event);
+            }
+            return;
           }
         } else if (targetId) {
-          if (!visibleRootTargets.has(targetId)) return;
-          if (event.method === "Target.targetDestroyed") visibleRootTargets.delete(targetId);
+          if (!attachedTargets.has(targetId) && !visibleRootTargets.has(targetId)) return;
         }
       }
       onEvent(event);
@@ -6422,136 +6511,183 @@ export class BrowserService {
             browserSend.target.runtimeId !== record.runtimeId)
         )
           throw new BrowserCdpConnectionEnded("This page changed browser.");
-        const answered = broker.requestCdp(
-          {
-            ...(replyBudget ? { replyBudget } : {}),
-            ...(scriptAttachmentId ? { scriptAttachmentId } : {}),
-            ...(confirmed?.eventBudget ? { scriptEventBudget: confirmed.eventBudget } : {}),
-            // TS11: an agent's wake is answered once the page it woke has loaded.
-            command:
-              command.method === browserHostMethods.resumeTab
-                ? { ...command, parameters: { ...command.parameters, loaded: true } }
-                : command,
-            ...(actorToken ? { actorToken } : {}),
-            ...(nativeAttachment ? { attachmentId: nativeAttachment.attachmentId } : {}),
-            ...(runtimeHoldsConnection ? { connection: true as const } : {}),
-            ...(canManageExtensions &&
-            isExtensionMutationCommand(command.method, command.parameters)
-              ? { manageExtensions: true as const }
-              : {}),
-            requestId: globalThis.crypto.randomUUID(),
-            type: "cdp.command",
-          },
-          confirmed?.signal,
-          browserSend
-            ? {
-                recheck: async () => {
-                  await this.#requireAgentAccess(record.runnerId);
-                  if (lease && !(await fillAllowed())) throw new BrowserCdpConnectionEnded();
-                  await browserSend.recheck();
-                  if (!input.scriptTabId || (await pageWitness(input.scriptTabId)) !== expectedPage)
-                    throw new BrowserCdpConnectionEnded("This browser page is stale.");
-                  assertAttached(false);
-                },
-                submitted: browserSend.submitted,
-                acknowledged: browserSend.acknowledged,
-              }
-            : pooledRelay
+        const tracksPendingAttach =
+          filterTargetEvents &&
+          (command.method === "Target.attachToTarget" ||
+            command.method === "Target.createTarget" ||
+            command.method === browserHostMethods.resumeTab);
+        if (tracksPendingAttach) pendingAttaches += 1;
+        let answered: Promise<BrowserCdpResponse>;
+        try {
+          answered = broker.requestCdp(
+            {
+              ...(replyBudget ? { replyBudget } : {}),
+              ...(scriptAttachmentId ? { scriptAttachmentId } : {}),
+              ...(confirmed?.eventBudget ? { scriptEventBudget: confirmed.eventBudget } : {}),
+              // TS11: an agent's wake is answered once the page it woke has loaded.
+              command:
+                command.method === browserHostMethods.resumeTab
+                  ? { ...command, parameters: { ...command.parameters, loaded: true } }
+                  : command,
+              ...(actorToken ? { actorToken } : {}),
+              ...(nativeAttachment ? { attachmentId: nativeAttachment.attachmentId } : {}),
+              ...(runtimeHoldsConnection ? { connection: true as const } : {}),
+              ...(canManageExtensions &&
+              isExtensionMutationCommand(command.method, command.parameters)
+                ? { manageExtensions: true as const }
+                : {}),
+              requestId: globalThis.crypto.randomUUID(),
+              type: "cdp.command",
+            },
+            confirmed?.signal,
+            browserSend
               ? {
                   recheck: async () => {
                     await this.#requireAgentAccess(record.runnerId);
-                    await this.admitAgentBrowser(input, "read-write", [record]);
+                    if (lease && !(await fillAllowed())) throw new BrowserCdpConnectionEnded();
+                    await browserSend.recheck();
+                    if (
+                      !input.scriptTabId ||
+                      (await pageWitness(input.scriptTabId)) !== expectedPage
+                    )
+                      throw new BrowserCdpConnectionEnded("This browser page is stale.");
                     assertAttached(false);
                   },
-                  submitted: () => pooledRelay.submitted(),
-                  acknowledged: () => pooledRelay.acknowledged(),
+                  submitted: browserSend.submitted,
+                  acknowledged: browserSend.acknowledged,
                 }
-              : undefined,
-        );
+              : pooledRelay
+                ? {
+                    recheck: async () => {
+                      await this.#requireAgentAccess(record.runnerId);
+                      await this.admitAgentBrowser(input, "read-write", [record]);
+                      assertAttached(false);
+                    },
+                    submitted: () => pooledRelay.submitted(),
+                    acknowledged: () => pooledRelay.acknowledged(),
+                  }
+                : undefined,
+          );
+        } catch (error) {
+          if (tracksPendingAttach) releasePendingAttach();
+          throw error;
+        }
         pooledRelay?.track(command.method, command.parameters, answered);
         if (scriptAttachmentId && command.method === browserHostMethods.resumeTab)
           scriptOpening = answered;
         return {
-          result: answered.then(async (response) => {
-            if (
-              command.method === "Target.createTarget" &&
-              this.#workspaceTabs &&
-              record.origin !== "trigger" &&
-              record.opener?.kind !== "automation"
-            ) {
-              const created = z
-                .object({ surfaceId: BrowserSurfaceIdSchema })
-                .safeParse(response.result);
-              const actor = actorToken ? this.#actors.get(actorToken) : undefined;
-              if (created.success && actor) {
-                const id = created.data.surfaceId;
-                const descriptor = broker.clientRows(this.#presence(record.id)).records.get(id);
-                const profile = record.profileId
-                  ? (await this.#repository.listBrowserProfiles(input.ownerId)).find(
-                      (profile) => profile.id === record.profileId,
-                    )
-                  : null;
-                const write: TabWrite = {
-                  id,
-                  ownerId: input.ownerId,
-                  computerId: await this.#selfDeviceId(record.runnerId),
-                  kind: "page",
-                  title: descriptor?.title ?? "New tab",
-                  url: descriptor?.url ?? "about:blank",
-                  profileId: record.profileId,
-                  profileName: profile?.name ?? null,
-                  openedBy: actor.audience.get(input.ownerId)
-                    ? { taskId: actor.audience.get(input.ownerId)!.threadId }
-                    : "person",
-                  pageBinding: { lineageId: broker.groupId, sessionId: record.id, surfaceId: id },
-                };
-                await this.#workspaceTabs.open(write, `cdp-open:${record.id}:${id}`, async (tx) => {
-                  await this.admitAgentBrowser(
-                    input,
-                    "read-write",
-                    [record],
-                    new OpensteerStore(tx),
-                  );
-                });
-                await this.pageTabs.admitted!(write);
-                this.#onTabsChanged(input.ownerId, [id]);
+          result: answered.then(
+            async (response) => {
+              if (tracksPendingAttach) {
+                const resultRecord =
+                  response.result && typeof response.result === "object"
+                    ? (response.result as Record<string, unknown>)
+                    : undefined;
+                const attachedSessionId =
+                  command.method === "Target.attachToTarget" &&
+                  typeof resultRecord?.sessionId === "string"
+                    ? resultRecord.sessionId
+                    : undefined;
+                const attachedTargetId =
+                  typeof resultRecord?.targetId === "string"
+                    ? resultRecord.targetId
+                    : command.method === "Target.attachToTarget" &&
+                        typeof command.parameters?.targetId === "string"
+                      ? command.parameters.targetId
+                      : undefined;
+                if (attachedSessionId) rememberBounded(attachedSessions, attachedSessionId);
+                if (attachedTargetId) rememberBounded(attachedTargets, attachedTargetId);
+                flushPendingTerminalEvents(attachedSessionId, attachedTargetId);
+                releasePendingAttach();
               }
-            }
-            if (command.method === "Target.attachToTarget") {
-              const target = z
-                .object({ surfaceId: BrowserSurfaceIdSchema })
-                .safeParse(response.result);
-              // Which page a Run used is durable and true even when its Run ended
-              // while the command was answering; the live attachment is not
-              // touched here, so that end cannot be undone. The agent has its page
-              // either way: recording it never delays the answer or fails it.
-              const actor = actorToken ? this.#actors.get(actorToken) : undefined;
-              // An actor's own lane skips a page it already recorded: switching back is not a new use.
               if (
-                target.success &&
-                actor?.sessionId === record.id &&
-                broker.pageKeyOf(target.data.surfaceId) !== undefined
+                command.method === "Target.createTarget" &&
+                this.#workspaceTabs &&
+                record.origin !== "trigger" &&
+                record.opener?.kind !== "automation"
               ) {
-                void this.#recordActorUse(actor, target.data.surfaceId);
-              } else if (target.success) {
-                void this.#repository
-                  .recordAgentBrowserUse({
-                    agentBindingId: input.agentBindingId,
+                const created = z
+                  .object({ surfaceId: BrowserSurfaceIdSchema })
+                  .safeParse(response.result);
+                const actor = actorToken ? this.#actors.get(actorToken) : undefined;
+                if (created.success && actor) {
+                  const id = created.data.surfaceId;
+                  const descriptor = broker.clientRows(this.#presence(record.id)).records.get(id);
+                  const profile = record.profileId
+                    ? (await this.#repository.listBrowserProfiles(input.ownerId)).find(
+                        (profile) => profile.id === record.profileId,
+                      )
+                    : null;
+                  const write: TabWrite = {
+                    id,
                     ownerId: input.ownerId,
-                    page: broker.pageOf(target.data.surfaceId),
-                    sessionId: record.id,
-                    tabId: target.data.surfaceId,
-                  })
-                  .then(async (credits) => {
-                    this.#noteLastHeldSession(record.id, input.agentBindingId);
-                    this.announceUsage(credits);
-                    await this.#restoreHoldings(record.id);
-                  })
-                  .catch(this.#onError);
+                    computerId: await this.#selfDeviceId(record.runnerId),
+                    kind: "page",
+                    title: descriptor?.title ?? "New tab",
+                    url: descriptor?.url ?? "about:blank",
+                    profileId: record.profileId,
+                    profileName: profile?.name ?? null,
+                    openedBy: actor.audience.get(input.ownerId)
+                      ? { taskId: actor.audience.get(input.ownerId)!.threadId }
+                      : "person",
+                    pageBinding: { lineageId: broker.groupId, sessionId: record.id, surfaceId: id },
+                  };
+                  await this.#workspaceTabs.open(
+                    write,
+                    `cdp-open:${record.id}:${id}`,
+                    async (tx) => {
+                      await this.admitAgentBrowser(
+                        input,
+                        "read-write",
+                        [record],
+                        new OpensteerStore(tx),
+                      );
+                    },
+                  );
+                  await this.pageTabs.admitted!(write);
+                  this.#onTabsChanged(input.ownerId, [id]);
+                }
               }
-            }
-            return response.result;
-          }),
+              if (command.method === "Target.attachToTarget") {
+                const target = z
+                  .object({ surfaceId: BrowserSurfaceIdSchema })
+                  .safeParse(response.result);
+                // Which page a Run used is durable and true even when its Run ended
+                // while the command was answering; the live attachment is not
+                // touched here, so that end cannot be undone. The agent has its page
+                // either way: recording it never delays the answer or fails it.
+                const actor = actorToken ? this.#actors.get(actorToken) : undefined;
+                // An actor's own lane skips a page it already recorded: switching back is not a new use.
+                if (
+                  target.success &&
+                  actor?.sessionId === record.id &&
+                  broker.pageKeyOf(target.data.surfaceId) !== undefined
+                ) {
+                  void this.#recordActorUse(actor, target.data.surfaceId);
+                } else if (target.success) {
+                  void this.#repository
+                    .recordAgentBrowserUse({
+                      agentBindingId: input.agentBindingId,
+                      ownerId: input.ownerId,
+                      page: broker.pageOf(target.data.surfaceId),
+                      sessionId: record.id,
+                      tabId: target.data.surfaceId,
+                    })
+                    .then(async (credits) => {
+                      this.#noteLastHeldSession(record.id, input.agentBindingId);
+                      this.announceUsage(credits);
+                      await this.#restoreHoldings(record.id);
+                    })
+                    .catch(this.#onError);
+                }
+              }
+              return response.result;
+            },
+            (error) => {
+              if (tracksPendingAttach) releasePendingAttach();
+              throw error;
+            },
+          ),
         };
       });
     };

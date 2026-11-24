@@ -68,6 +68,7 @@ const scriptOrWorldMethods = new Set([
   "Runtime.releaseObject",
   "Page.createIsolatedWorld",
   "Page.addScriptToEvaluateOnNewDocument",
+  "Page.removeScriptToEvaluateOnNewDocument",
   "Debugger.setBreakpointByUrl",
   "Debugger.setBreakpoint",
   "Debugger.setBreakpointOnFunctionCall",
