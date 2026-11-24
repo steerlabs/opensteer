@@ -1913,6 +1913,53 @@ describeStore("an external agent's direct work through sessions", (it) => {
     );
   });
 
+  it("answers a repeat that read the operation running with the outcome it completed with", async ({
+    storeFixture,
+  }) => {
+    const s = await setUp(storeFixture, "session-repeat-after-completion");
+    const { database } = storeFixture;
+    const held = s.holdNext();
+    const first = s.direct("repeat-after-completion");
+    await held.started;
+    // The repeat reads the operation while it runs, then waits in its admission (which reads the
+    // deployment) while the first finishes, settles completed, and lets go of its executor.
+    const blocking = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const lock = database.transaction().execute(async (tx) => {
+      await sql`lock table deployments in access exclusive mode`.execute(tx);
+      blocking.resolve();
+      await release.promise;
+    });
+    await blocking.promise;
+    const repeat = s.direct("repeat-after-completion");
+    await vi.waitFor(
+      async () => {
+        const { rows } = await sql<{ readonly waiting: number }>`
+          select count(*)::integer as waiting from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'`.execute(database);
+        expect(rows[0]?.waiting).toBeGreaterThan(0);
+      },
+      { timeout: 10_000 },
+    );
+    held.release();
+    const completed = await first;
+    expect(completed).toMatchObject({ status: "completed" });
+    release.resolve();
+    await lock;
+    // The operation completed: the repeat says so, never unknown (rule 4).
+    expect(await repeat).toMatchObject({
+      status: "completed",
+      operationId: completed.operationId,
+    });
+    expect(
+      await database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome"])
+        .where("operationKey", "=", "repeat-after-completion")
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ state: "completed", outcome: "completed" });
+  });
+
   it("returns the unknown receipt with the person's Stop refusal", async ({ storeFixture }) => {
     const s = await setUp(storeFixture, "session-stop-receipt");
     const held = s.holdNext();
