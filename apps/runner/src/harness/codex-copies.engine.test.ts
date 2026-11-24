@@ -188,8 +188,11 @@ it.skipIf(!oldCodex || !oldVersion)(
         AbortSignal.timeout(120_000),
       );
     }
+    // The engine answered for itself: an old copy refuses here as "older than".
+    // The stand-in's API key is no OpenAI account, so it asks for a sign-in;
+    // a turn needs none against the stand-in.
     expect(inspected).not.toMatchObject({ detail: expect.stringContaining("older than") });
-    expect(inspected.status).toBe("ready");
+    expect(["authentication-required", "ready"]).toContain(inspected.status);
 
     const adapter = await harnesses.adapter(definition.id);
     const context: HarnessSessionContext = {
