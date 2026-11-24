@@ -634,7 +634,7 @@ extension WireJourney {
             undoRes = try await input([["kind": "command", "command": "undo", "contextId": currentCtx]])
             let undoDoneUsRetry = DispatchTime.now().uptimeNanoseconds / 1000
             try require(undoRes["outcome"] as? String == "dispatched", "stress undo refused at gap=\(gapMs) iter=\(i): \(undoRes)")
-            let redoCtx = try await activeContext(after: retryUndoMark, excluding: currentCtx)
+            let redoCtx = try await activeContext(after: retryUndoMark)
             if gapMs > 0 {
               let targetUs = undoDoneUsRetry + UInt64(gapMs) * 1000
               let nowUs = DispatchTime.now().uptimeNanoseconds / 1000
@@ -658,7 +658,7 @@ extension WireJourney {
             if isHit {
               hits += 1
               expectedLen += 1
-              currentCtx = try await activeContext(after: beforeRedoMark, excluding: redoCtx)
+              currentCtx = try await activeContext(after: beforeRedoMark)
             } else {
               misses += 1
               totalMisses += 1
@@ -700,7 +700,7 @@ extension WireJourney {
           }
           let undoDoneUs = DispatchTime.now().uptimeNanoseconds / 1000
           try require(undoRes["outcome"] as? String == "dispatched", "stress undo refused at gap=\(gapMs) iter=\(i): \(undoRes)")
-          let redoCtx = try await activeContext(after: beforeUndoMark, excluding: currentCtx)
+          let redoCtx = try await activeContext(after: beforeUndoMark)
           if gapMs > 0 {
             let targetUs = undoDoneUs + UInt64(gapMs) * 1000
             let nowUs = DispatchTime.now().uptimeNanoseconds / 1000
@@ -726,7 +726,7 @@ extension WireJourney {
           if isHit {
             hits += 1
             expectedLen += 1
-            currentCtx = try await activeContext(after: beforeRedoMark, excluding: redoCtx)
+            currentCtx = try await activeContext(after: beforeRedoMark)
           } else {
             misses += 1
             totalMisses += 1
@@ -886,41 +886,51 @@ extension WireJourney {
       "events": [["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]]])
     try require(second["outcome"] as? String == "dispatched", "Idle attachment excluded another viewer")
     passed()
-    start("agent-refused-held-button")
-    let heldContact = try await input([["kind": "mouse", "phase": "down", "button": "left",
-      "clickCount": 1, "modifiers": [], "x": 0.5, "y": 0.5]])
-    try require(heldContact["outcome"] as? String == "dispatched", "Person button did not go down")
-    let heldResult = try await agent.request("session.act", ["sessionId": session, "app": sessionApp, "window": ref,
-      "actions": [["type": "key", "keys": "x"]]])
-    let heldError = heldResult["error"] as? [String: Any]
-    try require(heldError?["code"] as? String == "failed"
-      && heldError?["message"] as? String == "A person is pressing in this app; try again.",
-      "Agent did not refuse the actual held contact")
-    passed()
-    start("another-app-agent-unaffected")
+    func mouseUps() throws -> Int {
+      try String(contentsOf: dispatchLog, encoding: .utf8).split(separator: "\n").filter {
+        let row = try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+        return row?["type"] as? Int == Int(NSEvent.EventType.leftMouseUp.rawValue)
+      }.count
+    }
+    // Prepare the independent fixture before holding a button down on App A so
+    // cold app startup never races the 5 s held-contact safety watchdog.
+    let beforeHeldUps: Int
     do {
-      let path = try ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_OTHER_APP"].unwrap("independent app fixture")
-      let running = try await launchFixture(URL(fileURLWithPath: path))
-      defer { running.terminate() }
+      let otherPath = try ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_OTHER_APP"].unwrap("independent app fixture")
+      let otherRunning = try await launchFixture(URL(fileURLWithPath: otherPath))
+      defer { otherRunning.terminate() }
       let otherOut = out.appendingPathComponent("other-app")
-      let ready = Date().addingTimeInterval(10)
-      while !FileManager.default.fileExists(atPath: otherOut.appendingPathComponent("windows.json").path), Date() < ready {
+      let otherReady = Date().addingTimeInterval(10)
+      while !FileManager.default.fileExists(atPath: otherOut.appendingPathComponent("windows.json").path), Date() < otherReady {
         try await Task.sleep(nanoseconds: 20_000_000)
       }
-      let record = try AppResolver.record(forBundleAtPath: path).unwrap("independent app identity")
-      let otherIdentity = try JSONSerialization.jsonObject(with: JSONCoding.encoder.encode(record.identity))
+      let otherRecord = try AppResolver.record(forBundleAtPath: otherPath).unwrap("independent app identity")
+      let otherIdentity = try JSONSerialization.jsonObject(with: JSONCoding.encoder.encode(otherRecord.identity))
       let otherSession = "cus_22222222-2222-4222-8222-222222222222"
       let otherApp: [String: Any] = ["identity": otherIdentity, "access": "read-write"]
       let independent = try WireJourney(out: out.appendingPathComponent("independent-agent"), helper: helper)
       defer { independent.close() }
       try await independent.hello()
       _ = try await independent.request("session.open", ["sessionId": otherSession, "threadTitle": "Independent app during owner control"])
-      let listed = try await independent.request("session.windows", ["sessionId": otherSession, "app": otherApp])
-      let window = try ((listed["windows"] as? [[String: Any]])?.first(where: { $0["title"] as? String == "A" })).unwrap("independent A")
-      let bound = try await independent.request("session.bind", ["sessionId": otherSession, "app": otherApp, "windowId": window["windowId"]!])
-      let independentRef = try ((bound["window"] as? [String: Any])?["ref"] as? String).unwrap("independent ref")
+      let otherListed = try await independent.request("session.windows", ["sessionId": otherSession, "app": otherApp])
+      let otherWindow = try ((otherListed["windows"] as? [[String: Any]])?.first(where: { $0["title"] as? String == "A" })).unwrap("independent A")
+      let otherBound = try await independent.request("session.bind", ["sessionId": otherSession, "app": otherApp, "windowId": otherWindow["windowId"]!])
+      let independentRef = try ((otherBound["window"] as? [String: Any])?["ref"] as? String).unwrap("independent ref")
       _ = try await independent.request("session.observe", ["sessionId": otherSession, "app": otherApp,
         "window": independentRef, "includeScreenshot": false])
+      start("agent-refused-held-button")
+      beforeHeldUps = try mouseUps()
+      let heldContact = try await input([["kind": "mouse", "phase": "down", "button": "left",
+        "clickCount": 1, "modifiers": [], "x": 0.5, "y": 0.5]])
+      try require(heldContact["outcome"] as? String == "dispatched", "Person button did not go down")
+      let heldResult = try await agent.request("session.act", ["sessionId": session, "app": sessionApp, "window": ref,
+        "actions": [["type": "key", "keys": "x"]]])
+      let heldError = heldResult["error"] as? [String: Any]
+      try require(heldError?["code"] as? String == "failed"
+        && heldError?["message"] as? String == "A person is pressing in this app; try again.",
+        "Agent did not refuse the actual held contact")
+      passed()
+      start("another-app-agent-unaffected")
       let acted = try await independent.request("session.act", ["sessionId": otherSession, "app": otherApp,
         "window": independentRef, "actions": [["type": "key", "keys": "x"]]])
       let delivered = Date().addingTimeInterval(2)
@@ -935,22 +945,16 @@ extension WireJourney {
       try require(acted["error"] is NSNull && (acted["performed"] as? [String])?.count == 1
         && (try independentKeys()) == 1, "One app's lease blocked another app's native agent key")
       _ = try await independent.request("session.close", ["sessionId": otherSession])
+      passed()
     }
-    passed()
-    let beforeResetUps = try String(contentsOf: dispatchLog, encoding: .utf8).split(separator: "\n").filter {
-      let row = try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
-      return row?["type"] as? Int == Int(NSEvent.EventType.leftMouseUp.rawValue)
-    }.count
     try await reset(self, streamA, viewA)
     let releaseBy = Date().addingTimeInterval(2)
-    func mouseUps() throws -> Int {
-      try String(contentsOf: dispatchLog, encoding: .utf8).split(separator: "\n").filter {
-        let row = try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
-        return row?["type"] as? Int == Int(NSEvent.EventType.leftMouseUp.rawValue)
-      }.count
-    }
-    while try mouseUps() == beforeResetUps, Date() < releaseBy { try await Task.sleep(nanoseconds: 10_000_000) }
-    try require(try mouseUps() == beforeResetUps + 1, "Reset did not release exactly one held person button")
+    while try mouseUps() == beforeHeldUps, Date() < releaseBy { try await Task.sleep(nanoseconds: 10_000_000) }
+    try require(try mouseUps() == beforeHeldUps + 1, "Held person button was not released exactly once")
+    let afterResetSecond = try await other.request("display.input", ["streamId": streamB, "source": source(viewB),
+      "geometry": secondGeometry, "sequence": 1,
+      "events": [["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]]])
+    try require(afterResetSecond["outcome"] as? String == "dispatched", "Held person contact remained after reset")
     // A snapshot the helper published after the latest input's receipt: later
     // than the input, not proof the app has finished applying it.
     func context(sensitive: Bool? = nil, excluding: String? = nil) async throws -> String {
