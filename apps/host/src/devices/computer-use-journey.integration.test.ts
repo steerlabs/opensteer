@@ -295,7 +295,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         '"undefined"',
       );
       const trigger = await world.gateway(run, true);
-      expect((await trigger.call("computer_use", { code: "return 1" })).isError).toBe(true);
+      expect((await trigger.call("computer_use", { code: "return 1" })).isError).toBeUndefined();
       const artifactDirectory = process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR;
       if (artifactDirectory) {
         await mkdir(artifactDirectory, { recursive: true });
@@ -600,8 +600,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const trigger = await world.gateway(run, true);
       expect(
         ((await trigger.list()) as { tools: { name: string }[] }).tools.map((row) => row.name),
-      ).not.toContain("computer_use");
-      expect((await trigger.call("computer_use", { code: "return 1" })).isError).toBe(true);
+      ).toContain("computer_use");
+      expect((await trigger.call("computer_use", { code: "return 1" })).isError).toBeUndefined();
     } finally {
       await world.close();
     }
@@ -2894,7 +2894,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       },
     });
 
-    // A Trigger occurrence has no Run for a session to belong to.
+    // A Trigger occurrence acts as its anchor task (Brief T5): it is offered computer_use and
+    // app_access_request, and follows the same computerId validation as a Run.
     await world.fakeMac.attach();
     const trigger = await world.gateway(runA, true);
     expect(
@@ -2903,10 +2904,13 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         access: "read",
         reason: "Look.",
       }),
-    ).toEqual(toolRefusal("access_denied", "This tool requires a live Run"));
-    expect(await trigger.call("computer_use", { code: "return 1" })).toEqual(
-      refusal("Tool is unavailable"),
-    );
+    ).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: { code: "invalid_input" },
+      },
+    });
+    expect(text(await trigger.call("computer_use", { code: "return 1" }))).toBe("1");
     await world.close();
   });
 });
@@ -5527,7 +5531,6 @@ async function openGateway(
     runnerBootId: "boot",
     runnerId: run.agentRunnerId,
     threadId: run.threadId,
-    toolContractVersion: 5 as const,
   };
   const service = createIntegrationMcpFixture({
     platform,

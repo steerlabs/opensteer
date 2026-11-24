@@ -25,7 +25,9 @@ import {
   SequenceSchema,
   ThreadIdSchema,
   type EnvironmentId,
+  type RunnerId,
   type ThreadId,
+  type TriggerOccurrenceId,
   type RunId,
   type UserId,
 } from "@opensteer/core";
@@ -68,8 +70,9 @@ import type { PluginPackagesTokenService } from "../local-servers/plugin-package
 import type { EgressService } from "../server/egress-service.js";
 import { computeMachineAccess } from "../shell/machine-access-run-context.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
-import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
-import { isExecutableTriggerProgram, TRIGGER_PROGRAM_VERSION_REFUSAL } from "@opensteer/triggers";
+import { automationScriptCompatibilityReason } from "../triggers/automation-script-compatibility.js";
+import type { AutomationSecrets } from "../triggers/automation-secrets.js";
+import { TRIGGER_SCRIPT_UPDATE_REASON } from "@opensteer/triggers";
 import type { RunToolTokenService } from "./run-tool-tokens.js";
 import {
   harnessInspectionDefinition,
@@ -162,8 +165,25 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #executionNow: () => number;
   readonly #store: OpensteerStore;
   readonly #catalogs: HarnessCatalogRecorder;
+  readonly #automationSecrets: Pick<AutomationSecrets, "values"> | undefined;
   readonly #triggerControlTokens: TriggerControlTokenService;
   readonly #triggers: TriggerStore;
+  readonly #dispatchingTriggers = new Map<
+    TriggerOccurrenceId,
+    { readonly runnerBootId: string; readonly runnerId: RunnerId }
+  >();
+  inFlightTriggerOccurrenceIds(
+    runnerId: RunnerId,
+    runnerBootId: string,
+  ): readonly TriggerOccurrenceId[] {
+    const ids: TriggerOccurrenceId[] = [];
+    for (const [occurrenceId, entry] of this.#dispatchingTriggers) {
+      if (entry.runnerId === runnerId && entry.runnerBootId === runnerBootId) {
+        ids.push(occurrenceId);
+      }
+    }
+    return ids;
+  }
   constructor(options: {
     readonly attachmentRunTokens: RunCapabilityTokenService<"opensteer-run-attachments">;
     readonly attachments: Pick<AttachmentStore, "listForRun">;
@@ -189,9 +209,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly onRunAdmitted?: (threadId: ThreadId) => void;
     readonly store: OpensteerStore;
     readonly catalogs?: HarnessCatalogRecorder;
+    readonly automationSecrets?: Pick<AutomationSecrets, "values">;
     readonly triggerControlTokens: TriggerControlTokenService;
     readonly triggers: TriggerStore;
   }) {
+    this.#automationSecrets = options.automationSecrets;
     this.#attachmentRunTokens = options.attachmentRunTokens;
     this.#attachments = options.attachments;
     this.#requestResponseVault = options.requestResponseVault;
@@ -865,10 +887,12 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       }
     };
     const initial = await heldIfChatWaits(() => this.#triggers.loadDispatchContext(command.id));
-    const incompatibility = await triggerProgramCompatibilityReason(
+    if (!initial.script) {
+      throw new CommandDispatchError(TRIGGER_SCRIPT_UPDATE_REASON, "failed");
+    }
+    const incompatibility = await automationScriptCompatibilityReason(
       this.#store,
       initial.anchorThread.environmentId,
-      initial.revision.program.toolContractVersion,
     );
     if (incompatibility) throw new CommandDispatchError(incompatibility, "failed");
     const toolsFailure = runnerAgentToolsFailure(identity.capabilities);
@@ -879,91 +903,31 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         "failed",
       );
     }
-    const { context, executionGeneration, connectionId } = await heldIfChatWaits(() =>
-      this.#triggers.startExecution({
-        commandId: command.id,
-        runnerBootId: identity.bootId,
-        runnerId: identity.runnerId,
-      }),
-    );
-    const notAdmitted = connectionId
-      ? () => this.#triggers.recordOccurrenceNotAdmitted(context.occurrence.id, executionGeneration)
-      : undefined;
-    this.#onTriggerChanged();
-    const program = context.revision.program;
-    if (!isExecutableTriggerProgram(program)) {
-      await notAdmitted?.();
-      throw new CommandDispatchError(TRIGGER_PROGRAM_VERSION_REFUSAL, "failed");
-    }
-    const { capabilityToken, hasBrowser } = await (async () => {
-      try {
-        const capabilityToken = this.#triggerControlTokens.issue({
-          environmentId: context.anchorThread.environmentId,
-          executionGeneration,
-          occurrenceId: context.occurrence.id,
-          requestedBy: context.trigger.createdBy,
-          runnerBootId: identity.bootId,
-          runnerId: identity.runnerId,
-          threadId: context.anchorThread.id,
-          toolContractVersion: program.toolContractVersion,
-        });
-        const hasBrowser = await this.#browser.hasBrowserProfiles(context.trigger.createdBy);
-        signal.throwIfAborted();
-        return { capabilityToken, hasBrowser };
-      } catch (error) {
-        await notAdmitted?.();
-        throw error;
-      }
-    })();
-    const digest = createHash("sha256")
-      .update(`trigger.execute:${command.id}:${executionGeneration}`)
-      .digest("hex");
-    const attemptCommandId = CommandIdSchema.parse(
-      `cmd_${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`,
-    );
-    const runnerCommand: RunnerCommand = {
-      commandId: attemptCommandId,
-      context: {
-        anchorThreadId: context.anchorThread.id,
-        browserCdp: hasBrowser
-          ? {
-              token: capabilityToken,
-              url: this.#browserCdpUrl,
-            }
-          : null,
-        event: context.occurrence.event,
-        executionGeneration,
-        mcp: {
-          token: capabilityToken,
-          url: this.#agentToolsUrl,
-        },
-        occurrenceId: context.occurrence.id,
-        program,
-        revisionId: context.revision.id,
-        triggerId: context.trigger.id,
-      },
-      correlationId: CorrelationIdSchema.parse(attemptCommandId),
-      environmentId: context.anchorThread.environmentId,
-      agentHome: context.agentHome,
-      type: "trigger.execute",
-    };
-    // Trigger setup can cross a stop transaction. Make the
-    // running occurrence generation and its execution authority current at the
-    // same boundary where the command leaves the Host.
-    await this.#runners.dispatch(runnerCommand, signal, {
-      connectionGeneration: identity.connectionGeneration,
-      beforeAck: () =>
-        this.#triggers.acceptExecution({
+    this.#dispatchingTriggers.set(initial.occurrence.id, {
+      runnerBootId: identity.bootId,
+      runnerId: identity.runnerId,
+    });
+    try {
+      const { context, executionGeneration, connectionId } = await heldIfChatWaits(() =>
+        this.#triggers.startExecution({
           commandId: command.id,
-          executionGeneration,
           runnerBootId: identity.bootId,
           runnerId: identity.runnerId,
         }),
-      // Held here, the Runner never had it: the registry records it not admitted, which undoes
-      // the running stamp, and the coordinator returns it to pending.
-      beforeSend: () =>
-        heldIfChatWaits(() =>
-          this.#triggers.assertActiveExecutionBinding({
+      );
+      const notAdmitted = connectionId
+        ? () =>
+            this.#triggers.recordOccurrenceNotAdmitted(context.occurrence.id, executionGeneration)
+        : undefined;
+      this.#onTriggerChanged();
+      const script = context.script;
+      if (!script) {
+        await notAdmitted?.();
+        throw new CommandDispatchError(TRIGGER_SCRIPT_UPDATE_REASON, "failed");
+      }
+      const { capabilityToken, hasBrowser, secrets } = await (async () => {
+        try {
+          const capabilityToken = this.#triggerControlTokens.issue({
             environmentId: context.anchorThread.environmentId,
             executionGeneration,
             occurrenceId: context.occurrence.id,
@@ -971,10 +935,94 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
             threadId: context.anchorThread.id,
+          });
+          const [hasBrowser, secrets] = await Promise.all([
+            this.#browser.hasBrowserProfiles(
+              context.trigger.createdBy,
+              `trigger:${context.occurrence.id}`,
+            ),
+            context.encryptedSecrets && this.#automationSecrets
+              ? this.#automationSecrets.values(context.trigger.id, context.encryptedSecrets)
+              : Promise.resolve<Readonly<Record<string, string>>>({}),
+          ]);
+          signal.throwIfAborted();
+          return { capabilityToken, hasBrowser, secrets };
+        } catch (error) {
+          await notAdmitted?.();
+          throw error;
+        }
+      })();
+      const digest = createHash("sha256")
+        .update(`trigger.execute:${command.id}:${executionGeneration}`)
+        .digest("hex");
+      const attemptCommandId = CommandIdSchema.parse(
+        `cmd_${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`,
+      );
+      const runnerCommand: RunnerCommand = {
+        commandId: attemptCommandId,
+        context: {
+          anchorThreadId: context.anchorThread.id,
+          browserCdp: hasBrowser
+            ? {
+                token: capabilityToken,
+                url: this.#browserCdpUrl,
+              }
+            : null,
+          event: context.occurrence.event,
+          executionGeneration,
+          mcp: {
+            token: capabilityToken,
+            url: this.#agentToolsUrl,
+          },
+          occurrenceId: context.occurrence.id,
+          revisionId: context.revision.id,
+          script,
+          ...(Object.keys(secrets).length > 0 ? { secrets: { ...secrets } } : {}),
+          triggerId: context.trigger.id,
+          ...(context.webhookBody
+            ? { webhookBodyBase64: context.webhookBody.toString("base64") }
+            : {}),
+        },
+        correlationId: CorrelationIdSchema.parse(attemptCommandId),
+        environmentId: context.anchorThread.environmentId,
+        agentHome: context.agentHome,
+        type: "trigger.execute",
+      };
+      // Trigger setup can cross a stop transaction. Make the
+      // running occurrence generation and its execution authority current at the
+      // same boundary where the command leaves the Host.
+      await this.#runners.dispatch(runnerCommand, signal, {
+        connectionGeneration: identity.connectionGeneration,
+        beforeAck: () =>
+          this.#triggers.acceptExecution({
+            commandId: command.id,
+            executionGeneration,
+            runnerBootId: identity.bootId,
+            runnerId: identity.runnerId,
           }),
-        ),
-      ...(notAdmitted ? { onNotAdmitted: notAdmitted } : {}),
-    });
+        // Held here, the Runner never had it: the registry records it not admitted, which undoes
+        // the running stamp, and the coordinator returns it to pending.
+        beforeSend: async () => {
+          await heldIfChatWaits(() =>
+            this.#triggers.assertActiveExecutionBinding({
+              environmentId: context.anchorThread.environmentId,
+              executionGeneration,
+              occurrenceId: context.occurrence.id,
+              requestedBy: context.trigger.createdBy,
+              runnerBootId: identity.bootId,
+              runnerId: identity.runnerId,
+              threadId: context.anchorThread.id,
+            }),
+          );
+        },
+        // Z4: Stamp frame_sent_at at the point of no return inside RunnerRegistry.dispatch,
+        // after every refusing check (offline, connection replaced, agents stopped, aborted).
+        beforeWireSend: () => this.#store.markCommandFrameSent(command.id),
+        ...(notAdmitted ? { onNotAdmitted: notAdmitted } : {}),
+      });
+    } finally {
+      this.#dispatchingTriggers.delete(initial.occurrence.id);
+    }
   }
   async #dispatchControl(command: CommandRow, signal: AbortSignal): Promise<void> {
     if (!command.environmentId)

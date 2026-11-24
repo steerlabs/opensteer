@@ -132,7 +132,10 @@ import {
 } from "./execution-containment.js";
 import { warmEngineKey, WarmEnginePool, type WarmEngine } from "./warm-engine-pool.js";
 import { startProgramEndpoints, type ProgramEndpointSet } from "../agent/program-endpoints.js";
-import { TriggerProgramExecutor } from "../agent/program-executor.js";
+import {
+  AutomationScriptExecutor,
+  type AutomationScriptEvent,
+} from "../agent/script-executor.js";
 import { WatchSupervisor } from "../triggers/watch-supervisor.js";
 import {
   isMachineAccessRoutes,
@@ -168,10 +171,22 @@ export type HarnessDriverAvailability = Pick<RunnerHarnessDriver, "driverKind" |
   readonly sources?: readonly Pick<HarnessSourceDescriptor, "sourceId" | "stateKinds">[];
 };
 
+export type ProxyTokenRenewalTarget = Extract<
+  RunnerOperationalReport,
+  { readonly type: "runner.proxy-token.renew" }
+>["target"];
+
+export type ProxyTokenRenewalResult = Pick<
+  Extract<HostToRunnerMessage, { readonly type: "host.proxy-token.renewed" }>,
+  "browserCdp" | "mcp" | "reason"
+>;
+
 export interface RunnerMessageSink {
   send(message: RunnerOperationalReport): Promise<void>;
   /** Undefined when the Host gave no answer; the Run keeps its tokens and retries. */
   refreshRunCredentials?(runId: RunId): Promise<RefreshedRunCredentials | undefined>;
+  /** On-demand renewal of a watch or firing's Host capability token over the WebSocket. */
+  renewProxyToken?(target: ProxyTokenRenewalTarget): Promise<ProxyTokenRenewalResult | undefined>;
   /** Uploads a recorded tool output image into Host-owned storage before the event is emitted. */
   publishOutputImage?(image: ToolOutputImage, signal: AbortSignal): Promise<void>;
 }
@@ -241,7 +256,7 @@ export interface RunnerRuntimeOptions {
   readonly nodeExecutable?: string;
   readonly privateStateDirectory: string;
   readonly projectContinuationIdentity: ProviderContinuationIdentityProjector;
-  readonly programExecutor?: Pick<TriggerProgramExecutor, "execute">;
+  readonly scriptExecutor?: Pick<AutomationScriptExecutor, "execute">;
   readonly agentHome: AgentHomeAccess;
   readonly watchSupervisor?: Pick<
     WatchSupervisor,
@@ -388,7 +403,7 @@ type ExecutionEndReport = Extract<
 interface ActiveTriggerProgram {
   readonly abort: AbortController;
   readonly command: Extract<RunnerCommand, { readonly type: "trigger.execute" }>;
-  readonly sink: RunnerMessageSink;
+  sink: RunnerMessageSink;
   task?: Promise<void>;
 }
 
@@ -486,7 +501,7 @@ export class RunnerRuntime {
   readonly #voice: VoiceCalls;
   readonly #modelServerHome: string | undefined;
   readonly #projectContinuationIdentity: ProviderContinuationIdentityProjector;
-  readonly #programExecutor: Pick<TriggerProgramExecutor, "execute">;
+  readonly #scriptExecutor: Pick<AutomationScriptExecutor, "execute">;
   readonly #runs = new Map<RunId, ActiveRun>();
   readonly #containment: ExecutionContainment;
   readonly #earlierBootsContained: boolean;
@@ -719,8 +734,8 @@ export class RunnerRuntime {
     this.#voice = new VoiceCalls(join(this.#privateStateDirectory, "voice"));
     this.#modelServerHome = options.modelServerHome;
     this.#projectContinuationIdentity = options.projectContinuationIdentity;
-    this.#programExecutor =
-      options.programExecutor ?? programExecutorFor(options, this.#privateStateDirectory);
+    this.#scriptExecutor =
+      options.scriptExecutor ?? scriptExecutorFor(options, this.#privateStateDirectory);
     this.#agentHome = options.agentHome;
     this.#watchSupervisor =
       options.watchSupervisor ??
@@ -2614,6 +2629,37 @@ export class RunnerRuntime {
   }
 
   /**
+   * Every firing this Runner holds (active or settled awaiting ack), announced
+   * on attach so the Host can reattach running firings across disconnects/restarts (T12).
+   */
+  attachFiringInventory(): NonNullable<
+    Extract<RunnerOperationalReport, { readonly type: "runner.executions.attach" }>["firings"]
+  > {
+    const firings: NonNullable<
+      Extract<RunnerOperationalReport, { readonly type: "runner.executions.attach" }>["firings"]
+    > = [];
+    for (const active of this.#triggerPrograms.values()) {
+      firings.push({
+        environmentId: active.command.environmentId,
+        executionGeneration: active.command.context.executionGeneration,
+        occurrenceId: active.command.context.occurrenceId,
+        terminal: false,
+      });
+    }
+    for (const report of this.#endedAttempts.values()) {
+      if (typeof report === "string" || report.type !== "runner.trigger-result") continue;
+      if (this.#triggerPrograms.has(report.output.occurrenceId)) continue;
+      firings.push({
+        environmentId: report.environmentId,
+        executionGeneration: report.executionGeneration,
+        occurrenceId: report.output.occurrenceId,
+        terminal: true,
+      });
+    }
+    return firings;
+  }
+
+  /**
    * Applies the Host's answer to the attach message and resumes reporting on
    * this connection. An attached Run replays what the Host has not committed,
    * from `nextOrdinal`, then states its streams again; a revoked one stops.
@@ -2690,6 +2736,26 @@ export class RunnerRuntime {
       if (!answered.has(runId)) revoked.push({ reason: "The Host does not hold this Run", runId });
     }
     if (revoked.length > 0) this.revokeRuns(revoked);
+    if (answer.firingResults !== undefined) {
+      const firingAnswers = new Map(
+        answer.firingResults.map((result) => [result.occurrenceId, result]),
+      );
+      for (const active of this.#triggerPrograms.values()) {
+        const result = firingAnswers.get(active.command.context.occurrenceId);
+        if (!result || result.status === "revoked") {
+          active.abort.abort(
+            new Error(result?.reason ?? "The Host does not hold this automation firing"),
+          );
+        } else {
+          active.sink = sink;
+        }
+      }
+      for (const [key, report] of this.#endedAttempts) {
+        if (typeof report === "string" || report.type !== "runner.trigger-result") continue;
+        const result = firingAnswers.get(report.output.occurrenceId);
+        if (result?.status === "revoked") this.#endedAttempts.delete(key);
+      }
+    }
     await Promise.all(resumed);
     for (const [driverKind, installation] of this.#pendingDriverInstallationAdvertisements) {
       const operation = this.#driverInstallationOperations.get(driverKind);
@@ -2729,6 +2795,10 @@ export class RunnerRuntime {
   /** Forgets what the Host has committed; nothing acknowledged is replayed again. */
   acknowledge(
     acks: Extract<HostToRunnerMessage, { readonly type: "host.executions.acked" }>["acks"],
+    firingAcks?: Extract<
+      HostToRunnerMessage,
+      { readonly type: "host.executions.acked" }
+    >["firingAcks"],
   ): void {
     for (const ack of acks) {
       for (const [key, report] of this.#endedAttempts) {
@@ -2751,6 +2821,9 @@ export class RunnerRuntime {
       }
       if (ack.sessionBound) journal.sessionBound = null;
       this.#releaseIfSettled(active);
+    }
+    for (const ack of firingAcks ?? []) {
+      this.#endedAttempts.delete(`${ack.occurrenceId}:${ack.executionGeneration}`);
     }
   }
 
@@ -2879,16 +2952,11 @@ export class RunnerRuntime {
   }
 
   async connectionLost(sink: RunnerMessageSink): Promise<void> {
-    // Runs keep executing: they hold leases the Host renews, and what they
-    // report waits in each Run's journal for the next connection. Trigger
-    // programs and watches belong to the connection that started them.
+    // Runs and automation firings keep executing across transient disconnects
+    // and Host restarts (T12): their results wait in memory and reattach on the
+    // next connection. Watches and app servers belong to the connection that started them.
     if (this.#connection === sink) this.#connection = null;
     const tasks: Promise<void>[] = [];
-    for (const active of this.#triggerPrograms.values()) {
-      if (active.sink !== sink) continue;
-      active.abort.abort(new Error("Host connection was lost"));
-      if (active.task) tasks.push(active.task);
-    }
     tasks.push(this.#watchSupervisor.connectionLost(sink));
     tasks.push(this.appServers.stopAll());
     await Promise.allSettled(tasks);
@@ -3135,16 +3203,64 @@ export class RunnerRuntime {
         agentHome: active.command.agentHome,
         signal: active.abort.signal,
       });
+      let currentMcpToken = context.mcp.token;
+      let currentBrowserToken = context.browserCdp?.token ?? null;
+      let tokenIssuedAt = Date.now();
+      let pendingTokenRenewal: Promise<void> | undefined;
+      const ensureFreshTokens = async (): Promise<void> => {
+        if (Date.now() - tokenIssuedAt < 11 * 60 * 60_000 || !active.sink.renewProxyToken) {
+          return;
+        }
+        pendingTokenRenewal ??= active.sink
+          .renewProxyToken({
+            executionGeneration: context.executionGeneration,
+            kind: "firing",
+            occurrenceId: context.occurrenceId,
+          })
+          .then((answer) => {
+            if (answer?.mcp) {
+              currentMcpToken = answer.mcp.token;
+              currentBrowserToken = answer.browserCdp?.token ?? null;
+              tokenIssuedAt = Date.now();
+            }
+          })
+          .catch(() => undefined)
+          .finally(() => {
+            pendingTokenRenewal = undefined;
+          });
+        await pendingTokenRenewal;
+      };
       endpoints = await startProgramEndpoints({
-        capabilities: () => context,
+        capabilities: () => ({
+          browserCdp:
+            context.browserCdp && currentBrowserToken
+              ? { token: currentBrowserToken, url: context.browserCdp.url }
+              : null,
+          mcp: { token: currentMcpToken, url: context.mcp.url },
+        }),
+        resolveBrowserToken: async () => {
+          await ensureFreshTokens();
+          return currentBrowserToken ?? "";
+        },
+        resolveMcpToken: async () => {
+          await ensureFreshTokens();
+          return currentMcpToken;
+        },
         transport: { mode: this.#mode },
       });
       active.abort.signal.throwIfAborted();
-      output = await this.#programExecutor.execute({
-        context,
+      output = await this.#scriptExecutor.execute({
+        automationId: context.triggerId,
         endpoints: endpoints.endpoints,
+        event: scriptEventFromTriggerEvent(context),
+        firingId: context.occurrenceId,
         planLaunch: () => this.#planProgramLaunch(key),
+        script: context.script,
+        ...(context.secrets ? { secrets: context.secrets } : {}),
         signal: active.abort.signal,
+        ...(context.webhookBodyBase64 !== undefined
+          ? { webhookBody: Buffer.from(context.webhookBodyBase64, "base64") }
+          : {}),
         workspace,
       });
     } catch (error) {
@@ -3163,11 +3279,11 @@ export class RunnerRuntime {
     } finally {
       output ??= {
         completedAt: new Date().toISOString(),
-        error: "Trigger program ended without an execution result",
+        error: "Automation script ended without an execution result",
         exitCode: null,
         occurrenceId: context.occurrenceId,
         result: null,
-        status: "failed",
+        status: "unknown",
         stderr: "",
         stdout: "",
       };
@@ -4610,19 +4726,49 @@ function reject(
  * executable and native filesystem helper are resolved before the runtime
  * exists, so their absence here is a composition bug rather than a runtime condition.
  */
-function programExecutorFor(
+export function scriptEventFromTriggerEvent(
+  context: Extract<RunnerCommand, { readonly type: "trigger.execute" }>["context"],
+): AutomationScriptEvent {
+  const { event } = context;
+  const base = {
+    automationId: context.triggerId,
+    firedAt: event.receivedAt,
+    firingId: context.occurrenceId,
+    kind: event.source.kind,
+    taskId: event.trigger.anchorThreadId,
+    ...(event.payload !== undefined ? { payload: event.payload } : {}),
+  } as const;
+  if (event.source.kind === "schedule") {
+    return { ...base, kind: "schedule", scheduledFor: event.source.scheduledFor };
+  }
+  if (event.source.kind === "webhook") {
+    return {
+      ...base,
+      kind: "webhook",
+      request: {
+        headers: event.source.headers,
+        method: event.source.method,
+        path: event.source.path ?? "/hooks/v1",
+        query: event.source.query ?? {},
+      },
+    };
+  }
+  return base;
+}
+
+function scriptExecutorFor(
   options: Pick<RunnerRuntimeOptions, "nativeFsHelperBinary" | "nodeExecutable">,
   privateStateDirectory: string,
-): TriggerProgramExecutor {
+): AutomationScriptExecutor {
   if (!options.nodeExecutable || !options.nativeFsHelperBinary) {
     throw new TypeError(
-      "RunnerRuntime requires a verified nodeExecutable and nativeFsHelperBinary for Trigger programs",
+      "RunnerRuntime requires a verified nodeExecutable and nativeFsHelperBinary for automation scripts",
     );
   }
-  return new TriggerProgramExecutor({
+  return new AutomationScriptExecutor({
     nativeFsHelperBinary: options.nativeFsHelperBinary,
     nodeExecutable: options.nodeExecutable,
-    privateDirectory: resolve(privateStateDirectory, "trigger-programs"),
+    privateDirectory: resolve(privateStateDirectory, "automation-scripts"),
   });
 }
 

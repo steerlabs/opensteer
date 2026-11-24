@@ -67,6 +67,7 @@ export const reactNative = {
 
 export const primitives = {
   AppText: ({ children }: Children) => <span>{children}</span>,
+  DisplayTitle: ({ children }: Children) => <span>{children}</span>,
   CodeBlock: (props: { readonly label?: string; readonly text: string }) => (
     <pre aria-label={props.label}>{props.text}</pre>
   ),

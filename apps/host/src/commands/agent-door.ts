@@ -1,5 +1,6 @@
 import { OpensteerError } from "@opensteer/core";
 import type { DatabaseSchema } from "@opensteer/database";
+import type { HostApiCommand } from "@opensteer/protocol";
 import { commandTable, type CommandType } from "@opensteer/protocol/command-table";
 import type { Kysely } from "kysely";
 import {
@@ -14,15 +15,37 @@ import {
   agentCommandReadmission,
   agentCommandScope,
   type AgentCommandDoor,
+  type CommandAuthority,
 } from "./dispatch.js";
 import type { CommandRegistry } from "./registry.js";
 
+export type TriggerCommand = Extract<HostApiCommand, { readonly type: `trigger.${string}` }>;
+
+export const agentAutomationTypes: ReadonlySet<CommandType> = new Set([
+  "trigger.create",
+  "trigger.update",
+  "trigger.status.set",
+  "trigger.run",
+  "trigger.cancel",
+]);
+
+export interface AgentAutomationExecutor {
+  execute(
+    actor: AgentCaller,
+    command: TriggerCommand,
+    authority: CommandAuthority,
+  ): Promise<unknown>;
+}
+
 /**
- * The registry agents meet: a command the administration service runs for agents takes the
- * agent, and the service admits it again at commit; every other command is still the person's,
- * so the door puts it to them.
+ * The registry agents meet: a command the administration or automation handler runs for agents
+ * takes the agent and admits it again at commit; every other command is still the person's, so
+ * the door puts it to them.
  */
-export function agentCommandRegistry(administration: AdministrationService): CommandRegistry {
+export function agentCommandRegistry(
+  administration: AdministrationService,
+  automations?: AgentAutomationExecutor,
+): CommandRegistry {
   const personOnly = {
     accepts: "person" as const,
     run: async (): Promise<never> => {
@@ -44,7 +67,24 @@ export function agentCommandRegistry(administration: AdministrationService): Com
               return administration.execute(actor as AgentCaller, command as AdministrationCommand);
             },
           }
-        : personOnly,
+        : automations && agentAutomationTypes.has(type)
+          ? {
+              accepts: "any" as const,
+              run: async (
+                actor: { readonly kind: string },
+                command: unknown,
+                { authority }: { readonly authority: CommandAuthority | null },
+              ) => {
+                if (actor.kind === "person")
+                  throw new OpensteerError({ code: "internal", message: "Not the person's door" });
+                return automations.execute(
+                  actor as AgentCaller,
+                  command as TriggerCommand,
+                  authority!,
+                );
+              },
+            }
+          : personOnly,
     ]),
   ) as unknown as CommandRegistry;
 }

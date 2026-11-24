@@ -88,7 +88,7 @@ import { useMobileClient } from "../ui/mobile-client-context.js";
 import { useAppForeground } from "../ui/foreground.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import { enter, exit } from "../ui/motion.js";
-import { AppText } from "../ui/primitives.js";
+import { AppText, DisplayTitle } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { useContentInsets, usePaneInView } from "../ui/pane.js";
 import { useGutter, useReadingColumn } from "../ui/screen.js";
@@ -182,6 +182,11 @@ type TranscriptItem =
  */
 export interface ThreadHeaderState {
   readonly connectionLabel: string | null;
+  /**
+   * The label ends in a host (a connected agent's): one line that gives up its start, keeping the
+   * end that says whose it is, as a browser's address bar does. A host is never wrapped.
+   */
+  readonly connectionKeepsEnd?: boolean;
   readonly title: string;
   readonly icon: ThreadSummary["icon"];
   readonly color: ThreadSummary["color"];
@@ -197,6 +202,7 @@ export function sameThreadHeader(
   return (
     left !== null &&
     left.connectionLabel === right.connectionLabel &&
+    left.connectionKeepsEnd === right.connectionKeepsEnd &&
     left.title === right.title &&
     left.icon === right.icon &&
     left.color === right.color &&
@@ -1407,7 +1413,6 @@ function ThreadPaneForUser(
             label: "Try again",
             onPress: () => hostClient.activateThread(threadId),
           })}
-          numberOfLines={2}
         />
       </View>
     ) : null;
@@ -2008,9 +2013,9 @@ function EmptyThread(props: { readonly loading: boolean; readonly voice: boolean
     );
   return (
     <View style={styles.empty}>
-      <AppText role="displaySmall">
+      <DisplayTitle size="small">
         {props.voice ? "Say what you need done" : "What would you like to do?"}
-      </AppText>
+      </DisplayTitle>
       <AppText role="secondary" tone="muted">
         {props.voice
           ? "Talk to Opensteer and it starts the work, keeps you posted and asks when it needs you."

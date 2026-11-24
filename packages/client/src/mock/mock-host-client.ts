@@ -7220,10 +7220,9 @@ class MockHostState {
         const created = this.createTrigger({
           anchorThreadId: ThreadIdSchema.parse(worker.id),
           name: worker.title,
-          program: {
-            language: "typescript",
-            toolContractVersion: 5,
-            source: "export default async () => null",
+          script: {
+            interpreter: null,
+            text: "console.log('memory-pass')",
           },
           source: {
             kind: "schedule",
@@ -9322,14 +9321,13 @@ class MockHostState {
       createdByThreadId: null,
       id: createId("triggerRevision"),
       ordinal: 1,
-      program: input.program,
+      script: input.script,
       source: input.source,
       triggerId,
     });
     const webhookRouteKey = input.source.kind === "webhook" ? `mock-webhook-${triggerId}` : null;
     const trigger = TriggerSchema.parse({
       anchorThreadId: thread.id,
-      consecutiveFailures: 0,
       createdAt: now.toISOString(),
       createdBy: mockUserId,
       createdByThreadId: null,
@@ -9362,8 +9360,8 @@ class MockHostState {
       ...(webhookRouteKey
         ? {
             webhook: {
-              secret: `mock-secret-${triggerId}`,
-              url: `${mockWebhookOrigin}/v1/trigger-webhooks/${webhookRouteKey}`,
+              scope: "public" as const,
+              url: `${mockWebhookOrigin}/hooks/v1/${webhookRouteKey}`,
             },
           }
         : {}),
@@ -9375,7 +9373,7 @@ class MockHostState {
     if (
       record.trigger.systemRole &&
       (input.name !== undefined ||
-        input.program !== undefined ||
+        input.script !== undefined ||
         (input.source !== undefined &&
           (input.source.kind !== "schedule" ||
             input.source.schedule.kind !== "cron" ||
@@ -9399,7 +9397,7 @@ class MockHostState {
       createdByThreadId: null,
       id: createId("triggerRevision"),
       ordinal: record.revision.ordinal + 1,
-      program: input.program ?? record.revision.program,
+      script: input.script ?? record.revision.script,
       source,
       triggerId,
     });
@@ -9407,9 +9405,6 @@ class MockHostState {
     // one-time instant stays elapsed.
     const trigger = TriggerSchema.parse({
       ...record.trigger,
-      ...(input.program === undefined && input.source === undefined
-        ? {}
-        : { consecutiveFailures: 0 }),
       currentRevisionId: revision.id,
       name:
         input.name === undefined
@@ -9447,7 +9442,6 @@ class MockHostState {
     const now = this.now();
     const trigger = TriggerSchema.parse({
       ...record.trigger,
-      ...(status === "active" ? { consecutiveFailures: 0 } : {}),
       nextFireAt: status === "active" ? resumedFireAt(record.revision.source, now) : null,
       pauseReason: null,
       status,

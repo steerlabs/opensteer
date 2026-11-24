@@ -1497,10 +1497,9 @@ describeStore("PostgreSQL store", (it) => {
       createdBy: fixture.userId,
       idempotencyKey: "trigger-lifecycle-create",
       name: "Daily work",
-      program: {
-        toolContractVersion: 5,
-        language: "typescript",
-        source: "export default async function ({ event }) { return event.payload; }",
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -1519,10 +1518,9 @@ describeStore("PostgreSQL store", (it) => {
       createdBy: fixture.userId,
       idempotencyKey: "trigger-lifecycle-create",
       name: "Daily work",
-      program: {
-        toolContractVersion: 5,
-        language: "typescript",
-        source: "export default async function ({ event }) { return event.payload; }",
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -1574,9 +1572,8 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).resolves.toBeUndefined();
     await expect(
-      triggers.failActiveForRunnerDisconnect({
-        activeOccurrenceIds: [createId("triggerOccurrence")],
-        runnerBootId: "boot-trigger-lifecycle",
+      triggers.markActiveUnknownForRevokedRunner({
+        runnerBootId: "other-boot",
         runnerId: fixture.runnerId,
       }),
     ).resolves.toBe(0);
@@ -1629,44 +1626,72 @@ describeStore("PostgreSQL store", (it) => {
       createdBy: fixture.userId,
       idempotencyKey: "trigger-webhook-create",
       name: "Git provider",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "webhook",
       },
       webhookRouteKey: "wh_12345678901234567890123456789012",
-      webhookSecretHash: "a".repeat(64),
     });
+    const firstBody = Buffer.from('{"ref":"main","seq":1}', "utf8");
+    const secondBody = Buffer.from('{"ref":"main","seq":2}', "utf8");
     const first = await triggers.enqueueWebhook({
-      deliveryId: "delivery-1",
       headers: {
         "x-github-event": "push",
+        "x-hub-signature-256": "sha256=first",
       },
       method: "POST",
-      payload: {
-        ref: "main",
-      },
+      path: "/hooks/v1",
+      query: { seq: "1" },
+      rawBody: firstBody,
       routeKey: created.trigger.webhookRouteKey ?? "",
     });
-    const duplicate = await triggers.enqueueWebhook({
-      deliveryId: "delivery-1",
+    const second = await triggers.enqueueWebhook({
       headers: {
         "x-github-event": "push",
+        "x-hub-signature-256": "sha256=second",
       },
       method: "POST",
-      payload: {
-        ref: "main",
-      },
+      path: "/hooks/v1",
+      query: { seq: "2" },
+      rawBody: secondBody,
       routeKey: created.trigger.webhookRouteKey ?? "",
     });
+    // Y11: Every webhook request queues in order (no deliveryId deduplication).
     expect(first.wasDuplicate).toBe(false);
-    expect(duplicate.wasDuplicate).toBe(true);
-    expect(duplicate.occurrence.id).toBe(first.occurrence.id);
+    expect(second.wasDuplicate).toBe(false);
+    expect(second.occurrence.id).not.toBe(first.occurrence.id);
+    // Raw body bytes are preserved for dispatch (Y2 / Y15).
+    const dispatchCtx = await triggers.loadDispatchContext(first.occurrence.commandId);
+    expect(dispatchCtx.webhookBody?.equals(firstBody)).toBe(true);
+
+    // Key rotation (T7): old URL returns identical 404 immediately; new URL accepts requests.
+    const rotatedKey = "whk_rotated012345678901234567890123456789012";
+    const rotated = await triggers.rotateWebhookKey({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+      webhookRouteKey: rotatedKey,
+    });
+    expect(rotated.webhookRouteKey).toBe(rotatedKey);
+    await expect(
+      triggers.enqueueWebhook({
+        headers: {},
+        method: "POST",
+        routeKey: created.trigger.webhookRouteKey ?? "",
+      }),
+    ).rejects.toMatchObject({ code: "not_found", message: "Webhook not found" });
+    const afterRotate = await triggers.enqueueWebhook({
+      headers: {},
+      method: "POST",
+      routeKey: rotatedKey,
+    });
+    expect(afterRotate.wasDuplicate).toBe(false);
   });
-  it("caps the pending webhook backlog while still answering retries of admitted deliveries", async ({
+  it("caps the pending webhook backlog at 100 in order before refusing with resource_exhausted (Y11)", async ({
     storeFixture,
   }) => {
     const { createRunFixture, triggers } = storeFixture;
@@ -1677,36 +1702,31 @@ describeStore("PostgreSQL store", (it) => {
       createdBy: fixture.userId,
       idempotencyKey: "trigger-backlog-create",
       name: "Busy webhook",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "webhook",
       },
       webhookRouteKey: "wh_backlog0123456789012345678901234",
-      webhookSecretHash: "b".repeat(64),
     });
     const routeKey = created.trigger.webhookRouteKey ?? "";
     for (let index = 0; index < MAX_PENDING_TRIGGER_OCCURRENCES; index += 1) {
       const admitted = await triggers.enqueueWebhook({
-        deliveryId: `backlog-${index}`,
         headers: {},
         method: "POST",
-        payload: {
-          index,
-        },
+        rawBody: Buffer.from(JSON.stringify({ index }), "utf8"),
         routeKey,
       });
       expect(admitted.wasDuplicate).toBe(false);
     }
     await expect(
       triggers.enqueueWebhook({
-        deliveryId: "backlog-over-cap",
         headers: {},
         method: "POST",
-        payload: null,
+        rawBody: Buffer.from("over-cap", "utf8"),
         routeKey,
       }),
     ).rejects.toMatchObject({
@@ -1715,21 +1735,6 @@ describeStore("PostgreSQL store", (it) => {
         pendingLimit: MAX_PENDING_TRIGGER_OCCURRENCES,
       },
     });
-    // A sender retrying an already-admitted delivery must still see its answer:
-    // the cap gates new work, not the idempotent reply to accepted work.
-    await expect(
-      triggers.enqueueWebhook({
-        deliveryId: "backlog-0",
-        headers: {},
-        method: "POST",
-        payload: {
-          index: 0,
-        },
-        routeKey,
-      }),
-    ).resolves.toMatchObject({
-      wasDuplicate: true,
-    });
     await expect(
       triggers.enqueueManual({
         actorThreadId: null,
@@ -1737,7 +1742,7 @@ describeStore("PostgreSQL store", (it) => {
         triggerId: created.trigger.id,
       }),
     ).rejects.toMatchObject({
-      code: "resource_exhausted",
+      code: "conflict",
     });
   });
   it("collapses queued schedule ticks while letting a running Occurrence overlap the next one", async ({
@@ -1751,10 +1756,10 @@ describeStore("PostgreSQL store", (it) => {
       createdBy: fixture.userId,
       idempotencyKey: "trigger-collapse-create",
       name: "Every minute",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -1816,16 +1821,15 @@ describeStore("PostgreSQL store", (it) => {
       createdBy: fixture.userId,
       idempotencyKey: "trigger-cancel-create",
       name: "Cancelable webhook",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "webhook",
       },
       webhookRouteKey: "wh_cancel01234567890123456789012345",
-      webhookSecretHash: "c".repeat(64),
     });
     const routeKey = created.trigger.webhookRouteKey ?? "";
     const delivered = [];
@@ -1833,7 +1837,6 @@ describeStore("PostgreSQL store", (it) => {
       delivered.push(
         (
           await triggers.enqueueWebhook({
-            deliveryId,
             headers: {},
             method: "POST",
             payload: {
@@ -1931,10 +1934,10 @@ describeStore("PostgreSQL store", (it) => {
       createdBy: fixture.userId,
       idempotencyKey: "trigger-rearm-create",
       name: "One shot",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -1950,10 +1953,10 @@ describeStore("PostgreSQL store", (it) => {
       expectedRevisionId: created.revision.id,
       name: "One shot, renamed",
       ownerId: fixture.userId,
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => 1",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       triggerId: created.trigger.id,
     });
@@ -2003,10 +2006,10 @@ describeStore("PostgreSQL store", (it) => {
       createdBy: fixture.userId,
       idempotencyKey: "trigger-authority-pause-create",
       name: "Hourly report",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -2067,19 +2070,17 @@ describeStore("PostgreSQL store", (it) => {
       createdBy: fixture.userId,
       idempotencyKey: "trigger-admission-create",
       name: "Control caller",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "webhook",
       },
       webhookRouteKey: "wh_admission012345678901234567890123",
-      webhookSecretHash: "d".repeat(64),
     });
     const { occurrence } = await triggers.enqueueWebhook({
-      deliveryId: "admission-1",
       headers: {},
       method: "POST",
       payload: null,

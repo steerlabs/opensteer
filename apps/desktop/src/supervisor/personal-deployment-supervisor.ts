@@ -133,6 +133,8 @@ interface PersonalDeploymentSupervisorOptions {
   readonly syncExtensionDirectory?: typeof syncBrowserExtensionDirectory;
   readonly dataReset?: PersonalDataReset;
   readonly accountIssuer?: URL | string | null;
+  /** `NODE_EXTRA_CA_CERTS` from the app's own environment: the Host gets it, and nothing else does. */
+  readonly extraCertificateAuthorities?: string | null;
   readonly allocatePort?: () => Promise<number>;
   readonly baseEnvironment?: Readonly<Record<string, string>>;
   readonly catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
@@ -248,6 +250,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     "userDataDirectory" | "syncExtensionDirectory"
   >;
   readonly #accountIssuer: string | null;
+  readonly #extraCertificateAuthorities: string | null;
   readonly #allocatePort: () => Promise<number>;
   readonly #passkeys: boolean;
   readonly #baseEnvironment: Readonly<Record<string, string>>;
@@ -317,6 +320,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     this.#accountIssuer = options.accountIssuer
       ? new URL(String(options.accountIssuer)).origin
       : null;
+    this.#extraCertificateAuthorities = options.extraCertificateAuthorities ?? null;
     this.#allocatePort = options.allocatePort ?? allocateLoopbackPort;
     this.#passkeys = options.passkeys === true;
     this.#baseEnvironment = options.baseEnvironment ?? filterUserEnvironment(process.env);
@@ -1050,6 +1054,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         this.#passkeys,
         extensionDirectory,
         await this.#personFullName(),
+        this.#extraCertificateAuthorities,
       ),
       (line) => {
         const stage = line.startsWith(`${personalUpgradeProgressLine}: `)
@@ -2253,7 +2258,8 @@ function postgresSpec(
   };
 }
 
-function hostSpec(
+/** The Host's process as this supervisor starts it: its environment is all it is given. */
+export function hostSpec(
   release: VerifiedPersonalRuntimeRelease,
   manifest: PersonalDeploymentManifest,
   paths: PersonalDeploymentPreparedPaths,
@@ -2264,6 +2270,8 @@ function hostSpec(
   passkeys: boolean,
   extensionDirectory: string | null,
   ownerNameSeed: string | null,
+  /** `NODE_EXTRA_CA_CERTS`, when the app's own environment carried it; otherwise none. */
+  extraCertificateAuthorities: string | null = null,
 ): PersonalProcessSpec {
   const fingerprint = HostKeyFingerprintSchema.parse(manifest.hostKeyFingerprint);
   const origin = `http://127.0.0.1:${manifest.hostPort}`;
@@ -2296,6 +2304,8 @@ function hostSpec(
       // would be redacted out of unrelated words.
       ...(ownerNameSeed ? { OPENSTEER_OWNER_NAME_SEED: ownerNameSeed } : {}),
       ...(accountIssuer ? { OPENSTEER_PERSONAL_ACCOUNT_ISSUER: accountIssuer } : {}),
+      // Node's own way to add an authority: only when someone set it for the app on purpose.
+      ...(extraCertificateAuthorities ? { NODE_EXTRA_CA_CERTS: extraCertificateAuthorities } : {}),
       ...(portalOrigin ? { OPENSTEER_PORTAL_ORIGIN: portalOrigin } : {}),
       OPENSTEER_RUNTIME_ORIGIN: origin,
       OPENSTEER_SIGNUP_POLICY: "closed",

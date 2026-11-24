@@ -192,10 +192,9 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
         createdBy: fixture.userId,
         idempotencyKey: key,
         name: key,
-        program: {
-          toolContractVersion: 5,
-          language: "javascript",
-          source: "export default async () => null",
+        script: {
+          interpreter: null,
+          text: "console.log('ok')",
         },
         source: {
           kind: "schedule",
@@ -839,10 +838,9 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
       createdBy: fixture.userId,
       idempotencyKey: "routes-end-names-trigger",
       name: "Clean trigger",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -1749,10 +1747,9 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
       createdBy: fixture.userId,
       idempotencyKey: "sol-trig-dirty",
       name: "seed-trig-dirty",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -1765,10 +1762,9 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
       createdBy: fixture.userId,
       idempotencyKey: "sol-trig-clean",
       name: "seed-trig-clean",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",

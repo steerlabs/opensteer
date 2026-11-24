@@ -1082,13 +1082,14 @@ export interface TriggerDetail {
   occurrences: TriggerOccurrence[];
   revision: TriggerRevision;
   trigger: Trigger;
+  webhook?: { scope: "local" | "public"; url?: string | null | undefined } | null | undefined;
 }
 
 export interface CreatedTrigger {
   revision: TriggerRevision;
   trigger: Trigger;
   wasDuplicate: boolean;
-  webhook?: { secret: string; url: string } | undefined;
+  webhook?: { scope?: "local" | "public" | undefined; url: string } | undefined;
 }
 
 /** One page of a computer's session history, newest session first. */

@@ -48,9 +48,18 @@ export function sameLiveWorkSource(previous: LiveWorkSource, next: LiveWorkSourc
   );
 }
 
-/** A page's site as a person reads it: its host, without the "www." that says nothing. */
-export function pageSiteLabel(url: string): string | null {
-  return hostName(url)?.replace(/^www\./u, "") || null;
+/**
+ * A page's site as a person reads it: its host, without the "www." that says nothing. With
+ * `origin`, where a host alone could name two places, as a browser's address bar and a connected
+ * agent's title do, it also keeps a port that is not the scheme's default and a scheme that is not
+ * https: "http://192.168.1.20:3000", never "192.168.1.20".
+ */
+export function pageSiteLabel(url: string, options?: { readonly origin?: boolean }): string | null {
+  const host = hostName(url)?.replace(/^www\./u, "") || null;
+  if (host === null || options?.origin !== true) return host;
+  const parsed = new URL(url);
+  const scheme = parsed.protocol === "https:" ? "" : `${parsed.protocol}//`;
+  return `${scheme}${host}${parsed.port === "" ? "" : `:${parsed.port}`}`;
 }
 
 function hostName(url: string): string | null {

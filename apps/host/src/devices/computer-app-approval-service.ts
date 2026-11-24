@@ -13,6 +13,8 @@ import {
   isPhoneDisplayDefinitionId,
   type PhoneDisplayDefinitionId,
   type ThreadId,
+  type TriggerOccurrenceId,
+  type TriggerWatchActivationId,
   type UserId,
 } from "@opensteer/core";
 import {
@@ -993,7 +995,9 @@ export class ComputerAppApprovalService {
     readonly callId?: string;
     readonly reason: string;
     readonly ownerUserId: UserId;
-    readonly originatingRunId: RunId;
+    readonly originatingRunId?: RunId | null;
+    readonly originatingOccurrenceId?: TriggerOccurrenceId | null;
+    readonly originatingWatchActivationId?: TriggerWatchActivationId | null;
     readonly deviceId?: DeviceId;
     readonly runnerId?: RunnerId;
     readonly threadId: ThreadId;
@@ -1048,7 +1052,7 @@ export class ComputerAppApprovalService {
     try {
       resolved = await computerUse.resolveApp({
         app: input.app,
-        runId: input.originatingRunId,
+        ...(input.originatingRunId ? { runId: input.originatingRunId } : {}),
         deviceId: input.deviceId,
       });
     } catch (error) {
@@ -1196,11 +1200,22 @@ export class ComputerAppApprovalService {
       return this.#store.requestDeviceComputerAppAccess({
         access: input.access,
         app: ask.app,
-        auditRequestId: input.callId ?? input.originatingRunId,
+        auditRequestId:
+          input.callId ??
+          input.originatingRunId ??
+          input.originatingOccurrenceId ??
+          input.originatingWatchActivationId ??
+          input.threadId,
         definitionDigest: integrationDefinitionDigest(definition),
         definitionId,
         ...(input.callId === undefined ? {} : { idempotencyKey: input.callId }),
-        originatingRunId: input.originatingRunId,
+        originatingRunId: input.originatingRunId ?? null,
+        ...(input.originatingOccurrenceId
+          ? { originatingOccurrenceId: input.originatingOccurrenceId }
+          : {}),
+        ...(input.originatingWatchActivationId
+          ? { originatingWatchActivationId: input.originatingWatchActivationId }
+          : {}),
         ownerUserId: input.ownerUserId,
         reason: input.reason,
         deviceId: input.deviceId,

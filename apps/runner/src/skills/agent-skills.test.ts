@@ -134,11 +134,11 @@ describe("Runner Agent Skills", () => {
     expect(tasks).not.toMatch(/publish an\s+update there/u);
     expect(automations).toContain("# Reminders and updates for the person");
     // A reminder wakes its automation's actual task, whose reply is the notification.
-    expect(automations).toMatch(
-      /opensteer\.callTool\("opensteer_task_send", \{\s+delivery: "queue",\s+message: "Reminder: /u,
+    expect(automations).toContain(
+      `opensteer tool opensteer_task_send '{"delivery":"queue","message":"Reminder:`,
     );
-    expect(automations).toContain("taskId: event.trigger.anchorThreadId");
-    expect(automations).toContain("toolContractVersion: 5");
+    expect(automations).not.toContain("toolContractVersion");
+    expect(automations).not.toContain("opensteer.callTool");
   });
 
   it("ships the machine access refusal sentences verbatim", async () => {

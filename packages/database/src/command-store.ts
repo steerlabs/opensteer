@@ -43,6 +43,7 @@ import {
   type UserId,
   type RunId,
   type ThreadId,
+  type TriggerId,
   type RequestId,
   type RequestResponse,
   OpensteerError,
@@ -145,6 +146,7 @@ export type RunnerControlInput =
       readonly type: "request.respond";
     };
 export interface ClaimedCommand {
+  readonly blocked?: undefined;
   readonly command: CommandRow;
 
   /**
@@ -155,6 +157,10 @@ export interface ClaimedCommand {
   /** External sender revocation cancels that input, not other people sharing its authority. */
   readonly terminalFailureInput?: "seed-input";
 }
+export interface BlockedCommandClaim {
+  readonly blocked: "firing-ahead";
+  readonly triggerId: TriggerId;
+}
 async function claimObservedCommand(
   transaction: Transaction<DatabaseSchema>,
   observed: Pick<
@@ -162,14 +168,52 @@ async function claimObservedCommand(
     "environmentId" | "id" | "payload" | "requestedBy" | "runId" | "threadId" | "type"
   > & { readonly connectionId: string | null },
   dispatcherId: string,
-): Promise<ClaimedCommand | null> {
+): Promise<ClaimedCommand | BlockedCommandClaim | null> {
   const lineage =
     observed.type === "run.execute" || observed.type === "run.steer" ? observed.connectionId : null;
   await lockLineageConnection(transaction, lineage);
   // A tick enqueued before its chat was paused, listed before the pause: held at its claim, as a
   // queued Run is, and listed again when the chat is back.
-  if (observed.type === "trigger.execute" && (await triggerCommandHeld(transaction, observed.id)))
-    return null;
+  // AA2 / Y11 / T10: Enforce one firing at a time (and FIFO webhook order) here at trigger claim,
+  // never on the shared listPendingCommands dispatch query.
+  if (observed.type === "trigger.execute") {
+    if (await triggerCommandHeld(transaction, observed.id)) return null;
+    const candidate = await transaction
+      .selectFrom("triggerOccurrences")
+      .select(["createdAt", "id", "triggerId"])
+      .where("commandId", "=", observed.id)
+      .executeTakeFirst();
+    if (candidate) {
+      await transaction
+        .selectFrom("triggers")
+        .select("id")
+        .where("id", "=", candidate.triggerId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      const blocker = await transaction
+        .selectFrom("triggerOccurrences")
+        .select("id")
+        .where("triggerId", "=", candidate.triggerId)
+        .where("id", "!=", candidate.id)
+        .where((eb) =>
+          eb.or([
+            eb("status", "=", "running"),
+            eb.and([
+              eb("status", "=", "pending"),
+              sql<boolean>`(created_at, id) < (${candidate.createdAt}, ${candidate.id})`,
+            ]),
+          ]),
+        )
+        .limit(1)
+        .executeTakeFirst();
+      if (blocker) {
+        return {
+          blocked: "firing-ahead",
+          triggerId: candidate.triggerId,
+        };
+      }
+    }
+  }
   // Follow ./lock-order.ts: an ambiguous prior dispatch may requeue a command
   // just as the old Runner commits its terminal event.
   const run = observed.runId
@@ -1258,7 +1302,8 @@ export async function claimNextCommand(
       .orderBy("commands.createdAt", "asc")
       .executeTakeFirst();
     if (!candidate) return null;
-    return claimObservedCommand(transaction, candidate, dispatcherId);
+    const result = await claimObservedCommand(transaction, candidate, dispatcherId);
+    return result && !result.blocked ? result : null;
   });
 }
 
@@ -1543,11 +1588,23 @@ async function triggerCommandHeld(
         and ${connectionState()} = 'waiting') as held`.execute(transaction);
   return rows[0]?.held === true;
 }
+export function claimCommand(
+  database: Kysely<DatabaseSchema>,
+  commandId: CommandRow["id"],
+  dispatcherId: string,
+): Promise<ClaimedCommand | null>;
+export function claimCommand(
+  database: Kysely<DatabaseSchema>,
+  commandId: CommandRow["id"],
+  dispatcherId: string,
+  options: { readonly includeBlocked?: boolean },
+): Promise<ClaimedCommand | BlockedCommandClaim | null>;
 export async function claimCommand(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
   dispatcherId: string,
-): Promise<ClaimedCommand | null> {
+  options?: { readonly includeBlocked?: boolean },
+): Promise<ClaimedCommand | BlockedCommandClaim | null> {
   return commitPersonalMutation(database, async (transaction) => {
     const observed = await transaction
       .selectFrom("commands")
@@ -1566,7 +1623,9 @@ export async function claimCommand(
       .where("commands.status", "=", "pending")
       .executeTakeFirst();
     if (!observed) return null;
-    return claimObservedCommand(transaction, observed, dispatcherId);
+    const result = await claimObservedCommand(transaction, observed, dispatcherId);
+    if (result?.blocked && !options?.includeBlocked) return null;
+    return result;
   });
 }
 export async function loadSteerDispatchInput(
@@ -1647,20 +1706,53 @@ export async function loadSteerDispatchInput(
     threadId: row.targetThreadId,
   };
 }
+export async function markCommandFrameSent(
+  database: Kysely<DatabaseSchema>,
+  commandId: CommandRow["id"],
+): Promise<void> {
+  await commitPersonalMutation(database, async (transaction) => {
+    const now = new Date();
+    // Follow lock-order.ts: trigger_occurrences (120) before commands (218).
+    await transaction
+      .updateTable("triggerOccurrences")
+      .set({ frameSentAt: now, provenNotStartedAt: null, updatedAt: now })
+      .where("commandId", "=", commandId)
+      .where("status", "=", "running")
+      .execute();
+    await transaction
+      .updateTable("commands")
+      .set({ frameSentAt: now, updatedAt: now })
+      .where("id", "=", commandId)
+      .where("status", "=", "dispatched")
+      .execute();
+  });
+}
+
 export async function retryCommand(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
   commandId: CommandRow["id"],
   error: unknown,
+  options?: { readonly provenNotStarted?: boolean | undefined },
 ): Promise<void> {
   return commitPersonalMutation(database, async (transaction) => {
     const observed = await transaction
       .selectFrom("commands")
-      .select(["id", "runId", "type"])
+      .select(["frameSentAt", "id", "runId", "type"])
       .where("id", "=", commandId)
       .where("status", "=", "dispatched")
       .executeTakeFirst();
     if (!observed) return;
+    if (
+      observed.type === "trigger.execute" &&
+      observed.frameSentAt !== null &&
+      !options?.provenNotStarted
+    ) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Cannot retry an automation firing after its dispatch frame was sent.",
+      });
+    }
     if (observed.type === "trigger.execute") {
       await transaction
         .selectFrom("triggerOccurrences")
@@ -1711,6 +1803,7 @@ export async function retryCommand(
       .updateTable("commands")
       .set({
         dispatcherId: null,
+        frameSentAt: null,
         lastError: safeError(error),
         status: "pending",
         updatedAt: new Date(),
@@ -1754,6 +1847,7 @@ export async function retryCommand(
           and connection_id is not null and runner_id is not null and runner_boot_id is not null
           and (terminal_evidence_at is null or contact_lost_at is not null)
       `.execute(transaction);
+      const now = new Date();
       await transaction
         .updateTable("triggerOccurrences")
         .set({
@@ -1761,11 +1855,12 @@ export async function retryCommand(
           admittedAccessMode: null,
           terminalEvidenceAt: null,
           contactLostAt: null,
+          ...(options?.provenNotStarted ? { frameSentAt: null, provenNotStartedAt: now } : {}),
           runnerBootId: null,
           runnerId: null,
           startedAt: null,
           status: "pending",
-          updatedAt: new Date(),
+          updatedAt: now,
         })
         .where("commandId", "=", commandId)
         .where("status", "=", "running")
@@ -1782,6 +1877,7 @@ export async function failCommand(
   queuedInputCancellation:
     "activation-input" | "authority-cohort" | "seed-input" = "activation-input",
   failureCode: "dispatch_failed" | "runner_restarted" = "dispatch_failed",
+  options?: { readonly provenNotStarted?: boolean | undefined },
 ): Promise<void> {
   const observed = await database
     .selectFrom("commands")
@@ -1837,12 +1933,14 @@ export async function failCommand(
           .set({
             completedAt: now,
             error: jsonValue(failure),
+            ...(options?.provenNotStarted ? { frameSentAt: null, provenNotStartedAt: now } : {}),
             status: "failed",
             updatedAt: now,
           })
           .where("commandId", "=", commandId)
           .where("status", "in", ["pending", "running"])
           .execute();
+        await wakeExecutionCommands(transaction);
       }
     });
     return;

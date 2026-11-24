@@ -255,7 +255,6 @@ export const databaseLockOrder = [
   "account_directory_projections",
   "personal_remote_pairing_codes",
   "personal_remote_session_grant_uses",
-  "watch_control_requests",
   // Only paths already holding the Run write its nodes, attempts and grants, last.
   "execution_nodes",
   "run_attempts",

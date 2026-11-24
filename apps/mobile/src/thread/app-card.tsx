@@ -117,7 +117,7 @@ function Card(props: { readonly client: HostClient; readonly entry: AppEntry }):
       </View>
       {opening.line === null ? null : (
         <View style={styles.failure}>
-          <ActionLine line={opening.line} numberOfLines={2} onDismiss={opening.dismiss} />
+          <ActionLine line={opening.line} onDismiss={opening.dismiss} />
         </View>
       )}
       <AppFrame appId={appId} client={client} onTitle={setTitle} />

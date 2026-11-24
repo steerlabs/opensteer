@@ -278,10 +278,9 @@ it("keeps Voice in personal settings and uses real task anchors for Triggers", a
       kind: "schedule",
       schedule: { kind: "at", at: new Date(Date.now() + 60_000).toISOString() },
     },
-    program: {
-      language: "typescript",
-      toolContractVersion: 5,
-      source: "export default async function () {}",
+    script: {
+      interpreter: null,
+      text: "console.log('ok')",
     },
   });
   expect(created.trigger.anchorThreadId).toBe(anchor.id);
@@ -296,10 +295,9 @@ it("keeps Voice in personal settings and uses real task anchors for Triggers", a
         kind: "schedule",
         schedule: { kind: "at", at: new Date(Date.now() + 60_000).toISOString() },
       },
-      program: {
-        language: "typescript",
-        toolContractVersion: 5,
-        source: "export default async function () {}",
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
     }),
   ).rejects.toThrow();
@@ -333,10 +331,9 @@ it("owns independent memory jobs that see ordinary tasks as changed", async () =
       execution: f.execution,
       systemRole,
       pauseReason: null,
-      program: {
-        language: "typescript",
-        toolContractVersion: 5,
-        source: "export default async function () {}",
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",

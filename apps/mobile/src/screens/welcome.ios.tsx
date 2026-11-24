@@ -27,10 +27,11 @@ import {
   multilineTextAlignment,
   shapes,
   tint,
+  dynamicTypeSize,
 } from "@expo/ui/swift-ui/modifiers";
 import { useState, type ReactNode } from "react";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
-import { color } from "../theme.js";
+import { color, displayDynamicTypeLimit } from "../theme.js";
 import { Chevron, ErrorText, Footer, Lines } from "./settings-form-primitives.ios.js";
 import {
   keylessWelcomeCopy,
@@ -39,6 +40,7 @@ import {
   welcomePresentation,
   type WelcomeProps,
 } from "./welcome-model.js";
+import { isAddress } from "../ui/address-words.js";
 
 const secondary = foregroundStyle({ type: "hierarchical", style: "secondary" });
 const centred = multilineTextAlignment("center");
@@ -70,6 +72,7 @@ export function Welcome(props: WelcomeProps): ReactNode {
             <Text
               modifiers={[
                 font({ textStyle: "title", weight: "bold" }),
+                dynamicTypeSize({ max: displayDynamicTypeLimit }),
                 foregroundStyle(color.text),
                 centred,
               ]}
@@ -104,7 +107,11 @@ export function Welcome(props: WelcomeProps): ReactNode {
           <>
             <Section title={welcomeCopy.onMac}>
               {view.signedInAs === null ? null : (
-                <Lines detail="Opensteer account" title={view.signedInAs} />
+                <Lines
+                  detail="Opensteer account"
+                  title={view.signedInAs}
+                  {...(isAddress(view.signedInAs) ? { addressIn: "title" as const } : {})}
+                />
               )}
               <Text modifiers={[font({ textStyle: "body" }), secondary]}>
                 {welcomeCopy.onMacDetail}
@@ -121,7 +128,11 @@ export function Welcome(props: WelcomeProps): ReactNode {
                   {cloud.price === null ? cloud.detail : `${cloud.price}. ${cloud.detail}`}
                 </Text>
                 {cloud.address === null ? null : (
-                  <Lines detail={cloud.address} title={welcomeCopy.cloudAddress} />
+                  <Lines
+                    detail={cloud.address}
+                    title={welcomeCopy.cloudAddress}
+                    {...(isAddress(cloud.address) ? { addressIn: "detail" as const } : {})}
+                  />
                 )}
                 {cloud.address === null ? null : (
                   <Button onPress={() => props.onCopyCloudAddress?.(cloud.address!)}>

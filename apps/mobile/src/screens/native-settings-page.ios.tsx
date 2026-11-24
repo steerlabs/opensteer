@@ -49,8 +49,11 @@ import {
   pickerStyle,
 } from "@expo/ui/swift-ui/modifiers";
 import { useNavigation } from "@react-navigation/native";
+import { setStringAsync } from "expo-clipboard";
 import { useEffect, type ReactNode } from "react";
 import { color } from "../theme.js";
+import { useStackedLayout } from "../ui/stacked-layout.js";
+import { addressWords } from "../ui/address-words.js";
 import { RowMarkIcon } from "../ui/integration-icon.js";
 import type {
   NativeSettingsPageProps,
@@ -63,6 +66,7 @@ import {
   IdentityMark,
   LineFooter,
   Lines,
+  linesAddress,
   PlaceholderRow,
   Tile,
 } from "./settings-form-primitives.ios.js";
@@ -154,6 +158,8 @@ export function NativeSettingsSections(props: {
 }
 
 function Row({ row }: { readonly row: NativeSettingsRow }) {
+  // At the largest sizes a row's mark takes a line of its own (`stacked-layout.ts`).
+  const stacked = useStackedLayout();
   if (row.kind === "chips")
     return (
       <Picker
@@ -174,12 +180,36 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
     );
   if (row.kind === "text")
     return row.initial === undefined ? (
-      <Lines detail={row.detail ?? null} title={row.label} />
+      <Lines
+        detail={row.detail ?? null}
+        title={row.label}
+        titleParts={row.labelParts}
+        {...linesAddress(row.addressIn)}
+      />
     ) : (
-      <HStack alignment="center" spacing={12}>
-        <IdentityMark circular initial={row.initial} />
-        <Lines detail={row.detail ?? null} title={row.label} />
-      </HStack>
+      (() => {
+        const mark = <IdentityMark circular initial={row.initial} />;
+        const lines = (
+          <Lines
+            detail={row.detail ?? null}
+            title={row.label}
+            titleParts={row.labelParts}
+            {...linesAddress(row.addressIn)}
+          />
+        );
+        // Above the address at the largest sizes, so the address has the row's whole width.
+        return stacked ? (
+          <VStack alignment="leading" spacing={8}>
+            {mark}
+            {lines}
+          </VStack>
+        ) : (
+          <HStack alignment="center" spacing={12}>
+            {mark}
+            {lines}
+          </HStack>
+        );
+      })()
     );
   if (row.kind === "status") return <StatusRow row={row} />;
   if (row.kind === "choice") return <ChoiceRow row={row} />;
@@ -231,6 +261,7 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
             <Lines
               detail={row.detail ?? null}
               title={row.label}
+              {...linesAddress(row.addressIn)}
               {...(row.tone === "attention" ? { detailColor: color.amber } : {})}
             />
             <Spacer />
@@ -358,7 +389,32 @@ function StatusRow({ row }: { readonly row: Extract<NativeSettingsRow, { kind: "
         />
         <Text modifiers={[font({ textStyle: "body", weight: "semibold" })]}>{row.label}</Text>
       </HStack>
-      {row.detail === undefined ? null : (
+      {row.detail === undefined ? null : row.addressIn === "detail" ? (
+        // An address is drawn with characters that are not the address, so it is never selected:
+        // Copy in the system's menu gives the address exactly.
+        <ContextMenu>
+          <ContextMenu.Trigger>
+            <Text
+              modifiers={[
+                font({ textStyle: "footnote", design: "monospaced" }),
+                foregroundStyle(color.textSoft),
+                accessibilityLabel(row.detail),
+              ]}
+            >
+              {addressWords(row.detail)}
+            </Text>
+          </ContextMenu.Trigger>
+          <ContextMenu.Items>
+            <Button
+              label="Copy"
+              onPress={() => {
+                if (row.detail !== undefined) void setStringAsync(row.detail);
+              }}
+              systemImage="doc.on.doc"
+            />
+          </ContextMenu.Items>
+        </ContextMenu>
+      ) : (
         <Text
           modifiers={[
             font({ textStyle: "footnote", design: "monospaced" }),

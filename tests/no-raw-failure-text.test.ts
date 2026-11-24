@@ -113,6 +113,7 @@ const allowed: Readonly<Record<string, { readonly count: number; readonly reason
   "apps/mobile/src/screens/thread-settings.tsx": { count: 2, reason: reasons.presenter },
   "apps/mobile/src/thread/computer-use-line.tsx": { count: 1, reason: reasons.presenter },
   "apps/mobile/src/thread/use-request-response.ts": { count: 1, reason: reasons.answer },
+  "apps/mobile/src/ui/client-feedback.ts": { count: 1, reason: reasons.signin },
   "apps/web/src/attachments-visual.tsx": { count: 1, reason: reasons.dev },
   "apps/web/src/components/agent-activity.tsx": {
     count: 1,

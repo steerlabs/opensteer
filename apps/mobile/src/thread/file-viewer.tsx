@@ -162,7 +162,7 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
       </View>
       {line === null ? null : (
         <View style={styles.line}>
-          <ActionLine line={line} numberOfLines={2} onDismiss={() => setLine(null)} />
+          <ActionLine line={line} onDismiss={() => setLine(null)} />
         </View>
       )}
       {shown.status === "loading" ? (
@@ -183,7 +183,6 @@ function FileView(props: { readonly client: HostClient; readonly params: FileVie
               }),
               haptic: null,
             }}
-            numberOfLines={2}
           />
         </View>
       ) : file === null ? null : file.preview.kind === "text" ? (

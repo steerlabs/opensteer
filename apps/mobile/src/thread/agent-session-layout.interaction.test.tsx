@@ -12,6 +12,8 @@ import {
   layoutWindow,
   overlaps,
   textElement,
+  readingColumn,
+  textFaults,
   type Frames,
   type Rect,
 } from "../../test-support/yoga-frames.js";
@@ -29,6 +31,23 @@ const geometry = vi.hoisted(() => ({
   header: 0,
   insets: { bottom: 0, left: 0, right: 0, top: 0 },
 }));
+/** What the last answer came to, when a case says it failed: the card's own outcome line. */
+const answered = vi.hoisted(() => ({ failure: null as null | { key: string; text: string } }));
+vi.mock("./use-question-answering.js", async (actual) => {
+  const real = await actual<typeof import("./use-question-answering.js")>();
+  return {
+    ...real,
+    useQuestionAnswering: (input: Parameters<typeof real.useQuestionAnswering>[0]) => {
+      const question = real.useQuestionAnswering(input);
+      if (answered.failure === null) return question;
+      const failure = { ...answered.failure, tone: "danger" as const };
+      return {
+        ...question,
+        responder: { ...question.responder, session: { ...question.responder.session, failure } },
+      };
+    },
+  };
+});
 
 vi.mock(
   "react-native",
@@ -100,7 +119,21 @@ vi.mock("../markdown/markdown.js", async () => {
   };
 });
 vi.mock("./asker-byline.js", () => ({ AskerByline: () => null, useRequestAsker: () => null }));
-vi.mock("./request-card.js", () => ({ arrivalGuardMs: 450, WaitingMenu: () => null }));
+// The waiting count beside a question's heading, as it draws: "1 of 14" and its chevron.
+vi.mock("./request-card.js", async () => {
+  const { Text, View } = (await import("../../test-support/yoga-frames.js")).layoutReactNative;
+  return {
+    arrivalGuardMs: 450,
+    WaitingMenu: () => (
+      <View style={{ alignItems: "center", flexDirection: "row", gap: 2 }}>
+        <Text maxFontSizeMultiplier={1.6} style={{ fontSize: 13, lineHeight: 18 }}>
+          1 of 14
+        </Text>
+        <View style={{ height: 9, width: 9 }} />
+      </View>
+    ),
+  };
+});
 vi.mock("../client/mobile-client.js", () => ({
   operationDetail: (_error: unknown, fallback: string) => fallback,
 }));
@@ -131,6 +164,7 @@ afterEach(() => {
   host?.dispose();
   document.body.replaceChildren();
   layoutWindow.fontScale = 1;
+  answered.failure = null;
 });
 
 const phones = layoutPhones;
@@ -178,6 +212,10 @@ async function draw(phone: (typeof phones)[number], fontScale: number) {
   const frames = await layout(container, phone.window);
   // A layout that never comes to rest is a measure loop: the phone's main thread stays busy.
   expect(frames.settled, "the layout never comes to rest").toBe(true);
+  expect(
+    textFaults(frames, { column: readingColumn(phone) }),
+    "a text a person reads is broken or cut",
+  ).toEqual([]);
   return { container, frames };
 }
 
@@ -292,5 +330,19 @@ describe("what a person reads and presses in a connected agent's task", () => {
         expect(frames.frame(stop).y + frames.frame(stop).height).toBeLessThanOrEqual(
           phone.window.height - phone.insets.bottom + 0.5,
         );
+      });
+});
+
+describe("an answer that didn't go through, on the agent's question", () => {
+  const sentence = "Couldn't send your answer. Check that this phone is online, then answer again.";
+  for (const phone of phones)
+    for (const fontScale of textSizes)
+      it(`says so whole and clear on ${phone.name} at text size ${fontScale}`, async () => {
+        answered.failure = { key: "answer-failed", text: sentence };
+        const { container, frames } = await draw(phone, fontScale);
+        const text = textElement(container, sentence);
+        expect(frames.cut(text), "the failure is cut").toBe(false);
+        expect(frames.shown(text), "the failure is cut").toBe(sentence);
+        expectClear(container, frames, phone, text, "the failure");
       });
 });

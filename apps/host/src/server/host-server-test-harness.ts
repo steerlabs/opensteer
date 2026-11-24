@@ -99,7 +99,7 @@ export function hostServerTestDependencies(
     triggers: {
       controlTokens: inert(),
       watchBrowserTokens: inert(),
-      watchPrograms: inert(),
+      watchScripts: inert(),
       service: inert(),
     },
     ...overrides,

@@ -8,6 +8,7 @@ import {
   overlaps,
   inside,
   textElement,
+  textFaults,
 } from "../../test-support/yoga-frames.js";
 
 vi.mock(
@@ -126,6 +127,10 @@ async function draw(
   const frames = await layout(container, window);
   // A layout that never comes to rest is a measure loop: the phone's main thread stays busy.
   expect(frames.settled, "the layout never comes to rest").toBe(true);
+  expect(
+    textFaults(frames, { column: window.width - 32 - 24 }),
+    "a text a person reads is broken or cut",
+  ).toEqual([]);
   return { container, frames };
 }
 

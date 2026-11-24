@@ -1075,23 +1075,20 @@ integration.sequential("Run recovery acceptance", () => {
     const current = await start();
     const log = join(current.scratch, "occurrences");
     const releaseTick = join(current.scratch, "next-tick");
-    const program = `import {appendFileSync, existsSync} from 'node:fs';
-      export default async function () {
-        appendFileSync(${JSON.stringify(log)}, JSON.stringify({id: process.env.OPENSTEER_OCCURRENCE_ID}) + String.fromCharCode(10));
-        if (!existsSync(${JSON.stringify(releaseTick)})) await new Promise((resolve) => {
-          const poll = setInterval(() => { if (existsSync(${JSON.stringify(releaseTick)})) { clearInterval(poll); resolve(); } }, 50);
-        });
-      }`;
+    const scriptText = `import {appendFileSync, existsSync} from 'node:fs';
+      appendFileSync(${JSON.stringify(log)}, JSON.stringify({id: process.env.OPENSTEER_FIRING_ID}) + String.fromCharCode(10));
+      if (!existsSync(${JSON.stringify(releaseTick)})) await new Promise((resolve) => {
+        const poll = setInterval(() => { if (existsSync(${JSON.stringify(releaseTick)})) { clearInterval(poll); resolve(); } }, 50);
+      });`;
     const created = await current.active.api["commands.dispatch"]({
       type: "trigger.create",
       idempotencyKey: randomUUID(),
       input: {
         anchorThreadId: current.threadId,
         name: "Recovery recurring program",
-        program: {
-          language: "javascript",
-          source: program,
-          toolContractVersion: 5,
+        script: {
+          interpreter: null,
+          text: scriptText,
         },
         source: {
           kind: "schedule",
@@ -1116,7 +1113,6 @@ integration.sequential("Run recovery acceptance", () => {
       .where("triggerId", "=", triggerId)
       .where("status", "=", "running")
       .executeTakeFirstOrThrow();
-    const failures = created.data.trigger.consecutiveFailures;
     await settledTriggerDispatches(current.active);
     await current.active.restartRunner();
     await waitFor(
@@ -1127,17 +1123,16 @@ integration.sequential("Run recovery acceptance", () => {
             .select("status")
             .where("id", "=", before.id)
             .executeTakeFirstOrThrow()
-        ).status === "failed",
-      "occurrence interrupted",
+        ).status === "unknown",
+      "occurrence settled unknown after runner restart",
     );
     const lost = await current.active.host.store.database
       .selectFrom("triggerOccurrences")
       .selectAll()
       .where("id", "=", before.id)
       .executeTakeFirstOrThrow();
-    expect(JSON.stringify(lost.error)).toMatch(
-      /runner_disconnected|host_restarted|disconnect|restart/iu,
-    );
+    expect(lost.status).toBe("unknown");
+    expect(JSON.stringify(lost.error)).toMatch(/outcome_unknown|reconnected without/iu);
     expect(lost.executionGeneration).toBe(before.executionGeneration);
     expect(
       (
@@ -1146,8 +1141,8 @@ integration.sequential("Run recovery acceptance", () => {
           .selectAll()
           .where("id", "=", triggerId)
           .executeTakeFirstOrThrow()
-      ).consecutiveFailures,
-    ).toBe(failures);
+      ).failingSince,
+    ).toBeNull();
     await writeFile(join(current.scratch, "next-tick"), "");
     await waitFor(
       async () =>
@@ -1200,13 +1195,11 @@ integration.sequential("Run recovery acceptance", () => {
       input: {
         anchorThreadId: current.threadId,
         name: "Recovery one-shot",
-        program: {
-          language: "javascript",
-          source: `import {writeFileSync} from 'node:fs'; export default async function () {
-            writeFileSync(${JSON.stringify(oneShotStarted)}, process.env.OPENSTEER_OCCURRENCE_ID);
-            await new Promise(() => { setInterval(() => {}, 1000); });
-          }`,
-          toolContractVersion: 5,
+        script: {
+          interpreter: null,
+          text: `import {writeFileSync} from 'node:fs';
+            writeFileSync(${JSON.stringify(oneShotStarted)}, process.env.OPENSTEER_FIRING_ID);
+            await new Promise(() => { setInterval(() => {}, 1000); });`,
         },
         source: {
           kind: "schedule",
@@ -1244,9 +1237,77 @@ integration.sequential("Run recovery acceptance", () => {
       kind: "platform",
       cause: "automation-stopped",
     });
-    expect(textOf(notice.content)).toMatch(/restart|interrupt/iu);
+    expect(textOf(notice.content)).toMatch(/restart|interrupt|reconnect/iu);
     expect(textOf(notice.content)).toMatch(/may not have finished/iu);
     expect(textOf(notice.content)).toMatch(/run.*again/iu);
+  }, 180_000);
+
+  it("11b. reattaches an in-flight firing across a Host restart and commits its real exit result (Fault A / T12)", async () => {
+    const current = await start();
+    const startedFlag = join(current.scratch, "host-restart-firing-started");
+    const releaseFlag = join(current.scratch, "host-restart-firing-release");
+    const created = await current.active.api["commands.dispatch"]({
+      type: "trigger.create",
+      idempotencyKey: randomUUID(),
+      input: {
+        anchorThreadId: current.threadId,
+        name: "Survives Host restart",
+        script: {
+          interpreter: null,
+          text: `import { existsSync, writeFileSync } from "node:fs";
+            writeFileSync(${JSON.stringify(startedFlag)}, process.env.OPENSTEER_FIRING_ID);
+            while (!existsSync(${JSON.stringify(releaseFlag)})) {
+              await new Promise((resolve) => setTimeout(resolve, 25));
+            }
+            console.log(JSON.stringify({ survivedHostRestart: true }));`,
+        },
+        source: {
+          kind: "schedule",
+          schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+        },
+      },
+    });
+    if (!created.ok || created.data.type !== "trigger.create")
+      throw new Error(`Trigger setup failed: ${JSON.stringify(created)}`);
+    const triggerId = created.data.trigger.id;
+    const triggered = await current.active.api["commands.dispatch"]({
+      type: "trigger.run",
+      idempotencyKey: randomUUID(),
+      triggerId,
+    });
+    if (!triggered.ok || triggered.data.type !== "trigger.run")
+      throw new Error(`Manual trigger run failed: ${JSON.stringify(triggered)}`);
+    const occurrenceId = triggered.data.occurrence.id;
+
+    await waitFor(
+      async () => (await readFile(startedFlag, "utf8").catch(() => "")).trim() === occurrenceId,
+      "firing executing before host restart",
+    );
+    await settledTriggerDispatches(current.active);
+
+    // Restart the Host while the Runner keeps the firing alive, then release the firing so it
+    // completes and reports its proven result on the reattached connection.
+    await current.active.restartHost();
+    await writeFile(releaseFlag, "go");
+
+    await waitFor(
+      async () =>
+        (
+          await current.active.host.store.database
+            .selectFrom("triggerOccurrences")
+            .select("status")
+            .where("id", "=", occurrenceId)
+            .executeTakeFirstOrThrow()
+        ).status === "succeeded",
+      "firing reattaches and commits succeeded after Host restart",
+    );
+    const settled = await current.active.host.store.database
+      .selectFrom("triggerOccurrences")
+      .selectAll()
+      .where("id", "=", occurrenceId)
+      .executeTakeFirstOrThrow();
+    expect(settled.status).toBe("succeeded");
+    expect(JSON.parse(settled.stdout.trim())).toEqual({ survivedHostRestart: true });
   }, 180_000);
   it("12. relaunches a watch on the next boot with generation +1 and restartCount zero", async () => {
     const current = await start();
@@ -1259,11 +1320,9 @@ integration.sequential("Run recovery acceptance", () => {
         source: {
           kind: "watch",
         },
-        program: {
-          language: "javascript",
-          source:
-            "export default async function () { await new Promise(() => { setInterval(() => {}, 1000); }); }",
-          toolContractVersion: 5,
+        script: {
+          interpreter: null,
+          text: "await new Promise(() => { setInterval(() => {}, 1000); });",
         },
       },
     });

@@ -925,6 +925,22 @@ stat -f '%Su %u' /dev/console
           path.join(import.meta.dirname, "test-vm/fixture-keychain.sh"),
           "utf8",
         );
+        // The fixture authority's files are made by a script of their own, which the step finds in
+        // the job's folder: the step itself arrives over stdin.
+        await run(
+          [
+            ...ssh!,
+            `/bin/bash -c ${shellQuote('cat >"$HOME/opensteer-job/fixture-authority-files.sh"')}`,
+          ],
+          {
+            name: "fixture-authority-files",
+            timeout: 30,
+            stdin: readFileSync(
+              path.join(import.meta.dirname, "test-vm/fixture-authority-files.sh"),
+              "utf8",
+            ),
+          },
+        );
         fixtureKeychain = true;
         await run([...ssh!, `/bin/bash -s -- begin ${shellQuote(vm)}`], {
           name: "fixture-keychain",

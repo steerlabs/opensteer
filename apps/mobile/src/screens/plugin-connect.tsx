@@ -22,6 +22,7 @@ import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 import { usePluginAction } from "./plugins.js";
 import { usePluginRead } from "./use-plugin-read.js";
+import { addressDetail } from "../ui/sentence-parts.js";
 
 type Params = StaticScreenProps<{
   readonly deploymentId: string;
@@ -124,7 +125,17 @@ function ConnectBody(props: BodyProps & { signIn: readonly NativeSettingsSection
         author: review.plugin.author,
         pluginName: review.plugin.name,
         providerName: provider,
-      }).map((line) => ({ key: line.key, kind: "text" as const, label: line.text })),
+      }).flatMap((line) => [
+        { key: line.key, kind: "text" as const, label: line.text },
+        // A decision: each site the credential may reach is a row of its own, drawn whole as an
+        // address, apart from every name the plugin gives.
+        ...line.sites.map((site) => ({
+          addressIn: "label" as const,
+          key: `${line.key}:${site}`,
+          kind: "text" as const,
+          label: site,
+        })),
+      ]),
       ...(action.footer ? { footer: action.footer } : {}),
     },
   ];
@@ -425,7 +436,7 @@ function useSignInSections(input: {
           kind: "status",
           tone: "neutral",
           label: "Register this as the redirect URL",
-          detail: form.redirectUri,
+          ...addressDetail(form.redirectUri),
         },
         ...(form.scopes.length
           ? [

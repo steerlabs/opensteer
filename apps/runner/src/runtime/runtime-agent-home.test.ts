@@ -43,22 +43,15 @@ const notForARun: Readonly<Record<string, string>> = {
     "The manager checking that a folder it resolved is still Agent home.",
   "folders/agent-home.ts: throw new Error(`Agent home ${agentHome.path} now resolves to ${path}. Restore it.`);":
     "Its refusal names the folder.",
-  "triggers/watch-supervisor.ts: const materialized = await this.#materialize(active, program, workspace.path);":
-    "A watch's program, which the Host activates only for a lineage with personal context (`triggerLaunchStanding`).",
   "triggers/watch-supervisor.ts: workspacePath: workspace.path,":
-    "The same watch program's working folder.",
-  "triggers/watch-supervisor.ts: )({ args: arguments_, cwd: workspace.path, environment, executable: this.#nodeExecutable });":
-    "The same watch program's working folder.",
+    "A watch's script working folder, which the Host activates only for a lineage with personal context (`triggerLaunchStanding`).",
+  "triggers/watch-supervisor.ts: )({ args, cwd: workspace.path, environment, executable });":
+    "The same watch script's working folder.",
   "apps/app-server-manager.ts: left.agentHome.path === right.agentHome.path":
     "Whether two app servers share a home, compared; nothing is opened.",
-  "agent/program-executor.ts: input.workspace.path,":
-    "An automation's program, which the Host launches only for a lineage with personal context (`triggerLaunchStanding`).",
-  "agent/program-executor.ts: assertChildPath(input.workspace.path, programFile);":
-    "The same program, kept inside its workspace.",
-  "agent/program-executor.ts: workspacePath: input.input.workspace.path,":
-    "The same program's working folder.",
-  "agent/program-executor.ts: cwd: input.input.workspace.path,":
-    "The same program's working folder.",
+  "agent/script-executor.ts: workspacePath: input.workspace.path,":
+    "An automation's script, which the Host launches only for a lineage with personal context (`triggerLaunchStanding`).",
+  "agent/script-executor.ts: cwd: input.workspace.path,": "The same script's working folder.",
 };
 
 const named = String.raw`(?:workspace|\w*[aA]gentHome\w*|\w*settingsHome\w*|folders\??\.agentHome)`;

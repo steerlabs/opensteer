@@ -570,6 +570,35 @@ tasks included, since they take the task's lineage), automations and replies not
 that may have been sent is kept as unknown and shown as "may have been sent", never sent again.
 Removing a messaging account ends every chat on it.
 
+## Automations
+
+An automation is a script stored by the Home (`script`: text and an optional interpreter, defaulting
+to the shipped Node) anchored to a task, started on a schedule, an HTTP request to its address, or
+kept alive as a Watch. When it fires, the Runner runs the script directly with `OPENSTEER_EVENT` and
+the `opensteer` CLI on `PATH`, acting under its anchor task's live authority
+(`trigger:<occurrenceId>`, `watch:<activationId>`). Opensteer's own memory passes are two ordinary
+automations.
+
+- **Approval through the door.** Creating, changing, pausing, resuming, running now and removing are
+  admitted through the one command door (`admitCommand`, `dispatchCommand`;
+  `apps/host/src/mcp/handlers/triggers.ts`, `apps/host/src/triggers/trigger-routes.ts`). Creating,
+  changing the script or when it runs, and running now run at once only in Full access with personal
+  context on an anchor in the caller's own lineage, and otherwise open a Request showing the command
+  and its script; approving a Request executes it while keeping the proposing connection's lineage
+  rather than lending the person's authority. Pausing and cancelling a pending firing narrow
+  authority and run now below Full access. Anything outside a caller's grant reads `not_found`, and
+  a chat anyone may speak in holds no automation commands.
+- **Addresses, bounds and contact loss.** A webhook address accepts any HTTP method and raw body,
+  rate-limits before the database without logging requests, and is shown only to callers that may
+  run the automation. One firing of an automation runs at a time (due ticks collapse; webhook
+  requests queue up to 100), stored output is kept for the last 100 firings with 64 KiB tails, and
+  failures never auto-pause an automation. A Home restart or lost connection never guesses a firing's
+  outcome: the Runner reattaches and reports when back, and an unconfirmed firing settles as
+  `unknown`, never retried.
+- **Screens.** On web, desktop and mobile, the automations list and detail views show the stored
+  script, recent firings and output tails, pause state with its reason and who paused it, contact
+  loss, and pause/stop controls that confirm an end only with evidence.
+
 ## Where a Home runs
 
 Every Home and every Runner trusts Node's certificate authorities plus the ones its computer

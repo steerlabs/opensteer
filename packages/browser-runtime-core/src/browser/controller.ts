@@ -1109,15 +1109,15 @@ export class BrowserController {
       // write or a click included; an answer never waits behind what it frees.
       return this.run(message);
     }
+    // Closing a tab never waits behind a size write, input or navigation on
+    // its lane: a tab that cannot answer them would otherwise refuse to close.
     if (
       message.type === "cdp.command" &&
       message.command.method === "Target.closeTarget" &&
-      this.pageOf(message) &&
-      this.ledger.dialogOpen(this.pageOf(message)!)
+      this.pageOf(message)
     )
       return this.run(message, this.pageOf(message));
-    if (message.type === "surface.close" && this.ledger.dialogOpen(message.surfaceId))
-      return this.run(message, message.surfaceId);
+    if (message.type === "surface.close") return this.run(message, message.surfaceId);
     if (
       message.type === "navigation.stop" ||
       (message.type === "cdp.command" && message.command.method === "Page.stopLoading")
@@ -1940,7 +1940,6 @@ export class BrowserController {
       if (this.ledger.snapshot().length <= 1) {
         throw new BrowserRuntimeError("conflict", "The final browser surface cannot be closed.");
       }
-      if (!this.ledger.dialogOpen(message.surfaceId)) await this.prepareResize(message.surfaceId);
       this.closingSurfaces.add(message.surfaceId);
       try {
         await this.ledger.closeSurface(message.surfaceId, "person-closed");
@@ -3783,7 +3782,7 @@ export class BrowserController {
         .withGeometry(surfaceId, (cdp, geometry) => {
           ended.throwIfAborted();
           this.cdpRouter.admitPageCommand(this.claims.sessionId, admitted);
-          return this.lookAt(page, cdp, geometry, request, command.replyBudget);
+          return this.lookAt(page, cdp, geometry, request, command.replyBudget, ended);
         })
         .finally(() => page.offClose(closed));
     return bounded(
@@ -3791,7 +3790,7 @@ export class BrowserController {
         ended.throwIfAborted();
         // Access may have changed while this waited, as `send` would recheck.
         this.cdpRouter.admitPageCommand(this.claims.sessionId, admitted);
-        return bounded(this.lookAt(page, cdp, geometry, request, command.replyBudget));
+        return bounded(this.lookAt(page, cdp, geometry, request, command.replyBudget, ended));
       }),
     ).finally(() => page.offClose(closed));
   }
@@ -3802,9 +3801,11 @@ export class BrowserController {
     geometry: PageGeometry | null,
     { clip, format, quality }: z.infer<typeof screenshotParameters>,
     budget?: CdpCommand["replyBudget"],
+    signal?: AbortSignal,
   ): Promise<ViewportCapture> {
     if (!geometry)
       throw new BrowserRuntimeError("conflict", "The page has no size yet.", { retryable: true });
+    signal?.throwIfAborted();
     const viewport = async () => {
       const { cssVisualViewport } = visualViewportMetricsSchema.parse(
         await cdp.send("Page.getLayoutMetrics"),
@@ -3812,15 +3813,20 @@ export class BrowserController {
       return { ...cssVisualViewport, pageScale: cssVisualViewport.scale * cssVisualViewport.zoom };
     };
     const { pageScale, pageX, pageY } = await viewport();
-    const capture = await page.captureViewport({
-      format,
-      layout: pageViewport(geometry),
-      pageScale,
-      ...(budget?.maxImageBytes === undefined ? {} : { maxImageBytes: budget.maxImageBytes }),
-      ...(quality === undefined ? {} : { quality }),
-      // CDP's clip is in document coordinates.
-      ...(clip ? { clip: { ...clip, x: clip.x - pageX, y: clip.y - pageY } } : {}),
-    });
+    signal?.throwIfAborted();
+    const capture = await page.captureViewport(
+      {
+        format,
+        layout: pageViewport(geometry),
+        pageScale,
+        ...(budget?.maxImageBytes === undefined ? {} : { maxImageBytes: budget.maxImageBytes }),
+        ...(quality === undefined ? {} : { quality }),
+        // CDP's clip is in document coordinates.
+        ...(clip ? { clip: { ...clip, x: clip.x - pageX, y: clip.y - pageY } } : {}),
+      },
+      signal,
+    );
+    signal?.throwIfAborted();
     // Pixels from a document with another scale would put every click in the wrong place.
     if ((await viewport()).pageScale !== pageScale)
       throw new BrowserRuntimeError("conflict", "The page changed during the screenshot.", {
@@ -4517,7 +4523,6 @@ function isOrderedAgentMutation(
       "Page.reload",
       "Page.navigateToHistoryEntry",
       "Page.setDocumentContent",
-      "Target.closeTarget",
     ].includes(message.command.method)
   );
 }

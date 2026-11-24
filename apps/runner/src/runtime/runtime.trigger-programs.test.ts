@@ -101,6 +101,53 @@ describe("Runner Trigger program concurrency", () => {
       await fixture.runtime.close();
     }
   });
+
+  it("keeps active firings running across connectionLost and reports them in attachFiringInventory", async () => {
+    const fixture = runtimeFixture({ maxConcurrentRuns: 1, maxConcurrentTriggerPrograms: 2 });
+    const trigger = triggerCommand(fixture.environmentId);
+    try {
+      await expect(fixture.runtime.handleCommand(trigger, fixture.sink)).resolves.toEqual({
+        status: "accepted",
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await fixture.runtime.connectionLost(fixture.sink);
+      // Firing must NOT be aborted by a transient disconnect (T12).
+      expect(fixture.abortedPreparations()).toBe(0);
+      expect(fixture.runtime.activeTriggerOccurrenceIds()).toEqual([trigger.context.occurrenceId]);
+      expect(fixture.runtime.attachFiringInventory()).toEqual([
+        {
+          environmentId: fixture.environmentId,
+          executionGeneration: trigger.context.executionGeneration,
+          occurrenceId: trigger.context.occurrenceId,
+          terminal: false,
+        },
+      ]);
+      // When the Host revokes it on attach, the Runner aborts it.
+      await fixture.runtime.attach(
+        {
+          bootId: "rbt_00000000-0000-4000-8000-000000000001" as never,
+          connectionGeneration: 2,
+          connectionId: "rcn_00000000-0000-4000-8000-000000000001" as never,
+          connectionLeaseId: "rcl_00000000-0000-4000-8000-000000000001" as never,
+          firingResults: [
+            {
+              occurrenceId: trigger.context.occurrenceId,
+              reason: "Paused while offline",
+              status: "revoked",
+            },
+          ],
+          leaseMs: 60_000,
+          results: [],
+          runnerId: "runr_00000000-0000-4000-8000-000000000001" as never,
+          type: "host.executions.attached",
+        },
+        fixture.sink,
+      );
+      expect(fixture.abortedPreparations()).toBe(1);
+    } finally {
+      await fixture.runtime.close();
+    }
+  });
 });
 
 function runtimeFixture(input: {
@@ -130,9 +177,9 @@ function runtimeFixture(input: {
     maxConcurrentTriggerPrograms: input.maxConcurrentTriggerPrograms,
     dataDirectory: dirname("/runner/private/harness-state"),
     privateStateDirectory: "/runner/private/harness-state",
-    programExecutor: {
+    scriptExecutor: {
       execute: async () => {
-        throw new Error("A blocked Workspace preparation must not execute a Trigger program");
+        throw new Error("A blocked Workspace preparation must not execute an automation script");
       },
     },
     projectContinuationIdentity: (identity) => identity as never,

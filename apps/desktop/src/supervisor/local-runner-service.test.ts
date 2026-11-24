@@ -3394,9 +3394,11 @@ async function configuration(directory: string): Promise<DesktopConfiguration> {
     chmod(node, 0o700),
   ]);
   return {
+    accountCertificateKey: null,
     accountUrl: null,
     browser: null,
     dataDirectory: directory,
+    extraCertificateAuthorities: null,
     hostUrl: null,
     localExecution: {
       dataDirectory: path.join(directory, "runner"),

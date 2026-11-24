@@ -67,11 +67,8 @@ import {
   type EnvironmentId,
 } from "@opensteer/core";
 import { ComputerAppPlatformSchema } from "@opensteer/integration-core/computer-app";
-import {
-  TriggerExecutionOutputSchema,
-  TriggerProgramEventSchema,
-  TriggerProgramSchema,
-} from "@opensteer/triggers/models";
+import { TriggerExecutionOutputSchema, TriggerScriptEventSchema } from "@opensteer/triggers/models";
+import { AutomationScriptSchema } from "@opensteer/triggers/script";
 import { z } from "zod";
 import { RunEgressPlanSchema } from "./access.js";
 import {
@@ -324,13 +321,18 @@ export type WatchReconcileActivation = z.infer<typeof WatchReconcileActivationSc
 export const TriggerExecutionContextSchema = z.strictObject({
   anchorThreadId: ThreadIdSchema,
   browserCdp: TriggerCapabilityPlanSchema.nullable(),
-  event: TriggerProgramEventSchema,
+  event: TriggerScriptEventSchema,
   executionGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   mcp: TriggerCapabilityPlanSchema,
   occurrenceId: TriggerOccurrenceIdSchema,
-  program: TriggerProgramSchema,
   revisionId: TriggerRevisionIdSchema,
+  script: AutomationScriptSchema,
+  secrets: z.record(z.string(), z.string()).optional(),
   triggerId: TriggerIdSchema,
+  webhookBodyBase64: z
+    .string()
+    .max(400 * 1_024)
+    .optional(),
 });
 export type TriggerExecutionContext = z.infer<typeof TriggerExecutionContextSchema>;
 
@@ -2051,7 +2053,7 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
     healthySince: IsoDateTimeSchema.nullable(),
     lastError: z.string().max(20_000).nullable(),
     lastExitCode: z.number().int().nullable(),
-    observed: z.enum(["starting", "running", "backoff", "expired", "stopped"]),
+    observed: z.enum(["starting", "running", "backoff", "halted", "expired", "stopped"]),
     restartCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     stderrTail: watchLogTailSchema,
     stdoutTail: watchLogTailSchema,
@@ -2101,7 +2103,35 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
         }),
       )
       .max(1_000),
+    firings: z
+      .array(
+        z.strictObject({
+          environmentId: EnvironmentIdSchema,
+          executionGeneration: z.number().int().positive(),
+          occurrenceId: TriggerOccurrenceIdSchema,
+          terminal: z.boolean(),
+        }),
+      )
+      .max(1_000)
+      .optional(),
     type: z.literal("runner.executions.attach"),
+  }),
+  z.strictObject({
+    ...fencedMessageBase,
+    requestId: CorrelationIdSchema,
+    target: z.discriminatedUnion("kind", [
+      z.strictObject({
+        executionGeneration: z.number().int().positive(),
+        kind: z.literal("firing"),
+        occurrenceId: TriggerOccurrenceIdSchema,
+      }),
+      z.strictObject({
+        activationId: TriggerWatchActivationIdSchema,
+        executionGeneration: z.number().int().positive(),
+        kind: z.literal("watch"),
+      }),
+    ]),
+    type: z.literal("runner.proxy-token.renew"),
   }),
   z.strictObject({
     ...fencedMessageBase,
@@ -2199,6 +2229,8 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
     acceptsAgentStop: z.literal(true).optional(),
     acceptsHomeFiles: z.literal(true).optional(),
     acceptsAttemptStopState: z.literal(true).optional(),
+    /** The Home understands `firings` on attach, `firingResults`, `firingAcks`, and proxy token renewal. */
+    acceptsAutomationScripts: z.literal(true).optional(),
     agentHome: ComputerFolderSchema.optional(),
     agentHomeIsProvisional: z.literal(true).optional(),
     /** Present and true when the Host accepts `run.retry` events; sent only to a Runner advertising `run-retry-v1`. */
@@ -2272,6 +2304,22 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
         ]),
       )
       .max(1_000),
+    firingResults: z
+      .array(
+        z.discriminatedUnion("status", [
+          z.strictObject({
+            occurrenceId: TriggerOccurrenceIdSchema,
+            status: z.literal("attached"),
+          }),
+          z.strictObject({
+            occurrenceId: TriggerOccurrenceIdSchema,
+            reason: z.string().trim().min(1).max(500),
+            status: z.literal("revoked"),
+          }),
+        ]),
+      )
+      .max(1_000)
+      .optional(),
     type: z.literal("host.executions.attached"),
   }),
   /**
@@ -2279,19 +2327,40 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
    * `throughOrdinal`, and the session binding when `sessionBound`. The Runner
    * stops holding them for replay.
    */
+  z
+    .strictObject({
+      ...fencedMessageBase,
+      acks: z
+        .array(
+          z.strictObject({
+            runId: RunIdSchema,
+            sessionBound: z.boolean(),
+            throughOrdinal: z.number().int().min(-1),
+          }),
+        )
+        .max(1_000),
+      firingAcks: z
+        .array(
+          z.strictObject({
+            executionGeneration: z.number().int().positive(),
+            occurrenceId: TriggerOccurrenceIdSchema,
+          }),
+        )
+        .max(1_000)
+        .optional(),
+      type: z.literal("host.executions.acked"),
+    })
+    .refine(
+      (message) => message.acks.length > 0 || (message.firingAcks?.length ?? 0) > 0,
+      "At least one Run or firing acknowledgement is required",
+    ),
   z.strictObject({
     ...fencedMessageBase,
-    acks: z
-      .array(
-        z.strictObject({
-          runId: RunIdSchema,
-          sessionBound: z.boolean(),
-          throughOrdinal: z.number().int().min(-1),
-        }),
-      )
-      .min(1)
-      .max(1_000),
-    type: z.literal("host.executions.acked"),
+    browserCdp: WatchCapabilityPlanSchema.nullable(),
+    mcp: WatchCapabilityPlanSchema.nullable(),
+    reason: z.string().trim().min(1).max(500).optional(),
+    requestId: CorrelationIdSchema,
+    type: z.literal("host.proxy-token.renewed"),
   }),
   /**
    * The Host renewed these Runs' leases for `leaseMs` from the heartbeat sent

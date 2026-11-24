@@ -133,17 +133,14 @@ describeStore(
       const automation = (key: string, actorConnectionId?: string) =>
         triggers.create({
           actorThreadId: null,
-          ...(actorConnectionId
-            ? { actorConnectionId, actorAccessMode: "full-access" as const }
-            : {}),
+          ...(actorConnectionId ? { actorConnectionId } : {}),
           anchorThreadId: root.id,
           createdBy: fixture.userId,
           idempotencyKey: key,
           name: key,
-          program: {
-            toolContractVersion: 5,
-            language: "javascript",
-            source: "export default () => {}",
+          script: {
+            interpreter: null,
+            text: "console.log('ok')",
           },
           source: {
             kind: "schedule",

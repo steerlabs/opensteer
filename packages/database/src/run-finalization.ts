@@ -781,7 +781,12 @@ async function finalizeRunOutcome(
         .where("anchorThreadId", "=", run.threadId)
         .where("status", "=", "active")
         .execute();
-      for (const trigger of triggers) await pauseTriggerInTransaction(transaction, trigger);
+      for (const trigger of triggers) {
+        await pauseTriggerInTransaction(transaction, trigger, {
+          pauseReason: "Paused because its task was marked done.",
+          pausedBy: "system",
+        });
+      }
       const doneAt = input.completedAt;
       const updated = await transaction
         .updateTable("threads")

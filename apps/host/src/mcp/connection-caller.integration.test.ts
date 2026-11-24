@@ -32,6 +32,7 @@ import {
   AgentConnectionStore,
   assertLineageCompatibleReuse,
   beginAgentSession,
+  commandAdmission,
   type OpensteerStore,
 } from "@opensteer/database";
 import {
@@ -1185,10 +1186,9 @@ describeStore("connection grants and lineage", (it) => {
   });
 
   const tasksOnly: AgentGrant = { scope: "selected", tasks: true, resources: [] };
-  const program = {
-    language: "javascript",
-    source: "export default async () => null",
-    toolContractVersion: 5,
+  const script = {
+    interpreter: null,
+    text: "console.log('ok')",
   } as const;
   function scheduled(anchor: import("@opensteer/core").ThreadId, userId: UserId, key: string) {
     return {
@@ -1197,7 +1197,7 @@ describeStore("connection grants and lineage", (it) => {
       createdBy: userId,
       idempotencyKey: key,
       name: `Automation ${key}`,
-      program,
+      script,
       source: {
         kind: "schedule" as const,
         schedule: { expression: "0 9 * * *", kind: "cron" as const, timezone: "UTC" },
@@ -1382,7 +1382,7 @@ describeStore("connection grants and lineage", (it) => {
         {
           automationId: owner.trigger.id,
           expectedRevisionId: owner.revision.id,
-          program: { ...program, source: "export default async () => 'replaced'" },
+          script: { ...script, text: "console.log('replaced')" },
         },
       ],
     ] as const)
@@ -1654,10 +1654,25 @@ describeStore("connection grants and lineage", (it) => {
     expect(
       await access({ kind: "plugin", target: { kind: "installed", pluginId: "gmail" } }),
     ).toBeNull();
+    const afterLowering = scheduled(own, f.userId, "lineage-made-after-lowering");
     await expect(
       triggers.create({
-        ...scheduled(own, f.userId, "lineage-made-after-lowering"),
+        ...afterLowering,
         actorConnectionId: agent.id,
+        commandIdentity: commandAdmission({
+          ownerUserId: f.userId,
+          callerKey: `connection:${agent.id}`,
+          command: {
+            type: "trigger.create",
+            idempotencyKey: afterLowering.idempotencyKey,
+            input: {
+              anchorThreadId: afterLowering.anchorThreadId,
+              name: afterLowering.name,
+              script: afterLowering.script,
+              source: afterLowering.source,
+            },
+          },
+        }),
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
     expect(made.trigger.id).toBeTruthy();

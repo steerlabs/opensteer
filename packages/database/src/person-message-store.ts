@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { personalTransactionDatabase } from "./personal-transaction.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { syncTranscriptMessage } from "./message-visibility.js";
@@ -5,9 +6,11 @@ import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
   createId,
   MessageAuthorSchema,
+  MessageIdSchema,
   OpensteerError,
   PersonMessageSchema,
   type Message,
+  type MessageAuthor,
   type MessageId,
   type RunId,
   type ThreadId,
@@ -155,5 +158,80 @@ export async function publishPersonMessage(
         );
       return { message, wasDuplicate: false };
     })(personalTransaction);
+  });
+}
+
+export interface ProgramPersonMessageInput {
+  readonly ownerId: UserId;
+  readonly threadId: ThreadId;
+  readonly requestId: string;
+  readonly message: string;
+  readonly author: Extract<MessageAuthor, { kind: "trigger" | "watch" }>;
+}
+
+/** Deterministic MessageId from (threadId, requestId) so retries are idempotent without new tables. */
+function programMessageId(threadId: ThreadId, requestId: string): MessageId {
+  const digest = createHash("sha256")
+    .update(`program-person-message|${threadId}|${requestId}`)
+    .digest();
+  digest[6] = (digest[6]! & 0x0f) | 0x80;
+  digest[8] = (digest[8]! & 0x3f) | 0x80;
+  const hex = digest.subarray(0, 16).toString("hex");
+  return MessageIdSchema.parse(
+    `msg_${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
+}
+
+/** Publishes a direct message from an automation script (`send_to_person`) to its anchor thread. */
+export async function publishProgramPersonMessage(
+  database: Kysely<DatabaseSchema>,
+  input: ProgramPersonMessageInput,
+): Promise<PersonMessageResult> {
+  const text = PersonMessageSchema.parse(input.message);
+  const author = MessageAuthorSchema.parse(input.author);
+  const id = programMessageId(input.threadId, input.requestId);
+  return commitPersonalMutation(database, async (transaction) => {
+    await requirePersonalOwner(transaction, input.ownerId);
+    const thread = await transaction
+      .selectFrom("threads")
+      .select(["threads.nextMessageSequence"])
+      .where("threads.id", "=", input.threadId)
+      .where("threads.createdBy", "=", input.ownerId)
+      .where("threads.removedAt", "is", null)
+      .forNoKeyUpdate("threads")
+      .executeTakeFirst();
+    if (!thread) throw new OpensteerError({ code: "forbidden", message: "Task is unavailable" });
+    const existing = await transaction
+      .selectFrom("messages")
+      .selectAll()
+      .where("id", "=", id)
+      .executeTakeFirst();
+    if (existing) return { message: messageFromRow(existing), wasDuplicate: true };
+    const row = await transaction
+      .insertInto("messages")
+      .values({
+        id,
+        threadId: input.threadId,
+        runId: null,
+        kind: "input",
+        actorPrincipalId: systemPrincipalId,
+        addressedToUserId: input.ownerId,
+        author: jsonValue(author),
+        content: jsonValue([{ type: "text", text }]),
+        sequence: thread.nextMessageSequence,
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    await transaction
+      .updateTable("threads")
+      .set({
+        nextMessageSequence: sql`next_message_sequence + 1`,
+        updatedAt: new Date(),
+      })
+      .where("id", "=", input.threadId)
+      .executeTakeFirstOrThrow();
+    const message = messageFromRow(row);
+    await syncTranscriptMessage(transaction, message.id);
+    return { message, wasDuplicate: false };
   });
 }
