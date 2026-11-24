@@ -374,7 +374,7 @@ function riseIn(element: HTMLElement) {
  * Prose and compact tool rows share the reading stream. The run's status is
  * a separate line: it never controls whether the agent's words are visible.
  */
-export function AgentTranscript({
+export const AgentTranscript = memo(function AgentTranscript({
   activity = "idle",
   attachmentReader = null,
   conversation = false,
@@ -806,7 +806,7 @@ export function AgentTranscript({
       </DeliveryFeedback>
     </TranscriptDisclosures>
   );
-}
+});
 
 /* ---- A turn ---- */
 
@@ -1693,7 +1693,7 @@ function Typing({ turnKey = null }: { turnKey?: string | null }) {
  * narrow screen it is a sheet. Its steps are drawn as the turn draws them
  * anywhere, without timings or what they consumed.
  */
-export function ConversationActivity({
+export const ConversationActivity = memo(function ConversationActivity({
   anchor,
   browserSessions = noTabs,
   browserUses = noBrowserUses,
@@ -1825,7 +1825,7 @@ export function ConversationActivity({
       {body}
     </Popover>
   );
-}
+});
 
 function TurnContent({
   reveal = null,

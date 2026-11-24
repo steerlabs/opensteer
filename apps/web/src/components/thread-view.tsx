@@ -1441,16 +1441,17 @@ const ThreadView = memo(function ThreadView({
       waiting,
     ],
   );
+  const closeActivity = useCallback(() => setActivityView(null), []);
   const activityOwner = useMemo(
     () =>
       activityView?.source === "reply" && activityView.selection.kind === "turn"
         ? {
-            onClose: () => setActivityView(null),
+            onClose: closeActivity,
             panelId: activityPanelId,
             turnKey: activityView.selection.key,
           }
         : null,
-    [activityPanelId, activityView],
+    [activityPanelId, activityView, closeActivity],
   );
 
   return (
@@ -1768,7 +1769,7 @@ const ThreadView = memo(function ThreadView({
                   id={activityPanelId}
                   inputQueuePaused={thread.inputQueuePaused}
                   live={live}
-                  onClose={() => setActivityView(null)}
+                  onClose={closeActivity}
                   returnFocusTo={activityView.opener}
                   reveal={activityView.reveal}
                   selection={activityView.selection}

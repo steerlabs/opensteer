@@ -109,10 +109,16 @@ async function drawsDuring(work: () => void | Promise<void>) {
     ThreadView: total("ThreadView"),
     AgentTranscript: total("AgentTranscript"),
     ConversationHeader: total("ConversationHeader"),
+    ConversationActivity: total("ConversationActivity"),
   };
 }
 
-const untouched = { ThreadView: 0, AgentTranscript: 0, ConversationHeader: 0 };
+const untouched = {
+  ThreadView: 0,
+  AgentTranscript: 0,
+  ConversationHeader: 0,
+  ConversationActivity: 0,
+};
 
 describe("what does not concern the open task", () => {
   beforeEach(() => open(expenses));
@@ -191,6 +197,67 @@ describe("what does not concern the open task", () => {
       ),
       "how many tasks need the reader",
     ).toEqual(untouched);
+  });
+});
+
+describe("what the open task's view does for itself", () => {
+  it("redraws the view, not its transcript, and the transcript still follows its own changes", async () => {
+    await open(expenses);
+    // Find opens over the task: the view's own state changes, and nothing the transcript shows.
+    const find = await drawsDuring(() =>
+      act(() => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "f", metaKey: true }));
+      }),
+    );
+    expect(document.querySelector(".thread-find"), "Find never opened").not.toBeNull();
+    expect(find.ThreadView, "the view").toBeGreaterThan(0);
+    expect(find.AgentTranscript, "its transcript").toBe(0);
+
+    // Something said in the task is the transcript's own news.
+    const said = await drawsDuring(async () => {
+      await act(async () => {
+        await fixture.host.dispatch({
+          content: [{ type: "text", text: "Also the hotel receipts" }],
+          delivery: "queue",
+          idempotencyKey: "thread-view-scope-said",
+          threadId: expenses,
+          type: "thread.sendMessage",
+        });
+      });
+      await until("the new message never showed", () =>
+        expect(document.querySelector(".transcript")?.textContent).toContain(
+          "Also the hotel receipts",
+        ),
+      );
+    });
+    expect(said.AgentTranscript, "its transcript").toBeGreaterThan(0);
+  });
+
+  it("redraws a conversation's open Run details only for what they show", async () => {
+    await open(expenses);
+    fixture.publish(withThread(expenses, (thread) => ({ ...thread, purpose: "voice" })));
+    const more = await until("no reply offered its menu", () => {
+      const button = document.querySelector<HTMLButtonElement>(".reply__more");
+      expect(button).not.toBeNull();
+      return button!;
+    });
+    act(() => more.click());
+    const details = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((item) =>
+      item.textContent?.includes("Run details"),
+    );
+    expect(details, "Run details").toBeDefined();
+    act(() => details!.click());
+    await until("Run details never opened", () =>
+      expect(document.querySelector('[aria-label="Close run details"]')).not.toBeNull(),
+    );
+    const find = await drawsDuring(() =>
+      act(() => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "f", metaKey: true }));
+      }),
+    );
+    expect(find.ThreadView, "the view").toBeGreaterThan(0);
+    expect(find.ConversationActivity, "its Run details").toBe(0);
+    expect(find.AgentTranscript, "its transcript").toBe(0);
   });
 });
 
@@ -287,6 +354,7 @@ describe("what the open task shows of itself", () => {
     expect(stop()).toBe("Le Petit Jardin");
     const counts = await drawsDuring(() => fixture.retitleTab(restaurant, "Le Petit Jardin · Fri"));
     expect(counts.ThreadView, "its own tab").toBeGreaterThan(0);
+    expect(counts.AgentTranscript, "its own tab, in its transcript").toBeGreaterThan(0);
     await until("its tab's new title never showed", () =>
       expect(stop()).toBe("Le Petit Jardin · Fri"),
     );
