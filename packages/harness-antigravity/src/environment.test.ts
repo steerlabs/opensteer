@@ -15,7 +15,7 @@ afterEach(async () => {
 });
 
 describe("Antigravity launch environment", () => {
-  it("isolates the profile, strips ambient Google credentials, and uses the supplied Node", async () => {
+  it("isolates the profile, strips ambient Google credentials, and passes 1.5 CLI flags", async () => {
     const root = await mkdtemp(join(tmpdir(), "opensteer-antigravity-profile-"));
     temporaryDirectories.push(root);
     const launch = await prepareAntigravityLaunch({
@@ -23,6 +23,7 @@ describe("Antigravity launch environment", () => {
       authMethod: "gemini-api-key",
       baseEnvironment: {
         AGY_ACP_ENABLE_OAUTH: "ambient",
+        AGY_CLI_DISABLE_AUTO_UPDATE: "0",
         GEMINI_API_KEY: "ambient-secret",
         google_api_key: "case-insensitive-secret",
         GOOGLE_CLOUD_PROJECT: "ambient-project",
@@ -38,13 +39,19 @@ describe("Antigravity launch environment", () => {
         store: { directory: join(root, "profile"), id: "profile-1" },
       },
       runtime: {
-        executable: join(root, "runtime", "agy_acp_server.par"),
-        harness: join(root, "runtime", "localharness_external"),
+        executable: join(root, "runtime", "antigravity"),
       },
     });
 
+    expect(launch.args).toEqual([
+      "acp",
+      "--gemini-dir",
+      join(root, "profile"),
+      "--app-data-dir",
+      "antigravity-acp",
+    ]);
     expect(launch.environment).toMatchObject({
-      ANTIGRAVITY_HARNESS_PATH: join(root, "runtime", "localharness_external"),
+      AGY_CLI_DISABLE_AUTO_UPDATE: "1",
       GEMINI_API_KEY: "account-owned-key",
       GEMINI_HOME: join(root, "profile"),
       PATH: "/usr/bin",
@@ -52,6 +59,7 @@ describe("Antigravity launch environment", () => {
     expect(launch.environment).not.toHaveProperty("google_api_key");
     expect(launch.environment).not.toHaveProperty("GOOGLE_CLOUD_PROJECT");
     expect(launch.environment).not.toHaveProperty("AGY_ACP_ENABLE_OAUTH");
+    expect(launch.environment).not.toHaveProperty("SSH_CONNECTION");
     expect(launch.environment.BROWSER).toContain("/opt/Opensteer Runtime/bin/node");
     expect(launch.environment.BROWSER).toContain("process.exit(0)");
     const settings = await readFile(
@@ -62,6 +70,30 @@ describe("Antigravity launch environment", () => {
     expect(JSON.parse(settings)).toEqual({ auth: { type: "gemini-api-key" } });
   });
 
+  it("forces file-backed per-profile OAuth storage via SSH_CONNECTION for oauth-personal", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opensteer-antigravity-personal-"));
+    temporaryDirectories.push(root);
+    const launch = await prepareAntigravityLaunch({
+      authMethod: "oauth-personal",
+      baseEnvironment: { PATH: "/usr/bin" },
+      config: { gcpLocation: "", gcpProject: "" },
+      nodeExecutable: "/opt/Opensteer Runtime/bin/node",
+      providerState: {
+        continuationKey: "profile-1",
+        kind: "isolated",
+        privateStateRoot: root,
+        providerHomeDirectory: join(root, "profile"),
+        store: { directory: join(root, "profile"), id: "profile-1" },
+      },
+      runtime: { executable: join(root, "runtime", "antigravity") },
+    });
+
+    expect(launch.environment.SSH_CONNECTION).toBe("127.0.0.1 0 127.0.0.1 0");
+    expect(launch.profile.cliTokenPath).toBe(
+      join(root, "profile", "antigravity-acp", "antigravity-oauth-token"),
+    );
+  });
+
   it("copies only authentication into an ephemeral title home", async () => {
     const root = await mkdtemp(join(tmpdir(), "opensteer-antigravity-title-profile-"));
     temporaryDirectories.push(root);
@@ -70,6 +102,13 @@ describe("Antigravity launch environment", () => {
     const title = join(root, "title");
     await mkdir(join(source, "config", "skills"), { recursive: true });
     await mkdir(sourceAcp, { recursive: true });
+    await writeFile(
+      join(sourceAcp, "antigravity-oauth-token"),
+      '{"token":{"access_token":"t"}}\n',
+      {
+        mode: 0o600,
+      },
+    );
     await writeFile(join(sourceAcp, "acp_token.json"), '{"token":"account-owned"}\n', {
       mode: 0o600,
     });
@@ -90,8 +129,7 @@ describe("Antigravity launch environment", () => {
         store: { directory: source, id: "profile-1" },
       },
       runtime: {
-        executable: join(root, "runtime", "agy_acp_server.par"),
-        harness: join(root, "runtime", "localharness_external"),
+        executable: join(root, "runtime", "antigravity"),
       },
     });
 
@@ -101,12 +139,13 @@ describe("Antigravity launch environment", () => {
       XDG_CONFIG_HOME: join(title, "config"),
       XDG_DATA_HOME: join(title, "data"),
     });
-    expect(await readdir(join(title, "home", "antigravity-acp"))).toEqual([
+    expect((await readdir(join(title, "home", "antigravity-acp"))).sort()).toEqual([
       "acp_token.json",
+      "antigravity-oauth-token",
       "settings.json",
     ]);
     await expect(
-      readFile(join(title, "home", "antigravity-acp", "acp_token.json"), "utf8"),
-    ).resolves.toBe('{"token":"account-owned"}\n');
+      readFile(join(title, "home", "antigravity-acp", "antigravity-oauth-token"), "utf8"),
+    ).resolves.toBe('{"token":{"access_token":"t"}}\n');
   });
 });

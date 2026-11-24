@@ -26,6 +26,8 @@ import { senderUnlinkedFailure } from "./bridge-admission.js";
 import {
   OpensteerError,
   MessageContentSchema,
+  createId,
+  harnessSessionBrokenFailureCode,
   harnessUsageLimitFailureCode,
   runTerminationUnprovenCode,
   ReplyTargetSchema,
@@ -605,24 +607,70 @@ async function finalizeRunOutcome(
     });
   }
   await recordPersonWaited(transaction, run.id);
-  if (run.runStatus !== "queued")
-    await transaction
-      .updateTable("providerSessions")
-      .set({
-        status: input.status === "failed" ? "broken" : "ready",
-        updatedAt: input.completedAt,
-        ...(offline && run.bindingGeneration !== null
-          ? {
-              bindingGeneration: sql<number>`binding_generation + 1`,
-              leaseExpiresAt: null,
-              leaseTokenHash: null,
-              runnerId: null,
-              runnerBootId: null,
-            }
-          : {}),
-      })
-      .where("id", "=", run.providerSessionId)
-      .execute();
+  if (run.runStatus !== "queued") {
+    const rotateBrokenSession =
+      input.status === "failed" && input.failure?.code === harnessSessionBrokenFailureCode;
+    const sessionUpdate = {
+      status: (input.status === "failed" ? "broken" : "ready") as "broken" | "ready",
+      updatedAt: input.completedAt,
+      ...(offline && run.bindingGeneration !== null
+        ? {
+            bindingGeneration: sql<number>`binding_generation + 1`,
+            leaseExpiresAt: null,
+            leaseTokenHash: null,
+            runnerId: null,
+            runnerBootId: null,
+          }
+        : {}),
+    };
+    if (rotateBrokenSession) {
+      const retired = await transaction
+        .updateTable("providerSessions")
+        .set({ ...sessionUpdate, active: false })
+        .where("id", "=", run.providerSessionId)
+        .where("active", "=", true)
+        .returning(["continuationIdentity", "harnessInstanceId", "personalContext"])
+        .executeTakeFirst();
+      if (retired) {
+        await transaction
+          .insertInto("providerSessions")
+          .values({
+            active: true,
+            bindingGeneration: 0,
+            continuationIdentity:
+              retired.continuationIdentity === null
+                ? null
+                : jsonValue(retired.continuationIdentity),
+            createdAt: input.completedAt,
+            harnessInstanceId: retired.harnessInstanceId,
+            id: createId("providerSession"),
+            leaseExpiresAt: null,
+            leaseTokenHash: null,
+            personalContext: retired.personalContext,
+            providerSessionReference: null,
+            runnerBootId: null,
+            runnerId: null,
+            stateLayout: "session",
+            status: "starting",
+            threadId: run.threadId,
+            updatedAt: input.completedAt,
+          })
+          .executeTakeFirstOrThrow();
+      } else {
+        await transaction
+          .updateTable("providerSessions")
+          .set(sessionUpdate)
+          .where("id", "=", run.providerSessionId)
+          .execute();
+      }
+    } else {
+      await transaction
+        .updateTable("providerSessions")
+        .set(sessionUpdate)
+        .where("id", "=", run.providerSessionId)
+        .execute();
+    }
+  }
   const cancelled =
     run.runStatus === "queued"
       ? await transaction

@@ -2,6 +2,8 @@ import { request as httpRequest } from "node:http";
 import { OpensteerError } from "@opensteer/core";
 
 const maximumUrlLength = 16_384;
+/** Where `antigravity acp --login` sends Google; the page displays a code the person pastes back. */
+const codeRedirectUri = "https://antigravity.google/oauth-callback";
 
 export interface AntigravityAuthorization {
   readonly authorizationUrl: string;
@@ -16,7 +18,10 @@ function invalidAuthorization(): OpensteerError {
   });
 }
 
-export function parseAntigravityAuthorizationUrl(value: string): AntigravityAuthorization {
+export function parseAntigravityAuthorizationUrl(
+  value: string,
+  kind: "loopback" | "code" = "loopback",
+): AntigravityAuthorization {
   if (value.length > maximumUrlLength || /\s/u.test(value)) throw invalidAuthorization();
   let url: URL;
   try {
@@ -27,9 +32,10 @@ export function parseAntigravityAuthorizationUrl(value: string): AntigravityAuth
   const states = url.searchParams.getAll("state");
   const redirects = url.searchParams.getAll("redirect_uri");
   const responseTypes = url.searchParams.getAll("response_type");
+  const expectedPath = kind === "loopback" ? "/o/oauth2/v2/auth" : "/o/oauth2/auth";
   if (
     url.origin !== "https://accounts.google.com" ||
-    url.pathname !== "/o/oauth2/v2/auth" ||
+    url.pathname !== expectedPath ||
     url.username !== "" ||
     url.password !== "" ||
     url.hash !== "" ||
@@ -42,6 +48,10 @@ export function parseAntigravityAuthorizationUrl(value: string): AntigravityAuth
     responseTypes[0] !== "code"
   ) {
     throw invalidAuthorization();
+  }
+  if (kind === "code") {
+    if (redirects[0] !== codeRedirectUri) throw invalidAuthorization();
+    return { authorizationUrl: value, redirectUri: codeRedirectUri, state: states[0] };
   }
   let redirect: URL;
   try {
@@ -116,6 +126,45 @@ export function validateAntigravityCallbackUrl(
     throw invalidCallback("The redirect URL is not a Google sign-in response");
   }
   return callback;
+}
+
+/**
+ * Validates what `antigravity acp --login` reads on stdin: either the bare code
+ * displayed by the Antigravity callback page, or that page's URL belonging to
+ * this sign-in's state. Rejects whitespace, control characters, and foreign URLs.
+ */
+export function validateAntigravityLoginResponse(
+  pending: Pick<AntigravityAuthorization, "redirectUri" | "state">,
+  raw: string,
+): string {
+  const value = raw.trim();
+  if (/^[\w./~-]{1,2048}$/u.test(value)) return value;
+  if (value.length > maximumUrlLength || /\s/u.test(value)) {
+    throw invalidCallback("Paste the code or complete redirect URL from the Google sign-in page");
+  }
+  let callback: URL;
+  try {
+    callback = new URL(value);
+  } catch {
+    throw invalidCallback("Paste the code or complete redirect URL from the Google sign-in page");
+  }
+  if (
+    `${callback.origin}${callback.pathname}` !== pending.redirectUri ||
+    callback.username !== "" ||
+    callback.password !== "" ||
+    callback.hash !== ""
+  ) {
+    throw invalidCallback("This redirect URL does not belong to the current sign-in");
+  }
+  const states = callback.searchParams.getAll("state");
+  if (states.length !== 1 || states[0] !== pending.state) {
+    throw invalidCallback("This redirect URL does not belong to the current sign-in");
+  }
+  const codes = callback.searchParams.getAll("code");
+  if (codes.length !== 1 || !codes[0]) {
+    throw invalidCallback("The redirect URL must contain one Google sign-in code");
+  }
+  return value;
 }
 
 /** Sends one callback directly to the loopback listener without proxies or redirects. */
