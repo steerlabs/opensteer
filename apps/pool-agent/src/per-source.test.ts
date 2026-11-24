@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { connect, type AddressInfo, type Server, type Socket } from "node:net";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { limitConnectionsPerSource } from "./per-source.js";
 import { relayConnectionsPerSource, createRelayServer } from "./relay.js";
 import { homeConnectionsPerSource, createHomeServer } from "./server.js";
@@ -55,21 +55,25 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise((done) => server.close(done))));
 });
 
-/** Opens `count` plain TCP connections and says which the server closed within half a second. */
+/**
+ * Opens `count` plain TCP connections one after another from the same address, waits for the
+ * server to close the last one, and says how many of all of them it closed.
+ */
 async function closedOf(server: Server, count: number): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   servers.push(server);
   const { port } = server.address() as AddressInfo;
-  const sockets = await Promise.all(
-    Array.from({ length: count }, () => {
-      const socket = connect(port, "127.0.0.1");
-      opened.push(socket);
-      socket.on("error", () => undefined);
-      return new Promise<Socket>((resolve) => socket.once("connect", () => resolve(socket)));
-    }),
-  );
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  return sockets.filter((socket) => socket.destroyed || socket.readyState !== "open").length;
+  const closed = new Set<Socket>();
+  for (let index = 0; index < count; index += 1) {
+    const socket = connect(port, "127.0.0.1");
+    opened.push(socket);
+    socket.on("error", () => undefined);
+    socket.once("close", () => closed.add(socket));
+    await new Promise((resolve) => socket.once("connect", resolve));
+  }
+  const last = opened.at(-1)!;
+  await vi.waitFor(() => expect(closed.has(last)).toBe(true));
+  return closed.size;
 }
 
 it("limits the relay to its share per Home before the TLS handshake", async () => {
@@ -101,7 +105,7 @@ it("limits the relay to its share per Home before the TLS handshake", async () =
   rmSync(directory, { recursive: true, force: true });
   expect(relayConnectionsPerSource).toBe(64);
   expect(await closedOf(server, relayConnectionsPerSource + 1)).toBe(1);
-}, 20_000);
+});
 
 it("limits the agent port's unauthenticated requests to its share per Home", async () => {
   const server = createHomeServer({
@@ -110,4 +114,4 @@ it("limits the agent port's unauthenticated requests to its share per Home", asy
   });
   expect(homeConnectionsPerSource).toBe(16);
   expect(await closedOf(server, homeConnectionsPerSource + 1)).toBe(1);
-}, 20_000);
+});

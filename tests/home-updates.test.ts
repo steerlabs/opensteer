@@ -52,6 +52,7 @@ function account(answer: object | null) {
   writeFileSync(
     join(work, "curl"),
     `#!/usr/bin/env bash
+cat > /dev/null # curl --config - reads its credentials from stdin
 out='' url=''
 while (($#)); do
   case $1 in --output) out=$2; shift 2 ;; --) url=$2; shift 2 ;; *) shift ;; esac
