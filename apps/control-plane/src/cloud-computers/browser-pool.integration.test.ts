@@ -30,6 +30,8 @@ import {
   cloudComputerBootPath,
   cloudComputerLeaseHeader,
   cloudComputerLeasePath,
+  cloudComputerPoolNetworkPath,
+  CloudComputerPoolNetworkResponseSchema,
   cloudComputerStatusPath,
   cloudComputersDesiredPath,
   managedBrowserPoolRegistrationPath,
@@ -266,8 +268,9 @@ integration("Browser pool Account service", () => {
   async function buildHarness(
     slotsPerHost?: string,
     db: Kysely<ControlPlaneDatabaseSchema> = database,
+    env: Record<string, string> = {},
   ) {
-    const config = loadCloudComputerConfig(makeEnv(slotsPerHost))!;
+    const config = loadCloudComputerConfig({ ...makeEnv(slotsPerHost), ...env })!;
     const cloudStore = new CloudComputerStore(db, {
       config,
       accountOrigin: publicOrigin,
@@ -318,15 +321,13 @@ integration("Browser pool Account service", () => {
       authorization: "Bearer provisioner-ok",
       [cloudComputerLeaseHeader]: leaseHolder,
     };
-    const acquireLease = async (
-      poolConfigured = slotsPerHost !== undefined,
-      poolNetwork?: string,
-    ) => {
+    // The provisioner's Home subnet, where it creates the pool hosts too.
+    const acquireLease = async (poolNetwork = "10.40.0.0/20") => {
       const response = await app.inject({
         method: "POST",
         url: cloudComputerLeasePath,
         headers: { authorization: "Bearer provisioner-ok" },
-        payload: { holder: leaseHolder, poolConfigured, ...(poolNetwork ? { poolNetwork } : {}) },
+        payload: { holder: leaseHolder, poolNetwork },
       });
       expect(response.statusCode).toBe(200);
     };
@@ -622,7 +623,7 @@ integration("Browser pool Account service", () => {
     };
 
     const setupPooledHomeAndHost = async (ip = "10.40.0.10") => {
-      await acquireLease(true);
+      await acquireLease();
       const { accountId, computer } = await provisionComputer(1);
       const claimed = await bootAndClaimComputer(computer, accountId);
       const hosts = await getDesiredHosts();
@@ -698,7 +699,7 @@ integration("Browser pool Account service", () => {
     const h = await buildHarness("2");
     try {
       // The provisioner's Home subnet, where it creates the pool hosts too.
-      await h.acquireLease(true, "10.128.0.0/20");
+      await h.acquireLease("10.128.0.0/20");
       // A free egress endpoint is never handed to the Home: only its pool host holds one (T9).
       await h.cloudStore.addEgressEndpoint({
         url: "https://egress.example.test:8443",
@@ -820,15 +821,143 @@ integration("Browser pool Account service", () => {
     }
   });
 
-  it("gives a Home no pool network when the provisioner holding the lease reported none", async () => {
+  it("refuses a Cloud Computer's boot, which its installer retries, until the lease has a pool network", async () => {
+    // Review C1: this used to boot a pooled Home with no pool network, which then had no path to
+    // its browser for good (the network is saved only at install). It is now refused, retryably.
     const h = await buildHarness("2");
     try {
-      await h.acquireLease(true);
+      await h.acquireLease();
+      const { accountId, computer } = await h.provisionComputer(1);
+      // A lease taken before 0040 (or by an older provisioner) has no pool network.
+      await sql`update cloud_computer_provisioner_lease set pool_network = null`.execute(database);
+      await h.app.inject({
+        method: "POST",
+        url: cloudComputerStatusPath(computer.id),
+        headers: h.leaseHeaders,
+        payload: {
+          id: computer.id,
+          generation: computer.generation,
+          revision: computer.revision,
+          phase: "provisioning",
+          providerServerId: null,
+          providerServerRef: `os-${computer.id.replace("_", "-")}-1/1001`,
+          ipv4: "192.0.2.10",
+          ipv6: null,
+          observedIdentity: null,
+          lastError: null,
+        },
+      });
+      const refused = await h.app.inject({
+        method: "POST",
+        url: cloudComputerBootPath(computer.id),
+        payload: { hostname: computer.hostname, bootstrapToken: computer.bootstrapToken },
+      });
+      // 503: managed-boot.sh exits 1 and systemd tries again; 401/403/409/410 would end it.
+      expect(refused.statusCode).toBe(503);
+      expect(refused.body).not.toContain("managedHome");
+      await h.acquireLease("10.128.0.0/20");
+      const { boot } = await h.bootAndClaimComputer(computer, accountId);
+      expect(boot.browserPoolNetwork).toEqual({
+        cidr: "10.128.0.0/20",
+        agentPort: 7310,
+        relayPort: 7312,
+      });
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("tells a booted Home its pool network now, and nobody else (S2)", async () => {
+    const h = await buildHarness("2");
+    try {
+      await h.acquireLease("10.128.0.0/20");
       const { accountId, computer } = await h.provisionComputer(1);
       const { boot } = await h.bootAndClaimComputer(computer, accountId);
-      expect(boot.browserPool).toBe(true);
-      // Its firewall then opens nothing private: it fails closed toward the pool.
-      expect(boot).not.toHaveProperty("browserPoolNetwork");
+      const oidc = boot.managedHome!.oidc;
+      const read = (authorization?: string) =>
+        h.app.inject({
+          method: "GET",
+          url: cloudComputerPoolNetworkPath(computer.id),
+          ...(authorization ? { headers: { authorization } } : {}),
+        });
+      const basic = (secret: string) =>
+        `Basic ${Buffer.from(`${oidc.clientId}:${secret}`).toString("base64")}`;
+      const answer = await read(basic(oidc.clientSecret));
+      expect(answer.statusCode).toBe(200);
+      expect(CloudComputerPoolNetworkResponseSchema.parse(JSON.parse(answer.body))).toEqual({
+        browserPoolNetwork: { cidr: "10.128.0.0/20", agentPort: 7310, relayPort: 7312 },
+      });
+      // A provisioner that reports another subnet moves every Home at its next maintenance.
+      await h.acquireLease("10.130.0.0/20");
+      expect(JSON.parse((await read(basic(oidc.clientSecret))).body)).toEqual({
+        browserPoolNetwork: { cidr: "10.130.0.0/20", agentPort: 7310, relayPort: 7312 },
+      });
+      expect((await read()).statusCode).toBe(401);
+      expect((await read(basic(`ocs_${"A".repeat(43)}`))).statusCode).toBe(401);
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("refuses what the provisioner no longer sends: the pool flag and the probe (S9)", async () => {
+    const h = await buildHarness("2");
+    try {
+      const flagged = await h.app.inject({
+        method: "POST",
+        url: cloudComputerLeasePath,
+        headers: { authorization: "Bearer provisioner-ok" },
+        payload: { holder: randomUUID(), poolConfigured: true, poolNetwork: "10.40.0.0/20" },
+      });
+      expect(flagged.statusCode).toBe(400);
+      const bare = await h.app.inject({
+        method: "POST",
+        url: cloudComputerLeasePath,
+        headers: { authorization: "Bearer provisioner-ok" },
+        payload: { holder: randomUUID() },
+      });
+      expect(bare.statusCode).toBe(400);
+      await h.acquireLease();
+      const probe = await h.app.inject({
+        method: "GET",
+        url: `${browserPoolHostsDesiredPath}?probe=true&limit=1`,
+        headers: h.leaseHeaders,
+      });
+      expect(probe.statusCode).toBe(400);
+      const page = await h.app.inject({
+        method: "GET",
+        url: browserPoolHostsDesiredPath,
+        headers: h.leaseHeaders,
+      });
+      expect(JSON.parse(page.body)).not.toHaveProperty("poolEnabled");
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("gives a live Cloud Computer without a slot one at the configured size", async () => {
+    const h = await buildHarness("2", database, {
+      OPENSTEER_CLOUD_COMPUTER_POOL_PROFILE_MIB: "1024",
+    });
+    try {
+      await h.acquireLease();
+      const { computer } = await h.provisionComputer(1);
+      // As a row moved by 0040 is: live, and no slot.
+      await database.deleteFrom("browserPoolSlots").where("computerId", "=", computer.id).execute();
+      await h.getDesiredSlots();
+      const slots = await database
+        .selectFrom("browserPoolSlots")
+        .select(["state", "phase", "guestVcpus", "guestMemoryMib", "profileMib"])
+        .where("computerId", "=", computer.id)
+        .execute();
+      expect(slots).toEqual([
+        {
+          state: "active",
+          phase: "preparing",
+          guestVcpus: 2,
+          guestMemoryMib: 2048,
+          profileMib: 1024,
+        },
+      ]);
     } finally {
       await h.app.close();
     }
@@ -839,7 +968,7 @@ integration("Browser pool Account service", () => {
   it("places slots onto the ready host with the most free slots and grows host count when full (W2)", async () => {
     const h = await buildHarness("2");
     try {
-      await h.acquireLease(true);
+      await h.acquireLease();
       await h.provisionComputer(1);
       const host1Id = (await h.getDesiredHosts())[0]!.id;
       await h.enrolAndReadyHost(host1Id, "10.40.0.10");
@@ -880,7 +1009,7 @@ integration("Browser pool Account service", () => {
   it("never places a new slot on a draining host", async () => {
     const h = await buildHarness("2");
     try {
-      await h.acquireLease(true);
+      await h.acquireLease();
       await h.provisionComputer(1);
       const host1Id = (await h.getDesiredHosts())[0]!.id;
       await h.enrolAndReadyHost(host1Id, "10.40.0.10");
@@ -915,7 +1044,7 @@ integration("Browser pool Account service", () => {
   it("serializes two Cloud Computers racing for the last free slot without oversubscribing a host", async () => {
     const h = await buildHarness("2");
     try {
-      await h.acquireLease(true);
+      await h.acquireLease();
       await h.provisionComputer(1);
       const host1Id = (await h.getDesiredHosts())[0]!.id;
       await h.enrolAndReadyHost(host1Id, "10.40.0.10");
@@ -949,7 +1078,7 @@ integration("Browser pool Account service", () => {
   it("serializes concurrent 0-host scale-up calls via the advisory lock so only one host is created (X7)", async () => {
     const h = await buildHarness("2");
     try {
-      await h.acquireLease(true);
+      await h.acquireLease();
       await h.provisionComputer(1);
 
       const results = await Promise.all([
@@ -997,7 +1126,7 @@ integration("Browser pool Account service", () => {
   it("refuses pool host enrolment when the bootstrap token belongs to another host", async () => {
     const h = await buildHarness("1");
     try {
-      await h.acquireLease(true);
+      await h.acquireLease();
       await h.provisionComputer(1);
       await h.provisionComputer(2);
       const hosts = await h.getDesiredHosts();
@@ -1024,7 +1153,7 @@ integration("Browser pool Account service", () => {
   it("refuses pool host enrolment when the generation does not match the host", async () => {
     const h = await buildHarness("2");
     try {
-      await h.acquireLease(true);
+      await h.acquireLease();
       await h.provisionComputer(1);
       const hostId = (await h.getDesiredHosts())[0]!.id;
       const host = await h.openHostBootWindow(hostId, "10.40.0.10");
@@ -1062,7 +1191,7 @@ integration("Browser pool Account service", () => {
   it("refuses pool host enrolment when the bootstrap token has expired", async () => {
     const h = await buildHarness("2");
     try {
-      await h.acquireLease(true);
+      await h.acquireLease();
       await h.provisionComputer(1);
       const hostId = (await h.getDesiredHosts())[0]!.id;
       const host = await h.openHostBootWindow(hostId, "10.40.0.10");
@@ -1087,7 +1216,7 @@ integration("Browser pool Account service", () => {
   it("makes pool host enrolment idempotent when replayed with the same keys", async () => {
     const h = await buildHarness("2");
     try {
-      await h.acquireLease(true);
+      await h.acquireLease();
       await h.provisionComputer(1);
       const hostId = (await h.getDesiredHosts())[0]!.id;
       const { host, hostKey, relayKey, bootstrapToken } = await h.enrolAndReadyHost(
@@ -1117,7 +1246,7 @@ integration("Browser pool Account service", () => {
   it("refuses pool host enrolment when replayed with different keys (single-use)", async () => {
     const h = await buildHarness("2");
     try {
-      await h.acquireLease(true);
+      await h.acquireLease();
       await h.provisionComputer(1);
       const hostId = (await h.getDesiredHosts())[0]!.id;
       const { host, hostKey, bootstrapToken } = await h.enrolAndReadyHost(hostId, "10.40.0.10");
@@ -1150,7 +1279,7 @@ integration("Browser pool Account service", () => {
   it("allows replacing an unenrolled host up to twice and refuses auto-replacement once enrolled or after two retries (T8)", async () => {
     const h = await buildHarness("2");
     try {
-      await h.acquireLease(true);
+      await h.acquireLease();
       await h.provisionComputer(1);
       const hostId = (await h.getDesiredHosts())[0]!.id;
 
@@ -1231,7 +1360,7 @@ integration("Browser pool Account service", () => {
   it("refuses slot-egress for another host's slot with the uniform refusal", async () => {
     const h = await buildHarness("1");
     try {
-      await h.acquireLease(true);
+      await h.acquireLease();
       await h.provisionComputer(1);
       await h.provisionComputer(2);
       const hosts = await h.getDesiredHosts();
@@ -1864,7 +1993,7 @@ integration("Browser pool Account service", () => {
   it("refuses Home key registration without a signature", async () => {
     const h = await buildHarness("2");
     try {
-      await h.acquireLease(true);
+      await h.acquireLease();
       const { accountId, computer } = await h.provisionComputer(1);
       const { hostCredential } = await h.bootAndClaimComputer(computer, accountId);
 
@@ -1891,7 +2020,7 @@ integration("Browser pool Account service", () => {
   it("refuses Home key registration signed by another key than the Home's pinned key", async () => {
     const h = await buildHarness("2");
     try {
-      await h.acquireLease(true);
+      await h.acquireLease();
       const { accountId, computer } = await h.provisionComputer(1);
       const { hostCredential } = await h.bootAndClaimComputer(computer, accountId);
       const attackerKey = keyPairSpkiBase64();
@@ -1916,7 +2045,7 @@ integration("Browser pool Account service", () => {
   it("refuses Home key registration naming another Cloud Computer", async () => {
     const h = await buildHarness("2");
     try {
-      await h.acquireLease(true);
+      await h.acquireLease();
       const c1 = await h.provisionComputer(1);
       const c2 = await h.provisionComputer(2);
       const claimed1 = await h.bootAndClaimComputer(c1.computer, c1.accountId);
@@ -1941,7 +2070,7 @@ integration("Browser pool Account service", () => {
   it("refuses Home key registration older than five minutes", async () => {
     const h = await buildHarness("2");
     try {
-      await h.acquireLease(true);
+      await h.acquireLease();
       const { accountId, computer } = await h.provisionComputer(1);
       const { hostCredential, hostKey } = await h.bootAndClaimComputer(computer, accountId);
       const expiredTs = new Date(now.getTime() - 6 * 60_000).toISOString();
@@ -2602,42 +2731,6 @@ integration("Browser pool Account service", () => {
     }
   });
 
-  // --- T9 operator warning when pooling on without pool-configured provisioner ---
-
-  it("warns in operator pool commands when pooling is enabled in Account while the active provisioner lacks a pool key (T9)", async () => {
-    const h = await buildHarness("2");
-    try {
-      await h.acquireLease(false);
-      await h.provisionComputer(1);
-      await h.getDesiredHosts();
-
-      const hostsView = (await runCloudComputerOperator(h.cloudStore, ["pool-host-list"])) as {
-        hosts: unknown[];
-        warning?: string;
-      };
-      expect(hostsView.hosts).toHaveLength(1);
-      expect(hostsView.warning).toContain("OPENSTEER_POOL_PROVISIONER_KEY");
-
-      const slotsView = (await runCloudComputerOperator(h.cloudStore, ["pool-slot-list"])) as {
-        slots: unknown[];
-        warning?: string;
-      };
-      expect(slotsView.warning).toContain("OPENSTEER_POOL_PROVISIONER_KEY");
-
-      // Once a pool-configured provisioner acquires the lease, the warning disappears.
-      await h.acquireLease(true);
-      const cleanHostsView = (await runCloudComputerOperator(h.cloudStore, ["pool-host-list"])) as {
-        hosts: unknown[];
-        warning?: string;
-      };
-      expect(cleanHostsView.warning).toBeUndefined();
-    } finally {
-      await h.app.close();
-    }
-  });
-
-  // --- X2 failed slot recovery, X4 pooling turned off, X5 probe & active-slot erasure ---
-
   it("resets failed active slots via pool-slot-retry and pool-host-replace while keeping lastError until ready (X2)", async () => {
     const h = await buildHarness("2");
     try {
@@ -2713,30 +2806,6 @@ integration("Browser pool Account service", () => {
       expect(afterReplaceRow.lastError).toBe(
         "The pool host rejected the slot administration request.",
       );
-    } finally {
-      await h.app.close();
-    }
-  });
-
-  it("answers ?probe=true on desired hosts without creating pool hosts or minting bootstrap tokens (X5)", async () => {
-    const h = await buildHarness("2");
-    try {
-      await h.acquireLease(true);
-      await h.provisionComputer(1);
-
-      const probeRes = await h.app.inject({
-        method: "GET",
-        url: `${browserPoolHostsDesiredPath}?probe=true&limit=1`,
-        headers: h.leaseHeaders,
-      });
-      expect(probeRes.statusCode).toBe(200);
-      expect(BrowserPoolHostDesiredResponseSchema.parse(JSON.parse(probeRes.body))).toEqual({
-        hosts: [],
-        poolEnabled: true,
-      });
-
-      const hostRows = await database.selectFrom("browserPoolHosts").select(["id"]).execute();
-      expect(hostRows).toEqual([]);
     } finally {
       await h.app.close();
     }

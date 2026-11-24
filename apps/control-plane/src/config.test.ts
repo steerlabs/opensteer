@@ -104,6 +104,16 @@ it("loads optional managed Home settings from the Account runtime directory", ()
       region: "europe-west3-a",
       browserPool: { slotsPerHost: 10 },
     });
+    // Review S4: pool ports the Home's firewall would refuse (equal, or the mail ports it rejects
+    // first) would leave every Home without a path to its browser: refused at start.
+    for (const ports of [
+      { OPENSTEER_CLOUD_COMPUTER_POOL_AGENT_PORT: "7312" },
+      { OPENSTEER_CLOUD_COMPUTER_POOL_RELAY_PORT: "25" },
+      { OPENSTEER_CLOUD_COMPUTER_POOL_AGENT_PORT: "587" },
+    ])
+      expect(() => loadControlPlaneConfig({ ...environment, ...ports })).toThrow(
+        "The browser pool's agent and relay ports must differ and must not be 25, 465 or 587",
+      );
     expect(() =>
       loadControlPlaneConfig({
         ...environment,

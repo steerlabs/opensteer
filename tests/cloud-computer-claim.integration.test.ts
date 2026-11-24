@@ -800,7 +800,7 @@ beforeAll(async () => {
       secretAccessKey: `secret-${prefix}`,
     });
   const leased = await operator.request(account(cloudComputerLeasePath), {
-    ...json({ holder: lease }),
+    ...json({ holder: lease, poolNetwork: "10.40.0.0/20" }),
     headers: { ...provisioner(), "content-type": "application/json" },
   });
   expect(leased.status, await leased.text()).toBe(200);

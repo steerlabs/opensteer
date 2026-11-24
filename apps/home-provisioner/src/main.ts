@@ -60,6 +60,23 @@ export async function runProvisionerTick(options: {
   return waitMs;
 }
 
+/**
+ * Every Home's firewall opens the network this provisioner reports with its lease (its
+ * OPENSTEER_POOL_HOME_CIDR): it must be the subnet's own range, where it creates Homes and pool
+ * hosts, or the Homes would open the wrong network or none that reaches their pool host.
+ */
+export async function checkPoolNetwork(
+  provider: Pick<GoogleCompute, "subnetRange">,
+  homeCidr: string,
+  signal: AbortSignal,
+): Promise<void> {
+  const range = await provider.subnetRange(signal);
+  if (range !== homeCidr)
+    throw new Error(
+      `OPENSTEER_POOL_HOME_CIDR (${homeCidr}) is not the subnet's range (${range ?? "unknown"})`,
+    );
+}
+
 async function main(): Promise<void> {
   let config: ReturnType<typeof loadConfig>;
   try {
@@ -77,7 +94,6 @@ async function main(): Promise<void> {
     http,
     undefined,
     "google",
-    true,
     // Pool hosts are created in the Homes' own subnet (google-compute.ts, createPoolHost).
     config.pool.homeCidr,
   );
@@ -134,6 +150,7 @@ async function main(): Promise<void> {
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
   try {
+    await checkPoolNetwork(googleProvider, config.pool.homeCidr, shutdown.signal);
     await account.acquire(shutdown.signal);
     console.log(JSON.stringify({ event: "home-provisioner.started" }));
     while (!shutdown.signal.aborted) {

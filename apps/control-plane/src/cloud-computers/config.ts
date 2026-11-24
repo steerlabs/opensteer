@@ -136,6 +136,17 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
         : defaultBrowserPoolRelayPort,
     };
   })();
+  // Every Home's firewall lets its Host reach these two ports only, after rejecting the mail
+  // ports (deploy/home/firewall.sh): ports it would refuse leave no path to any browser.
+  const mailPorts = [25, 465, 587];
+  if (
+    browserPool.agentPort === browserPool.relayPort ||
+    mailPorts.includes(browserPool.agentPort) ||
+    mailPorts.includes(browserPool.relayPort)
+  )
+    throw new Error(
+      "The browser pool's agent and relay ports must differ and must not be 25, 465 or 587",
+    );
   return {
     provisionerEmail: read(
       "PROVISIONER_EMAIL",

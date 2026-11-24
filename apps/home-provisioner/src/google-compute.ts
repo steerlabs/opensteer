@@ -126,6 +126,7 @@ const subnetwork = z.object({
   network: z.string(),
   stackType: z.enum(["IPV4_ONLY", "IPV4_IPV6", "IPV6_ONLY"]).default("IPV4_ONLY"),
   ipv6AccessType: z.enum(["EXTERNAL", "INTERNAL"]).optional(),
+  ipCidrRange: z.string().optional(),
 });
 const firewall = z.object({
   name: resourceName,
@@ -336,6 +337,11 @@ export class GoogleCompute implements VmProvider, PoolHostProvider {
       await this.#refreshAfterWrite(vm.name, signal);
     }
     return (await this.#readRef(server.id, signal))?.tags?.items.includes(firewallTag) ?? false;
+  }
+
+  /** The subnet's primary IPv4 range, where Homes and pool hosts are created (review S3). */
+  async subnetRange(signal: AbortSignal): Promise<string | undefined> {
+    return (await this.#request(this.#subnet, subnetwork, signal)).ipCidrRange;
   }
 
   async #dualStack(signal: AbortSignal) {

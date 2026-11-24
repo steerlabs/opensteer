@@ -472,7 +472,8 @@ integration("every Cloud Computer's browser in the pool (0040_browser_always_poo
         drop constraint cloud_computers_browser_mode_check,
         add constraint cloud_computers_browser_mode_check check (browser_mode in ('local', 'pool')),
         alter column browser_mode set default 'local';
-      alter table public.cloud_computer_provisioner_lease drop column pool_network;
+      alter table public.cloud_computer_provisioner_lease drop column pool_network,
+        add column pool_configured boolean;
       drop index public.browser_pool_slots_one_live_per_computer;
       alter table public.browser_pool_slots
         add constraint browser_pool_slots_computer_id_key unique (computer_id);
@@ -539,8 +540,8 @@ integration("every Cloud Computer's browser in the pool (0040_browser_always_poo
     `.execute(database);
     const fresh = { term: 1, state: "active", phase: "preparing", hostId: null };
     expect(slots.rows).toEqual([
-      { computerId: id(1), ...fresh, guestVcpus: 2, guestMemoryMib: 2048, profileMib: 2048 },
-      { computerId: id(2), ...fresh, guestVcpus: 2, guestMemoryMib: 2048, profileMib: 2048 },
+      // Rows 1 and 2 get theirs from the account, at its configured size (see the browser pool
+      // tests): a migration cannot know POOL_PROFILE_MIB.
       // An existing slot is left exactly as it was.
       { computerId: id(5), ...fresh, guestVcpus: 4, guestMemoryMib: 4096, profileMib: 1024 },
     ]);
@@ -556,10 +557,17 @@ integration("every Cloud Computer's browser in the pool (0040_browser_always_poo
       values (${`bps_00000000-0000-4000-8000-0000000000${n}`}, ${id(1)}, 'active', 'preparing',
         2, 2048, 2048, ${tombstoned ? sql`now()` : null})
     `;
-    await expect(slot("e1", false).execute(database)).rejects.toThrow(
+    await slot("e1", false).execute(database);
+    await expect(slot("e3", false).execute(database)).rejects.toThrow(
       /browser_pool_slots_one_live_per_computer/u,
     );
     await slot("e2", true).execute(database);
+    // What the provisioner no longer sends is gone (review S9).
+    const leaseColumns = await sql<{ columnName: string }>`
+      select column_name from information_schema.columns
+      where table_schema = 'public' and table_name = 'cloud_computer_provisioner_lease'
+    `.execute(database);
+    expect(leaseColumns.rows.map((row) => row.columnName)).not.toContain("pool_configured");
     // The lease keeps the pool network its provisioner reported, a private one only.
     await expect(
       sql`

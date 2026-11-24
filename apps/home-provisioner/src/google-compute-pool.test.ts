@@ -5,6 +5,7 @@ import {
 } from "@opensteer/control-plane-protocol";
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "./config.js";
+import { checkPoolNetwork } from "./main.js";
 import {
   ComputeFake,
   computeCreate,
@@ -236,5 +237,19 @@ describe("Google Compute pool host provider", () => {
       localSsdCount: 2,
       adminPort: 7311,
     });
+  });
+});
+
+describe("the Homes' subnet as the pool network (review S3)", () => {
+  it("starts only when OPENSTEER_POOL_HOME_CIDR is the subnet's own range", async () => {
+    const provider = new ComputeFake().adapter();
+    const signal = new AbortController().signal;
+    expect(await provider.subnetRange(signal)).toBe("10.40.0.0/20");
+    await expect(checkPoolNetwork(provider, "10.40.0.0/20", signal)).resolves.toBeUndefined();
+    // Each Home's firewall opens exactly this network: a range that is not the subnet's would
+    // open the wrong one, or leave the pool unreachable.
+    await expect(checkPoolNetwork(provider, "10.40.0.0/16", signal)).rejects.toThrow(
+      "OPENSTEER_POOL_HOME_CIDR (10.40.0.0/16) is not the subnet's range (10.40.0.0/20)",
+    );
   });
 });

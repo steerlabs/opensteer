@@ -120,7 +120,6 @@ export function accountClient(
   http: HttpOptions,
   holder: string = randomUUID(),
   provider?: "google",
-  poolConfigured?: boolean,
   /** The subnet it creates Homes and pool hosts in, which each Home's firewall may reach. */
   poolNetwork?: string,
 ): AccountApi {
@@ -138,11 +137,7 @@ export function accountClient(
         json(z.object({ acquired: z.literal(true) })),
         {
           method: "POST",
-          body: {
-            holder,
-            ...(poolConfigured !== undefined ? { poolConfigured } : {}),
-            ...(poolNetwork !== undefined ? { poolNetwork } : {}),
-          },
+          body: { holder, ...(poolNetwork !== undefined ? { poolNetwork } : {}) },
           headers: await headers(signal),
         },
       );

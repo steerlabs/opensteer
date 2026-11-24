@@ -184,8 +184,9 @@ export const browserPoolMigration = {
 /**
  * A Cloud Computer's browser runs in the browser pool, always. A row made before that, with
  * `browser_mode = 'local'`, moves forward and is never dropped: a live one gets its pool slot
- * (the pool's default guest size, as a slot made today would get without overrides); one already
- * deleted or being deleted had no slot and has none to erase. Its VM keeps its old in-VM browser
+ * from the account at its next reconciliation, at the size the account is configured with (a
+ * migration cannot know it); one already deleted or being deleted had no slot and has none to
+ * erase. Its VM keeps its old in-VM browser
  * until it is replaced, whose boot answer then says browserPool. The provisioner's lease also
  * keeps the network its pool hosts live in, which each Home's boot answer carries for its firewall.
  */
@@ -202,20 +203,10 @@ export async function upBrowserAlwaysPooledMigration(
       on browser_pool_slots (computer_id) where tombstoned_at is null
   `.execute(db);
   await sql`
-    insert into browser_pool_slots
-      (slot_id, computer_id, term, state, phase, guest_vcpus, guest_memory_mib, profile_mib)
-    select 'bps_' || gen_random_uuid(), id, 1, 'active', 'preparing', 2, 2048, 2048
-      from cloud_computers
-      where browser_mode = 'local'
-        and state in ('active', 'suspended')
-        and deletion_requested_at is null
-        and tombstoned_at is null
-    on conflict (computer_id) where tombstoned_at is null do nothing
-  `.execute(db);
-  await sql`
     update cloud_computers
       set browser_slot_erased_at = coalesce(browser_slot_erased_at, now())
       where browser_mode = 'local'
+        and (state = 'deleted' or deletion_requested_at is not null or tombstoned_at is not null)
         and not exists (select 1 from browser_pool_slots where computer_id = cloud_computers.id)
   `.execute(db);
   await sql`update cloud_computers set browser_mode = 'pool' where browser_mode = 'local'`.execute(
@@ -226,6 +217,10 @@ export async function upBrowserAlwaysPooledMigration(
       alter column browser_mode set default 'pool',
       drop constraint cloud_computers_browser_mode_check,
       add constraint cloud_computers_browser_mode_check check (browser_mode = 'pool')
+  `.execute(db);
+  // The provisioner no longer reports whether it has a pool key: it cannot start without one.
+  await sql`
+    alter table cloud_computer_provisioner_lease drop column if exists pool_configured
   `.execute(db);
   await sql`
     alter table cloud_computer_provisioner_lease

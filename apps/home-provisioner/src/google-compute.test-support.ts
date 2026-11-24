@@ -201,6 +201,7 @@ export class ComputeFake {
     if (path.endsWith("/subnetworks/home-subnet"))
       return json({
         network: `https://compute.googleapis.com/compute/v1/${globalPath}/networks/home-net`,
+        ipCidrRange: "10.40.0.0/20",
         ...(this.dualStack ? { stackType: "IPV4_IPV6", ipv6AccessType: "EXTERNAL" } : {}),
       });
     if (path.includes("/operations")) return this.#operationRequest(req);

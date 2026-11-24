@@ -17,9 +17,8 @@ it("reports the network its pool hosts live in when it takes the lease", async (
     },
     holder,
     "google",
-    true,
     "10.128.0.0/20",
   );
   await account.acquire(new AbortController().signal);
-  expect(bodies).toEqual([{ holder, poolConfigured: true, poolNetwork: "10.128.0.0/20" }]);
+  expect(bodies).toEqual([{ holder, poolNetwork: "10.128.0.0/20" }]);
 });

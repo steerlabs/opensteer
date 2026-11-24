@@ -40,6 +40,7 @@ import {
   CloudComputerDesiredPageSchema,
   CloudComputerIdSchema,
   CloudComputerEgressResponseSchema,
+  CloudComputerPoolNetworkResponseSchema,
   CloudComputerReleaseFeedResponseSchema,
   CloudComputerListResponseSchema,
   CloudComputerOfferResponseSchema,
@@ -112,10 +113,10 @@ export function registerCloudComputerRoutes(
 
   async function requireLease(request: FastifyRequest) {
     await options.verifyProvisioner(request.headers.authorization);
-    const lease = CloudComputerLeaseSchema.safeParse({
-      holder: request.headers[cloudComputerLeaseHeader],
-    });
-    if (!lease.success || !(await store.lease(lease.data.holder, false))) {
+    const holder = CloudComputerLeaseSchema.shape.holder.safeParse(
+      request.headers[cloudComputerLeaseHeader],
+    );
+    if (!holder.success || !(await store.lease(holder.data, false))) {
       throw new ControlPlaneError("forbidden", "Cloud Computer provisioner lease is not held");
     }
   }
@@ -134,8 +135,8 @@ export function registerCloudComputerRoutes(
   app.post(cloudComputerLeasePath, async (request, reply) => {
     privateResponse(reply);
     await options.verifyProvisioner(request.headers.authorization);
-    const { holder, poolConfigured, poolNetwork } = CloudComputerLeaseSchema.parse(request.body);
-    if (!(await store.lease(holder, true, poolConfigured, poolNetwork))) {
+    const { holder, poolNetwork } = CloudComputerLeaseSchema.parse(request.body);
+    if (!(await store.lease(holder, true, poolNetwork))) {
       throw new ControlPlaneError("conflict", "Another Cloud Computer provisioner holds the lease");
     }
     return { acquired: true };
@@ -208,6 +209,23 @@ export function registerCloudComputerRoutes(
     );
   });
 
+  // A booted Home asks at each maintenance pass, so it follows a pool network that moves (S2).
+  const poolNetworkLimit = new BootRateLimit();
+  app.get(`${provisionerPath}/pool-network`, async (request, reply) => {
+    privateResponse(reply);
+    const { id } = params.parse(request.params);
+    if (!poolNetworkLimit.allow(id, request.ip))
+      return reply
+        .code(429)
+        .header("retry-after", "60")
+        .send({
+          error: { code: "rate_limited", message: "Too many Cloud Computer pool network requests" },
+        });
+    return CloudComputerPoolNetworkResponseSchema.parse(
+      await store.poolNetworkForHome(id, request.headers.authorization),
+    );
+  });
+
   // A booted Home asks at each update check, so it follows a feed this account moves later.
   const feedLimit = new BootRateLimit();
   app.get(`${provisionerPath}/release-feed`, async (request, reply) => {
@@ -240,10 +258,8 @@ export function registerCloudComputerRoutes(
   app.get(browserPoolHostsDesiredPath, async (request, reply) => {
     privateResponse(reply);
     await requireLease(request);
-    const { after, limit, probe } = BrowserPoolHostDesiredPageSchema.parse(request.query);
-    return BrowserPoolHostDesiredResponseSchema.parse(
-      await store.desiredPoolHosts(after, limit, probe ?? false),
-    );
+    const { after, limit } = BrowserPoolHostDesiredPageSchema.parse(request.query);
+    return BrowserPoolHostDesiredResponseSchema.parse(await store.desiredPoolHosts(after, limit));
   });
 
   app.post(`${poolHostPath}/check`, async (request, reply) => {

@@ -429,7 +429,7 @@ integration("Cloud Computer Account service", () => {
           method: "POST",
           url: cloudComputerLeasePath,
           headers: leaseHeaders(),
-          payload: { holder: lease },
+          payload: { holder: lease, poolNetwork: "10.40.0.0/20" },
         })
       ).statusCode,
     ).toBe(200);
@@ -807,7 +807,7 @@ integration("Cloud Computer Account service", () => {
       method: "POST",
       url: cloudComputerLeasePath,
       headers: leaseHeaders(),
-      payload: { holder: randomUUID() },
+      payload: { holder: randomUUID(), poolNetwork: "10.40.0.0/20" },
     });
     expect(competing.statusCode).toBe(409);
   });
@@ -881,13 +881,22 @@ integration("Cloud Computer Account service", () => {
         token: () => Promise<string>,
         http: { timeoutMs: number },
         holder: string,
+        provider?: "google",
+        poolNetwork?: string,
       ) => {
         desired: (signal: AbortSignal) => Promise<readonly CloudComputerDesired[]>;
         report: (report: CloudComputerReport, signal: AbortSignal) => Promise<boolean>;
       };
     }>("../../../home-provisioner/src/account.js");
     const options = {
-      account: accountClient(listener, async () => provisionerToken, { timeoutMs: 5000 }, lease),
+      account: accountClient(
+        listener,
+        async () => provisionerToken,
+        { timeoutMs: 5000 },
+        lease,
+        undefined,
+        "10.40.0.0/20",
+      ),
       provider,
       dns,
       discover: async () => identity,
@@ -1105,7 +1114,7 @@ integration("Cloud Computer Account service", () => {
     expect((await boot(initial)).statusCode).toBe(401);
     expect((await report(initial)).json()).toEqual({ recorded: false });
     now = new Date(now.getTime() + 21 * 60_000);
-    expect(await cloud.lease(lease, true)).toBe(true);
+    expect(await cloud.lease(lease, true, "10.40.0.0/20")).toBe(true);
     expect((await getDesired(id))?.bootstrapToken).toBe(initial.bootstrapToken);
     await cloud.mutate(id, "reissue");
     const first = (await getDesired(id))!;
@@ -1541,7 +1550,7 @@ integration("Cloud Computer Account service", () => {
           method: "POST",
           url: cloudComputerLeasePath,
           headers: leaseHeaders(),
-          payload: { holder },
+          payload: { holder, poolNetwork: "10.40.0.0/20" },
         })
       ).statusCode,
     ).toBe(200);
@@ -2119,6 +2128,8 @@ integration("Cloud Computer Account service", () => {
         token: () => Promise<string>,
         http: { timeoutMs: number },
         holder: string,
+        provider?: "google",
+        poolNetwork?: string,
       ): { check(id: string, check: CloudComputerCheck, signal: AbortSignal): Promise<boolean> };
     }>("../../../home-provisioner/src/account.js");
     const { discoverHome } = await vi.importActual<{
@@ -2195,6 +2206,8 @@ integration("Cloud Computer Account service", () => {
         async () => provisionerToken,
         { timeoutMs: 5000 },
         input.holder ?? lease,
+        undefined,
+        "10.40.0.0/20",
       ),
       provider,
       dns,
@@ -2225,6 +2238,8 @@ integration("Cloud Computer Account service", () => {
         async () => provisionerToken,
         { timeoutMs: 5000 },
         holder,
+        undefined,
+        "10.40.0.0/20",
       );
       const account = input.interceptCheck
         ? {

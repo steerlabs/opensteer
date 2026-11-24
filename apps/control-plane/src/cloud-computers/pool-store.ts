@@ -278,6 +278,43 @@ export class BrowserPoolStore {
   async #reconcileCapacity(): Promise<void> {
     const pool = this.#config.browserPool;
 
+    // 0. Every live Cloud Computer has a slot (one moved forward by 0040_browser_always_pooled
+    // has none yet), at the size this account is configured with now: a migration cannot know
+    // it. Lock order cloud_computers -> browser_pool_slots, as everywhere.
+    await this.#db.transaction().execute(async (tx) => {
+      const missing = await tx
+        .selectFrom("cloudComputers")
+        .select("id")
+        .where("state", "in", ["active", "suspended"])
+        .where("deletionRequestedAt", "is", null)
+        .where("tombstonedAt", "is", null)
+        .where((eb) =>
+          eb.not(
+            eb.exists(
+              eb
+                .selectFrom("browserPoolSlots")
+                .select("slotId")
+                .whereRef("browserPoolSlots.computerId", "=", "cloudComputers.id")
+                .where("browserPoolSlots.tombstonedAt", "is", null),
+            ),
+          ),
+        )
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .skipLocked()
+        .execute();
+      const now = this.#now();
+      for (const { id } of missing) {
+        const live = await tx
+          .selectFrom("browserPoolSlots")
+          .select("slotId")
+          .where("computerId", "=", id)
+          .where("tombstonedAt", "is", null)
+          .executeTakeFirst();
+        if (!live) await this.createSlotForComputer(tx, id, now);
+      }
+    });
+
     // 1. Separate transaction so slot locks are never held before host locks (T7).
     await this.#db.transaction().execute(async (tx) => {
       const now = this.#now();
@@ -425,9 +462,7 @@ export class BrowserPoolStore {
   async desiredHosts(
     after?: BrowserPoolHostId,
     limit = 100,
-    probe = false,
   ): Promise<BrowserPoolHostDesiredResponse> {
-    if (probe) return { hosts: [], poolEnabled: true };
     await this.#reconcileCapacity();
     let query = this.#db
       .selectFrom("browserPoolHosts")
@@ -516,7 +551,6 @@ export class BrowserPoolStore {
       }),
     );
     return {
-      poolEnabled: true,
       hosts,
       ...(rows.length > limit ? { next: page.at(-1)!.id } : {}),
     };
@@ -1469,41 +1503,23 @@ export class BrowserPoolStore {
     });
   }
 
-  async #poolProvisionerWarning(): Promise<string | undefined> {
-    const result = await sql<{ poolConfigured: boolean | null }>`
-      select pool_configured as "poolConfigured" from cloud_computer_provisioner_lease where singleton
-    `.execute(this.#db);
-    const lease = result.rows[0];
-    if (lease && lease.poolConfigured !== true) {
-      return (
-        "Browser pooling is enabled in Account, but the active home-provisioner does not have " +
-        "OPENSTEER_POOL_PROVISIONER_KEY configured. Pool hosts and slots will not be reconciled."
-      );
-    }
-    return undefined;
-  }
-
   async operatorListHosts() {
-    const [rows, warning] = await Promise.all([
-      this.#db.selectFrom("browserPoolHosts").selectAll().orderBy("createdAt", "desc").execute(),
-      this.#poolProvisionerWarning(),
-    ]);
-    return {
-      hosts: rows.map(poolHostOperatorView),
-      ...(warning ? { warning } : {}),
-    };
+    const rows = await this.#db
+      .selectFrom("browserPoolHosts")
+      .selectAll()
+      .orderBy("createdAt", "desc")
+      .execute();
+    return { hosts: rows.map(poolHostOperatorView) };
   }
 
   async operatorShowHost(id: BrowserPoolHostId) {
-    const [row, warning] = await Promise.all([
-      this.#db.selectFrom("browserPoolHosts").selectAll().where("id", "=", id).executeTakeFirst(),
-      this.#poolProvisionerWarning(),
-    ]);
+    const row = await this.#db
+      .selectFrom("browserPoolHosts")
+      .selectAll()
+      .where("id", "=", id)
+      .executeTakeFirst();
     if (!row) throw new ControlPlaneError("not_found", "Browser pool host was not found");
-    return {
-      ...poolHostOperatorView(row),
-      ...(warning ? { warning } : {}),
-    };
+    return poolHostOperatorView(row);
   }
 
   async operatorDrainHost(id: BrowserPoolHostId) {
@@ -1604,30 +1620,22 @@ export class BrowserPoolStore {
   }
 
   async operatorListSlots() {
-    const [rows, warning] = await Promise.all([
-      this.#db.selectFrom("browserPoolSlots").selectAll().orderBy("createdAt", "desc").execute(),
-      this.#poolProvisionerWarning(),
-    ]);
-    return {
-      slots: rows.map(poolSlotOperatorView),
-      ...(warning ? { warning } : {}),
-    };
+    const rows = await this.#db
+      .selectFrom("browserPoolSlots")
+      .selectAll()
+      .orderBy("createdAt", "desc")
+      .execute();
+    return { slots: rows.map(poolSlotOperatorView) };
   }
 
   async operatorShowSlot(slotId: BrowserPoolSlotId) {
-    const [row, warning] = await Promise.all([
-      this.#db
-        .selectFrom("browserPoolSlots")
-        .selectAll()
-        .where("slotId", "=", slotId)
-        .executeTakeFirst(),
-      this.#poolProvisionerWarning(),
-    ]);
+    const row = await this.#db
+      .selectFrom("browserPoolSlots")
+      .selectAll()
+      .where("slotId", "=", slotId)
+      .executeTakeFirst();
     if (!row) throw new ControlPlaneError("not_found", "Browser pool slot was not found");
-    return {
-      ...poolSlotOperatorView(row),
-      ...(warning ? { warning } : {}),
-    };
+    return poolSlotOperatorView(row);
   }
 
   /** X2: Operator retries a failed active slot immediately while keeping lastError visible until ready. */

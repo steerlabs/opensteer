@@ -308,12 +308,13 @@ integration("A pooled Home against its Opensteer account (phase B, piece 4)", ()
       authorization: "Bearer provisioner-ok",
       [cloudComputerLeaseHeader]: leaseHolder,
     };
-    const acquireLease = async (poolConfigured = slotsPerHost !== undefined) => {
+    // The provisioner's Home subnet, where it creates the pool hosts too.
+    const acquireLease = async () => {
       const response = await app.inject({
         method: "POST",
         url: cloudComputerLeasePath,
         headers: { authorization: "Bearer provisioner-ok" },
-        payload: { holder: leaseHolder, poolConfigured },
+        payload: { holder: leaseHolder, poolNetwork: "10.40.0.0/20" },
       });
       expect(response.statusCode).toBe(200);
     };
@@ -609,7 +610,7 @@ integration("A pooled Home against its Opensteer account (phase B, piece 4)", ()
     };
 
     const setupPooledHomeAndHost = async (ip = "10.40.0.10") => {
-      await acquireLease(true);
+      await acquireLease();
       const { accountId, computer } = await provisionComputer(1);
       const claimed = await bootAndClaimComputer(computer, accountId);
       const hosts = await getDesiredHosts();
@@ -661,7 +662,7 @@ integration("A pooled Home against its Opensteer account (phase B, piece 4)", ()
     const h = await buildHarness("2");
     const directory = await mkdtemp(join(tmpdir(), "opensteer-pool-home-"));
     try {
-      await h.acquireLease(true);
+      await h.acquireLease();
       const { accountId, computer } = await h.provisionComputer(1);
       const claimed = await h.bootAndClaimComputer(computer, accountId);
       const [host] = await h.getDesiredHosts();

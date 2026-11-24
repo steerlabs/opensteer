@@ -1086,29 +1086,17 @@ export class CloudComputerStore {
       throw new ControlPlaneError("conflict", "The holder does not have an expired lease");
   }
 
-  async lease(
-    holder: string,
-    acquire: boolean,
-    poolConfigured?: boolean,
-    poolNetwork?: string,
-  ): Promise<boolean> {
+  async lease(holder: string, acquire: boolean, poolNetwork?: string): Promise<boolean> {
     const now = this.#now();
     const expires = new Date(now.getTime() + 10 * 60_000);
-    const poolFlag = poolConfigured ?? null;
     const network = poolNetwork ?? null;
     const result = acquire
       ? await sql`
-          insert into cloud_computer_provisioner_lease
-            (singleton, holder, expires_at, pool_configured, pool_network)
-          values (true, ${holder}::uuid, ${expires}, ${poolFlag}, ${network}::cidr)
+          insert into cloud_computer_provisioner_lease (singleton, holder, expires_at, pool_network)
+          values (true, ${holder}::uuid, ${expires}, ${network}::cidr)
           on conflict (singleton) do update set
             holder = excluded.holder,
             expires_at = excluded.expires_at,
-            pool_configured = case
-              when ${poolFlag}::boolean is not null then ${poolFlag}::boolean
-              when cloud_computer_provisioner_lease.holder = excluded.holder then cloud_computer_provisioner_lease.pool_configured
-              else null
-            end,
             pool_network = case
               when ${network}::cidr is not null then ${network}::cidr
               when cloud_computer_provisioner_lease.holder = excluded.holder then cloud_computer_provisioner_lease.pool_network
@@ -1662,6 +1650,13 @@ export class CloudComputerStore {
       }
       const { endpoint: backupEndpoint, bucket, prefix } = backup;
       const poolNetwork = await this.#poolNetwork(tx);
+      // Review C1: without it this Home would have no path to its browser, for good. The
+      // installer retries a 503 until the provisioner's lease names the pool network.
+      if (!poolNetwork)
+        throw new ControlPlaneError(
+          "unavailable",
+          "The browser pool's network is not known yet; the Cloud Computer will boot once it is",
+        );
       return {
         managedHome,
         ipv6Enabled: row.ipv6Enabled,
@@ -1676,8 +1671,8 @@ export class CloudComputerStore {
         releaseManifestUrl: this.#options.config.releaseManifestUrl,
         // Its browser runs on a pool host, which alone holds its egress password (T9).
         browserPool: true,
-        // The pool network its firewall may reach; without one it reaches nothing private.
-        ...(poolNetwork ? { browserPoolNetwork: poolNetwork } : {}),
+        // The pool network its firewall may reach, and nothing else private.
+        browserPoolNetwork: poolNetwork,
         backup: {
           endpoint: backupEndpoint,
           bucket,
@@ -1823,6 +1818,17 @@ export class CloudComputerStore {
       await this.#requireBootedHome(tx, id, authorization, "share");
       // T9: A Cloud Computer's egress password is held only by its pool host, never its Home.
       return {};
+    });
+  }
+
+  /** The pool network now, to a booted Home that proves its credentials (review S2). */
+  async poolNetworkForHome(id: CloudComputerId, authorization: string | undefined) {
+    return this.#db.transaction().execute(async (tx) => {
+      await this.#requireBootedHome(tx, id, authorization, "share");
+      const browserPoolNetwork = await this.#poolNetwork(tx);
+      if (!browserPoolNetwork)
+        throw new ControlPlaneError("unavailable", "The browser pool's network is not known yet");
+      return { browserPoolNetwork };
     });
   }
 
@@ -2886,8 +2892,8 @@ export class CloudComputerStore {
     });
   }
 
-  desiredPoolHosts(after?: BrowserPoolHostId, limit?: number, probe?: boolean) {
-    return this.#pool.desiredHosts(after, limit, probe);
+  desiredPoolHosts(after?: BrowserPoolHostId, limit?: number) {
+    return this.#pool.desiredHosts(after, limit);
   }
 
   checkPoolHost(id: BrowserPoolHostId, check: BrowserPoolHostCheck) {

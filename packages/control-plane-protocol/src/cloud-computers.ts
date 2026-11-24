@@ -241,9 +241,8 @@ export type CloudComputerBrowserPoolNetwork = z.infer<typeof CloudComputerBrowse
 
 export const CloudComputerLeaseSchema = z.strictObject({
   holder: z.uuid(),
-  poolConfigured: z.boolean().optional(),
   /** The provisioner's Home subnet, where its pool hosts live too. */
-  poolNetwork: BrowserPoolNetworkCidrSchema.optional(),
+  poolNetwork: BrowserPoolNetworkCidrSchema,
 });
 export const CloudComputerCheckSchema = z.discriminatedUnion("operation", [
   z.strictObject({ operation: z.literal("orphan") }),
@@ -329,6 +328,13 @@ export type CloudComputerReleaseFeedResponse = z.infer<
 >;
 export const cloudComputerReleaseFeedPath = (id: CloudComputerId) =>
   `/v1/cloud-computers/${id}/release-feed`;
+
+/** The pool network a booted Home's firewall may reach now (review S2), as its boot answer has. */
+export const CloudComputerPoolNetworkResponseSchema = z.strictObject({
+  browserPoolNetwork: CloudComputerBrowserPoolNetworkSchema,
+});
+export const cloudComputerPoolNetworkPath = (id: CloudComputerId) =>
+  `/v1/cloud-computers/${id}/pool-network`;
 
 export const CloudComputerBackupReportSchema = z.strictObject({
   completedAt: z.iso.datetime(),
