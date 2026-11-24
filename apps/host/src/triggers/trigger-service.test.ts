@@ -557,10 +557,105 @@ describe("TriggerService", () => {
     expect(result.trigger?.webhookRouteKey).toBeNull();
     expect(result.webhook).toEqual({ scope: "public", url: null });
   });
-  it("does not expose unreachable rotateWebhookKey, patchSecrets, or listSecretNames methods (AB7)", () => {
+  it("sets, replaces, lists names, and removes secrets via TriggerService while keeping rotateWebhookKey absent", async () => {
     expect("rotateWebhookKey" in TriggerService.prototype).toBe(false);
-    expect("patchSecrets" in TriggerService.prototype).toBe(false);
-    expect("listSecretNames" in TriggerService.prototype).toBe(false);
+    let storedEnvelope: Buffer | null = null;
+    const onChanged = vi.fn();
+    const onWatchChanged = vi.fn();
+    const { AesGcmSecretVault, StaticEncryptionKeyProvider } =
+      await import("@opensteer/access/host");
+    const { AutomationSecrets } = await import("./automation-secrets.js");
+    const secrets = new AutomationSecrets(
+      new AesGcmSecretVault(
+        new StaticEncryptionKeyProvider(new Map([[1, Buffer.alloc(32, 0x33)]]), 1),
+      ),
+    );
+    const triggerId = createId("trigger");
+    const anchorThreadId = createId("thread");
+    const userId = createId("user");
+    const now = new Date().toISOString();
+    const triggerRecord = {
+      anchorThreadId,
+      createdAt: now,
+      createdBy: userId,
+      createdByThreadId: null,
+      currentRevisionId: createId("triggerRevision"),
+      id: triggerId,
+      kind: "watch" as const,
+      lastFiredAt: null,
+      name: "Secret watch",
+      nextFireAt: null,
+      pauseReason: null,
+      pausedBy: null,
+      status: "active" as const,
+      systemRole: null,
+      updatedAt: now,
+      webhookRouteKey: null,
+    };
+    const service = new TriggerService({
+      onChanged,
+      onOccurrenceQueued: vi.fn(),
+      onWatchChanged,
+      publicUrl: new URL("https://host.opensteer.test"),
+      runnerStore: {} as never,
+      secrets,
+      store: {
+        getEncryptedSecrets: vi.fn(async () => storedEnvelope),
+        getForOwner: vi.fn(async () => ({
+          activation: null,
+          anchorThread: null,
+          anchorThreadTitle: "Task",
+          createdByThreadTitle: null,
+          downstreamRuns: [],
+          downstreamRunsTruncated: false,
+          occurrences: [],
+          revision: {
+            createdAt: now,
+            createdBy: userId,
+            createdByThreadId: null,
+            id: triggerRecord.currentRevisionId,
+            ordinal: 1,
+            script: { interpreter: null, text: "console.log(1)" },
+            source: { kind: "watch" as const },
+            triggerId,
+          },
+          trigger: triggerRecord,
+        })),
+        updateEncryptedSecrets: vi.fn(
+          async (input: {
+            transform: (current: Buffer | null) => Promise<{
+              result: readonly string[];
+              sealed: { envelope: Buffer; keyVersion: number } | null;
+            }>;
+          }) => {
+            const { result, sealed } = await input.transform(storedEnvelope);
+            storedEnvelope = sealed?.envelope ?? null;
+            return { result, trigger: triggerRecord };
+          },
+        ),
+      } as never,
+      threads: {} as never,
+    } as never);
+
+    const setRes = await (
+      service as unknown as {
+        setSecrets: (
+          owner: unknown,
+          input: unknown,
+          actorThreadId: null,
+        ) => Promise<{ secretNames: readonly string[] }>;
+      }
+    ).setSecrets(userId, { triggerId, set: { Z_KEY: "val-z", A_KEY: "val-a" } }, null);
+    expect(setRes.secretNames).toEqual(["A_KEY", "Z_KEY"]);
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    expect(onWatchChanged).toHaveBeenCalledWith(triggerId);
+
+    const detail = (await service.get(userId, triggerId, 10, { kind: "person" })) as {
+      secretNames?: readonly string[];
+    };
+    expect(detail.secretNames).toEqual(["A_KEY", "Z_KEY"]);
+    expect(JSON.stringify(detail)).not.toContain("val-a");
+    expect(JSON.stringify(detail)).not.toContain("val-z");
   });
   it("fires schedules at their deadline or a wake, wakes dispatch only for new occurrences, and never polls", async () => {
     vi.useFakeTimers();

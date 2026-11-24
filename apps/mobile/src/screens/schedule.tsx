@@ -4,6 +4,7 @@ import {
   describeRepeating,
   formatFullMoment,
   formatMoment,
+  mutationIdempotencyKey,
   schedulesClient,
   threadInDirectory,
   watchState,
@@ -27,6 +28,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import {
@@ -445,7 +447,14 @@ function ScheduleBody(props: {
             value={definition.revision.script?.text ?? definition.revision.legacySource ?? ""}
           />
         </View>
-      ) : null}
+      ) : (
+        <AutomationSecretsCard
+          changeable={changeable}
+          hostClient={props.hostClient}
+          names={definition.secretNames ?? []}
+          triggerId={item.id}
+        />
+      )}
       <View style={styles.runs}>
         <ScheduleGroupHead title="Recent runs" />
         {detail.occurrences.length === 0 ? (
@@ -684,8 +693,243 @@ const styles = StyleSheet.create({
     paddingVertical: space[10],
   },
   runGlyph: { alignItems: "center", width: 20 },
+  secretActions: { flexDirection: "row", gap: space[8] },
+  secretBtn: {
+    ...material.control,
+    borderRadius: radius.sm,
+    justifyContent: "center",
+    minHeight: 32,
+    paddingHorizontal: space[10],
+  },
+  secretError: { color: color.red },
+  secretForm: { gap: space[10], padding: space[14] },
+  secretHead: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  secretInput: {
+    backgroundColor: color.background,
+    borderColor: color.line,
+    borderRadius: radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    color: color.text,
+    minHeight: touchTarget,
+    paddingHorizontal: space[12],
+  },
+  secretRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: space[10],
+    justifyContent: "space-between",
+    minHeight: touchTarget,
+    paddingHorizontal: space[14],
+    paddingVertical: space[8],
+  },
+  secretSection: { gap: space[8] },
   separated: { borderColor: color.line, borderTopWidth: StyleSheet.hairlineWidth },
   status: { alignItems: "center", flexDirection: "row", gap: space[8] },
   statusWords: { flexShrink: 1 },
   words: { flex: 1, gap: space[2], minWidth: 0 },
 });
+
+/** Write-only secrets for one automation: names are listed; values are never shown again. */
+function AutomationSecretsCard(props: {
+  readonly changeable: boolean;
+  readonly hostClient: HostClient;
+  readonly names: readonly string[];
+  readonly triggerId: string;
+}): ReactNode {
+  const [editing, setEditing] = useState<{
+    readonly mode: "add" | "replace";
+    readonly name: string;
+  } | null>(null);
+  const [nameInput, setNameInput] = useState("");
+  const [valueInput, setValueInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const openAdd = () => {
+    setEditing({ mode: "add", name: "" });
+    setNameInput("");
+    setValueInput("");
+    setError(null);
+  };
+  const openReplace = (name: string) => {
+    setEditing({ mode: "replace", name });
+    setNameInput(name);
+    setValueInput("");
+    setError(null);
+  };
+  const close = () => {
+    setEditing(null);
+    setNameInput("");
+    setValueInput("");
+    setError(null);
+  };
+
+  const save = async () => {
+    if (!editing) return;
+    const targetName = editing.mode === "add" ? nameInput.trim() : editing.name;
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/u.test(targetName)) {
+      setError("Use 1 to 64 letters, digits, or underscores starting with a letter or underscore.");
+      return;
+    }
+    if (valueInput.length === 0) {
+      setError("Enter a value.");
+      return;
+    }
+    const valueToSave = valueInput;
+    setValueInput("");
+    setBusy(true);
+    setError(null);
+    try {
+      await props.hostClient.dispatch({
+        idempotencyKey: mutationIdempotencyKey(`trigger-secrets:${props.triggerId}`),
+        set: { [targetName]: valueToSave },
+        triggerId: props.triggerId,
+        type: "trigger.secrets.set",
+      });
+      await schedulesClient(props.hostClient).detail(props.triggerId).refresh();
+      close();
+    } catch {
+      setError("Could not save secret.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (name: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await props.hostClient.dispatch({
+        idempotencyKey: mutationIdempotencyKey(`trigger-secrets:${props.triggerId}`),
+        remove: [name],
+        triggerId: props.triggerId,
+        type: "trigger.secrets.set",
+      });
+      await schedulesClient(props.hostClient).detail(props.triggerId).refresh();
+    } catch {
+      setError("Could not remove secret.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <View style={styles.secretSection}>
+      <View style={styles.secretHead}>
+        <ScheduleGroupHead title="Secrets" />
+        {props.changeable && editing === null ? (
+          <Pressable
+            accessibilityLabel="Add"
+            accessibilityRole="button"
+            disabled={busy}
+            onPress={openAdd}
+            style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
+          >
+            <AppText role="secondaryMedium">Add</AppText>
+          </Pressable>
+        ) : null}
+      </View>
+      <AppText role="caption" tone="muted">
+        Values are added to the script’s environment as OPENSTEER_SECRET_&lt;NAME&gt; and aren’t
+        shown again. The script, and any agent that can change it, can read them there.
+      </AppText>
+      {editing !== null ? (
+        <View style={[styles.plate, styles.secretForm]}>
+          {editing.mode === "add" ? (
+            <TextInput
+              accessibilityLabel="Secret name"
+              autoCapitalize="none"
+              autoCorrect={false}
+              onChangeText={setNameInput}
+              placeholder="API_TOKEN"
+              placeholderTextColor={color.mutedDim}
+              style={styles.secretInput}
+              value={nameInput}
+            />
+          ) : (
+            <AppText role="secondaryMedium">Replacing {editing.name}</AppText>
+          )}
+          <TextInput
+            accessibilityLabel={editing.mode === "add" ? "Secret value" : "New value"}
+            autoCapitalize="none"
+            autoCorrect={false}
+            onChangeText={setValueInput}
+            placeholder="Secret value"
+            placeholderTextColor={color.mutedDim}
+            secureTextEntry
+            style={styles.secretInput}
+            value={valueInput}
+          />
+          <View style={styles.secretActions}>
+            <Pressable
+              accessibilityLabel="Cancel"
+              accessibilityRole="button"
+              disabled={busy}
+              onPress={close}
+              style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
+            >
+              <AppText role="secondary">Cancel</AppText>
+            </Pressable>
+            <Pressable
+              accessibilityLabel="Save"
+              accessibilityRole="button"
+              disabled={busy}
+              onPress={() => void save()}
+              style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
+            >
+              <AppText role="secondaryMedium">{busy ? "Saving…" : "Save"}</AppText>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+      {error !== null ? (
+        <AppText role="caption" style={styles.secretError}>
+          {error}
+        </AppText>
+      ) : null}
+      <View style={styles.plate}>
+        {props.names.length === 0 ? (
+          <View style={styles.secretRow}>
+            <AppText role="secondary" tone="muted">
+              No secrets yet.
+            </AppText>
+          </View>
+        ) : (
+          props.names.map((name, index) => (
+            <View key={name} style={[styles.secretRow, index > 0 && styles.separated]}>
+              <AppText numberOfLines={1} role="secondaryMedium" style={styles.words}>
+                {name}
+              </AppText>
+              {props.changeable ? (
+                <View style={styles.secretActions}>
+                  <Pressable
+                    accessibilityLabel={`Replace ${name}`}
+                    accessibilityRole="button"
+                    disabled={busy}
+                    onPress={() => openReplace(name)}
+                    style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
+                  >
+                    <AppText role="secondary">Replace</AppText>
+                  </Pressable>
+                  <Pressable
+                    accessibilityLabel={`Remove ${name}`}
+                    accessibilityRole="button"
+                    disabled={busy}
+                    onPress={() => void remove(name)}
+                    style={({ pressed }) => [styles.secretBtn, pressed && styles.pressed]}
+                  >
+                    <AppText role="secondary">Remove</AppText>
+                  </Pressable>
+                </View>
+              ) : null}
+            </View>
+          ))
+        )}
+      </View>
+    </View>
+  );
+}

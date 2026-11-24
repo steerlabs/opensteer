@@ -105,6 +105,21 @@ vi.mock("react-native", () => {
     ),
     StyleSheet: { create: <T,>(styles: T) => styles, hairlineWidth: 1 },
     Text: (props: Children) => <span>{props.children}</span>,
+    TextInput: (props: {
+      accessibilityLabel?: string;
+      onChangeText?: (text: string) => void;
+      placeholder?: string;
+      secureTextEntry?: boolean;
+      value?: string;
+    }) => (
+      <input
+        aria-label={props.accessibilityLabel ?? props.placeholder}
+        onChange={(event) => props.onChangeText?.(event.currentTarget.value)}
+        placeholder={props.placeholder}
+        type={props.secureTextEntry ? "password" : "text"}
+        value={props.value ?? ""}
+      />
+    ),
     View: (props: Children & { accessibilityLabel?: string; accessibilityRole?: string }) => (
       <div aria-label={props.accessibilityLabel} data-role={props.accessibilityRole}>
         {props.children}
@@ -781,5 +796,51 @@ describe("Managed memory passes", () => {
       threads: f.snapshot().threads.map((t) => ({ ...t, updatedAt: "2026-11-03T11:00:00Z" })),
     });
     expect(f.get).toHaveBeenCalledTimes(reads);
+  });
+
+  it("shows automation secret names and lets the person add, replace, and remove secrets", async () => {
+    const f = host();
+    const trigger = (await f.summaries()).find((t) => !t.systemRole)!;
+    const screen = detailScreen(trigger.id);
+    await shown(screen, "Secrets", "secrets section did not appear");
+    expect(screen.textContent).toContain("can read them there");
+    expect(screen.textContent?.toLowerCase()).not.toContain("agent cannot see");
+
+    const setInput = (label: string, value: string) => {
+      const input = screen.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+      expect(input).not.toBeNull();
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      act(() => {
+        setter.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+    };
+
+    press(button(screen, "Add"));
+    setInput("Secret name", "API_TOKEN");
+    const valInput = screen.querySelector<HTMLInputElement>('input[aria-label="Secret value"]')!;
+    expect(valInput.type).toBe("password");
+    setInput("Secret value", "mobile-secret-1");
+    press(button(screen, "Save"));
+    await shown(screen, "API_TOKEN", "added secret name never appeared");
+    expect(screen.textContent).not.toContain("mobile-secret-1");
+
+    press(button(screen, "Replace API_TOKEN"));
+    const replaceInput = screen.querySelector<HTMLInputElement>('input[aria-label="New value"]')!;
+    expect(replaceInput.type).toBe("password");
+    setInput("New value", "mobile-secret-2");
+    press(button(screen, "Save"));
+    await vi.waitFor(
+      () => expect(screen.querySelector('input[aria-label="New value"]')).toBeNull(),
+      { timeout: 2000 },
+    );
+    expect(screen.textContent).toContain("API_TOKEN");
+    expect(screen.textContent).not.toContain("mobile-secret-2");
+
+    press(button(screen, "Remove API_TOKEN"));
+    await vi.waitFor(() => expect(screen.textContent).not.toContain("API_TOKEN"), {
+      timeout: 2000,
+    });
   });
 });

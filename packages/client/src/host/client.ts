@@ -1083,6 +1083,7 @@ export interface TriggerDetail {
   downstreamRunsTruncated: boolean;
   occurrences: TriggerOccurrence[];
   revision: TriggerRevision;
+  secretNames?: readonly string[];
   trigger: Trigger;
   webhook?: { scope: "local" | "public"; url?: string | null | undefined } | null | undefined;
 }

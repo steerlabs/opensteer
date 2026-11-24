@@ -1622,6 +1622,7 @@ export class TriggerStore {
   }): Promise<{ readonly result: Result; readonly trigger: Trigger }> {
     return commitPersonalMutation(this.#database, async (transaction) => {
       const admitted = await admitTriggerActor(transaction, input.ownerId, input);
+      await lockWatchAnchorPlacementForTrigger(transaction, input.triggerId);
       const trigger = await lockTriggerForMutation(transaction, admitted.input);
       if (
         admitted.connection?.grant.scope === "selected" &&
@@ -1642,16 +1643,57 @@ export class TriggerStore {
       if (trigger.systemRole) throw conflict(MANAGED_MEMORY_REFUSAL);
       if (trigger.status === "archived") throw conflict("Archived automations cannot be changed");
       const { result, sealed } = await input.transform(trigger.encryptedSecrets ?? null);
+      const now = new Date();
+      let nextRevisionId = trigger.currentRevisionId;
+      if (trigger.kind === "watch") {
+        const current = await transaction
+          .selectFrom("triggerRevisions")
+          .selectAll()
+          .where("id", "=", trigger.currentRevisionId)
+          .executeTakeFirstOrThrow();
+        nextRevisionId = createId("triggerRevision");
+        await transaction
+          .insertInto("triggerRevisions")
+          .values({
+            createdAt: now,
+            createdBy: input.ownerId,
+            createdByThreadId: input.actorThreadId,
+            id: nextRevisionId,
+            ordinal: current.ordinal + 1,
+            script: current.script === null ? null : jsonValue(current.script),
+            source: jsonValue(current.source),
+            triggerId: trigger.id,
+          })
+          .execute();
+      }
       const updated = await transaction
         .updateTable("triggers")
         .set({
+          currentRevisionId: nextRevisionId,
           encryptedSecrets: sealed?.envelope ?? null,
           secretsKeyVersion: sealed?.keyVersion ?? null,
-          updatedAt: new Date(),
+          updatedAt: now,
         })
         .where("id", "=", trigger.id)
         .returningAll()
         .executeTakeFirstOrThrow();
+      if (trigger.kind === "watch") {
+        await stopActiveWatchActivation(transaction, trigger.id, now);
+        if (updated.status === "active") {
+          const anchor = await transaction
+            .selectFrom("threads")
+            .select("environmentId")
+            .where("id", "=", trigger.anchorThreadId)
+            .executeTakeFirstOrThrow();
+          await createWatchActivation(transaction, {
+            anchorThreadId: trigger.anchorThreadId,
+            createdBy: trigger.createdBy,
+            environmentId: anchor.environmentId,
+            revisionId: nextRevisionId,
+            triggerId: trigger.id,
+          });
+        }
+      }
       return { result, trigger: triggerFromRow(updated) };
     });
   }
@@ -2000,54 +2042,6 @@ export class TriggerStore {
         },
         rawBody,
       );
-    });
-  }
-  async rotateWebhookKey(input: {
-    readonly commandIdentity?: Pick<CommandIdentity, "admit">;
-    readonly actorConnectionId?: string;
-    readonly actorThreadId: ThreadId | null;
-    readonly ownerId: UserId;
-    readonly triggerId: TriggerId;
-    readonly webhookRouteKey: string;
-  }): Promise<Trigger> {
-    return commitPersonalMutation(this.#database, async (transaction) => {
-      const admitted = await admitTriggerActor(transaction, input.ownerId, input);
-      const trigger = await lockTriggerForMutation(transaction, admitted.input);
-      if (
-        admitted.connection?.grant.scope === "selected" &&
-        trigger.originConnectionId !== admitted.input.actorConnectionId
-      ) {
-        throw notFound();
-      }
-      if (
-        admitted.input.actorConnectionId &&
-        trigger.originConnectionId !== admitted.input.actorConnectionId
-      ) {
-        throw new OpensteerError({
-          code: "forbidden",
-          message:
-            "A connected agent cannot rotate the webhook address of an automation it did not create.",
-        });
-      }
-      if (trigger.kind !== "webhook") {
-        throw new OpensteerError({
-          code: "bad_request",
-          message: "Only webhook automations have a webhook address",
-        });
-      }
-      if (trigger.status === "archived") {
-        throw conflict("Archived automation cannot rotate its webhook address");
-      }
-      const updated = await transaction
-        .updateTable("triggers")
-        .set({
-          updatedAt: new Date(),
-          webhookRouteKey: input.webhookRouteKey,
-        })
-        .where("id", "=", trigger.id)
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      return triggerFromRow(updated);
     });
   }
   enqueueManual(input: {

@@ -196,6 +196,8 @@ const withoutTool: Readonly<Record<string, string>> = {
     "no tool revokes a device grant: computer_apps lists, app_access_request asks for more",
   "integration.disconnect":
     "no tool disconnects a device app: computer_apps lists, app_access_request asks for more",
+  "trigger.secrets.set":
+    "no legacy tool sets automation secrets; added directly through opensteer_command",
 };
 /**
  * Step-A commands a tool performs that the recording does not cover yet, each with its tool;

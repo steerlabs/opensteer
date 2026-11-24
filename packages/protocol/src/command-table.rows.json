@@ -3670,6 +3670,40 @@
         "why": "trigger-service.ts:267: one store write",
         "ongoing": false
       }
+    },
+    {
+      "type": "trigger.secrets.set",
+      "family": "automations",
+      "governs": "an automation's secrets ← `triggerId`",
+      "faces": [
+        {
+          "when": "`remove` only",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "`set` given or omitted",
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "removing a secret narrows what the script holds; setting or replacing one needs Full access in the automation's own lineage (same admission as changing its script, trigger.update face 1), and `set` is in `secretFields` so a Request never stores or displays a value",
+      "effect": {
+        "where": "database",
+        "why": "trigger-service.ts:238: one store write; the notices after it are in memory",
+        "ongoing": true
+      }
     }
   ],
   "inputs": {
@@ -3857,6 +3891,8 @@
     "trigger.status.set status": "face: paused narrow, archived narrow with Full access, active widen-self",
     "trigger.run payload": "same class; omitted: no payload",
     "trigger.cancel occurrenceId": "same class; omitted: every pending occurrence (agent-tools triggers.ts:86)",
+    "trigger.secrets.set remove": "face: remove only (without set) narrow; omitted: set face (widen-self, Full access, own lineage)",
+    "trigger.secrets.set set": "face: present or omitted without remove widens in the automation's lineage (same admission as changing the script, trigger.update face 1); secret path stripped from Requests and refused on agents whose call asks",
     "personal.accountLink.unlink step": "same class: identity whatever the step, the Mac app's two unlink steps (lead's AD10 ruling)",
     "plugins.install source.name": "same class; omitted: the folder's own plugin name",
     "plugins.install source.pluginId": "same class (widen-self): a new version of that plugin from your own agent's folder, as today's tool deploys one"

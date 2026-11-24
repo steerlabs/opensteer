@@ -154,6 +154,7 @@ export const commandTitles: { readonly [K in CommandType]: string } = {
   "trigger.status.set": "Pause, resume or archive an automation",
   "trigger.run": "Run an automation now",
   "trigger.cancel": "Cancel an automation's pending runs",
+  "trigger.secrets.set": "Change an automation's secrets",
 };
 
 /** The screen of each family that performs its commands, on the web, the Mac app and the phone. */

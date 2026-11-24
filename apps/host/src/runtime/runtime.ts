@@ -3083,6 +3083,7 @@ export async function createHostRuntime(
       publicUrl: config.canonicalOrigin,
       remoteOrigin: async () =>
         (await personalRemoteAccess?.status())?.route?.document.route.origin ?? null,
+      secrets: automationSecrets,
       store: triggerStore,
       threads: store,
     });

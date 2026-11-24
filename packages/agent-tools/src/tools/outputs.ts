@@ -36,6 +36,8 @@ import {
   ThreadAccessModeSchema,
 } from "@opensteer/core";
 import {
+  AutomationSecretNameSchema,
+  MAX_AUTOMATION_SECRETS,
   TriggerScriptEventSchema,
   TriggerViewSchema,
   TriggerRevisionViewSchema,
@@ -464,6 +466,7 @@ export const TriggerOutputSchema = z.object({
     .optional(),
   downstreamRunsTruncated: z.boolean().optional(),
   replayed: z.boolean().optional(),
+  secretNames: z.array(AutomationSecretNameSchema).max(MAX_AUTOMATION_SECRETS).optional(),
   webhook: TriggerWebhookAddressViewSchema.nullable().optional(),
 });
 

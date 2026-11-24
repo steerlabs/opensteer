@@ -17,6 +17,7 @@ import {
   type TriggerDetail,
 } from "@opensteer/client/host";
 import {
+  AutomationSecretNameSchema,
   TRIGGER_SCRIPT_UPDATE_REASON,
   triggerOccurrenceErrorMessage,
   type TriggerOccurrence,
@@ -487,6 +488,38 @@ function AutomationView({
         ) : null}
       </dl>
 
+      {managed ? null : (
+        <AutomationSecretsSection
+          archived={archived}
+          disabled={pending}
+          names={detail.secretNames ?? []}
+          onRemove={(name) =>
+            void act(async () => {
+              await client.dispatch({
+                idempotencyKey: mutationIdempotencyKey(`trigger-secrets:${trigger.id}`),
+                remove: [name],
+                triggerId: trigger.id,
+                type: "trigger.secrets.set",
+              });
+              await refresh();
+              return `Removed ${name}`;
+            })
+          }
+          onSave={(name, value, mode) =>
+            act(async () => {
+              await client.dispatch({
+                idempotencyKey: mutationIdempotencyKey(`trigger-secrets:${trigger.id}`),
+                set: { [name]: value },
+                triggerId: trigger.id,
+                type: "trigger.secrets.set",
+              });
+              await refresh();
+              return mode === "add" ? `Added ${name}` : `Replaced ${name}`;
+            })
+          }
+        />
+      )}
+
       {shape === "watch" ? null : (
         <RecentRuns
           detail={detail}
@@ -918,5 +951,166 @@ function Advanced({
         ) : null}
       </div>
     </details>
+  );
+}
+
+/** Write-only secrets for one automation: names are listed; values are never shown again. */
+function AutomationSecretsSection({
+  archived,
+  disabled,
+  names,
+  onRemove,
+  onSave,
+}: {
+  readonly archived: boolean;
+  readonly disabled: boolean;
+  readonly names: readonly string[];
+  readonly onRemove: (name: string) => void;
+  readonly onSave: (name: string, value: string, mode: "add" | "replace") => Promise<void>;
+}) {
+  const [editing, setEditing] = useState<{
+    readonly mode: "add" | "replace";
+    readonly name: string;
+  } | null>(null);
+  const [nameInput, setNameInput] = useState("");
+  const [valueInput, setValueInput] = useState("");
+  const [invalid, setInvalid] = useState<string | null>(null);
+
+  const openAdd = () => {
+    setEditing({ mode: "add", name: "" });
+    setNameInput("");
+    setValueInput("");
+    setInvalid(null);
+  };
+  const openReplace = (name: string) => {
+    setEditing({ mode: "replace", name });
+    setNameInput(name);
+    setValueInput("");
+    setInvalid(null);
+  };
+  const close = () => {
+    setEditing(null);
+    setNameInput("");
+    setValueInput("");
+    setInvalid(null);
+  };
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!editing) return;
+    const targetName = editing.mode === "add" ? nameInput.trim() : editing.name;
+    const parsedName = AutomationSecretNameSchema.safeParse(targetName);
+    if (!parsedName.success) {
+      setInvalid(
+        "Use 1 to 64 letters, digits, or underscores starting with a letter or underscore.",
+      );
+      return;
+    }
+    if (valueInput.length === 0) {
+      setInvalid("Enter a value.");
+      return;
+    }
+    setInvalid(null);
+    const valueToSave = valueInput;
+    setValueInput("");
+    await onSave(parsedName.data, valueToSave, editing.mode);
+    close();
+  };
+
+  return (
+    <section aria-labelledby="automation-secrets" className="automations-group">
+      <div className="automation-secrets__head">
+        <h2 className="automations-group__title" id="automation-secrets">
+          Secrets
+        </h2>
+        {archived || editing ? null : (
+          <button className="btn btn--small" disabled={disabled} onClick={openAdd} type="button">
+            Add
+          </button>
+        )}
+      </div>
+      <p className="automation-secrets__note">
+        Values are added to the script’s environment as <code>OPENSTEER_SECRET_&lt;NAME&gt;</code>{" "}
+        and aren’t shown again. The script, and any agent that can change it, can read them there.
+      </p>
+      {editing ? (
+        <form className="automation-time" noValidate onSubmit={(event) => void submit(event)}>
+          {editing.mode === "add" ? (
+            <label className="field">
+              <span className="field__label">Name</span>
+              <input
+                autoComplete="off"
+                className="text-input"
+                name="secret-name"
+                onChange={(event) => setNameInput(event.currentTarget.value)}
+                placeholder="API_TOKEN"
+                required
+                type="text"
+                value={nameInput}
+              />
+            </label>
+          ) : (
+            <p className="automation-secrets__target">
+              Replacing <code>{editing.name}</code>
+            </p>
+          )}
+          <label className="field">
+            <span className="field__label">Value</span>
+            <input
+              autoComplete="off"
+              className="text-input"
+              name="secret-value"
+              onChange={(event) => setValueInput(event.currentTarget.value)}
+              required
+              type="password"
+              value={valueInput}
+            />
+          </label>
+          <div className="automation-time__actions">
+            <button className="btn btn--small btn--ghost" onClick={close} type="button">
+              Cancel
+            </button>
+            <button className="btn btn--small btn--primary" disabled={disabled} type="submit">
+              {disabled ? "Saving…" : "Save"}
+            </button>
+          </div>
+          {invalid ? (
+            <p className="form-actions__error" role="alert">
+              {invalid}
+            </p>
+          ) : null}
+        </form>
+      ) : null}
+      <div className="automations-list">
+        {names.length === 0 ? (
+          <p className="automations-list__empty">No secrets yet.</p>
+        ) : (
+          names.map((name) => (
+            <div className="automation-secret-row" key={name}>
+              <code className="automation-secret-row__name">{name}</code>
+              {archived ? null : (
+                <div className="automation-secret-row__actions">
+                  <button
+                    className="btn btn--small btn--ghost"
+                    disabled={disabled}
+                    onClick={() => openReplace(name)}
+                    type="button"
+                  >
+                    Replace
+                  </button>
+                  <button
+                    className="btn btn--small btn--ghost btn--danger"
+                    disabled={disabled}
+                    onClick={() => onRemove(name)}
+                    type="button"
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </section>
   );
 }

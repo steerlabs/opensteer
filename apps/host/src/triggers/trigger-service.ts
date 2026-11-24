@@ -20,6 +20,7 @@ import {
   automationScriptCompatibilityReason,
   type AutomationScriptRunnerStore,
 } from "./automation-script-compatibility.js";
+import type { AutomationSecrets } from "./automation-secrets.js";
 import type { Clock } from "@opensteer/shared/clock";
 import { DeadlineDrain, retryWithBackoff } from "../runtime/deadline-drain.js";
 interface TriggerServiceOptions {
@@ -30,6 +31,7 @@ interface TriggerServiceOptions {
   readonly publicUrl: URL;
   /** Live public tunnel/remote origin when Personal Remote Access is active (Y3). */
   readonly remoteOrigin?: () => Promise<string | null>;
+  readonly secrets?: Pick<AutomationSecrets, "apply" | "names"> | undefined;
   readonly store: TriggerStore;
   readonly runnerStore: AutomationScriptRunnerStore;
   readonly threads: Pick<OpensteerStore, "readTask">;
@@ -41,6 +43,7 @@ export class TriggerService {
   readonly #onWatchChanged: TriggerServiceOptions["onWatchChanged"];
   readonly #publicUrl: URL;
   readonly #remoteOrigin: (() => Promise<string | null>) | undefined;
+  readonly #secrets: Pick<AutomationSecrets, "apply" | "names"> | undefined;
   readonly #store: TriggerStore;
   readonly #runnerStore: AutomationScriptRunnerStore;
   readonly #threads: TriggerServiceOptions["threads"];
@@ -51,6 +54,7 @@ export class TriggerService {
     this.#onWatchChanged = options.onWatchChanged;
     this.#publicUrl = options.publicUrl;
     this.#remoteOrigin = options.remoteOrigin;
+    this.#secrets = options.secrets;
     this.#store = options.store;
     this.#runnerStore = options.runnerStore;
     this.#threads = options.threads;
@@ -197,7 +201,15 @@ export class TriggerService {
           ? await this.resolveWebhookAddress(detail.trigger.webhookRouteKey)
           : { scope: (await this.#resolveWebhookOrigin()).scope, url: null }
         : null;
-    return { ...detail, webhook };
+    const secretNames = this.#secrets
+      ? [
+          ...(await this.#secrets.names(
+            detail.trigger.id,
+            await this.#store.getEncryptedSecrets(ownerId, detail.trigger.id),
+          )),
+        ]
+      : [];
+    return { ...detail, secretNames, webhook };
   }
   async update(
     ownerId: UserId,
@@ -222,6 +234,51 @@ export class TriggerService {
     this.#onChanged?.();
     if (updated.trigger.kind === "watch") this.#onWatchChanged?.(updated.trigger.id);
     return updated;
+  }
+  async setSecrets(
+    ownerId: UserId,
+    input: {
+      readonly remove?: readonly string[] | undefined;
+      readonly set?: Readonly<Record<string, string>> | undefined;
+      readonly triggerId: TriggerId;
+    },
+    actorThreadId: ThreadId | null,
+    commandIdentity?: Pick<CommandIdentity, "admit">,
+    actorConnectionId?: string,
+  ): Promise<{ readonly secretNames: readonly string[] }> {
+    const secrets = this.#secrets;
+    if (!secrets) {
+      throw new OpensteerError({
+        code: "internal",
+        message: "Automation secrets are unavailable.",
+      });
+    }
+    const hasSet = input.set !== undefined && Object.keys(input.set).length > 0;
+    const hasRemove = input.remove !== undefined && input.remove.length > 0;
+    if (!hasSet && !hasRemove) {
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Provide at least one secret to set or remove.",
+      });
+    }
+    const { result: secretNames, trigger } = await this.#store.updateEncryptedSecrets({
+      actorThreadId,
+      ownerId,
+      triggerId: input.triggerId,
+      ...(commandIdentity ? { commandIdentity } : {}),
+      ...(actorConnectionId ? { actorConnectionId } : {}),
+      transform: async (current) => {
+        const sealed = await secrets.apply(input.triggerId, current, {
+          ...(input.remove ? { remove: input.remove } : {}),
+          ...(input.set ? { set: input.set } : {}),
+        });
+        const names = await secrets.names(input.triggerId, sealed?.envelope ?? null);
+        return { result: names, sealed };
+      },
+    });
+    this.#onChanged?.();
+    if (trigger.kind === "watch") this.#onWatchChanged?.(trigger.id);
+    return { secretNames };
   }
   async setStatus(
     ownerId: UserId,

@@ -186,6 +186,7 @@ import {
   DeviceComputerAppSetupRequestViewSchema,
   DeviceIntegrationConnectionSummaryViewSchema,
 } from "@opensteer/integration-core";
+import { MAX_AUTOMATION_SECRETS } from "@opensteer/triggers/bounds";
 import {
   CreateTriggerHttpBodySchema,
   TriggerOccurrenceViewSchema,
@@ -196,6 +197,10 @@ import {
   TriggerWebhookAddressViewSchema,
   UpdateTriggerHttpBodySchema,
 } from "@opensteer/triggers/models";
+import {
+  AutomationSecretNameSchema,
+  AutomationSecretValueSchema,
+} from "@opensteer/triggers/script";
 import { z } from "zod";
 import { ReferenceResolveInputSchema, ReferenceResolveResultSchema } from "./references.js";
 import { AppIdSchema } from "@opensteer/core";
@@ -1233,6 +1238,13 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     triggerId: TriggerIdSchema,
     type: z.literal("trigger.cancel"),
   }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    remove: z.array(AutomationSecretNameSchema).max(MAX_AUTOMATION_SECRETS).optional(),
+    set: z.record(AutomationSecretNameSchema, AutomationSecretValueSchema).optional(),
+    triggerId: TriggerIdSchema,
+    type: z.literal("trigger.secrets.set"),
+  }),
 ]);
 
 const commandInputSchema = z.union([
@@ -1538,6 +1550,10 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({
     canceledOccurrenceIds: z.array(z.string().min(1)).max(100),
     type: z.literal("trigger.cancel"),
+  }),
+  z.object({
+    secretNames: z.array(AutomationSecretNameSchema).max(MAX_AUTOMATION_SECRETS),
+    type: z.literal("trigger.secrets.set"),
   }),
 ]);
 
@@ -2166,6 +2182,7 @@ const hostApiGroup4 = defineRpc({
       createdByThreadTitle: ThreadViewSchema.shape.title.nullable().default(null),
       occurrences: z.array(TriggerOccurrenceViewSchema).max(100),
       revision: TriggerRevisionViewSchema,
+      secretNames: z.array(AutomationSecretNameSchema).max(MAX_AUTOMATION_SECRETS).default([]),
       trigger: TriggerViewSchema,
       webhook: TriggerWebhookAddressViewSchema.nullable().optional(),
     }),

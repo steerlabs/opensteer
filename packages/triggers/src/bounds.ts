@@ -10,9 +10,6 @@ export const RETAINED_OUTPUT_OCCURRENCES = 100;
 /** Maximum raw webhook request body size accepted on /hooks/v1/:routeKey. */
 export const MAX_WEBHOOK_BODY_BYTES = 256 * 1_024;
 
-/** Maximum waiting webhook firings per automation before returning HTTP 429. */
-export const MAX_PENDING_WEBHOOK_FIRINGS = 100;
-
 /** Maximum sealed environment-variable secrets stored on a single automation. */
 export const MAX_AUTOMATION_SECRETS = 64;
 

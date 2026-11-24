@@ -507,6 +507,7 @@ describeStore("what a caller is shown is what it can send (G2)", (test) => {
       "trigger.status.set",
       "trigger.run",
       "trigger.cancel",
+      "trigger.secrets.set",
     ]);
     const anyoneWrong: string[] = [];
     for (const type of automations) {

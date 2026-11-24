@@ -119,7 +119,7 @@ const agents: readonly (readonly [string, AgentCaller])[] = [
 /** A copy of the command with a value at a dotted path, as an agent might send it. */
 function withPath(command: HostApiCommand, path: string, given: unknown): HostApiCommand {
   // A secret of the shape its schema reads: text, or a set of named values.
-  const value = /(?:^|\.)(?:secrets|credentials|fields)$/u.test(path)
+  const value = /(?:^|\.)(?:secrets|credentials|fields|set)$/u.test(path)
     ? { TOKEN: String(given) }
     : given;
   const copy = structuredClone(command) as Record<string, unknown>;

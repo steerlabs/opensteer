@@ -378,9 +378,9 @@ describe("the command rule, generated from the table", () => {
       b: nowInStepA("b"),
       c: nowInStepA("c"),
       d: nowInStepA("d"),
-      // b is 19, not the data file's first 21: creating (D1) or changing (D0a) an automation
-      // needs Full access, as today's tools say.
-    }).toEqual({ a: 51, b: 19, c: 46, d: 23 });
+      // b is 20, not the data file's first 22: creating (D1) or changing (D0a) an automation
+      // needs Full access, as today's tools say; removing a secret narrows (now).
+    }).toEqual({ a: 52, b: 20, c: 47, d: 24 });
   });
 });
 

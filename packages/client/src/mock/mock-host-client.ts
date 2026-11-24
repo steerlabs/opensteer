@@ -3754,6 +3754,16 @@ async function executeMockCommand(
           type: command.type,
         }),
       );
+    case "trigger.secrets.set":
+      return rpcSuccess(
+        hostApi["commands.dispatch"].success.parse({
+          secretNames: client.setTriggerSecrets(command.triggerId, {
+            ...(command.remove ? { remove: command.remove } : {}),
+            ...(command.set ? { set: command.set } : {}),
+          }),
+          type: command.type,
+        }),
+      );
   }
   return unsupportedMockRpc();
 }
@@ -9322,7 +9332,43 @@ class MockHostState {
       createdByThreadTitle:
         this.snapshot.threads.find(({ id }) => id === record.trigger.createdByThreadId)?.title ??
         null,
+      secretNames: [...(record.secretNames ?? [])],
     };
+  }
+
+  setTriggerSecrets(
+    triggerId: string,
+    patch: {
+      readonly remove?: readonly string[];
+      readonly set?: Readonly<Record<string, string>>;
+    },
+  ): readonly string[] {
+    const record = this.getTrigger(triggerId);
+    if (record.trigger.systemRole) {
+      throw new HostClientRequestError({
+        code: "conflict",
+        message: "Opensteer manages this memory pass.",
+        status: rpcErrorStatus("conflict"),
+      });
+    }
+    if (record.trigger.status === "archived") {
+      throw new HostClientRequestError({
+        code: "conflict",
+        message: "Archived automations cannot be changed",
+        status: rpcErrorStatus("conflict"),
+      });
+    }
+    const next = new Set(record.secretNames ?? []);
+    for (const name of patch.remove ?? []) next.delete(name);
+    for (const name of Object.keys(patch.set ?? {})) next.add(name);
+    const secretNames = [...next].sort();
+    this.triggers.set(triggerId, {
+      ...record,
+      secretNames,
+      trigger: { ...record.trigger, updatedAt: this.now().toISOString() },
+    });
+    this.triggersChanged();
+    return secretNames;
   }
 
   getTrigger(triggerId: string): MockTriggerRecord {

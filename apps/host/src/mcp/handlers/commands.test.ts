@@ -22,4 +22,13 @@ describe("a command's input schema (AD8)", () => {
     expect(underConnection).not.toContain('"directory"');
     expect(underConnection).toContain('"catalog"');
   });
+
+  it("shows trigger.secrets.set's set map only when the caller can run it now", () => {
+    const asking = JSON.stringify(commandInputSchemas("trigger.secrets.set", false, false));
+    const runnable = JSON.stringify(commandInputSchemas("trigger.secrets.set", false, true));
+    expect(asking).not.toContain('"set"');
+    expect(asking).toContain('"remove"');
+    expect(runnable).toContain('"set"');
+    expect(runnable).toContain('"remove"');
+  });
 });

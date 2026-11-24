@@ -91,7 +91,7 @@ export class CommandTools {
       const row = commandRow(type) as CommandRow;
       if (!commandHolds(type, holder)) return [];
       const { answer } = commandMark(type, { scope, mode }, this.#registry);
-      return [{ type, family: row.family, title: commandTitles[type], answer }];
+      return [{ type, family: row.family, title: commandTitles[type], answer, mode }];
     });
   }
 
@@ -100,7 +100,13 @@ export class CommandTools {
     if (input.type) {
       const found = held.find((entry) => entry.type === input.type);
       if (!found) throw notFound();
-      const schemas = commandInputSchemas(found.type, callerLineage(caller) !== null);
+      const row = commandRow(found.type) as CommandRow;
+      const includeRunnableSecrets = row.step === "A" && found.mode === "full-access";
+      const schemas = commandInputSchemas(
+        found.type,
+        callerLineage(caller) !== null,
+        includeRunnableSecrets,
+      );
       return {
         type: found.type,
         title: found.title,
@@ -525,6 +531,7 @@ export class CommandTools {
 export function commandInputSchemas(
   type: CommandType,
   underConnection = false,
+  includeRunnableSecrets = false,
 ): Record<string, unknown>[] {
   const row = commandRow(type) as CommandRow;
   return commandVariants(type, underConnection).map((variant) => {
@@ -532,7 +539,9 @@ export function commandInputSchemas(
       "idempotencyKey" in variant.shape ? variant.omit({ idempotencyKey: true } as never) : variant,
       { io: "input", unrepresentable: "any" },
     ) as Record<string, unknown>;
-    for (const path of row.secretFields ?? []) dropPath(schema, path.split("."));
+    if (!(includeRunnableSecrets && row.step === "A")) {
+      for (const path of row.secretFields ?? []) dropPath(schema, path.split("."));
+    }
     return schema;
   });
 }

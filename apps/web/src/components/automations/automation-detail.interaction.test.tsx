@@ -451,3 +451,48 @@ it("shows a plain notice instead of empty output when a firing's output was prun
   );
   expect(node.querySelector("details.automation-run__output")).toBeNull();
 });
+
+it("lists secret names and lets the person add, replace, and remove secrets with honest copy", async () => {
+  const { node } = await mount();
+  expect(node.textContent).toContain("Secrets");
+  expect(node.textContent).toContain("can read them there");
+  expect(node.textContent?.toLowerCase()).not.toContain("agent cannot see");
+
+  // Add a secret
+  await act(async () => button(node, "Add").click());
+  const nameInput = node.querySelector<HTMLInputElement>('input[name="secret-name"]')!;
+  const valueInput = node.querySelector<HTMLInputElement>('input[name="secret-value"]')!;
+  expect(nameInput).not.toBeNull();
+  expect(valueInput.type).toBe("password");
+  const setInput = (el: HTMLInputElement, value: string) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(el, value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  await act(async () => {
+    setInput(nameInput, "API_TOKEN");
+    setInput(valueInput, "secret-value-1");
+  });
+  await act(async () => button(node, "Save").click());
+  await vi.waitFor(() => expect(node.textContent).toContain("API_TOKEN"), { timeout: 2000 });
+  expect(node.textContent).not.toContain("secret-value-1");
+
+  // Replace the secret
+  await act(async () => button(node, "Replace").click());
+  const replaceInput = node.querySelector<HTMLInputElement>('input[name="secret-value"]')!;
+  expect(replaceInput.type).toBe("password");
+  await act(async () => {
+    setInput(replaceInput, "secret-value-2");
+  });
+  await act(async () => button(node, "Save").click());
+  await vi.waitFor(() => expect(node.querySelector('input[name="secret-value"]')).toBeNull(), {
+    timeout: 2000,
+  });
+  expect(node.textContent).toContain("API_TOKEN");
+  expect(node.textContent).not.toContain("secret-value-2");
+
+  // Remove the secret
+  await act(async () => button(node, "Remove").click());
+  await vi.waitFor(() => expect(node.textContent).not.toContain("API_TOKEN"), { timeout: 2000 });
+});

@@ -27,6 +27,7 @@ export const agentAutomationTypes: ReadonlySet<CommandType> = new Set([
   "trigger.status.set",
   "trigger.run",
   "trigger.cancel",
+  "trigger.secrets.set",
 ]);
 
 export interface AgentAutomationExecutor {

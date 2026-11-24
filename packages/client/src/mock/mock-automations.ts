@@ -28,6 +28,7 @@ export interface MockTriggerRecord {
   readonly downstreamRunsTruncated: boolean;
   readonly occurrences: readonly TriggerOccurrence[];
   readonly revision: TriggerRevision;
+  readonly secretNames?: readonly string[];
   readonly trigger: Trigger;
 }
 

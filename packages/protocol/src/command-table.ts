@@ -1579,6 +1579,21 @@ export const commandTable: CommandTable = {
     governs: (c) => resource("automation", c.triggerId),
     effect: "database",
   },
+  "trigger.secrets.set": {
+    family: "automations",
+    scope: "task",
+    step: "A",
+    // Removing a secret narrows what the script holds; setting or replacing one gives the
+    // automation's script a new value in its lineage (same admission as changing the script,
+    // trigger.update face 1). `set` is in `secretFields` so a stored Request (propose or approve)
+    // never holds secret values, and an agent whose call asks must leave `set` out.
+    faces: [{ class: "narrow" }, { class: "widen-self", fullAccess: true, lineage: true }],
+    face: (c) => (c.remove !== undefined && c.remove.length > 0 && c.set === undefined ? 0 : 1),
+    governsKinds: ["automation"],
+    governs: (c) => resource("automation", c.triggerId),
+    secretFields: ["set"],
+    effect: "database",
+  },
 };
 
 export function commandRow<K extends CommandType>(type: K): CommandRow<K> {

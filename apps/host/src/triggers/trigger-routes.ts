@@ -169,6 +169,23 @@ export async function handleTriggerCommand(
         ],
         type: command.type,
       };
+    case "trigger.secrets.set":
+      return {
+        secretNames: [
+          ...(
+            await triggers.setSecrets(
+              ownerId,
+              {
+                ...(command.remove === undefined ? {} : { remove: command.remove }),
+                ...(command.set === undefined ? {} : { set: command.set }),
+                triggerId: command.triggerId,
+              },
+              null,
+            )
+          ).secretNames,
+        ],
+        type: command.type,
+      };
   }
 }
 export function registerTriggerRoutes(

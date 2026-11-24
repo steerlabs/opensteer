@@ -206,14 +206,14 @@ export async function dispatchCommand(
   command = parsed.data as HostApiCommand;
   const admission = await door.admit(actor, command, holder);
   if (admission.answer === "not_found") throw notFound();
-  assertNoSecretPaths(row, command);
   const handler = door.registry[command.type] as CommandHandler<HostApiCommand["type"]>;
-  if (
+  const runsNow =
     admission.answer === "now" &&
     handler.accepts === "any" &&
-    agentRunsNow(row, admission.face, handler, holder?.scope ?? null)
-  ) {
-    const authority = commandAuthority(actor, command);
+    agentRunsNow(row, admission.face, handler, holder?.scope ?? null);
+  if (!runsNow) assertNoSecretPaths(row, command);
+  if (runsNow) {
+    const authority = commandAuthority(actor, command, row);
     const readmit = door.readmit;
     const effect = await runCommandEffect({
       row,
@@ -280,19 +280,31 @@ export interface CommandAuthority {
 }
 const authorities = new WeakSet<object>();
 
-function commandAuthority(caller: AgentCaller, command: HostApiCommand): CommandAuthority {
+function commandAuthority(
+  caller: AgentCaller,
+  command: HostApiCommand,
+  row: CommandRow,
+): CommandAuthority {
   const { type, idempotencyKey, ...request } = command as HostApiCommand & {
     readonly idempotencyKey?: string;
   };
   if (!idempotencyKey)
     throw new OpensteerError({ code: "bad_request", message: "A command needs its key" });
+  const sanitized = JSON.parse(JSON.stringify(request)) as Record<string, unknown>;
+  for (const path of row.secretFields ?? []) {
+    const keys = path.split(".");
+    let at: unknown = sanitized;
+    for (const key of keys.slice(0, -1))
+      at = typeof at === "object" && at !== null ? (at as Record<string, unknown>)[key] : undefined;
+    if (typeof at === "object" && at !== null) delete (at as Record<string, unknown>)[keys.at(-1)!];
+  }
   const authority = Object.freeze({
     caller,
     identity: {
       requestedBy: caller.userId,
       idempotencyKey,
       type,
-      request: JSON.parse(JSON.stringify(request)) as Record<string, unknown>,
+      request: sanitized,
       authoritySource: { kind: "mcp", callerKind: caller.kind, callerKey: caller.key },
       ...commandAdmission({ ownerUserId: caller.userId, callerKey: caller.key, command }),
     },
