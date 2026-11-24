@@ -10942,6 +10942,104 @@ describe("work under a connection's authority never uses the clipboard or change
     connectedScript.close();
   });
 
+  async function connectedRootAttachment(name: string) {
+    const ownerId = createId("user");
+    const runId = createId("run");
+    const threadId = createId("thread");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const profile = await repository.createBrowserProfile({ ownerId, name });
+    const binding = { agentBindingId: `run:${runId}`, ownerId };
+    repository.resolveResourceAccess = async () => ({
+      access: "read-write",
+      runAccess: "read-write",
+      grantAccess: "read-write",
+      execution: {
+        ownerUserId: ownerId,
+        subject: { kind: "binding", bindingId: binding.agentBindingId },
+        actor: "agent",
+        threadId,
+        runId,
+        agentConnection: {
+          agentConnectionId: `acn_${randomUUID()}`,
+          grant: { scope: "everything" },
+          grantRevision: 1,
+          consentVersion: 1,
+          accessMode: "full-access",
+          bridgeSenders: null,
+        },
+        taskMode: "full-access",
+        runMode: "full-access",
+        mode: "full-access",
+      },
+    });
+    const opened = await service.openAgentSession({ ...binding, profileId: profile.id });
+    const attach = async () => {
+      const events: { method: string; parameters: Record<string, unknown> }[] = [];
+      const attached = await service.attachCdpForAgent(
+        { ...binding, sessionId: opened.session.id },
+        (event) => events.push(event as (typeof events)[number]),
+      );
+      return { attached, events };
+    };
+    return { runtime, attach };
+  }
+
+  it("keeps a subscriber's own early detach however many other targets end during its attach (S1)", async () => {
+    const { runtime, attach } = await connectedRootAttachment("S1 Profile");
+    const { attached, events } = await attach();
+    const request = attached.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "own-tab", flatten: true },
+    });
+    const forward = await runtime.nextCommand();
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.detachedFromTarget",
+        parameters: { sessionId: "cdp_own", targetId: "own-tab" },
+        sequence: 1,
+      },
+    });
+    for (let index = 0; index < 64; index += 1) {
+      runtime.sendServer({
+        type: "cdp.event",
+        event: {
+          method: "Target.targetDestroyed",
+          parameters: { targetId: `other-${index}` },
+          sequence: 2 + index,
+        },
+      });
+      runtime.sendServer({
+        type: "cdp.event",
+        event: {
+          method: "Target.detachedFromTarget",
+          parameters: { sessionId: `cdp_other_${index}`, targetId: `other-${index}` },
+          sequence: 100 + index,
+        },
+      });
+    }
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: forward.requestId,
+      result: { sessionId: "cdp_own" },
+    });
+    await expect(request).resolves.toEqual({ sessionId: "cdp_own" });
+    await vi.waitFor(() =>
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          method: "Target.detachedFromTarget",
+          parameters: { sessionId: "cdp_own", targetId: "own-tab" },
+        }),
+      ),
+    );
+    expect(JSON.stringify(events)).not.toContain("other-");
+    attached.close();
+  });
+
   it("never deadlocks when attachCdpForAgent or agent start races #holdForAgent on the same profile (PH1)", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");

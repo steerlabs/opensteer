@@ -6150,6 +6150,9 @@ export class BrowserService {
     const pendingTerminalEvents: Extract<BrowserServerMessage, { type: "cdp.event" }>["event"][] =
       [];
     let pendingAttaches = 0;
+    // The targets pending `Target.attachToTarget`s name: only their early terminal events are
+    // kept, so other targets' ends cannot push this subscriber's own out of the buffer (S1).
+    const pendingTargetIds = new Map<string, number>();
     const rememberBounded = (set: Set<string>, id: string) => {
       if (!set.has(id) && set.size >= 4_096) {
         const oldest = set.values().next().value;
@@ -6163,8 +6166,13 @@ export class BrowserService {
       if (pendingTerminalEvents.length >= 64) pendingTerminalEvents.shift();
       pendingTerminalEvents.push(event);
     };
-    const releasePendingAttach = () => {
+    const releasePendingAttach = (targetId: string | undefined) => {
       pendingAttaches = Math.max(0, pendingAttaches - 1);
+      if (targetId !== undefined) {
+        const count = pendingTargetIds.get(targetId) ?? 0;
+        if (count <= 1) pendingTargetIds.delete(targetId);
+        else pendingTargetIds.set(targetId, count - 1);
+      }
       if (pendingAttaches === 0) pendingTerminalEvents.length = 0;
     };
     const flushPendingTerminalEvents = (
@@ -6211,6 +6219,7 @@ export class BrowserService {
       attachedTargets.clear();
       attachedSessions.clear();
       pendingTerminalEvents.length = 0;
+      pendingTargetIds.clear();
       if (scriptAttachmentId && scriptOpening) {
         void broker
           .sendScriptCleanup({
@@ -6269,7 +6278,14 @@ export class BrowserService {
           ) {
             // Terminal detach for a discovered or attached target passes through.
           } else {
-            if (pendingAttaches > 0 && (eventSessionId !== undefined || targetId !== undefined)) {
+            // A detach names the attachment's target; one with no target can still be the
+            // pending attach's own session.
+            if (
+              pendingAttaches > 0 &&
+              (targetId !== undefined
+                ? pendingTargetIds.has(targetId)
+                : eventSessionId !== undefined)
+            ) {
               recordTerminalCandidate(event);
             }
             return;
@@ -6279,7 +6295,7 @@ export class BrowserService {
             attachedTargets.delete(targetId);
             visibleRootTargets.delete(targetId);
           } else {
-            if (pendingAttaches > 0 && targetId !== undefined) {
+            if (pendingAttaches > 0 && targetId !== undefined && pendingTargetIds.has(targetId)) {
               recordTerminalCandidate(event);
             }
             return;
@@ -6516,7 +6532,17 @@ export class BrowserService {
           (command.method === "Target.attachToTarget" ||
             command.method === "Target.createTarget" ||
             command.method === browserHostMethods.resumeTab);
-        if (tracksPendingAttach) pendingAttaches += 1;
+        const pendingTargetId =
+          tracksPendingAttach &&
+          command.method === "Target.attachToTarget" &&
+          typeof command.parameters?.targetId === "string"
+            ? command.parameters.targetId
+            : undefined;
+        if (tracksPendingAttach) {
+          pendingAttaches += 1;
+          if (pendingTargetId !== undefined)
+            pendingTargetIds.set(pendingTargetId, (pendingTargetIds.get(pendingTargetId) ?? 0) + 1);
+        }
         let answered: Promise<BrowserCdpResponse>;
         try {
           answered = broker.requestCdp(
@@ -6569,7 +6595,7 @@ export class BrowserService {
                 : undefined,
           );
         } catch (error) {
-          if (tracksPendingAttach) releasePendingAttach();
+          if (tracksPendingAttach) releasePendingAttach(pendingTargetId);
           throw error;
         }
         pooledRelay?.track(command.method, command.parameters, answered);
@@ -6598,7 +6624,7 @@ export class BrowserService {
                 if (attachedSessionId) rememberBounded(attachedSessions, attachedSessionId);
                 if (attachedTargetId) rememberBounded(attachedTargets, attachedTargetId);
                 flushPendingTerminalEvents(attachedSessionId, attachedTargetId);
-                releasePendingAttach();
+                releasePendingAttach(pendingTargetId);
               }
               if (
                 command.method === "Target.createTarget" &&
@@ -6684,7 +6710,7 @@ export class BrowserService {
               return response.result;
             },
             (error) => {
-              if (tracksPendingAttach) releasePendingAttach();
+              if (tracksPendingAttach) releasePendingAttach(pendingTargetId);
               throw error;
             },
           ),
