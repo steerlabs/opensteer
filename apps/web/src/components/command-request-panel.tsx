@@ -190,7 +190,7 @@ export function CommandRequestPanel({
       {shown.decline ? (
         <div className="operation-request__answers">
           {screen && screenPath ? (
-            <button className="btn" onClick={() => navigate(screenPath)} type="button">
+            <button className="btn" onClick={() => void navigate(screenPath)} type="button">
               {`Open ${screen.label}`}
             </button>
           ) : null}
