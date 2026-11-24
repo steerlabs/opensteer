@@ -1,5 +1,5 @@
 import { RetainedToolImage } from "./asset-image.js";
-import { useVirtualTranscript } from "./virtual-transcript.js";
+import { rowHeights, useVirtualTranscript } from "./virtual-transcript.js";
 import { useWindowedRows } from "./workspace/windowed-rows.js";
 import {
   hostMessageOutbox,
@@ -41,7 +41,6 @@ import {
   Fragment,
   Suspense,
   lazy,
-  type ComponentProps,
   useEffect,
   useId,
   useLayoutEffect,
@@ -153,7 +152,7 @@ import {
   SurfaceChips,
   SurfaceLink,
 } from "./surface-chips.js";
-import { FoldMeasuresWhenLaidOut, MessageFold } from "./message-fold.js";
+import { MessageFold } from "./message-fold.js";
 import { AnsweredQuestionRow } from "./answered-question.js";
 import { useToast } from "./toast.js";
 import { TaskMark, AgentOrb } from "./workspace/task-mark.js";
@@ -167,47 +166,15 @@ import { act, failureWords } from "./use-action.js";
 // Fetched with this module, not when a reply is first drawn: until it lands a
 // reply shows its raw Markdown, and on a weak link that wait is what people see.
 const markdownChunk = import("./markdown.js");
-const LazyMarkdown = lazy(() => markdownChunk);
+const Markdown = lazy(() => markdownChunk);
 
 /**
- * Where a long transcript's rows scroll, while the browser skips the ones off screen. A row's
- * Markdown is parsed once it comes within a screen of view; until then its words stand as plain
- * text, so Find and assistive reading still have them. Without skipping (an engine that would not
- * hold the reader's place as a row above grows), every body is parsed as it is drawn.
+ * The newest rows stay drawn wherever the reader is, so streaming and following the tail never
+ * flicker: a screen's height of them, at most eight. A long report is a screen by itself, so a
+ * research task holds only its last reply.
  */
-const DeferredBodies = createContext<(() => HTMLElement | null) | null>(null);
-const undeferredRows = 40;
-/** Tail rows pinned mounted in virtualized transcripts so streaming stays smooth. */
-const virtualTailPinRows = 8;
-
-function Markdown(props: ComponentProps<typeof LazyMarkdown>) {
-  const scroller = useContext(DeferredBodies);
-  const [near, setNear] = useState(scroller === null);
-  const plain = useRef<HTMLParagraphElement | null>(null);
-  useEffect(() => {
-    const element = plain.current;
-    const root = scroller?.() ?? null;
-    if (near || !element) return;
-    if (!root || typeof IntersectionObserver === "undefined") {
-      setNear(true);
-      return;
-    }
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some(({ isIntersecting }) => isIntersecting)) setNear(true);
-      },
-      { root, rootMargin: "100% 0px" },
-    );
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [near, scroller]);
-  if (near) return <LazyMarkdown {...props} />;
-  return (
-    <p className="md-prose md-prose--plain" ref={plain}>
-      {props.bare ? props.text : readableMarkdown(props.text)}
-    </p>
-  );
-}
+const tailPinRows = 8;
+const tailPinPx = 900;
 
 const TranscriptLive = createContext(true);
 /**
@@ -478,8 +445,9 @@ export function AgentTranscript({
   subagentReader?: SubagentReader | null;
   viewerUserId?: string | null;
   /**
-   * The element a long transcript scrolls in. Given, rows outside the viewport
-   * are virtualized and off-screen Markdown is only parsed as it nears view.
+   * The element the transcript scrolls in. Given, only the rows in and near
+   * the viewport are drawn; the rest stand as spacers at their measured or
+   * estimated heights.
    */
   scroller?: (() => HTMLElement | null) | null;
   /** True while the caller is actively following the live tail. */
@@ -618,30 +586,28 @@ export function AgentTranscript({
         : null,
     [ownerPanel, ownerTurn],
   );
-  // Read once: the start-up check that decides whether rows are skipped finishes long before this.
-  const [skipping] = useState(
-    () => typeof document !== "undefined" && document.documentElement.dataset.rowSkipping !== "off",
-  );
-  const deferBodies = skipping ? scroller : null;
   const imageScope = useMemo(
     () => (attachmentReader && threadId ? { client: attachmentReader, threadId } : null),
     [attachmentReader, threadId],
   );
   const rowKeys = useMemo(() => rows.map(({ key }) => key), [rows]);
+  // A row never measured stands at the height its words would take. A reply is drawn whole, so a
+  // long report is estimated as long as it is: a short guess would draw rows that it then pushes
+  // far out of view.
   const estimateRowHeight = useCallback(
     (index: number) => {
       const row = rows[index];
       if (!row) return 120;
       const { group } = row;
+      const lines = (words: string) => Math.ceil(words.length / 80);
       if (group.kind === "message") {
-        const lines = Math.min(12, Math.max(1, Math.ceil(group.entry.body.length / 72)));
-        return 44 + lines * 22;
+        const { body, messageKind } = group.entry;
+        // A person's words fold at twenty lines at most.
+        return (
+          44 + Math.max(1, messageKind === "input" ? Math.min(20, lines(body)) : lines(body)) * 22
+        );
       }
-      if (group.kind === "turn") {
-        const replyLen = group.turn.reply?.body.length ?? 0;
-        const lines = Math.min(14, Math.max(2, Math.ceil(replyLen / 72)));
-        return 60 + lines * 22;
-      }
+      if (group.kind === "turn") return 60 + Math.max(2, lines(group.turn.reply?.body ?? "")) * 22;
       return 84;
     },
     [rows],
@@ -674,9 +640,15 @@ export function AgentTranscript({
   const disclosures = useMemo(() => new Map<string, boolean>(), [threadId]);
   const allPinnedKeys = useMemo(() => {
     const pinned = new Set<string>(pinnedRowKeys);
-    // Keep the tail rows mounted so streaming and tail-follow never flicker.
-    for (let index = Math.max(0, rows.length - virtualTailPinRows); index < rows.length; index++) {
-      pinned.add(rows[index]!.key);
+    let tail = 0;
+    for (
+      let index = rows.length - 1;
+      index >= Math.max(0, rows.length - tailPinRows) && tail < tailPinPx;
+      index--
+    ) {
+      const { key } = rows[index]!;
+      pinned.add(key);
+      tail += rowHeights.peek(key) ?? estimateRowHeight(index);
     }
     if (ownerTurn !== undefined) pinned.add(ownerTurn);
     const wantedMessages = new Set<string>(pinnedMessageIds);
@@ -696,7 +668,15 @@ export function AgentTranscript({
     }
     if (focusedRowKey !== null) pinned.add(focusedRowKey);
     return [...pinned];
-  }, [focusedRowKey, ownerTurn, pinnedMessageIds, pinnedRowKeys, revealMessage, rows]);
+  }, [
+    estimateRowHeight,
+    focusedRowKey,
+    ownerTurn,
+    pinnedMessageIds,
+    pinnedRowKeys,
+    revealMessage,
+    rows,
+  ]);
   const virtual = useVirtualTranscript({
     scroller,
     keys: rowKeys,
@@ -711,9 +691,6 @@ export function AgentTranscript({
     return (
       <TranscriptRow
         continued={places?.[index]?.continued === true}
-        // Virtualized transcripts only mount the viewport + overscan (~30 rows), so parse
-        // their Markdown immediately to prevent delayed plain-to-Markdown height shifts.
-        deferBodies={!virtual.enabled && index < rows.length - undeferredRows ? deferBodies : null}
         group={group}
         joined={places?.[index]?.joined === true}
         key={key}
@@ -812,7 +789,6 @@ export function AgentTranscript({
 
 interface TranscriptRowProps {
   readonly continued: boolean;
-  readonly deferBodies: (() => HTMLElement | null) | null;
   readonly group: TranscriptGroup;
   readonly joined: boolean;
   readonly renderTask: TaskRenderer | undefined;
@@ -823,13 +799,12 @@ interface TranscriptRowProps {
 }
 
 /**
- * One transcript row. Rows stay mounted however long the conversation, so a row whose group holds
- * the same entries as before skips rendering: a streamed token redraws its own row alone.
+ * One transcript row. A row whose group holds the same entries as before skips rendering: a
+ * streamed token redraws its own row alone.
  */
 const TranscriptRow = memo(
   function TranscriptRow({
     continued,
-    deferBodies,
     group,
     joined,
     renderTask,
@@ -839,42 +814,39 @@ const TranscriptRow = memo(
     viewerUserId,
   }: TranscriptRowProps) {
     return (
-      <DeferredBodies value={deferBodies}>
-        <FoldMeasuresWhenLaidOut value={deferBodies !== null}>
-          {time ? <p className="transcript__time">{time}</p> : null}
-          <div
-            className="transcript__row"
-            data-continued={continued || undefined}
-            data-joined={joined || undefined}
-            data-transcript-row={rowKey}
-          >
-            {group.kind === "app" ? (
-              <AppCard entry={group.entry} />
-            ) : group.kind === "turn" ? (
-              <TurnView turn={group.turn} turnKey={group.key} reveal={reveal} />
-            ) : group.kind === "delegation" ? (
-              <DelegationNotice delegation={group.entry} />
-            ) : group.kind === "question" ? (
-              <TranscriptAnsweredQuestion entry={group.entry} />
-            ) : group.kind === "assignment" ? (
-              renderTask?.([group.entry])
-            ) : (
-              <TranscriptMessage
-                joinedRun={group.joinedRun === true}
-                reveal={reveal?.id === group.entry.id ? reveal : null}
-                message={group.entry}
-                viewerUserId={viewerUserId}
-              />
-            )}
-          </div>
-        </FoldMeasuresWhenLaidOut>
-      </DeferredBodies>
+      <>
+        {time ? <p className="transcript__time">{time}</p> : null}
+        <div
+          className="transcript__row"
+          data-continued={continued || undefined}
+          data-joined={joined || undefined}
+          data-transcript-row={rowKey}
+        >
+          {group.kind === "app" ? (
+            <AppCard entry={group.entry} />
+          ) : group.kind === "turn" ? (
+            <TurnView turn={group.turn} turnKey={group.key} reveal={reveal} />
+          ) : group.kind === "delegation" ? (
+            <DelegationNotice delegation={group.entry} />
+          ) : group.kind === "question" ? (
+            <TranscriptAnsweredQuestion entry={group.entry} />
+          ) : group.kind === "assignment" ? (
+            renderTask?.([group.entry])
+          ) : (
+            <TranscriptMessage
+              joinedRun={group.joinedRun === true}
+              reveal={reveal?.id === group.entry.id ? reveal : null}
+              message={group.entry}
+              viewerUserId={viewerUserId}
+            />
+          )}
+        </div>
+      </>
     );
   },
   // `renderTask` is a screen's inline renderer; an assignment row redraws when its entry does.
   (previous: TranscriptRowProps, next: TranscriptRowProps) =>
     previous.continued === next.continued &&
-    previous.deferBodies === next.deferBodies &&
     previous.joined === next.joined &&
     previous.time === next.time &&
     previous.reveal === next.reveal &&

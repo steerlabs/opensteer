@@ -7,7 +7,8 @@ import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { MemoryRouter } from "react-router";
 import { WorkspaceProvider } from "./workspace/workspace-context.js";
 import type { WorkspaceNavigation } from "./workspace/navigation.js";
-import { Markdown } from "./markdown.js";
+import { drawnBlocks, Markdown } from "./markdown.js";
+import { highlightedCode } from "./markdown-highlight.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
@@ -135,6 +136,66 @@ describe("Markdown an agent wrote", () => {
     expect(container.textContent).toContain("~maybe~ <b>bold</b>");
     expect(container.querySelectorAll("li")).toHaveLength(2);
     expect(container.querySelector("strong")?.textContent).toBe("one");
+  });
+});
+
+describe("Markdown drawn again", () => {
+  function mount(markup: React.ReactNode) {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    act(() => root.render(markup));
+    return {
+      container,
+      draw: (next: React.ReactNode) => act(() => root.render(next)),
+      unmount: () => {
+        roots.splice(roots.indexOf(root), 1);
+        act(() => root.unmount());
+      },
+    };
+  }
+
+  it("parses a finished reply once, however often it is mounted", () => {
+    const text =
+      "# Mounted again\n\nFirst **finding**.\n\n- one\n- two\n\n```js\nconst again = 1;\n```";
+    const parsed = vi.spyOn(drawnBlocks, "set");
+    const first = mount(<Markdown text={text} />);
+    const html = first.container.innerHTML;
+    first.unmount();
+    // Its heading, its words with their list, and its code.
+    expect(parsed).toHaveBeenCalledTimes(3);
+    const again = mount(<Markdown text={text} />);
+    expect(parsed).toHaveBeenCalledTimes(3);
+    expect(again.container.innerHTML).toBe(html);
+    // How a block is drawn is part of what it is: a person's words, or an excerpt, are not an agent's.
+    mount(<Markdown excerpt text={text} />);
+    expect(parsed).toHaveBeenCalledTimes(6);
+  });
+
+  it("keeps a streaming reply's finished blocks, never the block still being written", () => {
+    const parsed = vi.spyOn(drawnBlocks, "set");
+    const kept = () => parsed.mock.calls.map(([key]) => key.split("\u0000")[1]);
+    const reply = mount(
+      <Markdown streaming text={"Streamed one.\n\nStreamed two.\n\nStreamed thr"} />,
+    );
+    expect(kept()).toEqual(["Streamed one.\n\n", "Streamed two.\n\n"]);
+    reply.draw(<Markdown streaming text={"Streamed one.\n\nStreamed two.\n\nStreamed three"} />);
+    expect(kept()).toHaveLength(2);
+    reply.draw(<Markdown text={"Streamed one.\n\nStreamed two.\n\nStreamed three."} />);
+    expect(kept()).toEqual(["Streamed one.\n\n", "Streamed two.\n\n", "Streamed three."]);
+    expect(reply.container.textContent).toBe("Streamed one.Streamed two.Streamed three.");
+  });
+
+  it("highlights the same finished code once for every reply that shows it", () => {
+    const highlighted = vi.spyOn(highlightedCode, "set");
+    const code = "```ts\nconst shared = 'highlighted once';\n```";
+    mount(<Markdown text={`One reply.\n\n${code}`} />);
+    expect(highlighted).toHaveBeenCalledTimes(1);
+    const other = mount(<Markdown streaming text={`Another reply.\n\n${code}\n\nStill wri`} />);
+    other.draw(<Markdown streaming text={`Another reply.\n\n${code}\n\nStill writing`} />);
+    expect(highlighted).toHaveBeenCalledTimes(1);
+    expect(other.container.querySelector("code.hljs .hljs-keyword")?.textContent).toBe("const");
   });
 });
 

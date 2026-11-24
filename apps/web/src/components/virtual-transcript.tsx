@@ -1,14 +1,17 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { BoundedCache } from "@opensteer/shared/boundedCache";
 import { windowPlan, type WindowItem } from "./workspace/windowed-rows.js";
-
-/** Threads with at most this many rows mount directly without virtualization overhead. */
-export const virtualTranscriptThreshold = 48;
 
 /** Generous off-screen draw distance (px) above and below the viewport, matching Legend List. */
 const transcriptOverscanPx = 900;
 
-/** Cap retained row height entries so very long browsing sessions stay bounded in memory. */
-const maxRetainedMeasurements = 2_000;
+/**
+ * Each row's last measured height (px, excluding the list's gap), by row key, shared by every
+ * transcript: row keys are item and turn ids, unique across Threads. A task switched back to lays
+ * out at its rows' real heights at once, so its scroll position is put back exactly; a row is
+ * measured again whenever it is drawn, so a new width corrects what it changes.
+ */
+export const rowHeights = new BoundedCache<string, number>({ maxEntries: 10_000 });
 
 export interface VirtualTranscriptOptions {
   /** Scroll container getter; null disables virtualization (e.g. SSR or static previews). */
@@ -39,7 +42,7 @@ interface VisualAnchor {
 }
 
 /**
- * Variable-height viewport virtualization for long transcripts.
+ * Variable-height viewport virtualization for transcripts.
  *
  * Keeps only visible rows (+ overscan + pinned tail/jump/focus rows) in the DOM,
  * measures real row heights via ResizeObserver + layout effects, and pins the
@@ -54,8 +57,7 @@ export function useVirtualTranscript({
   initialAtTail = true,
   followTail = false,
 }: VirtualTranscriptOptions): VirtualTranscriptState {
-  const enabled = scroller !== null && keys.length > virtualTranscriptThreshold;
-  const measured = useRef(new Map<string, number>());
+  const enabled = scroller !== null;
   const elements = useRef(new Map<string, HTMLElement>());
   const resizeObserver = useRef<ResizeObserver | null>(null);
   const initialized = useRef(false);
@@ -80,7 +82,7 @@ export function useVirtualTranscript({
   const sizes = useMemo(
     () =>
       keys.map((key, index) => {
-        const height = measured.current.get(key) ?? estimate(index);
+        const height = rowHeights.peek(key) ?? estimate(index);
         return height + view.gap;
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -133,7 +135,6 @@ export function useVirtualTranscript({
     followTail,
     gap: view.gap,
     items,
-    keys,
     pinnedIndices,
     scroller,
     sizes,
@@ -143,7 +144,6 @@ export function useVirtualTranscript({
     followTail,
     gap: view.gap,
     items,
-    keys,
     pinnedIndices,
     scroller,
     sizes,
@@ -257,27 +257,15 @@ export function useVirtualTranscript({
       if (!element.isConnected) continue;
       const height = element.getBoundingClientRect().height;
       if (height <= 0) continue;
-      const previous = measured.current.get(key);
-      if (previous !== undefined && Math.abs(previous - height) < 0.5) continue;
-      measured.current.set(key, height);
-      changed = true;
+      const previous = rowHeights.peek(key);
+      // Set even when unchanged: a drawn row is the most recently used, so it is never dropped.
+      rowHeights.set(key, height);
+      if (previous === undefined || Math.abs(previous - height) >= 0.5) changed = true;
     }
 
     const sample = elements.current.values().next().value;
     const parent = sample?.parentElement;
     const nextGap = parent ? parseFloat(getComputedStyle(parent).rowGap) || 0 : gap;
-
-    if (measured.current.size > maxRetainedMeasurements) {
-      const protectedKeys = new Set<string>(elements.current.keys());
-      for (const index of latest.current.pinnedIndices) {
-        const key = latest.current.keys[index];
-        if (key !== undefined) protectedKeys.add(key);
-      }
-      for (const key of measured.current.keys()) {
-        if (!protectedKeys.has(key)) measured.current.delete(key);
-        if (measured.current.size <= maxRetainedMeasurements) break;
-      }
-    }
 
     if (scrollerEl) {
       anchorRef.current = captureAnchor.current(scrollerEl);
