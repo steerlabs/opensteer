@@ -4387,9 +4387,37 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     try {
       const a = await openTab("dialogs-a");
       const shownSince = performance.now();
+      // Seen once (Nov 24): the person's start waited for this tab to paint and it never did. What
+      // its page's paint wait depended on, sampled while this check waits, is written only if it
+      // sees no picture, so the next time says which condition held the paint back.
+      const paintSamples: unknown[] = [];
+      const sampling = setInterval(() => {
+        const binding = ledger.binding(a.tab);
+        const page = binding?.page as { paintEvidence?: () => Record<string, unknown> } | undefined;
+        paintSamples.push({
+          afterMs: Math.round(performance.now() - shownSince),
+          surface: binding
+            ? {
+                active: binding.surface.active,
+                geometryRevision: binding.surface.geometryRevision,
+                loading: binding.surface.loading ?? false,
+                state: binding.surface.state,
+              }
+            : null,
+          paint: page?.paintEvidence?.() ?? null,
+        });
+      }, 250);
       await controller.handle({ surfaceId: a.tab, type: "surface.activate" });
       await controller.handle({ ...panel, surfaceId: a.tab, type: "viewport.follow" });
-      ensure((await pictureWithin(panel, shownSince, a.tab)) !== null, "The tab was never shown.");
+      const firstPicture = await pictureWithin(panel, shownSince, a.tab).finally(() =>
+        clearInterval(sampling),
+      );
+      if (firstPicture === null)
+        await writeFile(
+          path.join(artifactDirectory, "electron-never-shown-paint.json"),
+          `${JSON.stringify({ tab: a.tab, panel, samples: paintSamples }, null, 2)}\n`,
+        );
+      ensure(firstPicture !== null, "The tab was never shown.");
 
       // In the connection whose click opened it, as Puppeteer's page.on("dialog") answers.
       await agent("Page.enable", {}, a.session);

@@ -570,6 +570,12 @@ async function homeStop(): Promise<void> {
   let personSessionId: string | null = null;
   let liveViewSocketsOpened = 0;
   let liveViewSnapshots = 0;
+  /** Each live-view socket's life, kept for the record a failed rapid Stop+Resume writes. */
+  const liveViewSockets: Array<{
+    readonly socket: number;
+    readonly at: number;
+    readonly event: string;
+  }> = [];
   const liveClient = new HttpHostClient({
     baseUrl: home.origin,
     fetch: (input, init) => {
@@ -583,6 +589,11 @@ async function homeStop(): Promise<void> {
       const isBrowserWatch =
         personSessionId !== null && url.includes(`/v1/browser-sessions/${personSessionId}/connect`);
       if (isBrowserWatch) liveViewSocketsOpened += 1;
+      const socketNumber = liveViewSocketsOpened;
+      const note = (event: string) => {
+        if (isBrowserWatch) liveViewSockets.push({ socket: socketNumber, at: Date.now(), event });
+      };
+      note("dial");
       let readyState = 0;
       const listeners = new Map<string, Set<(event: unknown) => void>>();
       const emit = (type: string, event: unknown) => {
@@ -599,14 +610,17 @@ async function homeStop(): Promise<void> {
         {
           open: () => {
             readyState = 1;
+            note("open");
             emit("open", {});
           },
           message: (data) => {
             if (isBrowserWatch && typeof data === "string") {
               try {
-                if ((JSON.parse(data) as { type?: string }).type === "browser.snapshot") {
+                const type = (JSON.parse(data) as { type?: string }).type;
+                if (type === "browser.snapshot") {
                   liveViewSnapshots += 1;
                 }
+                if (type && type !== "browser.frame") note(`message ${type}`);
               } catch {
                 // Ignore malformed non-JSON frame here; client validates it.
               }
@@ -618,10 +632,12 @@ async function homeStop(): Promise<void> {
             emit("message", { data: payload });
           },
           error: () => {
+            note("error");
             emit("error", {});
           },
           close: (code, reason) => {
             readyState = 3;
+            note(`close ${code} ${String(reason).slice(0, 120)}`);
             emit("close", { code, reason });
           },
         },
@@ -1125,6 +1141,24 @@ async function homeStop(): Promise<void> {
     async () => !(await row(home.manifest.runnerId))?.agentsStoppedSince,
     30_000,
   );
+  // Seen twice (Nov 23, Nov 24): the live view redialled just before this Stop and was never
+  // admitted again. Its watch state and sockets, from here on, are written only if that wait fails.
+  const rapidFrom = Date.now();
+  const watchSamples: unknown[] = [];
+  const sampleWatch = setInterval(() => {
+    const state = liveClient.browserWatchState(session.id, personSurfaceId);
+    const sample = {
+      admitted: state.admitted ?? false,
+      admissionId: state.admissionId ?? null,
+      status: state.status,
+      error: state.error,
+      frame: state.frame !== null,
+    };
+    const last = watchSamples.at(-1) as { state: unknown } | undefined;
+    if (JSON.stringify(last?.state) !== JSON.stringify(sample))
+      watchSamples.push({ afterMs: Date.now() - rapidFrom, state: sample });
+  }, 100);
+  sampleWatch.unref();
   const rapidStop = localStop.stop();
   const rapidResume = localStop.resume();
   await Promise.all([rapidStop, rapidResume]);
@@ -1156,7 +1190,20 @@ async function homeStop(): Promise<void> {
       return state.admitted === true && state.error === null;
     },
     30_000,
-  );
+  )
+    .catch((error: unknown) => {
+      log("test.live-view-after-rapid-stop", {
+        evidence: JSON.stringify({
+          watch: watchSamples,
+          sockets: liveViewSockets
+            .filter((entry) => entry.at >= rapidFrom - 5_000)
+            .map((entry) => ({ ...entry, afterMs: entry.at - rapidFrom })),
+          snapshots: liveViewSnapshots,
+        }),
+      });
+      throw error;
+    })
+    .finally(() => clearInterval(sampleWatch));
   held("stop-then-resume-quickly");
   passed({ runnerId: homeRunnerId });
 }

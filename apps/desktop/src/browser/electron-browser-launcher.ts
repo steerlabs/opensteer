@@ -1264,6 +1264,9 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     for (const listener of this.#navigationListeners) listener();
   }
   #frameSubscriptionRevision: number | null = null;
+  /** For paintEvidence(): frames a paint wait saw at another size than the placement. */
+  #paintFramesOtherSize = 0;
+  #paintLastOtherSize: { readonly raster: string; readonly bounds: string } | null = null;
   #paintedSurfaceRevision = -1;
   #metricsSurfaceRevision = 0;
   #renderingDemand = false;
@@ -1731,8 +1734,14 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       if (
         Math.abs(raster.width - pixels(bounds.width)) > 1 ||
         Math.abs(raster.height - pixels(bounds.height)) > 1
-      )
+      ) {
+        this.#paintFramesOtherSize++;
+        this.#paintLastOtherSize = {
+          raster: `${raster.width}x${raster.height}`,
+          bounds: `${pixels(bounds.width)}x${pixels(bounds.height)}`,
+        };
         return;
+      }
       this.#paintedSurfaceRevision = revision;
       for (const waiter of this.#paintWaiters) waiter.resolve();
     });
@@ -1795,6 +1804,35 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
         settle(error instanceof Error ? error : new Error(String(error)));
       }
     });
+  }
+
+  /**
+   * What a paint wait depends on, as plain facts: read by a check that saw no picture, so its
+   * record says which condition held the paint back. Reading it changes nothing.
+   */
+  paintEvidence(): Record<string, unknown> {
+    return {
+      surfaceRevision: this.#surfaceRevision,
+      appliedSurfaceRevision: this.#appliedSurfaceRevision,
+      metricsSurfaceRevision: this.#metricsSurfaceRevision,
+      paintedSurfaceRevision: this.#paintedSurfaceRevision,
+      frameSubscriptionRevision: this.#frameSubscriptionRevision,
+      serializesGeometry: this.#serializeGeometry !== null,
+      paintWaiters: this.#paintWaiters.size,
+      framesAtOtherSize: this.#paintFramesOtherSize,
+      lastOtherSize: this.#paintLastOtherSize,
+      renderingDemand: this.#renderingDemand,
+      parked: this.#parked,
+      mounted: this.#mount !== null,
+      attached: this.#mount?.attached ?? false,
+      desiredBounds: this.#desiredPlacement.bounds,
+      surfaceAborted: this.#surfaceAbort.signal.aborted,
+      closed: this.isClosed(),
+      crashed: this.#hub.isCrashed(),
+      capturing: !this.isClosed() && this.#webContents.isBeingCaptured(),
+      loading: !this.isClosed() && this.#webContents.isLoading(),
+      dialog: this.#dialog !== null && this.#dialog !== undefined,
+    };
   }
 
   settleRendering(signal?: AbortSignal): Promise<void> {
