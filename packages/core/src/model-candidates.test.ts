@@ -134,6 +134,13 @@ describe("automatic model resolver", () => {
     expect(resolve([base], { wants: [ranked("max")] }).skipped).toMatchObject([
       { reason: "options-unavailable", detail: expect.stringContaining("it takes low, high") },
     ]);
+    // Account readiness precedes option/model checks, and model unavailability precedes effort checks.
+    expect(
+      resolve([{ ...base, enabled: false }], { wants: [ranked("max")] }).skipped,
+    ).toMatchObject([{ reason: "disabled" }]);
+    expect(resolve([retired], { wants: [ranked("max")] }).skipped).toMatchObject([
+      { reason: "model-unavailable", detail: "Not on your plan" },
+    ]);
   });
   it("keeps cross-engine want order and puts default first within each want", () => {
     const secondary = account(),
@@ -149,7 +156,7 @@ describe("automatic model resolver", () => {
       claude.harnessInstanceId,
     ]);
   });
-  it("reserves the original effective key even when an earlier want specifies the default", () => {
+  it("keeps an earlier want's priority when it matches the original, without duplicating it", () => {
     const a = account(),
       b = account();
     const result = resolve([a, b], {
@@ -157,13 +164,100 @@ describe("automatic model resolver", () => {
       original: own(a),
     });
     expect(result.candidates.map((c) => c.harnessInstanceId)).toEqual([
-      b.harnessInstanceId,
       a.harnessInstanceId,
+      b.harnessInstanceId,
     ]);
-    expect(result.candidates.map((c) => c.original)).toEqual([false, true]);
-    expect(result.candidates[1]?.storedModelSelection.options).toEqual({});
-    expect(result.candidates[1]?.runModelSelection.options).toEqual({ effort: "low" });
-    expect(result.candidates[1]?.storedModelSelection.nativeModelId).toBe("gateway/gpt-6-luna");
+    expect(result.candidates.map((c) => c.original)).toEqual([true, false]);
+    expect(result.candidates[0]?.storedModelSelection.options).toEqual({});
+    expect(result.candidates[0]?.runModelSelection.options).toEqual({ effort: "low" });
+    expect(result.candidates[0]?.storedModelSelection.nativeModelId).toBe("gateway/gpt-6-luna");
+  });
+  it("keeps an explicit deep choice or top default first even when it equals Chat's model", () => {
+    const effortLadder = {
+      id: "effort",
+      type: "select" as const,
+      defaultValue: "low",
+      values: [{ value: "low" }, { value: "high" }, { value: "xhigh" }],
+    };
+    const codex = account("codex", {
+      isDefault: true,
+      catalog: {
+        status: "ready",
+        models: [
+          {
+            ...selection("gpt-6.1-sol"),
+            displayName: "GPT-6.1-Sol",
+            isDefault: true,
+            options: [effortLadder],
+          },
+        ],
+      },
+    });
+    const claude = account("claude", {
+      isDefault: true,
+      catalog: {
+        status: "ready",
+        models: [
+          {
+            ...selection("claude-opus-5-5"),
+            displayName: "Claude Opus 5.5",
+            isDefault: true,
+            options: [effortLadder],
+          },
+        ],
+      },
+    });
+    const settings = AgentHomeSettingsSchema.parse({
+      backgroundModels: {
+        deep: [
+          {
+            engine: "codex",
+            account: codex.harnessInstanceId,
+            model: "gpt-6.1-sol",
+            effort: "xhigh",
+          },
+        ],
+      },
+    });
+    const explicit = resolve([codex, claude], {
+      wants: backgroundModelWants(settings, "deep"),
+      original: {
+        environmentId: codex.environmentId,
+        harnessInstanceId: codex.harnessInstanceId,
+        modelSelection: selection("gpt-6.1-sol", { effort: "xhigh" }),
+      },
+    });
+    expect(
+      explicit.candidates.map((c) => [
+        c.harnessInstanceId,
+        c.storedModelSelection.modelId,
+        c.runModelSelection.options.effort,
+        c.original,
+      ]),
+    ).toEqual([
+      [codex.harnessInstanceId, "gpt-6.1-sol", "xhigh", true],
+      [claude.harnessInstanceId, "claude-opus-5-5", "high", false],
+      [codex.harnessInstanceId, "gpt-6.1-sol", "high", false],
+    ]);
+    // Even without settings.json, a default deep model matching Chat's model keeps its rank.
+    const defaultMatch = resolve([codex, claude], {
+      wants: backgroundModelWants({}, "deep"),
+      original: {
+        environmentId: claude.environmentId,
+        harnessInstanceId: claude.harnessInstanceId,
+        modelSelection: selection("claude-opus-5-5", { effort: "high" }),
+      },
+    });
+    expect(
+      defaultMatch.candidates.map((c) => [
+        c.harnessInstanceId,
+        c.storedModelSelection.modelId,
+        c.original,
+      ]),
+    ).toEqual([
+      [claude.harnessInstanceId, "claude-opus-5-5", true],
+      [codex.harnessInstanceId, "gpt-6.1-sol", false],
+    ]);
   });
   it.each(["excluded", "removed", "disabled", "unauthorized", "unsupported-access-mode"] as const)(
     "drops an ineligible original: %s",
@@ -237,6 +331,60 @@ describe("automatic model resolver", () => {
     expect(picked([shared], "opencode/union-alpha")).toEqual([
       expect.objectContaining({ providerId: "opencode", nativeModelId: "opencode/union-alpha@2" }),
     ]);
+    // Distinct catalog rows sharing a modelId under different providers never collide on dedup.
+    const dual = {
+      ...a,
+      catalog: {
+        status: "ready",
+        models: [
+          {
+            ...model("openai"),
+            modelId: ModelSelectionSchema.shape.modelId.parse("llama-3"),
+            nativeModelId: "openai/llama-3",
+          },
+          {
+            ...model("meta"),
+            modelId: ModelSelectionSchema.shape.modelId.parse("llama-3"),
+            nativeModelId: "meta/llama-3",
+          },
+        ],
+      },
+    };
+    const both = resolve([dual], {
+      wants: [want("opencode", "openai/llama-3"), want("opencode", "meta/llama-3")],
+      original: {
+        environmentId: dual.environmentId,
+        harnessInstanceId: dual.harnessInstanceId,
+        modelSelection: ModelSelectionSchema.parse({
+          providerId: "meta",
+          modelId: "llama-3",
+          options: {},
+        }),
+      },
+    });
+    expect(
+      both.candidates.map((c) => [
+        c.storedModelSelection.providerId,
+        c.storedModelSelection.modelId,
+        c.original,
+      ]),
+    ).toEqual([
+      ["openai", "llama-3", false],
+      ["meta", "llama-3", true],
+    ]);
+  });
+  it("records a skip when a pinned account is missing from authorized accounts", () => {
+    const missing = createId("harnessInstance");
+    const pinned = BackgroundModelChoiceSchema.parse({
+      engine: "codex",
+      account: missing,
+      model: "gpt-6-luna",
+    });
+    const result = resolve([account()], { wants: [pinned] });
+    expect(result.candidates).toEqual([]);
+    expect(result.skipped).toEqual([
+      { want: pinned, harnessInstanceId: missing, reason: "unauthorized" },
+    ]);
   });
   it("requires explicit binding for each arbitrary endpoint", () => {
     const a = account("codex", { sourceId: "openai-compatible" });
@@ -255,7 +403,7 @@ describe("automatic model resolver", () => {
       }).candidates,
     ).toEqual([]);
   });
-  it("demotes relevant exhausted usage, keeps the original last, ignores expired/unrelated facts", () => {
+  it("demotes relevant exhausted usage, keeps priority order, and ignores expired/unrelated facts", () => {
     const usage = [{ providerId: "openai", exhausted: true, resetsAt: null }];
     const a = account("codex", { isDefault: true, usage }),
       b = account(),
@@ -267,6 +415,20 @@ describe("automatic model resolver", () => {
       [c.harnessInstanceId, true],
     ]);
     expect(result.skipped).toEqual([]);
+    // A healthy original fallback beats an exhausted want rather than failing on a spent account.
+    const healthyFallback = account("claude");
+    expect(
+      resolve([a, healthyFallback], {
+        wants: [want()],
+        original: {
+          ...healthyFallback,
+          modelSelection: selection("claude-haiku-5-5"),
+        },
+      }).candidates.map((c) => [c.harnessInstanceId, c.usageLimited, c.original]),
+    ).toEqual([
+      [healthyFallback.harnessInstanceId, false, true],
+      [a.harnessInstanceId, true, false],
+    ]);
     expect(
       resolve([
         {
