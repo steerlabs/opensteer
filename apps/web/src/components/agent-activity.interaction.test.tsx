@@ -1283,9 +1283,26 @@ describe("arrival motion", () => {
     });
     await show(range(0, 21));
     expect(moving()).toEqual([]);
+    // Two at once rise in too; more than that is a catch-up, not live work.
+    await show(range(0, 23));
+    expect(moving()).toEqual(["arrival-21", "arrival-22"]);
+    for (const slot of scroller.querySelectorAll(".transcript__virtual-slot--arrived"))
+      act(() => {
+        slot.dispatchEvent(new Event("animationend"));
+      });
+    await show(range(0, 26));
+    expect(moving()).toEqual([]);
     // A jump or a new cut replaces the window: none of its rows arrive.
     await show(range(40, 50));
     expect(moving()).toEqual([]);
+    // Nor when the new window overlaps the old and ends in a row never shown: rows left the front.
+    await show(range(42, 51));
+    expect(moving()).toEqual([]);
+    // Nor when it moves back over rows shown before and ends past them.
+    await show(range(30, 52));
+    expect(moving()).toEqual([]);
+    await show(range(30, 53));
+    expect(moving()).toEqual(["arrival-52"]);
   });
 });
 
