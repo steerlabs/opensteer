@@ -78,16 +78,6 @@ export function threadStopTarget(input: ThreadStopTargetInput): RunQueueEntry | 
           (run) => run.maintenance && (run.status !== "queued" || !input.thread.inputQueuePaused),
         ) ?? null)
       : null;
-  return threadCurrentRun(input);
-}
-
-/**
- * The Run the Host has the Thread at work on: the one executing, else the one
- * that starts next. Null while the Host keeps the Thread idle.
- */
-export function threadCurrentRun(input: ThreadStopTargetInput): RunQueueEntry | null {
-  const { status } = input.thread;
-  if (status !== "running" && status !== "waiting") return null;
   return (
     threadRuns(input.runQueue, input.thread.id).find((run) => run.status !== "queued") ??
     nextQueuedRun(input)

@@ -89,7 +89,6 @@ import {
   placeReply,
   replyPlaces,
   threadActivityIndicator,
-  liveTurnHeadLabel,
   toolBody,
   turnComputer,
   turnState,
@@ -192,12 +191,6 @@ const Markdown = lazy(() => markdownChunk);
 const transcriptTail = { rows: 8, px: 900 } as const;
 
 const TranscriptLive = createContext(true);
-/**
- * The Run the line above the composer speaks for, while it is on screen: that
- * Run's turn keeps only its steps' disclosure for a head, which would otherwise
- * repeat the line out of view once the turn grows.
- */
-const LiveLineRun = createContext<string | null>(null);
 /**
  * The request a waiting turn waits on is on screen, above the composer: a
  * "Waiting for you" line beside it would only repeat it.
@@ -404,7 +397,6 @@ export const AgentTranscript = memo(function AgentTranscript({
   conversation = false,
   computers = null,
   live = true,
-  liveRunId = null,
   entries,
   waitingRequests = noWaitingRequests,
   assignments = noAssignments,
@@ -445,8 +437,6 @@ export const AgentTranscript = memo(function AgentTranscript({
   conversation?: boolean;
   computers?: TranscriptComputers | null;
   live?: boolean;
-  /** The Run the line above the composer speaks for, while it is shown. */
-  liveRunId?: string | null;
   entries: readonly TranscriptEntry[];
   waitingRequests?: readonly WaitingRequest[];
   assignments?: Readonly<Record<string, AssignmentSummary>>;
@@ -594,9 +584,8 @@ export const AgentTranscript = memo(function AgentTranscript({
         : null,
     [conversation, rows, viewerUserId],
   );
-  // The line above the composer speaks for a Run under way; this one only stands in before it.
   const indicator =
-    live && liveRunId === null && !(requestShown && activity === "waiting_for_you")
+    live && !(requestShown && activity === "waiting_for_you")
       ? threadActivityIndicator(activity, { conversation, groups, startHold })
       : null;
   const speakers = useMemo(() => ({ threadId }), [threadId]);
@@ -798,56 +787,54 @@ export const AgentTranscript = memo(function AgentTranscript({
     <TranscriptDisclosures value={disclosures}>
       <DeliveryFeedback value={deliveryFeedback}>
         <TranscriptLive value={live}>
-          <LiveLineRun value={liveRunId}>
-            <AgentsLive value={live}>
-              <AgentReader value={agents}>
-                <AgentFolds>
-                  <RequestShown value={requestShown}>
-                    <ConversationMode value={conversation}>
-                      <ReplyWith value={replyWith}>
-                        <OpenActivity value={openWith}>
-                          <ActivityOfTurn value={activities}>
-                            <ActivityOpenedFrom value={owner}>
-                              <ActivityAnchor value={onActivityAnchor}>
-                                <TaskViews value={taskView}>
-                                  <TranscriptHostClientContext value={attachmentReader}>
-                                    <ReaderComputers value={computers}>
-                                      <TranscriptBrowserUses value={browserUses}>
-                                        <TranscriptBrowsers value={browserSessions}>
-                                          <Speakers value={speakers}>
-                                            <TranscriptImageContext value={imageScope}>
-                                              {drawnRows}
-                                              {indicator === null ? null : indicator.kind ===
-                                                "typing" ? (
-                                                // No turn has begun, so there is no Activity to open yet.
-                                                <div className="turn turn--conversation">
-                                                  <Typing />
-                                                </div>
-                                              ) : (
-                                                <WorkingIndicator label={indicator.label} />
-                                              )}
-                                              {passwordsOffer === null
-                                                ? null
-                                                : renderPasswordsSuggestion?.(passwordsOffer)}
-                                              {queued}
-                                            </TranscriptImageContext>
-                                          </Speakers>
-                                        </TranscriptBrowsers>
-                                      </TranscriptBrowserUses>
-                                    </ReaderComputers>
-                                  </TranscriptHostClientContext>
-                                </TaskViews>
-                              </ActivityAnchor>
-                            </ActivityOpenedFrom>
-                          </ActivityOfTurn>
-                        </OpenActivity>
-                      </ReplyWith>
-                    </ConversationMode>
-                  </RequestShown>
-                </AgentFolds>
-              </AgentReader>
-            </AgentsLive>
-          </LiveLineRun>
+          <AgentsLive value={live}>
+            <AgentReader value={agents}>
+              <AgentFolds>
+                <RequestShown value={requestShown}>
+                  <ConversationMode value={conversation}>
+                    <ReplyWith value={replyWith}>
+                      <OpenActivity value={openWith}>
+                        <ActivityOfTurn value={activities}>
+                          <ActivityOpenedFrom value={owner}>
+                            <ActivityAnchor value={onActivityAnchor}>
+                              <TaskViews value={taskView}>
+                                <TranscriptHostClientContext value={attachmentReader}>
+                                  <ReaderComputers value={computers}>
+                                    <TranscriptBrowserUses value={browserUses}>
+                                      <TranscriptBrowsers value={browserSessions}>
+                                        <Speakers value={speakers}>
+                                          <TranscriptImageContext value={imageScope}>
+                                            {drawnRows}
+                                            {indicator === null ? null : indicator.kind ===
+                                              "typing" ? (
+                                              // No turn has begun, so there is no Activity to open yet.
+                                              <div className="turn turn--conversation">
+                                                <Typing />
+                                              </div>
+                                            ) : (
+                                              <WorkingIndicator label={indicator.label} />
+                                            )}
+                                            {passwordsOffer === null
+                                              ? null
+                                              : renderPasswordsSuggestion?.(passwordsOffer)}
+                                            {queued}
+                                          </TranscriptImageContext>
+                                        </Speakers>
+                                      </TranscriptBrowsers>
+                                    </TranscriptBrowserUses>
+                                  </ReaderComputers>
+                                </TranscriptHostClientContext>
+                              </TaskViews>
+                            </ActivityAnchor>
+                          </ActivityOpenedFrom>
+                        </ActivityOfTurn>
+                      </OpenActivity>
+                    </ReplyWith>
+                  </ConversationMode>
+                </RequestShown>
+              </AgentFolds>
+            </AgentReader>
+          </AgentsLive>
         </TranscriptLive>
       </DeliveryFeedback>
     </TranscriptDisclosures>
@@ -1064,7 +1051,6 @@ function WorkStatus({
 }) {
   const connected = useContext(TranscriptLive);
   const requestShown = useContext(RequestShown);
-  const liveRunId = useContext(LiveLineRun);
   const now = useComputerUseNow(turn);
   const kept = useKeptComputerStop(turn, now);
   const live = connected && summary.state !== "settled";
@@ -1073,24 +1059,13 @@ function WorkStatus({
   if (now) return <ComputerUseLine key={now.session.sessionId} now={now} toggle={toggle} />;
   if (kept) return <KeptComputerStopLine key={kept.sessionId} stop={kept} toggle={toggle} />;
   if (summary.state === "waiting" && requestShown && !onToggle) return null;
-  // The line above the composer says what a turn under way is doing; the head
-  // keeps only its disclosure, named for the steps it opens.
-  const pinned = liveRunId !== null && turn.runId === liveRunId && turn.continued !== true;
-  if (pinned && !onToggle) return null;
   const head = (
     <span className="work__label">
-      {pinned
-        ? liveTurnHeadLabel
-        : summary.state === "live" && restartPending(turn.run)
-          ? restartingLabel
-          : summary.label}
+      {summary.state === "live" && restartPending(turn.run) ? restartingLabel : summary.label}
     </span>
   );
   return (
-    <div
-      aria-label={pinned ? undefined : "Agent status"}
-      className={live && !pinned ? "work work--live" : "work"}
-    >
+    <div aria-label="Agent status" className={live ? "work work--live" : "work"}>
       {onToggle ? (
         <button
           aria-expanded={open}
