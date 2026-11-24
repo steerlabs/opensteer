@@ -23,6 +23,8 @@ import {
   cloudComputerBootPath,
   cloudComputerCheckPath,
   cloudComputerEgressPath,
+  cloudComputerReleaseFeedPath,
+  CloudComputerReleaseFeedResponseSchema,
   cloudComputerBootCompletePath,
   cloudComputerLeasePath,
   cloudComputerLeaseHeader,
@@ -1418,6 +1420,34 @@ integration("Cloud Computer Account service", () => {
     expect((await read()).json()).toHaveProperty("lastBackupAt", published.completedAt);
     expect((await send(replacement, later)).statusCode).toBe(204);
     expect((await read()).json()).toHaveProperty("lastBackupAt", later.completedAt);
+  });
+
+  it("tells a booted Home the feed it updates from now, and nobody else", async () => {
+    const { id } = await buy();
+    const computer = (await getDesired(id))!;
+    const booted = await bootable(computer);
+    const oidc = booted.managedHome!.oidc;
+    const credentials = (secret: string) =>
+      `Basic ${Buffer.from(`${oidc.clientId}:${secret}`).toString("base64")}`;
+    const read = (authorization?: string) =>
+      http({
+        method: "GET",
+        url: cloudComputerReleaseFeedPath(id),
+        ...(authorization ? { headers: { authorization } } : {}),
+      });
+    // Not before its boot completed.
+    expect((await read(credentials(oidc.clientSecret))).statusCode).toBe(401);
+    expect((await complete(computer)).statusCode).toBe(200);
+    const answer = await read(credentials(oidc.clientSecret));
+    expect(answer.statusCode).toBe(200);
+    expect(answer.headers["cache-control"]).toBe("no-store");
+    // The account's feed as it is configured now, not the one the Home was born with.
+    expect(CloudComputerReleaseFeedResponseSchema.parse(answer.json())).toEqual({
+      releaseManifestUrl,
+    });
+    expect((await read()).statusCode).toBe(401);
+    expect((await read(credentials("ocs_" + "A".repeat(43)))).statusCode).toBe(401);
+    expect((await read(`Bearer ${computer.bootstrapToken}`)).statusCode).toBe(401);
   });
 
   it("assigns a late egress endpoint and never serves it to the Home, whose browser is in the pool", async () => {

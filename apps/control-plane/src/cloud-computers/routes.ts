@@ -40,6 +40,7 @@ import {
   CloudComputerDesiredPageSchema,
   CloudComputerIdSchema,
   CloudComputerEgressResponseSchema,
+  CloudComputerReleaseFeedResponseSchema,
   CloudComputerListResponseSchema,
   CloudComputerOfferResponseSchema,
   cloudComputerOfferPath,
@@ -204,6 +205,23 @@ export function registerCloudComputerRoutes(
         });
     return CloudComputerEgressResponseSchema.parse(
       await store.egressForHome(id, request.headers.authorization),
+    );
+  });
+
+  // A booted Home asks at each update check, so it follows a feed this account moves later.
+  const feedLimit = new BootRateLimit();
+  app.get(`${provisionerPath}/release-feed`, async (request, reply) => {
+    privateResponse(reply);
+    const { id } = params.parse(request.params);
+    if (!feedLimit.allow(id, request.ip))
+      return reply
+        .code(429)
+        .header("retry-after", "60")
+        .send({
+          error: { code: "rate_limited", message: "Too many Cloud Computer release feed requests" },
+        });
+    return CloudComputerReleaseFeedResponseSchema.parse(
+      await store.releaseFeedForHome(id, request.headers.authorization),
     );
   });
 

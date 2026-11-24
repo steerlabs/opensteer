@@ -42,9 +42,17 @@ PostgreSQL. To update such a Home, build the new release's checkout the same way
 and run `sudo opensteer-home update /root/opensteer-home-release.json`.
 
 Set `OPENSTEER_HOME_RELEASE_MANIFEST_URL` at install time or in
-`/etc/opensteer-home/config.env` to supply a release feed for the hourly updater.
-Managed installations enable the update timer only with an Opensteer-account-supplied
-HTTPS feed that resolves only to public addresses, and always require image digests.
+`/etc/opensteer-home/config.env` to supply a release feed for the hourly updater;
+the line may be quoted (`OPENSTEER_HOME_RELEASE_MANIFEST_URL='https://…'`) or bare,
+and an update refuses a line it cannot read rather than skip it. Every Home has the
+hourly update timer from install. A managed Home asks its Opensteer account for the
+current feed at each check (`/v1/cloud-computers/<id>/release-feed`, with its OIDC
+client credentials, like the egress check), takes it only when it is HTTPS and resolves
+only to public addresses, and writes it to `config.env` when it changed; when the
+account does not answer it uses the feed it has and logs so. Managed updates always
+require image digests. A release is its version and its image digests: the updater says
+"Already on this release", "Same version, different build: updating", "Updating from
+… to …", or, on a scheduled update, refuses an older version ("older: refused").
 The updater pulls before replacing services and retains prior image IDs for rollback.
 A release that migrates the database must remain compatible with the previous Host
 for image rollback to work.
@@ -265,8 +273,8 @@ again and connects only to the checked public addresses. PostgreSQL has its own
 fixed digest; inherited Compose variables cannot override images or volume selection.
 Set `OPENSTEER_HOME_RELEASE_MANIFEST_URL` in `config.env` for scheduled updates
 on a bring-your-own Home, or supply a manifest to `update` directly. The Opensteer
-account gives every Cloud Computer a `releaseManifestUrl` in its boot response, which schedules
-its updates; a managed Home updates from that feed only.
+account gives every Cloud Computer a `releaseManifestUrl` in its boot response and its current
+feed at each update check; a managed Home updates from the account's feed only.
 
 ## Managed release and verification
 

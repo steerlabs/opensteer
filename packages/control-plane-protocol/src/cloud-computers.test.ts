@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  cloudComputerReleaseFeedPath,
+  CloudComputerReleaseFeedResponseSchema,
   BrowserPoolNetworkCidrSchema,
   CloudComputerBrowserPoolNetworkSchema,
   CloudComputerLeaseSchema,
@@ -273,4 +275,18 @@ it("accepts only a private IPv4 network, at its own address, as the pool network
     CloudComputerLeaseSchema.safeParse({ holder: crypto.randomUUID(), poolNetwork: "8.8.8.0/24" })
       .success,
   ).toBe(false);
+});
+
+it("names a Home's release feed route and answers only an allowed feed address", () => {
+  const id = "cc_00000000-0000-4000-8000-000000000001";
+  expect(cloudComputerReleaseFeedPath(id)).toBe(`/v1/cloud-computers/${id}/release-feed`);
+  expect(
+    CloudComputerReleaseFeedResponseSchema.parse({
+      releaseManifestUrl: "https://releases.example.test/managed/stable.json",
+    }),
+  ).toEqual({ releaseManifestUrl: "https://releases.example.test/managed/stable.json" });
+  for (const releaseManifestUrl of ["http://releases.example.test/x", "https://a.test/x?y=1"])
+    expect(CloudComputerReleaseFeedResponseSchema.safeParse({ releaseManifestUrl }).success).toBe(
+      false,
+    );
 });

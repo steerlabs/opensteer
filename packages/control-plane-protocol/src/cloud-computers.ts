@@ -320,6 +320,16 @@ export const CloudComputerEgressResponseSchema = z.strictObject({
 });
 export const cloudComputerEgressPath = (id: CloudComputerId) => `/v1/cloud-computers/${id}/egress`;
 
+/** The feed a booted Home updates from now: the account's, which may differ from its boot's. */
+export const CloudComputerReleaseFeedResponseSchema = z.strictObject({
+  releaseManifestUrl: CloudComputerReleaseManifestUrlSchema,
+});
+export type CloudComputerReleaseFeedResponse = z.infer<
+  typeof CloudComputerReleaseFeedResponseSchema
+>;
+export const cloudComputerReleaseFeedPath = (id: CloudComputerId) =>
+  `/v1/cloud-computers/${id}/release-feed`;
+
 export const CloudComputerBackupReportSchema = z.strictObject({
   completedAt: z.iso.datetime(),
   snapshotId: CloudComputerSnapshotSchema,

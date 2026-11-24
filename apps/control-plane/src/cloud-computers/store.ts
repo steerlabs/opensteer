@@ -1826,6 +1826,14 @@ export class CloudComputerStore {
     });
   }
 
+  /** The feed this account gives now, to a booted Home that proves its credentials. */
+  async releaseFeedForHome(id: CloudComputerId, authorization: string | undefined) {
+    return this.#db.transaction().execute(async (tx) => {
+      await this.#requireBootedHome(tx, id, authorization, "share");
+      return { releaseManifestUrl: this.#options.config.releaseManifestUrl };
+    });
+  }
+
   async reportBackupForHome(
     id: CloudComputerId,
     authorization: string | undefined,

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 home_dir=$1
-unit_dir=/etc/systemd/system
+unit_dir=${OPENSTEER_HOME_UNIT_DIR:-/etc/systemd/system} # Set only by tests.
 unit=${2:-opensteer-home}
 # Only the Home in the default directory owns the command on the path.
 if [[ $unit == opensteer-home && $home_dir == /etc/opensteer-home ]]; then
@@ -34,15 +34,9 @@ WantedBy=multi-user.target
 UNIT
 
 timers=()
+# Every Home has an update timer from install: a managed Home asks its account for its feed at each
+# check, so it follows one given or moved later; a Home with no feed at all checks nothing.
 for task in update backup maintain; do
-  if [[ $task == update && -f "$home_dir/managed" ]] &&
-     ! grep -Eq "^OPENSTEER_HOME_RELEASE_MANIFEST_URL='https://[^']+'$" "$home_dir/config.env"; then
-    if [[ -f "$unit_dir/$unit-update.timer" ]]; then
-      systemctl disable --now "$unit-update.timer"
-      rm -f -- "$unit_dir/$unit-update.timer" "$unit_dir/$unit-update.service"
-    fi
-    continue
-  fi
   timers+=("$unit-$task.timer")
   case $task in
     update) calendar=hourly ;;

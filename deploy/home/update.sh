@@ -63,24 +63,38 @@ update_home() (
     release_to_env "$2" "$candidate" "$pinned"
   else
     if $pinned; then
-      feed=$(sed -n "s/^OPENSTEER_HOME_RELEASE_MANIFEST_URL='\([^']*\)'$/\1/p" "$home_dir/config.env")
+      # The feed its account gives now, checked as at boot; its own when the account is silent.
+      feed=$(managed_feed) || fail 'No update feed passed the checks.'
     else
       feed=$(compose config --environment | sed -n 's/^OPENSTEER_HOME_RELEASE_MANIFEST_URL=//p')
     fi
     if [[ -z $feed ]]; then
-      [[ $1 == scheduled-update ]] && return 0
-      fail "Set OPENSTEER_HOME_RELEASE_MANIFEST_URL in config.env or supply a release manifest."
+      if [[ $1 == scheduled-update ]]; then
+        echo 'No update feed is set; nothing to check.'
+        return 0
+      fi
+      fail "Set OPENSTEER_HOME_RELEASE_MANIFEST_URL='https://…' in config.env or supply a release manifest."
     fi
     fetch_manifest "$feed" "$current_dir/release.json" "$pinned"
     release_to_env "$current_dir/release.json" "$candidate" "$pinned"
   fi
-  cmp -s "$active" "$candidate" && return 0
   old_version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$active")
-  cp "$active" "$current_dir/original.env"
   new_version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$candidate")
-  if [[ $1 == scheduled-update && $(printf '%s\n%s\n' "$old_version" "$new_version" | sort -V | tail -1) != "$new_version" ]]; then
-    fail "The update feed is older than the running Home."
-  fi
+  # A release is its version and its image digests together.
+  case $(release_change "$active" "$candidate") in
+    same)
+      echo "Already on this release ($old_version)."
+      return 0
+      ;;
+    rebuild) echo "Same version, different build: updating $new_version." ;;
+    newer) echo "Updating from $old_version to $new_version." ;;
+    older)
+      [[ $1 == scheduled-update ]] &&
+        fail "The feed's release $new_version is older than the running $old_version: older: refused."
+      echo "Release $new_version is older than the running $old_version: updating, as asked by hand."
+      ;;
+  esac
+  cp "$active" "$current_dir/original.env"
 
   project=$(compose_project)
   printf 'OPENSTEER_HOME_VERSION=%s\n' "$old_version" > "$previous"

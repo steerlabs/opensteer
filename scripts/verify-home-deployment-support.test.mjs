@@ -994,7 +994,7 @@ await test("production Host parses file-only enrollment and Account credentials 
   assert.equal(config.managedHome?.oidc.clientSecret, secret);
 });
 
-await test("the managed scheduler enables the update timer only with a saved feed", (t) => {
+await test("the managed scheduler enables the update timer from install, with or without a feed", (t) => {
   const temp = mkdtempSync(resolve(tmpdir(), "home-schedule-"));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const units = resolve(temp, "units");
@@ -1002,30 +1002,27 @@ await test("the managed scheduler enables the update timer only with a saved fee
   mkdirSync(units);
   writeFileSync(resolve(temp, "managed"), "");
   writeFileSync(resolve(temp, "systemctl"), '#!/bin/sh\nprintf "%s\\n" "$*"\n', { mode: 0o700 });
-  const scheduler = readFileSync("deploy/home/install-scheduler.sh", "utf8").replace(
-    "unit_dir=/etc/systemd/system",
-    `unit_dir=${quote(units)}`,
-  );
   const run = () =>
-    execFileSync("bash", ["-c", scheduler, "schedule", temp, "opensteer-home-proof"], {
-      env: { ...process.env, PATH: `${temp}:${process.env.PATH}` },
+    execFileSync("bash", ["deploy/home/install-scheduler.sh", temp, "opensteer-home-proof"], {
+      env: { ...process.env, PATH: `${temp}:${process.env.PATH}`, OPENSTEER_HOME_UNIT_DIR: units },
       encoding: "utf8",
     });
   const updateTimer = resolve(units, "opensteer-home-proof-update.timer");
-  writeFileSync(
-    config,
+  // A managed Home asks its account for its feed at each check, so it has the timer either way.
+  for (const content of [
     "OPENSTEER_HOME_RELEASE_MANIFEST_URL='https://release.example.test/home/stable.json'\n",
-  );
-  assert.match(run(), /enable --now .*opensteer-home-proof-update\.timer/u);
-  assert.match(readFileSync(updateTimer, "utf8"), /OnCalendar=hourly/u);
-  writeFileSync(config, "");
-  const output = run();
-  assert.match(output, /disable --now opensteer-home-proof-update\.timer/u);
-  assert.match(
-    output,
-    /enable --now opensteer-home-proof-backup\.timer opensteer-home-proof-maintain\.timer/u,
-  );
-  assert.equal(existsSync(updateTimer), false);
+    "",
+  ]) {
+    writeFileSync(config, content);
+    rmSync(updateTimer, { force: true });
+    const output = run();
+    assert.match(
+      output,
+      /enable --now opensteer-home-proof-update\.timer opensteer-home-proof-backup\.timer opensteer-home-proof-maintain\.timer/u,
+    );
+    assert.doesNotMatch(output, /disable/u);
+    assert.match(readFileSync(updateTimer, "utf8"), /OnCalendar=hourly/u);
+  }
 });
 
 await test("managed update feed refuses nonpublic addresses, including mixed DNS answers, before curl", () => {

@@ -210,6 +210,82 @@ except (OSError, ValueError):
 PY
 }
 
+# The feed address in config.env, quoted ('https://…') or bare; empty when there is none.
+configured_feed() {
+  local line pattern='https://[a-zA-Z0-9.:/_=%+-]+'
+  line=$(grep -m1 '^OPENSTEER_HOME_RELEASE_MANIFEST_URL=' "$home_dir/config.env") || return 0
+  if [[ $line =~ ^OPENSTEER_HOME_RELEASE_MANIFEST_URL=\'($pattern)\'$ ||
+    $line =~ ^OPENSTEER_HOME_RELEASE_MANIFEST_URL=($pattern)$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return
+  fi
+  fail "config.env has an OPENSTEER_HOME_RELEASE_MANIFEST_URL line this Home cannot read. Write it as OPENSTEER_HOME_RELEASE_MANIFEST_URL='https://…'."
+}
+
+# Whether a feed address passes the checks boot applies: plain HTTPS of the allowed characters,
+# resolving only to public addresses.
+valid_managed_feed() {
+  [[ ${#1} -le 2048 && $1 =~ ^https://[a-zA-Z0-9.:/_=%+-]+$ ]] &&
+    managed_feed_resolution "$1" >/dev/null
+}
+
+# The feed a managed Home updates from, on stdout: the one its account gives now, when the account
+# answers and the address passes the boot checks (config.env is rewritten when it changed), and
+# otherwise the one config.env has. An address that fails the checks is never used.
+managed_feed() {
+  local configured asked='' origin id client_id answer status
+  configured=$(configured_feed) || return
+  origin=$(sed -n "s/^OPENSTEER_HOME_ACCOUNT_ORIGIN='\([^']*\)'$/\1/p" "$home_dir/config.env")
+  id=$(sed -n "s/^OPENSTEER_HOME_MANAGED_ID='\([^']*\)'$/\1/p" "$home_dir/config.env")
+  client_id=$(sed -n "s/^OPENSTEER_HOME_OIDC_CLIENT_ID='\([^']*\)'$/\1/p" "$home_dir/config.env")
+  answer=$(mktemp "$home_dir/feed.XXXXXX") || return
+  if [[ $origin =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ && $id =~ ^cc_[a-f0-9-]{36}$ &&
+    $client_id =~ ^occ_[a-f0-9-]{36}$ && -s "$home_dir/secrets/oidc_client_secret" ]] &&
+    status=$(printf 'user = "%s:%s"\n' "$client_id" "$(cat "$home_dir/secrets/oidc_client_secret")" |
+      curl -q --config - --basic --silent --proto '=https' --tlsv1.2 \
+        --connect-timeout 10 --max-time 20 --max-filesize 16384 \
+        --output "$answer" --write-out '%{http_code}' \
+        -- "$origin/v1/cloud-computers/$id/release-feed") && [[ $status == 200 ]]; then
+    asked=$(jq -r '.releaseManifestUrl | select(type == "string")' "$answer" 2>/dev/null) || asked=''
+    if [[ -n $asked ]] && valid_managed_feed "$asked"; then
+      rm -f -- "$answer"
+      if [[ $asked != "$configured" ]]; then
+        set_configured_feed "$asked" || return
+        echo "This Home now follows the update feed its account gives: $asked" >&2
+      fi
+      printf '%s\n' "$asked"
+      return
+    fi
+    echo "The account's update feed failed the checks; keeping this Home's own." >&2
+  else
+    echo "The account did not answer for its update feed; using this Home's own." >&2
+  fi
+  rm -f -- "$answer"
+  [[ -z $configured ]] && return 0
+  valid_managed_feed "$configured" || fail "This Home's update feed failed the checks: $configured"
+  printf '%s\n' "$configured"
+}
+
+set_configured_feed() {
+  local tmp
+  tmp=$(mktemp "$home_dir/config.env.XXXXXX") || return
+  grep -v '^OPENSTEER_HOME_RELEASE_MANIFEST_URL=' "$home_dir/config.env" > "$tmp" || true
+  printf "OPENSTEER_HOME_RELEASE_MANIFEST_URL='%s'\n" "$1" >> "$tmp"
+  publish_file "$tmp" "$home_dir/config.env"
+}
+
+# release_change <active selection> <candidate selection>: same (this exact release), rebuild (the
+# same version with other images), newer or older.
+release_change() {
+  local old new
+  if cmp -s "$1" "$2"; then echo same; return; fi
+  old=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$1")
+  new=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$2")
+  if [[ $old == "$new" ]]; then echo rebuild
+  elif [[ $(printf '%s\n%s\n' "$old" "$new" | sort -V | tail -1) == "$new" ]]; then echo newer
+  else echo older; fi
+}
+
 fetch_manifest() {
   local resolution args=()
   if [[ ${3:-false} == true ]]; then
