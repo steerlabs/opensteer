@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { sql } from "kysely";
 import pg from "pg";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -22,7 +23,7 @@ import {
 } from "../runtime/private-machine-host.test-support.js";
 import { registeredHostRoutes } from "../server.js";
 import { hostInternalRoutePaths } from "../server/internal-routes.js";
-import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
+import { injectRpcRequest, testRpcData } from "../server/test-host-api-request.js";
 
 /**
  * The three tools (A5) on a real Home: what a caller may change is listed from the one rule,
@@ -706,44 +707,60 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
     // Every agent's MCP client is done before the reads are traced: one still listening signs in
     // again on its own (its connection's last use), which is not the read's write.
     await Promise.all(clients.map((client) => client.close().catch(() => undefined)));
-    const statements: string[] = [];
-    let tracing = false;
+    // Each read is sent in process and traced in its own async context, so a statement counts for
+    // the request that issued it, or for work that request started, and never for the Home's
+    // background work. A Runner heartbeat that renews a Run's lease is made to land inside every
+    // read: it is counted for none of them (it once was, by time alone). Each read's statements
+    // are taken only at the end, so a write a read leaves running is still that read's.
+    const served = (host as unknown as { runtime: { app: FastifyInstance } }).runtime.app;
+    const ownStatements = new AsyncLocalStorage<string[]>();
+    let leaseRenewals = 0;
     const clientQuery = pg.Client.prototype.query;
     const traced = vi.spyOn(pg.Client.prototype, "query").mockImplementation(function (
       this: pg.Client,
       ...args: unknown[]
     ) {
       const first = args[0] as string | { readonly text?: string } | undefined;
-      if (tracing)
-        statements.push(typeof first === "string" ? first : (first?.text ?? "<unknown>"));
+      const text = typeof first === "string" ? first : (first?.text ?? "<unknown>");
+      if (/^\s*update "provider_sessions" set "lease_expires_at"/u.test(text)) leaseRenewals++;
+      ownStatements.getStore()?.push(text);
       return Reflect.apply(clientQuery, this, args) as never;
     });
-    const writesDuring = async (send: () => Promise<unknown>) => {
-      statements.length = 0;
-      tracing = true;
-      try {
-        await send().catch(() => undefined);
-      } finally {
-        tracing = false;
-      }
-      return statements.filter((statement) =>
+    expect(machine.primary.activeRunIds.length).toBeGreaterThan(0);
+    const heartbeatRenews = async () => {
+      const before = leaseRenewals;
+      machine.primary.socket.send(
+        JSON.stringify({
+          ...machine.primary.fence,
+          activeRunIds: [...machine.primary.activeRunIds],
+          activeTriggerOccurrenceIds: [],
+          activeWatchActivationIds: [],
+          sentAt: new Date().toISOString(),
+          type: "runner.heartbeat",
+        }),
+      );
+      await vi.waitFor(() => expect(leaseRenewals).toBeGreaterThan(before), { timeout: 10_000 });
+    };
+    const traces: { readonly name: string; readonly statements: string[] }[] = [];
+    const tracedRead = async (name: string, send: () => Promise<unknown>) => {
+      const statements: string[] = [];
+      traces.push({ name, statements });
+      const renewed = ownStatements.exit(heartbeatRenews);
+      await ownStatements.run(statements, () => send().catch(() => undefined));
+      await renewed;
+    };
+    const writes = (statements: readonly string[]) =>
+      statements.filter((statement) =>
         /^\s*(?:insert|update|delete|merge)\b|\bfor (?:no key )?update\b/iu.test(statement),
       );
-    };
     try {
-      const signIn = new Set(
-        await writesDuring(() =>
-          testRpcRequest(host.origin, "channels.get", {} as never, { headers: host.ownerHeaders }),
-        ),
+      await tracedRead("sign-in", () =>
+        injectRpcRequest(served, "channels.get", {}, host.ownerHeaders),
       );
-      const wrote: string[] = [];
       for (const [name, input] of reads) {
-        for (const statement of await writesDuring(() =>
-          testRpcRequest(host.origin, name as never, input as never, {
-            headers: host.ownerHeaders,
-          }),
-        ))
-          if (!signIn.has(statement)) wrote.push(`${name}: ${statement.slice(0, 160)}`);
+        await tracedRead(name, () =>
+          injectRpcRequest(served, name as never, input, host.ownerHeaders),
+        );
         expect(doorRoutes.get(`POST /v1/rpc/${name}`), name).toMatchObject({
           kind: "not a Home command",
           why: expect.stringContaining("writes nothing"),
@@ -752,21 +769,34 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
       // The extension's pair challenge (ruling 3): it signs the extension's nonce with this Home's
       // key and returns it. No row is written, with or without a pairing the person started, so
       // nothing it leaves can outlive the pairing.
-      for (const statement of await writesDuring(() =>
-        fetch(new URL(hostInternalRoutePaths.browserSourcePairChallenge, host.origin), {
+      await tracedRead("pair/challenge", async () => {
+        const challenged = await served.inject({
           method: "POST",
+          url: hostInternalRoutePaths.browserSourcePairChallenge,
           headers: {
+            host: new URL(host.origin).host,
             "content-type": "application/json",
             origin: `chrome-extension://${"a".repeat(32)}`,
           },
-          body: JSON.stringify({
+          payload: JSON.stringify({
             origin: new URL(host.origin).origin,
             routeGeneration: null,
             nonce: randomUUID(),
           }),
-        }),
-      ))
-        if (!signIn.has(statement)) wrote.push(`pair/challenge: ${statement.slice(0, 160)}`);
+        });
+        expect(challenged.statusCode, challenged.body).toBe(200);
+      });
+      // Every signed-in read was traced in its own context: its sign-in's statements are its own.
+      // The pair challenge signs in nobody and issues none.
+      for (const { name, statements } of traces)
+        if (name !== "pair/challenge") expect(statements.length, name).toBeGreaterThan(0);
+      const [signIn, ...rest] = traces;
+      const signedIn = new Set(writes(signIn!.statements));
+      const wrote = rest.flatMap(({ name, statements }) =>
+        writes(statements)
+          .filter((statement) => !signedIn.has(statement))
+          .map((statement) => `${name}: ${statement.slice(0, 160)}`),
+      );
       expect(wrote).toEqual([]);
     } finally {
       traced.mockRestore();
