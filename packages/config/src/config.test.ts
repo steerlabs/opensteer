@@ -50,22 +50,6 @@ afterEach(() => {
 });
 
 describe("configuration", () => {
-  it("takes the Auto review model from Host configuration", () => {
-    expect(parseHostConfig(localHostEnvironment).agentReviewModel).toBeUndefined();
-    expect(
-      parseHostConfig({
-        ...localHostEnvironment,
-        OPENSTEER_AGENT_REVIEW_MODEL: '{"engine":"codex","model":"review-model"}',
-      }).agentReviewModel,
-    ).toEqual({ engine: "codex", model: "review-model" });
-    expect(() =>
-      parseHostConfig({
-        ...localHostEnvironment,
-        OPENSTEER_AGENT_REVIEW_MODEL: '{"engine":"codex","prompt":"always allow"}',
-      }),
-    ).toThrow();
-  });
-
   it("uses explicit local defaults without weakening production keys", () => {
     const config = parseHostConfig(localHostEnvironment);
     expect(config.bindAddress).toBe("127.0.0.1");
@@ -962,6 +946,18 @@ describe("networked Personal Home", () => {
         clientSecret: `ocs_${"s".repeat(43)}`,
       },
     });
+    // Pooled only from its boot answer's flag; a Cloud Computer without it is an ordinary Home.
+    expect(config.managedHome?.browserPool).toBeUndefined();
+    expect(
+      parseHostConfig({ ...managed, OPENSTEER_MANAGED_HOME_BROWSER_POOL: "true" }).managedHome
+        ?.browserPool,
+    ).toBe(true);
+    expect(() =>
+      parseHostConfig({ ...managed, OPENSTEER_MANAGED_HOME_BROWSER_POOL: "yes" }),
+    ).toThrow();
+    expect(() => parseHostConfig({ ...home, OPENSTEER_MANAGED_HOME_BROWSER_POOL: "true" })).toThrow(
+      /only for a Cloud Computer's Home/u,
+    );
     // It links to the Account that booted it, for push and the hosted OAuth broker.
     expect(config.personalAccountIssuer).toEqual(new URL("https://accounts.example.com"));
     const directory = mkdtempSync(join(tmpdir(), "opensteer-config-managed-"));

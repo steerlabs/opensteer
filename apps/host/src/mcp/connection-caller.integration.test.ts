@@ -70,9 +70,12 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
   }) => {
     const f = await storeFixture.startRunFixture("connection-tools");
     const url = await serveMcp(storeFixture);
+    // Consented on the grant screen, as every connection now does; one that consented before
+    // direct work is listed none of it (connection-contract, B5).
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
+      grant: { scope: "everything" },
     });
     const listed = (await agent.client.listTools()).tools.map(({ name }) => name);
     expect(listed.toSorted()).toEqual([

@@ -1322,9 +1322,12 @@ describe("mobile pages", () => {
     type("x");
     const surfaceId = chosen.pages[0]!.id;
     expect(sendBrowserCommand.mock.calls).toEqual([
-      [chosen.id, { type: "clipboard.paste", surfaceId, text: "saved" }],
-      [chosen.id, { type: "clipboard.paste", surfaceId, text: "!" }],
-      [chosen.id, { type: "clipboard.paste", surfaceId, text: "x" }],
+      [
+        chosen.id,
+        { type: "clipboard.paste", surfaceId, text: "saved", contextId: expect.any(String) },
+      ],
+      [chosen.id, { type: "clipboard.paste", surfaceId, text: "!", contextId: expect.any(String) }],
+      [chosen.id, { type: "clipboard.paste", surfaceId, text: "x", contextId: expect.any(String) }],
     ]);
   });
 
@@ -3140,6 +3143,81 @@ describe("native page layout and controls", () => {
     expect(container.querySelector('[data-testid="page-typing"]')).not.toBeNull();
     expect(element(container, "Keyboard")).toBeNull();
   });
+
+  it("keeps the keyboard up when tapping from one field to another across a transient blur", async () => {
+    const editing = new BrowserEditingStore(vi.fn());
+    editing.negotiate("chosen", 1);
+    state.hostClient = { browserFrames: { editing, subscribe: () => () => undefined } };
+    const chosen = mailSession("chosen");
+    const surfaceId = chosen.pages[0]!.id;
+    const { container, render } = await setup({
+      sessionId: chosen.id,
+      tabId: surfaceId,
+    });
+    state.snapshot = snapshot([chosen]);
+    await render();
+    const input = () => container.querySelector<HTMLElement>("[data-page-input]");
+    press(container, "Tap the page");
+    act(() =>
+      editing.receive(chosen.id, {
+        type: "browser.editing",
+        surfaceId,
+        context: {
+          contextId: "00000000-0000-4000-8000-000000000001",
+          field: { kind: "text", multiline: false, sensitive: false },
+          caret: null,
+        },
+      }),
+    );
+    expect(input()?.dataset.focused).toBe("true");
+    expect(input()?.dataset.softKeyboard).toBe("true");
+    expect(container.querySelector('[data-testid="page-typing"]')).not.toBeNull();
+
+    // Tap a second field: even if a transient focusout (field: null) arrives before the second
+    // field's focusin, the keyboard must come back up for the second field without a second tap.
+    press(container, "Tap the page");
+    act(() =>
+      editing.receive(chosen.id, {
+        type: "browser.editing",
+        surfaceId,
+        context: {
+          contextId: "00000000-0000-4000-8000-000000000002",
+          field: null,
+          caret: null,
+        },
+      }),
+    );
+    act(() =>
+      editing.receive(chosen.id, {
+        type: "browser.editing",
+        surfaceId,
+        context: {
+          contextId: "00000000-0000-4000-8000-000000000003",
+          field: { kind: "text", multiline: false, sensitive: false },
+          caret: null,
+        },
+      }),
+    );
+    expect(input()?.dataset.focused).toBe("true");
+    expect(input()?.dataset.softKeyboard).toBe("true");
+    expect(container.querySelector('[data-testid="page-typing"]')).not.toBeNull();
+
+    // Tapping outside any field still puts the keyboard away.
+    press(container, "Tap the page");
+    act(() =>
+      editing.receive(chosen.id, {
+        type: "browser.editing",
+        surfaceId,
+        context: {
+          contextId: "00000000-0000-4000-8000-000000000004",
+          field: null,
+          caret: null,
+        },
+      }),
+    );
+    expect(input()?.dataset.softKeyboard).toBe("false");
+    expect(container.querySelector('[data-testid="page-typing"]')).toBeNull();
+  });
 });
 
 it("opens controller page actions only from matching streamed facts and offers one-shot Drag/select", async () => {
@@ -3160,6 +3238,15 @@ it("opens controller page actions only from matching streamed facts and offers o
   expect(container.querySelector('[data-drag-select="true"]')).not.toBeNull();
   press(container, "Finish selection");
   expect(container.querySelector('[data-drag-select="true"]')).toBeNull();
+  // The page's context, with no field focused: a page publishes one from the start.
+  const contextId = "00000000-0000-4000-8000-000000000002";
+  act(() =>
+    editing.receive(chosen.id, {
+      type: "browser.editing",
+      surfaceId,
+      context: { contextId, field: null, caret: null },
+    }),
+  );
   const menu = {
     type: "browser.contextmenu" as const,
     surfaceId,
@@ -3177,6 +3264,7 @@ it("opens controller page actions only from matching streamed facts and offers o
     type: "input.command",
     surfaceId,
     command: "selectAll",
+    contextId,
   });
   expect(container.querySelector('section[aria-label="Page actions"]')).toBeNull();
   act(() => editing.receive(chosen.id, { ...menu, geometryRevision: 7 }));
@@ -3194,6 +3282,18 @@ it("fences a menu clipboard read when another page contact changes its destinati
   const { container, render } = await setup({ sessionId: chosen.id, tabId: surfaceId });
   state.snapshot = snapshot([chosen]);
   await render();
+  // The page's own context, as a page publishes one from the start: what its paste is made for.
+  act(() =>
+    editing.receive(chosen.id, {
+      type: "browser.editing",
+      surfaceId,
+      context: {
+        contextId: "00000000-0000-4000-8000-000000000003",
+        field: { kind: "text", multiline: false, sensitive: false },
+        caret: null,
+      },
+    }),
+  );
   const menu = () =>
     act(() =>
       editing.receive(chosen.id, {
@@ -3222,6 +3322,7 @@ it("fences a menu clipboard read when another page contact changes its destinati
     type: "clipboard.paste",
     surfaceId,
     text: "clipboard",
+    contextId: "00000000-0000-4000-8000-000000000003",
   });
 });
 
@@ -3331,6 +3432,33 @@ describe("a Cloud Computer's browser", () => {
     expect(container.textContent).toContain(
       "It didn’t come back as you left it. Reload to open it again.",
     );
+  });
+
+  it("shows an unconfirmed-closing replaced-browser session and lets the person remove it from the list (X2)", async () => {
+    const dismissBrowserSession = vi.fn(async () => {});
+    const { container, render } = await setup({ sessionId: "chosen" });
+    state.hostClient.dismissBrowserSession = dismissBrowserSession;
+    state.snapshot = snapshot([session("chosen")]);
+    await render();
+    const raw = snapshot([session("chosen")]);
+    const tab = tabs.get(TabIdSchema.parse(firstPage.id));
+    if (tab?.kind !== "page") throw new Error("The first page is not listed");
+    state.snapshot = {
+      ...raw,
+      browserPools: [
+        {
+          ...mockBrowserPoolReport("awake", tab.computer.computerId, firstPage.id),
+          unconfirmedClosings: [{ sessionId: "chosen", surfaceIds: [firstPage.id] }],
+        },
+      ],
+    } as HostSnapshot;
+    await render();
+    expect(container.textContent).toContain("This page didn't confirm it closed");
+    expect(container.textContent).toContain(
+      "Its browser was replaced before it answered, and Opensteer can no longer ask it. Nothing more is sent to this page.",
+    );
+    await pressAsync(container, "Remove from list");
+    expect(dismissBrowserSession).toHaveBeenCalledWith("chosen");
   });
 });
 

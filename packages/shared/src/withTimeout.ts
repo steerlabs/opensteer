@@ -14,6 +14,9 @@ export async function withTimeout<T>(
 ): Promise<T> {
   const { signal } = options;
   if (signal?.aborted) {
+    // The operation is already under way (it was the caller's argument): its outcome is no one's
+    // now, and a failure of it must not go unhandled.
+    void operation.catch(() => undefined);
     throw signal.reason instanceof Error
       ? signal.reason
       : new Error(options.abortFallback ?? "Operation aborted");

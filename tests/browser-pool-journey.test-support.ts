@@ -67,7 +67,8 @@ export class TestRuntimeConnection extends EventEmitter implements BrowserRuntim
     const pending: [Buffer, boolean][] = [];
     const frame = (data: Buffer, binary: boolean) => {
       if (this.readyState === 0) pending.push([data, binary]);
-      else if (this.readyState === 1) this.emit("message", data, binary);
+      // As a WebSocket does, frames that arrive while its close is under way are still received.
+      else if (this.readyState === 1 || this.readyState === 2) this.emit("message", data, binary);
     };
     void bridge
       .attach(this.channel, ticket, {
@@ -76,7 +77,10 @@ export class TestRuntimeConnection extends EventEmitter implements BrowserRuntim
         onClosed: (_channel, code, reason) => this.end(code, reason),
       })
       .then((attached) => {
-        if (this.readyState === 3) return;
+        if (this.readyState === 3) {
+          this.bridge.close(this.channel, 1006, "terminated");
+          return;
+        }
         this.initialPage = attached.initialPage;
         this.readyState = 1;
         for (const [data, binary] of pending) frame(data, binary);
@@ -107,13 +111,21 @@ export class TestRuntimeConnection extends EventEmitter implements BrowserRuntim
     queueMicrotask(() => this.emit("close", code, Buffer.from(reason)));
   }
 
+  /**
+   * As the Runner's relay does for a pool guest: the close goes to the runtime, and the code the
+   * Home sees is the runtime's own answer (1006 when none comes), never one made up here.
+   */
   close(): void {
-    this.bridge.close(this.channel);
-    this.end(1000, "closed");
+    if (this.readyState === 3) return;
+    this.readyState = 2;
+    void this.bridge
+      .closeWithReceipt(this.channel, 5_000)
+      .then((code) => this.end(code, code === 1000 ? "closed" : "runtime did not answer"));
   }
 
   terminate(): void {
-    this.close();
+    this.bridge.close(this.channel);
+    this.end(1006, "terminated");
   }
 }
 
@@ -133,6 +145,7 @@ export function dyingAfter(runtime: BrowserRuntime, kind: string): BrowserPoolRu
       }
       return state;
     },
+    endSession: (ticket) => (dead ? new Promise(() => {}) : runtime.endPoolSession(ticket)),
   };
 }
 
@@ -143,8 +156,16 @@ export async function journey(
     readonly profile?: boolean;
     readonly runtimeFault?: ConstructorParameters<typeof BrowserPoolCoordinator>[0]["runtimeFault"];
     readonly channelDeadlineMs?: number;
+    /** How often a running guest's status is read (60 s by default). */
+    readonly statusEveryMs?: number;
     /** The guest's page probe during a retire; a retire waits for it. */
     readonly probePage?: (page: unknown, phase: "active" | "frozen") => Promise<readonly string[]>;
+    readonly requireAgentAccess?: ConstructorParameters<
+      typeof BrowserService
+    >[0]["requireAgentAccess"];
+    readonly detachRunnerAgents?: ConstructorParameters<
+      typeof BrowserService
+    >[0]["detachRunnerAgents"];
   } = {},
 ) {
   const real = options.chromium !== false;
@@ -172,7 +193,15 @@ export async function journey(
         executablePath: chromium.executablePath(),
         headless: true,
       })
-    : new FakeIsolatingLauncher();
+    : options.profile
+      ? Object.assign(new FakeIsolatingLauncher(), {
+          localProfiles: {
+            engine: "chromium" as const,
+            createFiles: async () => {},
+            release: async () => "released" as const,
+          },
+        })
+      : new FakeIsolatingLauncher();
   if (real) {
     const launch = launcher.launch.bind(launcher);
     vi.spyOn(launcher, "launch").mockImplementation(async (request) => {
@@ -260,9 +289,16 @@ export async function journey(
       })
     : null;
   const homes: Home[] = [];
-  const startHome = async (
-    channel: BrowserPoolRuntimeChannel = loopbackPoolChannel(guest),
-  ): Promise<Home> => {
+  // The journey's Runner stands for the whole way to the guest: while it is away the runtime's
+  // end request is not answered either.
+  const reachableGuest: BrowserPoolRuntimeChannel = {
+    ...loopbackPoolChannel(guest),
+    endSession: (ticket) =>
+      runnerDown
+        ? Promise.reject(new Error("The guest cannot be reached."))
+        : guest.endPoolSession(ticket),
+  };
+  const startHome = async (channel: BrowserPoolRuntimeChannel = reachableGuest): Promise<Home> => {
     const coordinator = new BrowserPoolCoordinator({
       database,
       runnerId: task.runnerId,
@@ -277,6 +313,7 @@ export async function journey(
       },
       ...(options.runtimeFault ? { runtimeFault: options.runtimeFault } : {}),
       ...(options.channelDeadlineMs ? { channelDeadlineMs: options.channelDeadlineMs } : {}),
+      ...(options.statusEveryMs ? { statusEveryMs: options.statusEveryMs } : {}),
     });
     const service = new BrowserService({
       deploymentId: task.deploymentId,
@@ -286,6 +323,8 @@ export async function journey(
       tabs,
       tabPlaces: { write: async () => false, notice: () => {} },
       repository: personalBrowserRepository(store),
+      ...(options.requireAgentAccess ? { requireAgentAccess: options.requireAgentAccess } : {}),
+      ...(options.detachRunnerAgents ? { detachRunnerAgents: options.detachRunnerAgents } : {}),
       ...(profile
         ? {
             localProfiles: new BrowserLocalProfiles({
@@ -309,6 +348,8 @@ export async function journey(
     const home = { service, coordinator };
     homes.push(home);
     await service.initialize();
+    // initialize does not wait for the pool's recovery; these journeys start from a recovered one.
+    await coordinator.recover();
     return home;
     function target() {
       return {
@@ -334,12 +375,18 @@ export async function journey(
         reconcileStandardCdpAttempt: (attempt) =>
           guest.reconcileStandardCdpAttempt(attempt).then(({ runtimeBootId }) => runtimeBootId),
         wholeContextCdp: true,
+        // The loopback runtime follows a target without pictures too.
+        targetControl: true,
       } satisfies BrowserRuntimeTarget;
     }
   };
   const restartHome = async (home: Home, channel?: BrowserPoolRuntimeChannel) => {
     await home.service.close();
     home.coordinator.close();
+    // The Home's link to the Runner ends with it: the Runner closes what it carried for the Home
+    // (1001), as it does when its stream to the Home goes.
+    bridge.closeAll(1001, "browser stream closed");
+    for (const connection of connections.splice(0)) connection.lose(1006, "home gone");
     return startHome(channel);
   };
   /** The Home process dies: nothing is closed gracefully, every channel drops, and it starts. */
@@ -397,6 +444,8 @@ export async function journey(
   ) => {
     let open = true;
     const frames: Buffer[] = [];
+    /** Every text message the viewer was sent, parsed. */
+    const messages: Record<string, unknown>[] = [];
     const waiting: { count: number; resolve: () => void }[] = [];
     /** Resolves once a frame arrives after the first `count`: on the stream, not on a clock. */
     const next = (count: number) =>
@@ -413,6 +462,10 @@ export async function journey(
           open = false;
         },
         send: async (data, binary) => {
+          if (!binary && typeof data === "string")
+            messages.push(JSON.parse(data) as Record<string, unknown>);
+          else if (!binary && Buffer.isBuffer(data))
+            messages.push(JSON.parse(data.toString()) as Record<string, unknown>);
           if (binary && Buffer.isBuffer(data)) {
             if (!frames.length) onFrame?.();
             frames.push(data);
@@ -425,7 +478,7 @@ export async function journey(
       { authSessionId: createId("authSession"), mode, signedIn: async () => true },
     );
     void attaching.catch(() => undefined);
-    return { attaching, frames, next };
+    return { attaching, frames, next, messages };
   };
   const close = async () => {
     try {
@@ -463,6 +516,11 @@ export async function journey(
      * code the Home sees; the runtime always sees the Runner's own 1011 (a 1000 reaches it only
      * as the relay of the Home's own close).
      */
+    /**
+     * The tunnel from the Runner to the guest breaks: the runtime sees every channel drop (1011)
+     * and keeps its sessions, while the Home's channels are left as they are.
+     */
+    tunnelBreaks: () => bridge.closeAll(1011, "pool tunnel broke"),
     runnerDown: (homeCode = 1011) => {
       runnerDown = true;
       bridge.closeAll(1011, "runner restarting");

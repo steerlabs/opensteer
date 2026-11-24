@@ -9,11 +9,10 @@ import type { HarnessProcessLaunchWrapper, HarnessProviderState } from "@openste
 const exec = promisify(execFile);
 
 /**
- * One sample's disposable engine environment. The driver's own isolated-service
- * sandbox confines native tools exactly as on a macOS Runner, which cannot nest
- * another Seatbelt profile around it. This adds a private HOME and engine
+ * One sample's disposable engine environment: a private HOME and engine
  * profile holding only a copy of the existing login, so engines start without
- * the user's configuration, hooks, MCP servers or history.
+ * the user's configuration, hooks, MCP servers or history. The engine runs
+ * under its own modes, exactly as a Run does.
  */
 export async function isolate(root: string, engine: "claude" | "codex", signal: AbortSignal) {
   signal.throwIfAborted();
@@ -28,7 +27,7 @@ export async function isolate(root: string, engine: "claude" | "codex", signal: 
     ),
   );
   // Copy only authentication, never user MCP servers, plugins, instructions,
-  // hooks, history or provider routing. Copies are inaccessible to model tools.
+  // hooks, history or provider routing, into this sample's own directory.
   if (engine === "codex") {
     const source = join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json");
     await copyFile(source, join(providerHome, "auth.json"));

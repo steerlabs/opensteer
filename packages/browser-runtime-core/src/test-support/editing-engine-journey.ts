@@ -329,6 +329,7 @@ export async function runEditingEngineJourney(
       surfaceId,
       producerId: contender,
       command: "deleteBackward",
+      contextId,
     });
     await controller.handle(
       browser.clipboard
@@ -337,6 +338,7 @@ export async function runEditingEngineJourney(
             surfaceId,
             producerId: contender,
             operationId: randomUUID(),
+            contextId,
           }
         : {
             type: "input.key",
@@ -453,7 +455,12 @@ export async function runEditingEngineJourney(
       "events.filter(e=>e.type==='copy'||e.type==='cut').length",
     );
     if (browser.clipboard) {
-      await controller.handle({ type: "clipboard.copy", surfaceId, operationId: sensitiveCopy });
+      await controller.handle({
+        type: "clipboard.copy",
+        surfaceId,
+        operationId: sensitiveCopy,
+        contextId: editingContext()!.context.contextId,
+      });
       await wait(() =>
         messages.some(
           (message) =>

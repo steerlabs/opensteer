@@ -2650,6 +2650,66 @@ describe("Runner connection registry", () => {
       expect(connection.catalogs()).toHaveLength(2);
       await registry.close();
     });
+    it("does not invalidate another account's in-flight inspection when a sibling settles", async () => {
+      const first = definition(createId("harnessInstance"));
+      const second = definition(createId("harnessInstance"));
+      let registry!: RunnerRegistry;
+      let environmentId!: ReturnType<typeof createId<"environment">>;
+      let secondRecapture: ReturnType<RunnerRegistry["inspectHarnesses"]> | undefined;
+      const connection = await attached(async (_identity, invalidation) => {
+        if (invalidation.harnessInstanceId !== second.id) return;
+        secondRecapture = registry.inspectHarnesses(
+          environmentId,
+          [second],
+          new AbortController().signal,
+          { fresh: true },
+        );
+        await secondRecapture;
+      });
+      registry = connection.registry;
+      environmentId = connection.environmentId;
+      try {
+        const signal = AbortSignal.timeout(2_000);
+        const firstInspection = registry.inspectHarnesses(environmentId, [first], signal, {
+          fresh: true,
+        });
+        firstInspection.catch(() => undefined);
+        const fullReconcile = registry.reconcileHarnesses(environmentId, [first, second], signal);
+        fullReconcile.catch(() => undefined);
+        await waitFor(() => connection.catalogs().length === 2);
+        await registry.handle(connection.peer, {
+          ...fenceOf(connection.peer),
+          harnessInstanceId: second.id,
+          type: "runner.harness-catalog-invalidated",
+        });
+        await waitFor(() => connection.catalogs().length === 3);
+        // A concurrent reader for `first` still shares its unaffected in-flight request.
+        const joinedFirst = registry.inspectHarnesses(environmentId, [first], signal, {
+          fresh: true,
+        });
+        joinedFirst.catch(() => undefined);
+        expect(connection.catalogs()).toHaveLength(3);
+        await connection.answer(0, "ready");
+        await connection.answer(1, "preparing");
+        await connection.answer(2, "ready");
+        await expect(firstInspection).resolves.toMatchObject([
+          { harnessInstanceId: first.id, status: "ready" },
+        ]);
+        await expect(joinedFirst).resolves.toEqual(await firstInspection);
+        // The multi-account reconcile that included `second` is still fenced as stale.
+        await expect(fullReconcile).rejects.toMatchObject({
+          code: "conflict",
+          reason: "harness-catalog-stale-read",
+          retryable: true,
+        });
+        await expect(secondRecapture).resolves.toMatchObject([
+          { harnessInstanceId: second.id, status: "ready" },
+        ]);
+        expect(connection.catalogs()).toHaveLength(3);
+      } finally {
+        await registry.close();
+      }
+    });
     it("abandons a catalog request whose send is still pending without an unobserved rejection", async () => {
       const { catalogs, environmentId, peer, registry } = await attached();
       const unhandled: unknown[] = [];
@@ -2873,7 +2933,6 @@ function hello(
         harnessDrivers,
 
         maxConcurrentRuns: 2,
-        providerStateModes: ["isolated"],
       },
     },
     name: "Runner",

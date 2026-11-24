@@ -131,7 +131,6 @@ describe("Host runtime wiring", () => {
             sources: [{ sourceId: "openai", stateKinds: ["isolated"] }],
           },
         ],
-        providerStateModes: ["ambient", "isolated"],
       });
       // The seeded account talks to the first source its engine declares,
       // because that is the engine's own answer to "which one by default".

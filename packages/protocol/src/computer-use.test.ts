@@ -492,7 +492,7 @@ describe("computer use on the integrations stream", () => {
   });
 });
 
-describe("computer use helper protocol 10", () => {
+describe("computer use helper protocol 11", () => {
   it("requires an explicit single permission on the current wire protocol", () => {
     const request = { id: 1, method: "permissions.request" };
     for (const pane of ["screen-recording", "accessibility"]) {
@@ -507,7 +507,7 @@ describe("computer use helper protocol 10", () => {
   });
 
   it("opens a session as bookkeeping only, naming no app", () => {
-    expect(computerUseHelperProtocolVersion).toBe(10);
+    expect(computerUseHelperProtocolVersion).toBe(11);
     // The app set a session once declared is gone: a list on the open, or on
     // its answer, is a frame from protocol 2 and is refused.
     expect(

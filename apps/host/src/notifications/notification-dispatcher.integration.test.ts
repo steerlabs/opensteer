@@ -12,10 +12,11 @@ import {
 } from "@opensteer/core";
 import {
   AccountDirectoryStore,
+  AgentConnectionStore,
   NotificationStateStore,
   NotificationStore,
 } from "@opensteer/database";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { startVerticalStack, type VerticalStack } from "../agents/vertical-stack.test-support.js";
@@ -71,7 +72,6 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
         );
         return registry;
       },
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
     });
     const database = stack.host.store.database;
     const owner = await database
@@ -263,6 +263,9 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
             }
             return reason;
           },
+          beginPublication: (entry) => notifications.beginPublication(entry),
+          continuePublication: (id, entry) => notifications.continuePublication(id, entry),
+          settlePublication: (id, state) => notifications.settlePublication(id, state),
         },
       });
       try {
@@ -362,6 +365,7 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
         userId: decision.userId,
         eventId: createId("event"),
         sequence: decision.sequence,
+        connectionId: decision.connectionId,
         occurredAt: new Date(decision.view.occurredAt),
         expiresAt: new Date(
           Date.parse(decision.view.occurredAt) + notificationPushWindowMilliseconds,
@@ -390,4 +394,138 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
       await dispatcher.close();
     }
   }, 60_000);
+
+  /**
+   * A reply or a failure alert for a Run in a connected agent's lineage carries that agent's
+   * words to the phone: it is handed off through the connection's Disconnect set (F1).
+   */
+  it.each([
+    ["reply", "revoked"],
+    ["fail", "revoked"],
+    ["reply", "live"],
+    ["fail", "live"],
+    ["reply", "lost acknowledgement, then revoked"],
+    ["fail", "lost acknowledgement, then revoked"],
+    ["reply", "your own agent"],
+    ["fail", "your own agent"],
+  ] as const)(
+    "F1 a %s alert of a connection's Run: %s",
+    async (kind, order) => {
+      const database = stack.host.store.database;
+      const threadId = await stack.createThread({
+        modelSelection,
+        title: `Lineage ${kind} ${order}`,
+      });
+      const turn = await stack.sendMessage({
+        text: kind === "reply" ? "Reply [[reply The agent's words]]" : "Fail [[fail]]",
+        threadId,
+      });
+      const runId = turn.runId;
+      if (!runId) throw new Error("Expected a Run");
+      const outcome = kind === "reply" ? ("completed" as const) : ("failed" as const);
+      await vi.waitFor(
+        () =>
+          database
+            .selectFrom("runs")
+            .select("id")
+            .where("id", "=", runId)
+            .where("status", "=", outcome)
+            .executeTakeFirstOrThrow(),
+        { timeout: 20_000, interval: 50 },
+      );
+      const connections = new AgentConnectionStore(database);
+      const connection = await connections.create({
+        userId: recipientId,
+        label: "Fixture",
+        clientName: "Fixture",
+        resource: "http://localhost/mcp",
+        accessMode: "full-access",
+        grant: { scope: "everything" },
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      await connections.activate(connection.id, `fixture-${kind}-${order}`);
+      if (order !== "your own agent")
+        await database
+          .updateTable("runs")
+          .set({ connectionId: connection.id })
+          .where("id", "=", runId)
+          .execute();
+      if (order === "revoked") await connections.revoke(recipientId, connection.id);
+      const notifications = new NotificationStore(database);
+      const posted: string[] = [];
+      const dispatcher = new NotificationDispatcher({
+        wait: async () => undefined,
+        client: new NotificationPublicationClient({
+          deploymentId: stack.host.deployment.id,
+          hostInstanceId: stack.host.deployment.activeHostInstanceId,
+          target: async () => ({
+            controlApiOrigin: new URL("https://accounts.invalid"),
+            hostCredential: `osc_${"a".repeat(43)}`,
+          }),
+          fetch: async (_url, init) => {
+            const { notificationId } = JSON.parse(String(init?.body)) as {
+              notificationId: string;
+            };
+            posted.push(notificationId);
+            if (order === "lost acknowledgement, then revoked") {
+              // It reached the account, the answer was lost, and the person disconnected.
+              await connections.revoke(recipientId, connection.id);
+              throw new Error("socket hang up");
+            }
+            return new Response(JSON.stringify({ accepted: true, deliveries: 1, notificationId }), {
+              status: 202,
+            });
+          },
+        }),
+        ready: Promise.resolve(),
+        onLive: () => undefined,
+        onError: () => undefined,
+        onWarning: () => undefined,
+        store: notifications,
+      });
+      try {
+        dispatcher.dispatch({
+          type: "runFinished",
+          runId,
+          threadId,
+          outcome,
+          attemptId: null,
+          bindingGeneration: null,
+        });
+        await dispatcher.drain();
+      } finally {
+        await dispatcher.close();
+      }
+      const attempts = await database
+        .selectFrom("commandAttempts")
+        .select(["state", "connectionId", "type"])
+        .where("connectionId", "=", connection.id)
+        .execute();
+      switch (order) {
+        case "revoked":
+          // Nothing for a Run whose connection ended: no request, no attempt.
+          expect(posted).toEqual([]);
+          expect(attempts).toEqual([]);
+          break;
+        case "live":
+          expect(posted).toHaveLength(1);
+          expect(attempts).toEqual([
+            { state: "done", connectionId: connection.id, type: "notification.publish" },
+          ]);
+          break;
+        case "lost acknowledgement, then revoked":
+          // Sent once, maybe arrived: unknown, and never sent again.
+          expect(posted).toHaveLength(1);
+          expect(attempts).toEqual([
+            { state: "unknown", connectionId: connection.id, type: "notification.publish" },
+          ]);
+          break;
+        case "your own agent":
+          expect(posted).toHaveLength(1);
+          expect(attempts).toEqual([]);
+          break;
+      }
+    },
+    60_000,
+  );
 });

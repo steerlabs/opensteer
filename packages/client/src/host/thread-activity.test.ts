@@ -44,7 +44,6 @@ describe("threadStartHold", () => {
       id: "env_studio",
       kind: "personal",
       name: "Studio Mac",
-      providerStateModes: [],
       runnerId: "rnr_studio",
       status: "connected",
       can: { executeTasks: true },

@@ -94,6 +94,18 @@ export interface BrowserPoolAdoptionOutcome {
   readonly pagesLost?: readonly BrowserPoolPageLoss[];
 }
 
+/**
+ * The runtime's answer to the Home's request to end one session (P15), with its state when it
+ * answered. `ended`: it tore the session down and its pages are gone, or it holds no such
+ * session and is not tearing one down. `not-yet`: a teardown is under way, an attach of it is
+ * still opening, or the runtime does not serve traffic now. `unknown`: a teardown failed; the
+ * next request tries it again.
+ */
+export interface BrowserPoolEndAnswer {
+  readonly outcome: "ended" | "not-yet" | "unknown";
+  readonly state: BrowserPoolRuntimeState;
+}
+
 export type BrowserPoolRuntimePhase =
   "uninstalled" | "running" | "retiring" | "retired" | "sealed" | "adopting";
 

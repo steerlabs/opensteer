@@ -19,7 +19,7 @@ import type {
   TaskReader,
   ThreadMutationAdmission,
 } from "@opensteer/database";
-import { personTaskReader } from "@opensteer/database";
+import { earlierBootProvenContained, personTaskReader } from "@opensteer/database";
 import type { CommandService, RunnerRegistry } from "@opensteer/orchestration";
 import type { HarnessInstanceCatalog, HarnessModelDescriptor } from "@opensteer/protocol";
 import {
@@ -28,8 +28,9 @@ import {
   storedModelSelection,
 } from "../agents/model-selection.js";
 import type { HostApiCommand } from "@opensteer/protocol";
-import { callerReader, type AgentCaller } from "../mcp/agent-caller.js";
+import { callerLineage, callerReader, type AgentCaller } from "../mcp/agent-caller.js";
 import { threadCallerAuthority, messageSource } from "../mcp/operations.js";
+import { isCommandAuthority, type CommandAuthority } from "../commands/dispatch.js";
 import { write as assertThreadAccess } from "../mcp/tool-access.js";
 import type { PlaceContextService } from "../computer-use/place-context-service.js";
 import type { BrowserService } from "../browser/browser-service.js";
@@ -56,12 +57,15 @@ type Command<K extends HostApiCommand["type"]> = Extract<
  */
 export type ThreadServiceStore = Pick<
   OpensteerStore,
+  | "clearThreadStartHold"
+  | "confirmThreadUnconfirmedStop"
   | "findThreadCreationByIdempotency"
   | "getEnvironment"
   | "getHarnessCatalog"
   | "getHarnessInstance"
   | "hasAcceptedThreadInput"
   | "readTask"
+  | "readThreadUnconfirmedStop"
 >;
 export class ThreadService {
   readonly options: {
@@ -74,7 +78,8 @@ export class ThreadService {
       | "harnessAccessModes"
       | "identityForEnvironment"
       | "attachmentInputFailure"
-    >;
+    > &
+      Partial<Pick<RunnerRegistry, "recheckThreadStop">>;
     readonly placeContext: Pick<PlaceContextService, "assertIncludable">;
     readonly browser: Pick<BrowserService, "announceUsage">;
   };
@@ -102,6 +107,7 @@ export class ThreadService {
       /** Placement a delegation already resolved; its model is carried as stored, not re-offered. */
       readonly placed?: true;
     } = {},
+    door?: CommandAuthority,
   ) {
     if (
       actor.kind !== "person" &&
@@ -126,7 +132,7 @@ export class ThreadService {
       ...(actor.kind === "person"
         ? {}
         : {
-            authority: threadCallerAuthority(actor),
+            authority: doorAuthority(actor, door),
           }),
       accessMode:
         command.accessMode ??
@@ -284,7 +290,11 @@ export class ThreadService {
       },
     );
   }
-  async configure(actor: ThreadActor, command: Command<"thread.execution.update">) {
+  async configure(
+    actor: ThreadActor,
+    command: Command<"thread.execution.update">,
+    door?: CommandAuthority,
+  ) {
     const thread = await this.assertTarget(actor, command.threadId);
     if (
       command.continuation &&
@@ -321,7 +331,7 @@ export class ThreadService {
         ...(actor.kind === "person"
           ? {}
           : {
-              authority: threadCallerAuthority(actor),
+              authority: doorAuthority(actor, door),
             }),
         ...(command.continuation
           ? {
@@ -342,21 +352,26 @@ export class ThreadService {
     actor: ThreadActor,
     input: EnqueueThreadInputRequest,
     admission?: ThreadMutationAdmission,
+    door?: CommandAuthority,
   ) {
     if (actor.kind !== "person" && (actor.kind !== "connection" || input.policy !== "queue"))
       await this.assertTarget(actor, input.threadId);
+    const authority = actor.kind === "person" ? undefined : doorAuthority(actor, door);
     const request = {
       ...input,
-      ...(actor.kind === "person" || admission
-        ? {}
-        : {
-            authority: threadCallerAuthority(actor),
-          }),
+      ...(authority && !admission ? { authority } : {}),
     };
     return admission
       ? this.options.commands.enqueueAdmittedThreadInput({
           input: request,
-          admission,
+          // The Run's or program's own admission carries the door's, to run at commit (A3).
+          admission: {
+            ...admission,
+            request: {
+              ...admission.request,
+              ...(authority?.admit ? { commandAdmit: authority.admit } : {}),
+            },
+          } as ThreadMutationAdmission,
         })
       : this.options.commands.enqueueThreadInput(request);
   }
@@ -421,7 +436,11 @@ export class ThreadService {
         return { type: command.type };
     }
   }
-  async resume(actor: ThreadActor, command: Command<"thread.inputQueue.resume">) {
+  async resume(
+    actor: ThreadActor,
+    command: Command<"thread.inputQueue.resume">,
+    door?: CommandAuthority,
+  ) {
     if (actor.kind !== "person") await this.assertTarget(actor, command.threadId);
     const result = await this.options.commands.resumeThreadInputQueue({
       ...command,
@@ -429,7 +448,7 @@ export class ThreadService {
       ...(actor.kind === "person"
         ? {}
         : {
-            authority: threadCallerAuthority(actor),
+            authority: doorAuthority(actor, door),
           }),
     });
     return {
@@ -437,10 +456,54 @@ export class ThreadService {
       asOfSequence: result.asOfSequence,
     };
   }
+  async recheckThreadStop(
+    actor: ThreadActor,
+    command: Command<"thread.stop.recheck">,
+    signal: AbortSignal,
+  ): Promise<{ readonly proven: boolean }> {
+    const thread = await this.assertTarget(actor, command.threadId);
+    const identity = this.options.runners.identityForEnvironment(thread.environmentId);
+    if (!identity || !this.options.runners.recheckThreadStop) {
+      throw new OpensteerError({
+        code: "runner_offline",
+        message: "That device is offline",
+      });
+    }
+    const unconfirmed = await this.options.store.readThreadUnconfirmedStop(thread.id);
+    if (
+      unconfirmed &&
+      (unconfirmed.runnerId !== identity.runnerId || unconfirmed.runnerBootId !== identity.bootId)
+    ) {
+      // A Runner from a different boot has no record of the held attempt: confirm ONLY
+      // when its own start verified earlier-boot containment or the machine rebooted.
+      const proven = earlierBootProvenContained({
+        attemptRunnerId: unconfirmed.runnerId,
+        attemptRunnerBootId: unconfirmed.runnerBootId,
+        attemptMachineBootId: unconfirmed.machineBootId,
+        currentRunnerId: identity.runnerId,
+        currentRunnerBootId: identity.bootId,
+        currentMachineBootId: identity.machineBootId ?? null,
+        earlierBootsContained: identity.capabilities.includes("earlier-boots-contained-v1"),
+      });
+      if (!proven) return { proven: false };
+      await this.options.store.confirmThreadUnconfirmedStop(thread.id, unconfirmed.runId);
+      return { proven: true };
+    }
+    const result = await this.options.runners.recheckThreadStop(
+      thread.environmentId,
+      thread.id,
+      signal,
+    );
+    if (result.proven) {
+      await this.options.store.clearThreadStartHold(thread.id);
+    }
+    return result;
+  }
   async steer(
     actor: ThreadActor,
     command: Command<"thread.input.steer">,
     sessionId?: AuthSessionId,
+    door?: CommandAuthority,
   ) {
     await this.assertTarget(actor, command.threadId);
     const result = await this.options.commands.steerThreadInput({
@@ -450,7 +513,7 @@ export class ThreadService {
       ...(actor.kind === "person"
         ? {}
         : {
-            authority: threadCallerAuthority(actor),
+            authority: doorAuthority(actor, door),
           }),
     });
     return {
@@ -477,7 +540,12 @@ export class ThreadService {
       input: result.input,
     };
   }
-  async move(actor: ThreadActor, command: Command<"thread.input.move">, sessionId?: AuthSessionId) {
+  async move(
+    actor: ThreadActor,
+    command: Command<"thread.input.move">,
+    sessionId?: AuthSessionId,
+    door?: CommandAuthority,
+  ) {
     if (actor.kind !== "person") await this.assertTarget(actor, command.threadId);
     await this.options.commands.moveThreadInput({
       ...command,
@@ -486,7 +554,7 @@ export class ThreadService {
       ...(actor.kind === "person"
         ? {}
         : {
-            authority: threadCallerAuthority(actor),
+            authority: doorAuthority(actor, door),
           }),
     });
     return {};
@@ -505,12 +573,13 @@ export class ThreadService {
           action: "done" | "reopen";
         }
     ),
+    door?: CommandAuthority,
   ) {
     await this.assertTarget(actor, command.threadId);
     const input = {
       ...command,
       requestedBy: actor.userId,
-      authority: threadCallerAuthority(actor),
+      authority: doorAuthority(actor, door),
     };
     switch (command.action) {
       case "rename":
@@ -613,5 +682,32 @@ export function assertModelSelectionAvailable(
   return {
     catalog,
     model: match.model,
+  };
+}
+
+/**
+ * An agent's task write is a command the door admitted (rule 2, A3): it carries the door's
+ * authority, whose last admission runs in the write's own transaction. Without it, it is refused.
+ */
+function doorAuthority(actor: AgentCaller, door: CommandAuthority | undefined) {
+  if (!door || !isCommandAuthority(door))
+    throw new OpensteerError({
+      code: "internal",
+      message: "An agent's task write goes through the command door",
+    });
+  // Admitted again at commit where what the door read can change before the write: a lineage
+  // under a connection (its grant, its standing). Your own agents' mode is read again by the
+  // store's own caller check, and a task's lineage never changes, so they pay nothing more (rule
+  // 7). Once per transaction, however often the store checks its caller.
+  const admit = door.identity.admit;
+  if (!admit || !callerLineage(actor)) return threadCallerAuthority(actor);
+  const admitted = new WeakSet<object>();
+  return {
+    ...threadCallerAuthority(actor),
+    admit: async (transaction: Parameters<typeof admit>[0]) => {
+      if (admitted.has(transaction)) return;
+      admitted.add(transaction);
+      await admit(transaction);
+    },
   };
 }

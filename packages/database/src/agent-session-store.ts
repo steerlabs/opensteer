@@ -25,6 +25,7 @@ import {
   type ThreadAccessMode,
   type ThreadId,
   type UserId,
+  consentAllowsDirectWork,
 } from "@opensteer/core";
 import { randomUUID } from "node:crypto";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
@@ -86,7 +87,7 @@ async function lockLiveConnection(
     grantTarget,
   });
   if (!row) throw refused(lineageEndedMessage);
-  if (row.consentVersion < 2) throw refused(directWorkUnavailableMessage);
+  if (!consentAllowsDirectWork(row.consentVersion)) throw refused(directWorkUnavailableMessage);
   return row;
 }
 
@@ -633,11 +634,18 @@ export async function admitAgentOperation(
   });
 }
 
+/**
+ * A decision this Home can still record. A past `reviewer` decision, from a
+ * Home that once had a review model configured, stays readable as recorded;
+ * nothing writes one any more.
+ */
+export type AgentOperationWrittenDecision = Exclude<AgentOperationDecision, { by: "reviewer" }>;
+
 /** Records who allowed an operation, or why it is refused; only from `admitted`. */
 export async function decideAgentOperation(
   database: Kysely<DatabaseSchema>,
   reviewed: ReviewedOperation,
-  decision: AgentOperationDecision,
+  decision: AgentOperationWrittenDecision,
 ): Promise<AgentOperationRow> {
   const refusedDecision = decision.by === "refused";
   const row = await reviewedOperationUpdate(database, reviewed, "admitted")

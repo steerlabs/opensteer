@@ -665,19 +665,64 @@ export class PhoneBrowserManager {
           });
         } else {
           const channel = this.#requireChannel(message.channelId);
-          await this.#client(
-            channel,
-            BrowserClientMessageSchema.parse(message.message),
-            authorityHandle,
-          );
+          const clientMessage = BrowserClientMessageSchema.parse(message.message);
+          try {
+            await this.#client(channel, clientMessage, authorityHandle);
+          } catch (error) {
+            // P1 (M1): a clipboard operation that throws (other than the two session-wide
+            // capability/suspension errors) settles by a clipboard.result naming its operationId.
+            if (
+              !(
+                error instanceof PhoneBrowserError &&
+                (error.code === "unsupported-operation" || error.code === "target-suspended")
+              ) &&
+              (clientMessage.type === "clipboard.copy" ||
+                clientMessage.type === "clipboard.cut" ||
+                clientMessage.type === "clipboard.paste-data")
+            ) {
+              this.#clipboard.delete(`${channel.id}:${clientMessage.operationId}`);
+              await this.#send(channel, {
+                type: "clipboard.result",
+                surfaceId: clientMessage.surfaceId,
+                operationId: clientMessage.operationId,
+                outcome:
+                  error instanceof PhoneBrowserError && error.code === "too-large"
+                    ? "too-large"
+                    : "refused",
+                ...(clientMessage.consumerToken
+                  ? { consumerToken: clientMessage.consumerToken }
+                  : {}),
+              });
+              return;
+            }
+            throw error;
+          }
         }
       }
     } catch (error) {
       if (this.#connection !== connection || !this.#foreground) return;
       if (message.type === "browser.client-message") {
         const channel = this.#channels.get(message.channelId);
-        if (channel)
-          await this.#send(channel, { type: "browser.error", error: protocolError(error) });
+        if (channel) {
+          const raw = message.message;
+          const operationId =
+            raw && typeof raw === "object"
+              ? "operationId" in raw && typeof raw.operationId === "string"
+                ? raw.operationId
+                : "part" in raw &&
+                    raw.part &&
+                    typeof raw.part === "object" &&
+                    "operationId" in raw.part &&
+                    typeof raw.part.operationId === "string"
+                  ? raw.part.operationId
+                  : undefined
+              : undefined;
+          await this.#send(channel, {
+            type: "browser.error",
+            error: protocolError(error),
+            ...(operationId ? { operationId } : {}),
+          });
+        }
       } else if ("requestId" in message) {
         await this.#sendRelay({
           ...connection.fence,
@@ -1097,17 +1142,42 @@ export class PhoneBrowserManager {
           "unsupported-operation",
           "Only basic phone input is available.",
         );
-      if (message.type === "clipboard.paste-data") {
+      const clipboardKey =
+        message.type === "clipboard.paste-data" ? `${channel.id}:${message.operationId}` : null;
+      if (clipboardKey) {
         if (this.#clipboard.size >= 32)
           throw new PhoneBrowserError("too-large", "Too many clipboard operations are pending.");
-        this.#clipboard.set(`${channel.id}:${message.operationId}`, {
+        this.#clipboard.set(clipboardKey, {
           tab,
           documentId: tab.metadata.documentId,
         });
       }
-      await this.#tabOperation(tab, () =>
-        this.#native.applyViewerInput({ ...this.#ref(tab), channelId: channel.id, message }),
-      );
+      try {
+        await this.#tabOperation(tab, () =>
+          this.#native.applyViewerInput({ ...this.#ref(tab), channelId: channel.id, message }),
+        );
+      } catch (error) {
+        if (clipboardKey) this.#clipboard.delete(clipboardKey);
+        if (message.type === "clipboard.part") {
+          this.#clipboard.delete(`${channel.id}:${message.part.operationId}`);
+          if (!(
+            error instanceof PhoneBrowserError &&
+            (error.code === "unsupported-operation" || error.code === "target-suspended")
+          )) {
+            await this.#send(channel, {
+              type: "clipboard.result",
+              surfaceId: BrowserSurfaceIdSchema.parse(tab.id),
+              operationId: message.part.operationId,
+              outcome:
+                error instanceof PhoneBrowserError && error.code === "too-large"
+                  ? "too-large"
+                  : "refused",
+            });
+            return;
+          }
+        }
+        throw error;
+      }
       return;
     }
     throw new PhoneBrowserError("unsupported-operation", "The phone does not offer this ability.");
@@ -1889,6 +1959,7 @@ export class PhoneBrowserManager {
     session.tabs.delete(tab.id);
     this.#tabs.delete(tab.id);
     this.#localIntents.delete(tab.id);
+    for (const [key, entry] of this.#clipboard) if (entry.tab === tab) this.#clipboard.delete(key);
     session.revision++;
     tab.state = "closed";
     tab.dialog = null;
@@ -1917,6 +1988,8 @@ export class PhoneBrowserManager {
       await this.#releaseCovered(undefined, covered.tabId);
     for (const [id, attachment] of this.#attachments)
       if (attachment.channel === channel) this.#attachments.delete(id);
+    for (const key of this.#clipboard.keys())
+      if (key.startsWith(`${channel.id}:`)) this.#clipboard.delete(key);
     for (const [key, pending] of this.#cdp)
       if (key.startsWith(`${channel.id}:`)) {
         this.#cdp.delete(key);
@@ -1972,6 +2045,8 @@ export class PhoneBrowserManager {
     if (metadata.documentId !== tab.metadata.documentId) {
       tab.dialog = null;
       tab.editingContextId = null;
+      for (const [key, entry] of this.#clipboard)
+        if (entry.tab === tab) this.#clipboard.delete(key);
     }
     tab.metadata = metadata;
     if (metadata.documentId) tab.lastDocumentId = metadata.documentId;

@@ -12,12 +12,13 @@ import type { PooledBrowserSend } from "../agent-sessions/agent-session-service.
 import { BrowserCdpConnectionEnded, type BrowserService } from "../browser/browser-service.js";
 import type { CdpAuthority } from "../browser/standard-cdp-tickets.js";
 import { browserReplLimits, browserTargetSchema } from "./browser-repl-messages.js";
-import type {
-  BrowserUseBudget,
-  BrowserUseCall,
-  BrowserUsePage,
-  BrowserUsePort,
-  BrowserUseTarget,
+import {
+  BrowserUseCdpError,
+  type BrowserUseBudget,
+  type BrowserUseCall,
+  type BrowserUsePage,
+  type BrowserUsePort,
+  type BrowserUseTarget,
 } from "./browser-repl-service.js";
 
 interface AdmittedPage {
@@ -72,6 +73,8 @@ function checkReply(value: unknown, budget: BrowserUseBudget): void {
 function translate(error: unknown): never {
   if (error instanceof BrowserCdpConnectionEnded) throw ended();
   if (error instanceof OpensteerError && error.reason === "browser-reply-limit") throw tooLarge();
+  if (error instanceof OpensteerError && error.reason === "browser-cdp-protocol-error")
+    throw new BrowserUseCdpError(-32000, error.message);
   throw error;
 }
 

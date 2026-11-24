@@ -503,7 +503,8 @@ export function menuBarActivity(input: {
   const seen = new Set<string>();
   for (const { machine } of input.machines.values())
     for (const session of machine?.access?.activeSessions ?? []) {
-      if (seen.has(session.threadId)) continue;
+      // One the Home already cut is no longer using this Mac, only still being written down.
+      if (session.ending || seen.has(session.threadId)) continue;
       seen.add(session.threadId);
       lines.push(`“${session.threadTitle || "A task"}” is using this Mac`);
     }

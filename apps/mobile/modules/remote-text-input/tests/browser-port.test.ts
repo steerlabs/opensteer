@@ -17,7 +17,8 @@ it("uses the shared negotiated target and writes only activated clipboard result
   editing.negotiate("session", 1);
   expect(target.get().negotiated).toBe(true);
   const stop = target.activate(() => undefined);
-  const result = target.send({ kind: "copy" });
+  const contextId = crypto.randomUUID();
+  const result = target.send({ kind: "copy", contextId });
   const command = send.mock.calls[0]?.[0];
   if (command?.type !== "clipboard.copy") throw new Error("No copy operation was sent.");
   const operationId = command.operationId;
@@ -38,7 +39,7 @@ it("uses the shared negotiated target and writes only activated clipboard result
     { type: "text/plain", bytes: new TextEncoder().encode("hi") },
   ]);
   stop();
-  await target.send({ kind: "copy" });
+  await target.send({ kind: "copy", contextId });
   expect(write).toHaveBeenCalledOnce();
 });
 it("uses shared exact legacy projection and reports synchronous admission refusal", async () => {
@@ -56,7 +57,7 @@ it("uses shared exact legacy projection and reports synchronous admission refusa
     keystroke: { action: "down", key: "a", code: "KeyA", text: "a", modifiers: [] },
   });
   expect(send.mock.calls.map(([command]) => command)).toEqual([
-    { type: "clipboard.paste", surfaceId: surface, text: "hello" },
+    { type: "clipboard.paste", surfaceId: surface, text: "hello", contextId: "legacy" },
     {
       type: "input.key",
       surfaceId: surface,

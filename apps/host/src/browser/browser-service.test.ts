@@ -1,3 +1,4 @@
+import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import { RunnerIdSchema, type DeviceId } from "@opensteer/core";
 import { DeviceIdSchema } from "@opensteer/core";
 import { DeviceAccessRefusal } from "../administration/device-access.js";
@@ -501,7 +502,8 @@ describe("BrowserService", () => {
     runtime.sendServer({
       type: "cdp.error",
       requestId: request.requestId,
-      error: { code: "conflict", message: "Could not create page", retryable: false },
+      // A definite refusal: the runtime made no page.
+      error: { code: "conflict", message: "Could not create page", retryable: false, unsent: true },
     });
     await refused;
     expect((await repository.getBrowserSessionForOwner(opened.session.id, ownerId))?.state).toBe(
@@ -517,7 +519,8 @@ describe("BrowserService", () => {
     runtime.sendServer({
       type: "cdp.error",
       requestId: next.requestId,
-      error: { code: "conflict", message: "Could not create page", retryable: false },
+      // A definite refusal: the runtime made no page.
+      error: { code: "conflict", message: "Could not create page", retryable: false, unsent: true },
     });
     await retried;
     expect(runtime.receivedCommands()).toHaveLength(2);
@@ -1607,162 +1610,6 @@ describe("BrowserService", () => {
     );
   });
 
-  it("replaces baseline copy/cut with one native operation and isolates alternating editing copies", async () => {
-    vi.stubEnv("OPENSTEER_BROWSER_DIAGNOSTICS", "1");
-    const diagnostics = vi.spyOn(console, "info").mockImplementation(() => {});
-    const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
-      editing: true,
-      targetedStreaming: true,
-    });
-    const ownerId = createId("user");
-    const service = freshService({
-      keys,
-      runtime,
-      editing: true,
-      repository: new MemoryBrowserRepository(ownerId),
-    });
-    const opened = await service.openAgentSession({
-      agentBindingId: "legacy-copy",
-      ownerId,
-
-      fresh: true,
-    });
-    const old = new RecordingPeer("legacy-copy"),
-      modern = new RecordingPeer("editing-copy"),
-      watch = new RecordingPeer("watch-copy");
-    const baseline = await service.attach(ownerId, opened.session.id, old, consumerOptions());
-    const editing = await service.attach(ownerId, opened.session.id, modern, {
-      ...consumerOptions(),
-      editing: 1,
-    });
-    const watching = await service.attach(ownerId, opened.session.id, watch, {
-      ...consumerOptions(),
-      mode: "watch",
-      editing: 1,
-    });
-    const send = (attachment: typeof baseline, message: object) =>
-      attachment.handle(Buffer.from(JSON.stringify(message)), false);
-    await send(baseline, { type: "stream.subscribe", surfaceId: "page-1" });
-    expect(await runtime.nextCommand()).toMatchObject({
-      type: "stream.subscribe",
-      surfaceId: "page-1",
-    });
-    await send(editing, { type: "stream.subscribe", surfaceId: "page-1" });
-    for (const [index, operation] of ["copy", "cut", "copy"].entries()) {
-      const text = `native-${index}`;
-      let command: Record<string, unknown>;
-      if (index === 1) {
-        await send(editing, {
-          type: `clipboard.${operation}`,
-          surfaceId: "page-1",
-          operationId: randomUUID(),
-        });
-        command = await runtime.nextCommand();
-      } else {
-        await send(baseline, {
-          type: "input.key",
-          surfaceId: "page-1",
-          action: "down",
-          code: "KeyC",
-          key: "c",
-          modifiers: ["meta"],
-        });
-        command = await runtime.nextCommand();
-        expect(command.type).toBe("clipboard.copy");
-        await send(baseline, {
-          type: "input.key",
-          surfaceId: "page-1",
-          action: "up",
-          code: "KeyC",
-          key: "c",
-          modifiers: ["meta"],
-        });
-      }
-      await send(baseline, { type: "navigation.reload", surfaceId: "page-1" });
-      expect(await runtime.nextCommand()).toMatchObject({ type: "navigation.reload" });
-      runtime.sendServer({
-        type: "clipboard.result",
-        surfaceId: "page-1",
-        operationId: command.operationId,
-        consumerToken: command.consumerToken,
-        outcome: operation === "cut" ? "cut" : "copied",
-        items: [{ type: "text/plain", size: Buffer.byteLength(text) }],
-      });
-      runtime.sendServer({
-        type: "clipboard.part",
-        consumerToken: command.consumerToken,
-        part: {
-          operationId: command.operationId,
-          index: 0,
-          data: Buffer.from(text).toString("base64"),
-        },
-      });
-      if (index === 1) await waitFor(() => modern.text().some((m) => m.type === "clipboard.part"));
-      else
-        await waitFor(() =>
-          old.text().some((m) => m.type === "clipboard.data" && "text" in m && m.text === text),
-        );
-    }
-    await send(baseline, {
-      type: "input.key",
-      surfaceId: "page-1",
-      action: "down",
-      code: "KeyX",
-      key: "x",
-      modifiers: ["control"],
-    });
-    expect(await runtime.nextCommand()).toMatchObject({ type: "clipboard.cut" });
-    await send(baseline, {
-      type: "input.key",
-      surfaceId: "page-1",
-      action: "up",
-      code: "KeyX",
-      key: "x",
-      modifiers: [],
-    });
-    await send(baseline, {
-      type: "input.key",
-      surfaceId: "page-1",
-      action: "down",
-      code: "KeyA",
-      key: "a",
-      modifiers: [],
-    });
-    expect(await runtime.nextCommand()).toMatchObject({ type: "input.key", key: "a" });
-    await send(baseline, { type: "clipboard.paste", surfaceId: "page-1", text: "a" });
-    expect(await runtime.nextCommand()).toMatchObject({ type: "clipboard.paste", text: "a" });
-    expect(
-      old
-        .text()
-        .filter((m) => m.type === "clipboard.data")
-        .map((m) => ("text" in m ? m.text : undefined)),
-    ).toEqual(["native-0", "native-2"]);
-    expect(old.text().some((m) => ["clipboard.result", "clipboard.part"].includes(m.type))).toBe(
-      false,
-    );
-    expect(modern.text().some((m) => m.type === "clipboard.data")).toBe(false);
-    expect(watch.text().some((m) => m.type.startsWith("clipboard."))).toBe(false);
-    const counters = JSON.stringify(diagnostics.mock.calls);
-    expect(counters).toContain("clipboard.copied");
-    expect(counters).not.toContain("native-0");
-    const evidence = `${editingEvidenceRoot}/legacy-copy`;
-    await mkdir(evidence, { recursive: true });
-    console.info(`Browser service editing evidence: ${evidence}`);
-    await writeFile(
-      `${evidence}/report.json`,
-      JSON.stringify(
-        { passed: true, baseline: old.text(), editing: modern.text(), watch: watch.text() },
-        null,
-        2,
-      ),
-    );
-    baseline.close();
-    editing.close();
-    watching.close();
-    diagnostics.mockRestore();
-  });
-
   it.each([
     [undefined, undefined, [undefined, undefined, undefined]],
     [1, true, [undefined, 1, 1]],
@@ -1855,7 +1702,12 @@ describe("BrowserService", () => {
               false,
             );
           if (mode === "control") {
-            const command = { type: "input.command", surfaceId: "page-1", command: "selectAll" };
+            const command = {
+              type: "input.command",
+              surfaceId: "page-1",
+              command: "selectAll",
+              contextId: crypto.randomUUID(),
+            };
             if (expected) {
               await attachment.handle(Buffer.from(JSON.stringify(command)), false);
               expect(await nextInput()).toMatchObject(command);
@@ -1894,6 +1746,7 @@ describe("BrowserService", () => {
                       type: "clipboard.copy",
                       surfaceId: "page-1",
                       operationId: randomUUID(),
+                      contextId: randomUUID(),
                     }),
                   ),
                   false,
@@ -2278,6 +2131,7 @@ describe("BrowserService", () => {
       surfaceId: "page-1",
       operationId,
       items: [{ type: "text/plain", size: 1 }],
+      contextId: randomUUID(),
     });
     const paste = await runtime.nextCommand();
     await send({ type: "clipboard.part", part: { operationId, index: 0, data: "!" } });
@@ -6427,6 +6281,13 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     return this.#sessions.get(sessionId);
   }
 
+  async closeUnpooledBrowserSession(input: {
+    readonly from?: readonly HostedBrowserSessionState[];
+    readonly sessionId: BrowserSessionId;
+  }) {
+    return this.transitionBrowserSession({ ...input, state: "closed" });
+  }
+
   async transitionBrowserSession(input: {
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
@@ -7789,7 +7650,7 @@ it("batches additive person-use marks once per runtime connection and replays on
       sharedControl: true,
       connectTimeoutMs: 1000,
       passkeys: false,
-      onState: async () => ({}),
+      onState: async (state: string) => ({ state }),
       onTerminal: () => undefined,
       onTabsChanged: () => undefined,
       onRecordsChanged: () => undefined,
@@ -8073,7 +7934,12 @@ it("admits paged listing and exact resume only inside an agent's own session", a
   runtime.sendServer({
     type: "cdp.error",
     requestId: asked.requestId,
-    error: { code: "not_found", message: "The browser tab closed.", retryable: false },
+    error: {
+      code: "not_found",
+      message: "The browser tab closed.",
+      retryable: false,
+      unsent: true,
+    },
   });
   await expect(outside).rejects.toMatchObject({ code: "not_found" });
   await expect(cdp.request({ method: "Opensteer.openTab", parameters: {} })).rejects.toMatchObject({
@@ -9170,6 +9036,87 @@ it("a reopening whose last read fails for another reason keeps the open tab and 
   expect(sentFor(browserHostMethods.fenceTab)).toBe(false);
   expect(sentFor(browserHostMethods.closeTab)).toBe(false);
 });
+
+/*
+ * A7: an agent's command answered by an error. Only one the runtime says came before the command
+ * reached the page (`unsent`) is a refusal; one that does not say may have come after its effect,
+ * and its outcome is unknown: never failed, never retried by the Home.
+ */
+it.each([
+  ["after", undefined],
+  ["before", true],
+] as const)(
+  "tells an agent's command apart by whether its error came %s it reached the page (A7)",
+  async (when, unsent) => {
+    const keys = generateKeyPairSync("ed25519"),
+      runtime = await startFakeRuntime(keys.publicKey, "host-primary", { cdpReplyBudget: true }),
+      ownerId = createId("user"),
+      repository = new MemoryBrowserRepository(ownerId),
+      memory = memoryTabs(),
+      service = freshService({
+        keys,
+        runtime,
+        repository,
+        tabs: memory.store,
+        surfaceState: true,
+        tabRestoreVersion: true,
+      });
+    const descriptor = await service.pageTabs.open(
+      { kind: "person", ownerId },
+      { kind: "page", guest: true, url: "about:blank" },
+      `bind-${when}`,
+    );
+    await memory.add(descriptor);
+    const row = memory.rows.get(descriptor.id)!;
+    const binding = service.pageTabs.bindBrowserScript!(
+      {
+        authority: { ownerId, agentBindingId: `run:bind-${when}` },
+        threadId: createId("thread"),
+        signal: new AbortController().signal,
+      } as never,
+      row,
+    );
+    void binding.catch(() => undefined);
+    const resume = await vi.waitFor(() => {
+      const sent = runtime
+        .receivedCommands()
+        .findLast(
+          (m) =>
+            m.type === "cdp.command" &&
+            (m.command as { method?: string }).method === "Opensteer.resumeTab",
+        );
+      expect(sent).toBeDefined();
+      return sent!;
+    });
+    expect(resume.replyBudget).toBeDefined();
+    runtime.sendServer({
+      type: "cdp.error",
+      requestId: resume.requestId,
+      error:
+        unsent === true
+          ? {
+              code: "conflict",
+              message: "This tab is awake, but its page is still loading. Try again shortly.",
+              retryable: true,
+              unsent: true,
+            }
+          : {
+              code: "bad_message",
+              message: "Browser result exceeds its byte or nesting limit.",
+              reason: "browser-reply-limit",
+              retryable: false,
+            },
+    });
+    if (unsent === true) {
+      const refused = await binding.then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(refused).toBeInstanceOf(OpensteerError);
+      expect(refused).not.toBeInstanceOf(OperationOutcomeUnknown);
+    } else await expect(binding).rejects.toBeInstanceOf(OperationOutcomeUnknown);
+  },
+);
 
 function memoryTabs() {
   const rows = new Map<string, TabRecord>();
@@ -10522,5 +10469,190 @@ describe("work under a connection's authority never uses the clipboard or change
       second.session.id,
     ]);
     cdpFirst.close();
+  });
+
+  it("never deadlocks when attachCdpForAgent or agent start races #holdForAgent on the same profile (PH1)", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Shared Profile" });
+
+    let pauseNextAccess = false;
+    let enteredAccess = Promise.withResolvers<void>();
+    let releaseAccess = Promise.withResolvers<void>();
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      requireAgentAccess: async () => {
+        if (pauseNextAccess) {
+          pauseNextAccess = false;
+          enteredAccess.resolve();
+          await releaseAccess.promise;
+        }
+      },
+    });
+    const person = await service.start({ ownerId, profileId: profile.id });
+
+    // Sequence 1: attachCdpForAgent (Call A) pauses inside admission while openAgentSession (Call B)
+    // reaches #holdForAgent on the same profile P. Both must acquire profile lane before runner lane.
+    pauseNextAccess = true;
+    const callA = service.attachCdpForAgent(
+      { ownerId, sessionId: person.session.id, agentBindingId: "ph1-binding-a" },
+      () => undefined,
+    );
+    await withTimeout(enteredAccess.promise, 1000, {
+      timeoutError: () => new Error("Call A never reached admission"),
+    });
+    const callB = service.openAgentSession({
+      ownerId,
+      sessionId: person.session.id,
+      agentBindingId: "ph1-binding-b",
+    });
+    // Let Call B advance through its pre-hold checks and contend on the lanes.
+    for (let i = 0; i < 5; i++) await new Promise<void>((r) => setImmediate(r));
+    releaseAccess.resolve();
+    const [attachmentA, sessionB] = await withTimeout(Promise.all([callA, callB]), 1500, {
+      timeoutError: () =>
+        new Error("PH1 deadlock: attachCdpForAgent and #holdForAgent inverted lanes"),
+    });
+    expect(sessionB.session.id).toBe(person.session.id);
+    attachmentA.close();
+
+    // Sequence 2: an agent browser start on profile P pauses inside admission while #holdForAgent
+    // runs for an existing session on profile P. Both must complete without deadlock.
+    enteredAccess = Promise.withResolvers<void>();
+    releaseAccess = Promise.withResolvers<void>();
+    pauseNextAccess = true;
+    const startingC = service.openAgentSession({
+      ownerId,
+      profileId: profile.id,
+      agentBindingId: "ph1-binding-c",
+    });
+    await withTimeout(enteredAccess.promise, 1000, {
+      timeoutError: () => new Error("Agent start never reached admission"),
+    });
+    const holdingD = service.openAgentSession({
+      ownerId,
+      sessionId: person.session.id,
+      agentBindingId: "ph1-binding-d",
+    });
+    for (let i = 0; i < 5; i++) await new Promise<void>((r) => setImmediate(r));
+    releaseAccess.resolve();
+    const [resC, resD] = await withTimeout(
+      Promise.all([startingC.catch((e: unknown) => e), holdingD]),
+      1500,
+      {
+        timeoutError: () => new Error("PH1 deadlock: agent start and #holdForAgent inverted lanes"),
+      },
+    );
+    expect(resD.session.id).toBe(person.session.id);
+    expect(resC).toBeDefined();
+
+    // Dynamic lock-order check: acquiring a profile lane from inside withRunnerAdmission throws immediately.
+    const personRecord = (await repository.getBrowserSessionForOwner(person.session.id, ownerId))!;
+    await expect(
+      service.withRunnerAdmission(personRecord.runnerId, () =>
+        service.openAgentSession({
+          ownerId,
+          sessionId: person.session.id,
+          agentBindingId: "ph1-binding-nested",
+        }),
+      ),
+    ).rejects.toThrow("BrowserService lock-order violation");
+  });
+
+  it("refuses to treat an undefined or stateless onState result as confirmed ready (PH5)", async () => {
+    const sent: Array<{ type: string }> = [];
+    const socket = Object.assign(new EventEmitter(), {
+      readyState: 1,
+      send: (data: string, _options: unknown, callback: (error?: Error) => void) => {
+        sent.push(JSON.parse(data));
+        callback();
+      },
+      close: () => socket.emit("close", 1000, Buffer.from("closed")),
+    });
+    const sessionId = createBrowserSessionId();
+    let onStateCalled = 0;
+    const broker = new HostedBrowserBroker({
+      socket,
+      sessionId,
+      groupId: sessionId,
+      readSessionState: async () => ({ runs: 0, pinned: [] }),
+      personUse: { tabs: new Set(), persist: async () => undefined },
+      savedTabIds: [],
+      profileId: null,
+      surfaceState: 1,
+      sharedControl: true,
+      connectTimeoutMs: 1000,
+      passkeys: false,
+      onState: async () => {
+        onStateCalled++;
+        return {};
+      },
+      onTerminal: () => undefined,
+      onTabsChanged: () => undefined,
+      onRecordsChanged: () => undefined,
+      onPageChanged: () => undefined,
+    } as unknown as ConstructorParameters<typeof HostedBrowserBroker>[0]);
+    cleanups.push(async () => {
+      socket.emit("close", 1000, Buffer.from("closed"));
+    });
+    const emit = (message: unknown) =>
+      socket.emit("message", Buffer.from(JSON.stringify(message)), false);
+    const tabId = BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
+    emit({
+      type: "browser.snapshot",
+      sessionId,
+      access: "read-write",
+      state: "ready",
+      dialog: null,
+      surfaceState: 1,
+      targetedStreamingVersion: 1,
+    });
+    const rows = new Map([
+      [
+        tabId,
+        BrowserTabRecordSchema.parse({
+          id: tabId,
+          order: 0,
+          title: "Tab",
+          url: "about:blank",
+          state: "live",
+          icon: null,
+          openerId: null,
+          documentId: "doc",
+          geometryRevision: 1,
+          loading: false,
+          navigationFailed: false,
+          canGoBack: false,
+          canGoForward: false,
+          sizedByAgent: false,
+        }),
+      ],
+    ]);
+    const publisher = new KeyedStreamPublisher({
+      ids: () => rows.keys(),
+      read: (id) => rows.get(BrowserSurfaceIdSchema.parse(id)),
+      meta: () => ({ activeId: tabId, inventoryRevision: 1 }),
+      targetBytes: 64 * 1024,
+      envelopeBytes: 256,
+    });
+    for (let stream = publisher.next(); stream; stream = publisher.next()) {
+      emit({ type: "browser.tabs", stream });
+      publisher.settled(stream, true);
+    }
+    let resolved = false;
+    void broker.ready().then(
+      () => {
+        resolved = true;
+      },
+      () => undefined,
+    );
+    await vi.waitFor(() => expect(onStateCalled).toBe(1), { timeout: 1000 });
+    for (let i = 0; i < 5; i++) await new Promise<void>((r) => setImmediate(r));
+    expect(resolved).toBe(false);
+    expect(sent.filter((message) => message.type === "session.state")).toEqual([]);
   });
 });

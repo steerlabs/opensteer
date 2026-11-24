@@ -1155,4 +1155,39 @@ describe("the state after each event", () => {
       why: "its capture is let go",
     });
   });
+
+  it("sets whileLoading only on no-picture give-ups, not misfit or pre-send start failures (U5)", () => {
+    const loading = facts({}, { loading: true });
+    const key = keyOf(loading);
+    const running: TabCastState = {
+      ...initialTabCastState(),
+      lastKey: key,
+      told: { key, state: "running" },
+      unpictured: 3,
+    };
+    expect(
+      after(running, { givenUp: "no picture arrived", kind: "stopped", retry: false }, loading)
+        .failed?.whileLoading,
+    ).toBe(true);
+    expect(
+      after(
+        running,
+        {
+          givenUp: "its frames do not fit the region it is cast for",
+          kind: "stopped",
+          retry: false,
+        },
+        loading,
+      ).failed?.whileLoading,
+    ).toBeUndefined();
+    const preparing: TabCastState = {
+      ...initialTabCastState(),
+      lastKey: key,
+      told: { state: "preparing" },
+      unpictured: 3,
+    };
+    expect(
+      after(preparing, { kind: "start-failed", why: "boom" }, loading).failed?.whileLoading,
+    ).toBeUndefined();
+  });
 });

@@ -27,7 +27,9 @@ import type { DisplayUnavailableReason } from "./computer-watch-status.js";
 
 /** The contract's bound on one input batch (`DisplayInputEventsSchema`). */
 export const maxDisplayInputEvents = 64;
-const maxInputBytes = 256 * 1_024;
+export const maxDisplayInputBytes = 256 * 1_024;
+/** Thrown before sending when a single event or atomic batch exceeds the wire size bound (A4). */
+export class DisplayInputTooLargeError extends Error {}
 /** Viewer JSON is a state or editing line; anything near this is not one. */
 const maxServerTextCharacters = 256 * 1_024;
 const retryBaseMs = 300;
@@ -119,6 +121,7 @@ export interface DisplayLease {
     geometry: number,
     events: readonly DisplayInputEvent[],
     onSequence?: (sequence: number) => void,
+    options?: { readonly atomic?: boolean },
   ): boolean;
   /**
    * The decoder lost its state: asks the Host for a decodable start, and
@@ -443,9 +446,9 @@ export class DisplayStreams {
         if (!released && (current.holder === null || current.holder === lease))
           this.#resetInput(current);
       },
-      input: (geometry, events, onSequence) => {
+      input: (geometry, events, onSequence, options) => {
         if (released || (current.holder !== null && current.holder !== lease)) return false;
-        const sent = this.#input(current, geometry, events, onSequence);
+        const sent = this.#input(current, geometry, events, onSequence, options);
         if (!sent) return false;
         for (const event of events) trackHeldDisplayInput(current.held, event);
         current.holder = current.held.size > 0 ? lease : null;
@@ -828,6 +831,7 @@ export class DisplayStreams {
     geometry: number,
     events: readonly DisplayInputEvent[],
     onSequence?: (sequence: number) => void,
+    options?: { readonly atomic?: boolean },
   ): boolean {
     const connection = entry.connection;
     if (
@@ -878,16 +882,21 @@ export class DisplayStreams {
       const candidate = [...batch, event];
       if (
         candidate.length > maxDisplayInputEvents ||
-        new TextEncoder().encode(serialize(candidate)).byteLength > maxInputBytes
+        new TextEncoder().encode(serialize(candidate)).byteLength > maxDisplayInputBytes
       ) {
-        if (batch.length === 0) throw new Error("Display input event exceeds its byte limit.");
+        if (options?.atomic)
+          throw new DisplayInputTooLargeError(
+            "Dependent display input batch exceeds its single-batch limit.",
+          );
+        if (batch.length === 0)
+          throw new DisplayInputTooLargeError("Display input event exceeds its byte limit.");
         batches.push(serialize(batch));
         batch = [event];
       } else batch = candidate;
     }
     const last = serialize(batch);
-    if (new TextEncoder().encode(last).byteLength > maxInputBytes)
-      throw new Error("Display input event exceeds its byte limit.");
+    if (new TextEncoder().encode(last).byteLength > maxDisplayInputBytes)
+      throw new DisplayInputTooLargeError("Display input event exceeds its byte limit.");
     batches.push(last);
     const first = entry.inputSequence;
     entry.inputSequence += batches.length;

@@ -78,6 +78,7 @@ export { assignmentSummaryInTransaction } from "./assignment-store.js";
 export {
   personalDeploymentOwner,
   personalShellSessionState,
+  type ShellConnectionWitness,
   type ShellStopIdempotency,
 } from "./machine-store.js";
 
@@ -88,6 +89,7 @@ export {
 } from "./browser-home-store.js";
 export { readHarnessCatalogModelPage } from "./harness-store.js";
 export * from "./request-agent-response.js";
+export { earlierBootProvenContained, type ThreadUnconfirmedStop } from "./execution-recovery.js";
 export { deliverTaskQuestionNotice, cancelSettledTaskQuestionNotice } from "./thread-inbox.js";
 
 export * from "./private-resource-store.js";

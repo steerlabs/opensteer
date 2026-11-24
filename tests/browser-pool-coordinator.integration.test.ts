@@ -12,10 +12,12 @@ import type {
 } from "../apps/host/src/browser/browser-pool-controller.js";
 import {
   createPoolController,
+  AgentPoolController,
   poolControllerKind,
 } from "./browser-pool-controller-under-test.test-support.js";
 import { type BrowserPoolControl } from "../packages/browser-runtime-core/src/browser-pool.js";
 import { BrowserRuntime } from "../packages/browser-runtime-core/src/runtime.js";
+import { BrowserPoolAgentSlotDeleted } from "../packages/browser-runtime-core/src/browser-pool-agent-wire.js";
 import {
   FakeContext,
   FakeLaunchedBrowser,
@@ -144,8 +146,8 @@ async function poolFixture(
     live: (id) => sinks.has(id),
     // As the Home's: the ready sessions of the runtime with no channel here.
     pagesOf: async (id) => (id === sessionId ? [...surfaces] : []),
-    withoutChannel: async (runtimeId) => {
-      const found = (await listBrowserPoolReadySessions(database, task.runnerId, runtimeId)).filter(
+    withoutChannel: async (target) => {
+      const found = (await listBrowserPoolReadySessions(database, target)).filter(
         (id) => !sinks.has(id),
       );
       await scanning?.();
@@ -213,6 +215,7 @@ async function poolFixture(
         crash
           ? crash.pass(`runtime:${control.kind}`, () => runtime.controlPool(control, signature))
           : runtime.controlPool(control, signature),
+      endSession: (ticket) => runtime.endPoolSession(ticket),
     };
     const port: BrowserPoolPhysicalController = crash
       ? {
@@ -569,6 +572,474 @@ it("keeps a channel lost again while its attach is being finished as a new loss,
   }
 });
 
+it("waits out the reconnect step's backoff when the channel it brought back drops again at once", async () => {
+  const f = await poolFixture("lost-spin", { adoptionWindowMs: 60_000 });
+  try {
+    const home = f.home(undefined, f.controller, { channelDeadlineMs: 60_000, retryMs: 300 });
+    await home.recover();
+    await f.openSession(home);
+    const attempts: number[] = [];
+    f.onReattached(async (sessions) => {
+      attempts.push(Date.now());
+      const id = sessions[0]!;
+      // Every fresh channel closes as soon as it is up: lost again, during the step.
+      await f.sinks.get(id)?.close(false, false, true);
+      f.sinks.delete(id);
+      home.channelLost(id);
+    });
+    await f.loseChannel();
+    home.channelLost(f.sessionId);
+    await vi.waitFor(() => expect(attempts.length).toBeGreaterThanOrEqual(4), { timeout: 15_000 });
+    // Each new attempt waits its backoff: never dialled in a loop.
+    for (let index = 1; index < 4; index++)
+      expect(attempts[index]! - attempts[index - 1]!).toBeGreaterThanOrEqual(250);
+  } finally {
+    await f.close();
+  }
+});
+
+it("takes a stored, signed fenced answer as final: nothing more is sent, and callers are refused at once", async () => {
+  const f = await poolFixture("over-fenced");
+  try {
+    let fenced = false;
+    const physical: BrowserPoolPhysicalController = {
+      status: (slot, term) => f.controller.status(slot, term),
+      result: (slot, term, id) => f.controller.result(slot, term, id),
+      // Another term owns the slot now: the controller answers a start, stored, as fenced.
+      apply: async (call) =>
+        fenced && call.kind === "start"
+          ? {
+              id: call.id,
+              applied: false,
+              reason: "fenced",
+              status: await f.controller.status(call.slotId, call.term),
+            }
+          : f.controller.apply(call),
+    };
+    const home = f.home(undefined, physical);
+    await home.recover();
+    fenced = true;
+    await expect(
+      withTimeout(home.restart({ key: "fenced" }), 10_000, {
+        timeoutError: () => new Error("The restart is still asking a fenced target."),
+      }),
+    ).rejects.toThrow("not ready");
+    const effects = [...f.controller.effects];
+    const asked = Date.now();
+    await expect(home.gate.reserve(AbortSignal.timeout(15_000))).rejects.toThrow("not ready");
+    expect(Date.now() - asked).toBeLessThan(2_000);
+    expect(home.report()).toMatchObject({ refused: "fenced" });
+    expect(f.controller.effects).toEqual(effects);
+  } finally {
+    await f.close();
+  }
+});
+
+it("waits longer after each failure in a row, retryMs or not", async () => {
+  const f = await poolFixture("growing-backoff");
+  try {
+    const first = f.home();
+    await first.recover();
+    first.close();
+    // The runtime's state cannot be read for a while: each recovery attempt fails.
+    const tries: number[] = [];
+    const next = f.home(undefined, f.controller, {
+      retryMs: 20,
+      runtime: {
+        poolState: async () => {
+          tries.push(Date.now());
+          if (tries.length <= 5) throw new Error("The runtime's state could not be read.");
+          return f.runtime.poolState() ?? null;
+        },
+        controlPool: (control, signature) => f.runtime.controlPool(control, signature),
+        endSession: (ticket) => f.runtime.endPoolSession(ticket),
+      },
+    });
+    await next.recover();
+    const waits = tries.slice(1).map((at, index) => at - tries[index]!);
+    expect(waits.length).toBeGreaterThanOrEqual(5);
+    // 20 ms doubling: the fifth wait is far longer than the first.
+    expect(waits[4]!).toBeGreaterThan(waits[0]! * 4);
+  } finally {
+    await f.close();
+  }
+});
+
+it("keeps a parked browser whose wake the host refused for a down egress proxy, counts no failed start, starts nothing at once, and wakes it later", async () => {
+  const f = await poolFixture("proxy-refused");
+  try {
+    // Against the real agent the host itself refuses (it pulls egress, and the slot's proxy
+    // fails its check); against the fake, the refusal is the signed answer's shape.
+    const agent = poolControllerKind() === "agent";
+    let refusing = false;
+    const calls: string[] = [];
+    const physical: BrowserPoolPhysicalController = {
+      status: (slot, term) => f.controller.status(slot, term),
+      result: (slot, term, id) => f.controller.result(slot, term, id),
+      apply: async (call) => {
+        if (call.kind !== "sign") calls.push(call.kind);
+        // The host's proxy did not serve within its bound: the resume left nothing running.
+        return !agent && refusing && call.kind === "resume"
+          ? {
+              id: call.id,
+              applied: false,
+              reason: "egress-proxy-down",
+              status: await f.controller.status(call.slotId, call.term),
+            }
+          : f.controller.apply(call);
+      },
+    };
+    // A refusal is asked again only after a long while here: whatever is sent at once shows.
+    const home = f.home(undefined, physical, { refusedRetryMs: 60_000 });
+    await home.recover();
+    expect(await home.tryPark()).toBe("parked");
+    refusing = true;
+    f.controller.refuseProxy?.(true);
+    const waiting = home.gate.reserve(AbortSignal.timeout(30_000));
+    await vi.waitFor(() => expect(home.report()).toMatchObject({ refused: "egress-proxy-down" }));
+    // Nothing given up at once: no start after the refused resume (today's agent loses the saved
+    // state with its refusal; a fresh guest into the same refusal would be futile), and no
+    // failed start counted. Still parked.
+    expect(calls).toEqual(["start", "pause", "resume"]);
+    expect(await f.slot()).toMatchObject({ phase: "parked", failedStarts: 0 });
+    refusing = false;
+    f.controller.refuseProxy?.(false);
+    // Asked again (here by a second waiter), it wakes: from its saved state when the host kept
+    // it, or as a fresh guest when the host's refusal took the state with it.
+    (await home.gate.reserve(AbortSignal.timeout(30_000))).release();
+    (await waiting).release();
+    expect(await f.slot()).toMatchObject({ phase: "running", failedStarts: 0 });
+    if (!agent) expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
+  } finally {
+    await f.close();
+  }
+});
+
+it("shows a running browser recovering against a host that does not answer as waking from the first unanswered call, never as running", async () => {
+  const f = await poolFixture("recover-unreachable");
+  try {
+    const first = f.home();
+    await first.recover();
+    first.close();
+    // A Home restart while the host does not answer: every call goes unanswered.
+    const unreachable: BrowserPoolPhysicalController = {
+      status: async () => {
+        throw new TypeError("fetch failed");
+      },
+      result: async () => {
+        throw new TypeError("fetch failed");
+      },
+      apply: async () => {
+        throw new TypeError("fetch failed");
+      },
+    };
+    const next = f.home(undefined, unreachable, { unreachableAfterMs: 60 * 60_000 });
+    void next.recover();
+    // Long before the report would say unreachable, it says the browser is not ready.
+    await vi.waitFor(() => expect(next.report()).toMatchObject({ phase: "waking" }));
+    expect(next.report()?.unreachable).toBeUndefined();
+    expect(next.gate.admits).toBe(false);
+    next.close();
+  } finally {
+    await f.close();
+  }
+});
+
+it("recovers a running guest its host stopped on its own, at the next status read, and starts it again", async () => {
+  const f = await poolFixture("host-stopped");
+  try {
+    const home = f.home(undefined, f.controller, { statusEveryMs: 50 });
+    await home.recover();
+    await f.openSession(home);
+    // The host stops the guest by itself (a Home silent for long, say): nothing of this Home's
+    // asked for it, and no channel of it was lost here.
+    f.controller.observe({ phase: "stopped", savedState: null });
+    await vi.waitFor(() => expect(f.controller.effects).toEqual(["start", "start"]), {
+      timeout: 10_000,
+    });
+    // The session ended with the guest, with its note; a cold start is no failed start.
+    await vi.waitFor(async () => expect((await f.row())?.state).toBe("failed"));
+    expect(await f.slot()).toMatchObject({ phase: "running", failedStarts: 0 });
+  } finally {
+    await f.close();
+  }
+});
+
+it("counts no failed start for a fresh start into a target that is over, and ends there", async () => {
+  const f = await poolFixture("over-start");
+  try {
+    let over = false;
+    const physical: BrowserPoolPhysicalController = {
+      status: (slot, term) => f.controller.status(slot, term),
+      result: (slot, term, id) => f.controller.result(slot, term, id),
+      // The host answers, signed, that the slot is gone: the start goes nowhere.
+      apply: async (call) => {
+        if (over && call.kind === "start")
+          throw new BrowserPoolAgentSlotDeleted("The slot was deleted.");
+        return f.controller.apply(call);
+      },
+    };
+    const discards: string[] = [];
+    const home = f.home(undefined, physical, {
+      statusEveryMs: 50,
+      onDiscard: (reason) => discards.push(reason),
+    });
+    await home.recover();
+    // The guest is gone (the host stopped it): recovery's fresh start meets the deleted slot.
+    over = true;
+    f.controller.observe({ phase: "stopped", savedState: null });
+    await vi.waitFor(() => expect(discards.length).toBeGreaterThan(0), { timeout: 10_000 });
+    await vi.waitFor(() => expect(home.gate.phase).toBe("unavailable"));
+    // Over is no failed start: the browser did not fail to come up, its target is gone.
+    expect(await f.slot()).toMatchObject({ failedStarts: 0 });
+  } finally {
+    await f.close();
+  }
+});
+
+// Against the real agent only: the host's own resume, after it consumed the right to resume.
+it.skipIf(poolControllerKind() === "fake")(
+  "wakes a parked browser whose saved state the host lost after consuming its resume as a cold start, paced, said as expired",
+  async () => {
+    const f = await poolFixture("resume-lost");
+    try {
+      const calls: string[] = [];
+      const physical: BrowserPoolPhysicalController = {
+        status: (slot, term) => f.controller.status(slot, term),
+        result: (slot, term, id) => f.controller.result(slot, term, id),
+        apply: async (call) => {
+          if (call.kind !== "sign") calls.push(call.kind);
+          return f.controller.apply(call);
+        },
+      };
+      const home = f.home(undefined, physical, { refusedRetryMs: 60_000 });
+      await home.recover();
+      await f.openSession(home);
+      expect(await home.tryPark()).toBe("parked");
+      // The host consumes the resume, then its hypervisor fails it: the saved state is gone.
+      (f.controller as AgentPoolController).failNext("resume", new Error("resume failed"));
+      const waiting = home.gate.reserve(AbortSignal.timeout(30_000));
+      await vi.waitFor(() => expect(home.report()?.refused).toBeDefined(), { timeout: 10_000 });
+      // A refusal all the same: no start at once, no failed start, still parked.
+      expect(calls).toEqual(["start", "pause", "resume"]);
+      expect(await f.slot()).toMatchObject({ phase: "parked", failedStarts: 0 });
+      // Asked again, it is a cold start, said as what it is: the live state expired.
+      (await home.gate.reserve(AbortSignal.timeout(30_000))).release();
+      (await waiting).release();
+      expect(calls).toEqual(["start", "pause", "resume", "start"]);
+      expect(await f.slot()).toMatchObject({
+        phase: "running",
+        failedStarts: 0,
+        lastStart: { reason: "expired" },
+      });
+      await vi.waitFor(async () => expect((await f.row())?.state).toBe("failed"));
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+it("keeps a repair decided for one instance off the fresh guest that replaced it (W13)", async () => {
+  const f = await poolFixture("repair-leftover", { freshGuests: true });
+  try {
+    let reads = 0;
+    const physical: BrowserPoolPhysicalController = {
+      status: (slot, term) => {
+        reads++;
+        return f.controller.status(slot, term);
+      },
+      result: (slot, term, id) => f.controller.result(slot, term, id),
+      // A fresh start brings the slot's proxy back, as the host's own start does.
+      apply: async (call) => {
+        const result = await f.controller.apply(call);
+        if (call.kind === "start" && result.applied) f.controller.observe({ proxy: "up" as never });
+        return result;
+      },
+    };
+    const home = f.home(undefined, physical, { statusEveryMs: 50 });
+    await home.recover();
+    // A command in flight holds the guest, so the repair decided for its instance waits.
+    const command = await home.gate.reserve(AbortSignal.timeout(10_000));
+    f.controller.observe({ proxy: "down" });
+    await vi.waitFor(() => expect(home.report()).toMatchObject({ phase: "waking" }));
+    // The person restarts the browser: a fresh guest, whose proxy serves.
+    const restarting = home.restart();
+    command.release();
+    await restarting;
+    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
+    // Read after read, the fresh guest is never parked for the old instance's repair.
+    const before = reads;
+    await vi.waitFor(() => expect(reads).toBeGreaterThan(before + 5));
+    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
+    expect(home.report()).toBeUndefined();
+  } finally {
+    await f.close();
+  }
+});
+
+/** The fixture's controller, counting the host's status reads: the loop's turns, with no clock. */
+function countingStatus(f: Awaited<ReturnType<typeof poolFixture>>) {
+  const counted = { reads: 0 };
+  const physical: BrowserPoolPhysicalController = {
+    status: (slot, term) => {
+      counted.reads++;
+      return f.controller.status(slot, term);
+    },
+    result: (slot, term, id) => f.controller.result(slot, term, id),
+    apply: (call) => f.controller.apply(call),
+  };
+  return { counted, physical };
+}
+
+it("reports a running browser whose egress proxy is down, repairs it once by a park and a wake, and shows it paused if that did not", async () => {
+  const f = await poolFixture("proxy-down");
+  try {
+    const { counted, physical } = countingStatus(f);
+    const home = f.home(undefined, physical, { statusEveryMs: 50 });
+    await home.recover();
+    expect(home.report()).toBeUndefined();
+    // The repair's wake waits here, so the parked guest can be seen: `resuming` says the wake
+    // was asked, an event, not a clock.
+    const resume = Promise.withResolvers<void>();
+    const resuming = Promise.withResolvers<void>();
+    f.controller.hold("resume", () => {
+      resuming.resolve();
+      return resume.promise;
+    });
+    f.controller.observe({ proxy: "down" });
+    // While the repair runs the person is shown it waking, never "paused" first (W10).
+    await vi.waitFor(() => expect(home.report()).toMatchObject({ phase: "waking" }));
+    expect(home.report()?.proxyDown).toBeUndefined();
+    // Nothing holds it: the Home parks it and wakes it again by itself, which is what brings a
+    // proxy back. (It used to park and wait for demand to wake: a person watching would have
+    // been shown a parked browser.)
+    // Parked, its wake held: proxy down is a fact of the running instance, not shown now (W4).
+    await resuming.promise;
+    expect(["parked", "waking"]).toContain((await f.slot())?.phase);
+    expect(home.report()?.proxyDown).toBeUndefined();
+    resume.resolve();
+    await vi.waitFor(() => expect(f.controller.effects).toEqual(["start", "pause", "resume"]));
+    await vi.waitFor(async () => expect((await f.slot())?.phase).toBe("running"));
+    // Down again after that wake (a real agent's wake brings it back once): shown paused, and
+    // the repair is not made again for this instance, read after read.
+    f.controller.observe({ proxy: "down" });
+    await vi.waitFor(() => expect(home.report()).toMatchObject({ proxyDown: true }));
+    const reads = counted.reads;
+    await vi.waitFor(() => expect(counted.reads).toBeGreaterThan(reads + 5));
+    expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
+    expect(await f.slot()).toMatchObject({ phase: "running", failedStarts: 0 });
+    // A park that is not a repair, and its wake, are a fresh chance: still down after them, the
+    // repair is made once more, and once only.
+    expect(await home.tryPark()).toBe("parked");
+    (await home.gate.reserve(AbortSignal.timeout(10_000))).release();
+    f.controller.observe({ proxy: "down" });
+    await vi.waitFor(() =>
+      expect(f.controller.effects).toEqual([
+        "start",
+        "pause",
+        "resume",
+        "pause",
+        "resume",
+        "pause",
+        "resume",
+      ]),
+    );
+    const again = counted.reads;
+    await vi.waitFor(() => expect(counted.reads).toBeGreaterThan(again + 5));
+    expect(f.controller.effects).toHaveLength(7);
+    f.controller.observe({ proxy: "up" as never });
+    await vi.waitFor(() => expect(home.report()).toBeUndefined());
+  } finally {
+    await f.close();
+  }
+});
+
+it("waits for a command in flight before it repairs a guest whose egress proxy is down, and never pauses under it", async () => {
+  const f = await poolFixture("proxy-down-command");
+  try {
+    const { counted, physical } = countingStatus(f);
+    const home = f.home(undefined, physical, { statusEveryMs: 50 });
+    await home.recover();
+    // A command in flight: a reservation taken with demand, ended by its own bound.
+    const command = await home.gate.reserve(AbortSignal.timeout(10_000));
+    f.controller.observe({ proxy: "down" });
+    await vi.waitFor(() => expect(home.report()).toMatchObject({ phase: "waking" }));
+    const reads = counted.reads;
+    await vi.waitFor(() => expect(counted.reads).toBeGreaterThan(reads + 5));
+    // Turn after turn, nothing was paused under it.
+    expect(f.controller.effects).toEqual(["start"]);
+    expect(home.gate.phase).toBe("open");
+    command.release();
+    // Its end lets the repair go, with no read of the status needed first.
+    await vi.waitFor(() => expect(f.controller.effects).toEqual(["start", "pause", "resume"]));
+  } finally {
+    await f.close();
+  }
+});
+
+it("repairs a guest whose egress proxy is down while a person watches it: a viewer's sends wait for the wake", async () => {
+  const f = await poolFixture("proxy-down-viewer");
+  try {
+    const home = f.home(undefined, f.controller, { statusEveryMs: 50 });
+    await home.recover();
+    // A viewer: sends with no demand (its frames' acknowledgements), one after another, each
+    // admitted and released on the next turn of the event loop.
+    const watching = new AbortController();
+    let sent = 0;
+    const viewer = (async () => {
+      while (!watching.signal.aborted) {
+        const send =
+          home.gate.backgroundNow() ??
+          (await home.gate.background(watching.signal).catch(() => undefined));
+        if (!send) return;
+        sent++;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        send.release();
+      }
+    })();
+    f.controller.observe({ proxy: "down" });
+    await vi.waitFor(() => expect(f.controller.effects).toEqual(["start", "pause", "resume"]));
+    // The viewer kept sending across it.
+    const before = sent;
+    await vi.waitFor(() => expect(sent).toBeGreaterThan(before));
+    watching.abort();
+    await viewer;
+  } finally {
+    await f.close();
+  }
+});
+
+it("takes a stored, signed fenced answer to the park's retire as final too", async () => {
+  const f = await poolFixture("over-fenced-retire");
+  try {
+    let fenced = false;
+    const physical: BrowserPoolPhysicalController = {
+      status: (slot, term) => f.controller.status(slot, term),
+      result: (slot, term, id) => f.controller.result(slot, term, id),
+      // Another term owns the slot now: the controller answers the retire's signature as fenced.
+      apply: async (call) =>
+        fenced && call.kind === "sign" && call.control?.kind === "retire"
+          ? {
+              id: call.id,
+              applied: false,
+              reason: "fenced",
+              status: await f.controller.status(call.slotId, call.term),
+            }
+          : f.controller.apply(call),
+    };
+    const home = f.home(undefined, physical);
+    await home.recover();
+    fenced = true;
+    expect(await home.tryPark()).toBe("vetoed");
+    await vi.waitFor(() => expect(home.report()).toMatchObject({ refused: "fenced" }));
+    const asked = Date.now();
+    await expect(home.gate.reserve(AbortSignal.timeout(15_000))).rejects.toThrow("not ready");
+    expect(Date.now() - asked).toBeLessThan(2_000);
+  } finally {
+    await f.close();
+  }
+});
+
 it("stops a guest the controller reports for a removed device that never had a slot row", async () => {
   const f = await poolFixture("removed-no-slot");
   try {
@@ -714,7 +1185,35 @@ describe("with a runtime that cannot always be asked, as a remote one behind a r
   });
 });
 
-it("starts again after an install that never reached the runtime, and installs the next one", async () => {
+it("keeps a restart's hold, and stops nothing, while a holder's outcome could not be written", async () => {
+  const f = await poolFixture("restart-settle-fails");
+  try {
+    const home = f.home(undefined, f.controller, { quiesceMs: 200 });
+    await home.recover();
+    const order: string[] = [];
+    const held = await home.gate.reserve(AbortSignal.timeout(10_000));
+    let attempts = 0;
+    held.onForcedEnd?.(async () => {
+      attempts++;
+      if (attempts === 1) {
+        order.push(`write failed with ${f.controller.effects.join(",")}`);
+        throw new Error("The outcome write failed.");
+      }
+      order.push(`written with ${f.controller.effects.join(",")}`);
+    });
+    await withTimeout(home.restart({ key: "settle-fails" }), 20_000, {
+      timeoutError: () => new Error("The restart never went on after the write."),
+    });
+    // The first write failed: the hold stayed and no Stop came until the outcome was written.
+    expect(order).toEqual(["write failed with start", "written with start"]);
+    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
+    held.release();
+  } finally {
+    await f.close();
+  }
+});
+
+it("sends a restart's applied Start's install again when it never reached the runtime, and starts no other guest", async () => {
   const f = await poolFixture("install-lost");
   try {
     const home = f.home();
@@ -730,7 +1229,9 @@ it("starts again after an install that never reached the runtime, and installs t
       phase: "running",
       fence: { slot: "slot-install-lost", term: 1, instance: status.instance, epoch: 1 },
     });
-    expect(f.controller.effects).toEqual(["start", "stop", "start", "stop", "start"]);
+    // One call id per intent (P1): the applied Start's guest is the restart's, so its install is
+    // sent again; no second stop and start.
+    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
     expect(await f.slot()).toMatchObject({ phase: "running", instanceId: status.instance });
     await f.admitted();
   } finally {
@@ -1253,6 +1754,7 @@ it("recovers a runtime found retiring at a Home restart as not parked", async ()
           return state;
         },
         controlPool: (control, signature) => f.runtime.controlPool(control, signature),
+        endSession: (ticket) => f.runtime.endPoolSession(ticket),
       },
     });
     const recovering = next.recover();
@@ -1670,6 +2172,7 @@ it("aborts a park when a page was ended while its session was suspended", async 
           const state = await f.runtime.controlPool(control, signature);
           return dropAfterRetire && state.phase === "retired" ? { ...state, dropped: 1 } : state;
         },
+        endSession: (ticket) => f.runtime.endPoolSession(ticket),
       },
     });
     await home.recover();
@@ -1734,6 +2237,7 @@ it("discards a running slot whose recovery keeps failing, and never opens it unc
           return f.runtime.poolState() ?? null;
         },
         controlPool: (control, signature) => f.runtime.controlPool(control, signature),
+        endSession: (ticket) => f.runtime.endPoolSession(ticket),
       },
     });
     await withTimeout(next.recover(), 10_000, {
@@ -2068,6 +2572,7 @@ it("ends a recovery that keeps failing at start in a discard and an open gate", 
           control.kind === "release"
             ? Promise.reject(new Error("The release never applies."))
             : f.runtime.controlPool(control, signature),
+        endSession: (ticket) => f.runtime.endPoolSession(ticket),
       },
     });
     await next.recover();
@@ -2081,47 +2586,60 @@ it("ends a recovery that keeps failing at start in a discard and an open gate", 
   }
 });
 
-it("reports a lost session whose end could not be confirmed, and keeps the other session usable", async () => {
-  const f = await poolFixture("end-unconfirmed");
+it("never serves from a guest whose lost session's pages could not be confirmed closed, and replaces it", async () => {
+  // Each start is a fresh guest with an empty runtime, as against the agent: the guest that
+  // replaces this one holds none of its stuck pages.
+  const f = await poolFixture("end-unconfirmed", { freshGuests: true });
   try {
-    const home = f.home();
+    const discards: string[] = [];
+    const home = f.home(undefined, f.controller, {
+      onDiscard: (reason) => discards.push(reason),
+    });
     await home.recover();
     await f.openSession(home);
     const other = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
     await f.openSession(home, other);
     expect(await home.tryPark()).toBe("parked");
-    // The first session is not reattached, and ending it fails; the second is reattached.
+    // The first session is not reattached, and its page will not close: every close is taken
+    // and none happens (the strongest close the runtime has fails too).
     f.skip.add(f.sessionId);
-    (f.runtime as unknown as { endPooledSession: () => Promise<void> }).endPooledSession =
-      async () => {
-        throw new Error("The page close could not be confirmed.");
-      };
-    const woken = await home.gate.reserve(AbortSignal.timeout(10_000));
-    woken.release();
-    expect(f.runtime.poolState()).toMatchObject({
-      phase: "running",
-      adoption: {
-        outcome: {
-          adopted: [other],
-          lost: [{ sessionId: f.sessionId, reason: "not-reattached; end-unconfirmed" }],
-        },
-      },
+    const close = FakePage.prototype.close;
+    const stuck = vi.spyOn(FakePage.prototype, "close").mockImplementation(async function (
+      this: FakePage,
+    ) {
+      // Until the guest is given up for a fresh one (the loopback guest stands for the next one
+      // too, and a fresh guest holds no stuck page).
+      if (discards.length) return close.call(this);
+      this.closeCount += 1;
     });
-    // No blanket discard: the controller saw no fresh start, and the other session works.
-    expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
-    expect(await f.slot()).toMatchObject({ phase: "running", epoch: 2 });
-    expect((await f.row(other))?.state).toBe("ready");
-    await expect(
-      f.sinks.get(other)!.handle(
-        JSON.stringify({
-          type: "session.state",
-          runs: 0,
-          personUsed: [],
-          viewed: [],
-          pinned: [],
-        }),
-      ),
-    ).resolves.toBeUndefined();
+    const phases: string[] = [];
+    const watched = f.runtime;
+    const completes: number[] = [];
+    const control = watched.controlPool.bind(watched);
+    vi.spyOn(watched, "controlPool").mockImplementation((sent, signature) => {
+      if (sent.kind === "complete") completes.push(sent.attempt ?? 0);
+      return control(sent, signature);
+    });
+    const read = watched.poolState.bind(watched);
+    vi.spyOn(watched, "poolState").mockImplementation(() => {
+      const state = read();
+      if (state) phases.push(state.phase);
+      return state;
+    });
+    const woken = await home.gate.reserve(AbortSignal.timeout(30_000));
+    woken.release();
+    stuck.mockRestore();
+    // That guest never served: its adoption failed, and a fresh guest replaced it (V2).
+    expect(phases).not.toContain("running");
+    expect(f.controller.effects.slice(0, 3)).toEqual(["start", "pause", "resume"]);
+    expect(f.controller.effects.slice(3)).toContain("start");
+    // At once, with that reason: the refusal reached the loop (W3), after one adoption's
+    // complete, not after six wakes as unrecoverable.
+    expect(discards).toEqual(["end-unconfirmed"]);
+    expect(completes).toHaveLength(1);
+    // Both sessions ended with the replaced guest, with their notes; none is closed on a guess.
+    expect((await f.row(f.sessionId))?.state).toBe("failed");
+    expect((await f.row(other))?.state).toBe("failed");
   } finally {
     await f.close();
   }

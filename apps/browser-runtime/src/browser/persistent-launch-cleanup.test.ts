@@ -2,7 +2,7 @@ import { watch } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { PlaywrightChromiumLauncher } from "./playwright-launcher.js";
 import { nativeProfileRequest } from "./native-profile.test-support.js";
@@ -45,7 +45,15 @@ it("reaps a persistent Chromium child that never returns its protocol handshake"
     await withTimeout(started.promise, 1000, {
       timeoutError: () => new Error("Owned launch child never started"),
     });
-    pid = Number(await readFile(pidFile, "utf8"));
+    // An empty read is no pid: Number("") is 0, and kill(0, 0) signals this test's own group.
+    pid = await vi.waitFor(
+      async () => {
+        const written = Number(await readFile(pidFile, "utf8"));
+        expect(Number.isSafeInteger(written) && written > 0).toBe(true);
+        return written;
+      },
+      { timeout: 1_000, interval: 10 },
+    );
     const error = await withTimeout(refused, 1500, {
       timeoutError: () => new Error("Persistent launch did not finish its child cleanup"),
     });

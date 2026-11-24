@@ -90,7 +90,7 @@ function setup(
     render,
     focusTouch: () => act(() => handle?.focus(true)),
     pointerDown: () => act(() => handle?.pointerDown()),
-    pasteFromMenu: () => act(() => handle?.pasteFromMenu()),
+    pasteFromMenu: (contextId?: string) => act(() => handle?.pasteFromMenu(contextId)),
   };
 }
 function input(
@@ -265,6 +265,30 @@ describe("real shared proxy element", () => {
     composition(field, "compositionend", "한");
     expect(operations.filter((op) => op.kind === "edit")).toHaveLength(2);
   });
+  // CU5, CW9: a composition the wire refused before it left is told back to the reducer, so its
+  // next update is a fresh start again (it restates what it replaces) instead of an update the
+  // page never saw the start of.
+  it("sends a composition the wire refused again as a fresh start", async () => {
+    const { element, operations, wire } = setup();
+    let refuse = true;
+    wire.send.mockImplementation(async (operation: EditingOperation) => {
+      if (operation.kind === "compose" && refuse) {
+        refuse = false;
+        throw new Error("The socket is closed.");
+      }
+      operations.push(operation);
+      return undefined;
+    });
+    const field = element();
+    composition(field, "compositionstart");
+    input(field, "한", true, "insertCompositionText");
+    // The wire's refusal comes back before the person goes on.
+    await act(async () => undefined);
+    input(field, "한글", true, "insertCompositionText");
+    const composes = operations.filter((operation) => operation.kind === "compose");
+    expect(composes).toHaveLength(1);
+    expect(composes[0]).toMatchObject({ composition: { text: "한글", before: "", after: "" } });
+  });
   it("uses remote caret and field hints, then replaces sensitive fields with a password proxy", () => {
     const { element, render } = setup();
     expect(element().style.left).toBe("120px");
@@ -404,6 +428,109 @@ describe("real shared proxy element", () => {
     await act(async () => Promise.resolve());
     expect(paste).toHaveBeenCalledOnce();
     expect(operations).toEqual([]);
+  });
+  it("stamps web pasteFromMenu with the menu's context after focus moved", async () => {
+    const read = vi.fn(async () => [
+      {
+        types: ["text/plain"],
+        getType: async () => new Blob(["secret"], { type: "text/plain" }),
+      },
+    ]);
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      clipboard: { read },
+    });
+    const other: EditingContext = {
+      ...context,
+      contextId: "00000000-0000-4000-8000-000000000002",
+      field: { ...context.field!, sensitive: true },
+    };
+    const { pasteFromMenu, render, operations } = setup();
+    render({ context: other });
+    pasteFromMenu(context.contextId);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(operations).toMatchObject([{ kind: "paste", contextId: context.contextId }]);
+  });
+  it("stamps desktop menu Paste and Cmd+V with the pre-IPC context if focus moves mid-IPC", async () => {
+    const paste = vi.fn(async () => undefined);
+    const write = vi.fn(async () => undefined);
+    Object.defineProperty(window, "opensteerDesktop", {
+      configurable: true,
+      value: { pasteViewerClipboard: paste, writeViewerClipboard: write },
+    });
+    const other: EditingContext = {
+      ...context,
+      contextId: "00000000-0000-4000-8000-000000000002",
+      field: { ...context.field!, sensitive: true },
+    };
+    const trustedPaste = (text: string) => {
+      const event = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "isTrusted", { value: true });
+      Object.defineProperty(event, "clipboardData", {
+        value: { types: ["text/plain"], getData: () => text, files: [] },
+      });
+      return event;
+    };
+    const { element, pasteFromMenu, render, operations } = setup();
+    // 1) Menu paste opened in Field A (`context`), clicked after focus moved to Field B (`other`).
+    render({ context: other });
+    pasteFromMenu(context.contextId);
+    await act(async () => Promise.resolve());
+    act(() => {
+      element().dispatchEvent(trustedPaste("from-menu"));
+    });
+    expect(operations).toMatchObject([{ kind: "paste", contextId: context.contextId }]);
+
+    // 2) Electron Cmd+V pressed in Field B (`other`), focus moves to Field C before IPC delivers DOM paste.
+    const third: EditingContext = {
+      ...context,
+      contextId: "00000000-0000-4000-8000-000000000003",
+      field: { ...context.field!, sensitive: false },
+    };
+    act(() => {
+      element().dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "v",
+          code: "KeyV",
+          metaKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    render({ context: third });
+    await act(async () => Promise.resolve());
+    act(() => {
+      element().dispatchEvent(trustedPaste("from-shortcut"));
+    });
+    expect(operations.at(-1)).toMatchObject({ kind: "paste", contextId: other.contextId });
+
+    // 3) S10: if native paste resolves without firing a DOM paste event, pendingNativePaste is
+    // cleared so a later unrelated paste in another field uses that field's live context, not the
+    // stale pre-IPC context.
+    vi.useFakeTimers();
+    try {
+      const fourth: EditingContext = {
+        ...context,
+        contextId: "00000000-0000-4000-8000-000000000004",
+        field: { ...context.field!, sensitive: false },
+      };
+      pasteFromMenu(third.contextId);
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+      render({ context: fourth });
+      act(() => {
+        element().dispatchEvent(trustedPaste("later-unrelated"));
+      });
+      expect(operations.at(-1)).toMatchObject({ kind: "paste", contextId: fourth.contextId });
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it("renders local preedit when the target has no composition ability", () => {
     const { element, container, operations } = setup({

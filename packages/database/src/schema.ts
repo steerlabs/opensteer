@@ -69,6 +69,8 @@ import type {
   RunAttemptId,
   RunFailure,
   RunId,
+  RunInterruptedCause,
+  RunStartHoldReason,
   RunnerId,
   SecurityAuditId,
   ThreadAccessMode,
@@ -110,6 +112,7 @@ import type {
   BrowserTabOpenBinding,
   HarnessInstanceCatalog,
   MachineAccessPolicy,
+  RunnerAuxiliaryFrameFence,
   RunnerDevice,
   RunnerModuleName,
   RunnerModules,
@@ -562,6 +565,8 @@ interface RunnerTable {
   moduleDescriptors: JsonColumn<RunnerModules>;
   /** What the computer says it is, from its last signed hello; null until it says. */
   device: JsonColumn<RunnerDevice | null>;
+  /** Stable OS boot identity from the Runner's last signed hello; null until reported. */
+  machineBootId: Generated<string | null>;
   connectionGeneration: ColumnType<string, number | string, number | string>;
   /** Null for a Runner with no agents module, which executes nothing. */
   maxConcurrentRuns: number | null;
@@ -597,6 +602,18 @@ interface MachineAccessSessionTable {
   endReason: ShellCloseReason | null;
   bytesIn: ColumnType<string, number | string | undefined, number | string>;
   bytesOut: ColumnType<string, number | string | undefined, number | string>;
+  /**
+   * The connection whose lineage the Run that opened it is in, with the grant it was admitted
+   * under: the session is then an attempt in that connection's Disconnect set (rule 3).
+   */
+  connectionId: Generated<string | null>;
+  admittedGrantRevision: Generated<number | null>;
+  admittedAccessMode: Generated<ThreadAccessMode | null>;
+  /** The exact `shell` stream of the target Runner that was asked to serve it. */
+  targetFence: Generated<RunnerAuxiliaryFrameFence | null>;
+  /** The target's own close receipt on that stream, or the moment contact with it was lost. */
+  terminalEvidenceAt: Generated<Date | null>;
+  contactLostAt: Generated<Date | null>;
 }
 
 /** One audited SSH request, exactly as the target's helper reported it. */
@@ -715,7 +732,11 @@ export interface ThreadTable {
   inputQueueRevision: Generated<string>;
   lastReplyMessageId: Generated<MessageId | null>;
   lastReplyPreview: Generated<string | null>;
+  failureCode: Generated<string | null>;
   failurePreview: Generated<string | null>;
+  runStartHoldReason: Generated<RunStartHoldReason | null>;
+  /** Unresolved unproven-stop Run whose boot containment has not yet been confirmed. */
+  unconfirmedStopRunId: Generated<RunId | null>;
   latestRunCompletedAt: Generated<Date | null>;
   latestPlace: Generated<PlaceView | null>;
   removedAt: Generated<Date | null>;
@@ -921,6 +942,9 @@ export interface RunTable {
   /** The reply its channel was sent when a turn ended in the background. */
   turnReplyMessageId: Generated<MessageId | null>;
   status: "queued" | "starting" | "running" | "waiting" | "completed" | "failed" | "interrupted";
+  interruptedCause: Generated<RunInterruptedCause | null>;
+  startHoldReason: Generated<RunStartHoldReason | null>;
+  stopConfirmedAt: Generated<Date | null>;
   createdAt: Timestamp;
   startedAt: NullableTimestamp;
   completedAt: NullableTimestamp;
@@ -961,6 +985,7 @@ export interface RunAttemptTable {
   bindingGeneration: number | null;
   runnerId: RunnerId | null;
   runnerBootId: string | null;
+  machineBootId: Generated<string | null>;
   /** The selection the attempt was dispatched with. */
   modelSelection: JsonColumn<ModelSelection | null>;
   dispatchedAt: NullableTimestamp;
@@ -1184,7 +1209,9 @@ interface TriggerRevisionTable {
   ordinal: number;
   source: JsonColumn<TriggerSource>;
   script: JsonColumn<AutomationScript> | null;
+  legacyLanguage: Generated<string | null>;
   legacySource: Generated<string | null>;
+  legacyToolContractVersion: Generated<number | null>;
   createdBy: UserId;
   createdByThreadId: ThreadId | null;
   createdAt: Timestamp;
@@ -2241,6 +2268,25 @@ export interface DatabaseSchema {
   credentialVaultCanaries: CredentialVaultCanaryTable;
   browserProfiles: BrowserProfileTable;
   browserProfileDeletions: BrowserProfileDeletionTable;
+  /** W8: a replaced target the Home goes on asking for the end of the Stops it held. */
+  browserPoolRetiredTargets: {
+    slotId: string;
+    term: number;
+    runnerId: RunnerId;
+    runtimeId: string;
+    instanceId: string;
+    epoch: number;
+    target: JsonColumn<Readonly<Record<string, unknown>>>;
+    retiredAt: Generated<Timestamp>;
+  };
+  /** W1: the target (slot and term) each pooled session belongs to. */
+  browserPoolSessions: {
+    sessionId: BrowserSessionId;
+    runnerId: RunnerId;
+    slotId: string;
+    term: number;
+    dismissedAt: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  };
   browserPoolSlots: {
     runnerId: RunnerId;
     runtimeId: string;
@@ -2276,6 +2322,10 @@ export interface DatabaseSchema {
     result: JsonColumn<Readonly<Record<string, unknown>> | null>;
     createdAt: Generated<Timestamp>;
     settledAt: Timestamp | null;
+    /** A restart's Start: the keys it answers, written with the call before it is sent. */
+    restartKeys: JsonColumn<readonly string[] | null>;
+    /** A Start whose guest the slot holds: never installed again in place of a new one. */
+    installedAt: Timestamp | null;
   };
   browserPoolDocumentLosses: {
     intentId: string;
@@ -2292,6 +2342,18 @@ export interface DatabaseSchema {
     typed: ColumnType<boolean | null, boolean | null | undefined, boolean | null>;
     lostAt: Generated<Timestamp>;
     noticedAt: Timestamp | null;
+  };
+  /** A pooled Cloud Computer's Home: its key registration's attempt and the target it read. */
+  browserPoolTargets: {
+    cloudComputerId: string;
+    /** The public halves of a registration sent and not yet answered; cleared when answered. */
+    attemptKeys: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    attemptIssuedAt: Timestamp | null;
+    /** The public halves the account answered a registration for. */
+    registeredKeys: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    status: "unregistered" | "preparing" | "ready" | "failed";
+    target: JsonColumn<Readonly<Record<string, unknown>> | null>;
+    updatedAt: Timestamp;
   };
   browserPoolRelays: {
     id: string;

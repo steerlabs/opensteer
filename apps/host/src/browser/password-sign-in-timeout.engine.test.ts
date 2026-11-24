@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import { ModelSelectionSchema, heldToolCallTimeoutMs } from "@opensteer/core";
-import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import { createHarnessRegistry, parseAgentExecutionConfig } from "@opensteer/runner";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -121,7 +120,6 @@ describe.each(holdEngines)("$label held MCP", (engine) => {
           parseAgentExecutionConfig(process.env).harnessExecutables,
           { nodeExecutable: process.execPath, runtimeCacheDirectory },
         ),
-        harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
         harnessInstance: qualificationAccount(engine),
       });
       const model = stack.catalog.models.find((candidate) => candidate.isDefault);

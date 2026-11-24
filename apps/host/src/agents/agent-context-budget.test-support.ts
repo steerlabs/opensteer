@@ -1,3 +1,4 @@
+import { directWorkConsentVersion } from "@opensteer/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { AgentGrant, ThreadAccessMode } from "@opensteer/core";
@@ -10,6 +11,8 @@ export async function measureMcpContext(
   options?: {
     grant?: AgentGrant;
     accessMode?: ThreadAccessMode;
+    /** The consent the connection gave: the current one unless said. */
+    consentVersion?: number;
     connectionPasswords?: ConstructorParameters<
       typeof OpensteerMcpService
     >[0]["connectionPasswords"];
@@ -38,7 +41,18 @@ export async function measureMcpContext(
     accessMode: options?.accessMode ?? "full-access",
     ...(kind === "run" ? { thread: {} } : {}),
     ...(kind === "connection"
-      ? { grant: options?.grant ?? { scope: "everything" }, grantRevision: 1 }
+      ? {
+          grant: options?.grant ?? { scope: "everything" },
+          grantRevision: 1,
+          agentConnection: {
+            agentConnectionId: "context-budget",
+            grant: options?.grant ?? { scope: "everything" },
+            grantRevision: 1,
+            consentVersion: options?.consentVersion ?? directWorkConsentVersion,
+            accessMode: options?.accessMode ?? "full-access",
+            bridgeSenders: null,
+          },
+        }
       : {}),
   } as unknown as AgentCaller);
   const client = new Client({ name: "context-budget", version: "1" });

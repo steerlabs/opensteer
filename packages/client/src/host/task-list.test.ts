@@ -657,7 +657,32 @@ describe("taskWaitingReason", () => {
     expect(taskWaitingReason(snapshot, thread.id, [queued])).toMatchObject({
       kind: "account-preparing",
     });
+
+    const held = {
+      ...queued,
+      startHoldReason: "previous-stop-unconfirmed" as const,
+    };
+    const holdReason = taskWaitingReason(snapshot, thread.id, [held]);
+    expect(holdReason?.kind).toBe("stop-unconfirmed");
+    expect(holdReason?.label).toContain("couldn’t confirm the last Run stopped");
     client.dispose();
+  });
+
+  it("shows Couldn’t confirm it stopped instead of Couldn’t finish for unproven stops", () => {
+    const unprovenRow = taskList(
+      snapshot([
+        {
+          ...entry(99, "Unconfirmed stop task", "failed", 1, 1, {
+            failure: "Stopping could not be confirmed.",
+          }),
+          failureCode: "execution_termination_unproven",
+        },
+      ]),
+    ).ready[0]!;
+    expect(unprovenRow.line).toBe("Couldn’t confirm it stopped");
+    expect(unprovenRow.line).not.toContain("Couldn’t finish");
+    expect(taskRowLabel(unprovenRow)).toContain("couldn’t confirm it stopped");
+    expect(taskRowLabel(unprovenRow)).not.toContain("couldn’t finish");
   });
 
   it("shows provider retry progress instead of generic Working when a running task is retrying", () => {

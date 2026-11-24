@@ -4,7 +4,7 @@ kotlin { jvmToolchain(21) }
 sourceSets {
     main {
         kotlin.srcDir("../../mobile/modules/remote-text-input/android/src/main/java")
-        kotlin.include("**/RemoteInputType.kt")
+        kotlin.exclude("**/RemoteInputEditText.kt", "**/RemoteTextInputModule.kt")
     }
     test { kotlin.srcDir("../../mobile/modules/remote-text-input/android/src/test/java") }
 }

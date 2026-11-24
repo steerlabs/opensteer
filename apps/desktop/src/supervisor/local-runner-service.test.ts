@@ -60,8 +60,21 @@ import {
 import { RunnerWorkerSecretsMessageSchema } from "./runner-worker-secrets.js";
 
 const temporaryDirectories: string[] = [];
+const createdFixtures: {
+  readonly service: LocalRunnerService;
+  readonly children: FakeUtilityProcess[];
+}[] = [];
 
 afterEach(async () => {
+  vi.useRealTimers();
+  for (const entry of createdFixtures.splice(0)) {
+    entry.service.dispose();
+    const stopping = entry.service.shutdown().catch(() => undefined);
+    for (const child of entry.children) {
+      if (!child.exited) child.emit("exit", 0);
+    }
+    await stopping;
+  }
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -1608,6 +1621,7 @@ describe("LocalRunnerService", () => {
     await Promise.all(starts);
 
     targets.notify();
+    await running.service.reconcile();
     await expect(
       readFile(path.join(directory, "runner", "desktop-runner.json"), "utf8").then(JSON.parse),
     ).resolves.toMatchObject({
@@ -1745,6 +1759,50 @@ describe("LocalRunnerService", () => {
     await shutdown;
 
     await expect(running.service.hasEnrolledRunners()).resolves.toBe(true);
+  });
+
+  it("starts its Runner trusting this computer's certificates and none the app's environment names", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://home.opensteer.test");
+    await mkdir(path.join(directory, "runner", "deployments", target.deploymentId), {
+      recursive: true,
+    });
+    writeTestIdentity(path.join(directory, "runner", "deployments", target.deploymentId), true);
+    await writeFile(
+      path.join(directory, "runner", "desktop-runner.json"),
+      `${JSON.stringify({
+        runners: { [target.deploymentId]: { enabled: true, runnerName: "Office Mac" } },
+        version: 3,
+      })}\n`,
+      { mode: 0o600 },
+    );
+    // Whatever the environment this app was started in carries, as if the
+    // login-shell allowlist had let it through.
+    const leaking = {
+      async resolve(): Promise<Readonly<Record<string, string>>> {
+        return {
+          ...(await testUserEnvironment(directory).resolve()),
+          ...untrustedTrustInputs,
+        };
+      },
+    };
+    const running = fixture(await configuration(directory), targets, undefined, undefined, {
+      userEnvironment: leaking,
+    });
+
+    const restoring = running.service.startIfEnabled();
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    connect(child);
+    await restoring;
+
+    expect(child.environment.NODE_USE_SYSTEM_CA).toBe("1");
+    for (const name of Object.keys(untrustedTrustInputs).filter(
+      (name) => name !== "NODE_USE_SYSTEM_CA",
+    ))
+      expect(child.environment).not.toHaveProperty(name);
+    expect(child.environment.HOME).toBe(directory);
   });
 
   it("keeps a computer added by an earlier release running agents", async () => {
@@ -3081,33 +3139,36 @@ function fixture(
     ...(options.currentSession ? { currentSession: options.currentSession } : {}),
     ...(options.bindReply ? { bindReply: options.bindReply } : {}),
   });
+  const service = new LocalRunnerService(config, {
+    ...(options.assertAccountSource ? { assertAccountSource: options.assertAccountSource } : {}),
+    hostApi: host.api,
+    ...(options.leaveFetch ? { leaveFetch: options.leaveFetch } : {}),
+    ...(options.fenceDeployment ? { fenceDeployment: options.fenceDeployment } : {}),
+    ...(options.clearDeploymentSession
+      ? { clearDeploymentSession: options.clearDeploymentSession }
+      : {}),
+    ...(browser ? { browser } : {}),
+    computerName: async () => "Studio Mac",
+    ...(options.profileErasure ? { profileErasure: options.profileErasure } : {}),
+    ...(options.computerUse ? { computerUse: options.computerUse } : {}),
+    fork,
+    inspectIdentity: async (dataDirectory: string) => readTestIdentity(dataDirectory),
+    homeDirectory: config.dataDirectory,
+    ...(restartDelayMs ? { restartDelayMs } : {}),
+    runtimeRelease: testRuntimeRelease(config.dataDirectory),
+    ...(options.stopTimeouts ? { stopTimeouts: options.stopTimeouts } : {}),
+    ...(options.agentsStoppedSince ? { agentsStoppedSince: options.agentsStoppedSince } : {}),
+    confirmShutdown: async (_dataDirectory, proof) => proof !== undefined,
+    ...(options.onUncontainedBoot ? { onUncontainedBoot: options.onUncontainedBoot } : {}),
+    targets,
+    userEnvironment: options.userEnvironment ?? testUserEnvironment(config.dataDirectory),
+  });
+  createdFixtures.push({ service, children });
   return {
     children,
     fork,
     host,
-    service: new LocalRunnerService(config, {
-      ...(options.assertAccountSource ? { assertAccountSource: options.assertAccountSource } : {}),
-      hostApi: host.api,
-      ...(options.leaveFetch ? { leaveFetch: options.leaveFetch } : {}),
-      ...(options.fenceDeployment ? { fenceDeployment: options.fenceDeployment } : {}),
-      ...(options.clearDeploymentSession
-        ? { clearDeploymentSession: options.clearDeploymentSession }
-        : {}),
-      ...(browser ? { browser } : {}),
-      computerName: async () => "Studio Mac",
-      ...(options.profileErasure ? { profileErasure: options.profileErasure } : {}),
-      ...(options.computerUse ? { computerUse: options.computerUse } : {}),
-      fork,
-      inspectIdentity: async (dataDirectory: string) => readTestIdentity(dataDirectory),
-      homeDirectory: config.dataDirectory,
-      ...(restartDelayMs ? { restartDelayMs } : {}),
-      runtimeRelease: testRuntimeRelease(config.dataDirectory),
-      ...(options.stopTimeouts ? { stopTimeouts: options.stopTimeouts } : {}),
-      ...(options.agentsStoppedSince ? { agentsStoppedSince: options.agentsStoppedSince } : {}),
-      ...(options.onUncontainedBoot ? { onUncontainedBoot: options.onUncontainedBoot } : {}),
-      targets,
-      userEnvironment: options.userEnvironment ?? testUserEnvironment(config.dataDirectory),
-    }),
+    service,
   };
 }
 
@@ -3296,6 +3357,7 @@ class FakeUtilityProcess extends EventEmitter implements UtilityProcessLike {
   readonly stdout = new PassThrough();
   /** A worker that does not die when asked, so a test can time its exit. */
   readonly stubborn: boolean;
+  exited = false;
   kills = 0;
 
   constructor(
@@ -3307,6 +3369,9 @@ class FakeUtilityProcess extends EventEmitter implements UtilityProcessLike {
     this.dataDirectory = dataDirectory;
     this.environment = environment;
     this.stubborn = stubborn;
+    this.once("exit", () => {
+      this.exited = true;
+    });
   }
 
   kill(): boolean {
@@ -3389,6 +3454,16 @@ function testRuntimeRelease(
     nodeExecutable: path.join(directory, "node"),
   });
 }
+
+/** Every environment name that would change what a Runner trusts. */
+const untrustedTrustInputs = {
+  NODE_EXTRA_CA_CERTS: "/tmp/inspection-root.pem",
+  NODE_OPTIONS: "--use-openssl-ca",
+  NODE_USE_SYSTEM_CA: "0",
+  OPENSSL_CONF: "/tmp/openssl.cnf",
+  SSL_CERT_DIR: "/tmp/certs",
+  SSL_CERT_FILE: "/tmp/cert.pem",
+} as const;
 
 function testUserEnvironment(directory: string) {
   return {

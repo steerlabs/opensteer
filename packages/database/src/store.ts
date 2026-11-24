@@ -523,35 +523,20 @@ export class OpensteerStore {
   ): Promise<readonly ReachableMachineRecord[]> {
     return machineStore.listReachableMachines(this.#database, userId, callerRunnerId);
   }
-  async reserveShellSession(input: {
-    readonly callerMachineName: string;
-    readonly callerRunnerId: RunnerId;
-    readonly policyRevision: number;
-    readonly requestedBy: UserId;
-    readonly runId: RunId;
-    readonly runnerId: RunnerId;
-    readonly sessionId: ShellSessionId;
-    readonly startedAt: Date;
-    readonly threadId: ThreadId;
-    readonly threadTitle: string;
-  }): Promise<void> {
+  async reserveShellSession(input: Parameters<typeof machineStore.reserveShellSession>[1]) {
     return machineStore.reserveShellSession(this.#database, input);
   }
   async activateShellSession(sessionId: ShellSessionId): Promise<boolean> {
     return machineStore.activateShellSession(this.#database, sessionId);
   }
-  async endShellSession(input: {
-    readonly bytesIn?: number;
-    readonly bytesOut?: number;
-    readonly endedAt?: Date;
-    /** A Stop the person may click twice; the second click reports the first. */
-    readonly idempotency?: machineStore.ShellStopIdempotency;
-    readonly reason: ShellCloseReason;
-    readonly sessionId: ShellSessionId;
-  }): Promise<{
-    readonly ended: boolean;
-  }> {
+  async endShellSession(input: Parameters<typeof machineStore.endShellSession>[1]) {
     return machineStore.endShellSession(this.#database, input);
+  }
+  /** A connection's shell attempt ends on its target's receipt or on losing its stream (A4). */
+  async recordShellTargetEvidence(
+    input: Parameters<typeof machineStore.recordShellTargetEvidence>[1],
+  ): Promise<number> {
+    return machineStore.recordShellTargetEvidence(this.#database, input);
   }
   async endAllOpenShellSessions(reason: ShellCloseReason): Promise<number> {
     return machineStore.endAllOpenShellSessions(this.#database, reason);
@@ -662,6 +647,12 @@ export class OpensteerStore {
   }): Promise<boolean> {
     return runnerStore.touchRunnerConnection(this.#database, input);
   }
+  async touchRunnerConnectionForAttach(input: {
+    readonly connectionGeneration: number;
+    readonly runnerId: RunnerId;
+  }): Promise<{ readonly current: boolean; readonly hasUnconfirmedStop: boolean }> {
+    return runnerStore.touchRunnerConnectionForAttach(this.#database, input);
+  }
   async createBrowserProfile(input: {
     readonly homeRunnerId?: RunnerId | null;
     readonly idempotencyKey: string;
@@ -743,6 +734,8 @@ export class OpensteerStore {
     readonly profileId: BrowserProfileId | null;
     readonly runtimeId: string;
     readonly pooled?: true;
+    readonly onPooledComputer?: true;
+    readonly pooledRunner?: RunnerId;
   }): Promise<BrowserSessionRecord> {
     return browserSessionStore.createBrowserSession(this.#database, input);
   }
@@ -866,8 +859,11 @@ export class OpensteerStore {
   ): Promise<BrowserSessionRecord | null> {
     return browserSessionStore.getBrowserSessionForOwner(this.#database, sessionId, ownerId);
   }
-  async listBrowserSessions(ownerId: UserId): Promise<readonly BrowserSessionRecord[]> {
-    return browserSessionStore.listBrowserSessions(this.#database, ownerId);
+  async listBrowserSessions(
+    ownerId: UserId,
+    options?: { readonly pooled?: boolean },
+  ): Promise<readonly BrowserSessionRecord[]> {
+    return browserSessionStore.listBrowserSessions(this.#database, ownerId, options);
   }
   async listBrowserSessionThreads(input: {
     readonly ownerId: UserId;
@@ -890,9 +886,16 @@ export class OpensteerStore {
   async transitionBrowserSession(input: {
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
-    readonly state: HostedBrowserSessionState;
+    readonly state: Exclude<HostedBrowserSessionState, "closed">;
   }) {
     return browserSessionStore.transitionBrowserSession(this.#database, input);
+  }
+  /** Closes a session that is not pooled; a pooled one is refused in the statement itself. */
+  async closeUnpooledBrowserSession(input: {
+    readonly from?: readonly HostedBrowserSessionState[];
+    readonly sessionId: BrowserSessionId;
+  }) {
+    return browserSessionStore.closeUnpooledBrowserSession(this.#database, input);
   }
   async renewActiveExecutionBindings(input: {
     readonly activeRunIds: readonly RunId[];
@@ -1546,6 +1549,27 @@ export class OpensteerStore {
   }> {
     return threadStore.updateThreadExecutionSelection(this.#database, input);
   }
+  async clearThreadStartHold(threadId: ThreadId): Promise<boolean> {
+    return executionRecovery.clearThreadStartHold(this.#database, threadId);
+  }
+  async readThreadUnconfirmedStop(
+    threadId: ThreadId,
+  ): Promise<executionRecovery.ThreadUnconfirmedStop | null> {
+    return executionRecovery.readThreadUnconfirmedStop(this.#database, threadId);
+  }
+  async confirmThreadUnconfirmedStop(
+    threadId: ThreadId,
+    runId: RunId,
+    confirmedAt?: Date,
+  ): Promise<boolean> {
+    return executionRecovery.confirmThreadUnconfirmedStop(
+      this.#database,
+      threadId,
+      runId,
+      confirmedAt,
+    );
+  }
+
   async resumeThreadInputQueue(input: {
     readonly authority?: import("./thread-caller.js").ThreadCallerAuthority;
     readonly idempotencyKey: string;
@@ -1800,6 +1824,7 @@ export class OpensteerStore {
     readonly continuationIdentity: ProviderContinuationIdentity;
     readonly harnessInstanceId: HarnessInstanceId;
     readonly leaseTokenHash: string;
+    readonly machineBootId?: string | null;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
     readonly runId: RunId;
@@ -1916,6 +1941,7 @@ export class OpensteerStore {
     readonly leaseExpiresAt: Date;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
+    readonly checkUnconfirmedStops?: boolean;
   }): Promise<{
     readonly resumed: readonly ResumedExecution[];
     readonly results: readonly ExecutionAttachment[];

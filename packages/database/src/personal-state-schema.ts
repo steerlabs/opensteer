@@ -14,6 +14,7 @@ import type {
   RunAttemptId,
   RunId,
   RunFailure,
+  RunInterruptedCause,
   RunRetry,
   RunnerId,
   TabId,
@@ -62,6 +63,7 @@ export interface FinishIntent {
   readonly requestCancellationReason?: import("@opensteer/core").RequestCancellationReason;
   readonly queuedInputCancellation?: "activation-input" | "authority-cohort" | "seed-input";
   readonly failure?: RunFailure;
+  readonly interruptedCause?: RunInterruptedCause;
   readonly statement?: {
     readonly ordinal: number;
     readonly runnerId: RunnerId;
@@ -138,6 +140,8 @@ export interface TranscriptPreview {
   readonly endedAt?: string;
   readonly replyMessageId?: MessageId;
   readonly failure?: RunFailure;
+  readonly interruptedCause?: RunInterruptedCause;
+  readonly stopConfirmedAt?: string;
   readonly retry?: RunRetry;
   readonly usage?: RunUsage;
   readonly messageKind?: Extract<MessageKind, "input" | "assistant" | "continuation">;
@@ -222,14 +226,50 @@ export interface PersonalAttentionTable {
 export const uncertainEarlierRun =
   "started_at is null and binding_generation is not null and not runner_safety_terminal and execute_claim_state <> 'unclaimed'";
 
-const revisionKeys = `array[${durablePersonalResourceKinds.map((kind) => `'${kind}'`).join(",")}]`;
-const resourceRevisionCheck = durablePersonalResourceKinds
-  .map(
-    (kind) => `jsonb_typeof(resource_revisions->'${kind}') = 'string' and
+/**
+ * The default and CHECK of `client_sync_state.resource_revisions` for these kinds: every kind's
+ * revision present as a string at most the head, and no other key.
+ */
+export function resourceRevisionsDdl(kinds: readonly string[]) {
+  const keys = `array[${kinds.map((kind) => `'${kind}'`).join(",")}]`;
+  const each = kinds
+    .map(
+      (kind) => `jsonb_typeof(resource_revisions->'${kind}') = 'string' and
     (resource_revisions->>'${kind}') ~ '^(0|[1-9][0-9]{0,18})$' and
     (resource_revisions->>'${kind}')::numeric <= sequence`,
-  )
-  .join(" and ");
+    )
+    .join(" and ");
+  return {
+    defaultValue: JSON.stringify(Object.fromEntries(kinds.map((kind) => [kind, "0"]))),
+    check: `jsonb_typeof(resource_revisions) = 'object'
+      and resource_revisions ?& ${keys}
+      and resource_revisions - ${keys} = '{}'::jsonb and ${each}`,
+  };
+}
+
+/**
+ * The durable resource kinds 0038 was released with, frozen: a migration never reads a live list,
+ * so a Home that ran it and a Home that runs it now hold the same default and CHECK. 0110 retires
+ * `team-replies` from both.
+ */
+export const releasedResourceRevisionKinds = [
+  "settings",
+  "identity",
+  "owner-profile",
+  "environment",
+  "machine",
+  "harness",
+  "harness-catalog",
+  "tab",
+  "tab-layout",
+  "browser-profile",
+  "browser-placement",
+  "browser-home",
+  "browser-availability",
+  "plugin",
+  "team-replies",
+] as const;
+const releasedResourceRevisions = resourceRevisionsDdl(releasedResourceRevisionKinds);
 
 const retainedStateDdl = `
   alter table deployment_event_state rename to client_sync_state;
@@ -241,7 +281,7 @@ const retainedStateDdl = `
       check (pruned_through_sequence between 0 and sequence),
     add column retained_change_count integer not null default 0 check (retained_change_count between 0 and 4096),
     add column last_commit_at timestamptz not null default clock_timestamp(),
-    add column resource_revisions jsonb not null default '${JSON.stringify(emptyPersonalResourceRevisions)}',
+    add column resource_revisions jsonb not null default '${releasedResourceRevisions.defaultValue}',
     add column pending_request_count integer not null default 0 check (pending_request_count >= 0),
     add column pending_device_access_request_count integer not null default 0
       check (pending_device_access_request_count between 0 and pending_request_count),
@@ -250,9 +290,7 @@ const retainedStateDdl = `
     add column pending_requests_revision bigint not null default 0
       check (pending_requests_revision between 0 and sequence),
     add column upgrade_cursor jsonb,
-    add check (jsonb_typeof(resource_revisions) = 'object'
-      and resource_revisions ?& ${revisionKeys}
-      and resource_revisions - ${revisionKeys} = '{}'::jsonb and ${resourceRevisionCheck});
+    add check (${releasedResourceRevisions.check});
 
   create table client_changes (
     deployment_id text not null references client_sync_state(deployment_id) on delete cascade,

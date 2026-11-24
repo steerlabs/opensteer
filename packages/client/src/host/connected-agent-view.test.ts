@@ -806,6 +806,66 @@ describe("a chat's address, as parts", () => {
   });
 });
 
+describe("what the Home recorded under Check its last action (F3)", () => {
+  const generic =
+    "Contact was lost while “Grok” was in the middle of something. It may have finished. Check what it was working on before you rely on it.";
+  const uncertain = (detail: AgentConnection["lastActionUncertainDetail"]) =>
+    connectedAgentDetail(
+      connection({
+        state: "stopped",
+        lastActionUncertain: true,
+        lastActionUncertainDetail: detail,
+        revokedAt: "2026-11-19T11:00:00Z",
+      }),
+      names,
+      { grantsAvailable: true, now },
+    ).uncertain!;
+  const recorded = (reason: string, device: string | null) => ({
+    at: "2026-11-19T11:00:00Z",
+    device,
+    task: null,
+    taskId: null,
+    tool: null,
+    reason,
+  });
+
+  it("reads the shell's reason and the device it was on, the device as a name", () => {
+    const shell = uncertain(
+      recorded(
+        "Contact with this device was lost before it confirmed that the connected agent's shell there had closed.",
+        'Studio "Mac"',
+      ),
+    );
+    expect(shell.label).toBe("Check its last action");
+    expect(shell.detailParts).toContainEqual({ name: 'Studio "Mac"' });
+    expect(shell.detail).toBe(
+      `${generic} Contact with this device was lost before it confirmed that the connected agent's shell there had closed. It was on “Studio 'Mac'”.`,
+    );
+    expect(plainSentence(shell.detailParts!)).toBe(shell.detail);
+  });
+
+  it("reads an alert's reason, and an older kind's, with no device", () => {
+    expect(
+      uncertain(
+        recorded(
+          "A phone alert about this connected agent's work may have been sent; your Opensteer account did not confirm it.",
+          null,
+        ),
+      ).detail,
+    ).toBe(
+      `${generic} A phone alert about this connected agent's work may have been sent; your Opensteer account did not confirm it.`,
+    );
+    expect(
+      uncertain(recorded("Contact was lost before this action confirmed it had ended.", null))
+        .detail,
+    ).toBe(`${generic} Contact was lost before this action confirmed it had ended.`);
+  });
+
+  it("reads only the general sentence when nothing was recorded", () => {
+    expect(uncertain(null).detail).toBe(generic);
+  });
+});
+
 describe("a client-chosen name as a claim", () => {
   it("cuts a long name before an emoji sequence or flag, never inside one", () => {
     const family = "\u{1F468}‍\u{1F469}‍\u{1F467}";

@@ -253,6 +253,32 @@ integration("Host and Chromium editing contract", () => {
       for (const viewer of [old, oldWatch])
         expect(viewer.messages[0]).not.toHaveProperty("editingVersion");
       checks.push("signed ticket and per-control/watch snapshot opt-in");
+      // CZ5: a paste is made for the field a viewer last saw focused, and refused in any other.
+      const fieldContext = async (
+        messages: readonly BrowserServerMessage[],
+        match: (
+          field: NonNullable<
+            Extract<BrowserServerMessage, { type: "browser.editing" }>["context"]["field"]
+          >,
+        ) => boolean = () => true,
+      ) => {
+        let contextId: string | undefined;
+        await expect
+          .poll(() => {
+            const published = messages
+              .filter((m) => m.type === "browser.editing" && m.surfaceId === surfaceId)
+              .at(-1);
+            contextId =
+              published?.type === "browser.editing" &&
+              published.context.field !== null &&
+              match(published.context.field)
+                ? published.context.contextId
+                : undefined;
+            return contextId;
+          })
+          .toBeDefined();
+        return contextId!;
+      };
       const snapshot = person.messages[0];
       if (snapshot?.type !== "browser.snapshot") throw new Error("Missing snapshot");
       capture = async () => {
@@ -282,7 +308,13 @@ integration("Host and Chromium editing contract", () => {
         ).result.value;
       await expect.poll(() => evaluate("!!document.querySelector('#t')")).toBe(true);
       const operationId = randomUUID();
-      person.send({ type: "clipboard.copy", surfaceId, operationId, consumerToken: randomUUID() });
+      person.send({
+        type: "clipboard.copy",
+        surfaceId,
+        operationId,
+        consumerToken: randomUUID(),
+        contextId: await fieldContext(person.messages),
+      });
       await expect
         .poll(() =>
           person.messages.some(
@@ -296,19 +328,15 @@ integration("Host and Chromium editing contract", () => {
       for (const viewer of [other, old, watch, oldWatch])
         expect(viewer.messages.some((m) => m.type.startsWith("clipboard."))).toBe(false);
       checks.push("clipboard result and parts only reach the initiating controller");
-      const oldCopies = () => old.messages.filter((m) => m.type === "clipboard.data");
-      const legacyStroke = (key: string, code: string, modifiers: ("meta" | "control")[]) => {
-        for (const action of ["down", "up"] as const)
-          old.send({ type: "input.key", surfaceId, action, key, code, modifiers });
-      };
-      await evaluate("t.value='legacy copy';t.focus();t.select()");
-      legacyStroke("c", "KeyC", ["meta"]);
-      await expect.poll(() => oldCopies().length).toBe(1);
-      expect(oldCopies()[0]).toMatchObject({ text: "legacy copy" });
       const modernCopy = async (text: string) => {
         await evaluate(`t.value=${JSON.stringify(text)};t.focus();t.select()`);
         const id = randomUUID();
-        person.send({ type: "clipboard.copy", surfaceId, operationId: id });
+        person.send({
+          type: "clipboard.copy",
+          surfaceId,
+          operationId: id,
+          contextId: await fieldContext(person.messages, (field) => !field.sensitive),
+        });
         await expect
           .poll(() =>
             person.messages.some(
@@ -319,51 +347,16 @@ integration("Host and Chromium editing contract", () => {
           .toBe(true);
       };
       await modernCopy("editing copy");
-      expect(oldCopies()).toHaveLength(1);
-      await evaluate("t.value='legacy cut';t.focus();t.select()");
-      const cutsBefore = await evaluate("events.filter(e=>e.type==='cut').length");
-      legacyStroke("x", "KeyX", ["control"]);
-      await expect.poll(() => oldCopies().length).toBe(2);
-      expect(oldCopies()[1]).toMatchObject({ text: "legacy cut" });
-      expect(await evaluate("t.value")).toBe("");
-      expect(await evaluate("events.filter(e=>e.type==='cut').length")).toBe(
-        Number(cutsBefore) + 1,
-      );
-      expect(
-        browserRuntime
-          .receivedCommands()
-          .filter(
-            (m) =>
-              m.type === "input.key" &&
-              typeof m.code === "string" &&
-              ["KeyC", "KeyX"].includes(m.code),
-          ),
-      ).toHaveLength(0);
-      checks.push(
-        "editing and baseline controllers copy alternately; baseline cut deletes once and consumes matching keyup",
-      );
-      await evaluate(
-        "t.value='canceled';t.focus();t.select();window.copyCanceled=false;t.addEventListener('keydown',e=>{e.preventDefault();window.copyCanceled=true},{once:true})",
-      );
-      legacyStroke("c", "KeyC", ["control"]);
-      await expect.poll(() => evaluate("copyCanceled")).toBe(true);
-      await modernCopy("after canceled copy");
-      expect(oldCopies()).toHaveLength(2);
-      await evaluate(
-        "p.value='sensitive';p.focus();p.select();window.afterSensitive=false;p.addEventListener('keydown',()=>window.afterSensitive=true,{once:true})",
-      );
-      legacyStroke("c", "KeyC", ["meta"]);
-      legacyStroke("Escape", "Escape", []);
-      await expect.poll(() => evaluate("afterSensitive")).toBe(true);
-      await modernCopy("after sensitive copy");
-      expect(oldCopies()).toHaveLength(2);
-      for (const viewer of [other, watch, oldWatch])
+      for (const viewer of [other, old, watch, oldWatch])
         expect(viewer.messages.some((m) => m.type.startsWith("clipboard."))).toBe(false);
-      checks.push(
-        "canceled and sensitive baseline copy project no clipboard data to any other viewer",
-      );
+      checks.push("editing copy stays isolated from every other viewer");
       const legacyRefused = once(old.socket, "close");
-      old.send({ type: "input.command", surfaceId, command: "selectAll" });
+      old.send({
+        type: "input.command",
+        surfaceId,
+        command: "selectAll",
+        contextId: crypto.randomUUID(),
+      });
       const [refusalCode, refusalReason] = await legacyRefused;
       expect(refusalCode).toBe(4002);
       expect(String(refusalReason)).toBe("Browser editing was not negotiated.");
@@ -410,6 +403,7 @@ integration("Host and Chromium editing contract", () => {
         surfaceId,
         operationId: oversized,
         items: [{ type: "image/png", size: 16 * 1024 * 1024 + 1 }],
+        contextId: crypto.randomUUID(),
       });
       await expect
         .poll(() =>
@@ -431,6 +425,7 @@ integration("Host and Chromium editing contract", () => {
           surfaceId,
           operationId: id,
           items: [{ type, size: data.length }],
+          contextId: await fieldContext(person.messages),
         });
         for (let index = 0; index < Math.ceil(data.length / (512 * 1024)); index++)
           person.send({
@@ -505,6 +500,7 @@ integration("Host and Chromium editing contract", () => {
           surfaceId,
           operationId: id,
           items: [{ type: "text/plain", size: 1 }],
+          contextId: await fieldContext(other.messages),
         });
         other.send({ type: "clipboard.part", part: { operationId: id, index: 0, data: "eA==" } });
         await expect
@@ -528,6 +524,7 @@ integration("Host and Chromium editing contract", () => {
         surfaceId,
         operationId: recovered,
         items: [{ type: "text/plain", size: 1 }],
+        contextId: await fieldContext(other.messages),
       });
       other.send({
         type: "clipboard.part",

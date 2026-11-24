@@ -26,6 +26,7 @@ import {
   FakePage,
   FakeTicketVerifier,
   testSessionFilesRoot,
+  validClaims,
 } from "../packages/browser-runtime-core/src/test-support/fakes.js";
 import { LocalBrowserRuntimeBridge } from "../packages/runner-client/src/browser-bridge.js";
 import { RelayBrowserPoolRuntimeChannel } from "../apps/host/src/browser/managed-pool.js";
@@ -95,11 +96,12 @@ async function relayFixture() {
     type: "spki",
   });
   // The guest's runtime: pooled, its identity from its boot, its token from the agent.
+  const verifier = new FakeTicketVerifier();
   const runtime = new BrowserRuntime({
     launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([new FakePage()]))),
     runtimeId: "browser-main",
     sessionFilesRoot: testSessionFilesRoot(),
-    ticketVerifier: new FakeTicketVerifier(),
+    ticketVerifier: verifier,
     pool: {
       controllerKey: controlKey,
       probePage: async () => [],
@@ -148,6 +150,7 @@ async function relayFixture() {
   return {
     agent,
     runtime,
+    verifier,
     endpoint,
     call,
     host,
@@ -199,6 +202,26 @@ describe("the relay", () => {
     const forged = Buffer.alloc(64);
     await expect(channel.controlPool(started.control!, forged)).rejects.toThrow();
     expect((await channel.poolState())?.fence).toEqual(started.control!.fence);
+  });
+
+  it("carries the Home's end request to the runtime, and the answer it gives after its teardown", async () => {
+    const f = await relayFixture();
+    const started = await f.call("start");
+    const channel = new RelayBrowserPoolRuntimeChannel(poolRelayTransport(f.endpoint()));
+    await channel.controlPool(started.control!, Buffer.from(started.signature!, "base64"));
+    const claims = validClaims();
+    f.verifier.setClaims("end", { ...claims, pool: { ...started.control!.fence, end: true } });
+    // No such session is held or being torn down: ended, from the running runtime, under its fence.
+    expect(await channel.endSession("end")).toMatchObject({
+      outcome: "ended",
+      state: { phase: "running", fence: started.control!.fence },
+    });
+    // An attach ticket is not an end request: refused, and nothing is answered as ended.
+    f.verifier.setClaims("attach", {
+      ...claims,
+      pool: { ...started.control!.fence, attachment: 1 },
+    });
+    await expect(channel.endSession("attach")).rejects.toThrow("does not end a browser session");
   });
 
   // The Home side's channel interface (round 10): null means there is no runtime to ask, as a

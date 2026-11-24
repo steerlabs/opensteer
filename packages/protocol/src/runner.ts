@@ -1315,49 +1315,34 @@ export type RunnerAgentsResumed = z.infer<typeof RunnerAgentsResumedSchema>;
  * or a messaging transport has no work location and must not be made to invent
  * one.
  */
-export const RunnerAgentsModuleSchema = z
-  .object({
-    // Exactly one. A Runner holds a single unscoped harness registry and its
-    // identity refuses any other environment, so advertising a list the
-    // reconciler could never honor per-environment only invited callers to
-    // loop over it.
-    environmentIds: z.array(EnvironmentIdSchema).length(1),
-    computerTool: z.literal(1).optional(),
-    reconcileHarnessInspection: z
-      .number()
-      .int()
-      .positive()
-      .transform((version) => (version === 1 ? (1 as const) : undefined))
-      .optional(),
-    /** Absent on Runners that cannot give a Run files or take them from it. */
-    runFiles: z.literal(1).optional(),
-    harnessDrivers: RunnerHarnessDriversSchema,
-    // Present exactly when this Runner advertises local-directory. It carries
-    // the disk's durable identity plus what that disk currently holds, so a
-    // reconnect is reconciled without asking binding by binding.
+export const RunnerAgentsModuleSchema = z.object({
+  // Exactly one. A Runner holds a single unscoped harness registry and its
+  // identity refuses any other environment, so advertising a list the
+  // reconciler could never honor per-environment only invited callers to
+  // loop over it.
+  environmentIds: z.array(EnvironmentIdSchema).length(1),
+  computerTool: z.literal(1).optional(),
+  reconcileHarnessInspection: z
+    .number()
+    .int()
+    .positive()
+    .transform((version) => (version === 1 ? (1 as const) : undefined))
+    .optional(),
+  /** Absent on Runners that cannot give a Run files or take them from it. */
+  runFiles: z.literal(1).optional(),
+  harnessDrivers: RunnerHarnessDriversSchema,
+  // Present exactly when this Runner advertises local-directory. It carries
+  // the disk's durable identity plus what that disk currently holds, so a
+  // reconnect is reconciled without asking binding by binding.
 
-    loginFill: z
-      .number()
-      .int()
-      .positive()
-      .transform((version) => (version === 1 ? (1 as const) : undefined))
-      .optional(),
-    maxConcurrentRuns: z.number().int().positive().max(1_000),
-    // New choices may coexist with supported ones; a required set must remain usable.
-    providerStateModes: z
-      .array(z.string())
-      .max(100)
-      .transform((values) =>
-        values.filter((value) => HarnessInstanceStateKindSchema.safeParse(value).success),
-      )
-      .pipe(z.array(HarnessInstanceStateKindSchema).min(1).max(2)),
-    // New choices may coexist with supported ones; a required set must remain usable.
-  })
-  .superRefine((module, context) => {
-    if (new Set(module.providerStateModes).size !== module.providerStateModes.length) {
-      context.addIssue({ code: "custom", message: "Runner provider state modes must be unique" });
-    }
-  });
+  loginFill: z
+    .number()
+    .int()
+    .positive()
+    .transform((version) => (version === 1 ? (1 as const) : undefined))
+    .optional(),
+  maxConcurrentRuns: z.number().int().positive().max(1_000),
+});
 export type RunnerAgentsModule = z.infer<typeof RunnerAgentsModuleSchema>;
 
 export const RunnerBrowserModuleSchema = z
@@ -1740,6 +1725,8 @@ export const RunnerDescriptorSchema = z
   .object({
     agentsStoppedSince: IsoDateTimeSchema.nullable().optional(),
     bootId: RunnerBootIdSchema,
+    /** Stable identity of the host OS boot; changes on machine reboot. */
+    machineBootId: z.string().trim().min(1).max(128).optional(),
     // Capability names are an extensible set, independent of required semantics.
     capabilities: z
       .array(z.string())
@@ -2174,6 +2161,12 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
     requestId: CorrelationIdSchema,
     result: RunnerVoiceResultSchema,
   }),
+  z.strictObject({
+    ...fencedMessageBase,
+    type: z.literal("runner.thread.stop.recheck.result"),
+    requestId: CorrelationIdSchema,
+    proven: z.boolean(),
+  }),
   RunnerPowerSleepingSchema,
   RunnerAgentsStoppedSchema,
   RunnerAgentsResumedSchema,
@@ -2207,6 +2200,12 @@ export type RunnerToHostMessage = z.infer<typeof RunnerToHostMessageSchema>;
 
 export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({ ...fencedMessageBase, type: z.literal("host.shell.probe-full-disk-access") }),
+  z.strictObject({
+    ...fencedMessageBase,
+    type: z.literal("host.thread.stop.recheck"),
+    requestId: CorrelationIdSchema,
+    threadId: ThreadIdSchema,
+  }),
   z.strictObject({ ...fencedMessageBase, type: z.literal("host.live.resync"), runId: RunIdSchema }),
   HostBackgroundTextSchema,
   RunnerChallengeSchema,

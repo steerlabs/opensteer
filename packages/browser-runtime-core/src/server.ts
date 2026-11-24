@@ -220,7 +220,11 @@ export class BrowserRuntimeServer {
     // never a gate (round D, D4): a compromised guest can make it say anything.
     if (request.method === "GET" && request.url === "/v1/pool/sandbox")
       return reply(200, await readBrowserSandbox());
-    if (request.method !== "POST" || request.url !== "/v1/pool/control") return reply(404, {});
+    if (
+      request.method !== "POST" ||
+      (request.url !== "/v1/pool/control" && request.url !== "/v1/pool/end")
+    )
+      return reply(404, {});
     const chunks: Buffer[] = [];
     let size = 0;
     for await (const chunk of request) {
@@ -229,9 +233,23 @@ export class BrowserRuntimeServer {
       if (size > 16 * 1024) throw new Error("The pool control exceeds its limit.");
       chunks.push(bytes);
     }
-    const { control, signature } = PoolControlRequestSchema.parse(
-      JSON.parse(Buffer.concat(chunks).toString("utf8")),
-    );
+    const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (request.url === "/v1/pool/end") {
+      // The Home's request to end one session (P15): its answer, given after the teardown.
+      const { ticket } = PoolEndRequestSchema.parse(body);
+      try {
+        reply(200, await this.runtime.endPoolSession(ticket));
+      } catch (error) {
+        const failure = toBrowserRuntimeError(error);
+        reply(409, {
+          code: failure.code,
+          message: failure.message,
+          state: this.runtime.poolState(),
+        });
+      }
+      return;
+    }
+    const { control, signature } = PoolControlRequestSchema.parse(body);
     try {
       const state = await this.runtime.controlPool(
         control as BrowserPoolControl,
@@ -240,7 +258,13 @@ export class BrowserRuntimeServer {
       reply(200, { state });
     } catch (error) {
       const failure = toBrowserRuntimeError(error);
-      reply(409, { code: failure.code, message: failure.message, state: this.runtime.poolState() });
+      reply(409, {
+        code: failure.code,
+        message: failure.message,
+        // Optional: why a control was refused, as the Home acts on it (an end not confirmed).
+        ...(failure.reason ? { reason: failure.reason } : {}),
+        state: this.runtime.poolState(),
+      });
     }
   }
 
@@ -736,6 +760,8 @@ const PoolFenceSchema = z.strictObject({
 });
 
 /** A signed pool control as the Home relays it; the signature decides, the shape only bounds. */
+const PoolEndRequestSchema = z.strictObject({ ticket: z.string().min(1).max(16_384) });
+
 const PoolControlRequestSchema = z.strictObject({
   control: z.strictObject({
     kind: z.enum(["install", "retire", "release", "seal", "adopt", "complete"]),

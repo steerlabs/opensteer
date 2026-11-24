@@ -1,3 +1,4 @@
+import { nodeTrustEnvironment } from "../../../../deploy/container/opensteer-node-trust.mjs";
 import { DesktopBrowserProfileErasure } from "./browser-profile-erasure.js";
 import { logShutdownError, type ShutdownLog } from "../app/desktop-shutdown.js";
 import { RestartPolicy } from "@opensteer/shared/restartPolicy";
@@ -248,6 +249,7 @@ export interface LocalRunnerServiceDependencies {
   readonly userEnvironment?: PersonalUserEnvironmentPort;
   /** The menu bar's Stop: closed, no Runner launches here, whoever asks. */
   readonly agentsStoppedSince?: () => string | null;
+  readonly confirmShutdown?: typeof confirmRunnerShutdown;
   readonly onUncontainedBoot?: (mode: string) => void;
 }
 
@@ -357,6 +359,7 @@ export class LocalRunnerService {
   #reconcileTail: Promise<void> = Promise.resolve();
   #shuttingDown = false;
   readonly #agentsStoppedSince: (() => string | null) | undefined;
+  readonly #confirmShutdown: typeof confirmRunnerShutdown;
   readonly #onUncontainedBoot: LocalRunnerServiceDependencies["onUncontainedBoot"];
 
   constructor(config: DesktopConfiguration, dependencies: LocalRunnerServiceDependencies) {
@@ -406,6 +409,7 @@ export class LocalRunnerService {
     this.#targets = dependencies.targets;
     this.#userEnvironment = dependencies.userEnvironment ?? new NativePersonalUserEnvironment();
     this.#agentsStoppedSince = dependencies.agentsStoppedSince;
+    this.#confirmShutdown = dependencies.confirmShutdown ?? confirmRunnerShutdown;
     this.#onUncontainedBoot = dependencies.onUncontainedBoot;
     this.#unsubscribeTargets = this.#targets.subscribe(() => void this.reconcile());
   }
@@ -1767,27 +1771,33 @@ export class LocalRunnerService {
       await this.#stopSlotComputerUse(slot);
       this.#assertCurrentIntent(slot, intentGeneration);
     }
-    const environment = runnerEnvironment({
-      ...(browser ? { browser } : {}),
-      ...(computerUse ? { computerUse } : {}),
-      baseEnvironment: userEnvironment,
-      config: this.#config,
-      deploymentShape: target.deploymentShape,
-      hostUrl: target.hostUrl,
-      homeDirectory: this.#homeDirectory,
-      nodeExecutable: runtimeRelease.nodeExecutable,
-      runnerDataDirectory,
-      runnerName,
-      ...(runAgents
-        ? {
-            execution: {
-              agentSkillsDirectory: runtimeRelease.agentSkillsDirectory,
-              browserHarnessExecutable: runtimeRelease.browserHarnessExecutable,
-              harnessExecutables: runtimeRelease.harnessExecutables,
-            },
-          }
-        : {}),
-    });
+    // This Runner dials its Home over TLS from Electron's utility process,
+    // which takes Node's own variable for the computer's certificates but not
+    // the argument (`opensteer-node-trust.mjs`).
+    const environment = nodeTrustEnvironment(
+      runnerEnvironment({
+        ...(browser ? { browser } : {}),
+        ...(computerUse ? { computerUse } : {}),
+        baseEnvironment: userEnvironment,
+        config: this.#config,
+        deploymentShape: target.deploymentShape,
+        hostUrl: target.hostUrl,
+        homeDirectory: this.#homeDirectory,
+        nodeExecutable: runtimeRelease.nodeExecutable,
+        runnerDataDirectory,
+        runnerName,
+        ...(runAgents
+          ? {
+              execution: {
+                agentSkillsDirectory: runtimeRelease.agentSkillsDirectory,
+                browserHarnessExecutable: runtimeRelease.browserHarnessExecutable,
+                harnessExecutables: runtimeRelease.harnessExecutables,
+              },
+            }
+          : {}),
+      }),
+      { environmentInputs: "drop" },
+    );
     const networkSecrets = networkCredentialSecrets(environment);
     this.#assertCurrentIntent(slot, intentGeneration);
     const stoppedSince = this.#agentsStoppedSince?.();
@@ -2148,7 +2158,7 @@ export class LocalRunnerService {
         gone &&
         (!this.#agentsStoppedSince ||
           (!!target &&
-            (await confirmRunnerShutdown(
+            (await this.#confirmShutdown(
               this.#deploymentDataDirectory(target.deploymentId),
               slot.shutdownProof,
             ).catch(() => false))));

@@ -1,13 +1,19 @@
-import {
-  DeploymentIdSchema,
-  MessageContentSchema,
-  TeamChannelIdSchema,
-  TeamMessageIdSchema,
-} from "@opensteer/core";
+import { MessageContentSchema } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { z } from "zod";
 
-/** The team source this migration wrote, frozen here since the code that read it is gone. */
+/**
+ * The team source this migration wrote, frozen here with the ids it named, as main's
+ * `@opensteer/core` defined them when 0011 was released; the code that read it is gone.
+ */
+const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+const DeploymentIdSchema = z.string().regex(new RegExp(`^dep_${uuid}$`, "i"));
+const TeamChannelIdSchema = z.string().regex(new RegExp(`^tch_${uuid}$`, "i"));
+const TeamMessageIdSchema = z
+  .string()
+  .max(19)
+  .regex(/^[1-9][0-9]*$/)
+  .refine((value) => value.length < 19 || value <= "9223372036854775807");
 const TeamSourceSchema = z.strictObject({
   teamId: DeploymentIdSchema,
   channelId: TeamChannelIdSchema,

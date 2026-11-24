@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { expect, it, vi } from "vitest";
 import { standardCdpEndpoint } from "../apps/host/src/browser/standard-cdp-endpoint.test-support.js";
 import { AgentSessionService } from "../apps/host/src/agent-sessions/agent-session-service.js";
+import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
 import { BrowserScriptService } from "../apps/host/src/browser-use/browser-script-service.js";
 import {
   BrowserScriptConfinement,
@@ -771,6 +772,53 @@ it("redeems no connection ticket and passes no frame while a restart holds admis
     expect(await refused(attached.send("Target.getTargets"))).not.toBe("answered");
     expect(j.controller.effects).toEqual(["start"]);
   } finally {
+    await endpoint?.close();
+    await j.close();
+  }
+});
+
+it("refuses an attach whose restart hold began after its last check, at the dispatch itself", async () => {
+  const j = await journey("attach-dispatch-held", { profile: true });
+  let endpoint: Awaited<ReturnType<typeof standardCdpEndpoint>> | undefined;
+  const issue = BrowserAttachTicketSigner.prototype.issue;
+  let holdAtIssue: (() => void) | undefined;
+  const issuing = vi
+    .spyOn(BrowserAttachTicketSigner.prototype, "issue")
+    .mockImplementation(function (this: BrowserAttachTicketSigner, ...args) {
+      const ticket = Reflect.apply(issue, this, args) as ReturnType<typeof issue>;
+      // The attach's ticket is issued after every await and just before its dispatch.
+      if ((args[0] as { standardCdp?: unknown }).standardCdp) holdAtIssue?.();
+      return ticket;
+    });
+  try {
+    const home = await j.startHome();
+    await home.service.start({ ownerId: j.task.userId, profileId: j.profile!.id });
+    await j.draft();
+    const work = await directWork(j, () => home);
+    endpoint = await standardCdpEndpoint(() => home.service);
+    const issued = await work.connect();
+    expect(issued.isError, text(issued)).not.toBe(true);
+    const url = (issued.structuredContent as { endpoint: string }).endpoint;
+    // What reaches the guest: an attach dispatched to its runtime.
+    const reached = vi.spyOn(j.guest, "attachStandardCdp");
+    holdAtIssue = () => {
+      holdAtIssue = undefined;
+      home.coordinator.gate.set({ hold: "restart" });
+    };
+    const refused = (sent: Promise<unknown>) =>
+      sent.then(
+        (reply) => (reply as { error?: { message?: string } }).error?.message ?? "answered",
+        () => "closed",
+      );
+    const late = await endpoint.open(url).catch(() => undefined);
+    const answer = late ? await refused(late.send("Target.getTargets")) : "closed";
+    expect(holdAtIssue).toBeUndefined();
+    expect(answer).not.toBe("answered");
+    // Refused at the dispatch: nothing of it reached the guest.
+    expect(reached).not.toHaveBeenCalled();
+    expect(j.controller.effects).toEqual(["start"]);
+  } finally {
+    issuing.mockRestore();
     await endpoint?.close();
     await j.close();
   }

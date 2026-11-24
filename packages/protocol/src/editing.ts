@@ -61,6 +61,388 @@ export const EditingCommandSchema = z.enum([
 ]);
 export type EditingCommand = z.infer<typeof EditingCommandSchema>;
 
+/**
+ * CY4: what a composition's commit adds to a field that already holds `held` from that same
+ * composition (the change of its context committed it, or the page ended it keeping its text):
+ * nothing when it is that text, the rest when it extends it, all of it when it differs, an
+ * insertion that deletes nothing. Each committed text is applied exactly once. The one rule for
+ * both cases, wherever a side knows what the field already holds: the phone's reducer (the
+ * change of context) and the page's applier (a composition the page ended).
+ */
+export function committedRemainder(held: string, commit: string): string {
+  if (commit === held) return "";
+  return commit.startsWith(held) ? commit.slice(held.length) : commit;
+}
+
+/**
+ * The plain caret moves the phone sends. They are also what a client computes from an edit
+ * (moving the caret back where the person had it): after the far side refuses an edit, the moves
+ * of that producer under that context go with it until its next edit applies (CY5).
+ */
+export const caretMoveEditingCommands: ReadonlySet<EditingCommand> = new Set([
+  "moveBackward",
+  "moveForward",
+]);
+/**
+ * CY7: the commands relative to the caret, the single backward deletion (always a Backspace the
+ * person pressed at a caret) and the plain caret moves. Made under an earlier context of the
+ * focused field, one of these still applies at the caret as it now is; every other command made
+ * under any context but the current one is refused alone.
+ */
+export const caretRelativeEditingCommands: ReadonlySet<EditingCommand> = new Set([
+  "deleteBackward",
+  ...caretMoveEditingCommands,
+]);
+
+/**
+ * Identity of a focused field under the shared editing-admission rule (docs/editing-admission.md).
+ * A different element, a recreated element, a changed kind, a changed sensitive flag, or a changed
+ * editability flag is another field.
+ */
+export interface EditingFieldIdentity {
+  readonly id: string;
+  readonly kind: string;
+  readonly sensitive: boolean;
+  readonly editable?: boolean | undefined;
+}
+
+/**
+ * Snapshot of a focused field's selection and optional trailing text before the caret,
+ * used to distinguish the viewer's own edit effects from external changes (P4(b)).
+ */
+export interface EditingObservedState {
+  readonly location: number;
+  readonly length: number;
+  readonly text?: string | null | undefined;
+}
+
+function sameObservedState(a: EditingObservedState, b: EditingObservedState): boolean {
+  return (
+    a.location === b.location && a.length === b.length && (a.text ?? null) === (b.text ?? null)
+  );
+}
+
+function firstGraphemeStep(text: string): string {
+  const iter = text[Symbol.iterator]();
+  const head = iter.next();
+  if (head.done) return "";
+  let step = head.value;
+  let expectingJoinTarget = false;
+  for (const scalar of iter) {
+    const cp = scalar.codePointAt(0) ?? 0;
+    if (expectingJoinTarget) {
+      step += scalar;
+      expectingJoinTarget = false;
+      continue;
+    }
+    if (cp === 0x200d) {
+      step += scalar;
+      expectingJoinTarget = true;
+      continue;
+    }
+    const isCombining =
+      (cp >= 0x0300 && cp <= 0x036f) ||
+      (cp >= 0x1ab0 && cp <= 0x1aff) ||
+      (cp >= 0x1dc0 && cp <= 0x1dff) ||
+      (cp >= 0x20d0 && cp <= 0x20ff) ||
+      (cp >= 0xfe00 && cp <= 0xfe0f) ||
+      (cp >= 0xfe20 && cp <= 0xfe2f) ||
+      (cp >= 0xe0100 && cp <= 0xe01ef) ||
+      (cp >= 0x1f3fb && cp <= 0x1f3ff);
+    if (isCombining) {
+      step += scalar;
+      continue;
+    }
+    break;
+  }
+  return step;
+}
+
+function matchesExpectedState(
+  observed: EditingObservedState,
+  expected: EditingObservedState,
+): boolean {
+  if (observed.location !== expected.location || observed.length !== expected.length) return false;
+  // Q2: an expected (or observed) state whose text could not be predicted is NOT a match: rotate.
+  if (expected.text == null || observed.text == null) return false;
+  return observed.text === expected.text;
+}
+
+/**
+ * The three admission classes in docs/editing-admission.md:
+ * - `relative`: insertion, backward deletion, plain caret move, paste (Rule 2)
+ * - `named`: text-naming replacement or forward deletion of named text (Rule 3)
+ * - `exact`: commands with nothing to verify against live text (Rule 4)
+ */
+export type EditingAdmissionKind = "relative" | "named" | "exact";
+
+/**
+ * Bounded wait decision for a text-naming edit when a target renders input late (Rule 3).
+ */
+export type NamedTextWaitDecision = "apply" | "wait" | "refuse-mismatch" | "refuse-field";
+
+/** How long a late-rendering target waits for named text to appear before refusing (Rule 3). */
+export const editingNamedTextWaitSeconds = 0.5;
+
+export function namedTextWaitDecision(
+  sameField: boolean,
+  matches: boolean,
+  waitedSeconds: number,
+  limitSeconds: number = editingNamedTextWaitSeconds,
+): NamedTextWaitDecision {
+  if (!sameField) return "refuse-field";
+  if (matches) return "apply";
+  return waitedSeconds < limitSeconds ? "wait" : "refuse-mismatch";
+}
+
+export function sameEditingField(
+  a: EditingFieldIdentity | null,
+  b: EditingFieldIdentity | null,
+): boolean {
+  if (a === null || b === null) return a === b;
+  return (
+    a.id === b.id &&
+    a.kind === b.kind &&
+    a.sensitive === b.sensitive &&
+    (a.editable ?? true) === (b.editable ?? true)
+  );
+}
+
+/**
+ * Shared state machine for the five-part editing-admission rule (docs/editing-admission.md),
+ * verified against packages/protocol/fixtures/editing-admission.json in both TypeScript and Swift.
+ */
+export class EditingContexts {
+  static readonly kept = 64;
+  static readonly tailWindow = 16;
+  static readonly namedTextWaitSeconds = editingNamedTextWaitSeconds;
+
+  static trimmedTail(text: string): string | null {
+    if (text.length <= EditingContexts.tailWindow) return text;
+    const suffix = text.slice(text.length - EditingContexts.tailWindow);
+    const first = suffix.charCodeAt(0);
+    // Avoid splitting a surrogate pair at the left boundary of the tail window.
+    if (first >= 0xdc00 && first <= 0xdfff) return null;
+    return suffix;
+  }
+
+  readonly #nextId: () => string;
+  #current: string;
+  #earlier: string[] = [];
+  #field: EditingFieldIdentity | null = null;
+  #currentPublished = false;
+  #baseline: EditingObservedState | null = null;
+  #expected: EditingObservedState[] = [];
+
+  constructor(nextId: () => string = () => crypto.randomUUID()) {
+    this.#nextId = nextId;
+    this.#current = nextId();
+  }
+
+  get current(): string {
+    return this.#current;
+  }
+
+  get field(): EditingFieldIdentity | null {
+    return this.#field;
+  }
+
+  get earlier(): readonly string[] {
+    return this.#earlier;
+  }
+
+  get predictedState(): EditingObservedState | null {
+    return this.#expected.at(-1) ?? this.#baseline;
+  }
+
+  hasEarlier(contextId: string): boolean {
+    return this.#earlier.includes(contextId);
+  }
+
+  /**
+   * Marks `current` as published to the viewer. Only published contexts enter `earlier` on
+   * same-field rotation (P4(c)), so unpublished rotations while batches are pending never evict
+   * the viewer's published context.
+   */
+  markPublished(): void {
+    this.#currentPublished = true;
+  }
+
+  /** Records the state expected after dispatching one of the viewer's own edits (P4(b)). */
+  expectOwnEffect(state: EditingObservedState): void {
+    if (this.#field === null) return;
+    this.#expected.push(state);
+    if (this.#expected.length > EditingContexts.kept) this.#expected.shift();
+  }
+
+  /** Predicts the state after a `moveForward` command using text read after the caret (A1). */
+  expectMoveForward(nextText: string | null = null, selectionEndTail: string | null = null): void {
+    const base = this.predictedState;
+    if (!base) return;
+    if (base.length > 0) {
+      this.expectOwnEffect({
+        location: base.location + base.length,
+        length: 0,
+        text: selectionEndTail,
+      });
+      return;
+    }
+    if (nextText === null) {
+      this.expectOwnEffect({ location: base.location + 1, length: 0, text: null });
+      return;
+    }
+    if (nextText.length === 0) return;
+    // Step one Unicode scalar (plus any following combining marks, variation selectors, or
+    // ZWJ-linked scalars) in plain JS so this module stays Hermes-safe.
+    const first = firstGraphemeStep(nextText);
+    if (!first) return;
+    const nextTail = base.text != null ? EditingContexts.trimmedTail(base.text + first) : null;
+    this.expectOwnEffect({
+      location: base.location + first.length,
+      length: 0,
+      text: nextTail,
+    });
+  }
+
+  /**
+   * Observes the currently focused field. Returns true only when the context changed (Rule 5):
+   * the field identity changed, or `changed` reports a content/selection change on the same field.
+   */
+  observe(field: EditingFieldIdentity | null, changed = false): boolean {
+    if (!sameEditingField(this.#field, field)) {
+      this.#field = field;
+      this.#earlier = [];
+      this.#expected = [];
+      this.#baseline = null;
+      this.#current = this.#nextId();
+      this.#currentPublished = false;
+      return true;
+    }
+    if (!changed) return false;
+    this.rotate(field !== null);
+    return true;
+  }
+
+  /**
+   * Observes the live focused field together with its live selection/text state (P4(b)):
+   * - Equal to baseline (unchanged or app has not caught up yet): rotates nothing.
+   * - Equal to any expected prefix in `#expected`: consumes that prefix, advances baseline,
+   *   rotates nothing.
+   * - Anything else (or `forceChanged`, e.g. agent mutation): rotates, clears `#expected`,
+   *   and updates baseline.
+   */
+  observeState(
+    field: EditingFieldIdentity | null,
+    state: EditingObservedState | null,
+    forceChanged = false,
+  ): boolean {
+    if (!sameEditingField(this.#field, field)) {
+      this.#field = field;
+      this.#earlier = [];
+      this.#expected = [];
+      this.#baseline = state;
+      this.#current = this.#nextId();
+      this.#currentPublished = false;
+      return true;
+    }
+    if (forceChanged) {
+      this.#expected = [];
+      this.#baseline = state;
+      this.rotate(field !== null);
+      return true;
+    }
+    if (state === null) {
+      if (this.#baseline === null) return false;
+      this.#expected = [];
+      this.#baseline = null;
+      this.rotate(field !== null);
+      return true;
+    }
+    if (this.#baseline === null) {
+      this.#baseline = state;
+      return false;
+    }
+    if (sameObservedState(state, this.#baseline)) return false;
+    const matchIndex = this.#expected.findIndex((expected) =>
+      matchesExpectedState(state, expected),
+    );
+    if (matchIndex >= 0) {
+      this.#baseline = state;
+      this.#expected.splice(0, matchIndex + 1);
+      return false;
+    }
+    this.#expected = [];
+    this.#baseline = state;
+    this.rotate(field !== null);
+    return true;
+  }
+
+  /**
+   * Rotates to a fresh context. Keeps the previous context in `earlier` only for the same field
+   * AND only if that context was published to the viewer (P4(c)).
+   */
+  rotate(sameField: boolean): string {
+    if (sameField && this.#field !== null) {
+      if (this.#currentPublished && !this.#earlier.includes(this.#current)) {
+        this.#earlier.push(this.#current);
+        if (this.#earlier.length > EditingContexts.kept) this.#earlier.shift();
+      }
+    } else {
+      this.#earlier = [];
+    }
+    this.#expected = [];
+    this.#current = this.#nextId();
+    this.#currentPublished = false;
+    return this.#current;
+  }
+
+  /**
+   * A text-naming edit mismatched live text in the current field: rotate while a field is focused,
+   * without forgetting earlier contexts. With no focused field, rotates nothing (S6).
+   */
+  mismatch(): string {
+    if (this.#field === null) return this.#current;
+    return this.rotate(true);
+  }
+
+  /** Clears focus and forgets all earlier contexts. */
+  reset(): string {
+    this.#field = null;
+    this.#baseline = null;
+    this.#expected = [];
+    return this.rotate(false);
+  }
+
+  /**
+   * Decides whether an edit made under `contextId` is admitted now (Rules 1-4).
+   * Under an earlier context of the same field, a relative edit requires a collapsed live
+   * selection (`collapsed: true`); under the current context, any selection is admitted.
+   * A refusal never mutates state (Rule 5).
+   */
+  admits(
+    contextId: string,
+    kind: EditingAdmissionKind,
+    options?: {
+      readonly namedMatches?: boolean;
+      readonly exactNamed?: boolean;
+      readonly collapsed?: boolean;
+    },
+  ): boolean {
+    const isCurrent = contextId === this.#current;
+    const sameField = isCurrent || (this.#field !== null && this.#earlier.includes(contextId));
+    if (!sameField) return false;
+    switch (kind) {
+      case "relative":
+        return isCurrent || (options?.collapsed ?? true);
+      case "named":
+        if (options?.exactNamed && !isCurrent) return false;
+        return options?.namedMatches ?? true;
+      case "exact":
+        return isCurrent;
+    }
+  }
+}
+
 /** One grapheme, which a single keystroke types; long enough for ZWJ sequences. */
 export const editingKeystrokeTextMaxLength = 64;
 /** The most text one composition or text edit carries. */

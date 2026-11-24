@@ -599,7 +599,6 @@ integration.sequential("iPhone integrations Host contract", () => {
               bindings: [],
               truncated: false,
             },
-            providerStateModes: ["isolated"],
             workspaceBackings: ["local-directory"],
           },
         },

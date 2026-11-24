@@ -61,6 +61,7 @@ import {
   EditingClipboardPartSchema,
   EditingCommandSchema,
   EditingCompositionSchema,
+  EditingContextIdSchema,
   EditingContextSchema,
   EditingModifiersSchema,
   EditingTextEditSchema,
@@ -267,6 +268,11 @@ export const PooledBrowserAttachTicketClaimsSchema = BrowserAttachTicketClaimsSc
     instance: z.uuid(),
     epoch: z.number().int().positive(),
     attachment: z.number().int().positive().optional(),
+    /**
+     * Only ends this session (the Home's end request, never an attach): the runtime tears it
+     * down without reviving it, and refuses the ticket on every attach.
+     */
+    end: z.literal(true).optional(),
   }),
 });
 type PooledBrowserAttachTicketClaims = z.infer<typeof PooledBrowserAttachTicketClaimsSchema>;
@@ -632,6 +638,11 @@ const BaselineBrowserClientMessageSchema = z
        */
       ended: z.literal(true).optional(),
     }),
+    /**
+     * A key press carries no field context, by design: it goes to whatever has focus when it
+     * arrives, as a key on a keyboard does. (A paste, an edit, a composition and a command name
+     * the field they were made for.)
+     */
     z.strictObject({
       ...browserBase,
       type: z.literal("input.key"),
@@ -655,6 +666,19 @@ const BaselineBrowserClientMessageSchema = z
       consumerToken: z.uuid().optional(),
       surfaceId: BrowserSurfaceIdSchema,
       command: EditingCommandSchema,
+      /**
+       * The context of the field the command was made for (CV1), always. A move or the backward
+       * deletion under an earlier context of the focused field applies at its caret; any command
+       * under another field's context is refused alone. A target with no field contexts (a Mac
+       * app, a phone screen) takes its commands on its own wire, display.input, which carries
+       * none.
+       */
+      contextId: EditingContextIdSchema,
+      /**
+       * CZ7: a move computed from the edit this producer sent just before: refused when that
+       * edit was. A person's own move carries nothing.
+       */
+      follows: z.literal(true).optional(),
     }),
     /** Editing sessions only: the composition in progress, shown live in the page. */
     z.strictObject({
@@ -671,6 +695,8 @@ const BaselineBrowserClientMessageSchema = z
       targeted: z.boolean().optional(),
       surfaceId: BrowserSurfaceIdSchema,
       edit: EditingTextEditSchema,
+      /** P2 (S2): an insertion over a selection follows its selection-removal edit as one unit. */
+      follows: z.literal(true).optional(),
     }),
     /**
      * Editing sessions only. The person's copy or cut: the runtime performs its
@@ -684,6 +710,8 @@ const BaselineBrowserClientMessageSchema = z
       consumerToken: z.uuid().optional(),
       surfaceId: BrowserSurfaceIdSchema,
       operationId: EditingClipboardOperationIdSchema,
+      /** PH5: the context of the field it was made for, refused whole in any other. */
+      contextId: EditingContextIdSchema,
     }),
     /**
      * Editing sessions only. The person's paste: its bytes follow in
@@ -698,6 +726,13 @@ const BaselineBrowserClientMessageSchema = z
       surfaceId: BrowserSurfaceIdSchema,
       operationId: EditingClipboardOperationIdSchema,
       items: EditingClipboardItemsSchema,
+      /**
+       * CZ5: a paste is one act on one field: the context of the field it was made for. The page
+       * refuses it whole when that field is no longer the one focused, as it does an edit.
+       */
+      contextId: EditingContextIdSchema,
+      /** PH2: set when this paste follows a selection-deletion edit so both fail as one unit. */
+      follows: z.literal(true).optional(),
     }),
     z.strictObject({
       ...browserBase,
@@ -719,6 +754,10 @@ const BaselineBrowserClientMessageSchema = z
       targeted: z.boolean().optional(),
       surfaceId: BrowserSurfaceIdSchema,
       text: z.string().max(browserPasteTextMaxLength),
+      /** CZ5: the context of the field it was made for, refused whole in any other. */
+      contextId: EditingContextIdSchema,
+      /** PH2: set when this paste follows a selection-deletion edit so both fail as one unit. */
+      follows: z.literal(true).optional(),
     }),
     z.strictObject({
       ...browserRequestBase,
@@ -1077,6 +1116,7 @@ const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
     ...browserBase,
     type: z.literal("browser.error"),
     error: ProtocolErrorSchema,
+    operationId: z.uuid().optional(),
   }),
   /**
    * The viewer named by `consumerToken` opened this popup with its own input.
@@ -1459,6 +1499,11 @@ export const HostedBrowserSessionSchema = z.object({
   profileId: BrowserProfileIdSchema.nullable(),
   runtimeId: z.string().min(1).max(255),
   state: HostedBrowserSessionStateSchema,
+  /**
+   * W15: Stop never got its replaced browser's confirmation; kept closing honestly until the
+   * person removes it from their list.
+   */
+  closeUnconfirmed: z.literal(true).optional(),
   attachedRunIds: z.array(RunIdSchema).max(browserSessionMaxAttachedRuns).optional(),
   /**
    * An agent is acting in this browser now: it sent a command within the last
@@ -1482,6 +1527,7 @@ export const AgentBrowserSessionSummarySchema = HostedBrowserSessionSchema.omit(
   navigationVersion: true,
   tabRestoreVersion: true,
   acting: true,
+  closeUnconfirmed: true,
   opener: true,
   attachedRunIds: true,
   page: true,
@@ -1535,6 +1581,26 @@ export const BrowserPoolReportSchema = z.object({
       }),
     )
     .max(500)
+    .optional(),
+  /**
+   * Why the browser cannot be used now, while it cannot: `setting-up` (no browser placed yet, or
+   * a new place awaited), `egress-required`, `profile-disk-missing`, `unreachable` (nothing has
+   * answered for long), or a reason this client does not know. Optional; a released client
+   * ignores it.
+   */
+  notReady: z.object({ reason: z.string().min(1).max(64) }).optional(),
+  /**
+   * W15: sessions of a replaced browser whose Stop never confirmed, with their open tabs, until
+   * the person removes them from their list.
+   */
+  unconfirmedClosings: z
+    .array(
+      z.object({
+        sessionId: BrowserSessionIdSchema,
+        surfaceIds: z.array(z.string().min(1).max(200)).max(128),
+      }),
+    )
+    .max(128)
     .optional(),
 });
 export type BrowserPoolReportView = z.infer<typeof BrowserPoolReportSchema>;

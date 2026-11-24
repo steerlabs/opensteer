@@ -165,8 +165,8 @@ final class WireShapeTests: XCTestCase {
         "ownerViewVersion",
       ]
     )
-    XCTAssertEqual(encoded["protocolVersion"] as? Int, 10)
-    XCTAssertEqual(encoded["minProtocolVersion"] as? Int, 10)
+    XCTAssertEqual(encoded["protocolVersion"] as? Int, 11)
+    XCTAssertEqual(encoded["minProtocolVersion"] as? Int, 11)
     let permissions = try XCTUnwrap(encoded["permissions"] as? [String: Any])
     XCTAssertEqual(permissions["accessibility"] as? String, "denied")
     XCTAssertEqual(permissions["screenRecording"] as? String, "granted")

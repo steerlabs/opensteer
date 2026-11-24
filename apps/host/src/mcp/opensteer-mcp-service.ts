@@ -37,6 +37,7 @@ import {
   type Thread,
   requestHoldLimitMs,
   shortRequestHoldMs,
+  consentAllowsDirectWork,
 } from "@opensteer/core";
 import {
   findAgentOperation,
@@ -960,10 +961,16 @@ export class OpensteerMcpService {
         lineageAllowsPersonalContext(caller.agentConnection ?? null),
     });
     const passwords = this.options.connectionPasswords;
-    return caller.kind === "connection" &&
-      (typeof passwords === "function" ? !passwords() : passwords === false)
-      ? offered.filter(({ name }) => name !== "saved_login_request" && name !== "card_request")
-      : offered;
+    if (caller.kind !== "connection") return offered;
+    // Direct work only for a connection whose consent covers it: the same predicate its calls
+    // are refused by (B5). A connection with no row read reads as consenting to none.
+    const direct = consentAllowsDirectWork(caller.agentConnection?.consentVersion ?? 0);
+    const passwordsOff = typeof passwords === "function" ? !passwords() : passwords === false;
+    return offered.filter(
+      ({ name }) =>
+        (direct || !connectionDirectTools.has(name)) &&
+        !(passwordsOff && (name === "saved_login_request" || name === "card_request")),
+    );
   }
   async #assertConnectionTaskKind(
     caller: Extract<AgentCaller, { kind: "connection" }>,

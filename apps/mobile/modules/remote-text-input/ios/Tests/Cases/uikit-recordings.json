@@ -1,0 +1,782 @@
+{
+  "about" : "UIKit's own UITextView on Mac Catalyst, recorded by UIKitRecordingTests.swift: each case's start, then each call's text, selection, marked text and the ranges UIKit named to its delegate.",
+  "cases" : [
+    {
+      "name" : "insertText at a caret",
+      "start" : {
+        "selection" : {
+          "end" : 1,
+          "start" : 1
+        },
+        "text" : "ab"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "insertText",
+            "x"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 2,
+            "start" : 2
+          },
+          "text" : "axb"
+        }
+      ]
+    },
+    {
+      "name" : "insertText over a selection",
+      "start" : {
+        "selection" : {
+          "end" : 2,
+          "start" : 1
+        },
+        "text" : "abc"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "insertText",
+            "x"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 2,
+            "start" : 2
+          },
+          "text" : "axc"
+        }
+      ]
+    },
+    {
+      "name" : "insertText over marked text",
+      "start" : {
+        "marked" : {
+          "end" : 3,
+          "start" : 1
+        },
+        "selection" : {
+          "end" : 3,
+          "start" : 3
+        },
+        "text" : "a日本b"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "insertText",
+            "x"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 2,
+            "start" : 2
+          },
+          "text" : "axb"
+        }
+      ]
+    },
+    {
+      "name" : "setMarkedText at a caret",
+      "start" : {
+        "selection" : {
+          "end" : 1,
+          "start" : 1
+        },
+        "text" : "ab"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "setMarkedText",
+            "に",
+            1
+          ],
+          "marked" : {
+            "end" : 2,
+            "start" : 1
+          },
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 2,
+            "start" : 2
+          },
+          "text" : "aにb"
+        }
+      ]
+    },
+    {
+      "name" : "setMarkedText over a selection",
+      "start" : {
+        "selection" : {
+          "end" : 2,
+          "start" : 1
+        },
+        "text" : "abc"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "setMarkedText",
+            "に",
+            1
+          ],
+          "marked" : {
+            "end" : 2,
+            "start" : 1
+          },
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 2,
+            "start" : 2
+          },
+          "text" : "aにc"
+        }
+      ]
+    },
+    {
+      "name" : "setMarkedText over marked text, shorter",
+      "start" : {
+        "marked" : {
+          "end" : 3,
+          "start" : 1
+        },
+        "selection" : {
+          "end" : 3,
+          "start" : 3
+        },
+        "text" : "a日本b"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "setMarkedText",
+            "日",
+            1
+          ],
+          "marked" : {
+            "end" : 2,
+            "start" : 1
+          },
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 2,
+            "start" : 2
+          },
+          "text" : "a日b"
+        }
+      ]
+    },
+    {
+      "name" : "setMarkedText empty cancels",
+      "start" : {
+        "marked" : {
+          "end" : 3,
+          "start" : 1
+        },
+        "selection" : {
+          "end" : 3,
+          "start" : 3
+        },
+        "text" : "a日本b"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "setMarkedText",
+            "",
+            0
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 1,
+            "start" : 1
+          },
+          "text" : "ab"
+        }
+      ]
+    },
+    {
+      "name" : "unmarkText",
+      "start" : {
+        "marked" : {
+          "end" : 3,
+          "start" : 1
+        },
+        "selection" : {
+          "end" : 3,
+          "start" : 3
+        },
+        "text" : "a日本b"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "unmarkText"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 3,
+            "start" : 3
+          },
+          "text" : "a日本b"
+        }
+      ]
+    },
+    {
+      "name" : "deleteBackward at a caret",
+      "start" : {
+        "selection" : {
+          "end" : 2,
+          "start" : 2
+        },
+        "text" : "abc"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "deleteBackward"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 1,
+            "start" : 1
+          },
+          "text" : "ac"
+        }
+      ]
+    },
+    {
+      "name" : "deleteBackward at the start",
+      "start" : {
+        "selection" : {
+          "end" : 0,
+          "start" : 0
+        },
+        "text" : "abc"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "deleteBackward"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 0,
+            "start" : 0
+          },
+          "text" : "abc"
+        }
+      ]
+    },
+    {
+      "name" : "deleteBackward over a selection",
+      "start" : {
+        "selection" : {
+          "end" : 3,
+          "start" : 1
+        },
+        "text" : "abcd"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "deleteBackward"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 1,
+            "start" : 1
+          },
+          "text" : "ad"
+        }
+      ]
+    },
+    {
+      "name" : "deleteBackward after a decomposed é",
+      "start" : {
+        "selection" : {
+          "end" : 3,
+          "start" : 3
+        },
+        "text" : "aé"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "deleteBackward"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 1,
+            "start" : 1
+          },
+          "text" : "a"
+        }
+      ]
+    },
+    {
+      "name" : "deleteBackward after a precomposed é",
+      "start" : {
+        "selection" : {
+          "end" : 2,
+          "start" : 2
+        },
+        "text" : "aé"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "deleteBackward"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 1,
+            "start" : 1
+          },
+          "text" : "a"
+        }
+      ]
+    },
+    {
+      "name" : "deleteBackward after an emoji sequence",
+      "start" : {
+        "selection" : {
+          "end" : 6,
+          "start" : 6
+        },
+        "text" : "a👩‍💻"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "deleteBackward"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 1,
+            "start" : 1
+          },
+          "text" : "a"
+        }
+      ]
+    },
+    {
+      "name" : "deleteBackward after a Hebrew letter",
+      "start" : {
+        "selection" : {
+          "end" : 2,
+          "start" : 2
+        },
+        "text" : "aא"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "deleteBackward"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 1,
+            "start" : 1
+          },
+          "text" : "a"
+        }
+      ]
+    },
+    {
+      "name" : "deleteBackward inside marked text",
+      "start" : {
+        "marked" : {
+          "end" : 3,
+          "start" : 1
+        },
+        "selection" : {
+          "end" : 3,
+          "start" : 3
+        },
+        "text" : "a日本b"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "deleteBackward"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 1,
+            "start" : 1
+          },
+          "text" : "ab"
+        }
+      ]
+    },
+    {
+      "name" : "replace before the caret",
+      "start" : {
+        "selection" : {
+          "end" : 4,
+          "start" : 4
+        },
+        "text" : "abcd"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "replace",
+            0,
+            2,
+            "the"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 3,
+            "start" : 3
+          },
+          "text" : "thecd"
+        }
+      ]
+    },
+    {
+      "name" : "replace after the caret",
+      "start" : {
+        "selection" : {
+          "end" : 0,
+          "start" : 0
+        },
+        "text" : "abcd"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "replace",
+            2,
+            4,
+            "the"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 5,
+            "start" : 5
+          },
+          "text" : "abthe"
+        }
+      ]
+    },
+    {
+      "name" : "replace around the caret",
+      "start" : {
+        "selection" : {
+          "end" : 2,
+          "start" : 2
+        },
+        "text" : "abcd"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "replace",
+            1,
+            3,
+            "the"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 4,
+            "start" : 4
+          },
+          "text" : "athed"
+        }
+      ]
+    },
+    {
+      "name" : "replace at the caret, empty range",
+      "start" : {
+        "selection" : {
+          "end" : 2,
+          "start" : 2
+        },
+        "text" : "abcd"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "replace",
+            2,
+            2,
+            "the"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 5,
+            "start" : 5
+          },
+          "text" : "abthecd"
+        }
+      ]
+    },
+    {
+      "name" : "replace ending at the caret",
+      "start" : {
+        "selection" : {
+          "end" : 2,
+          "start" : 2
+        },
+        "text" : "abcd"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "replace",
+            0,
+            2,
+            "é"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 1,
+            "start" : 1
+          },
+          "text" : "écd"
+        }
+      ]
+    },
+    {
+      "name" : "replace starting at the caret",
+      "start" : {
+        "selection" : {
+          "end" : 2,
+          "start" : 2
+        },
+        "text" : "abcd"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "replace",
+            2,
+            4,
+            "ab"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 4,
+            "start" : 4
+          },
+          "text" : "abab"
+        }
+      ]
+    },
+    {
+      "name" : "replace covering a selection",
+      "start" : {
+        "selection" : {
+          "end" : 3,
+          "start" : 1
+        },
+        "text" : "abcd"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "replace",
+            0,
+            4,
+            "the"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 3,
+            "start" : 3
+          },
+          "text" : "the"
+        }
+      ]
+    },
+    {
+      "name" : "replace inside a selection",
+      "start" : {
+        "selection" : {
+          "end" : 4,
+          "start" : 0
+        },
+        "text" : "abcd"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "replace",
+            1,
+            3,
+            "x"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 2,
+            "start" : 2
+          },
+          "text" : "axd"
+        }
+      ]
+    },
+    {
+      "name" : "replace over part of a selection",
+      "start" : {
+        "selection" : {
+          "end" : 3,
+          "start" : 1
+        },
+        "text" : "abcd"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "replace",
+            2,
+            4,
+            "xy"
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 4,
+            "start" : 4
+          },
+          "text" : "abxy"
+        }
+      ]
+    },
+    {
+      "name" : "replace with nothing",
+      "start" : {
+        "selection" : {
+          "end" : 4,
+          "start" : 4
+        },
+        "text" : "abcd"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "replace",
+            1,
+            3,
+            ""
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 1,
+            "start" : 1
+          },
+          "text" : "ad"
+        }
+      ]
+    },
+    {
+      "name" : "select a range",
+      "start" : {
+        "selection" : {
+          "end" : 4,
+          "start" : 4
+        },
+        "text" : "abcd"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "select",
+            1,
+            3
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 3,
+            "start" : 1
+          },
+          "text" : "abcd"
+        }
+      ]
+    },
+    {
+      "name" : "select inside an emoji",
+      "start" : {
+        "selection" : {
+          "end" : 0,
+          "start" : 0
+        },
+        "text" : "a👩‍💻b"
+      },
+      "steps" : [
+        {
+          "call" : [
+            "select",
+            2,
+            2
+          ],
+          "named" : [
+
+          ],
+          "selection" : {
+            "end" : 2,
+            "start" : 2
+          },
+          "text" : "a👩‍💻b"
+        }
+      ]
+    }
+  ]
+}

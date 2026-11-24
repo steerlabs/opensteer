@@ -36,7 +36,6 @@ export function testRunnerDescriptor(input: {
           },
         ],
         maxConcurrentRuns: 4,
-        providerStateModes: ["isolated"],
       },
     },
     name: input.name,

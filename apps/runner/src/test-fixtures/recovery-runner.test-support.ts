@@ -1,6 +1,6 @@
 import { createPrivateKey } from "node:crypto";
 import { join } from "node:path";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import {
   FileRunnerIdentityStore,
@@ -107,11 +107,6 @@ async function boot(input: Boot) {
     browserHarnessExecutable: "/opt/opensteer/browser-harness",
     deploymentShape: config.deploymentShape,
     harnesses: registry,
-    harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-    harnessSandbox: {
-      plan: async () => (launch) => launch,
-      planProgram: async () => (launch) => launch,
-    },
     plugins: async () => ({
       cleanup: async () => undefined,
       digest: "none",

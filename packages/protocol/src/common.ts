@@ -21,6 +21,12 @@ export const ProtocolErrorSchema = z.strictObject({
    */
   reason: z.string().min(1).max(120).optional(),
   retryable: z.boolean(),
+  /**
+   * A7: the command was refused before it was sent to the page: nothing happened. Without it, a
+   * browser command's error came after it may have run (the reply too large or too deep, the page
+   * gone mid-command, a lost reply), and its outcome is unknown.
+   */
+  unsent: z.literal(true).optional(),
 });
 export type ProtocolError = z.infer<typeof ProtocolErrorSchema>;
 

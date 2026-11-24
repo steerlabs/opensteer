@@ -5,6 +5,7 @@ import {
   BrowserReturnNotes,
   browserRestartFailure,
   browserNotPooled,
+  browserNotReady,
   browserSleepFromHome,
   browserSleepWords,
   browserStartFailure,
@@ -344,5 +345,124 @@ describe("a second loss of the same tab", () => {
     expect(notes.note(computer, tab, lost("id-2"))).not.toBeNull();
     notes.seen(computer, tab, lost("id-2"));
     expect(told).toEqual(["id-1", "id-2"]);
+  });
+});
+
+describe("a browser that cannot be used now", () => {
+  const report = (
+    notReady: string | undefined,
+    phase: "running" | "parked" | "waking" = "parked",
+  ) =>
+    browserSleepFromHome(
+      [
+        {
+          runnerId: computer,
+          phase,
+          since,
+          ...(notReady ? { notReady: { reason: notReady } } : {}),
+        },
+      ],
+      computer,
+      tab,
+    ).browser;
+
+  it("is being set up while no browser is placed, and says so as a wait", () => {
+    expect(report("setting-up")).toEqual({ kind: "setting-up", computerId: computer });
+    expect(browserNotReady(report("setting-up"))).toEqual({
+      title: "Setting up your browser…",
+      detail: "This can take a few minutes.",
+      waiting: true,
+    });
+  });
+
+  it.each(["egress-required", "egress-proxy-down"])(
+    "is paused for %s in the words a Cloud Computer uses for a missing exit address today",
+    (reason) => {
+      expect(browserNotReady(report(reason))).toEqual({
+        title: "Browsing paused",
+        detail:
+          "Its Browser IP isn’t available. Opensteer keeps trying and waits for this IP before loading pages.",
+        waiting: false,
+      });
+    },
+  );
+
+  it.each(["profile-disk-missing", "unreachable", "a-reason-this-client-does-not-know"])(
+    "is paused for %s with its tabs and sign-ins kept, never as a lost profile",
+    (reason) => {
+      expect(report(reason, "running")).toEqual({ kind: "paused", computerId: computer, reason });
+      expect(browserNotReady(report(reason, "running"))).toEqual({
+        title: "Browsing paused",
+        detail:
+          "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
+        waiting: false,
+      });
+      expect(browserWakeLine(report(reason), 60_000, { picture: true })).toBeNull();
+      expect(browserStartFailure(report(reason))).toBeNull();
+    },
+  );
+
+  it("keeps today's lines while it wakes or starts", () => {
+    expect(browserNotReady(report(undefined, "waking"))).toBeNull();
+    expect(browserWakeLine(report(undefined, "waking"), 9_000, { picture: false })?.text).toBe(
+      "Taking longer than usual…",
+    );
+  });
+});
+
+describe("unconfirmed-closing replaced-browser session (X2)", () => {
+  it("reports the exact copy and Remove from list action from either session or pool report", async () => {
+    const mod = await import("./browser-sleep.js");
+    const closeUnconfirmed = (
+      mod as unknown as {
+        browserCloseUnconfirmed?: (
+          session: { readonly id: string; readonly closeUnconfirmed?: true } | null | undefined,
+          fromPool: { readonly sessionId: string } | null | undefined,
+        ) => {
+          readonly title: string;
+          readonly detail: string;
+          readonly action: string;
+          readonly sessionId: string;
+        } | null;
+      }
+    ).browserCloseUnconfirmed;
+    expect(closeUnconfirmed).toBeTypeOf("function");
+    const expected = {
+      title: "This page didn't confirm it closed",
+      detail:
+        "Its browser was replaced before it answered, and Opensteer can no longer ask it. Nothing more is sent to this page.",
+      action: "Remove from list",
+      sessionId: "bsn_11111111-1111-4111-8111-111111111111",
+    };
+    expect(
+      closeUnconfirmed!(
+        { id: "bsn_11111111-1111-4111-8111-111111111111", closeUnconfirmed: true },
+        null,
+      ),
+    ).toEqual(expected);
+    expect(
+      closeUnconfirmed!(null, { sessionId: "bsn_11111111-1111-4111-8111-111111111111" }),
+    ).toEqual(expected);
+    expect(closeUnconfirmed!({ id: "bsn_11111111-1111-4111-8111-111111111111" }, null)).toBeNull();
+    const viewWithUnconfirmed = browserSleepFromHome(
+      [
+        {
+          runnerId: computer,
+          phase: "running",
+          since: "2026-01-01T00:00:00.000Z",
+          unconfirmedClosings: [
+            {
+              sessionId: "bsn_11111111-1111-4111-8111-111111111111",
+              surfaceIds: [tab],
+            },
+          ],
+        } as never,
+      ],
+      computer,
+      tab,
+    ) as unknown as { readonly closeUnconfirmed?: { readonly sessionId: string } | null };
+    expect(viewWithUnconfirmed.closeUnconfirmed).toEqual({
+      sessionId: "bsn_11111111-1111-4111-8111-111111111111",
+    });
   });
 });

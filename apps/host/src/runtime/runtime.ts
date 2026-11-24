@@ -64,7 +64,6 @@ import { TabToolHandlers } from "../mcp/handlers/tabs.js";
 import { BrowserScriptConfinement, BrowserToolHandlers } from "../mcp/handlers/browser.js";
 import { BrowserScriptService } from "../browser-use/browser-script-service.js";
 import { AgentSessionService } from "../agent-sessions/agent-session-service.js";
-import { createAgentReviewer } from "../agent-sessions/agent-reviewer.js";
 import { createTranscriptFileServices } from "../threads/transcript-files.js";
 import { TranscriptFileAccess } from "../threads/transcript-file-access.js";
 import {
@@ -1246,13 +1245,19 @@ export async function createHostRuntime(
             .where("runnerId", "=", runnerId)
             .execute();
           if (sessions.length) {
+            const sessionIds = sessions.map(({ id }) => id);
+            await tx
+              .selectFrom("browserSessionAttachments")
+              .select("sessionId")
+              .where("sessionId", "in", sessionIds)
+              .orderBy("sessionId")
+              .orderBy("agentBindingId")
+              // FOR UPDATE: Deletes the attachments for this runner's sessions in key order.
+              .forUpdate()
+              .execute();
             const removed = await tx
               .deleteFrom("browserSessionAttachments")
-              .where(
-                "sessionId",
-                "in",
-                sessions.map(({ id }) => id),
-              )
+              .where("sessionId", "in", sessionIds)
               .executeTakeFirst();
             if (removed.numDeletedRows > 0) mutation.bumpResource("browser-placement");
           }
@@ -1830,6 +1835,8 @@ export async function createHostRuntime(
         realtime.sendToUsers([userId], { notification: view, type: "host.notification" }),
       onError: (failure) => reportNotification("error", failure),
       onWarning: (failure) => reportNotification("warn", failure),
+      // A connected agent's alert reached an outcome: its Disconnect can settle (A5).
+      onAttemptSettled: () => connectionMaintenance?.wake(),
       ready: notificationAuthorityReady,
       store: notifications,
     });
@@ -2564,14 +2571,15 @@ export async function createHostRuntime(
           });
         },
         onAttach: async (identity, executions) => {
-          const connectionIsCurrent = await store.touchRunnerConnection({
+          const touched = await store.touchRunnerConnectionForAttach({
             connectionGeneration: identity.connectionGeneration,
             runnerId: identity.runnerId,
           });
-          if (!connectionIsCurrent) {
+          if (!touched.current) {
             throw new Error("Runner connection fence is no longer current");
           }
           const attached = await store.attachRunnerExecutions({
+            checkUnconfirmedStops: touched.hasUnconfirmedStop,
             dispatchingRunIds: dispatchingRunIds(),
             executions,
             ...(identity.agentsStoppedSince ? { stoppedComputerName: identity.name } : {}),
@@ -2827,6 +2835,7 @@ export async function createHostRuntime(
       }),
       onAuditError: (sessionId, error) => reportShellAuditError(sessionId, error),
       onControlError: (runnerId, error) => reportShellControlError(runnerId, error),
+      onAttemptEvidence: () => connectionMaintenance?.wake(),
       runners,
       store,
     });
@@ -3354,9 +3363,6 @@ export async function createHostRuntime(
     });
     const agentSessions = new AgentSessionService({
       store,
-      ...(config.agentReviewModel
-        ? { reviewer: createAgentReviewer({ store, runners, model: config.agentReviewModel }) }
-        : {}),
       closeBinding: (bindingId, reason) => {
         browser.closeStandardCdpForBinding(bindingId, reason);
         void chromeTabs.closeForBinding(bindingId, reason).catch(reportAgentSessionError);
@@ -3529,6 +3535,9 @@ export async function createHostRuntime(
           if (attempt.kind === "plugin") {
             return pluginExecutions?.stopConnectionExecution(attempt.id, cleanup.connectionId);
           }
+          // A shell its Run opened on another computer: cut here, and ended by that computer's
+          // close receipt on the stream it was opened on, or by losing that stream (A4).
+          if (attempt.kind === "shell") return shellHub?.stopConnectionAttempt(attempt);
           if (
             attempt.kind !== "occurrence" &&
             attempt.kind !== "run-attempt" &&
@@ -4062,7 +4071,6 @@ export async function ensureDefaultHarnesses(
         readonly stateKinds: readonly ("ambient" | "isolated")[];
       }[];
     }[];
-    readonly providerStateModes: readonly ("ambient" | "isolated")[];
   },
 ): Promise<void> {
   const everExisted = await store.listHarnessInstances({
@@ -4080,8 +4088,8 @@ export async function ensureDefaultHarnesses(
     // The person's own sign-in where this computer offers it: an engine that
     // runs the person's own install offers it only where that install is, so
     // a computer without one starts with an Opensteer-managed account instead.
-    const stateKind = (["ambient", "isolated"] as const).find(
-      (kind) => runner.providerStateModes.includes(kind) && source.stateKinds.includes(kind),
+    const stateKind = (["ambient", "isolated"] as const).find((kind) =>
+      source.stateKinds.includes(kind),
     );
     if (!stateKind) continue;
     if (

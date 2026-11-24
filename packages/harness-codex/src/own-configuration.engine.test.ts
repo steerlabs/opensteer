@@ -9,11 +9,7 @@ import {
   requestOptionDeclines,
   type ThreadAccessMode,
 } from "@opensteer/core";
-import {
-  nativeUserHarnessRuntimeBoundary,
-  type HarnessEvent,
-  type HarnessSessionContext,
-} from "@opensteer/harness";
+import { type HarnessEvent, type HarnessSessionContext } from "@opensteer/harness";
 import { afterEach, expect, it } from "vitest";
 import { CodexHarnessDriver, codexOthersHomeDirectory, packagedCodexExecutable } from "./index.js";
 
@@ -256,8 +252,6 @@ async function codexRun(input: {
     historyWindow: { byteCount: 2, hasEarlier: false, itemCount: 0 },
     instructions: undefined,
     machineAccessNotice: "No other computers are reachable.",
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     modelSelection: ModelSelectionSchema.parse({
       modelId: "gpt-5.4",
       options: {},
@@ -281,7 +275,6 @@ async function codexRun(input: {
           providerHomeDirectory: undefined,
           store: { directory: codexHome, id: "own-configuration" },
         },
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: AbortSignal.timeout(180_000),
     skills: { skills: [] },
     threadId: createId("thread"),
@@ -511,7 +504,6 @@ it("runs Codex background text from the Opensteer-owned home without notify or p
         providerHomeDirectory: undefined,
         store: { directory: codexHome, id: "own-configuration" },
       },
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       scratchDirectory: state,
       wrapProcessLaunch: (launch) => launch,
     },
@@ -552,7 +544,6 @@ it("runs Codex background text from the Opensteer-owned home without notify or p
         providerHomeDirectory: undefined,
         store: { directory: codexHome, id: "own-configuration" },
       },
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       scratchDirectory: state,
       wrapProcessLaunch: (launch) => launch,
     },

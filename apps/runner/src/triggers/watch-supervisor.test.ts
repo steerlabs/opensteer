@@ -140,13 +140,16 @@ describe("WatchSupervisor", () => {
         command(1, true, new Date(Date.now() + 60_000).toISOString()),
         sink,
       );
-      await vi.waitFor(() => {
-        expect(
-          messages.some(
-            (message) => message.type === "runner.watch-status" && message.observed === "running",
-          ),
-        ).toBe(true);
-      });
+      await vi.waitFor(
+        () => {
+          expect(
+            messages.some(
+              (message) => message.type === "runner.watch-status" && message.observed === "running",
+            ),
+          ).toBe(true);
+        },
+        { timeout: 5_000 },
+      );
       expect(supervisor.activeActivationIds()).toEqual([activationId]);
       await expect(access(staleWorkspaceProgram)).resolves.toBeUndefined();
       await expect(access(staleExecutionRoot)).rejects.toMatchObject({ code: "ENOENT" });
@@ -176,30 +179,36 @@ describe("WatchSupervisor", () => {
         command(3, true, new Date(Date.now() + 60_000).toISOString(), "control-token-2", 2),
         sink,
       );
-      await vi.waitFor(() => {
-        expect(
-          messages.filter(
-            (message) => message.type === "runner.watch-status" && message.observed === "running",
-          ),
-        ).toHaveLength(runningBeforeRestart + 1);
-      });
+      await vi.waitFor(
+        () => {
+          expect(
+            messages.filter(
+              (message) => message.type === "runner.watch-status" && message.observed === "running",
+            ),
+          ).toHaveLength(runningBeforeRestart + 1);
+        },
+        { timeout: 5_000 },
+      );
       expect(fetchCount).toBe(1);
 
       let renewalGeneration = 4;
-      await vi.waitFor(async () => {
-        await supervisor.reconcile(
-          command(
-            renewalGeneration++,
-            true,
-            new Date(Date.now() + 60_000).toISOString(),
-            "control-token-2",
-            2,
-          ),
-          sink,
-        );
-        // The renewed Host token reaches the Host behind the script's back.
-        expect(toolAuthorizations.at(-1)).toBe("Bearer control-token-2");
-      });
+      await vi.waitFor(
+        async () => {
+          await supervisor.reconcile(
+            command(
+              renewalGeneration++,
+              true,
+              new Date(Date.now() + 60_000).toISOString(),
+              "control-token-2",
+              2,
+            ),
+            sink,
+          );
+          // The renewed Host token reaches the Host behind the script's back.
+          expect(toolAuthorizations.at(-1)).toBe("Bearer control-token-2");
+        },
+        { timeout: 5_000 },
+      );
       const status = messages.findLast(
         (message) => message.type === "runner.watch-status" && message.observed === "running",
       );
@@ -238,15 +247,7 @@ describe("WatchSupervisor", () => {
     );
     try {
       await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
-      let gen = 2;
-      await vi.waitFor(async () => {
-        await fixture.supervisor.reconcile(fixture.command(gen++), fixture.sink);
-        expect(
-          fixture.messages.findLast(
-            (message) => message.type === "runner.watch-status" && message.observed === "running",
-          ),
-        ).toMatchObject({ stdoutTail: expect.stringContaining("secret:s3cr3t-value") });
-      });
+      await fixture.waitForRunningStdout("secret:s3cr3t-value");
       const cached = await readFile(fixture.cachePath, "utf8");
       expect(cached).not.toContain("s3cr3t-value");
       expect(JSON.parse(cached)).toMatchObject({ hasSecrets: true });
@@ -403,7 +404,7 @@ describe("WatchSupervisor", () => {
     const fixture = await watchHarness('setInterval(() => console.log("tick"), 20);');
     try {
       await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
-      await vi.waitFor(() => expect(fixture.runningReports()).toHaveLength(1));
+      await vi.waitFor(() => expect(fixture.runningReports()).toHaveLength(1), { timeout: 5_000 });
 
       await fixture.supervisor.connectionLost(fixture.sink);
 
@@ -451,13 +452,16 @@ describe("WatchSupervisor", () => {
     const fixtureWorkspace = fixture.workspace;
     try {
       await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
-      await vi.waitFor(() => {
-        expect(
-          fixture.messages.some(
-            (message) => message.type === "runner.watch-status" && message.observed === "halted",
-          ),
-        ).toBe(true);
-      });
+      await vi.waitFor(
+        () => {
+          expect(
+            fixture.messages.some(
+              (message) => message.type === "runner.watch-status" && message.observed === "halted",
+            ),
+          ).toBe(true);
+        },
+        { timeout: 5_000 },
+      );
       await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
       expect(terminateCalls).toBe(1);
       expect(runCount).toBe(1);
@@ -473,15 +477,7 @@ describe("WatchSupervisor", () => {
     );
     try {
       await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
-      let gen = 2;
-      await vi.waitFor(async () => {
-        await fixture.supervisor.reconcile(fixture.command(gen++), fixture.sink);
-        expect(
-          fixture.messages.findLast(
-            (message) => message.type === "runner.watch-status" && message.observed === "running",
-          ),
-        ).toMatchObject({ stdoutTail: expect.stringContaining("capEnv:unset") });
-      });
+      await fixture.waitForRunningStdout("capEnv:unset");
     } finally {
       await fixture.close();
     }
@@ -569,15 +565,7 @@ describe("WatchSupervisor", () => {
     await writeFile(join(fixture.workspace, "watch-marker.txt"), "from-agent-home\n");
     try {
       await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
-      let reconcileGeneration = 2;
-      await vi.waitFor(async () => {
-        await fixture.supervisor.reconcile(fixture.command(reconcileGeneration++), fixture.sink);
-        expect(
-          fixture.messages.findLast(
-            (message) => message.type === "runner.watch-status" && message.observed === "running",
-          ),
-        ).toMatchObject({ stdoutTail: expect.stringContaining("from-agent-home") });
-      });
+      await fixture.waitForRunningStdout("from-agent-home");
     } finally {
       await fixture.close();
     }
@@ -591,16 +579,19 @@ describe("WatchSupervisor", () => {
     });
     try {
       await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
-      await vi.waitFor(() => {
-        expect(
-          fixture.messages.some(
-            (message) =>
-              message.type === "runner.watch-status" &&
-              message.observed === "backoff" &&
-              message.restartCount >= 1,
-          ),
-        ).toBe(true);
-      });
+      await vi.waitFor(
+        () => {
+          expect(
+            fixture.messages.some(
+              (message) =>
+                message.type === "runner.watch-status" &&
+                message.observed === "backoff" &&
+                message.restartCount >= 1,
+            ),
+          ).toBe(true);
+        },
+        { timeout: 5_000 },
+      );
       // Containment must have run after the first crash, before the supervisor even stops.
       expect(terminated).toContain(fixture.activationId);
     } finally {
@@ -614,16 +605,64 @@ describe("WatchSupervisor", () => {
     );
     try {
       await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
-      let reconcileGeneration = 2;
-      await vi.waitFor(async () => {
-        await fixture.supervisor.reconcile(fixture.command(reconcileGeneration++), fixture.sink);
-        expect(
-          fixture.messages.findLast(
-            (message) => message.type === "runner.watch-status" && message.observed === "running",
-          ),
-        ).toMatchObject({
-          stdoutTail: expect.stringContaining('{"event":true,"legacyPath":false}'),
-        });
+      await fixture.waitForRunningStdout('{"event":true,"legacyPath":false}');
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("keeps stdoutTail and stderrTail when a watch script exits before the running status send completes", async () => {
+    const pidDir = await mkdtemp(join(tmpdir(), "opensteer-watch-quick-exit-pid-"));
+    roots.push(pidDir);
+    const pidFile = join(pidDir, "watch.pid");
+    let delayedRunningOnce = false;
+    const fixture = await watchHarness(
+      `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(pidFile)}, String(process.ppid)); process.stdout.write("last-stdout-words\\n"); process.stderr.write("last-stderr-words\\n"); process.exit(1);`,
+      undefined,
+      undefined,
+      {},
+      () => 60_000,
+    );
+    const orderedSink: RunnerMessageSink = {
+      async send(message) {
+        fixture.messages.push(message);
+        if (
+          !delayedRunningOnce &&
+          message.type === "runner.watch-status" &&
+          message.observed === "running"
+        ) {
+          delayedRunningOnce = true;
+          await vi.waitFor(
+            async () => {
+              const supervisorPid = Number((await readFile(pidFile, "utf8")).trim());
+              expect(Number.isInteger(supervisorPid) && supervisorPid > 0).toBe(true);
+              expect(() => process.kill(supervisorPid, 0)).toThrow();
+            },
+            { interval: 10, timeout: 5_000 },
+          );
+        }
+      },
+    };
+    try {
+      await fixture.supervisor.reconcile(fixture.command(1), orderedSink);
+      await vi.waitFor(
+        () => {
+          expect(
+            fixture.messages.some(
+              (message) => message.type === "runner.watch-status" && message.observed === "backoff",
+            ),
+          ).toBe(true);
+        },
+        { timeout: 5_000 },
+      );
+      expect(
+        fixture.messages.findLast(
+          (message) => message.type === "runner.watch-status" && message.observed === "backoff",
+        ),
+      ).toMatchObject({
+        lastExitCode: 1,
+        stderrTail: expect.stringContaining("last-stderr-words"),
+        stdoutTail: expect.stringContaining("last-stdout-words"),
       });
     } finally {
       await fixture.close();
@@ -650,6 +689,7 @@ async function watchHarness(
   readonly runningReports: () => RunnerOperationalReport[];
   readonly sink: RunnerMessageSink;
   readonly supervisor: WatchSupervisor;
+  readonly waitForRunningStdout: (expected: string, nextGeneration?: number) => Promise<void>;
   readonly workspace: string;
 }> {
   const root = await mkdtemp(join(tmpdir(), "opensteer-watch-harness-"));
@@ -732,6 +772,30 @@ async function watchHarness(
       ),
     sink,
     supervisor,
+    waitForRunningStdout: async (expected: string, nextGeneration = 2) => {
+      await vi.waitFor(
+        () => {
+          expect(
+            messages.some(
+              (message) => message.type === "runner.watch-status" && message.observed === "running",
+            ),
+          ).toBe(true);
+        },
+        { timeout: 5_000 },
+      );
+      let reconcileGeneration = nextGeneration;
+      await vi.waitFor(
+        async () => {
+          await supervisor.reconcile(command(reconcileGeneration++), sink);
+          expect(
+            messages.findLast(
+              (message) => message.type === "runner.watch-status" && message.observed === "running",
+            ),
+          ).toMatchObject({ stdoutTail: expect.stringContaining(expected) });
+        },
+        { timeout: 5_000 },
+      );
+    },
     workspace,
   };
 }

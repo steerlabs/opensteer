@@ -3240,6 +3240,11 @@ async function executeMockCommand(
         asOfSequence: SequenceSchema.parse(String(client.getSnapshot().revision)),
         type: command.type,
       });
+    case "thread.stop.recheck":
+      return rpcSuccess({
+        proven: true,
+        type: command.type,
+      });
     case "thread.input.steer":
       client.assertThreadOriginLive(command.threadId);
       return rpcSuccess({
@@ -3706,6 +3711,9 @@ async function executeMockCommand(
     case "browser.session.close":
       await client.closeBrowser(command.sessionId);
       return unsupportedMockRpc();
+    case "browser.session.dismiss":
+      await client.dismissBrowserSession(command.sessionId);
+      return rpcSuccess(hostApi["commands.dispatch"].success.parse({ type: command.type }));
     case "trigger.create":
       return rpcSuccess(
         hostApi["commands.dispatch"].success.parse({
@@ -4506,6 +4514,11 @@ export class MockHostClient implements HostClient {
   readonly restartPooledBrowser = (_computerId: string): Promise<void> =>
     Promise.reject(new BrowserRestartUnavailable());
 
+  /** W15: removes an unconfirmed-closing session from the preview snapshot. */
+  readonly dismissBrowserSession = async (sessionId: string): Promise<void> => {
+    await this.#state.dismissBrowserSession(sessionId);
+  };
+
   /** A navigation can stay loading after the restored page has painted. */
   setBrowserLoading(tabId: string, loading: boolean): void {
     const snapshot = this.#state.getSnapshot();
@@ -5229,6 +5242,18 @@ export class MockHostClient implements HostClient {
       threadId,
       type: "thread.inputQueue.resume",
     });
+  }
+
+  async recheckThreadStop(threadId: string): Promise<{ readonly proven: boolean }> {
+    const result = await this.dispatch({
+      idempotencyKey: `mock-stop-recheck:${crypto.randomUUID()}`,
+      threadId,
+      type: "thread.stop.recheck",
+    });
+    if (result.type !== "thread.stop.recheck") {
+      throw new Error(`Unexpected thread.stop.recheck response: ${result.type}`);
+    }
+    return { proven: result.proven };
   }
 
   async steerThreadInput(threadId: string, messageId: string): Promise<void> {
@@ -11767,6 +11792,20 @@ class MockHostState {
     });
   }
 
+  async dismissBrowserSession(sessionId: string): Promise<void> {
+    const browserPools = this.snapshot.browserPools?.map((pool) => {
+      if (!pool.unconfirmedClosings?.some((entry) => entry.sessionId === sessionId)) return pool;
+      const remaining = pool.unconfirmedClosings.filter((entry) => entry.sessionId !== sessionId);
+      const { unconfirmedClosings: _dropped, ...rest } = pool;
+      return remaining.length ? { ...rest, unconfirmedClosings: remaining } : rest;
+    });
+    this.update({
+      ...this.snapshot,
+      browserSessions: this.snapshot.browserSessions.filter((session) => session.id !== sessionId),
+      ...(browserPools ? { browserPools } : {}),
+    });
+  }
+
   async createBrowserProfile(
     name: string,
     homeRunnerId?: string | null,
@@ -14766,7 +14805,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
         id: "env_00000000-0000-4000-8000-000000000001",
         kind: "main",
         name: "Home Mac",
-        providerStateModes: ["ambient", "isolated"],
         // The hosting Runner for this personal Deployment.
         runnerId: "rnr_11111111-1111-4111-8111-111111111111",
         status: "connected",
@@ -14797,7 +14835,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
         id: mockAwaySiteEnvironmentId,
         kind: "main",
         name: "Studio iMac",
-        providerStateModes: ["ambient", "isolated"],
         runnerId: "rnr_44444444-4444-4444-8444-444444444444",
         status: "connected",
       },

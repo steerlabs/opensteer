@@ -115,7 +115,6 @@ describe("engineGroups", () => {
     id: "environment-main",
     kind: "main",
     name: "Main",
-    providerStateModes: ["ambient", "isolated"],
     runnerId: "runner-main",
     status: "connected",
   };
@@ -131,21 +130,16 @@ describe("engineGroups", () => {
     stateKind: "isolated",
   });
 
-  it("on a Linux Home, offers only engines that can run there and says why the rest can't", () => {
-    const sandboxed = "runs only on a computer where Opensteer runs as you.";
+  it("offers the engines a computer can run and says how to install the rest", () => {
+    const finds = "Opensteer finds it within a minute; if it doesn't, restart Opensteer.";
     const refused: Record<string, string> = {
-      antigravity: `Antigravity keeps its sign-in in the computer's own account, so it ${sandboxed}`,
-      claude: "Claude Code isn’t included on this computer, so it can’t run here.",
-      cursor: `Cursor keeps its sign-in in the computer's own account, so it ${sandboxed}`,
-      grok: `Grok keeps its sign-in in the computer's own account, so it ${sandboxed}`,
-      muse: `Muse Code keeps its sign-in in the computer's own account, so it ${sandboxed}`,
-      opencode: `OpenCode has no command sandbox of its own, so it ${sandboxed}`,
-      pi: `Pi has no command sandbox of its own, so it ${sandboxed}`,
+      claude: `Install Claude Code from https://code.claude.com/docs/en/setup. ${finds}`,
+      cursor: `Cursor's CLI is not installed on this computer. Install it from https://cursor.com/install. ${finds}`,
+      grok: `Grok's CLI is not installed on this computer. Install it from https://x.ai/cli. ${finds}`,
+      muse: `Muse Code's CLI is not installed on this computer. Install it from https://dev.meta.ai/docs/muse-code. ${finds}`,
     };
     const home: EnvironmentSummary = {
       ...environment,
-      // What a Linux Home's isolated-service Runner reports.
-      providerStateModes: ["isolated"],
       harnessDrivers: environment.harnessDrivers.flatMap((driver): HarnessDriverSummary[] => {
         const reason = refused[driver.driverKind];
         if (driver.driverKind === "legacy-engine") return [];
@@ -157,6 +151,9 @@ describe("engineGroups", () => {
     const groups = engineGroups(home, []);
     expect(groups.filter((group) => group.addable).map((group) => group.driverKind)).toEqual([
       "codex",
+      "antigravity",
+      "opencode",
+      "pi",
     ]);
     expect(
       Object.fromEntries(
@@ -240,9 +237,12 @@ describe("engineGroups", () => {
     expect(groups.some((group) => group.driverKind === "legacy-engine")).toBe(false);
   });
 
-  it("offers no adding where the work location cannot hold a private sign-in", () => {
-    const groups = engineGroups({ ...environment, providerStateModes: ["ambient"] }, []);
+  it("offers no adding where the work location runs no engines", () => {
+    const groups = engineGroups({ ...environment, harnessDrivers: [] }, [
+      account("claude", "Claude Code"),
+    ]);
 
+    expect(groups.map((group) => group.driverKind)).toEqual(["claude"]);
     expect(groups.some((group) => group.addable)).toBe(false);
   });
 
@@ -395,7 +395,6 @@ describe("an AI engine row's actions", () => {
     id: "environment-main",
     kind: "main",
     name: "Main",
-    providerStateModes: ["isolated"],
     runnerId: "runner-main",
     status: "connected",
   } satisfies EnvironmentSummary;

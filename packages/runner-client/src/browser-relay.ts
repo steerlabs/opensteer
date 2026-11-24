@@ -25,6 +25,9 @@ import {
 } from "./browser-bridge.js";
 import type { RunnerModuleStream } from "./module-connection.js";
 
+/** How long a pool guest's runtime may take to answer the Home's close of a channel. */
+const pooledCloseReceiptMs = 5_000;
+
 interface ActiveChannel {
   capability: BrowserCapabilityReference;
   expiryTimer: NodeJS.Timeout;
@@ -366,13 +369,18 @@ export class BrowserModuleRelay {
         const settled = channel.raw
           ? await this.#bridge.settleStandardCdp(message.channelId)
           : false;
-        if (!channel.raw) this.#bridge.close(message.channelId);
+        // A pool guest's runtime is behind a tunnel that can break: its own close is the answer
+        // passed on, never this relay's queueing of it. A local runtime is closed as before.
+        let code = 1000;
+        if (!channel.raw && this.#bridge.pooled)
+          code = await this.#bridge.closeWithReceipt(message.channelId, pooledCloseReceiptMs);
+        else if (!channel.raw) this.#bridge.close(message.channelId);
         if (this.#stream !== stream) return;
         await this.#send({
           ...stream.fence,
           capability: message.capability,
           channelId: message.channelId,
-          code: 1000,
+          code,
           reason: settled ? standardCdpSettledReason : "Host closed the browser relay.",
           requestId: message.requestId,
           type: "browser.closed",

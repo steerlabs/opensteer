@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { ModelSelectionSchema, type RunId, type ThreadId } from "@opensteer/core";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
@@ -85,7 +85,6 @@ integration("conversation delivery across Host and Runner", () => {
         );
         return registry;
       },
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       runTimeoutMs: 30_000,
     });
     return stack;

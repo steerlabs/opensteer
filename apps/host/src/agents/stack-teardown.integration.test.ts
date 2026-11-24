@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { HarnessRegistry, nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -21,7 +21,6 @@ integration("Vertical stack teardown", () => {
     const starting = startVerticalStack({
       databaseUrl: databaseUrl!,
       harnesses,
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnessInstance: {
         config: {},
         driverKind: "missing",

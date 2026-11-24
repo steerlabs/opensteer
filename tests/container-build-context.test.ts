@@ -67,6 +67,22 @@ describe("container build context", () => {
     ).resolves.toMatchObject({ stderr: "" });
   });
 
+  it("ships the trust module beside every copy of the container entrypoint, which imports it", async () => {
+    const containerfile = await readFile(resolve("deploy/container/Containerfile"), "utf8");
+    const stages = containerfile.split(/^FROM /mu);
+    let copies = 0;
+    for (const stage of stages) {
+      const name = stage.split("\n", 1)[0] ?? "";
+      for (const match of stage.matchAll(/(\/[^\s]*\/)opensteer-entrypoint\.mjs/gu)) {
+        copies += 1;
+        expect(stage, `${name}: ${match[1]}`).toContain(`${match[1]}opensteer-node-trust.mjs`);
+      }
+    }
+    expect(copies).toBeGreaterThan(0);
+    const entrypoint = await readFile(resolve("deploy/container/opensteer-entrypoint.mjs"), "utf8");
+    expect(entrypoint).toContain('from "./opensteer-node-trust.mjs"');
+  });
+
   it("verifies every shipped harness runtime through the Runner's own resolution", async () => {
     // The Runner's verifier resolves each engine exactly as the Runner will
     // launch it and compares `--version` with the harness catalog, so the
@@ -132,20 +148,9 @@ describe("container build context", () => {
     expect(runnerStage).toContain(
       "apt-get install --no-install-recommends --yes libcap2 openssh-client openssl rsync socat",
     );
-    expect(containerfile).toContain("AS bubblewrap-build");
-    expect(containerfile).toContain(
-      "69abc30005d2186baf7737feacd8da35633b93cf5af38838ecff17c5f8e924f6",
-    );
-    expect(containerfile).toContain("-Dsupport_setuid=false");
-    expect(runnerStage).toContain(
-      "COPY --from=bubblewrap-build --chmod=0555 /output/bwrap /usr/local/bin/bwrap",
-    );
-    // bubblewrap is LGPL, so its licence text has to travel with the binary.
-    expect(runnerStage).toContain(
-      "COPY --from=bubblewrap-build --chmod=0444 /output/COPYING /usr/local/share/licenses/bubblewrap/COPYING",
-    );
-    expect(runnerStage).toContain('test "$(bwrap --version)" = "bubblewrap 0.11.2"');
-    expect(runnerStage).toContain("test ! -u /usr/local/bin/bwrap");
+    // Codex brings its own bubblewrap; the image ships none of its own.
+    expect(containerfile).not.toContain("bubblewrap");
+    expect(runnerStage).not.toContain("bwrap");
     expect(runnerStage).toContain("test -x /usr/bin/socat");
     expect(containerfile).toContain("AS process-supervisor-build");
     expect(runnerStage).toContain(

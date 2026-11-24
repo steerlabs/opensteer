@@ -40,7 +40,7 @@ import {
   stopShellData,
 } from "./mac-stop.test-support.js";
 import type { VerticalStackOptions } from "./vertical-stack.test-support.js";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { sql } from "kysely";
@@ -93,6 +93,7 @@ const captureSchema = z
       })
       .passthrough()
       .optional(),
+    fakeThreadClosed: z.string().optional(),
     preparationHeld: z
       .object({
         pid: z.number(),
@@ -272,7 +273,6 @@ integration("Runs that outlive their connection", () => {
             },
           }
         : {}),
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       maxConcurrentRuns: input.maxConcurrentRuns ?? 1,
       runTimeoutMs: 60_000,
     });
@@ -487,6 +487,7 @@ integration("Runs that outlive their connection", () => {
     // for it would hold the conversation for this long.
     const requestTimeoutMs = 120_000;
     const {
+      captured,
       release,
       stack: active,
       turnPids,
@@ -556,8 +557,19 @@ integration("Runs that outlive their connection", () => {
       status: "completed",
     });
     expect(Date.now() - reconnectedAt).toBeLessThan(requestTimeoutMs / 2);
+    // Stop on the shared Codex app-server frees the conversation on Codex's
+    // `thread/closed` evidence without retiring the server, so the recovered
+    // turn runs on the same server after the stopped conversation closed.
+    const capture = await captured();
+    const closedAt = capture.findIndex((record) => typeof record.fakeThreadClosed === "string");
+    const turnStarts = capture.flatMap((record, index) =>
+      record.method === "turn/start" ? [index] : [],
+    );
+    expect(closedAt).toBeGreaterThan(-1);
+    expect(turnStarts).toHaveLength(2);
+    expect(closedAt).toBeLessThan(turnStarts[1]!);
     const [stuck, resumed] = await turnPids();
-    expect(resumed).not.toBe(stuck);
+    expect(resumed).toBe(stuck);
     const ended = await active.host.store.database
       .selectFrom("runs")
       .select(["nextRunnerOrdinal", "bindingGeneration"])

@@ -6,6 +6,7 @@ import {
   type DeploymentId,
   type DeploymentKind,
   MessageIdSchema,
+  teamWorkEndedCancelReason,
   type MessageAuthor,
   type MessageId,
   type MessageKind,
@@ -117,8 +118,17 @@ async function countCanonical(tx: Tx) {
 const offlineCommandTypes = ["run.execute", "run.steer", ...resendableControlCommandTypes];
 
 async function retireOfflineDelivery(tx: Tx, runId: RunId, cutAt: Date) {
-  const inputs = await sql<{ message_id: MessageId; can_requeue: boolean; delivery: string }>`
-      select i.message_id, i.policy='queue' as can_requeue,
+  // Work a teammate asked for is never put back in line as the person's own: an unsent one ends
+  // with the reason every Team ask that never started has (0110 dropped its team reply target, and
+  // the request id it keeps is what marks it here).
+  const inputs = await sql<{
+    message_id: MessageId;
+    can_requeue: boolean;
+    team: boolean;
+    delivery: string;
+  }>`
+      select i.message_id, i.policy='queue' and i.team_request_id is null as can_requeue,
+        i.team_request_id is not null as team,
         case
           when c.type='run.steer' and c.status='succeeded' then 'delivered'
           when (i.steer_command_id is null or c.type='run.restart') and
@@ -147,13 +157,14 @@ async function retireOfflineDelivery(tx: Tx, runId: RunId, cutAt: Date) {
           else 'unknown' end,
         delivered_at=case when b.delivery='delivered' then coalesce(i.delivered_at,${cutAt}) end,
         cancel_reason=case when b.delivery='unsent' and not b.can_requeue
-          then case when i.steer_command_id is null then 'run-ended-before-start' else 'steer-not-delivered' end
+          then case when b.team then ${teamWorkEndedCancelReason}
+            when i.steer_command_id is null then 'run-ended-before-start' else 'steer-not-delivered' end
         end,
         run_id=case when b.delivery='unsent' and b.can_requeue then null else i.run_id end,
         steer_command_id=case when b.delivery='unsent' and b.can_requeue then null else i.steer_command_id end,
         updated_at=${cutAt}
       from jsonb_to_recordset(${JSON.stringify(inputs.rows)}::jsonb)
-        as b(message_id text, can_requeue boolean, delivery text) where i.message_id=b.message_id
+        as b(message_id text, can_requeue boolean, team boolean, delivery text) where i.message_id=b.message_id
     `.execute(tx);
     const requeued = inputs.rows
       .filter((row) => row.can_requeue && row.delivery === "unsent")

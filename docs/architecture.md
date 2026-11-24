@@ -190,9 +190,9 @@ Each call is one reviewed **operation** of an **agent session**:
   one. Every result carries it.
 - An operation (`agent_operations`) is written before review or dispatch. It records the caller,
   an operation key and id, a digest of the arguments, the concrete target and its generation, the
-  grant revision, the effective mode, who decided (`structural-read`, `full-access`, `reviewer`,
-  `person`, `refused`), the hand-off time and the outcome: `completed`, `failed`, `refused` or
-  `unknown`.
+  grant revision, the effective mode, who decided (`structural-read`, `full-access`, `person`,
+  `refused`; a past `reviewer` decision stays readable as recorded), the hand-off time and the
+  outcome: `completed`, `failed`, `refused` or `unknown`.
 
 ### The guarantees
 
@@ -204,13 +204,8 @@ Each call is one reviewed **operation** of an **agent session**:
    `browser_connect`, every CDP command, every frame from the browser and a timer once a second
    re-check the same facts; any change closes the socket.
 3. **Held when the mode says so.** A read runs in any mode. An effect runs at once in Full
-   access. In Supervised and Auto-accept edits the person is asked. In Auto a reviewer on the
-   Home may allow it; anything other than a clear allow within 15 seconds (no model, an error, a
-   timeout, an odd answer, a prompt too long, text that looks like a credential) asks the person.
-   The reviewer runs only when a review model is configured (`OPENSTEER_AGENT_REVIEW_MODEL`);
-   without one, Auto asks the person. The reviewer is told that page titles, app names, the
-   calls and the agent's own reason are untrusted. The person sees a page title or an app's own
-   name as a labelled plain line ("The app calls itself: …").
+   access. In Supervised, Auto-accept edits and Auto the person is asked. The person sees a page
+   title or an app's own name as a labelled plain line ("The app calls itself: …").
 4. **The answer applies only to what the person saw.** The Request shows the exact script or
    calls; a script longer than a Request's plain text can show in full (18,956 characters, which
    leaves room for the Home's own first lines, so that an older app shows all of it too) is
@@ -349,14 +344,20 @@ admitted once it commits. Then one worker converges over one set
 of attempts (`packages/database/src/connection-disconnect.ts`, driven by
 `OpensteerStore.driveConnectionCleanups`). The set holds everything in the connection's lineage:
 Runs and their handed-off generations, automation occurrences and their attempts, Watch
-activations, queued inputs, Requests, steering commands, active automations (paused), agent
-sessions and operations, plugin executions, standard CDP connections and shared Chrome tabs.
+activations, queued inputs, Requests, the phone alerts for its Requests and its Runs' replies
+and failures, steering commands,
+active automations (paused), agent sessions and operations, plugin executions, standard CDP
+connections, shared Chrome tabs, and the shells its Runs opened on other computers.
 Display streams are opened only by a person's own session (`computer-use-display-routes.ts` ->
 `DisplayStreamHub.attachViewer`), so they are not in any connection's Disconnect set.
 
 **Nothing leaves the Home before it is in the set.** A Run is recorded before its frame is built;
 a CDP attempt before the attach ticket goes to the browser runtime; a plugin execution before the
-call reaches the plugin engine. The one-use `browser_connect` address an agent receives is not a
+call reaches the plugin engine; a shell before its open frame goes to the target computer, bound
+to that computer's exact shell stream; a phone alert in the statement that checks, after
+every other wait, that the connection is live and (for a Request) the Request still pending. Each is
+recorded while holding the connection row the revoke locks, so a revoke that committed first
+refuses it and nothing is sent. The one-use `browser_connect` address an agent receives is not a
 handoff: it does nothing until redeemed, and redemption checks authority again and writes the
 attempt first. The worker stops each attempt through its own stop command and accepts only an answer for
 that exact attempt, generation, Runner and Runner boot.
@@ -369,6 +370,16 @@ What the person sees follows evidence:
   lost; it counts as ended, and the connection shows **Check its last action**.
 - With no answer and no contact loss, the connection stays Stopping. There is no timeout, and it
   cannot be removed until it settles.
+
+A shell ends on its target's close receipt on the stream it was opened on (a receipt on any other
+stream proves nothing), or with contact lost when that stream, the target's Runner boot or this
+Home's process is gone. A phone alert ends when the Opensteer account acknowledges it, when it is
+known never to have reached the account, or as unknown when the acknowledgement was lost; it is
+never sent again after that. Sending the same alert again after a lost acknowledgement, before
+then, completes the same attempt rather than making a second one: the account keeps one
+publication per notification id and answers a repeat from it, and the repeat passes the same
+check first. An alert already on the phone cannot be taken back: it stays until the person
+dismisses it, and opening it shows the question no longer waiting.
 
 Expiry, a narrowed grant and a lowered mode go through the same worker. The person's other work is untouched. Disconnect does not close tabs.
 
@@ -606,6 +617,12 @@ automations.
 
 ## Where a Home runs
 
+Every Home and every Runner trusts Node's certificate authorities plus the ones its computer
+trusts (a Mac's keychains, Windows' certificate stores, a Linux container's `/etc/ssl/certs`), so
+it reaches the Opensteer account through a network that inspects TLS
+([opensteer-node-trust.mjs](../deploy/container/opensteer-node-trust.mjs)).
+`OPENSTEER_SYSTEM_CERTIFICATES=off` where the app or the Home starts leaves Node's own list only.
+
 ### On a Mac
 
 The Host listens on loopback. The one signed Opensteer app stays in the menu bar: closing the
@@ -639,10 +656,11 @@ The same Home on a Linux server, packaged in `deploy/home` ([operator guide](../
   Host, PostgreSQL (no network listener), the gateway, the Runner, the browser, the browser's
   egress proxy and the messaging runtime, run as one Compose pod.
 - **Separation.** The Host's keys and database credentials live in a volume the Runner does not
-  mount. The Runner has no capabilities and a seccomp policy. Agent shells run in bubblewrap with
-  the Runner's data masked.
-- **Your own agents** on a Linux Home are Codex and Claude Code (pinned in the image). The other
-  engines refuse to run on that shared Runner.
+  mount. The Runner has no capabilities and a seccomp policy. Engines run as the Runner's own user
+  under their own sandbox and safety modes, exactly as on a Mac.
+- **Your own agents** on a Linux Home: the image ships Codex, Claude Code, OpenCode and Pi, and
+  Antigravity downloads itself. Grok, Muse Code and Cursor are not in the image; they show as not
+  installed.
 - **Claim.** A self-hosted Home prints a single-use setup link for the first owner (24 hours by
   default). A managed Home is claimed through the person's Opensteer account. There is no local
   bootstrap.
@@ -674,8 +692,8 @@ each provider write, and reports back. See [cloud-computer-operations.md](cloud-
 **What the verifier proves.** `scripts/verify-home-deployment.mjs` builds the images and runs 34
 checks against a real Linux Home in a local VM, or on the Linux server it runs on with
 `OPENSTEER_HOME_VERIFIER_TARGET=local`: the seven services, HTTPS, no local bootstrap,
-single-use setup and claim, Runner enrollment, sandboxed Codex that cannot read another profile or
-the Runner's credentials, CDP through the gateway with a one-use ticket, egress through the
+single-use setup and claim, Runner enrollment, Codex running as the Runner user in Agent home with
+its account's own home, CDP through the gateway with a one-use ticket, egress through the
 pinned proxy failing closed, no PostgreSQL listener, firewall rules, a Host restart keeping the
 claim, backup, restore, refusal without `--replace`, image-only rollback and the managed install.
 On Colima it runs arm64; locally it runs the server's own architecture. It does not prove
@@ -709,7 +727,7 @@ public certificates, real IPv6, a pristine Ubuntu install or a VM reboot.
   time. It does not hide the value afterwards.
 - **Saved logins and cards work only in the browser of the person's own Mac that hosts the Home.**
   Not on a Cloud Computer, not on another device, not over `browser_connect`.
-- **Auto asks the person unless a review model is configured** on the Home.
+- **Auto asks the person** before a connected agent's direct effect.
 - **A repeat is recognised only with the same `operationKey` or `operationId`.** Without either,
   the key is the MCP call id, and a retried call is a new operation.
 - **Disconnect can stay Stopping** for as long as a Runner cannot prove an end. A Runner too old to

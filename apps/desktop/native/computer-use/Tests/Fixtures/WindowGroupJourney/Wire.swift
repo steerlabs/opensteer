@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Darwin
 
 @MainActor final class WireJourney {
@@ -47,7 +48,7 @@ import Darwin
       try require(!ownerInput || negotiatedOwnerInput, "This connection did not negotiate owner input")
       return
     }
-    var params: [String: Any] = ["protocolVersion": 10, "ownerViewVersion": 3]
+    var params: [String: Any] = ["protocolVersion": 11, "ownerViewVersion": 3]
     if ownerInput { params["ownerInputVersion"] = 2 }
     if videoProfile { params["videoProfile"] = 1 }
     let reply = try await request("hello", params)
@@ -149,7 +150,7 @@ import Darwin
   /// The first text context for `stream` published after `mark` that the
   /// helper then publishes again unchanged: its idle republication saw the
   /// same field and selection, so the app had finished applying earlier input.
-  func settledEditingContext(_ stream: String, after mark: Int, seconds: Double = 1.5) async throws -> String {
+  func settledEditingContext(_ stream: String, after mark: Int, excluding: String? = nil, seconds: Double = 1.5) async throws -> String {
     let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(seconds * 1_000_000_000)
     var next = mark
     var previous: String?
@@ -157,7 +158,8 @@ import Darwin
       while next < editingContexts.count {
         let row = editingContexts[next]; next += 1
         guard row.stream == stream else { continue }
-        guard let id = row.context["contextId"] as? String, let field = row.context["field"] as? [String: Any],
+        guard let id = row.context["contextId"] as? String, id != excluding,
+          let field = row.context["field"] as? [String: Any],
           field["sensitive"] as? Bool == false
         else { previous = nil; continue }
         if id == previous { return id }
@@ -382,8 +384,8 @@ extension WireJourney {
     var cases: [String: String] = [:]
     var active: String?
     let planned = ["negotiation", "helper-baseline-negotiation", "capture-ready", "person-waits-for-agent-mutation", "two-idle-attachments-share-app", "agent-refused-held-button", "another-app-agent-unaffected",
-      "native-text-key", "IME-commit", "external-caret-stale", "verified-replacement", "stale-replacement", "rich-paste-refusal",
-      "multiline-paste", "AX-copy", "save-chord", "undo-chord", "stable-generation", "native-fixture-pixel-latency", "secure-refusal", "guest-pasteboard-unchanged",
+      "native-text-key", "IME-commit-at-once", "IME-commit", "external-caret-stale", "other-field-insertion-refused", "verified-replacement", "earlier-context-replacement", "replacement-text-gone", "stale-replacement", "own-burst-keeps-context", "move-forward-keeps-context", "app-rewrite-rotates", "rich-paste-refusal",
+      "multiline-paste", "AX-copy", "save-chord", "undo-chord", "redo-backspace-move", "stable-generation", "native-fixture-pixel-latency", "secure-refusal", "guest-pasteboard-unchanged",
       "resize-stale-input", "sibling-joins-composition", "sibling-leaves-composition", "contained-child-joins-composition", "contained-child-leaves-composition", "reset-preserves-agent-observation", "lost-keyup-cleanup", "hide-cleanup", "Stop-without-session", "local-cover-invariants", "disconnect-cleanup"]
     for name in planned { cases[name] = "not-run" }
     let pasteboard = NSPasteboard.general
@@ -444,7 +446,7 @@ extension WireJourney {
         targets.append(target)
       }
       let refused = try await baseline.request("display.input", ["streamId": streamA, "source": source,
-        "geometry": 1, "sequence": 0, "events": [["kind": "copy"]]])
+        "geometry": 1, "sequence": 0, "events": [["kind": "copy", "contextId": "00000000-0000-4000-8000-000000000001"]]])
       try require(refused["outcome"] as? String == "refused" && refused["reason"] as? String == "unavailable",
         "A baseline helper peer admitted owner input")
       _ = try await baseline.request("view.close", ["viewId": view, "generation": 1, "leaseDurationMs": 300_000])
@@ -459,12 +461,13 @@ extension WireJourney {
     try await Task.sleep(nanoseconds: 200_000_000)
     let originalFront = PrivateAPI.focusPID(front: true)
     let originalPointer = CGEvent(source: nil)?.location
+    let stressMode = ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_REDO_STRESS"] == "1"
     person.beginEvidence()
-    let localKeys = try OwnerPersonStream(out: out)
+    let localKeys = stressMode ? nil : try OwnerPersonStream(out: out)
     var localEvidenceCompleted = false
     defer {
-      localKeys.cancel()
-      if !localEvidenceCompleted, let sent = try? localKeys.recorded() {
+      localKeys?.cancel()
+      if !stressMode, !localEvidenceCompleted, let sent = try? localKeys?.recorded() {
         try? person.finishEvidence(sent: sent, out: out, front: originalFront, pointer: originalPointer, complete: false)
       }
     }
@@ -504,6 +507,298 @@ extension WireJourney {
       return answer
     }
     passed()
+    if ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_REDO_STRESS"] == "1" {
+      let dispatchLog = out.appendingPathComponent("dispatch.jsonl")
+      let diagLog = out.appendingPathComponent("owner-video.jsonl")
+      let meta = (try? JSONSerialization.jsonObject(with: Data(contentsOf: out.appendingPathComponent("receiver-metadata.json"))) as? [String: Any]) ?? [:]
+      let fixturePid = (meta["pid"] as? Int).map(pid_t.init) ?? 0
+      func readState() async throws -> [String: Any] {
+        try await Contracts.command(out, "owner-state")
+        return try JSONSerialization.jsonObject(with: Data(contentsOf: out.appendingPathComponent("owner-state.json"))) as! [String: Any]
+      }
+      func keyUpCount() throws -> Int {
+        try String(contentsOf: dispatchLog, encoding: .utf8).split(separator: "\n").filter {
+          let row = try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+          return row?["type"] as? Int == Int(NSEvent.EventType.keyUp.rawValue)
+        }.count
+      }
+      func rawRedoCount() throws -> Int {
+        try String(contentsOf: dispatchLog, encoding: .utf8).split(separator: "\n").filter {
+          let row = try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+          return row?["type"] as? Int == Int(NSEvent.EventType.keyDown.rawValue)
+            && row?["code"] as? Int == 6
+            && (row?["flags"] as? Int ?? 0) & 0x120000 == 0x120000
+        }.count
+      }
+      func waitKeyUp(after before: Int) async throws {
+        let by = Date().addingTimeInterval(2)
+        while try keyUpCount() <= before, Date() < by { try await Task.sleep(nanoseconds: 5_000_000) }
+      }
+      func diagOffset() -> UInt64 {
+        (try? FileManager.default.attributesOfItem(atPath: diagLog.path)[.size] as? UInt64) ?? 0
+      }
+      func diagShortcutEvents(since offset: UInt64) -> [[String: Any]] {
+        guard let handle = try? FileHandle(forReadingFrom: diagLog) else { return [] }
+        defer { try? handle.close() }
+        try? handle.seek(toOffset: offset)
+        guard let data = try? handle.readToEnd(), let text = String(data: data, encoding: .utf8) else { return [] }
+        return text.split(separator: "\n").compactMap { line in
+          guard line.contains("owner-menu-shortcut"),
+            let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
+          else { return nil }
+          return obj
+        }
+      }
+      func probeRedoAX() -> [String: Any] {
+        guard fixturePid > 0 else { return ["error": "no-pid"] }
+        let appEl = AXUIElementCreateApplication(fixturePid)
+        AXUIElementSetMessagingTimeout(appEl, 0.2)
+        var barVal: CFTypeRef?
+        let barStatus = AXUIElementCopyAttributeValue(appEl, kAXMenuBarAttribute as CFString, &barVal)
+        guard barStatus == .success, let barVal else { return ["barStatus": barStatus.rawValue] }
+        let bar = unsafeBitCast(barVal, to: AXUIElement.self)
+        var barChildrenVal: CFTypeRef?
+        let bcStatus = AXUIElementCopyAttributeValue(bar, kAXChildrenAttribute as CFString, &barChildrenVal)
+        guard bcStatus == .success, let barChildren = barChildrenVal as? [AXUIElement] else {
+          return ["barChildrenStatus": bcStatus.rawValue]
+        }
+        for barItem in barChildren {
+          var titleVal: CFTypeRef?
+          _ = AXUIElementCopyAttributeValue(barItem, kAXTitleAttribute as CFString, &titleVal)
+          if (titleVal as? String) != "Edit" { continue }
+          var subVal: CFTypeRef?
+          let subStatus = AXUIElementCopyAttributeValue(barItem, kAXChildrenAttribute as CFString, &subVal)
+          guard subStatus == .success, let menus = subVal as? [AXUIElement], let editMenu = menus.first else {
+            return ["editSubStatus": subStatus.rawValue]
+          }
+          var itemsVal: CFTypeRef?
+          let itemsStatus = AXUIElementCopyAttributeValue(editMenu, kAXChildrenAttribute as CFString, &itemsVal)
+          guard itemsStatus == .success, let items = itemsVal as? [AXUIElement] else {
+            return ["editItemsStatus": itemsStatus.rawValue]
+          }
+          for item in items {
+            let names = ["AXMenuItemCmdModifiers", "AXMenuItemCmdChar", "AXMenuItemCmdVirtualKey", kAXEnabledAttribute, kAXTitleAttribute] as CFArray
+            var vals: CFArray?
+            let rStatus = AXUIElementCopyMultipleAttributeValues(item, names, AXCopyMultipleAttributeOptions(rawValue: 0), &vals)
+            if rStatus == .success, let list = vals as? [AnyObject], list.count == 5, (list[4] as? String) == "Redo" {
+              return [
+                "found": true,
+                "title": list[4] as? String ?? "",
+                "cmdChar": list[1] as? String ?? String(describing: list[1]),
+                "cmdModifiers": (list[0] as? NSNumber)?.intValue ?? -1,
+                "enabled": (list[3] as? NSNumber)?.boolValue ?? false,
+                "rawEnabledType": String(describing: type(of: list[3])),
+              ]
+            }
+          }
+          return ["found": false, "editItemCount": items.count]
+        }
+        return ["found": false, "editMenuMissing": true]
+      }
+      func activeContext(after mark: Int? = nil, excluding: String? = nil) async throws -> String {
+        let ctx = try await editingContext(streamA, after: mark ?? inputMark) { c in
+          guard let id = c["contextId"] as? String, let field = c["field"] as? [String: Any] else { return false }
+          return id != excluding && field["sensitive"] as? Bool == false
+        }
+        return try (ctx["contextId"] as? String).unwrap("stress editing context")
+      }
+      _ = try await input([["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]])
+      let iterations = Int(ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_REDO_STRESS_COUNT"] ?? "200") ?? 200
+      let failOnMiss = ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_REDO_STRESS_FAIL_ON_MISS"] == "1"
+      var gapReports: [[String: Any]] = []
+      var totalMisses = 0
+      for gapMs in [0, 50, 250] {
+        let beforeClearMark = editingMark
+        try await Contracts.command(out, "owner-clear")
+        _ = try await input([["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]])
+        var currentCtx = try await activeContext(after: beforeClearMark)
+        // Seed one character so the undo stack is non-empty for the first type->undo->redo trial.
+        let seedKU = try keyUpCount()
+        let beforeSeedMark = editingMark
+        _ = try await input([
+          ["kind": "key", "action": "down", "code": "KeyS", "key": "s", "modifiers": [], "text": "s"],
+          ["kind": "key", "action": "up", "code": "KeyS", "key": "s", "modifiers": []],
+        ])
+        try await waitKeyUp(after: seedKU)
+        currentCtx = try await activeContext(after: beforeSeedMark)
+        var expectedLen = 1
+        var hits = 0
+        var misses = 0
+        var undoMisses = 0
+        var staleRedos = 0
+        var missDetails: [[String: Any]] = []
+        for i in 0..<iterations {
+          if i % 25 == 0 {
+            _ = try await request("view.renew", ["viewId": viewA, "generation": 1, "leaseDurationMs": 300_000])
+          }
+          let beforeKU = try keyUpCount()
+          let beforeTypeMark = editingMark
+          let typed = try await input([
+            ["kind": "key", "action": "down", "code": "KeyA", "key": "a", "modifiers": [], "text": "a"],
+            ["kind": "key", "action": "up", "code": "KeyA", "key": "a", "modifiers": []],
+          ])
+          try require(typed["outcome"] as? String == "dispatched", "stress type refused at gap=\(gapMs) iter=\(i): \(typed)")
+          try await waitKeyUp(after: beforeKU)
+          currentCtx = try await activeContext(after: beforeTypeMark)
+          // Ensure Undo itself runs (retry if Undo hits the same lazy-menu miss or stale context).
+          var undoDoneUs: UInt64 = 0
+          var undoMark = editingMark
+          for attempt in 0..<5 {
+            undoMark = editingMark
+            let undoOff = diagOffset()
+            let undoRes = try await input([["kind": "command", "command": "undo", "contextId": currentCtx]])
+            undoDoneUs = DispatchTime.now().uptimeNanoseconds / 1000
+            if undoRes["outcome"] as? String == "stale" {
+              currentCtx = try await activeContext(after: undoMark)
+              continue
+            }
+            try require(undoRes["outcome"] as? String == "dispatched", "stress undo refused at gap=\(gapMs) iter=\(i): \(undoRes)")
+            let uDiags = diagShortcutEvents(since: undoOff).filter { ($0["combo"] as? String) == "cmd+z" }
+            if uDiags.contains(where: { ($0["event"] as? String) == "owner-menu-shortcut-miss" }) {
+              undoMisses += 1
+              if attempt < 4 {
+                try await Task.sleep(nanoseconds: 50_000_000)
+                currentCtx = try await activeContext(after: undoMark)
+                continue
+              }
+            }
+            break
+          }
+          // Wait for the post-undo editing context (as fast as the wire allows).
+          var redoCtx = try await activeContext(after: undoMark)
+          if gapMs > 0 {
+            let targetUs = undoDoneUs + UInt64(gapMs) * 1000
+            let nowUs = DispatchTime.now().uptimeNanoseconds / 1000
+            if targetUs > nowUs {
+              try await Task.sleep(nanoseconds: (targetUs - nowUs) * 1000)
+            }
+          }
+          var dOff = diagOffset()
+          var rawBefore = try rawRedoCount()
+          var redoSendUs = DispatchTime.now().uptimeNanoseconds / 1000
+          var beforeRedoMark = editingMark
+          var redoRes = try await input([["kind": "command", "command": "redo", "contextId": redoCtx]])
+          if redoRes["outcome"] as? String == "stale" {
+            staleRedos += 1
+            redoCtx = try await activeContext(after: beforeRedoMark)
+            dOff = diagOffset()
+            rawBefore = try rawRedoCount()
+            redoSendUs = DispatchTime.now().uptimeNanoseconds / 1000
+            beforeRedoMark = editingMark
+            redoRes = try await input([["kind": "command", "command": "redo", "contextId": redoCtx]])
+          }
+          let redoDoneUs = DispatchTime.now().uptimeNanoseconds / 1000
+          let diags = diagShortcutEvents(since: dOff).filter { ($0["combo"] as? String) == "cmd+shift+z" }
+          let rawAfter = try rawRedoCount()
+          let state = try await readState()
+          let textLen = (state["text"] as? String)?.count ?? -1
+          let isHit = redoRes["outcome"] as? String == "dispatched"
+            && textLen == expectedLen + 1
+            && rawAfter == rawBefore
+            && !diags.contains(where: { ($0["event"] as? String) == "owner-menu-shortcut-miss" })
+          if isHit {
+            hits += 1
+            expectedLen += 1
+            currentCtx = try await activeContext(after: beforeRedoMark)
+          } else {
+            misses += 1
+            totalMisses += 1
+            let firstProbe = probeRedoAX()
+            var enabledAfterUndoMs: Double = -1
+            if (firstProbe["enabled"] as? Bool) == true {
+              enabledAfterUndoMs = Double(DispatchTime.now().uptimeNanoseconds / 1000 - undoDoneUs) / 1000.0
+            } else {
+              let deadline = Date().addingTimeInterval(0.5)
+              while Date() < deadline {
+                try await Task.sleep(nanoseconds: 5_000_000)
+                let p = probeRedoAX()
+                if (p["enabled"] as? Bool) == true {
+                  enabledAfterUndoMs = Double(DispatchTime.now().uptimeNanoseconds / 1000 - undoDoneUs) / 1000.0
+                  break
+                }
+              }
+            }
+            if missDetails.count < 50 {
+              missDetails.append([
+                "iter": i,
+                "actualGapMs": Double(redoSendUs - undoDoneUs) / 1000.0,
+                "redoElapsedMs": Double(redoDoneUs - redoSendUs) / 1000.0,
+                "redoOutcome": redoRes["outcome"] as? String ?? "unknown",
+                "redoReason": redoRes["reason"] as? String ?? "",
+                "rawKeyPosted": rawAfter > rawBefore,
+                "textLen": textLen,
+                "expectedLen": expectedLen + 1,
+                "ownerState": state,
+                "diags": diags,
+                "firstAxProbe": firstProbe,
+                "enabledAfterUndoMs": enabledAfterUndoMs,
+              ])
+            }
+            expectedLen = max(0, textLen)
+            currentCtx = try await activeContext(after: beforeRedoMark)
+          }
+        }
+        gapReports.append([
+          "gapMs": gapMs,
+          "iterations": iterations,
+          "hits": hits,
+          "misses": misses,
+          "undoMisses": undoMisses,
+          "staleRedos": staleRedos,
+          "missDetails": missDetails,
+        ])
+      }
+      // Opposite case: Redo when there is truly nothing to redo.
+      // Wait past AppKit's 1.0 s AX menu throttle so Edit › Redo reads disabled before sending redo.
+      try await Contracts.command(out, "owner-clear")
+      _ = try await input([["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]])
+      let freshKU = try keyUpCount()
+      let beforeFMark = editingMark
+      _ = try await input([
+        ["kind": "key", "action": "down", "code": "KeyF", "key": "f", "modifiers": [], "text": "f"],
+        ["kind": "key", "action": "up", "code": "KeyF", "key": "f", "modifiers": []],
+      ])
+      try await waitKeyUp(after: freshKU)
+      let nothingCtx = try await settledEditingContext(streamA, after: beforeFMark)
+      try await Task.sleep(nanoseconds: 1_150_000_000)
+      let nothingDiagOff = diagOffset()
+      let nothingRawBefore = try rawRedoCount()
+      let nothingStartUs = DispatchTime.now().uptimeNanoseconds / 1000
+      let nothingRes = try await input([["kind": "command", "command": "redo", "contextId": nothingCtx]])
+      let nothingElapsedMs = Double(DispatchTime.now().uptimeNanoseconds / 1000 - nothingStartUs) / 1000.0
+      let nothingRawAfter = try rawRedoCount()
+      let nothingState = try await readState()
+      let nothingDiags = diagShortcutEvents(since: nothingDiagOff)
+      let nothingText = nothingState["text"] as? String ?? ""
+      let nothingOk = nothingRes["outcome"] as? String == "dispatched"
+        && nothingText == "f"
+        && nothingRawAfter == nothingRawBefore
+      let report: [String: Any] = [
+        "gaps": gapReports,
+        "totalMisses": totalMisses,
+        "nothingToRedo": [
+          "ok": nothingOk,
+          "outcome": nothingRes["outcome"] as? String ?? "",
+          "reason": nothingRes["reason"] as? String ?? "",
+          "elapsedMs": nothingElapsedMs,
+          "textAfter": nothingText,
+          "rawKeyPosted": nothingRawAfter > nothingRawBefore,
+          "ownerState": nothingState,
+          "diags": nothingDiags,
+        ],
+      ]
+      try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+        .write(to: out.appendingPathComponent("redo-stress-report.json"))
+      person.stopEvidence()
+      try require(PrivateAPI.focusPID(front: true) == originalFront && CGEvent(source: nil)?.location == originalPointer,
+        "Stress run changed the person's front app or pointer")
+      localEvidenceCompleted = true
+      if failOnMiss {
+        try require(totalMisses == 0, "Redo stress had \(totalMisses) misses; see redo-stress-report.json")
+        try require(nothingOk, "Nothing-to-redo failed: text=\(nothingText) rawPosted=\(nothingRawAfter > nothingRawBefore) outcome=\(nothingRes)")
+      }
+      return
+    }
     start("person-waits-for-agent-mutation")
     let dispatchLog = out.appendingPathComponent("dispatch.jsonl")
     func dispatchedKeys() throws -> Int {
@@ -531,6 +826,12 @@ extension WireJourney {
       try require(try modifierReleases() == count + 1, "Held Shift did not receive exactly one native cleanup release")
     }
     let shiftDown: [[String: Any]] = [["kind": "key", "action": "down", "code": "ShiftLeft", "key": "Shift", "modifiers": ["shift"]]]
+    let establish = try await input([["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]])
+    try require(establish["outcome"] as? String == "dispatched", "Initial owner input attachment did not establish")
+    let beforeAgentContext = try await editingContext(streamA, after: 0) { context in
+      (context["field"] as? [String: Any])?["sensitive"] as? Bool == false
+    }
+    let beforeAgentContextId = try (beforeAgentContext["contextId"] as? String).unwrap("before-agent context id")
     let beforeAgent = try dispatchedKeys()
     let agentTask = Task { @MainActor in
       try await agent.request("session.act", ["sessionId": session, "app": sessionApp, "window": ref,
@@ -543,7 +844,7 @@ extension WireJourney {
     }
     do {
       try require(try dispatchedKeys() > beforeAgent, "Agent mutation never reached the native fixture")
-      let personBatch = try await input([["kind": "copy"]])
+      let personBatch = try await input([["kind": "copy", "contextId": beforeAgentContextId]])
       let result = try await agentTask.value
       try require(personBatch["outcome"] as? String == "dispatched"
         && result["error"] is NSNull && (result["performed"] as? [String])?.count == 2,
@@ -563,41 +864,51 @@ extension WireJourney {
       "events": [["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]]])
     try require(second["outcome"] as? String == "dispatched", "Idle attachment excluded another viewer")
     passed()
-    start("agent-refused-held-button")
-    let heldContact = try await input([["kind": "mouse", "phase": "down", "button": "left",
-      "clickCount": 1, "modifiers": [], "x": 0.5, "y": 0.5]])
-    try require(heldContact["outcome"] as? String == "dispatched", "Person button did not go down")
-    let heldResult = try await agent.request("session.act", ["sessionId": session, "app": sessionApp, "window": ref,
-      "actions": [["type": "key", "keys": "x"]]])
-    let heldError = heldResult["error"] as? [String: Any]
-    try require(heldError?["code"] as? String == "failed"
-      && heldError?["message"] as? String == "A person is pressing in this app; try again.",
-      "Agent did not refuse the actual held contact")
-    passed()
-    start("another-app-agent-unaffected")
+    func mouseUps() throws -> Int {
+      try String(contentsOf: dispatchLog, encoding: .utf8).split(separator: "\n").filter {
+        let row = try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+        return row?["type"] as? Int == Int(NSEvent.EventType.leftMouseUp.rawValue)
+      }.count
+    }
+    // Prepare the independent fixture before holding a button down on App A so
+    // cold app startup never races the 5 s held-contact safety watchdog.
+    let beforeHeldUps: Int
     do {
-      let path = try ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_OTHER_APP"].unwrap("independent app fixture")
-      let running = try await launchFixture(URL(fileURLWithPath: path))
-      defer { running.terminate() }
+      let otherPath = try ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_OTHER_APP"].unwrap("independent app fixture")
+      let otherRunning = try await launchFixture(URL(fileURLWithPath: otherPath))
+      defer { otherRunning.terminate() }
       let otherOut = out.appendingPathComponent("other-app")
-      let ready = Date().addingTimeInterval(10)
-      while !FileManager.default.fileExists(atPath: otherOut.appendingPathComponent("windows.json").path), Date() < ready {
+      let otherReady = Date().addingTimeInterval(10)
+      while !FileManager.default.fileExists(atPath: otherOut.appendingPathComponent("windows.json").path), Date() < otherReady {
         try await Task.sleep(nanoseconds: 20_000_000)
       }
-      let record = try AppResolver.record(forBundleAtPath: path).unwrap("independent app identity")
-      let otherIdentity = try JSONSerialization.jsonObject(with: JSONCoding.encoder.encode(record.identity))
+      let otherRecord = try AppResolver.record(forBundleAtPath: otherPath).unwrap("independent app identity")
+      let otherIdentity = try JSONSerialization.jsonObject(with: JSONCoding.encoder.encode(otherRecord.identity))
       let otherSession = "cus_22222222-2222-4222-8222-222222222222"
       let otherApp: [String: Any] = ["identity": otherIdentity, "access": "read-write"]
       let independent = try WireJourney(out: out.appendingPathComponent("independent-agent"), helper: helper)
       defer { independent.close() }
       try await independent.hello()
       _ = try await independent.request("session.open", ["sessionId": otherSession, "threadTitle": "Independent app during owner control"])
-      let listed = try await independent.request("session.windows", ["sessionId": otherSession, "app": otherApp])
-      let window = try ((listed["windows"] as? [[String: Any]])?.first(where: { $0["title"] as? String == "A" })).unwrap("independent A")
-      let bound = try await independent.request("session.bind", ["sessionId": otherSession, "app": otherApp, "windowId": window["windowId"]!])
-      let independentRef = try ((bound["window"] as? [String: Any])?["ref"] as? String).unwrap("independent ref")
+      let otherListed = try await independent.request("session.windows", ["sessionId": otherSession, "app": otherApp])
+      let otherWindow = try ((otherListed["windows"] as? [[String: Any]])?.first(where: { $0["title"] as? String == "A" })).unwrap("independent A")
+      let otherBound = try await independent.request("session.bind", ["sessionId": otherSession, "app": otherApp, "windowId": otherWindow["windowId"]!])
+      let independentRef = try ((otherBound["window"] as? [String: Any])?["ref"] as? String).unwrap("independent ref")
       _ = try await independent.request("session.observe", ["sessionId": otherSession, "app": otherApp,
         "window": independentRef, "includeScreenshot": false])
+      start("agent-refused-held-button")
+      let heldContact = try await input([["kind": "mouse", "phase": "down", "button": "left",
+        "clickCount": 1, "modifiers": [], "x": 0.5, "y": 0.5]])
+      try require(heldContact["outcome"] as? String == "dispatched", "Person button did not go down")
+      beforeHeldUps = try mouseUps()
+      let heldResult = try await agent.request("session.act", ["sessionId": session, "app": sessionApp, "window": ref,
+        "actions": [["type": "key", "keys": "x"]]])
+      let heldError = heldResult["error"] as? [String: Any]
+      try require(heldError?["code"] as? String == "failed"
+        && heldError?["message"] as? String == "A person is pressing in this app; try again.",
+        "Agent did not refuse the actual held contact")
+      passed()
+      start("another-app-agent-unaffected")
       let acted = try await independent.request("session.act", ["sessionId": otherSession, "app": otherApp,
         "window": independentRef, "actions": [["type": "key", "keys": "x"]]])
       let delivered = Date().addingTimeInterval(2)
@@ -612,22 +923,16 @@ extension WireJourney {
       try require(acted["error"] is NSNull && (acted["performed"] as? [String])?.count == 1
         && (try independentKeys()) == 1, "One app's lease blocked another app's native agent key")
       _ = try await independent.request("session.close", ["sessionId": otherSession])
+      passed()
     }
-    passed()
-    let beforeResetUps = try String(contentsOf: dispatchLog, encoding: .utf8).split(separator: "\n").filter {
-      let row = try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
-      return row?["type"] as? Int == Int(NSEvent.EventType.leftMouseUp.rawValue)
-    }.count
     try await reset(self, streamA, viewA)
     let releaseBy = Date().addingTimeInterval(2)
-    func mouseUps() throws -> Int {
-      try String(contentsOf: dispatchLog, encoding: .utf8).split(separator: "\n").filter {
-        let row = try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
-        return row?["type"] as? Int == Int(NSEvent.EventType.leftMouseUp.rawValue)
-      }.count
-    }
-    while try mouseUps() == beforeResetUps, Date() < releaseBy { try await Task.sleep(nanoseconds: 10_000_000) }
-    try require(try mouseUps() == beforeResetUps + 1, "Reset did not release exactly one held person button")
+    while try mouseUps() == beforeHeldUps, Date() < releaseBy { try await Task.sleep(nanoseconds: 10_000_000) }
+    try require(try mouseUps() == beforeHeldUps + 1, "Held person button was not released exactly once")
+    let afterResetSecond = try await other.request("display.input", ["streamId": streamB, "source": source(viewB),
+      "geometry": secondGeometry, "sequence": 1,
+      "events": [["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]]])
+    try require(afterResetSecond["outcome"] as? String == "dispatched", "Held person contact remained after reset")
     // A snapshot the helper published after the latest input's receipt: later
     // than the input, not proof the app has finished applying it.
     func context(sensitive: Bool? = nil, excluding: String? = nil) async throws -> String {
@@ -638,47 +943,116 @@ extension WireJourney {
       }
       return try (context["contextId"] as? String).unwrap("editing context id")
     }
-    func note() async throws -> String {
+    func noteState() async throws -> [String: Any] {
       try await Contracts.command(out, "owner-state")
-      let state = try JSONSerialization.jsonObject(with: Data(contentsOf: out.appendingPathComponent("owner-state.json"))) as! [String: Any]
-      return try (state["text"] as? String).unwrap("note text")
+      return try JSONSerialization.jsonObject(with: Data(contentsOf: out.appendingPathComponent("owner-state.json"))) as! [String: Any]
+    }
+    func note() async throws -> String {
+      return try (try await noteState()["text"] as? String).unwrap("note text")
+    }
+    func keyUps() throws -> Int {
+      try String(contentsOf: dispatchLog, encoding: .utf8).split(separator: "\n").filter {
+        let row = try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+        return row?["type"] as? Int == Int(NSEvent.EventType.keyUp.rawValue)
+      }.count
+    }
+    func waitForKeyUp(after before: Int) async throws {
+      let by = Date().addingTimeInterval(2)
+      while try keyUps() <= before, Date() < by { try await Task.sleep(nanoseconds: 10_000_000) }
     }
     // Reset releases the input lease. Focus the editor after the contact
     // test, then admit a new action before expecting its editing context.
     try await Contracts.command(out, "owner-resume")
-    let resumedInput = try await input([["kind": "copy"]])
+    let resumedInput = try await input([["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]])
     try require(resumedInput["outcome"] as? String == "dispatched", "New input did not reacquire the reset viewer")
     _ = try await context()
     start("native-text-key")
+    let beforeNativeKey = try keyUps()
     let key = try await input([["kind": "key", "action": "down", "code": "KeyQ", "key": "q", "modifiers": [], "text": "q"],
       ["kind": "key", "action": "up", "code": "KeyQ", "key": "q", "modifiers": []]])
     try require(key["outcome"] as? String == "dispatched", "Unicode-carrying key was refused")
+    try await waitForKeyUp(after: beforeNativeKey)
     try require(try await note() == "q", "AppKit key did not insert exactly once")
-    // The fixture now shows the key, but its receipt came first: Electron
-    // applies a key in its renderer, so the context the helper read at once
-    // can name the field before "q" landed, and an edit against it is rightly
-    // stale. A person commits into a settled field.
     let afterKey = editingMark
     passed()
+    // CY13: a person commits at once after a key. Electron applies the key in its renderer,
+    // after its receipt; the helper publishes the field's context only once the field shows
+    // the key, and an insertion under an earlier context of the same field goes in at the
+    // caret. Committed under the first context published after the key, it lands, once.
+    start("IME-commit-at-once")
+    let atOnce = try await editingContext(streamA, after: afterKey) { context in
+      (context["field"] as? [String: Any])?["sensitive"] as? Bool == false
+    }
+    let immediate = try await input([["kind": "edit", "edit": ["contextId": atOnce["contextId"] as Any, "text": "漢字", "before": "", "after": ""]]])
+    try require(immediate["outcome"] as? String == "dispatched", "An IME commit at once after a key was refused")
+    try require(try await note() == "q漢字", "An IME commit at once after a key did not insert once")
+    let afterCommit = editingMark
+    passed()
+    // And into a field that has settled, as before.
     start("IME-commit")
-    let ime = try await input([["kind": "edit", "edit": ["contextId": try await settledEditingContext(streamA, after: afterKey), "text": "漢字!", "before": "", "after": ""]]])
+    let ime = try await input([["kind": "edit", "edit": ["contextId": try await settledEditingContext(streamA, after: afterCommit), "text": "!", "before": "", "after": ""]]])
     try require(ime["outcome"] as? String == "dispatched", "IME commit was refused")
     try require(try await note() == "q漢字!", "IME commit did not insert once")
     passed()
     start("external-caret-stale")
-    // Sent without waiting for the move's publication: the edit itself must
-    // notice that the caret it names moved in the same field.
+    // Lead's ruling: an insertion is relative to the caret, so after an outside caret move in the
+    // same field it stays valid under an earlier context of that field and lands at the live caret.
     let beforeMiddle = try await context()
     try await Contracts.command(out, "owner-middle")
-    let moved = try await input([["kind": "edit", "edit": ["contextId": beforeMiddle, "text": "BAD", "before": "", "after": ""]]])
+    let moved = try await input([["kind": "edit", "edit": ["contextId": beforeMiddle, "text": "X", "before": "", "after": ""]]])
     let afterMoved = try await note()
-    try require(moved["outcome"] as? String == "stale" && afterMoved == "q漢字!",
-      "An external caret move admitted an old context's insertion")
+    try require(moved["outcome"] as? String == "dispatched" && afterMoved == "q漢X字!",
+      "An insertion under an earlier context of the same field did not land at the live caret")
+    let restored = try await input([["kind": "edit", "edit": ["contextId": try await context(), "text": "", "before": "X", "after": ""]]])
+    let afterRestored = try await note()
+    try require(restored["outcome"] as? String == "dispatched" && afterRestored == "q漢字!",
+      "Restoring after external-caret insertion failed")
+    passed()
+    start("other-field-insertion-refused")
+    // Lead's ruling: after focus moves to another field, an insertion under the old field's
+    // context is refused, neither field changes, and the refusal does not rotate the new field's context.
+    let noteContext = try await context(sensitive: false)
+    try await Contracts.command(out, "owner-other")
+    let otherContext = try await context(sensitive: false, excluding: noteContext)
+    let otherRefused = try await input([["kind": "edit", "edit": ["contextId": noteContext, "text": "WRONG", "before": "", "after": ""]]])
+    let afterOther = try await noteState()
+    let afterRefusalContext = try await context(sensitive: false)
+    try require(otherRefused["outcome"] as? String == "stale"
+      && afterRefusalContext == otherContext
+      && afterOther["text"] as? String == "q漢字!"
+      && afterOther["other"] as? String == "",
+      "An insertion under another field's context was not refused, rotated context, or changed a field")
+    try await Contracts.command(out, "owner-resume")
+    try await Contracts.command(out, "owner-middle")
     passed()
     start("verified-replacement")
-    let replace = try await input([["kind": "edit", "edit": ["contextId": try await context(excluding: beforeMiddle), "text": "é", "before": "漢", "after": "字"]]])
+    let beforeReplace = try await context(sensitive: false, excluding: otherContext)
+    let replace = try await input([["kind": "edit", "edit": ["contextId": beforeReplace, "text": "é", "before": "漢", "after": "字"]]])
     try require(replace["outcome"] as? String == "dispatched", "Verified replacement was refused")
     try require(try await note() == "qé!", "Verified middle replacement changed the prefix or suffix")
+    passed()
+    start("earlier-context-replacement")
+    // S9: Mac-specific Rule 3 — a text-naming replacement under an earlier context of the same
+    // field still applies when its named text is present around the collapsed caret.
+    let earlierReplaceCtx = try await context(sensitive: false)
+    try await Contracts.command(out, "owner-end")
+    let afterEndCtx = try await context(sensitive: false, excluding: earlierReplaceCtx)
+    try require(afterEndCtx != earlierReplaceCtx, "External caret move to end did not rotate context")
+    let earlierReplace = try await input([["kind": "edit", "edit": ["contextId": earlierReplaceCtx, "text": "?", "before": "!", "after": ""]]])
+    let afterEarlierReplace = try await note()
+    try require(earlierReplace["outcome"] as? String == "dispatched" && afterEarlierReplace == "qé?",
+      "Verified replacement under an earlier context of the same field did not apply")
+    let restoredBang = try await input([["kind": "edit", "edit": ["contextId": try await context(sensitive: false), "text": "!", "before": "?", "after": ""]]])
+    let afterRestoredBang = try await note()
+    try require(restoredBang["outcome"] as? String == "dispatched" && afterRestoredBang == "qé!",
+      "Restoring text after earlier-context replacement failed")
+    passed()
+    start("replacement-text-gone")
+    // Lead's ruling: a replacement whose named text is no longer in the field is refused.
+    let gone = try await input([["kind": "edit", "edit": ["contextId": beforeReplace, "text": "BAD", "before": "漢", "after": "字"]]])
+    let afterGone = try await note()
+    try require(gone["outcome"] as? String == "stale" && afterGone == "qé!",
+      "A replacement whose named text is gone was not refused or changed the field")
     passed()
     start("stale-replacement")
     let oldContext = try await context()
@@ -687,20 +1061,115 @@ extension WireJourney {
     try require(stale["outcome"] as? String == "stale" && afterStale == "qé!", "Stale replacement changed the field")
     try require(try await context() != oldContext, "Stale replacement did not rotate context")
     passed()
+    start("own-burst-keeps-context")
+    // Q3: send five edit insertions under C in five batches without waiting; after the text lands,
+    // C is still the published context and an exact command (selectAll) under C returns dispatched.
+    let burstContext = try await settledEditingContext(streamA, after: inputMark)
+    let beforeBurstText = try await note()
+    for ch in ["a", "b", "c", "d", "e"] {
+      let reply = try await input([["kind": "edit", "edit": ["contextId": burstContext, "text": ch, "before": "", "after": ""]]])
+      try require(reply["outcome"] as? String == "dispatched", "Own burst insertion \(ch) was refused")
+    }
+    let expectedBurstText = beforeBurstText + "abcde"
+    let burstDeadline = Date().addingTimeInterval(3)
+    while try await note() != expectedBurstText, Date() < burstDeadline {
+      try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    let afterBurstText = try await note()
+    try require(afterBurstText == expectedBurstText, "Own burst insertions did not all land in order")
+    let afterBurstMark = editingMark
+    let settledAfterBurst = try await settledEditingContext(streamA, after: afterBurstMark)
+    try require(settledAfterBurst == burstContext, "Own burst of five insertions rotated the published context")
+    let burstSelectAll = try await input([["kind": "command", "command": "selectAll", "contextId": burstContext]])
+    try require(burstSelectAll["outcome"] as? String == "dispatched", "Exact selectAll under burst context was refused")
+    try await Contracts.command(out, "owner-end")
+    passed()
+    start("move-forward-keeps-context")
+    // A1: move the caret right five times in a row under one context (from index 2 in "qé!abcde"
+    // across "!abcd" to before "e"), confirm the context did not rotate, then perform an exact
+    // edit (deleteForward) under that same context and verify "e" is deleted.
+    let beforeMoveText = try await note()
+    let beforeMoveContext = try await settledEditingContext(streamA, after: editingMark)
+    try await Contracts.command(out, "owner-middle")
+    let moveContext = try await settledEditingContext(streamA, after: editingMark, excluding: beforeMoveContext)
+    for step in 1...5 {
+      let reply = try await input([["kind": "command", "command": "moveForward", "contextId": moveContext]])
+      try require(reply["outcome"] as? String == "dispatched", "moveForward step \(step) was refused")
+    }
+    let afterMoveMark = editingMark
+    let settledAfterMoves = try await settledEditingContext(streamA, after: afterMoveMark)
+    try require(settledAfterMoves == moveContext, "Five moveForward steps rotated the published context")
+    let exactDeleteForward = try await input([["kind": "command", "command": "deleteForward", "contextId": moveContext]])
+    let expectedAfterDelete = String(beforeMoveText.dropLast())
+    let deleteDeadline = Date().addingTimeInterval(3)
+    while try await note() != expectedAfterDelete, Date() < deleteDeadline {
+      try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    let afterDeleteText = try await note()
+    try require(exactDeleteForward["outcome"] as? String == "dispatched" && afterDeleteText == expectedAfterDelete,
+      "Exact deleteForward after five moveForward steps was refused or landed at the wrong caret")
+    let restoreAfterMove = try await input([["kind": "edit", "edit": ["contextId": try await context(sensitive: false), "text": String(beforeMoveText.suffix(1)), "before": "", "after": ""]]])
+    let restoreDeadline = Date().addingTimeInterval(3)
+    while try await note() != beforeMoveText, Date() < restoreDeadline {
+      try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    let afterRestoreMove = try await note()
+    try require(restoreAfterMove["outcome"] as? String == "dispatched" && afterRestoreMove == beforeMoveText,
+      "Restoring text after move-forward-keeps-context failed")
+    try await Contracts.command(out, "owner-end")
+    passed()
+    start("app-rewrite-rotates")
+    // Q3: send one insertion under C, then have the fixture rewrite what was typed (upper-casing
+    // the last character); the helper publishes a new context, refuses exact selectAll under C as
+    // stale, and still applies a relative insertion under C at the live collapsed caret.
+    let rewriteStartMark = editingMark
+    let rewriteContext = try await settledEditingContext(streamA, after: rewriteStartMark)
+    let beforeRewriteText = try await note()
+    let rewriteInsert = try await input([["kind": "edit", "edit": ["contextId": rewriteContext, "text": "z", "before": "", "after": ""]]])
+    try require(rewriteInsert["outcome"] as? String == "dispatched", "Insertion before app rewrite was refused")
+    let renderedLower = beforeRewriteText + "z"
+    let lowerDeadline = Date().addingTimeInterval(3)
+    while try await note() != renderedLower, Date() < lowerDeadline {
+      try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    let afterLower = try await note()
+    try require(afterLower == renderedLower, "Insertion before app rewrite did not render")
+    let afterLowerMark = editingMark
+    let contextBeforeRewrite = try await settledEditingContext(streamA, after: afterLowerMark)
+    try require(contextBeforeRewrite == rewriteContext, "Own insertion before app rewrite already rotated the context")
+    try await Contracts.command(out, "owner-rewrite-last")
+    let rotatedContext = try await context(sensitive: false, excluding: rewriteContext)
+    try require(rotatedContext != rewriteContext, "App rewrite of typed text did not rotate the published context")
+    let staleSelectAll = try await input([["kind": "command", "command": "selectAll", "contextId": rewriteContext]])
+    try require(staleSelectAll["outcome"] as? String == "stale", "Exact selectAll under pre-rewrite context was not refused as stale")
+    let relativeAfterRewrite = try await input([["kind": "edit", "edit": ["contextId": rewriteContext, "text": "!", "before": "", "after": ""]]])
+    let expectedRewritten = beforeRewriteText + "Z!"
+    let rewriteDeadline = Date().addingTimeInterval(3)
+    while try await note() != expectedRewritten, Date() < rewriteDeadline {
+      try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    let afterRelative = try await note()
+    try require(relativeAfterRewrite["outcome"] as? String == "dispatched" && afterRelative == expectedRewritten,
+      "Relative insertion under pre-rewrite context did not apply at live caret")
+    passed()
     start("rich-paste-refusal")
     let rich = try await input([["kind": "paste", "items": [["type": "image/png", "size": 64]]]])
     try require(rich["outcome"] as? String == "refused" && rich["reason"] as? String == "unsupported", "Rich paste was not refused before upload")
     passed()
     start("multiline-paste")
+    let beforeMultilineSelect = try await settledEditingContext(streamA, after: editingMark)
     try await Contracts.command(out, "owner-select-all")
     let literal = "line 1\n\tline 2"
-    let pasted = try await input([["kind": "paste", "text": literal]])
+    let multilineContext = try await settledEditingContext(streamA, after: editingMark, excluding: beforeMultilineSelect)
+    let pasted = try await input([["kind": "paste", "text": literal, "contextId": multilineContext]])
     let afterPaste = try await note()
     try require(pasted["outcome"] as? String == "dispatched" && afterPaste == literal, "Literal multiline/tab paste changed content")
     passed()
     start("AX-copy")
+    let beforeCopySelect = try await settledEditingContext(streamA, after: editingMark)
     try await Contracts.command(out, "owner-select-all")
-    let copied = try await input([["kind": "copy"]])
+    let copyContext = try await settledEditingContext(streamA, after: editingMark, excluding: beforeCopySelect)
+    let copied = try await input([["kind": "copy", "contextId": copyContext]])
     try require(copied["outcome"] as? String == "dispatched", "AX selection copy was refused")
     _ = try await request("permissions.get", [:])
     let wireFiles = try FileManager.default.contentsOfDirectory(at: out, includingPropertiesForKeys: nil)
@@ -722,14 +1191,47 @@ extension WireJourney {
     try require(try String(contentsOf: out.appendingPathComponent("owner-saved.txt"), encoding: .utf8) == literal, "Save changed content")
     passed()
     start("undo-chord")
-    let selected = try await input([["kind": "command", "command": "selectAll"]])
+    // AX-copy already selected all of `literal`, so `selectAll` keeps the same selection; settle
+    // after `selectAll` before pasting over the selection.
+    let beforeUndoSelect = try await settledEditingContext(streamA, after: editingMark)
+    let selected = try await input([["kind": "command", "command": "selectAll", "contextId": beforeUndoSelect]])
     try require(selected["outcome"] as? String == "dispatched", "Select-all chord was refused")
-    let undoValue = try await input([["kind": "paste", "text": "undo fixture"]])
+    let undoPasteContext = try await settledEditingContext(streamA, after: editingMark)
+    let undoValue = try await input([["kind": "paste", "text": "undo fixture", "contextId": undoPasteContext]])
     let afterUndoValue = try await note()
     try require(undoValue["outcome"] as? String == "dispatched" && afterUndoValue == "undo fixture", "Undo setup changed content")
-    let undone = try await input([["kind": "command", "command": "undo"]])
+    let undoContext = try await settledEditingContext(streamA, after: editingMark)
+    let undone = try await input([["kind": "command", "command": "undo", "contextId": undoContext]])
     let afterUndo = try await note()
     try require(undone["outcome"] as? String == "dispatched" && afterUndo == literal, "Undo did not restore the last insertion once")
+    passed()
+    // CX3: what a phone does next in a Mac app's field: redo, a Backspace, a caret move then a key.
+    start("redo-backspace-move")
+    let redoContext = try await settledEditingContext(streamA, after: editingMark, excluding: undoContext)
+    let redone = try await input([["kind": "command", "command": "redo", "contextId": redoContext]])
+    let afterRedo = try await note()
+    try require(redone["outcome"] as? String == "dispatched" && afterRedo == "undo fixture", "Redo did not reapply the undone insertion once")
+    let beforeDelete = try keyUps()
+    let deleted = try await input([["kind": "command", "command": "deleteBackward", "contextId": try await context()]])
+    try await waitForKeyUp(after: beforeDelete)
+    let afterDelete = try await note()
+    try require(deleted["outcome"] as? String == "dispatched" && afterDelete == "undo fixtur", "Backspace did not delete exactly one character")
+    let beforeMoveBack = try keyUps()
+    let movedBack = try await input([["kind": "command", "command": "moveBackward", "contextId": try await context()]])
+    try require(movedBack["outcome"] as? String == "dispatched", "Caret move was refused")
+    try await waitForKeyUp(after: beforeMoveBack)
+    let beforeTypedAfterMove = try keyUps()
+    let typedAfterMove = try await input([["kind": "key", "action": "down", "code": "KeyX", "key": "X", "modifiers": [], "text": "X"],
+      ["kind": "key", "action": "up", "code": "KeyX", "key": "X", "modifiers": []]])
+    try await waitForKeyUp(after: beforeTypedAfterMove)
+    let afterMove = try await note()
+    try require(typedAfterMove["outcome"] as? String == "dispatched" && afterMove == "undo fixtuXr", "A key after a caret move did not go where the caret went")
+    // The sections after this one expect the literal text back.
+    let beforeRestoreSelect = try await settledEditingContext(streamA, after: editingMark)
+    try await Contracts.command(out, "owner-select-all")
+    let restoreSelectContext = try await settledEditingContext(streamA, after: editingMark, excluding: beforeRestoreSelect)
+    _ = try await input([["kind": "paste", "text": literal, "contextId": restoreSelectContext]])
+    try require(try await note() == literal, "Restoring the fixture text changed it")
     passed()
     start("stable-generation")
     try await Contracts.command(out, "move", "B")
@@ -752,23 +1254,28 @@ extension WireJourney {
     start("native-fixture-pixel-latency")
     let latency = try await OwnerLatencyEvidence.run(wire: self, media: mediaA, stream: streamA,
       generation: geometry, window: a, person: person, out: out, send: { try await input($0) })
-    _ = try await input([["kind": "command", "command": "selectAll"]])
-    _ = try await input([["kind": "paste", "text": literal]])
+    let beforeLatencySelect = try await settledEditingContext(streamA, after: editingMark)
+    _ = try await input([["kind": "command", "command": "selectAll", "contextId": beforeLatencySelect]])
+    let latencyPasteContext = try await settledEditingContext(streamA, after: editingMark, excluding: beforeLatencySelect)
+    _ = try await input([["kind": "paste", "text": literal, "contextId": latencyPasteContext]])
     try require(try await note() == literal, "Latency cleanup changed the fixture text")
     passed()
     start("secure-refusal")
     try await Contracts.command(out, "owner-secure")
-    _ = try await context(sensitive: true)
-    let secureCopy = try await input([["kind": "copy"]])
+    let secureContext = try await context(sensitive: true)
+    let secureCopy = try await input([["kind": "copy", "contextId": secureContext]])
     try require(secureCopy["outcome"] as? String == "refused" && secureCopy["reason"] as? String == "sensitive", "Secure copy was not refused")
-    let securePaste = try await input([["kind": "paste", "text": "must not insert"]])
+    let securePaste = try await input([["kind": "paste", "text": "must not insert", "contextId": secureContext]])
     try require(securePaste["outcome"] as? String == "refused" && securePaste["reason"] as? String == "sensitive", "Secure paste was not refused")
+    let secureCommand = try await input([["kind": "command", "command": "selectAll", "contextId": secureContext]])
+    try require(secureCommand["outcome"] as? String == "refused" && secureCommand["reason"] as? String == "sensitive", "Secure command was not refused")
     passed()
     start("resize-stale-input")
     try await Contracts.command(out, "owner-resume")
+    let beforeResizeContext = try await context(sensitive: false)
     let oldGeometry = geometry
     try await Contracts.command(out, "resize")
-    let retired = try await input([["kind": "paste", "text": "retired sample"]], generation: oldGeometry)
+    let retired = try await input([["kind": "paste", "text": "retired sample", "contextId": beforeResizeContext]], generation: oldGeometry)
     let afterRetired = try await note()
     try require(retired["outcome"] as? String == "stale" && afterRetired == literal, "Retired capture input changed content")
     for _ in 0..<12 {
@@ -791,12 +1298,15 @@ extension WireJourney {
         _ = try await request("display.refresh", ["streamId": streamA])
         let (nextGeometry, _) = try await mediaA.keyframe(streamA)
         try require(nextGeometry == retiredGeometry, "Contained content retired an unchanged input mapping")
-        let current = try await input([["kind": "command", "command": "moveBackward"]], generation: retiredGeometry)
+        // Reacquire the owner-input attachment if a previous geometry change retired it, so its
+        // live editing context is published before sending the caret move.
+        _ = try await input([["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]], generation: retiredGeometry)
+        let current = try await input([["kind": "command", "command": "moveBackward", "contextId": try await context(sensitive: false)]], generation: retiredGeometry)
         let afterCurrent = try await note()
         try require(current["outcome"] as? String == "dispatched" && afterCurrent == literal,
           "Contained content made current-picture input stale or changed text")
       } else {
-        let queued = try await input([["kind": "paste", "text": "queued old member sample"]], generation: retiredGeometry)
+        let queued = try await input([["kind": "paste", "text": "queued old member sample", "contextId": beforeResizeContext]], generation: retiredGeometry)
         let afterQueued = try await note()
         try require(queued["outcome"] as? String == "stale" && afterQueued == literal,
           "Changed sibling composition admitted input from a queued old picture")
@@ -836,14 +1346,16 @@ extension WireJourney {
     try require(resumed["error"] is NSNull && (resumed["performed"] as? [String])?.count == 1,
       "Person input invalidated the agent's observation")
     try await Contracts.command(out, "owner-select-all")
-    _ = try await input([["kind": "paste", "text": literal]])
+    // Reset released the input attachment; reacquire it so its editing context is published.
+    _ = try await input([["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]])
+    _ = try await input([["kind": "paste", "text": literal, "contextId": try await context(sensitive: false)]])
     passed()
     start("lost-keyup-cleanup")
     let beforeLost = try modifierReleases()
     let lostDown = try await input(shiftDown)
     try require(lostDown["outcome"] as? String == "dispatched", "Lost-keyup setup was refused")
     try await waitForModifierRelease(after: beforeLost, seconds: 6)
-    let expired = try await input([["kind": "copy"]])
+    let expired = try await input([["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]])
     try require(expired["outcome"] as? String == "dispatched",
       "Lost keyup prevented the next shared batch")
     try await reset(self, streamA, viewA)
@@ -855,7 +1367,7 @@ extension WireJourney {
     _ = try await request("display.demand", ["streamId": streamA, "revision": 1, "sources": [],
       "warm": ["durationMs": 30_000, "sources": [source(viewA)]]])
     try await waitForModifierRelease(after: beforeHide, seconds: 2)
-    let hiddenInput = try await input([["kind": "copy"]])
+    let hiddenInput = try await input([["kind": "copy", "contextId": "00000000-0000-4000-8000-000000000001"]])
     try require(hiddenInput["outcome"] as? String == "refused" && hiddenInput["reason"] as? String == "unavailable",
       "Hidden demand left owner input admitted")
     try await reset(self, streamA, viewA)
@@ -892,14 +1404,14 @@ extension WireJourney {
     helper.stopFromOverlay()
     try await waitForModifierRelease(after: beforeStop, seconds: 2)
     let stopped = try await other.request("display.input", ["streamId": streamB, "source": source(viewB),
-      "geometry": currentB, "sequence": 2, "events": [["kind": "copy"]]])
+      "geometry": currentB, "sequence": 2, "events": [["kind": "copy", "contextId": "00000000-0000-4000-8000-000000000001"]]])
     try require(stopped["outcome"] as? String == "refused" && stopped["reason"] as? String == "unavailable",
       "Stop without a session left input admitted")
     passed()
     start("local-cover-invariants")
     try require(PrivateAPI.focusPID(front: true) == originalFront && CGEvent(source: nil)?.location == originalPointer,
       "Owner input changed the person's front app or pointer")
-    let sent = try await localKeys.stop()
+    let sent = try await localKeys.unwrap("local person keystream").stop()
     try await Task.sleep(nanoseconds: 100_000_000)
     try person.finishEvidence(sent: sent, out: out, front: originalFront, pointer: originalPointer)
     localEvidenceCompleted = true
@@ -933,7 +1445,7 @@ extension WireJourney {
         .write(to: out.appendingPathComponent("owner-view-only-cases.json"))
     }
     start("baseline-hello-does-not-negotiate-input")
-    let hello = try await request("hello", ["protocolVersion": 10, "ownerViewVersion": 3])
+    let hello = try await request("hello", ["protocolVersion": 11, "ownerViewVersion": 3])
     try require(hello["ownerViewVersion"] as? Int == 3 && hello["ownerInputVersion"] == nil,
       "A baseline helper peer negotiated owner input")
     passed()

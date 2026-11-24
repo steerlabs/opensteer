@@ -3,13 +3,27 @@ package com.opensteer.remotetextinput
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Color
+import android.os.Build
+import android.os.Bundle
+import android.text.Selection
+import android.view.ContextMenu
+import android.view.DragEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import android.view.inputmethod.HandwritingGesture
+import android.view.inputmethod.PreviewableHandwritingGesture
+import android.os.CancellationSignal
+import java.util.concurrent.Executor
+import java.util.function.IntConsumer
 import android.text.InputType
 import android.text.TextWatcher
 import android.text.Editable
 import android.util.Base64
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
+import android.widget.PopupMenu
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
@@ -32,6 +46,13 @@ class RemoteInputEditText(context: Context) : EditText(context) {
   private var composingStart = -1
   private var composingEnd = -1
   private var contextId: String? = null
+  private val selection = RemoteInputSelection()
+  /** A text change outside the gate: one input after it has settled, its caret part of it (CW4). */
+  private val outside = RemoteInputOutsideEdit {
+    gate.reserve { mapOf("type" to "input", "inputType" to "insertReplacementText", "composing" to composing(), "proxy" to snapshot()) }
+  }
+  private val touch = RemoteInputTouch(ViewConfiguration.getLongPressTimeout().toLong(), ViewConfiguration.get(context).scaledTouchSlop.toFloat())
+  private val longPress = Runnable { if (touch.longPress(android.os.SystemClock.uptimeMillis()) != null) offerPaste() }
   var deliver: ((Map<String, Any?>) -> Unit)?
     get() = gate.deliver
     set(value) { gate.deliver = value }
@@ -44,14 +65,92 @@ class RemoteInputEditText(context: Context) : EditText(context) {
     inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
     gate.apply = { instruction -> applyInstruction(instruction) }
     addTextChangedListener(object : TextWatcher {
-      override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+      // A text change outside the gate (a source the view does not route through it) is
+      // reported as the edit it is: its own caret goes with it, never undone half.
+      override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
+        if (initialized) outside.changing(byGate = mutating || gate.inTurn) { post(it) }
+      }
       override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
       override fun afterTextChanged(s: Editable?) {
-        if (!mutating) gate.notify(mapOf("type" to "input", "inputType" to "insertReplacementText", "composing" to composing(), "proxy" to snapshot()))
+        outside.changed(byGate = mutating || gate.inTurn) { post(it) }
       }
     })
     onFocusChangeListener = View.OnFocusChangeListener { _, focused -> if (!focused) gate.notify(mapOf("type" to "blur")) }
+    // No stylus handwriting starts on the hidden field: its gestures select and edit in place.
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) isAutoHandwritingEnabled = false
+    // Autofill would set the text outside the gate.
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
     initialized = true
+  }
+  /**
+   * A touch focuses the field and does nothing else: its text and cursor are invisible, so no
+   * touch selects or moves anything in it (RemoteInputTouch). TextView's own touch handling never
+   * sees one; a long press offers Paste.
+   */
+  override fun onTouchEvent(event: MotionEvent): Boolean {
+    val action = when (event.actionMasked) {
+      MotionEvent.ACTION_DOWN -> RemoteInputTouch.Action.DOWN
+      MotionEvent.ACTION_MOVE -> RemoteInputTouch.Action.MOVE
+      MotionEvent.ACTION_UP -> RemoteInputTouch.Action.UP
+      MotionEvent.ACTION_CANCEL -> RemoteInputTouch.Action.CANCEL
+      else -> return true
+    }
+    if (action == RemoteInputTouch.Action.DOWN) postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
+    if (action == RemoteInputTouch.Action.UP || action == RemoteInputTouch.Action.CANCEL) removeCallbacks(longPress)
+    if (touch.onTouch(action, event.eventTime, event.x, event.y) == RemoteInputTouch.Outcome.FOCUS) performClick()
+    return true
+  }
+  /** A long click (an accessibility service's, or the system's) offers Paste and selects nothing. */
+  override fun performLongClick(): Boolean {
+    offerPaste()
+    return true
+  }
+  override fun performLongClick(x: Float, y: Float): Boolean = performLongClick()
+  /** A secondary click or a stylus button offers Paste too; TextView's own menu moves the caret. */
+  override fun performContextClick(): Boolean = performLongClick()
+  override fun performContextClick(x: Float, y: Float): Boolean = performLongClick()
+  override fun onCreateContextMenu(menu: ContextMenu) {}
+  /** Nothing is dragged into or over the hidden field: a drag over it moves its selection. */
+  override fun onDragEvent(event: DragEvent): Boolean = false
+  /** Accessibility moves no caret and selects nothing in a field whose text nobody sees. */
+  override fun performAccessibilityAction(action: Int, arguments: Bundle?): Boolean {
+    if (action in refusedAccessibilityActions) return false
+    // CW4: an accessibility set-text goes through the gate whole: its text and the caret it puts
+    // at the end are one edit, sent with a beforeinput like any other.
+    // CY10: only where the field is editable, as a person's typing is.
+    // CZ1: anywhere else it is refused, nothing changed (never TextView's own, outside the gate).
+    if (action == AccessibilityNodeInfo.ACTION_SET_TEXT) {
+      if (RemoteInputSetText.of(isEditable()) == RemoteInputSetText.REFUSED) return false
+      val text = arguments?.getCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE)?.toString() ?: ""
+      change("insertReplacementText", text) { super.performAccessibilityAction(action, arguments) }
+      return true
+    }
+    return super.performAccessibilityAction(action, arguments)
+  }
+  override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {
+    super.onInitializeAccessibilityNodeInfo(info)
+    for (action in refusedAccessibilityActions) info.removeAction(AccessibilityNodeInfo.AccessibilityAction(action, null))
+    info.movementGranularities = 0
+  }
+  override fun performClick(): Boolean {
+    super.performClick()
+    if (!isFocused) requestFocus()
+    if (desiredFocus && editableField) showKeyboard()
+    return true
+  }
+  /** The edit menu's one use here: Paste, through the same path as Ctrl+V. */
+  private fun offerPaste() {
+    if (!isEditable()) return
+    val menu = PopupMenu(context, this)
+    menu.menu.add(0, android.R.id.paste, 0, android.R.string.paste)
+    menu.setOnMenuItemClickListener { onTextContextMenuItem(it.itemId) }
+    menu.show()
+  }
+  private fun isEditable() = editableField && isEnabled
+  /** CZ4: an outside change still settling when the view goes gives its place in the gate back. */
+  override fun onDetachedFromWindow() {
+    outside.abandon()
+    super.onDetachedFromWindow()
   }
   override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
     super.onWindowFocusChanged(hasWindowFocus)
@@ -119,9 +218,27 @@ class RemoteInputEditText(context: Context) : EditText(context) {
       }
     }
   }
+  /** The one place every selection change is seen: only the gate changes it (RemoteInputSelection). */
   override fun onSelectionChanged(start: Int, end: Int) {
     super.onSelectionChanged(start, end)
-    if (initialized && !mutating) gate.notify(mapOf("type" to "selection", "proxy" to snapshot()))
+    if (!initialized) return
+    // The caret an outside change moves is that change's: kept, and carried by its input. A gate
+    // turn's own selection is that turn's, reported as ever (CY10).
+    if (outside.ownsSelection(inTurn = gate.inTurn || mutating)) {
+      selection.changed(start, end, inGateTurn = true, mutating = true)
+      return
+    }
+    when (selection.changed(start, end, gate.inTurn, mutating)) {
+      RemoteInputSelection.Outcome.REPORT -> gate.notify(mapOf("type" to "selection", "proxy" to snapshot()))
+      RemoteInputSelection.Outcome.QUIET -> {}
+      RemoteInputSelection.Outcome.UNDO -> {
+        val (keptStart, keptEnd) = selection.restore(length())
+        val wasMutating = mutating
+        mutating = true
+        Selection.setSelection(text, keptStart, keptEnd)
+        mutating = wasMutating
+      }
+    }
   }
   override fun onCreateInputConnection(info: EditorInfo): InputConnection? {
     val connection = super.onCreateInputConnection(info) ?: return null
@@ -189,6 +306,11 @@ class RemoteInputEditText(context: Context) : EditText(context) {
         }; return true
       }
       override fun performContextMenuAction(id: Int): Boolean = this@RemoteInputEditText.onTextContextMenuItem(id)
+      // A stylus gesture selects or edits in place, outside the gate: refused.
+      override fun performHandwritingGesture(gesture: HandwritingGesture, executor: Executor?, consumer: IntConsumer?) {
+        if (executor != null && consumer != null) executor.execute { consumer.accept(InputConnection.HANDWRITING_GESTURE_RESULT_UNSUPPORTED) }
+      }
+      override fun previewHandwritingGesture(gesture: PreviewableHandwritingGesture, cancellationSignal: CancellationSignal?): Boolean = false
       override fun sendKeyEvent(event: KeyEvent): Boolean = this@RemoteInputEditText.dispatchKeyEvent(event)
       override fun performEditorAction(actionCode: Int): Boolean {
         dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
@@ -200,6 +322,24 @@ class RemoteInputEditText(context: Context) : EditText(context) {
   override fun dispatchKeyEvent(event: KeyEvent): Boolean {
     // Android owns Back/system keys, and Meta shortcuts remain available to the app.
     if (event.keyCode == KeyEvent.KEYCODE_BACK || (event.isMetaPressed && event.action != KeyEvent.ACTION_UP)) return super.dispatchKeyEvent(event)
+    // CW4, CY10: a multiple key event goes through the gate, whole: its characters typed as one
+    // insertion, or a key repeated as each press in turn. The event is copied before it waits:
+    // the framework may recycle it once this returns.
+    @Suppress("DEPRECATION")
+    if (event.action == KeyEvent.ACTION_MULTIPLE) {
+      when (val multiple = RemoteInputMultipleKey.of(event.keyCode == KeyEvent.KEYCODE_UNKNOWN, event.repeatCount, event.characters)) {
+        is RemoteInputMultipleKey.Insert -> {
+          val retained = KeyEvent(event)
+          change("insertText", multiple.text) { super.dispatchKeyEvent(retained) }
+        }
+        is RemoteInputMultipleKey.Presses -> repeat(multiple.count) {
+          for (action in listOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP))
+            dispatchKeyEvent(KeyEvent(event.downTime, event.eventTime, action, event.keyCode, 0, event.metaState, event.deviceId, event.scanCode, event.flags, event.source))
+        }
+        RemoteInputMultipleKey.Nothing -> {}
+      }
+      return true
+    }
     if (event.action != KeyEvent.ACTION_DOWN && event.action != KeyEvent.ACTION_UP) return super.dispatchKeyEvent(event)
     val named = mapOf(KeyEvent.KEYCODE_DEL to "Backspace", KeyEvent.KEYCODE_FORWARD_DEL to "Delete", KeyEvent.KEYCODE_ENTER to "Enter", KeyEvent.KEYCODE_TAB to "Tab", KeyEvent.KEYCODE_ESCAPE to "Escape", KeyEvent.KEYCODE_PAGE_UP to "PageUp", KeyEvent.KEYCODE_PAGE_DOWN to "PageDown", KeyEvent.KEYCODE_SPACE to " ", KeyEvent.KEYCODE_MENU to "ContextMenu", KeyEvent.KEYCODE_DPAD_LEFT to "ArrowLeft", KeyEvent.KEYCODE_DPAD_RIGHT to "ArrowRight", KeyEvent.KEYCODE_DPAD_UP to "ArrowUp", KeyEvent.KEYCODE_DPAD_DOWN to "ArrowDown", KeyEvent.KEYCODE_MOVE_HOME to "Home", KeyEvent.KEYCODE_MOVE_END to "End", KeyEvent.KEYCODE_CTRL_LEFT to "Control", KeyEvent.KEYCODE_CTRL_RIGHT to "Control", KeyEvent.KEYCODE_ALT_LEFT to "Alt", KeyEvent.KEYCODE_ALT_RIGHT to "Alt", KeyEvent.KEYCODE_SHIFT_LEFT to "Shift", KeyEvent.KEYCODE_SHIFT_RIGHT to "Shift", KeyEvent.KEYCODE_META_LEFT to "Meta", KeyEvent.KEYCODE_META_RIGHT to "Meta")
     val unicode = event.getUnicodeChar(event.metaState and KeyEvent.META_CTRL_MASK.inv())
@@ -229,13 +369,28 @@ class RemoteInputEditText(context: Context) : EditText(context) {
     }
     return true
   }
+  /** No suggestions popup on a tap in text nobody sees; the keyboard's own autocorrect stays. */
+  override fun isSuggestionsEnabled(): Boolean = false
+  /**
+   * The text menu's items, whichever door asks (a menu, a Ctrl or Meta shortcut, an accessibility
+   * service, the input method): copy, cut, paste, undo and redo go to the page, and the keyboard
+   * picker is the system's. Nothing else runs on the hidden field: Select All, start selecting,
+   * replace, share, text assist and autofill would select or edit text nobody sees, outside the
+   * gate. The page's own selectAll is reached through the reducer's binding instead.
+   */
   override fun onTextContextMenuItem(id: Int): Boolean {
     when (id) {
       android.R.id.copy -> { gate.notify(mapOf("type" to "copy")); return true }
       android.R.id.cut -> { gate.notify(mapOf("type" to "cut")); return true }
       android.R.id.paste, android.R.id.pasteAsPlainText -> { gate.enqueue { paste() }; return true }
+      // Undo and redo are the far page's own (RemoteInputUndo), through the gate.
+      android.R.id.undo, android.R.id.redo -> {
+        for (packet in RemoteInputUndo.chord(redo = id == android.R.id.redo)) gate.enqueue { gate.event(packet + ("composing" to composing())) }
+        return true
+      }
+      android.R.id.switchInputMethod -> return super.onTextContextMenuItem(id)
     }
-    return super.onTextContextMenuItem(id)
+    return true
   }
   private fun paste() {
     val clip = (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip
@@ -317,5 +472,12 @@ class RemoteInputEditText(context: Context) : EditText(context) {
     } else if (isFocused || focusChanged) {
       clearFocus()
     }
+  }
+  private companion object {
+    val refusedAccessibilityActions = setOf(
+      AccessibilityNodeInfo.ACTION_SET_SELECTION,
+      AccessibilityNodeInfo.ACTION_NEXT_AT_MOVEMENT_GRANULARITY,
+      AccessibilityNodeInfo.ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY,
+    )
   }
 }

@@ -46,7 +46,12 @@ import {
   onePersonHomeContractMigration,
   onePersonHomeFirstMigration,
 } from "./one-person-home-migration.js";
-import { browserPoolMigrationName, applyBrowserPool } from "./browser-pool-migration.js";
+import {
+  browserPoolMigrationName,
+  applyBrowserPool,
+  browserPoolSessionsMigrationName,
+  applyBrowserPoolSessions,
+} from "./browser-pool-migration.js";
 import {
   applyBridgeConnections,
   bridgeConnectionsMigrationName,
@@ -662,15 +667,17 @@ export function migrationProvider(options?: {
               "0107_needs_you_counts_requests": {
                 /**
                  * A Home that used teams counted its teammates' asks in Needs you, and those
-                 * rows no longer list: the count is what the list shows, Requests alone. A
-                 * database still converting is left to its conversion, which counts the same.
+                 * rows no longer list: the count is what the list shows, Requests alone, and the
+                 * pending count with it, so neither can sit below the other. A database still
+                 * converting gets the same: one past its count stage keeps this, one before it
+                 * counts again the same way.
                  */
                 async up(database: Kysely<unknown>) {
-                  await sql`update client_sync_state set needs_you_count=listed.count
+                  await sql`update client_sync_state set pending_request_count=listed.count,
+                      needs_you_count=listed.count
                     from (select count(*)::integer as count from personal_attention where kind='request') listed
-                    where ready and needs_you_count is distinct from listed.count`.execute(
-                    database,
-                  );
+                    where pending_request_count is distinct from listed.count
+                      or needs_you_count is distinct from listed.count`.execute(database);
                 },
               },
               [bridgeConnectionsMigrationName]: { up: applyBridgeConnections },
@@ -760,6 +767,66 @@ export function migrationProvider(options?: {
                   await sql`
                     alter table provider_sessions
                     add column person_lineage boolean not null default true
+                  `.execute(database);
+                },
+              },
+              [browserPoolSessionsMigrationName]: { up: applyBrowserPoolSessions },
+              "0117_stop_truth_and_recovery": {
+                /**
+                 * Records why an interrupted Run ended (e.g. a shared engine had to retire),
+                 * why a queued Run is being held back from starting, when a late stop proof
+                 * arrived, and the failure code of a failed task so lists do not collapse
+                 * unconfirmed stops into generic failures. A shell a connected agent's Run opens
+                 * carries its Disconnect attempt: the connection and grant it was admitted under,
+                 * the target's stream, and that stream's end evidence.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table runs
+                      add column if not exists interrupted_cause text check (interrupted_cause in ('lease-lost', 'engine-retired')),
+                      add column if not exists start_hold_reason text check (start_hold_reason in ('previous-stop-unconfirmed')),
+                      add column if not exists stop_confirmed_at timestamptz;
+                    alter table threads
+                      add column if not exists failure_code text,
+                      add column if not exists run_start_hold_reason text check (run_start_hold_reason in ('previous-stop-unconfirmed')),
+                      add column if not exists unconfirmed_stop_run_id text;
+                    alter table runners
+                      add column if not exists machine_boot_id text;
+                    alter table run_attempts
+                      add column if not exists machine_boot_id text;
+                    -- A shell a connection's Run opens is an attempt in its Disconnect set:
+                    -- admitted under the live connection, bound to the target's exact shell
+                    -- stream, ended by that stream's close receipt or by contact loss (A4).
+                    alter table machine_access_sessions
+                      add column if not exists connection_id text
+                        references agent_connections(id) on delete cascade,
+                      add column if not exists admitted_grant_revision integer,
+                      add column if not exists admitted_access_mode text,
+                      add column if not exists target_fence jsonb,
+                      add column if not exists terminal_evidence_at timestamptz,
+                      add column if not exists contact_lost_at timestamptz;
+                    create index if not exists machine_access_sessions_connection
+                      on machine_access_sessions(connection_id)
+                      where connection_id is not null;
+                    create index if not exists machine_access_sessions_unsettled
+                      on machine_access_sessions(runner_id)
+                      where connection_id is not null and terminal_evidence_at is null;
+                    create index if not exists threads_unconfirmed_stop_idx
+                      on threads(environment_id)
+                      where unconfirmed_stop_run_id is not null or run_start_hold_reason is not null;
+                    update threads t
+                      set failure_code = last_run.code,
+                          unconfirmed_stop_run_id = case when last_run.code = 'execution_termination_unproven' then last_run.id else t.unconfirmed_stop_run_id end
+                      from (
+                        select distinct on (thread_id) thread_id, id, failure->>'code' as code
+                        from runs
+                        where maintenance is null
+                        order by thread_id, run_ordinal desc
+                      ) last_run
+                      where t.id = last_run.thread_id
+                        and t.status = 'failed'
+                        and last_run.code is not null;
+                    update client_sync_state set epoch = gen_random_uuid();
                   `.execute(database);
                 },
               },

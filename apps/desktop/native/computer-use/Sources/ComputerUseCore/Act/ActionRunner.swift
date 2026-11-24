@@ -1235,7 +1235,7 @@ public enum ActionRunner {
       throw reservedShortcut
     case .item(let item):
       return .menuItem(item)
-    case .none:
+    case .disabled, .none:
       return .keystroke
     case .unverified:
       guard combo.modifiers.isDisjoint(with: [.cmd, .ctrl, .alt]) else {

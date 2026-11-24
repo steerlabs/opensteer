@@ -246,9 +246,6 @@ const piDenialNoteMaxBytes = 20_000;
 const piLoginLineMaxBytes = 64 * 1_024;
 const primaryConnectionSlot = "primary";
 
-export const piIsolatedServiceDetail =
-  "Pi has no command sandbox of its own, so it runs only on a computer where Opensteer runs as you.";
-
 export interface PiHarnessDependencies {
   /** Pi's staged `dist/bundle/cli.js`, as the catalog's `script` runtime names it. */
   readonly executable: string;
@@ -269,7 +266,6 @@ export interface PiHarnessDependencies {
 
 export class PiHarnessDriver implements HarnessDriver {
   readonly kind = HarnessIdSchema.parse("pi");
-  readonly isolatedServiceRefusal = piIsolatedServiceDetail;
   readonly sources = piSources;
   /** `piAccessModeGate` translates each of them into the tool names the extension stops on. */
   readonly accessModes = piAccessModes;
@@ -372,9 +368,6 @@ export class PiHarnessDriver implements HarnessDriver {
   async inspect(context: HarnessInspectionContext): Promise<HarnessInspectionResult> {
     const config = PiHarnessConfigSchema.parse(context.config);
     const row = piSourceRow(context.sourceId);
-    if (context.runtimeBoundary.kind !== "native-user") {
-      return { detail: piIsolatedServiceDetail, status: "unavailable" };
-    }
     const environment = await piProcessEnvironment(context.environment, context.providerState);
     const version = await readPiVersion(
       this.#dependencies,
@@ -520,8 +513,6 @@ class PiHarnessAdapter implements HarnessAdapter {
     prompt,
     signal,
   }: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult> {
-    if (context.runtimeBoundary.kind !== "native-user")
-      return { ok: false, failure: "unavailable" };
     if (context.providerState.kind !== "isolated") {
       const piCheck = checkPiOthersHome({
         environment: context.environment,
@@ -725,12 +716,6 @@ class PiHarnessSession implements HarnessSession {
     onClose: (session: PiHarnessSession) => void,
     log?: HarnessLog,
   ): Promise<PiHarnessSession> {
-    if (context.runtimeBoundary.kind !== "native-user") {
-      // Pi has no sandbox, and the Runner's own sandbox binds the profile home
-      // and the Thread state directory into the harness process tree, so on a
-      // shared Runner a model-run command would read this profile's credentials.
-      throw new OpensteerError({ code: "harness_error", message: piIsolatedServiceDetail });
-    }
     if (context.signal.aborted) {
       throw new OpensteerError({
         code: "harness_error",
@@ -819,6 +804,7 @@ class PiHarnessSession implements HarnessSession {
     this.#settled = new Deferred<void>();
     const abort = () => {
       active.interruptRequested = true;
+      active.retry.dispose();
       void this.#interruptActive(active);
     };
     if (!run.signal.aborted) run.signal.addEventListener("abort", abort, { once: true });
@@ -871,6 +857,7 @@ class PiHarnessSession implements HarnessSession {
     const active = this.#activeTurn;
     if (!active || active.terminal) return;
     active.interruptRequested = true;
+    active.retry.dispose();
     await this.#interruptActive(active);
   }
 
@@ -1658,6 +1645,7 @@ class PiHarnessSession implements HarnessSession {
     const active = this.#activeTurn;
     if (active && !active.terminal) {
       active.interruptRequested = true;
+      active.retry.dispose();
       await this.#interruptActive(active).catch(() => undefined);
     }
     await this.#cancelPendingRequests("run-ended").catch(() => undefined);

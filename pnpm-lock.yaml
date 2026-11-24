@@ -1149,6 +1149,9 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
+      unicode-segmenter:
+        specifier: 0.17.3
+        version: 0.17.3
       vitest:
         specifier: 'catalog:'
         version: 4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.1)

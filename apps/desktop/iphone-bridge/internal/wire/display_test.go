@@ -60,7 +60,10 @@ func TestDisplayRequestsRejectMalformedParams(t *testing.T) {
 		{"display.input", `"events":[{"kind":"text","submit":false}]`},
 		{"display.input", `"events":[{"kind":"key","action":"down","code":"KeyX","key":"x","modifiers":["command"]}]`},
 		{"display.input", `"events":[{"kind":"key","action":"down","code":"KeyX","key":"x","modifiers":[null]}]`},
-		{"display.input", `"events":[{"kind":"command","command":"invalid"}]`},
+		{"display.input", `"events":[{"kind":"command","command":"invalid","contextId":"00000000-0000-4000-8000-000000000001"}]`},
+		{"display.input", `"events":[{"kind":"command","command":"selectAll"}]`},
+		{"display.input", `"events":[{"kind":"copy"}]`},
+		{"display.input", `"events":[{"kind":"paste","text":"fixture"}]`},
 		{"display.input", `"events":[{"kind":"paste","items":[{"type":"text/plain"}]}]`},
 	}
 	for _, tc := range cases {

@@ -519,16 +519,27 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         continuationIdentity: catalog.continuationIdentity,
         harnessInstanceId: context.run.harnessInstanceId,
         leaseTokenHash: createHash("sha256").update(randomBytes(32)).digest("base64url"),
+        machineBootId: identity.machineBootId ?? null,
         runnerBootId: identity.bootId,
         runnerId: identity.runnerId,
         runId: context.run.id,
         threadId: context.thread.id,
       })
       .catch(async (error: unknown) => {
-        if (!(error instanceof OpensteerError) || error.reason !== "earlier-boots-not-contained")
-          throw error;
-        await this.#store.failCommand(command.id, error.message, "seed-input", "runner_restarted");
-        return undefined;
+        if (error instanceof OpensteerError && error.reason === "earlier-boots-not-contained") {
+          await this.#store.failCommand(
+            command.id,
+            error.message,
+            "seed-input",
+            "runner_restarted",
+          );
+          return undefined;
+        }
+        if (error instanceof OpensteerError && error.reason === "previous-stop-unconfirmed") {
+          await this.#store.retryCommand(command.id, error);
+          return undefined;
+        }
+        throw error;
       });
     if (!binding) return;
     const toolsToken = this.#runToolTokens.issue({

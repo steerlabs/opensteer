@@ -873,7 +873,7 @@ integration("session-scoped browser agent backends", () => {
     const commands = f.phone.receivedCommands();
     const send = (message: Record<string, unknown>) =>
       viewer.send(JSON.stringify({ surfaceId: "page-integration", ...message }));
-    send({ type: "input.command", command: "selectAll" });
+    send({ type: "input.command", command: "selectAll", contextId: crypto.randomUUID() });
     await vi.waitFor(
       () =>
         expect(commands).toContainEqual(
@@ -887,12 +887,13 @@ integration("session-scoped browser agent backends", () => {
       { timeout: 2_000 },
     );
     for (const message of [
-      { type: "input.command", command: "undo" },
-      { type: "clipboard.cut", operationId: crypto.randomUUID() },
+      { type: "input.command", command: "undo", contextId: crypto.randomUUID() },
+      { type: "clipboard.cut", operationId: crypto.randomUUID(), contextId: crypto.randomUUID() },
       {
         type: "clipboard.paste-data",
         operationId: crypto.randomUUID(),
         items: [{ type: "text/html", size: 1 }],
+        contextId: crypto.randomUUID(),
       },
       { type: "input.key", action: "down", key: "Tab", code: "Tab", modifiers: [] },
       {
@@ -905,7 +906,7 @@ integration("session-scoped browser agent backends", () => {
       expect(await refused).toMatchObject({ error: { reason: "unsupported-operation" } });
     }
     const operationId = crypto.randomUUID();
-    send({ type: "clipboard.copy", operationId });
+    send({ type: "clipboard.copy", operationId, contextId: crypto.randomUUID() });
     await vi.waitFor(
       () =>
         expect(commands).toContainEqual(
@@ -971,6 +972,7 @@ integration("session-scoped browser agent backends", () => {
         type: "input.command",
         surfaceId: "page-integration",
         command: "selectAll",
+        contextId: crypto.randomUUID(),
       }),
     );
     expect(await notNegotiated).toEqual({
@@ -991,7 +993,7 @@ integration("session-scoped browser agent backends", () => {
     });
     await changed;
     const refused = waitForMessage(viewer, (message) => message.type === "browser.error", 2_000);
-    send({ type: "clipboard.paste", text: "Do not type" });
+    send({ type: "clipboard.paste", text: "Do not type", contextId: crypto.randomUUID() });
     expect(await refused).toMatchObject({ error: { reason: "target-suspended" } });
     expect(f.phone.protocolErrors()).toEqual([]);
   });

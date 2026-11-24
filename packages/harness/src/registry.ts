@@ -29,7 +29,6 @@ import type {
   HarnessProviderStoreScope,
   HarnessModelCommandContext,
   HarnessProcessLaunchWrapper,
-  HarnessRuntimeBoundary,
   HarnessSourceDescriptor,
 } from "./types.js";
 
@@ -65,7 +64,6 @@ export class HarnessRegistry {
   readonly #preparationListeners = new Set<(instanceId: HarnessInstanceId) => void>();
   readonly #installationResolver = new EngineInstallationResolver();
   readonly #log: HarnessLog | undefined;
-  #boundary: HarnessRuntimeBoundary["kind"] | undefined;
   #closed = false;
   /**
    * Every instance mutation and adapter creation runs on this one chain, so a
@@ -76,15 +74,6 @@ export class HarnessRegistry {
 
   constructor(options: { readonly log?: HarnessLog } = {}) {
     this.#log = options.log;
-  }
-
-  /**
-   * The boundary every engine on this Runner runs inside. An engine that
-   * refuses it is unavailable here, with its own reason, before anyone adds
-   * an account that could never run.
-   */
-  adoptRuntimeBoundary(boundary: HarnessRuntimeBoundary): void {
-    this.#boundary = boundary.kind;
   }
 
   /**
@@ -127,7 +116,7 @@ export class HarnessRegistry {
     )
       return registered.driver;
     const executable = registered.installed.locate();
-    if (!executable) return { unavailable: this.#missing(registered.installed) };
+    if (!executable) return { unavailable: registered.installed.missing };
     let driver = registered.installedDrivers.get(executable);
     if (!driver) {
       driver = registered.installed.create(executable);
@@ -136,25 +125,12 @@ export class HarnessRegistry {
     return driver;
   }
 
-  #missing(installed: HarnessInstalledEngine): string {
-    return this.#boundary === "isolated-service"
-      ? (installed.missingWhereIsolated ?? installed.missing)
-      : installed.missing;
-  }
-
   #availability(registered: RegisteredDriver): {
     readonly readiness: HarnessDriverReadiness;
     readonly sources: readonly HarnessSourceDescriptor[];
   } {
     if (registered.readiness.status === "unavailable") {
       return { readiness: registered.readiness, sources: [] };
-    }
-    const refusal = registered.driver.isolatedServiceRefusal;
-    if (this.#boundary === "isolated-service" && refusal) {
-      return {
-        readiness: normalizeReadiness({ reason: refusal, status: "unavailable" }),
-        sources: [],
-      };
     }
     const installed = registered.installed;
     if (!installed || installed.locate()) {
@@ -171,7 +147,7 @@ export class HarnessRegistry {
       readiness:
         sources.length > 0
           ? registered.readiness
-          : normalizeReadiness({ reason: this.#missing(installed), status: "unavailable" }),
+          : normalizeReadiness({ reason: installed.missing, status: "unavailable" }),
       sources,
     };
   }
@@ -322,7 +298,6 @@ export class HarnessRegistry {
   async inspectDefinition(
     definition: HarnessInstanceDefinition,
     environment: Readonly<Record<string, string>>,
-    runtimeBoundary: HarnessRuntimeBoundary,
     providerState: HarnessProviderState,
     workingDirectory: string,
     signal: AbortSignal,
@@ -361,7 +336,6 @@ export class HarnessRegistry {
       definition,
       parsed.data,
       environment,
-      runtimeBoundary,
       providerState,
       workingDirectory,
       driver,
@@ -379,7 +353,6 @@ export class HarnessRegistry {
       config: parsed.data,
       environment,
       providerState,
-      runtimeBoundary,
       signal,
       sourceId: definition.sourceId,
       workingDirectory,
@@ -404,7 +377,6 @@ export class HarnessRegistry {
   async authenticateDefinition(
     definition: HarnessInstanceDefinition,
     environment: Readonly<Record<string, string>>,
-    runtimeBoundary: HarnessRuntimeBoundary,
     providerState: HarnessProviderState,
     workingDirectory: string,
     signal: AbortSignal,
@@ -437,7 +409,6 @@ export class HarnessRegistry {
       definition,
       parsedConfig,
       environment,
-      runtimeBoundary,
       providerState,
       workingDirectory,
       driver,
@@ -458,7 +429,6 @@ export class HarnessRegistry {
         config: parsedConfig,
         environment,
         providerState,
-        runtimeBoundary,
         signal,
         sourceId: definition.sourceId,
         workingDirectory,
@@ -470,7 +440,6 @@ export class HarnessRegistry {
   async logoutDefinition(
     definition: HarnessInstanceDefinition,
     environment: Readonly<Record<string, string>>,
-    runtimeBoundary: HarnessRuntimeBoundary,
     providerState: HarnessProviderState,
     workingDirectory: string,
     signal: AbortSignal,
@@ -503,7 +472,6 @@ export class HarnessRegistry {
         config: driver.configSchema.parse(definition.config),
         environment,
         providerState,
-        runtimeBoundary,
         signal,
         sourceId: definition.sourceId,
         workingDirectory,
@@ -521,7 +489,6 @@ export class HarnessRegistry {
   async removeDefinition(
     definition: HarnessInstanceDefinition,
     environment: Readonly<Record<string, string>>,
-    runtimeBoundary: HarnessRuntimeBoundary,
     providerState: HarnessProviderState,
     workingDirectory: string,
     signal: AbortSignal,
@@ -539,7 +506,6 @@ export class HarnessRegistry {
       config: parsed.data,
       environment,
       providerState,
-      runtimeBoundary,
       signal,
       sourceId: definition.sourceId,
       workingDirectory,
@@ -808,7 +774,6 @@ export class HarnessRegistry {
     definition: HarnessInstanceDefinition,
     config: unknown,
     environment: Readonly<Record<string, string>>,
-    runtimeBoundary: HarnessRuntimeBoundary,
     providerState: HarnessProviderState,
     workingDirectory: string,
     driver: HarnessDriver,
@@ -818,7 +783,6 @@ export class HarnessRegistry {
         definition,
         config,
         environment,
-        runtimeBoundary,
         providerState,
         workingDirectory,
         driver,
@@ -830,7 +794,6 @@ export class HarnessRegistry {
     definition: HarnessInstanceDefinition,
     config: unknown,
     environment: Readonly<Record<string, string>>,
-    runtimeBoundary: HarnessRuntimeBoundary,
     providerState: HarnessProviderState,
     workingDirectory: string,
     driver: HarnessDriver,
@@ -843,7 +806,6 @@ export class HarnessRegistry {
       config,
       environment,
       providerState,
-      runtimeBoundary,
       signal: new AbortController().signal,
       sourceId: definition.sourceId,
       workingDirectory,
@@ -856,14 +818,7 @@ export class HarnessRegistry {
     }
     const key =
       sharedKey === undefined
-        ? preparationFingerprint(
-            definition,
-            config,
-            environment,
-            runtimeBoundary,
-            providerState,
-            workingDirectory,
-          )
+        ? preparationFingerprint(definition, config, environment, providerState, workingDirectory)
         : `${definition.driverKind}\0${sharedKey}`;
     const configured = this.#instances.get(definition.id);
     const existing = this.#preparations.get(key);
@@ -911,7 +866,6 @@ export class HarnessRegistry {
           config,
           environment,
           providerState,
-          runtimeBoundary,
           signal: controller.signal,
           sourceId: definition.sourceId,
           workingDirectory,
@@ -1039,7 +993,6 @@ function preparationFingerprint(
   definition: HarnessInstanceDefinition,
   config: unknown,
   environment: Readonly<Record<string, string>>,
-  runtimeBoundary: HarnessRuntimeBoundary,
   providerState: HarnessProviderState,
   workingDirectory: string,
 ): string {
@@ -1048,7 +1001,6 @@ function preparationFingerprint(
     definition: { ...runtimeDefinition, config },
     environment,
     providerState,
-    runtimeBoundary,
     workingDirectory,
   });
 }

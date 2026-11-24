@@ -36,12 +36,31 @@ public final class ComposerEditorModule: Module {
         "onComposerContentSizeChange",
         "onComposerEmptyBackspace"
       )
-      AsyncFunction("focus") { (view: ComposerEditorView) in view.focusEditor() }
-      AsyncFunction("blur") { (view: ComposerEditorView) in view.blurEditor() }
-      AsyncFunction("setSelection") { (view: ComposerEditorView, start: Int, end: Int) in
-        view.setSelection(start: start, end: end)
-      }
-      AsyncFunction("readState") { (view: ComposerEditorView) -> [String: Any] in view.readState() }
     }
+    // JavaScript reads this to call the editor's functions by its tag. A function whose argument
+    // is a view makes Expo resolve it on the JavaScript thread by waiting for the main thread,
+    // which deadlocks while React holds the main thread waiting for JavaScript. These take the
+    // tag and find the view on the main queue they run on.
+    Constant("viewTagFunctions") { 1 }
+    AsyncFunction("focusForView") { (tag: Int) -> Void in self.editor(tag)?.focusEditor() }.runOnQueue(.main)
+    AsyncFunction("blurForView") { (tag: Int) -> Void in self.editor(tag)?.blurEditor() }.runOnQueue(.main)
+    AsyncFunction("setSelectionForView") { (tag: Int, start: Int, end: Int) -> Void in
+      self.editor(tag)?.setSelection(start: start, end: end)
+    }.runOnQueue(.main)
+    AsyncFunction("readStateForView") { (tag: Int) -> [String: Any] in
+      guard let editor = self.editor(tag) else { throw EditorNotMountedException() }
+      return editor.readState()
+    }.runOnQueue(.main)
   }
+
+  /// The editor with this tag, found on the main queue these functions run on: never by waiting for it.
+  private func editor(_ tag: Int) -> ComposerEditorView? {
+    dispatchPrecondition(condition: .onQueue(.main))
+    return appContext?.findView(withTag: tag, ofType: ComposerEditorView.self)
+  }
+}
+
+/// The editor is not mounted: its state is not read, as Expo's own view lookup refused it.
+final class EditorNotMountedException: Exception {
+  override var reason: String { "The composer editor is not mounted" }
 }
