@@ -46,11 +46,6 @@ export function useTabCloser(): (place: Pick<PlaceItem, "key">) => void {
   return useCallback((place) => closer.close([place.key]), [closer]);
 }
 
-export function useTabGroupCloser(): (tabIds: readonly TabId[]) => void {
-  const closer = useCloser();
-  return useCallback((tabIds) => closer.close(tabIds), [closer]);
-}
-
 const idle = { key: "", running: false, outcome: null, issue: null } as const;
 const noAction = {
   getSnapshot: () => idle,

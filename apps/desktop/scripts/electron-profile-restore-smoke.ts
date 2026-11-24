@@ -152,10 +152,16 @@ async function driver() {
           clearTimeout(timer);
           const crash = name === "native-crash";
           const evidence = path.join(out, `results-${name}.json`);
-          const results = existsSync(evidence)
-            ? (JSON.parse(readFileSync(evidence, "utf8")) as { results: Record<string, Result> })
-                .results
-            : null;
+          // A phase that died mid-write leaves no readable evidence: that phase failed.
+          let results: Record<string, Result> | null = null;
+          try {
+            if (existsSync(evidence))
+              results = (
+                JSON.parse(readFileSync(evidence, "utf8")) as { results: Record<string, Result> }
+              ).results;
+          } catch {
+            results = null;
+          }
           const passed =
             results !== null &&
             Object.values(results).length > 0 &&

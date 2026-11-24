@@ -1222,8 +1222,7 @@ export class TabService implements TabServicePort {
     key: string,
     readmit?: TabReadmit,
   ): Promise<TabCloseResult & { groupClosed: boolean; layout: TabLayout }> {
-    const failed: TabCloseResult["failed"] = [],
-      permitted = new Set<TabId>(),
+    const permitted = new Set<TabId>(),
       cleanup: { row: TabRecord; closePage: boolean }[] = [];
     const result = await this.options.store.closeGroup(
       owner(actor),
@@ -1238,17 +1237,7 @@ export class TabService implements TabServicePort {
         const denied = (await this.options.deniedRows?.(actor, rows, tx)) ?? new Set<TabId>();
         for (const tabId of item.group.tabIds) {
           const row = rows.find((row) => row.id === tabId);
-          if (!row || row.ownerId !== owner(actor) || denied.has(row.id)) {
-            failed.push({
-              tabId,
-              error: normalizeToolError({
-                code: "not_found",
-                message: "This tab is no longer in the list.",
-                next: null,
-              }),
-            });
-            continue;
-          }
+          if (!row || row.ownerId !== owner(actor) || denied.has(row.id)) continue;
           const task =
             row.pageBinding && row.openedBy && row.openedBy !== "person"
               ? await tx
@@ -1266,6 +1255,21 @@ export class TabService implements TabServicePort {
         }
       }, readmit),
       (row) => permitted.has(row.id),
+    );
+    // The members this close left in its group are the ones that could not close: read from the
+    // mutation's own layout, a replay answers exactly what the first call answered.
+    const left = result.layout.items.find(
+      (item) => item.kind === "group" && item.group.groupId === groupId,
+    );
+    const failed: TabCloseResult["failed"] = (left?.kind === "group" ? left.group.tabIds : []).map(
+      (tabId) => ({
+        tabId,
+        error: normalizeToolError({
+          code: "not_found",
+          message: "This tab is no longer in the list.",
+          next: null,
+        }),
+      }),
     );
     // As a close of each member finishes: viewers end and the catalog moves, once.
     const meta = tabMutationMeta(result);
@@ -1286,9 +1290,7 @@ export class TabService implements TabServicePort {
       // The store's answer, a replay's included: exactly the members this close took.
       closed: result.tabIds,
       failed,
-      groupClosed: !result.layout.items.some(
-        (item) => item.kind === "group" && item.group.groupId === groupId,
-      ),
+      groupClosed: left === undefined,
       layout: meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout,
     };
   }
