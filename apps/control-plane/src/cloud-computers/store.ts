@@ -998,10 +998,12 @@ export class CloudComputerStore {
       // A computer that has been ready before and is down now pages only once this outage itself
       // has lasted a while too: one restart (an update, a provider write not confirmed on one
       // pass) inside a clock kept from earlier is not a person with no working computer (U1).
+      // An outage no report announced (a Resume, a replacement, a reissue) began with its clock.
+      const outageBegan = row.downAt ?? row.readinessStartedAt;
       const outageLasted =
         row.phase === "ready" ||
         row.readyAt === null ||
-        (row.downAt !== null && now - row.downAt.getTime() >= minimumOutageMs);
+        now - outageBegan.getTime() >= minimumOutageMs;
       if (
         row.phase === "failed" ||
         claim !== null ||

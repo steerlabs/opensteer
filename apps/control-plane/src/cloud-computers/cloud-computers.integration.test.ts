@@ -1777,6 +1777,48 @@ integration("Cloud Computer Account service", () => {
     ]);
   });
 
+  it("pages a computer that was ready, then resumed or replaced, with no report from the provisioner after", async () => {
+    const takeLease = () =>
+      http({
+        method: "POST",
+        url: cloudComputerLeasePath,
+        headers: leaseHeaders(),
+        payload: { holder: lease },
+      });
+    const notReady = async () =>
+      (await cloud.watch(30 * 60_000)).filter(
+        ({ event }) => event === "account.cloud_computer.not_ready",
+      );
+    // Ready and claimed through the provisioner's own report, so its outage clock was cleared.
+    const working = async () => {
+      const bought = await buy();
+      await database
+        .updateTable("cloudComputers")
+        .set({ bootCompletedAt: now, bootstrapReceiptAt: now, lastBackupAt: now })
+        .where("id", "=", bought.id)
+        .execute();
+      expect((await takeLease()).statusCode).toBe(200);
+      expect((await report((await getDesired(bought.id))!, {})).json()).toEqual({
+        recorded: true,
+      });
+      return bought;
+    };
+    const resumed = await working();
+    const replaced = await working();
+    now = new Date(now.getTime() + 60 * 60_000);
+    expect(await notReady()).toEqual([]);
+    // A Resume and a replacement put each back to provisioning; the provisioner never reports
+    // either of them again (it is down, or it lost them).
+    await cloud.mutate(resumed.id, "suspend", resumed.account.id);
+    await cloud.mutate(resumed.id, "resume", resumed.account.id);
+    await cloud.mutate(replaced.id, "replace", undefined, "aabbccdd");
+    expect(await notReady()).toEqual([]);
+    now = new Date(now.getTime() + 31 * 60_000);
+    expect((await notReady()).map(({ computerId }) => computerId).toSorted()).toEqual(
+      [resumed.id, replaced.id].toSorted(),
+    );
+  });
+
   it("pages a computer that keeps going down faster than the limit, though each outage is short (U2)", async () => {
     const { id } = await buy();
     // Up and claimed, as after its first set-up.
