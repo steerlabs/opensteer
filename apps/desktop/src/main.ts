@@ -132,6 +132,7 @@ import { NativeOAuthManager } from "@opensteer/client/auth";
 import { OAuthDeepLinkBroker } from "@opensteer/client/auth";
 import { registerDesktopOAuthProtocolClient } from "./account/oauth-protocol-client.js";
 import { DesktopProtectedAuthStore } from "./secrets/protected-auth-store.js";
+import { openDesktopLog } from "./app/desktop-log.js";
 import { assertDesktopLaunch } from "./app/launch-policy.js";
 import { NativePersonalDeploymentCredentials } from "./secrets/personal-deployment-credentials.js";
 import {
@@ -331,9 +332,8 @@ async function startDesktop(): Promise<void> {
     app.quit();
     return;
   }
-  desktopLog = new RotatingPersonalLog(
-    path.join(loaded.config.dataDirectory, "logs", "desktop.log"),
-  );
+  // What the app ignored from its environment is the log's first word (`desktop-log.ts`).
+  desktopLog = openDesktopLog(loaded.config.dataDirectory, loaded.ignored);
   app.once("will-quit", () => desktopLog?.close());
   await app.whenReady();
   await privateFiles
@@ -426,7 +426,15 @@ async function runDesktop(
     privateFiles: resetWrites.files,
   });
   const hostNetwork = new ElectronHostNetwork();
-  const serviceNetwork = new ElectronServiceNetwork();
+  // A development launch's stand-in account service, pinned on its own session; never a released app.
+  const serviceNetwork = new ElectronServiceNetwork({
+    accountCertificate:
+      !app.isPackaged &&
+      loaded.config.accountCertificateKey !== null &&
+      loaded.config.accountUrl !== null
+        ? { key: loaded.config.accountCertificateKey, origin: loaded.config.accountUrl.origin }
+        : null,
+  });
   const protectedStorage = new VerifiedDesktopSecretCryptography(safeStorage, {
     onVerificationFailure: ({ error, phase }) =>
       reportNonFatal(
@@ -656,6 +664,7 @@ async function runDesktop(
     onUncontainedBoot: (mode: string) => localStop.noteUncontainedBoot(mode),
     userDataDirectory: app.getPath("userData"),
     accountIssuer: loaded.config.accountUrl,
+    extraCertificateAuthorities: loaded.config.extraCertificateAuthorities,
     catalog: deploymentCatalog,
     computerUse: computerUseForSlots,
     credentials: new NativePersonalDeploymentCredentials(protectedStorage, { privateFiles }),

@@ -58,6 +58,11 @@ import {
 } from "./bridge-connections-migration.js";
 import { applyChatRoutesEnd, chatRoutesEndMigrationName } from "./chat-routes-end-migration.js";
 import {
+  applyAutomationsContract,
+  automationsContractMigrationName,
+} from "./automation-scripts-migration.js";
+export { automationsContractMigrationName } from "./automation-scripts-migration.js";
+import {
   completePersonalStateConversion,
   personalCurrentStateMigrationName,
   withPersonalStateStartupLock,
@@ -729,6 +734,7 @@ export function migrationProvider(options?: {
                   `.execute(database);
                 },
               },
+              [automationsContractMigrationName]: { up: applyAutomationsContract },
               "0114_thread_inputs_written_by_connection": {
                 /**
                  * Indexes connection-written inputs per task so `threadContextLineage` checks

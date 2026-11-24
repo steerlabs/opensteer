@@ -10,14 +10,26 @@ pnpm test:vm -- --mobile env OPENSTEER_CHROME_R0_REPEAT=5 bash scripts/test-maco
 ```
 
 Journey names are in [journey-command.sh](../../../../apps/desktop/scripts/journey-command.sh); with
-none named, all defaults run (`mac-owner` only when named). Cached jobs still pay boot, staging and
-export, so select related flows in one invocation. Set `OPENSTEER_CHROME_R0_REPEAT=5` after a typing
-or input change; host `PersonKeyOrderTests` stay the deterministic guard.
+none named, all defaults run (`mac-owner` and `first-run` only when named). Cached jobs still pay
+boot, staging and export, so select related flows in one invocation. Set
+`OPENSTEER_CHROME_R0_REPEAT=5` after a typing or input change; host `PersonKeyOrderTests` stay the
+deterministic guard.
 `OPENSTEER_VM_DISPLAY=1600x1100pt` gives the guest a 2x display on a Retina host; `native-browser`
 then runs at 2x, which is the density its capture steps need to show a page shrinking.
 `--inputs /absolute/directory`, before `--revision`, adds a read-only share at
 `/Volumes/My Shared Files/inputs`; it must be a real path without symlinks or `:`, and files are
 copied to guest APFS before modification.
+
+**First run.** `pnpm test:vm -- --mobile bash scripts/test-macos-journeys.sh first-run` drives the
+Mac app's first run against the real account service code on a PostgreSQL of its own: Sign in
+(the account's App Review form, a test account in that database), "Where should your Opensteer
+live?", On this Mac, setup, "Connect your phone". It runs twice, `settled` (setup moves on once
+the Home is ready) and `racing` (each step at once, so the turn-on meets the Home still being set
+up). Only the tunnel provider (`MemoryConnectProvider`), the browser and macOS's `open-url`
+hand-off stand in ([journey.ts](../../../../tests/first-run/journey.ts)). A pass is the Home in
+the account and the phone step's helper sentence, never "Couldn't add …" or "Another deployment
+access operation is already running"; `first-run/<trial>/verdict.json` records the count of
+`initialize-failed`. A real tunnel a phone outside can reach stays unverified.
 
 **Fixture keychain.** The runner guarantees every guest job a keychain of its own
 ([fixture-keychain.sh](../../../../scripts/test-vm/fixture-keychain.sh)), with a constant test
@@ -28,6 +40,20 @@ Electron there gets errSecInteractionNotAllowed (-25308). Cleanup restores the p
 and search list and deletes it. The login keychain is never unlocked, read or changed, and the step
 cannot run outside the guest: it refuses unless macOS reports a hypervisor and the clone's
 `~/opensteer-job/guest-job` marker (written at staging) names the job's VM.
+The same step makes a fixture authority for the job (`scripts/test-vm/fixture-authority-files.sh`,
+which checks its certificate verifies and logs both fingerprints) and puts
+`account.first-run.opensteer.example` on `192.88.99.10` in the guest's hosts file, an address it
+adds to the guest's loopback interface: the Host fetches account keys only from a name that
+resolves to a public address (`packages/access/src/public-network.ts`), never 127.0.0.1, and that
+deprecated 6to4 relay address is one it counts as public. It records the address and the line
+before it adds each, and refuses an address the guest already holds. It never changes the guest's trust. The first-run journey serves its account
+service there over HTTPS and hands the app, a development launch, two things a released app never
+takes from its environment: the authority as `NODE_EXTRA_CA_CERTS`, which the app passes to its
+Host and nothing else, and the account service's one key as
+`OPENSTEER_DESKTOP_ACCOUNT_CERTIFICATE_KEY`, which only the app's account session accepts
+(`electron-service-network.ts`). No launch takes a certificate switch. A trial stopped by a certificate leaves `first-run/<trial>/tls-evidence.json`: what
+the name resolved to and which certificate answered. `end` removes exactly the recorded line and
+address and keeps the record until it has.
 `pnpm exec tsx scripts/test-vm/guest-contract-journey.ts` holds it to that. To see what a suite's
 session can do with it, run `pnpm test:vm -- bash ../../scripts/test-vm/keychain-diagnostic.sh`.
 

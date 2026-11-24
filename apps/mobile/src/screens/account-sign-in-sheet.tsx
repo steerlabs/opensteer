@@ -20,6 +20,7 @@ import {
 } from "../ui/primitives.js";
 import { Sheet } from "../ui/sheet.js";
 import { AddAccountFields, useAddAccountForm } from "./add-account-form.js";
+import { sentence } from "../ui/sentence-parts.js";
 
 const noSources: readonly HarnessSourceDescriptor[] = [];
 const noSubscribe = () => () => undefined;
@@ -134,7 +135,10 @@ export function AccountSignInSheet(props: {
     failure === null ? null : <Notice detail={failure} title="Sign-in didn’t finish" />;
   const couldNotOpen =
     unopenedUrl === null ? null : (
-      <Notice detail={`Open ${unopenedUrl} in your browser.`} title="Your browser didn’t open" />
+      <Notice
+        detail={sentence`Open ${unopenedUrl} in your browser.`}
+        title="Your browser didn’t open"
+      />
     );
 
   let body: ReactNode;

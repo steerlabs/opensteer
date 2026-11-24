@@ -20,6 +20,7 @@ import {
 import { agentGrantsMigrationName } from "./agent-grants-migration.js";
 import { agentSessionsMigrationName } from "./agent-sessions-migration.js";
 import { agentDirectoryMigrationName } from "./agent-directory-migration.js";
+import { automationsContractMigrationName } from "./automation-scripts-migration.js";
 it("exposes the fresh, uniquely named Host baseline and the migrations after it", async () => {
   const names = Object.keys(await migrationProvider().getMigrations());
   expect(names).toEqual([
@@ -81,11 +82,13 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0110_remove_organizations_contract",
     "0111_remove_platform_verification_contract",
     "0112_command_requests",
+    automationsContractMigrationName,
     "0114_thread_inputs_written_by_connection",
     "0115_provider_session_person_lineage",
     "0116_browser_pool_sessions",
   ]);
-  // Kysely runs migrations in name order, so a later one must also sort later.
+  // Kysely runs migrations in name order, so names must be unique and ascending (gaps are allowed).
+  expect(new Set(names).size).toBe(names.length);
   expect(names).toEqual(names.toSorted());
   expect(personalTeamBaselineName).toBe("0002_personal_team_baseline");
 });

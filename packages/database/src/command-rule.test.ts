@@ -167,12 +167,12 @@ describe("the command rule, generated from the table", () => {
     });
     const at = (command: Record<string, unknown>, caller: CommandRuleCaller) =>
       commandRule(row(command.type as string), commandFace(command as never), caller);
-    const program = { language: "javascript", source: "export default async () => 1" };
+    const script = { interpreter: null, text: "console.log(1)" };
     for (const grant of ["everything", "selected"] as const) {
       // What another lineage's automation will run, or a run of it now, is recorded as that
       // lineage's: Disconnect would not reach it.
       for (const command of [
-        { type: "trigger.update", triggerId: "trg_1", input: { program } },
+        { type: "trigger.update", triggerId: "trg_1", input: { script } },
         {
           type: "trigger.update",
           triggerId: "trg_1",
@@ -214,10 +214,10 @@ describe("the command rule, generated from the table", () => {
         ownWork: true,
         ...(ownLineage === undefined ? {} : { ownLineage }),
       }).answer;
-    const program = { toolContractVersion: 5, language: "javascript", source: "x" };
+    const script = { interpreter: null, text: "console.log('x')" };
     for (const command of [
       { type: "trigger.status.set", triggerId: "trg_1", status: "active" },
-      { type: "trigger.create", input: { anchorThreadId: "thr_1", name: "n", program } },
+      { type: "trigger.create", input: { anchorThreadId: "thr_1", name: "n", script } },
       { type: "thread.inputQueue.resume", threadId: "thr_1" },
       { type: "thread.input.steer", threadId: "thr_1", messageId: "msg_1" },
       { type: "thread.execution.update", threadId: "thr_1" },
@@ -266,10 +266,10 @@ describe("the command rule, generated from the table", () => {
       ownWork: true,
       ownLineage: true,
     });
-    const program = { toolContractVersion: 5, language: "javascript", source: "x" };
+    const script = { interpreter: null, text: "console.log('x')" };
     for (const command of [
-      { type: "trigger.create", input: { anchorThreadId: "thr_1", name: "n", program } },
-      { type: "trigger.update", triggerId: "trg_1", input: { program } },
+      { type: "trigger.create", input: { anchorThreadId: "thr_1", name: "n", script } },
+      { type: "trigger.update", triggerId: "trg_1", input: { script } },
       { type: "trigger.run", triggerId: "trg_1" },
     ]) {
       const at = (mode: ThreadAccessMode) =>

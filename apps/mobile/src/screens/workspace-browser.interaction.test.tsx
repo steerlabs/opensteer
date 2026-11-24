@@ -39,6 +39,7 @@ import {
 } from "../client/thread-drafts.js";
 import { homeDraftId } from "../home/home-draft.js";
 import { WorkspaceBrowserScreen } from "./workspace-browser.js";
+import { addressWords } from "../ui/address-words.js";
 
 /*
  * One tab, app or phone, by route. What can go wrong: a link's tab is swapped
@@ -1460,7 +1461,7 @@ describe("mobile pages", () => {
     );
     await settle();
     expect(container.textContent).toContain("Waking this tab…");
-    expect(container.textContent).toContain(firstPage.url);
+    expect(container.textContent?.replace(/[\u2060\u200B]/gu, "")).toContain(firstPage.url);
     expect(container.textContent).not.toContain("Opening…");
   });
 
@@ -1589,7 +1590,9 @@ describe("mobile pages", () => {
       type: "navigation.reload",
       surfaceId: "srf_00000000-0000-4000-8000-000000000001",
     });
-    expect(container.textContent).toContain("Signed in to example.com with Chrome on Mac.");
+    expect(container.textContent).toContain(
+      `Signed in to ${addressWords("example.com")} with Chrome on Mac.`,
+    );
   });
 
   it("asks which Chrome when several are signed in, and says how to fix an offline one", async () => {
@@ -1640,10 +1643,14 @@ describe("mobile pages", () => {
 
     press(menu(), "Sign in with Chrome");
     // The site is remembered for the Workspace, which the action says before any tap.
-    expect(container.textContent).toContain("Your agent will be able to use example.com as you.");
+    expect(container.textContent).toContain(
+      `Your agent will be able to use ${addressWords("example.com")} as you.`,
+    );
     await pressAsync(container, "Sign in with Chrome");
     expect(inspect).toHaveBeenCalledWith({ url: "https://mail.example.com/inbox" });
-    expect(container.textContent).toContain("Choose the Chrome to use for example.com");
+    expect(container.textContent).toContain(
+      `Choose the Chrome to use for ${addressWords("example.com")}`,
+    );
 
     await pressAsync(container, "Work Chrome");
     expect(dispatch).toHaveBeenLastCalledWith(

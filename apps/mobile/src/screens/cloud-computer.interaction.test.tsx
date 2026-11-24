@@ -149,6 +149,7 @@ describe("Opensteer Cloud Computer on the phone", () => {
     expect(row("website-checkout", "address")).toMatchObject({
       kind: "status",
       detail: "https://app.opensteer.example/cloud-computer/checkout",
+      addressIn: "detail",
     });
     expect(section("website-checkout")?.footer?.text).toContain(
       "Set up your Cloud Computer on the Opensteer website",
@@ -226,9 +227,13 @@ describe("Opensteer Cloud Computer on the phone", () => {
       label: "Running",
       tone: "good",
       detail: mockCloudComputerAddress,
+      addressIn: "detail",
     });
     expect(row("status", "ip").label).toBe("Browser IP · Assigned");
-    expect(row("status", "browser-address")).toMatchObject({ detail: "203.0.113.24" });
+    expect(row("status", "browser-address")).toMatchObject({
+      detail: "203.0.113.24",
+      addressIn: "detail",
+    });
     expect(row("status", "region")).toMatchObject({ detail: "Ashburn, Virginia" });
     // The plan by its name, never its price.
     expect(row("plan", "plan")).toMatchObject({
@@ -237,6 +242,7 @@ describe("Opensteer Cloud Computer on the phone", () => {
     });
     expect(row("website-billing", "address")).toMatchObject({
       detail: "https://app.opensteer.example/cloud-computer/billing",
+      addressIn: "detail",
     });
   });
 

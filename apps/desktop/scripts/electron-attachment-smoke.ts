@@ -133,16 +133,18 @@ async function run(): Promise<object> {
       source: { kind: "manual" },
       updatedAt: now,
     });
+    // The catalog as the transport reads it: choosing a place or an endpoint answers with it.
+    const listed = async () => ({
+      deployments: [connection],
+      revision: 1,
+      schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
+      selectedDeploymentId: deploymentId,
+      updatedAt: now,
+    });
     const catalog = {
-      load: async () => ({
-        deployments: [connection],
-        revision: 1,
-        schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
-        selectedDeploymentId: deploymentId,
-        updatedAt: now,
-      }),
-      select: async () => undefined,
-      setPreferredEndpoint: async () => undefined,
+      load: listed,
+      select: listed,
+      setPreferredEndpoint: listed,
       subscribe: () => () => undefined,
     };
     const transport = new DesktopHostTransport({

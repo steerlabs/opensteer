@@ -14,8 +14,8 @@ export type CredentialRouteName = "agent-tools";
 export interface CredentialRoute {
   /** The Host endpoint this route stands in for. */
   readonly upstream: string;
-  /** The Host token current at the moment of each call; refresh replaces it. */
-  readonly token: () => string;
+  /** The Host token current at the moment of each call; may refresh on demand. */
+  readonly token: () => string | Promise<string>;
 }
 
 const allowedMethods = new Set(["DELETE", "GET", "POST"]);
@@ -54,7 +54,10 @@ export class CredentialProxy {
   readonly #maxCalls: number;
   readonly #maxStreams: number;
   readonly #prefix = `/${randomBytes(18).toString("base64url")}`;
-  readonly #routes: ReadonlyMap<string, { readonly upstream: URL; readonly token: () => string }>;
+  readonly #routes: ReadonlyMap<
+    string,
+    { readonly upstream: URL; readonly token: () => string | Promise<string> }
+  >;
   readonly #secret = Buffer.from(randomBytes(32).toString("base64url"));
   readonly #server: Server;
   #closed = false;
@@ -169,7 +172,8 @@ export class CredentialProxy {
       if (body === "too-large") return reply(response, 413);
       if (body === "timed-out") return reply(response, 408);
       const forward = async (payload: Buffer) => {
-        const headers = new Headers({ authorization: `Bearer ${route.token()}` });
+        const token = await route.token();
+        const headers = new Headers({ authorization: `Bearer ${token}` });
         for (const name of forwardedRequestHeaders) {
           const value = request.headers[name];
           if (typeof value === "string") headers.set(name, value);

@@ -1,4 +1,4 @@
-import { OpensteerError, type Tab, type ThreadId } from "@opensteer/core";
+import { type Tab, type ThreadId } from "@opensteer/core";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import type {
   AgentSessionService,
@@ -7,14 +7,18 @@ import type {
 import { deviceVisibleTo } from "../../devices/device-visibility.js";
 import type { TabActor, TabServicePort } from "../../tabs/ports.js";
 import { callerLineage, type AgentCaller } from "../agent-caller.js";
-import { operationId, requireRun } from "../operations.js";
+import { operationId } from "../operations.js";
 import { directResult as direct, requireDirectWork } from "./direct.js";
 import type { ToolCall } from "./types.js";
 
 function actor(caller: AgentCaller): TabActor {
   if (caller.kind === "run") return { kind: "run", claims: caller.claims };
   if (caller.kind === "connection") return { kind: "connection", caller };
-  throw new OpensteerError({ code: "forbidden", message: "Programs cannot access tabs." });
+  return {
+    kind: "browser-binding",
+    authority: { agentBindingId: caller.key, ownerId: caller.userId },
+    threadId: caller.anchor.id,
+  };
 }
 /** A connected agent's session acting on tabs: attributed to its task, stopped with it. */
 function sessionActor(context: DirectOperationContext): TabActor {
@@ -76,7 +80,6 @@ export class TabToolHandlers {
     );
   }
   async tab_open({ caller, input, operationKey }: ToolCall<"tab_open">) {
-    requireRun(caller);
     const { tab } = await this.#tabs.open(
       actor(caller),
       input.target,
@@ -85,7 +88,6 @@ export class TabToolHandlers {
     return { tab: tabForCaller(caller, tab) };
   }
   async tab_close({ caller, input, operationKey }: ToolCall<"tab_close">) {
-    requireRun(caller);
     return this.#tabs.close(
       actor(caller),
       input.tabIds,
@@ -93,7 +95,6 @@ export class TabToolHandlers {
     );
   }
   async tab_organize({ caller, input, operationKey }: ToolCall<"tab_organize">) {
-    requireRun(caller);
     return this.#tabs.organize(
       actor(caller),
       input,
@@ -101,7 +102,6 @@ export class TabToolHandlers {
     );
   }
   async tab_group_update({ caller, input, operationKey }: ToolCall<"tab_group_update">) {
-    requireRun(caller);
     return this.#tabs.updateGroup(
       actor(caller),
       input,

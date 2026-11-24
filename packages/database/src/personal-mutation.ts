@@ -111,6 +111,7 @@ export type PersonalCommitReaction =
   | { readonly type: "grantsRevoked"; readonly grants: readonly RevokedRunGrant[] }
   | { readonly type: "runnerRevoked"; readonly runnerId: RunnerId }
   | { readonly type: "triggerSchedulesChanged" }
+  | { readonly type: "triggerPaused" }
   | { readonly type: "authorityChanged"; readonly scopes: ReadonlySet<ScopeAuthority> }
   | {
       readonly type: "requestChanged";
@@ -777,6 +778,13 @@ export function wakeExecutionCommands(tx: PersonalMutationTransaction) {
 export function wakeTriggerSchedules(tx: PersonalMutationTransaction) {
   return commitPersonalMutation(tx, async (_tx, mutation) => {
     mutation.react({ type: "triggerSchedulesChanged" });
+  });
+}
+
+/** An automation was paused; the Host interrupts any running firing for it until settled (AA10). */
+export function wakePausedTriggerInterrupts(tx: PersonalMutationTransaction) {
+  return commitPersonalMutation(tx, async (_tx, mutation) => {
+    mutation.react({ type: "triggerPaused" });
   });
 }
 

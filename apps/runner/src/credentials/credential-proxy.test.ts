@@ -310,6 +310,38 @@ describe("credential proxy", () => {
     expect(host.seen.map(({ url }) => url)).toEqual(["/internal/v1/mcp", "/internal/v1/mcp"]);
   });
 
+  it("awaits async on-demand token renewal on each upstream call (Y2)", async () => {
+    const host = await upstream((_request, response) => response.end("{}"));
+    let calls = 0;
+    const proxy = new CredentialProxy({
+      routes: {
+        "agent-tools": {
+          token: async () => {
+            calls += 1;
+            return `renewed-${calls}`;
+          },
+          upstream: `${host.origin}/internal/v1/mcp`,
+        },
+      },
+      transport: { mode: "development" },
+    });
+    proxies.push(proxy);
+    const { secret, urls } = await proxy.start();
+    for (let i = 0; i < 2; i += 1) {
+      const response = await fetch(urls["agent-tools"], {
+        body: "{}",
+        headers: { authorization: `Bearer ${secret}` },
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+      await response.arrayBuffer();
+    }
+    expect(host.seen.map(({ headers }) => headers.authorization)).toEqual([
+      "Bearer renewed-1",
+      "Bearer renewed-2",
+    ]);
+  });
+
   it("refuses new calls and cuts open streams once revoked", async () => {
     const host = await upstream((_request, response) => {
       response.writeHead(200, { "content-type": "text/event-stream" });

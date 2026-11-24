@@ -44,6 +44,8 @@ import {
   tabTitle,
 } from "./tab-entries.js";
 import { useTabListSpans } from "./use-tabs.js";
+import { tabSiteLabel } from "../browser/site-label.js";
+import { HostLine } from "../ui/address-text.js";
 
 /** Chrome's group tints, as the web draws them. */
 export const tabGroupTint: Record<TabGroupColor, string> = {
@@ -546,6 +548,19 @@ const TabRow = memo(function TabRow(props: TabRowProps & { readonly place: Place
     ? chromeTabUsedBy(agents.agents.map((agent) => agent.connectedAgentName ?? agent.title))
     : null;
   const detail = tabDetail(tab, props);
+  // A page's line leads with its host: one line that keeps the host's end, never wrapped.
+  const site = tab.kind === "page" ? tabSiteLabel(tab.url ?? null) : null;
+  const subtitle =
+    site !== null && detail[0] === site ? (
+      <HostLine
+        after={detail.length > 1 ? ` · ${detail.slice(1).join(" · ")}` : ""}
+        host={site}
+        role="caption"
+        tone="muted"
+      />
+    ) : (
+      detail.join(" · ")
+    );
   const unavailable = tab.state === "unavailable";
   const movingThis =
     props.moving !== null &&
@@ -617,7 +632,7 @@ const TabRow = memo(function TabRow(props: TabRowProps & { readonly place: Place
               {title}
             </AppText>
             {detail.length === 0 && line === null ? null : (
-              <RowSubtitle line={line} subtitle={detail.join(" · ")} />
+              <RowSubtitle line={line} subtitle={subtitle} />
             )}
             {sharedUsers ? (
               <AppText numberOfLines={1} role="caption" tone="muted">

@@ -833,6 +833,157 @@ describe("ExecutionCoordinator", () => {
     await waitFor(() => dispatch.mock.calls.length === 2);
     await coordinator.stop();
   });
+
+  it("retries an unsent firing when coordinator.stop() aborts pre-send setup and preserves uncertain dispatches (Z8)", async () => {
+    const command = pendingCommand({
+      payload: { type: "trigger.execute" },
+      runId: null,
+      type: "trigger.execute",
+    });
+    const store = fakeStore(command);
+    let dispatchEntered = false;
+    const coordinator = new ExecutionCoordinator({
+      dispatcher: {
+        isAvailable: () => true,
+        dispatch: async (_command, signal) => {
+          dispatchEntered = true;
+          await new Promise<void>((resolve) => {
+            if (signal.aborted) resolve();
+            else signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+          signal.throwIfAborted();
+        },
+      },
+      dispatcherId: "test-dispatcher",
+      maxConcurrentRuns: 1,
+      maxConcurrentTriggerPrograms: 1,
+      maxQueuedBytes: 10_000,
+      maxQueuedCommands: 10,
+      pollIntervalMs: 10_000,
+      store: store.value,
+    });
+    coordinator.start();
+    await waitFor(() => dispatchEntered);
+    await coordinator.stop();
+    expect(store.retryCommand).toHaveBeenCalledWith(
+      command.id,
+      expect.objectContaining({ disposition: "retry", provenNotStarted: true }),
+      { provenNotStarted: true },
+    );
+    expect(store.failCommand).not.toHaveBeenCalled();
+
+    // If bytes may already have left (uncertain), coordinator shutdown must NEVER retry it.
+    const sentCommand = pendingCommand({
+      payload: { type: "trigger.execute" },
+      runId: null,
+      type: "trigger.execute",
+    });
+    const sentStore = fakeStore(sentCommand);
+    let sentEntered = false;
+    const sentCoordinator = new ExecutionCoordinator({
+      dispatcher: {
+        isAvailable: () => true,
+        dispatch: async (_command, signal) => {
+          sentEntered = true;
+          await new Promise<void>((resolve) => {
+            if (signal.aborted) resolve();
+            else signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+          throw new CommandDispatchError("Lost connection after frame left", "uncertain");
+        },
+      },
+      dispatcherId: "test-dispatcher",
+      maxConcurrentRuns: 1,
+      maxConcurrentTriggerPrograms: 1,
+      maxQueuedBytes: 10_000,
+      maxQueuedCommands: 10,
+      pollIntervalMs: 10_000,
+      store: sentStore.value,
+    });
+    sentCoordinator.start();
+    await waitFor(() => sentEntered);
+    await sentCoordinator.stop();
+    expect(sentStore.retryCommand).not.toHaveBeenCalled();
+    expect(sentStore.failCommand).not.toHaveBeenCalled();
+  });
+
+  it("attempts at most one claim per automation and schedules no poll while a firing is ahead (AB1)", async () => {
+    const triggerId = createId("trigger");
+    const waiting = Array.from({ length: 5 }, (_, index) =>
+      pendingCommand({
+        authoritySource: { kind: "trigger", triggerId },
+        createdAt: new Date(1_700_000_000_000 + index * 1_000),
+        payload: { occurrenceId: createId("triggerOccurrence"), type: "trigger.execute" },
+        runId: null,
+        type: "trigger.execute",
+      }),
+    );
+    let firingAhead = true;
+    const dispatched: CommandId[] = [];
+    const listPendingCommands = vi.fn<ExecutionCoordinatorStore["listPendingCommands"]>(async () =>
+      waiting.filter((cmd) => !dispatched.includes(cmd.id)),
+    );
+    const claimCommand = vi.fn(
+      async (
+        id: CommandId,
+        _dispatcherId: string,
+        options?: { readonly includeBlocked?: boolean },
+      ) => {
+        const found = waiting.find((cmd) => cmd.id === id);
+        if (!found) return null;
+        if (firingAhead) {
+          return options?.includeBlocked ? { blocked: "firing-ahead" as const, triggerId } : null;
+        }
+        return {
+          command: { ...found, status: "dispatched" as const },
+        };
+      },
+    );
+    const clock = manualClock();
+    const coordinator = new ExecutionCoordinator({
+      clock: clock.clock,
+      dispatcher: {
+        isAvailable: () => true,
+        dispatch: async (command) => {
+          dispatched.push(command.id);
+          firingAhead = true;
+        },
+      },
+      dispatcherId: "ab1-test",
+      maxConcurrentRuns: 1,
+      maxConcurrentTriggerPrograms: 4,
+      maxQueuedBytes: 100_000,
+      maxQueuedCommands: 100,
+      pollIntervalMs: 500,
+      store: {
+        claimCommand: claimCommand as unknown as ExecutionCoordinatorStore["claimCommand"],
+        failCommand: vi.fn(async () => undefined),
+        listPendingCommands,
+        markSteerUnknown: vi.fn(async () => undefined),
+        retryCommand: vi.fn(async () => undefined),
+      },
+    });
+    coordinator.start();
+    await waitFor(() => claimCommand.mock.calls.length >= 1);
+    // Let any microtasks settle.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    // At most one claim attempt for all 5 waiting firings of the same automation, and NO poll timer!
+    expect(claimCommand).toHaveBeenCalledTimes(1);
+    expect(clock.timers()).toEqual([]);
+    const listsAfterBlocked = listPendingCommands.mock.calls.length;
+    const claimsAfterBlocked = claimCommand.mock.calls.length;
+    // Advance 2.5 seconds (5 poll intervals): zero statements!
+    clock.advance(2_500);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(listPendingCommands).toHaveBeenCalledTimes(listsAfterBlocked);
+    expect(claimCommand).toHaveBeenCalledTimes(claimsAfterBlocked);
+    // When the firing ahead ends and wakes the coordinator, the earliest waiting firing runs at once.
+    firingAhead = false;
+    coordinator.wake();
+    await waitFor(() => dispatched.length === 1);
+    expect(dispatched).toEqual([waiting[0]!.id]);
+    await coordinator.stop();
+  });
 });
 function backoffStore(pending: () => readonly PendingCommandRow[]) {
   const claimCommand = vi.fn(async (id: CommandId) => {

@@ -23,6 +23,7 @@ import type {
   MoveThreadInputRequest,
   SteerThreadInputRequest,
   RunnerControlInput,
+  RunningFiringRef,
 } from "@opensteer/database";
 import { KeyedAdmissionQueue } from "./admission-queue.js";
 
@@ -34,17 +35,20 @@ interface CommandServiceOptions {
   /** A durable execution was accepted, so dispatch can resume immediately. */
   readonly onExecutionQueued: (environmentId: EnvironmentId | undefined) => void;
   readonly onActivity?: () => void;
+  readonly onInterruptFiring?: (firing: RunningFiringRef) => void;
 }
 export class CommandService {
   readonly #store: OpensteerStore;
   readonly #admission: KeyedAdmissionQueue;
   readonly #onExecutionQueued: (environmentId: EnvironmentId | undefined) => void;
   readonly #onActivity: (() => void) | undefined;
+  readonly #onInterruptFiring: ((firing: RunningFiringRef) => void) | undefined;
   constructor(options: CommandServiceOptions) {
     this.#store = options.store;
     this.#admission = options.admission;
     this.#onExecutionQueued = options.onExecutionQueued;
     this.#onActivity = options.onActivity;
+    this.#onInterruptFiring = options.onInterruptFiring;
   }
   readonly #inputAdmissions = new Map<string, Promise<void>>();
 
@@ -305,6 +309,9 @@ export class CommandService {
           const done = await this.#store.setThreadDone(input);
           for (const command of done.interruptCommands) {
             if (command.environmentId) this.#onExecutionQueued(command.environmentId);
+          }
+          for (const firing of done.runningTriggerFirings) {
+            this.#onInterruptFiring?.(firing);
           }
           return done;
         },

@@ -13,70 +13,11 @@ import {
   utf8ByteLength,
 } from "@opensteer/core";
 import { z } from "zod";
+import { AutomationScriptSchema, AutomationScriptViewSchema } from "./script.js";
 
 export const TriggerStatusSchema = z.enum(["active", "paused", "archived"]);
 
-/**
- * The runtime contract for Trigger programs. Agents read it in the
- * opensteer:automations skill, which must contain it verbatim; the automation
- * editor shows it to people. Tool metadata does not repeat it.
- */
-export const triggerProgramContract = [
-  "Automation programs execute as Node.js ESM modules (Node 24 or newer) on the hosting computer,",
-  "with Agent home as the working directory, so relative paths and relative imports",
-  "resolve from Agent home. The source must export one default function (async or not):",
-  "The program object must declare toolContractVersion: use 5. Use computer_list for computers, opensteer_ai_account_list for AI accounts, and opensteer_task_send or opensteer_task_delegate for tasks.",
-  "`export default async function ({ event, capabilities, opensteer }) { ... }`.",
-  "`event` is frozen ({ id, payload, receivedAt, source, trigger });",
-  '`event.source.kind` is "schedule" (with scheduledFor), "webhook" (with method, headers, and optional deliveryId),',
-  '"manual" (a manual run carries only the payload), or "watch" (the single startup event for a continuous watch).',
-  "A watch program runs continuously and must not resolve; Opensteer restarts unexpected exits with exponential backoff and pauses the automation after three consecutive unexpected exits.",
-  "`capabilities.mcp` is the short-lived Opensteer MCP endpoint ({ url, token });",
-  "`capabilities.browserCdp` is a short-lived CDP WebSocket endpoint ({ url, token }) or null when no browser access is available.",
-  "For a watch, every non-null capability also has expiresAt.",
-  "Watch capabilities rotate while the process runs: call `opensteer.capabilities()` for the current values, and reconnect an expired CDP session with its current browserCdp value.",
-  "`opensteer.callTool(name, input)` calls any Opensteer tool, including plugin_search, plugin_describe, plugin_call, plugin_execute and plugin_resume. Plugin interactions return pending immediately; retain executionId and resume after the person answers, without replaying the program. Programs cannot manage plugins or request accounts.",
-  "Supply a stable observationId with each watch call to opensteer_task_send or opensteer_task_delegate; when omitted, the request ID is used. Opensteer deduplicates the ID and admits up to 120 independent observations per activation per hour.",
-  "Node built-ins (node:fs, node:child_process, ...), fetch, and packages installed in Agent home's node_modules are available;",
-  "Deno, Bun, and DOM globals such as window and document do not exist, and nothing installs packages automatically.",
-  "TypeScript runs through Node's built-in type transform: type annotations, enums, and namespaces work; tsconfig paths, decorators, and JSX do not.",
-  "For schedule, webhook, and manual runs, the awaited return value serialized as JSON (at most 512 KiB) becomes the occurrence result, and a thrown error fails the occurrence with its message and stack.",
-  "Their console output is captured as stdout and stderr (512 KiB each); watch stdout and stderr retain only their latest 16 KiB tails.",
-  "A program acts as its task: its Opensteer tool calls use that task's access-mode ceiling, and only a full-access agent can write one.",
-].join(" ");
-
-export const TRIGGER_PROGRAM_VERSION_REFUSAL =
-  "Programs require toolContractVersion 5. Use opensteer_task_send and opensteer_task_delegate; older tool names are unavailable.";
-
-export const TRIGGER_PROGRAM_UPDATE_REASON =
-  "Needs an update because this program uses an unsupported tool contract. Ask your agent to update it.";
-
-/**
- * A revision's program as stored. Programs written for an older tool contract
- * stay readable so the owner's agent can replace them; only version 5 runs.
- */
-export const StoredTriggerProgramSchema = z.strictObject({
-  language: z.enum(["javascript", "typescript"]),
-  source: z
-    .string()
-    .min(1)
-    .max(512 * 1_024),
-  toolContractVersion: z.number().int().positive(),
-});
-export type StoredTriggerProgram = z.infer<typeof StoredTriggerProgramSchema>;
-const StoredTriggerProgramViewSchema = z.object(StoredTriggerProgramSchema.shape);
-
-/** A program Opensteer can write and run. */
-export const TriggerProgramSchema = StoredTriggerProgramSchema.extend({
-  toolContractVersion: z.literal(5, { error: TRIGGER_PROGRAM_VERSION_REFUSAL }),
-});
-export type TriggerProgram = z.infer<typeof TriggerProgramSchema>;
-
-export function isExecutableTriggerProgram(
-  program: StoredTriggerProgram,
-): program is TriggerProgram {
-  return program.toolContractVersion === 5;
-}
+export const TRIGGER_SCRIPT_UPDATE_REASON = "Needs an update: ask your agent";
 
 export const TriggerScheduleSchema = z.discriminatedUnion("kind", [
   z.strictObject({
@@ -122,7 +63,6 @@ export const MANAGED_MEMORY_WAKE_SKIPPED = "Opensteer skipped this memory pass w
 export const TriggerSchema = z.strictObject({
   systemRole: TriggerSystemRoleSchema.nullable().optional(),
   anchorThreadId: ThreadIdSchema,
-  consecutiveFailures: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   createdAt: IsoDateTimeSchema,
   createdBy: UserIdSchema,
   createdByThreadId: ThreadIdSchema.nullable().default(null),
@@ -146,19 +86,25 @@ export const TriggerRevisionSchema = z.strictObject({
   createdBy: UserIdSchema,
   createdByThreadId: ThreadIdSchema.nullable().default(null),
   id: TriggerRevisionIdSchema,
+  /** Legacy v5 source kept readable on paused pre-script revisions so an agent can rewrite them (T14). */
+  legacySource: z
+    .string()
+    .min(1)
+    .max(512 * 1_024)
+    .optional(),
   ordinal: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  program: StoredTriggerProgramSchema,
+  script: AutomationScriptSchema.nullable(),
   source: TriggerSourceSchema,
   triggerId: TriggerIdSchema,
 });
 export const TriggerRevisionViewSchema = z.object({
   ...TriggerRevisionSchema.shape,
-  program: StoredTriggerProgramViewSchema,
+  script: AutomationScriptViewSchema.nullable(),
   source: TriggerSourceViewSchema,
 });
 export type TriggerRevision = z.infer<typeof TriggerRevisionSchema>;
 
-export const TriggerProgramEventSchema = z.strictObject({
+export const TriggerScriptEventSchema = z.strictObject({
   id: TriggerOccurrenceIdSchema,
   payload: z.unknown(),
   receivedAt: IsoDateTimeSchema,
@@ -170,10 +116,13 @@ export const TriggerProgramEventSchema = z.strictObject({
       scheduledFor: IsoDateTimeSchema,
     }),
     z.strictObject({
+      bodyBytes: z.number().int().nonnegative().optional(),
       deliveryId: z.string().min(1).max(512).optional(),
       headers: z.record(z.string(), z.string()),
       kind: TriggerOccurrenceSourceKindSchema.extract(["webhook"]),
       method: z.string().min(1).max(16),
+      path: z.string().max(2_048).optional(),
+      query: z.record(z.string(), z.union([z.string(), z.array(z.string())])).optional(),
     }),
   ]),
   trigger: z.strictObject({
@@ -182,23 +131,24 @@ export const TriggerProgramEventSchema = z.strictObject({
     revisionId: TriggerRevisionIdSchema,
   }),
 });
-const TriggerProgramEventViewSchema = z.object({
-  ...TriggerProgramEventSchema.shape,
+const TriggerScriptEventViewSchema = z.object({
+  ...TriggerScriptEventSchema.shape,
   source: z.discriminatedUnion("kind", [
-    z.object(TriggerProgramEventSchema.shape.source.options[0].shape),
-    z.object(TriggerProgramEventSchema.shape.source.options[1].shape),
-    z.object(TriggerProgramEventSchema.shape.source.options[2].shape),
-    z.object(TriggerProgramEventSchema.shape.source.options[3].shape),
+    z.object(TriggerScriptEventSchema.shape.source.options[0].shape),
+    z.object(TriggerScriptEventSchema.shape.source.options[1].shape),
+    z.object(TriggerScriptEventSchema.shape.source.options[2].shape),
+    z.object(TriggerScriptEventSchema.shape.source.options[3].shape),
   ]),
-  trigger: z.object(TriggerProgramEventSchema.shape.trigger.shape),
+  trigger: z.object(TriggerScriptEventSchema.shape.trigger.shape),
 });
-export type TriggerProgramEvent = z.infer<typeof TriggerProgramEventSchema>;
+export type TriggerScriptEvent = z.infer<typeof TriggerScriptEventSchema>;
 
 export const TriggerWatchDesiredSchema = z.enum(["active", "stopped"]);
 export const TriggerWatchObservedSchema = z.enum([
   "starting",
   "running",
   "backoff",
+  "halted",
   "expired",
   "stopped",
 ]);
@@ -206,6 +156,7 @@ export const TriggerWatchObservedSchema = z.enum([
 export const TriggerWatchActivationSchema = z.strictObject({
   anchorThreadId: ThreadIdSchema,
   consecutiveFailures: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  contactLostAt: IsoDateTimeSchema.nullable().optional(),
   createdAt: IsoDateTimeSchema,
   createdBy: UserIdSchema,
   desired: TriggerWatchDesiredSchema,
@@ -248,19 +199,22 @@ const TriggerOccurrenceStatusSchema = z.enum([
   "succeeded",
   "failed",
   "canceled",
+  "unknown",
 ]);
 
 export const TriggerOccurrenceSchema = z.strictObject({
   commandId: CommandIdSchema,
   completedAt: IsoDateTimeSchema.nullable(),
+  contactLostAt: IsoDateTimeSchema.nullable().optional(),
   createdAt: IsoDateTimeSchema,
   environmentId: EnvironmentIdSchema,
   error: z.unknown().nullable(),
-  event: TriggerProgramEventSchema,
+  event: TriggerScriptEventSchema,
   exitCode: z.number().int().nullable(),
   id: TriggerOccurrenceIdSchema,
   result: z.unknown().nullable(),
   revisionId: TriggerRevisionIdSchema,
+  sent: z.boolean().optional(),
   startedAt: IsoDateTimeSchema.nullable(),
   status: TriggerOccurrenceStatusSchema,
   stderr: z.string(),
@@ -269,9 +223,17 @@ export const TriggerOccurrenceSchema = z.strictObject({
 });
 export const TriggerOccurrenceViewSchema = z.object({
   ...TriggerOccurrenceSchema.shape,
-  event: TriggerProgramEventViewSchema,
+  event: TriggerScriptEventViewSchema,
 });
 export type TriggerOccurrence = z.infer<typeof TriggerOccurrenceSchema>;
+
+export const TriggerWebhookAddressSchema = z.strictObject({
+  scope: z.enum(["public", "local"]),
+  /** Present when the caller may run the automation; null when redacted. */
+  url: z.url().nullable(),
+});
+export const TriggerWebhookAddressViewSchema = z.object(TriggerWebhookAddressSchema.shape);
+export type TriggerWebhookAddress = z.infer<typeof TriggerWebhookAddressSchema>;
 
 /**
  * A Trigger as a list shows it: when it runs, how its latest run went and,
@@ -286,9 +248,12 @@ export const TriggerSummarySchema = z.strictObject({
   latestOccurrence: z
     .strictObject({
       completedAt: IsoDateTimeSchema.nullable(),
+      contactLostAt: IsoDateTimeSchema.nullable().optional(),
       createdAt: IsoDateTimeSchema,
       error: z.string().nullable(),
+      exitCode: z.number().int().nullable().optional(),
       id: TriggerOccurrenceIdSchema,
+      sent: z.boolean().optional(),
       source: TriggerOccurrenceSourceKindSchema,
       status: TriggerOccurrenceStatusSchema,
     })
@@ -296,16 +261,19 @@ export const TriggerSummarySchema = z.strictObject({
   source: TriggerSourceSchema,
   watch: z
     .strictObject({
+      contactLostAt: IsoDateTimeSchema.nullable().optional(),
       lastError: z.string().nullable(),
       observed: TriggerWatchObservedSchema,
     })
     .nullable(),
+  webhook: TriggerWebhookAddressSchema.nullable().optional(),
 });
 export const TriggerSummaryViewSchema = z.object({
   ...TriggerSummarySchema.shape,
   latestOccurrence: z.object(TriggerSummarySchema.shape.latestOccurrence.unwrap().shape).nullable(),
   source: TriggerSourceViewSchema,
   watch: z.object(TriggerSummarySchema.shape.watch.unwrap().shape).nullable(),
+  webhook: TriggerWebhookAddressViewSchema.nullable().optional(),
 });
 export type TriggerSummary = z.infer<typeof TriggerSummarySchema>;
 
@@ -354,7 +322,7 @@ export const TriggerWriteInputSchema = z.strictObject({
   occurrenceId: TriggerOccurrenceIdSchema.optional(),
   ownTask: TriggerOwnTaskInputSchema.optional(),
   payload: z.unknown().optional(),
-  program: TriggerProgramSchema.optional(),
+  script: AutomationScriptSchema.optional(),
   source: TriggerSourceInputSchema.optional(),
   status: TriggerStatusSchema.optional(),
   triggerId: TriggerIdSchema.optional(),
@@ -368,7 +336,7 @@ export const TriggerControlInputSchema = z.discriminatedUnion("operation", [
     name: z.string().trim().min(1).max(160),
     operation: z.literal("create"),
     ownTask: TriggerOwnTaskInputSchema.optional(),
-    program: TriggerProgramSchema,
+    script: AutomationScriptSchema,
     source: TriggerSourceSchema,
   }),
   z.strictObject({
@@ -385,7 +353,7 @@ export const TriggerControlInputSchema = z.discriminatedUnion("operation", [
     expectedRevisionId: TriggerRevisionIdSchema,
     name: z.string().trim().min(1).max(160).optional(),
     operation: z.literal("update"),
-    program: TriggerProgramSchema.optional(),
+    script: AutomationScriptSchema.optional(),
     source: TriggerSourceSchema.optional(),
     triggerId: TriggerIdSchema,
   }),
@@ -415,14 +383,14 @@ export type TriggerControlInput = z.infer<typeof TriggerControlInputSchema>;
 export const CreateTriggerHttpBodySchema = z.strictObject({
   anchorThreadId: ThreadIdSchema,
   name: z.string().trim().min(1).max(160),
-  program: TriggerProgramSchema,
+  script: AutomationScriptSchema,
   source: TriggerSourceSchema,
 });
 
 export const UpdateTriggerHttpBodySchema = z.strictObject({
   expectedRevisionId: TriggerRevisionIdSchema,
   name: z.string().trim().min(1).max(160).optional(),
-  program: TriggerProgramSchema.optional(),
+  script: AutomationScriptSchema.optional(),
   source: TriggerSourceSchema.optional(),
 });
 
@@ -432,7 +400,7 @@ export const TriggerExecutionOutputSchema = z.strictObject({
   exitCode: z.number().int().nullable(),
   occurrenceId: TriggerOccurrenceIdSchema,
   result: z.unknown().nullable(),
-  status: z.enum(["succeeded", "failed", "canceled"]),
+  status: z.enum(["succeeded", "failed", "canceled", "unknown"]),
   stderr: z.string().max(512 * 1_024),
   stdout: z.string().max(512 * 1_024),
 });

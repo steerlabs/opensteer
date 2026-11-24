@@ -77,7 +77,7 @@ export function runAdmission(
 export function mutationAdmission(
   caller: AgentCaller,
   tool: "opensteer_task_delegate" | "opensteer_task_send",
-  input: { readonly observationId?: string | undefined },
+  input: unknown,
   requestId: string,
   targetThreadIds: readonly Thread["id"][] = [],
 ): ThreadMutationAdmission {
@@ -106,7 +106,6 @@ export function mutationAdmission(
     request: {
       ...p,
       action: actions[tool],
-      observationId: input.observationId ?? requestId,
       requestFingerprint: fingerprint(input),
       requestId,
       accessMode: caller.accessMode,
@@ -161,14 +160,9 @@ export function assertMutableTarget(caller: AgentCaller, target: Thread) {
   assertThreadAccess(caller, [target]);
 }
 
-export function toolOperationKey(caller: AgentCaller, input: object, fallback: string): string {
+export function toolOperationKey(_caller: AgentCaller, input: object, fallback: string): string {
   if ("operationKey" in input && typeof input.operationKey === "string") return input.operationKey;
-  return caller.kind === "program" &&
-    caller.program.kind === "watch" &&
-    "observationId" in input &&
-    typeof input.observationId === "string"
-    ? input.observationId
-    : fallback;
+  return fallback;
 }
 
 export function threadCallerAuthority(caller: AgentCaller): ThreadCallerAuthority {

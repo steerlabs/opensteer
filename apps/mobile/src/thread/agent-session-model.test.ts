@@ -1,14 +1,16 @@
 import { readAsDrawn } from "../screens/read-as-drawn.test-support.js";
-import { connectedAgentIdentity, type HostSnapshot } from "@opensteer/client/host";
+import { agentWho, connectedAgentIdentity, type HostSnapshot } from "@opensteer/client/host";
 import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
 import type { Request } from "@opensteer/core";
 import { afterEach, describe, expect, it } from "vitest";
+import { isAddress } from "../ui/address-words.js";
 import {
   needsYouOperation,
   operationRequestsOf,
   placeSessionLine,
   sessionRowOf,
   sessionTaskOf,
+  sourceLines,
   whoLines,
 } from "./agent-session-model.js";
 
@@ -213,5 +215,70 @@ describe("who the agent is, on the phone", () => {
     expect(withdrawn.verified).toBe(false);
     expect(withdrawn.withdrawn?.line).toMatch(/^No longer verified since /u);
     expect(withdrawn.withdrawn?.detail).toBe("Check its last action or disconnect it.");
+  });
+});
+
+describe("where a connected agent's task names who works it", () => {
+  const who = (label: string, redirect?: string) =>
+    connectedAgentIdentity(named(label), redirect, null).who;
+  const view = (label: string) => {
+    const agent = who(label);
+    return {
+      agent: { initial: "C", name: label, providerId: null, who: agent },
+      header: `Connected agent · ${agent.detail}`,
+    };
+  };
+
+  it("names the host on the floating title's one line, plain, and the whole origin in the pane", () => {
+    const lines = sourceLines(view("Claude"));
+    expect(lines).toEqual({
+      endsInHost: true,
+      short: "Connected agent · claude.ai",
+      whole: ["Connected agent · ", { address: "https://claude.ai" }],
+    });
+  });
+
+  it("keeps a port that is not the default and a scheme that is not https", () => {
+    // An agent that only says who it is: the Home knows it by its redirect's origin.
+    const agent = agentWho({ clientName: "Dev agent", redirect: "http://192.168.1.20:3000/cb" });
+    expect(agent.detail).toBe("http://192.168.1.20:3000");
+    const lines = sourceLines({
+      agent: { initial: "D", name: "Dev agent", providerId: null, who: agent },
+      header: `Connected agent · ${agent.detail}`,
+    });
+    expect(lines.short).toBe("Connected agent · http://192.168.1.20:3000");
+  });
+
+  it("draws a non-address detail as words, and falls back to the verified origin on the title", () => {
+    const base = view("Errand");
+    const sentenceDetail = "Errand asked for this. AgentPay holds the access.";
+    const pair = {
+      agent: {
+        ...base.agent,
+        who: {
+          ...base.agent.who,
+          detail: sentenceDetail,
+        },
+      },
+      header: `Connected agent · ${sentenceDetail}`,
+    };
+    expect(isAddress(pair.agent.who.detail), pair.agent.who.detail).toBe(false);
+    const lines = sourceLines(pair);
+    // Words stay words: never an address part, never a joiner beside a space.
+    expect(lines.whole).toEqual([pair.header]);
+    expect(lines.short).not.toMatch(/[\u2060\u200B]/u);
+    const verified = pair.agent.who.origins.find(({ role }) => role === "verified")?.origin;
+    expect(verified).toBeDefined();
+    expect(lines.short).toBe(`Connected agent · ${new URL(verified!).host}`);
+    expect(lines.endsInHost).toBe(true);
+  });
+
+  it("says an app on this computer as it is", () => {
+    const local = view("Claude Code");
+    expect(sourceLines(local)).toEqual({
+      endsInHost: false,
+      short: local.header,
+      whole: [local.header],
+    });
   });
 });

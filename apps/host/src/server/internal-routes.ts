@@ -21,7 +21,7 @@ export const hostInternalRoutePaths = {
   shellConnect: "/internal/v1/shell/connect",
   shellData: "/internal/v1/shell/data",
   triggerCdp: "/internal/v1/trigger-cdp",
-  triggerRevisionProgram: "/internal/v1/triggers/revisions/:revisionId/program",
+  triggerRevisionScript: "/internal/v1/triggers/revisions/:revisionId/script",
   watchCdp: "/internal/v1/watch-cdp",
 } as const;
 

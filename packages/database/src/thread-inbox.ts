@@ -2807,7 +2807,11 @@ export async function enqueueThreadInputInTransaction(
       ...content,
       {
         type: "text",
-        text: await memoryPassWakeContext(transaction, thread),
+        text: await memoryPassWakeContext(
+          transaction,
+          thread,
+          request.source.kind === "trigger" ? request.source.occurrenceId : undefined,
+        ),
       },
     ];
     const started = await startMemoryPassInTransaction(transaction, thread, request.memoryPass);
@@ -5290,13 +5294,6 @@ async function delegationCallerIntentMatches(
         .executeTakeFirst();
       break;
     case "watch":
-      receipt = await database
-        .selectFrom("watchControlRequests")
-        .select("requestFingerprint")
-        .where("activationId", "=", input.origin.activationId)
-        .where("observationId", "=", input.origin.observationId)
-        .where("action", "=", "thread.delegate")
-        .executeTakeFirst();
       break;
   }
   return receipt?.requestFingerprint === intent.requestFingerprint;

@@ -395,7 +395,6 @@ function Unverified(props: {
             },
           },
         }}
-        numberOfLines={2}
       />
     </View>
   );

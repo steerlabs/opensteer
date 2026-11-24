@@ -1,7 +1,7 @@
 import type { RunnerConfig } from "@opensteer/config";
 import { BrowserCdpRelay } from "../browser/browser-cdp-relay.js";
 import { CredentialProxy } from "../credentials/credential-proxy.js";
-import type { ProgramEndpoints } from "./program-executor.js";
+import type { ProgramEndpoints } from "./script-executor.js";
 
 interface CapabilityPlan {
   readonly token: string;
@@ -30,19 +30,24 @@ export interface ProgramEndpointSet {
  */
 export async function startProgramEndpoints(input: {
   readonly capabilities: () => ProgramCapabilities;
+  readonly resolveBrowserToken?: () => string | Promise<string>;
+  readonly resolveMcpToken?: () => string | Promise<string>;
   readonly transport: Pick<RunnerConfig, "mode">;
 }): Promise<ProgramEndpointSet> {
   const initial = input.capabilities();
   const proxy = new CredentialProxy({
     routes: {
-      "agent-tools": { token: () => input.capabilities().mcp.token, upstream: initial.mcp.url },
+      "agent-tools": {
+        token: input.resolveMcpToken ?? (() => input.capabilities().mcp.token),
+        upstream: initial.mcp.url,
+      },
     },
     transport: input.transport,
   });
   const relay = initial.browserCdp
     ? new BrowserCdpRelay({
         url: initial.browserCdp.url,
-        token: () => input.capabilities().browserCdp?.token ?? "",
+        token: input.resolveBrowserToken ?? (() => input.capabilities().browserCdp?.token ?? ""),
         transport: input.transport,
       })
     : undefined;

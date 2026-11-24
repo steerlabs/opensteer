@@ -22,6 +22,8 @@ export function runtimeResourceJourney(selected: readonly string[]) {
   if (selected.includes("passkeys")) return "passkeys";
   if (selected.includes("native-browser")) return "native-browser";
   if (selected.includes("electron")) return "electron";
+  // The Mac app's Home, and the account service's PostgreSQL, come from the same runtime.
+  if (selected.includes("first-run")) return "first-run";
   return undefined;
 }
 export async function prepareAcceptedRun(

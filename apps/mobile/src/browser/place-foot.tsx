@@ -79,7 +79,8 @@ export function FloatingPlaceStatus(): ReactNode {
         style={[styles.glass, { minHeight: statusRowHeight(fontScale) }]}
         tint={color.floatTint}
       >
-        {status}
+        {/* The row takes the capsule's own width, so its words wrap to the room it has. */}
+        <View style={styles.row}>{status}</View>
       </GlassSurface>
     </Animated.View>
   );
@@ -104,6 +105,7 @@ export function PlaceVoiceDock(): ReactNode {
 const styles = StyleSheet.create({
   floating: { paddingHorizontal: space[12] },
   glass: { flexDirection: "row" },
+  row: { flex: 1, minWidth: 0 },
   slot: { bottom: 0, end: 0, position: "absolute", start: 0 },
   voice: { paddingHorizontal: space[12], paddingTop: space[8] },
 });

@@ -1269,6 +1269,18 @@ div.trace-step__head .trace-step__detail {
   margin: 0 0 var(--space-6) var(--space-24);
 }
 
+.trace-step__lines--virtual {
+  max-height: 420px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.trace-step__spacer {
+  flex-shrink: 0;
+  pointer-events: none;
+  contain: strict;
+}
+
 .trace-step--compact .trace-step__head {
   min-height: 25px;
 }

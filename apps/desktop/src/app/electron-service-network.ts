@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, X509Certificate } from "node:crypto";
 import { session, type OnBeforeRequestListenerDetails, type Session } from "electron";
 import { ServiceOriginPolicy } from "./navigation-policy.js";
 
@@ -13,6 +13,20 @@ import { ServiceOriginPolicy } from "./navigation-policy.js";
  */
 export class ElectronServiceNetwork {
   readonly #sessions = new Map<string, Session>();
+  readonly #accountCertificate: { readonly key: string; readonly origin: string } | null;
+
+  /**
+   * `accountCertificate`, in a development launch only: the one key the account service's own
+   * session accepts for the account host, as a stand-in account service is served (the first-run
+   * journey's). Every other host and key on that session, and every other session, is Chromium's.
+   */
+  constructor(
+    options: {
+      readonly accountCertificate?: { readonly key: string; readonly origin: string } | null;
+    } = {},
+  ) {
+    this.#accountCertificate = options.accountCertificate ?? null;
+  }
 
   fetch(input: URL | RequestInfo, init?: RequestInit): Promise<Response> {
     const url = serviceRequestUrl(input);
@@ -45,6 +59,18 @@ export class ElectronServiceNetwork {
     created.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     for (const preload of created.getPreloadScripts()) created.unregisterPreloadScript(preload.id);
     created.on("will-download", (event) => event.preventDefault());
+    const pinned = this.#accountCertificate;
+    if (pinned && new URL(pinned.origin).origin === origin) {
+      const hostname = url.hostname;
+      created.setCertificateVerifyProc((request, callback) => {
+        // 0 accepts; -3 leaves the certificate to Chromium's own verification.
+        callback(
+          request.hostname === hostname && publicKeyOf(request.certificate.data) === pinned.key
+            ? 0
+            : -3,
+        );
+      });
+    }
     created.webRequest.onBeforeRequest(
       { urls: ["<all_urls>"] },
       (details: OnBeforeRequestListenerDetails, callback) => {
@@ -72,4 +98,14 @@ function serviceRequestUrl(input: URL | RequestInfo): URL {
     throw new Error("Desktop service request URLs cannot contain credentials.");
   }
   return url;
+}
+
+/** A PEM certificate's public key as a pin names it: the base64 SHA-256 of its SPKI. */
+function publicKeyOf(pem: string): string | null {
+  try {
+    const key = new X509Certificate(pem).publicKey.export({ format: "der", type: "spki" });
+    return createHash("sha256").update(key).digest("base64");
+  } catch {
+    return null;
+  }
 }

@@ -351,6 +351,7 @@ const phoneRef = iphoneNativePhoneRefSchema.shape;
 const imageRoots = z.array(z.string().min(1).max(4096)).max(8);
 const displayStartProfile = { maxLongSide: DisplayMaxLongSideSchema, maxFps: DisplayMaxFpsSchema };
 const displayDemandProfile = {
+  active: z.boolean().optional(),
   maxLongSide: DisplayMaxLongSideSchema.optional(),
   maxFps: DisplayMaxFpsSchema.optional(),
 };
@@ -700,6 +701,7 @@ export const iphoneNativeHelloSchema = z
     version: z.literal("0.1.0"),
     protocolVersion: z.literal(1),
     bootId: id,
+    displayDemandActive: z.boolean().optional(),
     bounds: z
       .object({
         requestBytes: z.literal(262144),
@@ -903,7 +905,10 @@ export const iphoneRunnerResults = {
   "iphone.installedApps": iphoneScreenNativeInstalledAppsSchema,
   "iphone.cancel": empty,
   "iphone.media": z.strictObject({ available: z.literal(false), reason: z.literal("unsupported") }),
-  "iphone.display.start": z.strictObject({ attachmentToken: z.string() }),
+  "iphone.display.start": z.strictObject({
+    attachmentToken: z.string(),
+    demandActive: z.literal(true).optional(),
+  }),
   "iphone.display.demand": empty,
   "iphone.display.refresh": empty,
   "iphone.display.stop": empty,

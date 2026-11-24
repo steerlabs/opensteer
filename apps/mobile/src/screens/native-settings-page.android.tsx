@@ -3,6 +3,7 @@ import { fillMaxWidth, padding, weight } from "@expo/ui/jetpack-compose/modifier
 import { SymbolView, type AndroidSymbol } from "expo-symbols";
 import { useState, type ReactNode } from "react";
 import { color } from "../theme.js";
+import { useStackedLayout } from "../ui/stacked-layout.js";
 import { RowMarkIcon } from "../ui/integration-icon.js";
 import type { SFSymbolName } from "../ui/symbol.js";
 import type { NativeSettingsPageProps, NativeSettingsRow } from "./native-settings-page.types.js";
@@ -121,6 +122,8 @@ export function NativeSettingsSections(props: {
 }
 
 function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
+  // At the largest sizes a row's mark takes a line of its own (`stacked-layout.ts`).
+  const stacked = useStackedLayout();
   switch (row.kind) {
     case "chips":
       return (
@@ -146,13 +149,24 @@ function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
     case "text":
       return (
         <LinkRow
+          {...rowAddress(row.addressIn)}
           detail={row.detail}
           lead={row.initial === undefined ? null : <Avatar initial={row.initial} />}
+          leadAbove={stacked}
           title={row.label}
+          titleParts={row.labelParts}
         />
       );
     case "status":
-      return <StatusRow detail={row.detail} label={row.label} steps={row.steps} tone={row.tone} />;
+      return (
+        <StatusRow
+          addressIn={row.addressIn}
+          detail={row.detail}
+          label={row.label}
+          steps={row.steps}
+          tone={row.tone}
+        />
+      );
     case "primary":
       return <PrimaryButton disabled={row.disabled} label={row.label} onPress={row.onPress} />;
     case "placeholder":
@@ -194,6 +208,7 @@ function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
       if (row.actions?.length)
         return (
           <MenuRow
+            {...rowAddress(row.addressIn)}
             actions={row.actions}
             destructive={row.destructive}
             detail={row.detail}
@@ -215,6 +230,7 @@ function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
         );
       return (
         <LinkRow
+          {...rowAddress(row.addressIn)}
           destructive={row.destructive}
           detail={row.detail}
           detailTone={row.tone}
@@ -226,6 +242,13 @@ function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
       );
     }
   }
+}
+
+/** A row's `addressIn` as the row's lines name them. */
+function rowAddress(addressIn: "label" | "detail" | undefined): {
+  readonly addressIn?: "title" | "detail";
+} {
+  return addressIn === undefined ? {} : { addressIn: addressIn === "label" ? "title" : "detail" };
 }
 
 const materialSymbols: Partial<Record<SFSymbolName, AndroidSymbol>> = {

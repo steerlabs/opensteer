@@ -16,7 +16,7 @@ export const app_publish = defineAgentTool({
   input: AppPublishInputSchema,
   output: AppPublishOutputSchema,
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
   capability: "apps",
 });
 export const app_list = defineAgentTool({
@@ -38,7 +38,7 @@ export const app_start = defineAgentTool({
   input: z.strictObject({ appId: appIdField }),
   output: AppLifecycleOutputSchema,
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
   capability: "apps",
 });
 export const app_stop = defineAgentTool({
@@ -49,7 +49,7 @@ export const app_stop = defineAgentTool({
   input: z.strictObject({ appId: appIdField }),
   output: AppLifecycleOutputSchema,
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
   capability: "apps",
 });
 export const app_delete = defineAgentTool({
@@ -60,7 +60,7 @@ export const app_delete = defineAgentTool({
   input: z.strictObject({ appId: appIdField }),
   output: AppDeleteOutputSchema,
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
   capability: "apps",
   destructive: true,
 });

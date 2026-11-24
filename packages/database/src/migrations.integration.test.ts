@@ -809,23 +809,47 @@ describe("fresh personal/team lineage", () => {
       { pluginId: "app_device_computer-connection", access: "off" },
       { pluginId: "app_server_local-server", access: "off" },
     ]);
+    // Before 0057 drops the legacy program column, verify 0034 upgraded v4 -> v5 on clean rows only.
+    for (const saved of [savedSchedule, savedWatch]) {
+      expect(
+        (
+          await sql<{
+            program: unknown;
+          }>`select program from trigger_revisions where id = ${saved.revision.id}`.execute(
+            database,
+          )
+        ).rows[0],
+      ).toMatchObject({ program: saved.revision.program });
+    }
+    expect(
+      (
+        await sql<{
+          program: unknown;
+        }>`select program from trigger_revisions where id = ${retiredSchedule.revision.id}`.execute(
+          database,
+        )
+      ).rows[0],
+    ).toMatchObject({ program: { toolContractVersion: 4 } });
     await migrateToLatest(database);
     const triggers = new TriggerStore(database);
     for (const saved of [savedSchedule, savedWatch]) {
       const detail = await triggers.getForOwner(saved.trigger.id, userId, 1, personTaskReader);
-      expect(detail?.revision.program).toEqual(saved.revision.program);
+      expect(detail?.revision.script).toBeNull();
+      expect(detail?.revision.legacySource).toBe(saved.revision.program.source);
+      expect(detail?.trigger.status).toBe("paused");
     }
-    expect(
-      await database
-        .selectFrom("triggerRevisions")
-        .select("program")
-        .where("id", "=", retiredSchedule.revision.id)
-        .executeTakeFirstOrThrow(),
-    ).toMatchObject({ program: { toolContractVersion: 4 } });
+    const retiredDetail = await triggers.getForOwner(
+      retiredSchedule.trigger.id,
+      userId,
+      1,
+      personTaskReader,
+    );
+    expect(retiredDetail?.revision.script).toBeNull();
+    expect(retiredDetail?.revision.legacySource).toBe(retiredSchedule.revision.program.source);
     expect(
       (await triggers.getForOwner(savedWatch.trigger.id, userId, 1, personTaskReader))?.activation,
     ).toMatchObject({
-      desired: "active",
+      desired: "stopped",
     });
     expect(
       (
@@ -1508,4 +1532,238 @@ it("keeps a server's recorded home when the publishing computer can no longer be
   expect((await sql`select app_id from app_versions`.execute(database)).rows).toEqual([
     { appId: server },
   ]);
+});
+
+it("applies 0113_automations_contract in one migration from pre-script state and matches a fresh catalog", async () => {
+  await migrateToLatest(database, migrationsBefore("0113_automations_contract"));
+  const fixture = await seedPersonalFixture(database, "/tmp/automations-contract-migration");
+  const task = await legacyTask(fixture, "Automations contract anchor");
+  const principalId =
+    (await sql<{ id: string }>`select id from principals limit 1`.execute(database)).rows[0]?.id ??
+    `usr:${fixture.userId}`;
+
+  const legacyScheduleId = `trg_${crypto.randomUUID()}`;
+  const legacyScheduleRevId = `trv_${crypto.randomUUID()}`;
+  const legacyWebhookId = `trg_${crypto.randomUUID()}`;
+  const legacyWebhookRevId = `trv_${crypto.randomUUID()}`;
+  const legacyWatchId = `trg_${crypto.randomUUID()}`;
+  const legacyWatchRevId = `trv_${crypto.randomUUID()}`;
+  const legacyWatchActId = `twa_${crypto.randomUUID()}`;
+  const memoryPassId = `trg_${crypto.randomUUID()}`;
+  const memoryPassRevId = `trv_${crypto.randomUUID()}`;
+  const archivedLegacyId = `trg_${crypto.randomUUID()}`;
+  const archivedLegacyRevId = `trv_${crypto.randomUUID()}`;
+  const inFlightCmdId = `cmd_${crypto.randomUUID()}`;
+  const inFlightOccId = `toc_${crypto.randomUUID()}`;
+  const pendingLegacyCmdId = `cmd_${crypto.randomUUID()}`;
+  const pendingLegacyOccId = `toc_${crypto.randomUUID()}`;
+  const futureFireAt = new Date(Date.now() + 3_600_000);
+  const legacyProgram = {
+    language: "javascript",
+    source: "export default async function () { return { legacy: true }; }",
+    toolContractVersion: 5,
+  };
+  const scheduleSource = {
+    kind: "schedule",
+    schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+  };
+
+  await database.transaction().execute(async (tx) => {
+    await sql`insert into triggers(
+      id, anchor_thread_id, created_by, idempotency_key, request_fingerprint, name, kind, status,
+      current_revision_id, consecutive_failures, next_fire_at
+    ) values
+      (${legacyScheduleId}, ${task.id}, ${fixture.userId}, 'leg-sched', 'fp-1', ${"Legacy\u202E\n\tschedule\u200D"}, 'schedule', 'active', ${legacyScheduleRevId}, 2, ${futureFireAt}),
+      (${legacyWebhookId}, ${task.id}, ${fixture.userId}, 'leg-hook', 'fp-2', ${"\u202E\u200D\n "}, 'webhook', 'active', ${legacyWebhookRevId}, 0, null),
+      (${legacyWatchId}, ${task.id}, ${fixture.userId}, 'leg-watch', 'fp-3', 'Legacy watch', 'watch', 'active', ${legacyWatchRevId}, 1, null),
+      (${archivedLegacyId}, ${task.id}, ${fixture.userId}, 'arch-leg', 'fp-6', 'Archived legacy', 'schedule', 'archived', ${archivedLegacyRevId}, 0, null)
+    `.execute(tx);
+    await sql`insert into triggers(
+      id, anchor_thread_id, created_by, idempotency_key, request_fingerprint, name, kind, status,
+      current_revision_id, consecutive_failures, next_fire_at, system_role
+    ) values (
+      ${memoryPassId}, ${task.id}, ${fixture.userId}, 'mem-pass', 'fp-5', 'Memory light pass',
+      'schedule', 'active', ${memoryPassRevId}, 0, ${futureFireAt}, 'memory-light'
+    )`.execute(tx);
+    await sql`insert into trigger_revisions(id, trigger_id, ordinal, source, program, created_by) values
+      (${legacyScheduleRevId}, ${legacyScheduleId}, 1, ${JSON.stringify(scheduleSource)}::jsonb, ${JSON.stringify(legacyProgram)}::jsonb, ${fixture.userId}),
+      (${legacyWebhookRevId}, ${legacyWebhookId}, 1, '{"kind":"webhook"}'::jsonb, ${JSON.stringify(legacyProgram)}::jsonb, ${fixture.userId}),
+      (${legacyWatchRevId}, ${legacyWatchId}, 1, '{"kind":"watch"}'::jsonb, ${JSON.stringify(legacyProgram)}::jsonb, ${fixture.userId}),
+      (${memoryPassRevId}, ${memoryPassId}, 1, ${JSON.stringify(scheduleSource)}::jsonb, ${JSON.stringify(legacyProgram)}::jsonb, ${fixture.userId}),
+      (${archivedLegacyRevId}, ${archivedLegacyId}, 1, ${JSON.stringify(scheduleSource)}::jsonb, ${JSON.stringify(legacyProgram)}::jsonb, ${fixture.userId})
+    `.execute(tx);
+    await sql`insert into trigger_watch_activations(
+      id, trigger_id, revision_id, anchor_thread_id, environment_id, created_by,
+      desired, observed, execution_generation, restart_count, consecutive_failures, stdout_tail, stderr_tail
+    ) values (
+      ${legacyWatchActId}, ${legacyWatchId}, ${legacyWatchRevId}, ${task.id}, ${fixture.environmentId}, ${fixture.userId},
+      'active', 'running', 1, 0, 0, '', ''
+    )`.execute(tx);
+    // AA3(a): an in-flight v5 firing dispatched before 0113 must get frame_sent_at backfilled so
+    // it settles to unknown after upgrade rather than returning to pending and failing.
+    await sql`insert into commands(
+      id, environment_id, thread_id, requested_by, actor_principal_id, authority_source,
+      idempotency_key, type, payload, status
+    ) values (
+      ${inFlightCmdId}, ${fixture.environmentId}, ${task.id}, ${fixture.userId}, ${principalId},
+      '{"kind":"person"}'::jsonb, 'in-flight-pre-0113', 'trigger.execute', '{}'::jsonb, 'dispatched'
+    )`.execute(tx);
+    await sql`insert into trigger_occurrences(
+      id, trigger_id, revision_id, command_id, environment_id, source_key, event, status, stdout, stderr
+    ) values (
+      ${inFlightOccId}, ${legacyScheduleId}, ${legacyScheduleRevId}, ${inFlightCmdId}, ${fixture.environmentId},
+      'schedule:in-flight', '{}'::jsonb, 'running', '', ''
+    )`.execute(tx);
+    // AB7: a pending firing queued for a legacy automation paused by 0113 must be canceled in place.
+    await sql`insert into commands(
+      id, environment_id, thread_id, requested_by, actor_principal_id, authority_source,
+      idempotency_key, type, payload, status
+    ) values (
+      ${pendingLegacyCmdId}, ${fixture.environmentId}, ${task.id}, ${fixture.userId}, ${principalId},
+      '{"kind":"person"}'::jsonb, 'pending-legacy-pre-0113', 'trigger.execute', '{}'::jsonb, 'pending'
+    )`.execute(tx);
+    await sql`insert into trigger_occurrences(
+      id, trigger_id, revision_id, command_id, environment_id, source_key, event, status, stdout, stderr
+    ) values (
+      ${pendingLegacyOccId}, ${legacyScheduleId}, ${legacyScheduleRevId}, ${pendingLegacyCmdId}, ${fixture.environmentId},
+      'schedule:pending-legacy', '{}'::jsonb, 'pending', '', ''
+    )`.execute(tx);
+  });
+
+  await migrateToLatest(database);
+
+  const backfilled = (
+    await sql<{ frameSentAt: Date | null }>`
+      select frame_sent_at as "frameSentAt" from commands where id = ${inFlightCmdId}
+    `.execute(database)
+  ).rows[0];
+  expect(backfilled?.frameSentAt).not.toBeNull();
+
+  const canceledLegacyOcc = (
+    await sql<{ status: string; completedAt: Date | null }>`
+      select status, completed_at as "completedAt" from trigger_occurrences where id = ${pendingLegacyOccId}
+    `.execute(database)
+  ).rows[0];
+  expect(canceledLegacyOcc?.status).toBe("canceled");
+  expect(canceledLegacyOcc?.completedAt).not.toBeNull();
+  const canceledLegacyCmd = (
+    await sql<{ status: string }>`
+      select status from commands where id = ${pendingLegacyCmdId}
+    `.execute(database)
+  ).rows[0];
+  expect(canceledLegacyCmd?.status).toBe("failed");
+
+  const triggers = new Map(
+    (
+      await sql<{
+        id: string;
+        name: string;
+        status: string;
+        nextFireAt: Date | null;
+        pauseReason: string | null;
+        pausedBy: string | null;
+        pausedAt: Date | null;
+      }>`select id, name, status, next_fire_at, pause_reason, paused_by, paused_at from triggers`.execute(
+        database,
+      )
+    ).rows.map((row) => [row.id, row]),
+  );
+
+  expect(triggers.get(legacyScheduleId)?.name).toBe("Legacy schedule");
+  expect(triggers.get(legacyWebhookId)?.name).toBe("Automation");
+
+  for (const id of [legacyScheduleId, legacyWebhookId, legacyWatchId]) {
+    const row = triggers.get(id);
+    expect(row?.status).toBe("paused");
+    expect(row?.nextFireAt).toBeNull();
+    expect(row?.pauseReason).toBe("Needs an update: ask your agent");
+    expect(row?.pausedBy).toBe("system");
+    expect(row?.pausedAt).not.toBeNull();
+  }
+  const watchAct = (
+    await sql<{
+      desired: string;
+    }>`select desired from trigger_watch_activations where id = ${legacyWatchActId}`.execute(
+      database,
+    )
+  ).rows[0];
+  expect(watchAct?.desired).toBe("stopped");
+
+  const legacyRev = (
+    await sql<{
+      script: unknown;
+      legacySource: string | null;
+    }>`select script, legacy_source from trigger_revisions where id = ${legacyScheduleRevId}`.execute(
+      database,
+    )
+  ).rows[0];
+  expect(legacyRev).toEqual({
+    legacySource: legacyProgram.source,
+    script: null,
+  });
+
+  // Memory pass and archived legacy automation stay untouched.
+  expect(triggers.get(memoryPassId)?.status).toBe("active");
+  expect(triggers.get(archivedLegacyId)?.status).toBe("archived");
+  expect(triggers.get(archivedLegacyId)?.pauseReason).toBeNull();
+
+  // Status allows 'unknown' directly and rejects invalid statuses; webhook_body stores raw bytes.
+  await sql`update trigger_occurrences set status = 'unknown', webhook_body = ${Buffer.from("raw-bytes")} where id = ${inFlightOccId}`.execute(
+    database,
+  );
+  await expect(
+    sql`update trigger_occurrences set status = 'bogus' where id = ${inFlightOccId}`.execute(
+      database,
+    ),
+  ).rejects.toThrow(/check constraint/u);
+
+  // Secrets envelope constraint enforces paired encrypted_secrets and secrets_key_version.
+  await expect(
+    sql`update triggers set encrypted_secrets = ${Buffer.from("cipher")}, secrets_key_version = null where id = ${legacyScheduleId}`.execute(
+      database,
+    ),
+  ).rejects.toThrow(/check constraint/u);
+
+  // Notice reasons allow the new set and reject removed wake-limit-reached.
+  await sql`insert into automation_failure_notices(id, trigger_id, reason, detail)
+    values (${crypto.randomUUID()}, ${legacyScheduleId}, 'started-failing', 'exited 1')`.execute(
+    database,
+  );
+  await sql`insert into automation_failure_notices(id, trigger_id, reason, detail)
+    values (${crypto.randomUUID()}, ${legacyScheduleId}, 'outcome-unknown', 'computer rebooted')`.execute(
+    database,
+  );
+  await expect(
+    sql`insert into automation_failure_notices(id, trigger_id, reason, detail)
+      values (${crypto.randomUUID()}, ${legacyScheduleId}, 'wake-limit-reached', 'nope')`.execute(
+      database,
+    ),
+  ).rejects.toThrow(/check constraint/u);
+
+  // Retired tables and columns are absent.
+  const retiredTables = (
+    await sql<{ name: string }>`
+      select tablename as name from pg_tables
+      where schemaname = 'public'
+        and tablename in ('trigger_revision_scripts', 'automation_wakes', 'watch_control_requests')
+    `.execute(database)
+  ).rows;
+  expect(retiredTables).toEqual([]);
+  const removedColumns = (
+    await sql<{ tableName: string; columnName: string }>`
+      select table_name, column_name from information_schema.columns
+      where table_schema = 'public'
+        and ((table_name = 'trigger_revisions' and column_name = 'program')
+          or (table_name = 'trigger_occurrences' and column_name = 'outcome')
+          or (table_name = 'triggers' and column_name in ('wake_limit_per_hour', 'webhook_secret_hash', 'consecutive_failures'))
+          or (table_name = 'execution_environments' and column_name = 'max_active_watches'))
+    `.execute(database)
+  ).rows;
+  expect(removedColumns).toEqual([]);
+
+  // Fresh catalog matches upgraded catalog byte-for-byte.
+  const upgraded = await catalog();
+  await sql`drop schema public cascade;create schema public`.execute(database);
+  await migrateToLatest(database);
+  expect(await catalog()).toEqual(upgraded);
 });

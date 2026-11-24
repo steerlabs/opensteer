@@ -220,6 +220,71 @@ describeStore("command Requests at the Home", (it) => {
     expect(commandContinuation(settled)).toContain("it was made");
   });
 
+  it("says where an automation's script will run, and as whom, before the person approves it (T4)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, store, commandStore } = await setup(storeFixture);
+    const script = {
+      interpreter: null,
+      text: "console.log('ok')",
+    };
+    const create = {
+      type: "trigger.create",
+      idempotencyKey: randomUUID(),
+      input: {
+        anchorThreadId: f.threadId,
+        name: "Daily",
+        script,
+        source: {
+          kind: "schedule",
+          schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+        },
+      },
+    } as unknown as HostApiCommand;
+    const gives = async (homeKind: "mac" | "server" | "cloud-computer") => {
+      const service = new CommandRequestService({
+        store: commandStore,
+        database,
+        requests: store.requests,
+        homeKind,
+      });
+      const proposed = (await service.propose({
+        ownerUserId: f.userId,
+        command: { ...create, idempotencyKey: randomUUID() } as HostApiCommand,
+        ask: { status: "ask", reason: "approval" },
+        face: 0,
+        proposer: {
+          kind: "run",
+          name: "Claude Code",
+          taskTitle: "Tidy up",
+          key: `task:${homeKind}-${randomUUID()}` as ProposerLineageKey,
+        },
+        origin: { runId: f.run.id },
+        originatingThreadId: f.threadId,
+        callKey: randomUUID(),
+      })) as { requestId: string };
+      return (await store.requests.get(proposed.requestId as never))!.command!.gives;
+    };
+    // The anchor task works on the Home's own computer.
+    const runner = await database
+      .selectFrom("threads")
+      .innerJoin("executionEnvironments", "executionEnvironments.id", "threads.environmentId")
+      .innerJoin("runners", "runners.id", "executionEnvironments.runnerId")
+      .select(["runners.id", "runners.kind"])
+      .where("threads.id", "=", f.threadId)
+      .executeTakeFirstOrThrow();
+    await database
+      .updateTable("runners")
+      .set({ kind: "main" })
+      .where("id", "=", runner.id)
+      .execute();
+    expect(await gives("mac")).toBe("Its script runs on your Mac, as you.");
+    expect(await gives("cloud-computer")).toBe(
+      "Its script runs on this Cloud Computer, as its user.",
+    );
+    expect(await gives("server")).toBe("Its script runs on this server, as its user.");
+  });
+
   it("never runs it for any declining answer, and hands the agent its words", async ({
     storeFixture,
   }) => {

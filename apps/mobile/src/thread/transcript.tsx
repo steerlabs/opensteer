@@ -2148,7 +2148,7 @@ function CompactionDivider({ run }: { readonly run: RunEntry }): ReactNode {
         </Pressable>
       ) : null}
       {stop.line === null || run.compaction.status !== "running" ? null : (
-        <ActionLine line={stop.line} numberOfLines={2} onDismiss={stop.dismiss} />
+        <ActionLine line={stop.line} onDismiss={stop.dismiss} />
       )}
     </View>
   );
@@ -2191,7 +2191,7 @@ function ProviderRetryNotice({ run }: { readonly run: RunEntry }): ReactNode {
         </Pressable>
       ) : null}
       {stop.line === null || !active ? null : (
-        <ActionLine line={stop.line} numberOfLines={2} onDismiss={stop.dismiss} />
+        <ActionLine line={stop.line} onDismiss={stop.dismiss} />
       )}
     </View>
   );

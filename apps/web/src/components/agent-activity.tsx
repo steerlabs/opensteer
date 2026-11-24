@@ -1,5 +1,7 @@
 import { AsleepStepLine, isAsleepStep } from "./asleep-moment.js";
 import { RetainedToolImage } from "./asset-image.js";
+import { useVirtualTranscript } from "./virtual-transcript.js";
+import { useWindowedRows } from "./workspace/windowed-rows.js";
 import {
   hostMessageOutbox,
   messageDeliveryActions,
@@ -174,6 +176,8 @@ const LazyMarkdown = lazy(() => markdownChunk);
  */
 const DeferredBodies = createContext<(() => HTMLElement | null) | null>(null);
 const undeferredRows = 40;
+/** Tail rows pinned mounted in virtualized transcripts so streaming stays smooth. */
+const virtualTailPinRows = 8;
 
 function Markdown(props: ComponentProps<typeof LazyMarkdown>) {
   const scroller = useContext(DeferredBodies);
@@ -331,13 +335,17 @@ function useAgentSource(
   const value = useMemo(() => {
     const base = source ?? noReader;
     const id = threadId ?? "";
+    const transcripts =
+      base.transcripts?.[id] === entries
+        ? base.transcripts
+        : { ...base.transcripts, [id]: entries };
     return {
       cache,
       threadId: id,
       reader: {
         ...base,
         connection: live ? base.connection : "offline",
-        transcripts: { ...base.transcripts, [id]: [...entries] },
+        transcripts,
       },
     };
   }, [cache, entries, live, source, threadId]);
@@ -346,10 +354,30 @@ function useAgentSource(
   return store;
 }
 
+/** Persists disclosure open/closed state across virtualized row unmounts, keyed by stable id. */
+const TranscriptDisclosures = createContext<Map<string, boolean> | null>(null);
+
+function usePersistentDisclosure(
+  key: string,
+  defaultOpen = false,
+): [boolean, (next: boolean) => void] {
+  const store = useContext(TranscriptDisclosures);
+  const [open, setOpenState] = useState<boolean>(() => store?.get(key) ?? defaultOpen);
+  const setOpen = useCallback(
+    (next: boolean) => {
+      store?.set(key, next);
+      setOpenState(next);
+    },
+    [key, store],
+  );
+  return [open, setOpen];
+}
+
 const noWaitingRequests: readonly WaitingRequest[] = [];
 const noActivities: ReadonlyMap<string, ReplyActivity> = new Map();
 const noAssignments: Readonly<Record<string, AssignmentSummary>> = {};
 const noBrowserUses: readonly BrowserSessionUseSummary[] = [];
+const noPinnedRowKeys: readonly string[] = [];
 
 /**
  * The agent's side of the conversation.
@@ -384,6 +412,9 @@ export function AgentTranscript({
   subagentReader = null,
   viewerUserId = null,
   scroller = null,
+  followTail = false,
+  pinnedRowKeys = noPinnedRowKeys,
+  pinnedMessageIds = noPinnedRowKeys,
 }: {
   /** What the Thread is doing, which decides the line under its transcript. */
   activity?: ThreadActivity;
@@ -443,10 +474,16 @@ export function AgentTranscript({
   subagentReader?: SubagentReader | null;
   viewerUserId?: string | null;
   /**
-   * The element a long transcript scrolls in. Given, and where the browser skips off-screen rows,
-   * a row's Markdown is parsed only as it nears view.
+   * The element a long transcript scrolls in. Given, rows outside the viewport
+   * are virtualized and off-screen Markdown is only parsed as it nears view.
    */
   scroller?: (() => HTMLElement | null) | null;
+  /** True while the caller is actively following the live tail. */
+  followTail?: boolean;
+  /** Row keys that the caller needs mounted even while off-screen (e.g. restore anchors). */
+  pinnedRowKeys?: readonly string[];
+  /** Message IDs whose containing row must stay mounted (survives turn-row renames on prepend). */
+  pinnedMessageIds?: readonly string[];
 }) {
   const groups = useMemo(
     () => groupTranscriptEntries(entries, { inputQueuePaused, startHold, assignments }),
@@ -578,75 +615,184 @@ export function AgentTranscript({
     () => (attachmentReader && threadId ? { client: attachmentReader, threadId } : null),
     [attachmentReader, threadId],
   );
-  const drawnRows = rows.map(({ group, key }, index) => (
-    <TranscriptRow
-      continued={places?.[index]?.continued === true}
-      // The newest rows are where a reader opens a conversation: they are parsed at once.
-      deferBodies={index < rows.length - undeferredRows ? deferBodies : null}
-      group={group}
-      joined={places?.[index]?.joined === true}
-      key={key}
-      renderTask={taskView}
-      reveal={revealMessage}
-      rowKey={key}
-      time={places?.[index]?.time ?? null}
-      viewerUserId={viewerUserId}
-    />
-  ));
+  const rowKeys = useMemo(() => rows.map(({ key }) => key), [rows]);
+  const estimateRowHeight = useCallback(
+    (index: number) => {
+      const row = rows[index];
+      if (!row) return 120;
+      const { group } = row;
+      if (group.kind === "message") {
+        const lines = Math.min(12, Math.max(1, Math.ceil(group.entry.body.length / 72)));
+        return 44 + lines * 22;
+      }
+      if (group.kind === "turn") {
+        const replyLen = group.turn.reply?.body.length ?? 0;
+        const lines = Math.min(14, Math.max(2, Math.ceil(replyLen / 72)));
+        return 60 + lines * 22;
+      }
+      return 84;
+    },
+    [rows],
+  );
+  const [focusedRowKey, setFocusedRowKey] = useState<string | null>(null);
+  useEffect(() => {
+    const node = scroller?.() ?? null;
+    if (!node) return;
+    const onFocusIn = (event: FocusEvent) => {
+      const row = (event.target as HTMLElement | null)?.closest<HTMLElement>(
+        "[data-transcript-row]",
+      );
+      const key = row?.dataset.transcriptRow ?? null;
+      setFocusedRowKey((current) => (current === key ? current : key));
+    };
+    const onFocusOut = (event: FocusEvent) => {
+      const next = (event.relatedTarget as HTMLElement | null)?.closest<HTMLElement>(
+        "[data-transcript-row]",
+      );
+      const key = next && node.contains(next) ? (next.dataset.transcriptRow ?? null) : null;
+      setFocusedRowKey((current) => (current === key ? current : key));
+    };
+    node.addEventListener("focusin", onFocusIn);
+    node.addEventListener("focusout", onFocusOut);
+    return () => {
+      node.removeEventListener("focusin", onFocusIn);
+      node.removeEventListener("focusout", onFocusOut);
+    };
+  }, [scroller]);
+  const disclosures = useMemo(() => new Map<string, boolean>(), [threadId]);
+  const allPinnedKeys = useMemo(() => {
+    const pinned = new Set<string>(pinnedRowKeys);
+    // Keep the tail rows mounted so streaming and tail-follow never flicker.
+    for (let index = Math.max(0, rows.length - virtualTailPinRows); index < rows.length; index++) {
+      pinned.add(rows[index]!.key);
+    }
+    if (ownerTurn !== undefined) pinned.add(ownerTurn);
+    const wantedMessages = new Set<string>(pinnedMessageIds);
+    if (revealMessage !== null) wantedMessages.add(revealMessage.id);
+    if (wantedMessages.size > 0) {
+      for (const { group, key } of rows) {
+        if (group.kind === "message" && wantedMessages.has(group.entry.id)) {
+          pinned.add(key);
+        } else if (
+          group.kind === "turn" &&
+          ((group.turn.reply && wantedMessages.has(group.turn.reply.id)) ||
+            group.turn.work.some((entry) => wantedMessages.has(entry.id)))
+        ) {
+          pinned.add(key);
+        }
+      }
+    }
+    if (focusedRowKey !== null) pinned.add(focusedRowKey);
+    return [...pinned];
+  }, [focusedRowKey, ownerTurn, pinnedMessageIds, pinnedRowKeys, revealMessage, rows]);
+  const virtual = useVirtualTranscript({
+    scroller,
+    keys: rowKeys,
+    estimate: estimateRowHeight,
+    pinnedKeys: allPinnedKeys,
+    followTail,
+    initialAtTail:
+      pinnedRowKeys.length === 0 && pinnedMessageIds.length === 0 && revealMessage === null,
+  });
+  const renderRowAt = (index: number) => {
+    const { group, key } = rows[index]!;
+    return (
+      <TranscriptRow
+        continued={places?.[index]?.continued === true}
+        // Virtualized transcripts only mount the viewport + overscan (~30 rows), so parse
+        // their Markdown immediately to prevent delayed plain-to-Markdown height shifts.
+        deferBodies={!virtual.enabled && index < rows.length - undeferredRows ? deferBodies : null}
+        group={group}
+        joined={places?.[index]?.joined === true}
+        key={key}
+        renderTask={taskView}
+        reveal={revealMessage}
+        rowKey={key}
+        time={places?.[index]?.time ?? null}
+        viewerUserId={viewerUserId}
+      />
+    );
+  };
+  const drawnRows = virtual.enabled
+    ? virtual.items.map((item, position) => {
+        if ("spacer" in item) {
+          return (
+            <div
+              aria-hidden="true"
+              className="transcript__spacer"
+              key={`spacer:${position}`}
+              style={{ height: Math.max(0, item.spacer) }}
+            />
+          );
+        }
+        const row = rows[item.index]!;
+        return (
+          <div
+            className="transcript__virtual-slot"
+            key={row.key}
+            ref={(element) => virtual.observeRow(row.key, element)}
+          >
+            {renderRowAt(item.index)}
+          </div>
+        );
+      })
+    : rows.map((_, index) => renderRowAt(index));
 
   return (
-    <DeliveryFeedback value={deliveryFeedback}>
-      <TranscriptLive value={live}>
-        <AgentsLive value={live}>
-          <AgentReader value={agents}>
-            <AgentFolds>
-              <RequestShown value={requestShown}>
-                <ConversationMode value={conversation}>
-                  <ReplyWith value={replyWith}>
-                    <OpenActivity value={openWith}>
-                      <ActivityOfTurn value={activities}>
-                        <ActivityOpenedFrom value={owner}>
-                          <ActivityAnchor value={onActivityAnchor}>
-                            <TaskViews value={taskView}>
-                              <TranscriptHostClientContext value={attachmentReader}>
-                                <ReaderComputers value={computers}>
-                                  <TranscriptBrowserUses value={browserUses}>
-                                    <TranscriptBrowsers value={browserSessions}>
-                                      <Speakers value={speakers}>
-                                        <TranscriptImageContext value={imageScope}>
-                                          {drawnRows}
-                                          {indicator === null ? null : indicator.kind ===
-                                            "typing" ? (
-                                            // No turn has begun, so there is no Activity to open yet.
-                                            <div className="turn turn--conversation">
-                                              <Typing />
-                                            </div>
-                                          ) : (
-                                            <WorkingIndicator label={indicator.label} />
-                                          )}
-                                          {passwordsOffer === null
-                                            ? null
-                                            : renderPasswordsSuggestion?.(passwordsOffer)}
-                                          {queued}
-                                        </TranscriptImageContext>
-                                      </Speakers>
-                                    </TranscriptBrowsers>
-                                  </TranscriptBrowserUses>
-                                </ReaderComputers>
-                              </TranscriptHostClientContext>
-                            </TaskViews>
-                          </ActivityAnchor>
-                        </ActivityOpenedFrom>
-                      </ActivityOfTurn>
-                    </OpenActivity>
-                  </ReplyWith>
-                </ConversationMode>
-              </RequestShown>
-            </AgentFolds>
-          </AgentReader>
-        </AgentsLive>
-      </TranscriptLive>
-    </DeliveryFeedback>
+    <TranscriptDisclosures value={disclosures}>
+      <DeliveryFeedback value={deliveryFeedback}>
+        <TranscriptLive value={live}>
+          <AgentsLive value={live}>
+            <AgentReader value={agents}>
+              <AgentFolds>
+                <RequestShown value={requestShown}>
+                  <ConversationMode value={conversation}>
+                    <ReplyWith value={replyWith}>
+                      <OpenActivity value={openWith}>
+                        <ActivityOfTurn value={activities}>
+                          <ActivityOpenedFrom value={owner}>
+                            <ActivityAnchor value={onActivityAnchor}>
+                              <TaskViews value={taskView}>
+                                <TranscriptHostClientContext value={attachmentReader}>
+                                  <ReaderComputers value={computers}>
+                                    <TranscriptBrowserUses value={browserUses}>
+                                      <TranscriptBrowsers value={browserSessions}>
+                                        <Speakers value={speakers}>
+                                          <TranscriptImageContext value={imageScope}>
+                                            {drawnRows}
+                                            {indicator === null ? null : indicator.kind ===
+                                              "typing" ? (
+                                              // No turn has begun, so there is no Activity to open yet.
+                                              <div className="turn turn--conversation">
+                                                <Typing />
+                                              </div>
+                                            ) : (
+                                              <WorkingIndicator label={indicator.label} />
+                                            )}
+                                            {passwordsOffer === null
+                                              ? null
+                                              : renderPasswordsSuggestion?.(passwordsOffer)}
+                                            {queued}
+                                          </TranscriptImageContext>
+                                        </Speakers>
+                                      </TranscriptBrowsers>
+                                    </TranscriptBrowserUses>
+                                  </ReaderComputers>
+                                </TranscriptHostClientContext>
+                              </TaskViews>
+                            </ActivityAnchor>
+                          </ActivityOpenedFrom>
+                        </ActivityOfTurn>
+                      </OpenActivity>
+                    </ReplyWith>
+                  </ConversationMode>
+                </RequestShown>
+              </AgentFolds>
+            </AgentReader>
+          </AgentsLive>
+        </TranscriptLive>
+      </DeliveryFeedback>
+    </TranscriptDisclosures>
   );
 }
 
@@ -1994,7 +2140,7 @@ export function SubagentSteps({
 }
 
 function StepsRow({ row, turn }: { row: Extract<WorkRow, { kind: "steps" }>; turn: Turn }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = usePersistentDisclosure(`steps:${row.key}`, false);
   const [only] = row.entries;
   const single = row.entries.length === 1 ? only : undefined;
   const computer =
@@ -2026,30 +2172,122 @@ function StepsRow({ row, turn }: { row: Extract<WorkRow, { kind: "steps" }>; tur
       {open && single?.kind === "tool" ? (
         <ToolDetail tool={single} />
       ) : open && !single ? (
-        // One app's steps are one activity in order, so they read as a
-        // timeline: each step's mark says how it went, not what kind it was.
-        <div
-          className={
-            row.group === "computer"
-              ? "trace-step__lines trace-step__lines--timeline"
-              : "trace-step__lines"
-          }
-        >
-          {row.entries.map((entry) =>
-            entry.kind === "place" ? (
-              <TracePlace entry={entry} turn={turn} key={entry.id} />
+        row.entries.length > virtualStepsThreshold ? (
+          <VirtualizedStepsList entries={row.entries} group={row.group} turn={turn} />
+        ) : (
+          // One app's steps are one activity in order, so they read as a
+          // timeline: each step's mark says how it went, not what kind it was.
+          <div
+            className={
+              row.group === "computer"
+                ? "trace-step__lines trace-step__lines--timeline"
+                : "trace-step__lines"
+            }
+          >
+            {row.entries.map((entry) =>
+              entry.kind === "place" ? (
+                <TracePlace entry={entry} turn={turn} key={entry.id} />
+              ) : (
+                <Step
+                  compact
+                  entry={entry}
+                  head={activityStepHead(entry)}
+                  key={entry.id}
+                  mark={row.group === "computer"}
+                />
+              ),
+            )}
+          </div>
+        )
+      ) : null}
+    </div>
+  );
+}
+
+const virtualStepsThreshold = 24;
+const estimateStepHeight = () => 30;
+
+function VirtualizedStepsList({
+  entries,
+  group,
+  turn,
+}: {
+  readonly entries: Extract<WorkRow, { kind: "steps" }>["entries"];
+  readonly group: Extract<WorkRow, { kind: "steps" }>["group"];
+  readonly turn: Turn;
+}) {
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [openSteps, setOpenSteps] = useState<ReadonlySet<string>>(() => new Set());
+  const [focusedStepId, setFocusedStepId] = useState<string | null>(null);
+  const toggleStep = useCallback((id: string) => {
+    setOpenSteps((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const keys = useMemo(() => entries.map((entry) => entry.id), [entries]);
+  const pinned = useMemo(() => (focusedStepId === null ? [] : [focusedStepId]), [focusedStepId]);
+  const plan = useWindowedRows({
+    list: listRef,
+    keys,
+    estimate: estimateStepHeight,
+    pinned,
+    all: false,
+  });
+  return (
+    <div
+      className={
+        group === "computer"
+          ? "trace-step__lines trace-step__lines--timeline trace-step__lines--virtual"
+          : "trace-step__lines trace-step__lines--virtual"
+      }
+      onFocusCapture={(event) => {
+        const key =
+          (event.target as HTMLElement | null)?.closest<HTMLElement>("[data-motion-key]")?.dataset
+            .motionKey ?? null;
+        setFocusedStepId((current) => (current === key ? current : key));
+      }}
+      onBlurCapture={(event) => {
+        const next = (event.relatedTarget as HTMLElement | null)?.closest<HTMLElement>(
+          "[data-motion-key]",
+        );
+        const key =
+          next && listRef.current?.contains(next) ? (next.dataset.motionKey ?? null) : null;
+        setFocusedStepId((current) => (current === key ? current : key));
+      }}
+      ref={listRef}
+    >
+      {plan.map((item, position) => {
+        if ("spacer" in item) {
+          return (
+            <div
+              aria-hidden="true"
+              className="trace-step__spacer"
+              key={`spacer:${position}`}
+              style={{ height: Math.max(0, item.spacer) }}
+            />
+          );
+        }
+        const entry = entries[item.index]!;
+        return (
+          <div data-motion-key={entry.id} key={entry.id}>
+            {entry.kind === "place" ? (
+              <TracePlace entry={entry} turn={turn} />
             ) : (
               <Step
                 compact
                 entry={entry}
                 head={activityStepHead(entry)}
-                key={entry.id}
-                mark={row.group === "computer"}
+                mark={group === "computer"}
+                open={openSteps.has(entry.id)}
+                onToggle={() => toggleStep(entry.id)}
               />
-            ),
-          )}
-        </div>
-      ) : null}
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -2095,7 +2333,10 @@ function Reasoning({
   active: boolean;
   scope?: TranscriptTextScope | undefined;
 }) {
-  const [open, setOpen] = useState(active || entry.state === "streaming");
+  const [open, setOpen] = usePersistentDisclosure(
+    `reasoning:${entry.id}`,
+    active || entry.state === "streaming",
+  );
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
   const content = useTranscriptText({
@@ -2128,13 +2369,19 @@ function Step({
   entry,
   head,
   mark = false,
+  open: controlledOpen,
+  onToggle,
 }: {
   compact?: boolean;
   entry: RequestReceiptEntry | ToolEntry;
   head: ActivityStepHead;
   mark?: boolean;
+  open?: boolean;
+  onToggle?: () => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = controlledOpen ?? localOpen;
+  const toggle = onToggle ?? (() => setLocalOpen((current) => !current));
   const className = [
     "trace-step",
     compact ? "trace-step--compact" : "",
@@ -2151,13 +2398,7 @@ function Step({
   }
   return (
     <div className={className}>
-      <StepHead
-        head={head}
-        listed={compact}
-        mark={mark}
-        onToggle={() => setOpen(!open)}
-        open={open}
-      />
+      <StepHead head={head} listed={compact} mark={mark} onToggle={toggle} open={open} />
       {open ? <ToolDetail tool={entry} /> : null}
     </div>
   );

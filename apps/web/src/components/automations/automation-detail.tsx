@@ -17,6 +17,7 @@ import {
   type TriggerDetail,
 } from "@opensteer/client/host";
 import {
+  TRIGGER_SCRIPT_UPDATE_REASON,
   triggerOccurrenceErrorMessage,
   type TriggerOccurrence,
   type TriggerSummary,
@@ -131,9 +132,11 @@ function summaryOf(detail: TriggerDetail): TriggerSummary {
     latestOccurrence: latest
       ? {
           completedAt: latest.completedAt,
+          contactLostAt: latest.contactLostAt ?? null,
           createdAt: latest.createdAt,
           error: triggerOccurrenceErrorMessage(latest.error),
           id: latest.id,
+          ...(latest.sent !== undefined ? { sent: latest.sent } : {}),
           source: latest.event.source.kind,
           status: latest.status,
         }
@@ -614,7 +617,7 @@ function When({
     );
   }
   if (shape === "watch" && detail.activation) {
-    const state = watchState(detail.activation.observed);
+    const state = watchState(detail.activation.observed, detail.activation.contactLostAt, now);
     return (
       <>
         {describeEvent("watch", machine)}
@@ -764,6 +767,7 @@ const runGlyph = {
   pending: { icon: "clock", tone: "warn" },
   running: { icon: "activity", tone: "accent" },
   succeeded: { icon: "check-circle", tone: "ok" },
+  unknown: { icon: "help-circle", tone: "warn" },
 } as const satisfies Record<TriggerOccurrence["status"], { icon: string; tone: Tone }>;
 
 function RunRow({
@@ -820,14 +824,15 @@ function RunRow({
           Open
         </AreaLink>
       ) : null}
-      {occurrence.status === "pending" ? (
+      {occurrence.status === "pending" ||
+      (occurrence.status === "running" && occurrence.contactLostAt) ? (
         <button
           className="btn btn--small"
           disabled={disabled}
           onClick={() => onCancel(occurrence.id)}
           type="button"
         >
-          Cancel
+          {occurrence.status === "running" ? "Mark unknown" : "Cancel"}
         </button>
       ) : null}
     </div>
@@ -862,13 +867,17 @@ function Advanced({
     <details className="automation-advanced">
       <summary>
         Advanced
-        <span className="automation-advanced__hint">Its program, logs and code</span>
+        <span className="automation-advanced__hint">Its script, logs and code</span>
       </summary>
       <div className="automation-advanced__body">
         <div className="automation-advanced__head">
           <span>
-            {revision.program.language === "typescript" ? "TypeScript" : "JavaScript"} program,
-            version {revision.ordinal}
+            {revision.script
+              ? revision.script.interpreter
+                ? `${revision.script.interpreter.join(" ")} script`
+                : "Node.js script"
+              : TRIGGER_SCRIPT_UPDATE_REASON}
+            , version {revision.ordinal}
           </span>
           {archived || detail.trigger.systemRole != null ? null : (
             <AreaLink
@@ -879,7 +888,9 @@ function Advanced({
             </AreaLink>
           )}
         </div>
-        <pre className="automation-advanced__code">{revision.program.source}</pre>
+        <pre className="automation-advanced__code">
+          {revision.script?.text ?? revision.legacySource ?? ""}
+        </pre>
         {shape === "watch" && activation ? (
           <>
             <p className="automation-advanced__head">
@@ -900,9 +911,16 @@ function Advanced({
           </>
         ) : null}
         {shape === "webhook" ? (
-          <p className="automation-advanced__label">
-            Its webhook address and secret were shown once, when it was created.
-          </p>
+          detail.webhook?.url ? (
+            <>
+              <p className="automation-advanced__label">
+                Webhook address ({detail.webhook.scope === "public" ? "public" : "local only"})
+              </p>
+              <pre className="automation-advanced__code">{detail.webhook.url}</pre>
+            </>
+          ) : (
+            <p className="automation-advanced__label">Webhook address is unavailable.</p>
+          )
         ) : null}
       </div>
     </details>

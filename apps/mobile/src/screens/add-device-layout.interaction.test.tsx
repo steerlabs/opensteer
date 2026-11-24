@@ -9,6 +9,8 @@ import {
   overlaps,
   reachable,
   textElement,
+  readingColumn,
+  textFaults,
 } from "../../test-support/yoga-frames.js";
 
 /*
@@ -61,11 +63,15 @@ vi.mock("expo-haptics", () => ({
 
 const { Sheet } = await import("../ui/sheet.js");
 const { AddDeviceGuide, addDeviceGuideSections } = await import("./add-device-guide.js");
+const { SettingsComputerEnrollment } = await import("./settings-computer-enrollment.js");
+const { MockHostClient } = await import("@opensteer/client/mock");
 const { View } = (await import("../../test-support/yoga-frames.js")).layoutReactNative;
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
+const hosts: { dispose(): void }[] = [];
 afterEach(() => {
+  for (const host of hosts.splice(0)) host.dispose();
   for (const root of roots.splice(0)) act(() => root.unmount());
   document.body.replaceChildren();
   layoutWindow.fontScale = 1;
@@ -81,10 +87,14 @@ describe("Add a device in its sheet", () => {
         const root = createRoot(container);
         roots.push(root);
         const sections = addDeviceGuideSections({ onConnectSomethingElse: () => undefined });
+        const host = new MockHostClient({ latencyMs: 0 });
+        hosts.push(host);
         await act(async () =>
           root.render(
             <View style={{ height: phone.window.height, width: phone.window.width }}>
               <Sheet onClose={() => undefined} open title="Add a device">
+                {/* As the Devices screen draws it: a computer's command first, then the guide. */}
+                <SettingsComputerEnrollment host={host} />
                 <AddDeviceGuide sections={sections} />
               </Sheet>
             </View>,
@@ -92,6 +102,10 @@ describe("Add a device in its sheet", () => {
         );
         const frames = await layout(container, phone.window);
         expect(frames.settled, "the layout never comes to rest").toBe(true);
+        expect(
+          textFaults(frames, { column: readingColumn(phone) }),
+          "a text a person reads is broken or cut",
+        ).toEqual([]);
         const header = textElement(container, "Add a device");
         const head = header.parentElement!;
         for (const section of sections) {
@@ -104,6 +118,12 @@ describe("Add a device in its sheet", () => {
             true,
           );
         }
+        // The computer's name and the command's button, whole.
+        const create = textElement(container, "Create connection command");
+        expect(
+          reachable(frames, create, phone.window),
+          "Create connection command is out of reach",
+        ).toBe(true);
         const last = sections.at(-1)!.rows.at(-1)!;
         const lastRow = textElement(container, last.label);
         expect(reachable(frames, lastRow, phone.window), "the last row is out of reach").toBe(true);
