@@ -1757,3 +1757,42 @@ describe("ShellHub ending that could not be written (B4)", () => {
     }
   });
 });
+
+describe("ShellHub stale detach (F2)", () => {
+  it("ends only the sessions of the stream that went, never those on its successor", async () => {
+    const context = lineagedHarness();
+    const old = await activate(context, await openSession(context));
+    // The computer reconnects: a new stream for the same Runner, and a session opened on it.
+    const successor: Machine = {
+      peer: controlPeer(),
+      stream: auxiliaryStream({ runnerId: context.target }),
+      target: context.target,
+    };
+    context.hub.attach(successor.peer, successor.stream);
+    const fresh = await activate(
+      context,
+      await openSession(context, { machine: successor }),
+      successor,
+    );
+    // Only now does the old stream's close arrive.
+    context.hub.detach(context.peer, "superseded");
+    await vi.waitFor(() =>
+      expect(context.store.state.ended).toMatchObject([
+        { reason: "machine-disconnected", sessionId: old.sessionId },
+      ]),
+    );
+    expect(context.store.state.evidence).toEqual([
+      { fence: context.stream.fence, sessionIds: [old.sessionId], contactLost: true },
+    ]);
+    // The new session still moves bytes and has ended nowhere.
+    fresh.caller.deliver(8);
+    expect(context.hub.liveSessionBytes(context.target).get(fresh.sessionId)).toEqual({
+      bytesIn: 8,
+      bytesOut: 0,
+    });
+    expect(fresh.caller.closes).toEqual([]);
+    expect(context.store.state.ended.map((entry) => entry.sessionId)).not.toContain(
+      fresh.sessionId,
+    );
+  });
+});
