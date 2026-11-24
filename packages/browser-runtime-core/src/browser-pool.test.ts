@@ -567,7 +567,16 @@ it("answers unknown after a teardown that failed, never ended, and ends the sess
       answered = true;
     });
     let waited = 0;
-    for (; waited < 60 && !answered; waited++) await vi.advanceTimersByTimeAsync(1_000);
+    while (!answered && waited < 60) {
+      // Yield to real I/O (such as active.files.dispose()) while no fake timer is armed so
+      // loaded unit runs do not burn through the fake-timer loop before poolEndConfirmMs starts.
+      if (vi.getTimerCount() === 0) {
+        await new Promise((resolve) => setImmediate(resolve));
+        continue;
+      }
+      waited++;
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
     // Its teardown's bound (5 s) and the ledger's own wait for the page (2 s), and no more.
     expect(waited).toBeLessThanOrEqual(12);
     expect((await first).outcome).toBe("unknown");
