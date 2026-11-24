@@ -18,7 +18,7 @@ import {
   startReference,
 } from "../ui/composer-reference-picker.js";
 import { useCompactionOffer } from "@opensteer/client/react";
-import { compactionOfferText } from "@opensteer/client/host";
+import { commandRequestView, compactionOfferText } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { useHostSelector } from "@opensteer/client/react";
 import { useFocusEffect } from "@react-navigation/native";
@@ -90,6 +90,7 @@ import {
   useDraftAttachments,
 } from "./draft-attachments.js";
 import { AnswerBar } from "./answer-bar.js";
+import { CommandRequestCard } from "./command-request-card.js";
 import { QuestionRequestCard } from "./question-card.js";
 import { RequestCard } from "./request-card.js";
 import type { ThreadMutationClaim, ThreadMutationGate } from "./thread-mutation-gate.js";
@@ -328,6 +329,8 @@ export function Composer(props: {
   // A question the viewer can answer turns this bar into its answer field,
   // unless a message is already being written here: that draft keeps the bar
   // until it is sent or emptied, or the person chooses to answer instead.
+  // A command an agent proposed is reviewed on its own card, whatever its form says.
+  const commandCard = surface === null ? null : commandRequestView(surface.request);
   const question = surface !== null && surface.textRole === "answer" && !readOnly ? surface : null;
   const holdsDraft = text.trim() !== "" || staged.items.length > 0 || quote !== null;
   const [answerInstead, setAnswerInstead] = useState<string | null>(null);
@@ -752,7 +755,18 @@ export function Composer(props: {
           <AppText role="caption">Show more requests</AppText>
         </Pressable>
       ) : null}
-      {surface === null ? null : question !== null ? (
+      {surface === null ? null : commandCard !== null ? (
+        <Animated.View entering={appear}>
+          <CommandRequestCard
+            disabled={!props.canRespond || requestDisabledReason !== null}
+            highlighted={surface.request.id === props.highlightRequestId}
+            hostClient={hostClient}
+            key={surface.request.id}
+            request={surface.request}
+            view={commandCard}
+          />
+        </Animated.View>
+      ) : question !== null ? (
         <Animated.View entering={appear}>
           <QuestionRequestCard
             canRespond={props.canRespond}

@@ -1,4 +1,4 @@
-import { threadMark, assignmentTitle } from "@opensteer/client/host";
+import { commandRequestView, threadMark, assignmentTitle } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import {
   isQuestionRequest,
@@ -18,6 +18,7 @@ import { AppText } from "../ui/primitives.js";
 import { TaskMark } from "../ui/task-mark.js";
 import { Symbol } from "../ui/symbol.js";
 import { waitingQuestion } from "./docked-requests.js";
+import { CommandRequestCard } from "./command-request-card.js";
 import { QuestionRequestCard } from "./question-card.js";
 import { RequestCard } from "./request-card.js";
 import { useThreadMutation } from "./thread-mutation-registry.js";
@@ -118,10 +119,19 @@ export function QuestionCard(props: {
     ...(props.asker === undefined ? {} : { asker: props.asker }),
     surface: props.surface,
   };
+  const command = commandRequestView(props.surface.request);
   return (
     <View>
       {/* No composer here takes its typed answer, so the card holds the field. */}
-      {isQuestionRequest(props.surface.request) && props.surface.denied === null ? (
+      {command ? (
+        <CommandRequestCard
+          disabled={!props.canRespond || props.surface.denied !== null}
+          hostClient={props.hostClient}
+          key={props.surface.request.id}
+          request={props.surface.request}
+          view={command}
+        />
+      ) : isQuestionRequest(props.surface.request) && props.surface.denied === null ? (
         <QuestionRequestCard {...shared} composer={null} key={props.surface.request.id} />
       ) : (
         <RequestCard {...shared} onPresent={() => undefined} onSettle={() => undefined} />
