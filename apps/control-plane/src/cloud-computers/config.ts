@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { readdirSync, readFileSync } from "node:fs";
+import { heartbeatUrl } from "@opensteer/shared/heartbeat";
 import {
   BrowserPoolHostReleaseSchema,
   CloudComputerBootReleaseSchema,
@@ -183,6 +184,34 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
       env[`${prefix}IPV6`] === undefined && env[`${prefix}IPV6_FILE`] === undefined
         ? false
         : read("IPV6", z.enum(["off", "on"])) === "on",
+    /** A person who paid and has no ready Cloud Computer this many minutes on is a page. */
+    notReadyAfterMinutes:
+      env[`${prefix}NOT_READY_MINUTES`] === undefined &&
+      env[`${prefix}NOT_READY_MINUTES_FILE`] === undefined
+        ? 30
+        : read(
+            "NOT_READY_MINUTES",
+            z.string().regex(/^\d+$/u).transform(Number).pipe(z.number().int().min(5).max(1_440)),
+          ),
+    /** Sent a GET after each clean billing pass, so a monitor knows the pass still runs. */
+    heartbeatUrl:
+      env[`${prefix}HEARTBEAT_URL`] === undefined &&
+      env[`${prefix}HEARTBEAT_URL_FILE`] === undefined
+        ? undefined
+        : read(
+            "HEARTBEAT_URL",
+            z
+              .string()
+              .transform((value, ctx) => {
+                try {
+                  return heartbeatUrl(value);
+                } catch {
+                  ctx.addIssue({ code: "custom", message: "Invalid heartbeat address" });
+                  return z.NEVER;
+                }
+              })
+              .pipe(z.instanceof(URL)),
+          ),
     interval:
       env[`${prefix}PRICE_INTERVAL`] === undefined &&
       env[`${prefix}PRICE_INTERVAL_FILE`] === undefined

@@ -1543,6 +1543,69 @@ integration("Cloud Computer Account service", () => {
     });
   });
 
+  it("tells the operator of a person who paid and has no working Cloud Computer, an overdue backup and a low pool", async () => {
+    const { id } = await buy();
+    const findings = async (event: string) =>
+      (await cloud.watch(30 * 60_000)).filter((finding) => finding.event === event);
+    expect(await findings("account.cloud_computer.not_ready")).toEqual([]);
+    now = new Date(now.getTime() + 31 * 60_000);
+    expect(await findings("account.cloud_computer.not_ready")).toEqual([
+      expect.objectContaining({ computerId: id, phase: "provisioning", minutes: 31 }),
+    ]);
+    // A failed setup is said once, with its cause, as it turns failed; the watch keeps saying it.
+    // The provisioner's lease lapsed with the half hour: it takes it again.
+    expect(
+      (
+        await http({
+          method: "POST",
+          url: cloudComputerLeasePath,
+          headers: leaseHeaders(),
+          payload: { holder: lease },
+        })
+      ).statusCode,
+    ).toBe(200);
+    const computer = (await getDesired(id))!;
+    const failed = {
+      phase: "failed",
+      observedIdentity: null,
+      providerServerId: null,
+      ipv4: null,
+      lastError: "The Cloud Computer provider operation failed.",
+    } as const;
+    expect((await report(computer, failed)).json()).toEqual({ recorded: true });
+    expect((await report(computer, failed)).json()).toEqual({ recorded: true });
+    const setupFailed = logs
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((line) => line.event === "account.cloud_computer.setup_failed");
+    expect(setupFailed).toEqual([
+      expect.objectContaining({ computerId: id, code: "provider-failed", phase: "failed" }),
+    ]);
+    expect(await findings("account.cloud_computer.not_ready")).toEqual([
+      expect.objectContaining({ computerId: id, phase: "failed", code: "provider-failed" }),
+    ]);
+    // Ready and claimed, with its last backup 37 hours ago.
+    await database
+      .updateTable("cloudComputers")
+      .set({
+        phase: "ready",
+        lastError: null,
+        bootstrapReceiptAt: now,
+        bootCompletedAt: now,
+        lastBackupAt: new Date(now.getTime() - 37 * 60 * 60_000),
+      })
+      .where("id", "=", id)
+      .execute();
+    expect(await findings("account.cloud_computer.not_ready")).toEqual([]);
+    expect(await findings("account.cloud_computer.backup_overdue")).toEqual([
+      { event: "account.cloud_computer.backup_overdue", computerId: id, minutes: 37 * 60 },
+    ]);
+    // Two backup targets, one held by this computer; no egress endpoint at all.
+    expect(await findings("account.pool.low")).toEqual([
+      { event: "account.pool.low", pool: "backup", free: 1 },
+      { event: "account.pool.low", pool: "egress", free: 0 },
+    ]);
+  });
+
   it("keeps deletion pending without key erasure and a backup target reserved until an empty listing", async () => {
     const { id, account } = await buy();
     const original = await getDesired(id);

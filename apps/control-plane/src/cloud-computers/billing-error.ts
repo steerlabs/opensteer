@@ -52,6 +52,18 @@ const safeMessages = new Set([
   "The configured Stripe price does not match the Cloud Computer offer",
 ]);
 
+/** The stable event a billing failure is logged as (apps/control-plane/src/server/events.ts). */
+export function billingEvent(
+  error: unknown,
+):
+  | "account.billing.cancelled_late"
+  | "account.billing.deletion_unsettled"
+  | "account.billing.failed" {
+  if (error instanceof CloudComputerCancelledLate) return "account.billing.cancelled_late";
+  if (error instanceof CloudComputerDeletionUnsettled) return "account.billing.deletion_unsettled";
+  return "account.billing.failed";
+}
+
 export function billingErrorDetails(error: unknown): Record<string, unknown> {
   // A deleted Cloud Computer names its row, so an operator can see it through.
   if (error instanceof CloudComputerCancelledLate)

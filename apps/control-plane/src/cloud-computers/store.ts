@@ -5,6 +5,8 @@ import {
   type CloudComputerDeletionStep,
 } from "./billing-error.js";
 import { freeBackupTargets } from "./backup-capacity.js";
+import { cloudComputerSetupFailure } from "../server/events.js";
+import type { CloudComputerSetupFailure } from "@opensteer/protocol/problems";
 import { deletionView } from "./deletion-view.js";
 import { SecretManagerBackupKeyVault, type BackupKeyVault } from "./backup-vault.js";
 import { purgeBackupObjects, type BackupPurgeStep } from "./backup-purge.js";
@@ -107,6 +109,30 @@ const emptyDigest = "0".repeat(64);
 const claimLeaseMs = 2 * 60_000;
 const providerWriteGraceMs = 3 * 60_000;
 const dispatchedWriteGraceMs = 15 * 60_000;
+/** A ready Cloud Computer with no backup reported for this long is overdue (it backs up daily). */
+const backupOverdueMs = 36 * 60 * 60_000;
+/** A pool with fewer free entries than this is about to stop checkout or browsing. */
+const lowPoolEntries = 2;
+
+/** One thing the watch found wrong; each is logged as its own stable event. */
+export type CloudComputerFinding =
+  | {
+      readonly event: "account.cloud_computer.not_ready";
+      readonly computerId: CloudComputerId;
+      readonly phase: "provisioning" | "booting" | "claiming" | "failed";
+      readonly minutes: number;
+      readonly code?: CloudComputerSetupFailure;
+    }
+  | {
+      readonly event: "account.cloud_computer.backup_overdue";
+      readonly computerId: CloudComputerId;
+      readonly minutes: number;
+    }
+  | {
+      readonly event: "account.pool.low";
+      readonly pool: "backup" | "egress";
+      readonly free: number;
+    };
 
 /** One ready Home the Account is about to claim, as it was when the attempt began. */
 export interface CloudComputerClaimJob {
@@ -878,7 +904,14 @@ export class CloudComputerStore {
       .executeTakeFirst();
   }
 
-  async reconcileBilling(onError: (error: unknown) => void) {
+  async reconcileBilling(
+    onError: (error: unknown) => void,
+    watch?: {
+      /** Each finding of the watch, logged as its stable event; see `watch`. */
+      readonly onFinding: (finding: CloudComputerFinding) => void;
+      readonly notReadyAfterMs: number;
+    },
+  ) {
     const run = async (action: () => Promise<unknown>) => {
       try {
         await action();
@@ -893,6 +926,11 @@ export class CloudComputerStore {
       try {
         await run(() => this.checkOffer());
         await this.#billingPass(run, onError);
+        // Under the same lock, so one replica reports each finding once a pass.
+        if (watch)
+          await run(async () => {
+            for (const finding of await this.watch(watch.notReadyAfterMs)) watch.onFinding(finding);
+          });
         return true;
       } finally {
         await sql`select pg_advisory_unlock(hashtextextended('cloud-computer-billing-reconcile',0))`.execute(
@@ -900,6 +938,94 @@ export class CloudComputerStore {
         );
       }
     });
+  }
+
+  /**
+   * What is wrong for paying people now, read from the rows the account already keeps: a
+   * person who paid and has no working Cloud Computer (its setup failed, its claim failed, or
+   * it is not claimed `notReadyAfterMs` after its readiness began), a ready computer that has
+   * reported no backup for 36 hours, and a pool with fewer than two free entries.
+   */
+  async watch(notReadyAfterMs: number): Promise<CloudComputerFinding[]> {
+    const now = this.#now().getTime();
+    const findings: CloudComputerFinding[] = [];
+    const rows = await this.#db
+      .selectFrom("cloudComputers")
+      .select([
+        "id",
+        "phase",
+        "lastError",
+        "claimError",
+        "readinessStartedAt",
+        "bootstrapReceiptAt",
+        "bootCompletedAt",
+        "lastBackupAt",
+      ])
+      .where("state", "=", "active")
+      .where("billingStatus", "=", "active")
+      .where("accountId", "is not", null)
+      .where("deletionRequestedAt", "is", null)
+      .where("tombstonedAt", "is", null)
+      .orderBy("id")
+      .execute();
+    const minutesSince = (at: Date) => Math.max(0, Math.floor((now - at.getTime()) / 60_000));
+    for (const row of rows) {
+      const claim = operatorClaimError(row.claimError);
+      const code = cloudComputerSetupFailure(row.lastError, claim);
+      const claimed = row.bootstrapReceiptAt !== null;
+      if (
+        row.phase === "failed" ||
+        claim !== null ||
+        (!claimed && now - row.readinessStartedAt.getTime() >= notReadyAfterMs)
+      ) {
+        findings.push({
+          event: "account.cloud_computer.not_ready",
+          computerId: row.id,
+          phase:
+            row.phase === "failed" || claim
+              ? "failed"
+              : row.phase === "ready"
+                ? "claiming"
+                : row.phase === "booting"
+                  ? "booting"
+                  : "provisioning",
+          minutes: minutesSince(row.readinessStartedAt),
+          ...(code ? { code } : {}),
+        });
+        continue;
+      }
+      const backedUp = row.lastBackupAt ?? row.bootCompletedAt;
+      if (
+        row.phase === "ready" &&
+        claimed &&
+        backedUp &&
+        now - backedUp.getTime() >= backupOverdueMs
+      )
+        findings.push({
+          event: "account.cloud_computer.backup_overdue",
+          computerId: row.id,
+          minutes: minutesSince(backedUp),
+        });
+    }
+    const [backup, egress] = await Promise.all([
+      freeBackupTargets(this.#db)
+        .select((eb) => eb.fn.countAll<string>().as("free"))
+        .executeTakeFirstOrThrow(),
+      this.#db
+        .selectFrom("cloudComputerEgressEndpoints")
+        .select((eb) => eb.fn.countAll<string>().as("free"))
+        .where("computerId", "is", null)
+        .where("needsRotation", "=", false)
+        .where("retired", "=", false)
+        .executeTakeFirstOrThrow(),
+    ]);
+    for (const [pool, { free }] of [
+      ["backup", backup],
+      ["egress", egress],
+    ] as const)
+      if (Number(free) < lowPoolEntries)
+        findings.push({ event: "account.pool.low", pool, free: Number(free) });
+    return findings;
   }
 
   async #billingPass(
@@ -1375,7 +1501,7 @@ export class CloudComputerStore {
           row.pendingProviderWrites.length !== 0) ||
         (report.phase === "ready" && (!row.bootCompletedAt || !report.observedIdentity))
       ) {
-        return { recorded: false, kick: false };
+        return { recorded: false, kick: false, newlyFailed: false };
       }
       const identity = report.observedIdentity;
       if (
@@ -1443,7 +1569,12 @@ export class CloudComputerStore {
           .where("computerId", "=", row.id)
           .executeTakeFirst();
       }
-      return { recorded: true, kick: ready && row.bootstrapReceiptAt === null };
+      return {
+        recorded: true,
+        kick: ready && row.bootstrapReceiptAt === null,
+        // Said once, as the setup turns failed; the watch keeps saying it while it stays so.
+        newlyFailed: report.phase === "failed" && row.phase !== "failed",
+      };
     });
     if (result.recorded && report.phase === "deleted") {
       await this.#eraseBackupKey(report.id).catch(() =>

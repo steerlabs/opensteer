@@ -70,7 +70,23 @@ it("loads optional managed Home settings from the Account runtime directory", ()
       stripeWebhookSecret: files.OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET,
       releaseManifestUrl: files.OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL,
       region: "europe-west3-a",
+      notReadyAfterMinutes: 30,
     });
+    expect(config.cloudComputers?.heartbeatUrl).toBeUndefined();
+    const watched = loadControlPlaneConfig({
+      ...environment,
+      OPENSTEER_CLOUD_COMPUTER_NOT_READY_MINUTES: "45",
+      OPENSTEER_CLOUD_COMPUTER_HEARTBEAT_URL: "https://hc.example.com/ping/billing",
+    }).cloudComputers;
+    expect(watched?.notReadyAfterMinutes).toBe(45);
+    expect(watched?.heartbeatUrl?.href).toBe("https://hc.example.com/ping/billing");
+    for (const [name, value] of [
+      ["OPENSTEER_CLOUD_COMPUTER_NOT_READY_MINUTES", "2"],
+      ["OPENSTEER_CLOUD_COMPUTER_HEARTBEAT_URL", "http://hc.example.com/ping/billing"],
+    ] as const)
+      expect(() => loadControlPlaneConfig({ ...environment, [name]: value })).toThrow(
+        `Missing or invalid ${name}`,
+      );
     expect(() =>
       loadControlPlaneConfig({
         ...environment,

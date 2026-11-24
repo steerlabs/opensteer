@@ -58,6 +58,7 @@ import { z } from "zod";
 import type { ControlPlaneAuthenticator } from "../auth/auth.js";
 import type { ControlPlaneStore } from "../database/store.js";
 import { toWebHeaders } from "../portal/routes.js";
+import { cloudComputerSetupFailure, logAccountEvent } from "../server/events.js";
 import { ControlPlaneError } from "../server/errors.js";
 import { PoolSlotEgressRateLimitedError } from "./pool-store.js";
 import type { CloudComputerStore } from "./store.js";
@@ -164,6 +165,15 @@ export function registerCloudComputerRoutes(
       throw new ControlPlaneError("bad_request", "Cloud Computer report ID does not match the URL");
     const result = await store.report(report);
     if (result.kick) options.kickBootstrap?.();
+    if (result.newlyFailed) {
+      const code = cloudComputerSetupFailure(report.lastError, null);
+      logAccountEvent(
+        request.log,
+        "account.cloud_computer.setup_failed",
+        { computerId: id, phase: report.phase, ...(code ? { code } : {}) },
+        "Cloud Computer setup failed",
+      );
+    }
     return CloudComputerReportResponseSchema.parse({ recorded: result.recorded });
   });
 
