@@ -44,6 +44,9 @@ const rendererSampleMs = 30_000;
 const pressureScanMs = 1_000;
 const rendererSettleMs = 3_000;
 const ineffectiveReclaimsBeforeBackoff = 3;
+const maxProbeDelayMs = 60_000;
+const zeroProgressBackoffBaseMs = 30_000;
+const zeroProgressBackoffMaxMs = 300_000;
 const minimumReclaimBytes = 16 * 1024 ** 2;
 const reportMemoryChangeBytes = 64 * 1024 ** 2;
 /** Refused attempts alone change the summary at most this often. */
@@ -100,6 +103,7 @@ interface HeldSession extends SleepSession {
   releasedAt: number;
   /** TS16: when each tab last stopped being viewed. */
   readonly viewedUntil: Map<BrowserSurfaceId, number>;
+  blockerEpoch: number;
   stop(): void;
 }
 
@@ -108,6 +112,7 @@ export class TabSleeper {
   private readonly sessions = new Map<string, HeldSession>();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private readonly nextProbe = new WeakMap<TabRecord, number>();
+  private readonly refusalCount = new WeakMap<TabRecord, number>();
   private running = false;
   private closed = false;
   private rendererUsage: BrowserRendererUsage | null = null;
@@ -156,6 +161,7 @@ export class TabSleeper {
   private lastOpenAt = Number.NEGATIVE_INFINITY;
   private flushTimer: ReturnType<typeof setTimeout> | undefined;
   private ineffectiveReclaims = 0;
+  private zeroProgressRotations = 0;
   private pressureBackoffUntil = 0;
   private lastReportedPass: TabSleepPass | null = null;
   private lastReportedAt = 0;
@@ -313,6 +319,7 @@ export class TabSleeper {
       hostState: null,
       releasedAt: Date.now(),
       viewedUntil: new Map(),
+      blockerEpoch: 0,
       stop: () => {
         stopPolicy();
       },
@@ -335,11 +342,16 @@ export class TabSleeper {
   setSessionState(id: string, state: BrowserSessionState): void {
     const session = this.sessions.get(id);
     if (!session) return;
+    const previous = session.hostState;
+    const blockerCleared =
+      previous === null ||
+      state.runs < previous.runs ||
+      (Boolean(previous.keepAwake) && !state.keepAwake) ||
+      previous.viewed.some((surfaceId) => !state.viewed.includes(surfaceId)) ||
+      previous.pinned.some((surfaceId) => !state.pinned.includes(surfaceId));
     if (
       state.runs === 0 &&
-      (session.hostState === null ||
-        session.hostState.runs > 0 ||
-        (session.hostState.keepAwake && !state.keepAwake))
+      (previous === null || previous.runs > 0 || (previous.keepAwake && !state.keepAwake))
     )
       session.releasedAt = Date.now();
     const now = Date.now();
@@ -347,6 +359,16 @@ export class TabSleeper {
       if (!state.viewed.includes(surfaceId)) session.viewedUntil.set(surfaceId, now);
     session.hostState = state;
     for (const surfaceId of state.personUsed) session.ledger.markPersonUsed(surfaceId);
+    if (blockerCleared) {
+      session.blockerEpoch += 1;
+      for (const record of session.ledger.policyRecords()) {
+        this.nextProbe.delete(record);
+        this.refusalCount.delete(record);
+      }
+      this.zeroProgressRotations = 0;
+      this.pressureBackoffUntil = 0;
+      this.declined = new WeakSet();
+    }
     this.poke();
   }
   private openerLinks(session: SleepSession): ReadonlySet<BrowserSurfaceId> {
@@ -471,13 +493,12 @@ export class TabSleeper {
           budget &&
           pressureDriven &&
           this.blocked(id, record, now, links, true) === null;
+        const due = budget
+          ? Math.max(now, this.pressureHoldUntil(this.readyUnderPressure))
+          : this.deadline(session, record, cutoff);
         earliest = Math.min(
           earliest,
-          Math.max(
-            budget ? now : this.deadline(session, record, cutoff),
-            young ? now : record.usedAt + quietMs,
-            this.nextProbe.get(record) ?? 0,
-          ),
+          Math.max(due, young ? now : record.usedAt + quietMs, this.nextProbe.get(record) ?? 0),
         );
       }
     }
@@ -769,6 +790,7 @@ export class TabSleeper {
     if (!this.overBudget()) {
       this.reclaimFrom = null;
       this.ineffectiveReclaims = 0;
+      this.zeroProgressRotations = 0;
       this.pressureBackoffUntil = 0;
       return;
     }
@@ -831,6 +853,7 @@ export class TabSleeper {
     if (!this.overBudget()) {
       this.reclaimFrom = null;
       this.ineffectiveReclaims = 0;
+      this.zeroProgressRotations = 0;
       this.pressureBackoffUntil = 0;
       return;
     }
@@ -915,6 +938,7 @@ export class TabSleeper {
     let attempted = 0;
     let slept = 0;
     let livePages = 0;
+    let hasUnvisitedEligible = false;
     const pending = new Set<Promise<void>>();
     // TS8: the sessions that became ready under pressure, let through any backoff by this pass.
     const ready = new Set(this.readyUnderPressure);
@@ -955,14 +979,17 @@ export class TabSleeper {
         const measuredPressure = pressureDriven
           ? this.memoryPressureState.known
           : this.rendererUsage !== null;
-        if (measuredPressure && deadline > Date.now()) {
-          if (!this.releasing || Date.now() < holdUntil(session)) continue;
-          if (spared(session, record)) continue;
-          // In single-step Electron renderer mode, finish pending sleeps before deciding the next one.
-          if (!pressureDriven && pending.size) await Promise.all(pending);
-          if (this.closed) break;
-          // The Host's facts may have changed during that wait (finding 10).
-          deadline = this.deadline(session, record);
+        if (deadline > Date.now()) {
+          if (Date.now() < holdUntil(session)) continue;
+          if (measuredPressure) {
+            if (!this.releasing) continue;
+            if (spared(session, record)) continue;
+            // In single-step Electron renderer mode, finish pending sleeps before deciding the next one.
+            if (!pressureDriven && pending.size) await Promise.all(pending);
+            if (this.closed) break;
+            // The Host's facts may have changed during that wait (finding 10).
+            deadline = this.deadline(session, record);
+          }
         }
         if (
           this.sessions.get(id) !== session ||
@@ -982,15 +1009,25 @@ export class TabSleeper {
         )
           continue;
         this.reclaimInFlight++;
+        const attemptEpoch = session.blockerEpoch;
         const sleeping = session.ledger
           .sleep(record.id, (next) => this.blocked(id, next, Date.now()))
           .then((committed) => {
             if (committed) {
               slept++;
               this.lastSleptAt = Date.now();
-            } else {
+              this.refusalCount.delete(record);
+              this.nextProbe.delete(record);
+              this.zeroProgressRotations = 0;
+            } else if (session.blockerEpoch === attemptEpoch) {
               this.declined.add(record);
-              this.nextProbe.set(record, Date.now() + quietMs);
+              const refusals = (this.refusalCount.get(record) ?? 0) + 1;
+              this.refusalCount.set(record, refusals);
+              const probeDelay = Math.min(
+                maxProbeDelayMs,
+                quietMs * 2 ** Math.min(refusals - 1, 3),
+              );
+              this.nextProbe.set(record, Date.now() + probeDelay);
             }
             this.trimRestore();
           })
@@ -1058,6 +1095,7 @@ export class TabSleeper {
         if (youngest) {
           const { id, session, record } = youngest;
           const bound = !young;
+          const attemptEpoch = session.blockerEpoch;
           attempted++;
           this.reclaimInFlight++;
           const committed = await session.ledger
@@ -1072,7 +1110,10 @@ export class TabSleeper {
           if (committed) {
             slept++;
             this.lastSleptAt = Date.now();
-          } else {
+            this.refusalCount.delete(record);
+            this.nextProbe.delete(record);
+            this.zeroProgressRotations = 0;
+          } else if (session.blockerEpoch === attemptEpoch) {
             this.declined.add(record);
             this.nextProbe.set(record, Date.now() + quietMs);
           }
@@ -1083,6 +1124,15 @@ export class TabSleeper {
       // checks again against it (M4); none waits on a host retiring.
       this.establishSettle(slept);
       this.releasePassWaiters();
+      const afterAttempts = Date.now();
+      hasUnvisitedEligible = candidates.some(
+        ({ id, session, record }) =>
+          record.live !== null &&
+          !this.declined.has(record) &&
+          this.sessions.get(id) === session &&
+          (this.nextProbe.get(record) ?? 0) <= afterAttempts &&
+          !this.blocked(id, record, afterAttempts),
+      );
       if (!this.closed && attempted < sleepsPerPass) {
         for (const host of this.retirementCandidates()) {
           if (this.closed || this.estimate() <= this.budget()) break;
@@ -1093,13 +1143,24 @@ export class TabSleeper {
       if (settlingAtStart) for (const session of ready) this.readyUnderPressure.add(session);
       this.running = false;
       this.openAsked = false;
-      if (attempted < sleepsPerPass) this.declined = new WeakSet();
+      const now = Date.now();
+      const continueScan = attempted >= sleepsPerPass && (slept > 0 || hasUnvisitedEligible);
+      if (slept === 0 && attempted > 0 && !hasUnvisitedEligible) {
+        this.zeroProgressRotations++;
+        const backoff = Math.min(
+          zeroProgressBackoffMaxMs,
+          zeroProgressBackoffBaseMs * 2 ** Math.min(this.zeroProgressRotations - 1, 4),
+        );
+        this.pressureBackoffUntil = Math.max(this.pressureBackoffUntil, now + backoff);
+        this.declined = new WeakSet();
+      } else if (attempted < sleepsPerPass) {
+        this.declined = new WeakSet();
+      }
       const pressureDriven = this.usesLinuxMemoryPressure();
       this.establishSettle(slept);
       if ((pressureDriven || this.rendererUsage) && this.releasing) {
-        const now = Date.now();
         const settleMs = pressureDriven ? linuxPressureSettleMs : rendererSettleMs;
-        if (attempted >= sleepsPerPass) {
+        if (continueScan) {
           this.nextRendererSample = Math.min(this.nextRendererSample, now + pressureScanMs);
           if (pressureDriven) {
             this.nextPressureSample = Math.min(this.nextPressureSample, now + settleMs);
@@ -1114,7 +1175,7 @@ export class TabSleeper {
         }
       }
       this.releasePassWaiters();
-      this.poke(attempted >= sleepsPerPass ? pressureScanMs : 0);
+      this.poke(continueScan ? pressureScanMs : 0);
       if (this.options.onPass) this.reportPass({ ...this.summary(attempted, slept), livePages });
     }
   }

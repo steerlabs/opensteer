@@ -184,6 +184,7 @@ it("makes an explicit stopped-mode decision for every primary work message", () 
     "host.connection.lease-renewed",
     "host.auxiliary.ticket",
     "host.grants.credentials",
+    "host.proxy-token.renewed",
     "host.shell.probe-full-disk-access",
   ]);
   const work = HostToRunnerMessageSchema.options
@@ -269,6 +270,10 @@ describe("ReconnectingHostConnection agent-stop notices", () => {
       await readyPlain;
       expect(plain.descriptors[0]?.capabilities).not.toContain(runnerAgentStopCapability);
       await plain.flushSocket(plain.sockets[0]);
+      // Z1: When Host welcome does NOT set acceptsAutomationScripts, Runner never sends firings on attach.
+      const attach = plain.received.find((m) => m.type === "runner.executions.attach");
+      expect(attach).toBeDefined();
+      expect(attach).not.toHaveProperty("firings");
     } finally {
       stopPlain.abort();
       await runningPlain;

@@ -32,7 +32,7 @@ export const local_server_add = defineAgentTool({
   name: "local_server_add",
   title: "Add a local server",
   access: "settings",
-  callers: ["run"],
+  callers: ["run", "program"],
   description:
     "Register, or update by the same name, an MCP server that runs on one of the person's computers: a program to launch, or a loopback URL that computer serves. The person reviews the exact launch and computer and enters declared secrets; its tools then appear in plugin_search under its name. folder is a package inside Agent home whose snapshot that computer runs: start its program with ./path, and use ${PLUGIN_ROOT} and ${PLUGIN_DATA} in args, env or cwd. Declare secrets by name only, never values. device marks a TV, speaker or light it controls. A changed launch on the same computer keeps approval unless it adds secrets.",
   input: z
@@ -95,7 +95,7 @@ export const local_server_remove = defineAgentTool({
   name: "local_server_remove",
   title: "Remove a local server",
   access: "settings",
-  callers: ["run"],
+  callers: ["run", "program"],
   destructive: true,
   description:
     "Remove a local server and its data, such as a device pairing, on the Host and on every computer that ran it. A computer that is offline removes it when it reconnects.",

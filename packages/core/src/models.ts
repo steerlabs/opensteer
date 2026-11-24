@@ -164,6 +164,8 @@ export const RunnerCapabilitySchema = z.enum([
   "environment-list-v1",
   // Can parse and execute v3 Trigger and Watch programs; independent of tool discovery.
   "trigger-program-v5",
+  // Runs wrapperless automation scripts with the shipped opensteer CLI and raw webhook body files.
+  "automation-script-v1",
   "native-place-input-v1",
   "execution-plane-v2",
   "filesystem",

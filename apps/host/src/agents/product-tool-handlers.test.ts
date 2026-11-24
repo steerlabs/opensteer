@@ -858,10 +858,9 @@ describe("Product tool handlers", () => {
         idempotencyKey: requestId,
         name: "Nightly report",
         operation: "create",
-        program: {
-          toolContractVersion: 5,
-          language: "javascript",
-          source: "export default () => {}",
+        script: {
+          interpreter: null,
+          text: "console.log('ok')",
         },
         source: {
           kind: "webhook",
@@ -916,9 +915,7 @@ describe("Product tool handlers", () => {
         operation: "list",
       },
       current.id,
-      {
-        accessMode: current.accessMode,
-      },
+      undefined,
     );
   });
 });

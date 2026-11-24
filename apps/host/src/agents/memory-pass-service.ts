@@ -23,8 +23,7 @@ import { resolveAutomaticModels, personalExecution } from "./automatic-models.js
 import { isDeepStrictEqual } from "node:util";
 import type { Clock } from "@opensteer/shared/clock";
 import { DeadlineDrain, retryWithBackoff } from "../runtime/deadline-drain.js";
-import { memoryPassProgram } from "./memory-pass-program.js";
-import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
+import { memoryPassScript } from "./memory-pass-script.js";
 
 export const memoryPassWaitingReason =
   "Waiting for an AI account on the hosting computer. Connect one there, or turn one on for automatic work in AI settings; it resumes by itself.";
@@ -111,19 +110,19 @@ export class MemoryPassService {
         "triggers.id",
         "triggers.currentRevisionId",
         "triggers.systemRole",
-        "triggerRevisions.program",
+        "triggerRevisions.script as currentScript",
       ])
       .where("triggers.systemRole", "is not", null)
       .execute();
     for (const current of systemPrograms) {
       if (!current.systemRole) continue;
-      const program = memoryPassProgram(current.systemRole);
-      if (!isDeepStrictEqual(current.program, program)) {
+      const script = memoryPassScript(current.systemRole);
+      if (!isDeepStrictEqual(current.currentScript, script)) {
         await new TriggerStore(store.database).regenerateSystemProgram({
           triggerId: current.id,
           ownerId: settings.ownerId,
           expectedRevisionId: current.currentRevisionId,
-          program,
+          script,
         });
         this.options.onChanged();
       }
@@ -145,10 +144,15 @@ export class MemoryPassService {
     }
     const environment = await store.database
       .selectFrom("executionEnvironments")
-      .select("id")
-      .where("runnerId", "=", settings.agentHome.computerId)
+      .innerJoin("runners", "runners.id", "executionEnvironments.runnerId")
+      .select(["executionEnvironments.id", "runners.capabilities"])
+      .where("executionEnvironments.runnerId", "=", settings.agentHome.computerId)
       .executeTakeFirst();
-    if (!environment || (await triggerProgramCompatibilityReason(store, environment.id, 5)))
+    if (
+      !environment ||
+      !Array.isArray(environment.capabilities) ||
+      !environment.capabilities.includes("automation-script-v1")
+    )
       return "waiting";
     let instructions: string | null;
     try {
@@ -187,7 +191,7 @@ export class MemoryPassService {
           modelSelection: seed.modelSelection,
         },
         systemRole,
-        program: memoryPassProgram(systemRole),
+        script: memoryPassScript(systemRole),
         source: memoryPassSource(systemRole, zone.data),
         pauseReason: off ? "Memory is off at your request." : null,
       });

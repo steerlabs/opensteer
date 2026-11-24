@@ -440,13 +440,9 @@ async function program(
             kind: "schedule",
             schedule: { kind: "cron", expression: "0 0 * * *", timezone: "UTC" },
           },
-    program: {
-      language: "javascript",
-      source:
-        kind === "watch"
-          ? "export default async()=>new Promise(()=>{})"
-          : "export default ()=>null",
-      toolContractVersion: 5,
+    script: {
+      interpreter: null,
+      text: kind === "watch" ? "await new Promise(()=>{});" : "console.log('ok');",
     },
   });
   const common = {
@@ -488,7 +484,6 @@ async function program(
         runnerBootId: "fixture-boot",
         runnerId: personal.runnerId,
         threadId: owner.thread.id,
-        toolContractVersion: 5,
       },
     };
   }
@@ -530,7 +525,6 @@ async function program(
       executionGeneration: activation.executionGeneration,
       revisionId: created.revision.id,
       triggerId: created.trigger.id,
-      toolContractVersion: 5,
     },
   };
 }
@@ -561,8 +555,8 @@ test.each(["trigger", "watch"] as const)(
     expect(await call(caller, "plugin_resume", { executionId: pending.executionId })).toMatchObject(
       { status: "completed" },
     );
+    expect(await call(caller, "opensteer_plugin_list", {})).toHaveProperty("plugins");
     for (const [name, input] of [
-      ["opensteer_plugin_list", {}],
       ["opensteer_plugin_install", { source: "catalog", catalogId: "fixture" }],
       [
         "plugin_account_request",
@@ -3125,8 +3119,7 @@ test("new plugin tools enforce their caller and standing-access matrix", async (
         continue;
       }
       const catalog = call(caller, "opensteer_plugin_catalog", { search: "fixture" });
-      if (caller.kind === "program") await expect(catalog).rejects.toThrow();
-      else await expect(catalog).resolves.toHaveProperty("items");
+      await expect(catalog).resolves.toHaveProperty("items");
       const skills = call(caller, "plugin_skills", { app: "fixture", name: "demo" });
       if (access === "off") await expect(skills).rejects.toThrow();
       else expect(JSON.stringify(await skills)).toContain("Fixture skill");
@@ -3134,18 +3127,14 @@ test("new plugin tools enforce their caller and standing-access matrix", async (
         pluginId: plugin,
         resource: "workflows",
       });
-      if (caller.kind === "program") await expect(resources).rejects.toThrow();
-      else {
-        // Outputs reach the person's own agent when the plugin is on.
-        const items = z
-          .array(z.object({ id: z.string() }).passthrough())
-          .parse(record.parse(await resources).items);
-        const run = items.find(({ id }) => id === started.id);
-        expect(run).toMatchObject({ status: "complete" });
-        if (caller.kind === "run" && access !== "off")
-          expect(run?.output).toEqual({ preview: '"done"', truncated: false });
-        else expect(items.filter((item) => "output" in item || "failure" in item)).toEqual([]);
-      }
+      // Outputs reach the person's own agent (and its automations, per Brief T5) when the plugin is on.
+      const items = z
+        .array(z.object({ id: z.string() }).passthrough())
+        .parse(record.parse(await resources).items);
+      const run = items.find(({ id }) => id === started.id);
+      expect(run).toMatchObject({ status: "complete" });
+      if (access !== "off") expect(run?.output).toEqual({ preview: '"done"', truncated: false });
+      else expect(items.filter((item) => "output" in item || "failure" in item)).toEqual([]);
       const update = call(caller, "opensteer_plugin_resource_update", {
         pluginId: plugin,
         change: { action: "workflow.start", workflow: "quick", input: {}, key: randomUUID() },

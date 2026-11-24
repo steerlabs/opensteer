@@ -173,6 +173,17 @@ function isAnsweredQuestion(entry: TranscriptEntry): entry is AnsweredQuestionEn
   return entry.kind === "request" && entry.question !== undefined;
 }
 
+const emptyGroupingAssignments: Readonly<Record<string, AssignmentSummary>> = {};
+
+interface CachedGrouping {
+  readonly inputQueuePaused: boolean;
+  readonly startHold: string | null;
+  readonly assignments: Readonly<Record<string, AssignmentSummary>>;
+  readonly groups: TranscriptGroup[];
+}
+
+const groupedTranscriptCache = new WeakMap<readonly TranscriptEntry[], CachedGrouping[]>();
+
 /**
  * The transcript in reading order. Entries keep their first-arrival order; a
  * turn gathers only what is adjacent and belongs to the same Run, so nothing
@@ -183,12 +194,56 @@ export function groupTranscriptEntries(
   {
     inputQueuePaused = false,
     startHold = null,
-    assignments = {},
+    assignments = emptyGroupingAssignments,
   }: {
     readonly inputQueuePaused?: boolean;
     readonly startHold?: string | null;
     readonly assignments?: Readonly<Record<string, AssignmentSummary>>;
   } = {},
+): TranscriptGroup[] {
+  const cachedList = groupedTranscriptCache.get(entries);
+  if (cachedList) {
+    for (const cached of cachedList) {
+      if (
+        cached.inputQueuePaused === inputQueuePaused &&
+        cached.startHold === startHold &&
+        cached.assignments === assignments
+      ) {
+        return cached.groups;
+      }
+    }
+  }
+  const result = computeGroupTranscriptEntries(entries, {
+    inputQueuePaused,
+    startHold,
+    assignments,
+  });
+  const record: CachedGrouping = {
+    inputQueuePaused,
+    startHold,
+    assignments,
+    groups: result,
+  };
+  if (cachedList) {
+    if (cachedList.length >= 4) cachedList.shift();
+    cachedList.push(record);
+  } else {
+    groupedTranscriptCache.set(entries, [record]);
+  }
+  return result;
+}
+
+function computeGroupTranscriptEntries(
+  entries: readonly TranscriptEntry[],
+  {
+    inputQueuePaused,
+    startHold,
+    assignments,
+  }: {
+    readonly inputQueuePaused: boolean;
+    readonly startHold: string | null;
+    readonly assignments: Readonly<Record<string, AssignmentSummary>>;
+  },
 ): TranscriptGroup[] {
   type Slot =
     | { readonly group: TranscriptGroup; readonly kind: "group" }
@@ -2841,6 +2896,11 @@ function computerUseHeadline(tool: ToolEntry): string | null {
     : readComputerUseResultHeadline(tool.output.text);
 }
 
+const parsedToolArgumentsCache = new WeakMap<
+  ToolEntry,
+  { readonly streamText: string; readonly value: unknown }
+>();
+
 /** Claude streams arguments as partial JSON; recover them once complete. */
 export function effectiveArguments(tool: ToolEntry): unknown {
   const args = tool.arguments;
@@ -2851,11 +2911,16 @@ export function effectiveArguments(tool: ToolEntry): unknown {
     Object.keys(args as Record<string, unknown>).length === 0;
   if (args !== undefined && args !== null && !isEmptyObject) return args;
   if (tool.state === "running" || !tool.streamText) return args;
+  const cached = parsedToolArgumentsCache.get(tool);
+  if (cached && cached.streamText === tool.streamText) return cached.value;
+  let value: unknown = args;
   try {
-    return JSON.parse(tool.streamText);
+    value = JSON.parse(tool.streamText);
   } catch {
-    return args;
+    value = args;
   }
+  parsedToolArgumentsCache.set(tool, { streamText: tool.streamText, value });
+  return value;
 }
 
 function commandFrom(args: unknown): string | null {

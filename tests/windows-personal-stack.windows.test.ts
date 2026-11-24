@@ -538,13 +538,13 @@ describe("the personal stack from source", () => {
     pids.set("app server", served.pid);
     pids.set("app server child", served.child);
 
-    // A program automation runs on the Runner and returns its result to the Host.
+    // A script automation runs on the Runner and returns its stdout to the Host.
     const trigger = await dispatch({
       idempotencyKey: randomUUID(),
       input: {
         anchorThreadId: threadId,
         name: "Doubler",
-        program: { language: "typescript", source: automationSource, toolContractVersion: 5 },
+        script: { interpreter: null, text: automationSource },
         source: { kind: "webhook" },
       },
       type: "trigger.create",
@@ -568,7 +568,10 @@ describe("the personal stack from source", () => {
       },
       { interval: 250, timeout: 60_000 },
     );
-    const result = occurrence.result as { readonly doubled: number; readonly pid: number };
+    const result = JSON.parse(occurrence.stdout.trim()) as {
+      readonly doubled: number;
+      readonly pid: number;
+    };
     expect(result.doubled).toBe(42);
     pids.set("automation", result.pid);
 
@@ -680,9 +683,9 @@ require("node:http").createServer((request, response) => {
 }).listen(Number(process.env.PORT), "127.0.0.1");
 `;
 
-const automationSource = `export default function ({ event }: { event: { payload: { n: number } } }) {
-  return { doubled: event.payload.n * 2, pid: process.pid };
-}`;
+const automationSource = `import { readFileSync } from "node:fs";
+const event = JSON.parse(readFileSync(process.env.OPENSTEER_EVENT, "utf8"));
+console.log(JSON.stringify({ doubled: event.payload.n * 2, pid: process.pid }));`;
 
 /**
  * A person's global CLI as npm installs it: the shim npm generates on Windows,

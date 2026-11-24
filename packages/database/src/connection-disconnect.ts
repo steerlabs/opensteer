@@ -853,17 +853,25 @@ export async function markConnectionAttemptsContactLost(
   await commitPersonalMutation(database, async (tx) => {
     const now = new Date();
     for (const table of ["triggerOccurrences", "triggerWatchActivations"] as const) {
-      const affected = await tx
+      let query = tx
         .selectFrom(table)
         .select("id")
-        .where("connectionId", "is not", null)
         .where("runnerId", "=", input.runnerId)
         .where("runnerBootId", "=", input.runnerBootId)
         .where("terminalEvidenceAt", "is", null)
-        .where("contactLostAt", "is", null)
-        .orderBy("id")
-        .forNoKeyUpdate()
-        .execute();
+        .where("contactLostAt", "is", null);
+      query =
+        table === "triggerOccurrences"
+          ? query.where((eb) =>
+              eb.or([eb("connectionId", "is not", null), eb("status", "=", "running")]),
+            )
+          : query.where((eb) =>
+              eb.or([
+                eb("connectionId", "is not", null),
+                eb("observed", "in", ["starting", "running", "backoff"]),
+              ]),
+            );
+      const affected = await query.orderBy("id").forNoKeyUpdate().execute();
       if (affected.length === 0) continue;
       await tx
         .updateTable(table)

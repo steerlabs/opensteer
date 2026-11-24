@@ -192,10 +192,9 @@ describe("TriggerControlService", () => {
         idempotencyKey: requestId,
         name: "Nightly report",
         operation: "create",
-        program: {
-          toolContractVersion: 5,
-          language: "javascript",
-          source: "export default () => {}",
+        script: {
+          interpreter: null,
+          text: "console.log('ok')",
         },
         source: {
           kind: "webhook",
@@ -212,7 +211,7 @@ describe("TriggerControlService", () => {
       }),
       threadId,
       {
-        accessMode: "full-access",
+        commandIdentity: expect.anything(),
         operationKey: `trigger:${occurrenceId}:${mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "opensteer_automation_create")}:trigger.write`,
       },
     );
@@ -242,7 +241,7 @@ describe("TriggerControlService", () => {
         systemRole: "memory-light",
       },
       threadId,
-      expect.anything(),
+      undefined,
     );
   });
 });
@@ -255,7 +254,6 @@ function makeService(options: {
   ) => Promise<readonly ReturnType<typeof environment>[]>;
   manage?: (owner: typeof ownerId, input: TriggerControlInput) => Promise<unknown>;
   store?: Readonly<Record<string, unknown>>;
-  toolContractVersion?: 5;
 }) {
   const anchor = thread();
   const claims = {
@@ -271,7 +269,6 @@ function makeService(options: {
     runnerBootId: "boot-1",
     runnerId,
     threadId,
-    toolContractVersion: options.toolContractVersion ?? 5,
   };
   const listEnvironmentsForUser = vi.fn(
     options.listEnvironmentsForUser ?? (async () => [environment(environmentId)]),

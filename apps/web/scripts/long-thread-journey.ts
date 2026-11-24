@@ -1,28 +1,26 @@
 /**
  * A conversation of several hundred rows, end to end in a real browser: the
  * production web build against the mock Host, driven in headless Chromium.
- * Every loaded row stays in the document and the browser skips laying out
- * and painting the ones off screen (`content-visibility: auto`), so this
- * walks everything that skipping could break.
+ * Long transcripts virtualize off-screen rows into spacers so the mounted DOM
+ * stays bounded to the viewport + overscan, while ThreadFind (⌘F / Ctrl+F)
+ * searches the entire conversation across virtualized and unloaded history.
  *
  * Ways this journey can fail, each checked below:
- *  1. A loaded row is missing from the document, rows are not skipped, or the
+ *  1. Off-screen rows are not virtualized into a bounded DOM window, or the
  *     newest reply is not on screen at the tail.
  *  2. A reply that streams in leaves the reader short of the tail.
  *  3. Scrolling up through the conversation moves what the reader is looking
- *     at once rows above are laid out, or never reaches its first question.
- *  4. Browser Find cannot reach a message far above the reader.
- *  5. Tab stops short of the controls in rows off screen.
- *  6. A selection across several screens copies less than it spans.
- *  7. Find in conversation cannot reach a message far away, or the found
- *     message is not on screen.
- *  8. "Earlier messages" moves the row the reader was on out of view, or the
+ *     at once rows above mount and measure, or never reaches its first question.
+ *  4. Find in conversation cannot reach a message far outside the window, or
+ *     the found message is not on screen.
+ *  5. "Earlier messages" moves the row the reader was on out of view, or the
  *     rows keep shifting after the page has landed.
- *  9. Coming back to the conversation lands somewhere other than where the
+ *  6. Coming back to the conversation lands somewhere other than where the
  *     reader left it.
  *
- * `result.json` and screenshots go to OPENSTEER_LONG_THREAD_E2E_ARTIFACT_DIR,
- * or `opensteer-long-thread-e2e` in the system temporary directory.
+ * `result.json` and screenshots go to OPENSTEER_LONG_THREAD_EVIDENCE_DIR /
+ * OPENSTEER_LONG_THREAD_E2E_ARTIFACT_DIR, or `opensteer-long-thread-e2e` in
+ * the system temporary directory.
  */
 import type { MockHostClient } from "@opensteer/client/mock";
 import { mkdir, rm } from "node:fs/promises";
@@ -75,32 +73,28 @@ try {
   await page.getByText(`Reply ${turns - 1}.`).waitFor();
   await settle(page);
 
-  await check(
-    "keeps every row in the document, skipping off-screen ones, at the tail",
-    async () => {
-      const observed = await page.evaluate((selector) => {
-        const element = document.querySelector<HTMLElement>(selector)!;
-        const rows = [...element.querySelectorAll<HTMLElement>("[data-transcript-row]")];
-        return {
-          rows: rows.length,
-          skipped: getComputedStyle(rows[0]!).contentVisibility,
-          // Where the engine would not hold the reader's place, rows are all laid out instead.
-          skipping: document.documentElement.dataset.rowSkipping !== "off",
-          nodes: document.getElementsByTagName("*").length,
-          fromTail: element.scrollHeight - element.clientHeight - element.scrollTop,
-        };
-      }, scroller);
-      await shot("01-tail.png");
-      expectThat(observed, observed.rows >= turns * 2, "A loaded row is not in the document.");
-      expectThat(
-        observed,
-        observed.skipped === (observed.skipping ? "auto" : "visible"),
-        "Off-screen rows are skipped where the reader's place would not hold, or not where it would.",
-      );
-      expectThat(observed, observed.fromTail < 4, "The reader is not at the tail.");
-      return observed;
-    },
-  );
+  await check("virtualizes off-screen rows to a bounded DOM window at the tail", async () => {
+    const observed = await page.evaluate((selector) => {
+      const element = document.querySelector<HTMLElement>(selector)!;
+      const rows = [...element.querySelectorAll<HTMLElement>("[data-transcript-row]")];
+      const spacers = [...element.querySelectorAll<HTMLElement>(".transcript__spacer")];
+      return {
+        rows: rows.length,
+        spacers: spacers.length,
+        nodes: document.getElementsByTagName("*").length,
+        fromTail: element.scrollHeight - element.clientHeight - element.scrollTop,
+      };
+    }, scroller);
+    await shot("01-tail.png");
+    expectThat(
+      observed,
+      observed.rows > 0 && observed.rows < turns,
+      "Expected viewport-bounded virtualized rows rather than mounting all loaded rows.",
+    );
+    expectThat(observed, observed.spacers > 0, "Expected virtual spacers for off-screen rows.");
+    expectThat(observed, observed.fromTail < 4, "The reader is not at the tail.");
+    return observed;
+  });
 
   await check("a reply that streams in keeps the reader at the tail", async () => {
     // Read where the browser paints: after this frame's layout and the page's own resize
@@ -229,94 +223,6 @@ try {
       return observed;
     },
   );
-
-  await check("browser Find reaches a message far below the reader", async () => {
-    const found = await page.evaluate((text) => {
-      (document.activeElement as HTMLElement | null)?.blur();
-      window.getSelection()!.removeAllRanges();
-      const search = window as unknown as {
-        find(text: string, cased: boolean, backwards: boolean, wrap: boolean): boolean;
-      };
-      return search.find(text, false, false, true);
-    }, "Question 250:");
-    await settle(page);
-    const observed = await page.evaluate((selector) => {
-      const selection = window.getSelection()!;
-      const node = selection.anchorNode?.parentElement;
-      const box = node?.getBoundingClientRect();
-      const view = document.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
-      return {
-        selected: selection.toString(),
-        inView: box ? box.bottom > view.top && box.top < view.bottom : false,
-      };
-    }, scroller);
-    await shot("05-browser-find.png");
-    // `window.find` matches as the find bar does; scrolling to the match is the find bar's own.
-    expectThat(
-      { found, ...observed },
-      found && observed.selected === "Question 250:",
-      "Not found.",
-    );
-    return { found, ...observed };
-  });
-
-  await check("Tab reaches the controls of rows off screen", async () => {
-    const start = await page.evaluate((selector) => {
-      const element = document.querySelector<HTMLElement>(selector)!;
-      const view = element.getBoundingClientRect();
-      const controls = [...element.querySelectorAll<HTMLElement>("[data-transcript-row] button")];
-      const visible = controls.filter((control) => {
-        const box = control.getBoundingClientRect();
-        return box.top >= view.top && box.bottom <= view.bottom;
-      });
-      const last = visible.at(-1)!;
-      last.focus();
-      const below = controls.slice(controls.indexOf(last) + 1);
-      // The first control not yet on screen, two screens down.
-      const target = below.find(
-        (control) => control.getBoundingClientRect().top > view.bottom + view.height * 2,
-      )!;
-      target.dataset.journeyTarget = "true";
-      return below.indexOf(target) + 1;
-    }, scroller);
-    for (let press = 0; press < start; press++) await page.keyboard.press("Tab");
-    await settle(page);
-    const observed = await page.evaluate((selector) => {
-      const focused = document.activeElement as HTMLElement | null;
-      const box = focused?.getBoundingClientRect();
-      const view = document.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
-      return {
-        reached: focused?.dataset.journeyTarget === "true",
-        inView: box ? box.bottom > view.top && box.top < view.bottom : false,
-      };
-    }, scroller);
-    await shot("06-tab.png");
-    expectThat({ start, ...observed }, observed.reached, "Tab stopped short of the row.");
-    expectThat(observed, observed.inView, "The focused control is not on screen.");
-    return { presses: start, ...observed };
-  });
-
-  await check("a selection across several screens copies everything it spans", async () => {
-    const observed = await page.evaluate(() => {
-      const bodies = [...document.querySelectorAll<HTMLElement>(".msg--assistant__body")];
-      const from = bodies.find((body) => body.textContent?.startsWith("Reply 100."))!;
-      const to = bodies.find((body) => body.textContent?.startsWith("Reply 140."))!;
-      const range = document.createRange();
-      range.setStartBefore(from);
-      range.setEndAfter(to);
-      const selection = window.getSelection()!;
-      selection.removeAllRanges();
-      selection.addRange(range);
-      const text = selection.toString();
-      const missing = Array.from({ length: 41 }, (_, index) => `Reply ${100 + index}.`).filter(
-        (reply) => !text.includes(reply),
-      );
-      selection.removeAllRanges();
-      return { length: text.length, missing };
-    });
-    expectThat(observed, observed.missing.length === 0, "The copy skipped rows.");
-    return observed;
-  });
 
   await check("find in conversation reaches a message far outside the window", async () => {
     await page.evaluate((selector) => {
