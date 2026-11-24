@@ -2797,7 +2797,11 @@ function OwnMessage({
 }) {
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
-  const [open, setOpen] = useState(reveal !== null);
+  // Opened, it stays open when its row is drawn again.
+  const [open, setOpen] = usePersistentDisclosure(
+    `message:${previewMessage.clientSendKey ?? previewMessage.id}`,
+    reveal !== null,
+  );
   const message = useTranscriptMessage(client, threadId, previewMessage, open);
   const outbox = client ? hostMessageOutbox(client) : null;
   const computer = useClientConnectionName(client?.connection ?? null);
@@ -3024,7 +3028,8 @@ function RecoveryNote({
 }) {
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
-  const [open, setOpen] = useState(reveal !== null);
+  // Opened, it stays open when its row is drawn again.
+  const [open, setOpen] = usePersistentDisclosure(`message:${previewMessage.id}`, reveal !== null);
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
   }, [reveal]);
@@ -3140,7 +3145,11 @@ function InputMessage({
   const conversation = useContext(ConversationMode);
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
-  const [open, setOpen] = useState(reveal !== null);
+  // Opened, it stays open when its row is drawn again.
+  const [open, setOpen] = usePersistentDisclosure(
+    `message:${previewMessage.clientSendKey ?? previewMessage.id}`,
+    reveal !== null,
+  );
   useLayoutEffect(() => {
     if (reveal !== null) setOpen(true);
   }, [reveal]);
