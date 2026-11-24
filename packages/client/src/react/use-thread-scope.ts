@@ -1,5 +1,11 @@
 import { useCallback, useMemo } from "react";
-import type { HostClient, HostSnapshot, ThreadSummary, TranscriptEntry } from "../host/client.js";
+import type {
+  AssignmentEntry,
+  HostClient,
+  HostSnapshot,
+  ThreadSummary,
+  TranscriptEntry,
+} from "../host/client.js";
 import {
   assignmentScope,
   sameFields,
@@ -48,15 +54,17 @@ export function useThreadScope(
   return useHostSelector(hostClient, select, sameThreadScope);
 }
 
-/** What cards about these assignments read; see `WorkScope`. */
+/** What cards about these transcript assignments read; see `assignmentScope`. */
 export function useAssignmentScope(
   hostClient: HostClient,
-  assignmentIds: readonly string[],
+  entries: readonly Pick<AssignmentEntry, "assignment">[],
 ): WorkScope {
-  const key = assignmentIds.join(" ");
+  const key = entries.map(({ assignment }) => `${assignment.id}:${assignment.revision}`).join(" ");
+  // The assignments as recorded, not the array: a redraw with the same ones keeps the selection.
+  const recorded = useMemo(() => entries, [key]);
   const select = useCallback(
-    (snapshot: HostSnapshot) => assignmentScope(snapshot, key ? key.split(" ") : []),
-    [key],
+    (snapshot: HostSnapshot) => assignmentScope(snapshot, recorded),
+    [recorded],
   );
   return useHostSelector(hostClient, select, sameWorkScope);
 }
