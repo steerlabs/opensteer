@@ -726,11 +726,11 @@ export class HttpHostClient {
         this.#visibility !== "background" && this.#snapshot.session !== "authentication-required",
       watchChanged: () => this.#stream.watchResources(),
       // Rows stay on screen; the inventory is only no longer known to be complete.
-      behind: (kind, reply) => {
-        if (kind === "tab") this.#tabs.markInventoryStale();
-        // Archiving a browser profile changes which sessions `thread.browserUsage.get` returns
-        // and only sends a `browser-profile` resource update; refresh shown tasks on live bumps.
-        if (kind === "browser-profile" && !reply) this.#refreshShownBrowserUsage();
+      behind: (kind) => kind === "tab" && this.#tabs.markInventoryStale(),
+      // Archiving a browser profile changes which sessions `thread.browserUsage.get` returns
+      // and only sends a `browser-profile` resource update; invalidate shown tasks on any advance.
+      revisionAdvanced: (kind) => {
+        if (kind === "browser-profile") this.#refreshShownBrowserUsage();
       },
       unreadable: (kind, unreadable) => {
         const held = this.#snapshot.unreadableResources ?? [];
@@ -2729,6 +2729,7 @@ export class HttpHostClient {
       else pending.again ??= "missing";
       return;
     }
+    if (!this.#reader(threadId)?.detail.transcript.getSnapshot().synchronized) return;
     const known = this.#browserUsageRead.get(threadId);
     const runIds = [...this.#browserUsageRunIds(threadId)].sort();
     const scope = mode === "full" || !known ? null : runIds.filter((runId) => !known.has(runId));
@@ -2837,6 +2838,7 @@ export class HttpHostClient {
       }
     } catch (error) {
       if (!current()) return false;
+      if (startedAt !== this.#browserUsageVersion(threadId)) return true;
       const message =
         error instanceof Error ? error.message : "Could not load this conversation’s browsers.";
       if (error instanceof HostClientRequestError && [403, 404].includes(error.status)) {
@@ -2858,11 +2860,10 @@ export class HttpHostClient {
       return true;
     }
     if (!current()) return false;
-    if (startedAt === this.#browserUsageVersion(threadId)) {
-      const known = whole ? new Set<string>() : new Set(this.#browserUsageRead.get(threadId));
-      for (const runId of runIds) known.add(runId);
-      this.#browserUsageRead.set(threadId, known);
-    }
+    if (startedAt !== this.#browserUsageVersion(threadId)) return true;
+    const known = whole ? new Set<string>() : new Set(this.#browserUsageRead.get(threadId));
+    for (const runId of runIds) known.add(runId);
+    this.#browserUsageRead.set(threadId, known);
     this.#replaceBrowserUsage(threadId, [...uses.values()], { runIds: whole ? null : runIds });
     return true;
   }
