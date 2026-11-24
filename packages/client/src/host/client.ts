@@ -296,6 +296,8 @@ export interface TaskListState {
 
 export interface RunQueueEntry {
   maintenance?: Run["maintenance"];
+  /** The Run has finished its work and the Host is closing it out. */
+  finishing?: true;
   createdAt: string;
   id: string;
   status: "queued" | "starting" | "running" | "waiting";
@@ -1227,9 +1229,20 @@ export interface HostClient extends TabsClient {
   /**
    * The view's one-shot measurement of the row in view (undefined at the latest messages), asked
    * only when the client needs the reader's position: a repair, a subscription. Ordinary
-   * scrolling is never reported. Null releases it.
+   * scrolling is never reported. Several views of one Thread each register theirs; the newest is
+   * asked, and releasing one (the returned function) gives the place back to the one before it.
    */
-  setTranscriptPosition(threadId: string, measure: (() => string | undefined | null) | null): void;
+  setTranscriptPosition(threadId: string, measure: () => string | undefined | null): () => void;
+  /**
+   * Whether the reader follows the live latest, asked only when live rows must be bounded: a
+   * follower keeps the newest, and the window gives way above them; anyone else keeps all they
+   * loaded, and what arrives past it waits a page away. Registered as positions are: the newest
+   * view is asked, and its release gives the Thread back to the one before it.
+   */
+  setTranscriptFollowing(
+    threadId: string,
+    following: import("./thread-transcript-store.js").TranscriptFollowReader,
+  ): () => void;
   /**
    * The view has revealed the target of the reader's move under way (the linked message is on
    * screen, or the foot after Return to latest): the move has landed and gives up the position.
@@ -1263,11 +1276,12 @@ export interface HostClient extends TabsClient {
     before?: string;
   }): Promise<ThreadMessagePage>;
   /**
-   * A move of the reader's: resolves true once its page landed, or false when a newer move (a
-   * later jump, Return to latest, a scroll) superseded it, which then says nothing about the
-   * message. Only a move that landed may judge what its page holds.
+   * A move of the reader's to a message, or to any row by its item id (a Request's receipt):
+   * resolves true once its page landed, or false when a newer move (a later jump, Return to
+   * latest, a scroll) superseded it, which then says nothing about the target. Only a move that
+   * landed may judge what its page holds; one whose target is gone rejects as not found.
    */
-  loadTranscriptAround(threadId: string, messageId: string): Promise<boolean>;
+  loadTranscriptAround(threadId: string, target: string): Promise<boolean>;
   loadLatestTranscript(threadId: string): Promise<boolean>;
   /**
    * What the Host decided this viewer should be told — a reply, a Request, a

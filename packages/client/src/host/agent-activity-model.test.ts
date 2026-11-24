@@ -31,6 +31,11 @@ import {
   activityStepHead,
   displayCommand,
   groupTranscriptEntries,
+  liveTurn,
+  liveTurnLine,
+  liveTurnQuietAfterMs,
+  liveTurnStalledAfterMs,
+  liveTurnWords,
   passwordsSetupOffer,
   toolBody,
   toolArgumentsText,
@@ -2825,5 +2830,252 @@ describe("ACP engine steps", () => {
     });
     expect(present("acp", "execute", { command: "pwd" })).toMatchObject({ kind: "command" });
     expect(present("acp", "edit", { path: "/a/b.ts" })).toMatchObject({ kind: "edit" });
+  });
+});
+
+/*
+ * The line pinned above a task's composer. What can go wrong: between two
+ * quick calls it falls back to "Working" and the task reads as stopped; the
+ * Run's own entry sits on a page not loaded and the line disappears between
+ * calls; a long command, a thought, a start or a person's question reads as a
+ * stall; a steer reads as old silence.
+ */
+describe("liveTurn", () => {
+  const second = (value: number) => Date.parse(at(0)) + value * 1_000;
+  const current = (status: "queued" | "running" | "starting" | "waiting" = "running") => ({
+    id: "run-a",
+    status,
+    createdAt: at(0),
+  });
+
+  it("names the step it last finished between steps, and how fresh that is", () => {
+    const ran = command("pnpm test", { createdAt: at(1), completedAt: at(4) });
+    const groups = groupTranscriptEntries([run({ status: "running", startedAt: at(0) }), ran]);
+    const live = liveTurn(groups, current());
+    expect(live).toMatchObject({
+      runId: "run-a",
+      state: "live",
+      executing: true,
+      label: toolPresentation(ran).label,
+      detail: { text: "pnpm test", code: true },
+      active: false,
+      stepStartedAt: null,
+      startedAt: second(0),
+      lastActivityAt: second(4),
+    });
+    expect(liveTurnLine(live!, second(12))).toEqual({
+      tone: "working",
+      label: toolPresentation(ran).label,
+      detail: { text: "pnpm test", code: true },
+      since: "updated 8s ago",
+      elapsed: "12s",
+      note: null,
+    });
+    // The words other surfaces show for the Thread are unchanged.
+    expect(liveTurnWords(groups)).toBe("Working");
+  });
+
+  it("stays while the Run's own entry is on a page not loaded", () => {
+    // The latest page holds only the Run's last steps; its entry is far above.
+    const groups = groupTranscriptEntries([
+      command("ls", { createdAt: at(30), completedAt: at(31) }),
+      command("cat feeds.csv", { createdAt: at(32), completedAt: at(33) }),
+    ]);
+    expect(liveTurnWords(groups)).toBeNull();
+    expect(liveTurn(groups, current())).toMatchObject({
+      state: "live",
+      executing: true,
+      label: "Ran a command",
+      startedAt: second(0),
+      lastActivityAt: second(33),
+    });
+    // Loaded, the Run's own entry says when it began, whatever the queue holds.
+    expect(
+      liveTurn(
+        groupTranscriptEntries([run({ status: "running", createdAt: at(20) }), command("ls")]),
+        { ...current(), createdAt: at(5) },
+      )?.startedAt,
+    ).toBe(second(20));
+    // The Host says nothing is under way: the transcript alone draws no line.
+    expect(liveTurn(groups, null)).toBeNull();
+    expect(liveTurn(groups, { ...current(), id: "run-b" })).toBeNull();
+    // A window short of the latest lacks what the Run did since: it would read a busy Run as quiet.
+    expect(liveTurn(groups, current(), { reachesLatest: false })).toBeNull();
+  });
+
+  it("times a step under way and never calls it quiet", () => {
+    const running = command("pnpm build", {
+      createdAt: at(10),
+      completedAt: null,
+      state: "running",
+    });
+    const live = liveTurn(
+      groupTranscriptEntries([run({ status: "running" }), command("ls"), running]),
+      current(),
+    )!;
+    expect(live).toMatchObject({
+      label: "Running a command",
+      active: true,
+      stepStartedAt: second(10),
+    });
+    expect(liveTurnLine(live, second(10.4)).since).toBe("just started");
+    expect(liveTurnLine(live, second(15 + 3_600))).toMatchObject({
+      tone: "working",
+      since: "running 1h",
+    });
+  });
+
+  it("goes quiet, then possibly stuck, once an executing Run has nothing under way", () => {
+    const live = liveTurn(
+      groupTranscriptEntries([run({ status: "running" }), command("ls")]),
+      current(),
+    )!;
+    expect(liveTurnLine(live, second(4) + liveTurnQuietAfterMs + 30_000)).toMatchObject({
+      tone: "quiet",
+      label: "Quiet for 2m 30s",
+      detail: { text: `Last: ${live.label}`, code: false },
+      since: null,
+    });
+    expect(liveTurnLine(live, second(4) + liveTurnStalledAfterMs + 60_000)).toMatchObject({
+      tone: "stalled",
+      label: "No activity for 11m",
+    });
+    // A change this reader saw counts, though no entry says when it happened.
+    expect(
+      liveTurnLine(live, second(4) + liveTurnStalledAfterMs + 60_000, {
+        observedAt: second(4) + liveTurnStalledAfterMs + 50_000,
+      }),
+    ).toMatchObject({ tone: "working", since: "updated 10s ago" });
+  });
+
+  it("never calls a Run quiet before it executes, nor while it waits, stops or is out of touch", () => {
+    const entries = [run({ status: "running" }), command("ls")];
+    for (const status of ["queued", "starting"] as const) {
+      const live = liveTurn(groupTranscriptEntries(entries), current(status))!;
+      expect(live.executing).toBe(false);
+      expect(liveTurnLine(live, second(3_600)).tone).toBe("working");
+    }
+    const waiting = liveTurn(groupTranscriptEntries(entries), current("waiting"))!;
+    expect(liveTurnLine(waiting, second(3_600))).toMatchObject({
+      tone: "held",
+      label: "Waiting for you",
+      since: null,
+    });
+    const stopping = liveTurn(
+      groupTranscriptEntries([run({ status: "running", stopping: true }), command("ls")]),
+      current(),
+    )!;
+    expect(liveTurnLine(stopping, second(3_600))).toMatchObject({
+      tone: "held",
+      label: "Stopping",
+    });
+    const working = liveTurn(groupTranscriptEntries(entries), current())!;
+    expect(liveTurnLine(working, second(3_600), { connected: false })).toMatchObject({
+      tone: "held",
+      since: null,
+    });
+  });
+
+  it("counts a provider retry, a compaction and a thought as under way", () => {
+    for (const record of [
+      run({ status: "running", retry: { attempt: 2, message: "Overloaded", status: "retrying" } }),
+      run({ status: "running", compaction: { status: "running", reason: "automatic" } }),
+    ]) {
+      const live = liveTurn(groupTranscriptEntries([record, command("ls")]), current())!;
+      expect(liveTurnLine(live, second(3_600)).tone).toBe("working");
+    }
+    const thinking = liveTurn(
+      groupTranscriptEntries([
+        run({ status: "running" }),
+        command("ls"),
+        reasoning({
+          completedAt: null,
+          state: "streaming",
+          text: "**Checking the API terms**\nMore",
+        }),
+      ]),
+      current(),
+    )!;
+    expect(thinking).toMatchObject({
+      label: "Thinking",
+      detail: { text: "Checking the API terms", code: false },
+      active: true,
+    });
+  });
+
+  it("keeps the Run's clock and its last step across a steer, and counts the steer as news", () => {
+    const groups = groupTranscriptEntries([
+      input({ body: "Find the feeds", runId: "run-a", createdAt: at(0) }),
+      run({ status: "running", startedAt: at(0) }),
+      command("rg sales", { createdAt: at(1), completedAt: at(2) }),
+      input({ body: "Skip r/sales", runId: "run-a", createdAt: at(50) }),
+    ]);
+    expect(groups.filter((group) => group.kind === "turn")).toHaveLength(2);
+    const live = liveTurn(groups, current())!;
+    expect(live).toMatchObject({
+      startedAt: second(0),
+      lastActivityAt: second(50),
+      label: "Ran a command",
+      detail: { text: "rg sales", code: true },
+    });
+    expect(liveTurnLine(live, second(60))).toMatchObject({
+      tone: "working",
+      since: "updated 10s ago",
+    });
+  });
+
+  it("changes its signature with every arrival and state change, and only then", () => {
+    const running = command("pnpm test", { completedAt: null, state: "running" });
+    const before = liveTurn(
+      groupTranscriptEntries([run({ status: "running" }), running]),
+      current(),
+    )!;
+    const same = liveTurn(
+      groupTranscriptEntries([run({ status: "running" }), running]),
+      current(),
+    )!;
+    const done = liveTurn(
+      groupTranscriptEntries([run({ status: "running" }), { ...running, state: "done" }]),
+      current(),
+    )!;
+    expect(same.signature).toBe(before.signature);
+    expect(done.signature).not.toBe(before.signature);
+  });
+
+  it("names the call that ended last when calls run side by side", () => {
+    const long = command("pnpm test", { createdAt: at(1), completedAt: at(9) });
+    const quick = command("cat notes.md", { createdAt: at(2), completedAt: at(3) });
+    const live = liveTurn(
+      groupTranscriptEntries([run({ status: "running" }), long, quick]),
+      current(),
+    )!;
+    expect(live.detail).toEqual({ text: "pnpm test", code: true });
+  });
+
+  it("never calls a Run quiet before its first entry, nor while the Host closes it out", () => {
+    // Queued for ten minutes, then started: nothing of it says when it began executing.
+    const fresh = liveTurn(groupTranscriptEntries([run({ status: "running" })]), current())!;
+    expect(fresh.executing).toBe(false);
+    expect(liveTurnLine(fresh, second(600)).tone).toBe("working");
+    const closing = liveTurn(groupTranscriptEntries([run({ status: "running" }), command("ls")]), {
+      ...current(),
+      finishing: true,
+    })!;
+    expect(closing.executing).toBe(false);
+    expect(liveTurnLine(closing, second(3_600)).tone).toBe("working");
+  });
+
+  it("keeps its signature when earlier history loads", () => {
+    const latest = command("rg sales", { createdAt: at(8), completedAt: at(9) });
+    const page = liveTurn(groupTranscriptEntries([latest]), current())!;
+    const more = liveTurn(
+      groupTranscriptEntries([run({ status: "running" }), command("ls"), latest]),
+      current(),
+    )!;
+    expect(more.signature).toBe(page.signature);
+  });
+
+  it("has nothing to say before anything of the Run is loaded", () => {
+    expect(liveTurn([], current())).toBeNull();
   });
 });

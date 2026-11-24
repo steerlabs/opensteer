@@ -150,6 +150,7 @@ import {
   MockPlugins,
   type MockPluginScenario,
   mockPluginAccountConsent,
+  mockPluginPagePath,
   mockPluginRequests,
 } from "./mock-plugins.js";
 import { MockSettingsFixtures } from "./settings-fixtures.js";
@@ -400,6 +401,7 @@ import {
   type MockPlacesWorld,
 } from "./mock-places.js";
 import { mockGeneratedTaskIcon, seedMockTaskMarks } from "./mock-task-marks.js";
+import type { TranscriptFollowReader } from "../host/thread-transcript-store.js";
 
 async function* binaryChunks(body: Blob, signal?: AbortSignal): AsyncIterable<Uint8Array> {
   const reader = body.stream().getReader();
@@ -4584,7 +4586,11 @@ export class MockHostClient implements HostClient {
   async viewPluginPage(pluginId: string, theme: "light" | "dark", signal?: AbortSignal) {
     signal?.throwIfAborted();
     const view = unwrapRpcResult(await this.rpc["plugins.page.view"]({ pluginId, theme }));
-    return { title: pluginId, url: view.entryUrl ?? view.path };
+    const url =
+      view.path === mockPluginPagePath
+        ? this.enginePlugins.pageUrl(pluginId, theme)
+        : (view.entryUrl ?? view.path);
+    return { title: pluginId, url };
   }
   async viewApp(
     _appId: string,
@@ -4835,7 +4841,13 @@ export class MockHostClient implements HostClient {
     return result.ok ? result.data : undefined;
   }
 
-  setTranscriptPosition(_threadId: string, _measure: (() => string | undefined | null) | null) {}
+  setTranscriptPosition(_threadId: string, _measure: () => string | undefined | null) {
+    return () => undefined;
+  }
+
+  setTranscriptFollowing(_threadId: string, _following: TranscriptFollowReader) {
+    return () => undefined;
+  }
 
   revealedTranscriptMove(_threadId: string) {}
   async loadMoreOverlays(threadId: string, kind: "requests" | "tools" | "nodes") {
@@ -5085,7 +5097,7 @@ export class MockHostClient implements HostClient {
   }
 
   async loadTranscriptAround(threadId: string, messageId: string): Promise<boolean> {
-    await this.#readMockHistory(threadId, { aroundMessageId: messageId });
+    await this.#readMockHistory(threadId, { anchorItemId: messageId });
     return true;
   }
 

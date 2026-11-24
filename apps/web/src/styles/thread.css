@@ -1706,6 +1706,25 @@ fieldset.action-panel {
   flex: none;
 }
 
+/* Load newer and Back to latest side by side: one floating group, each its own target. */
+.transcript__jumps {
+  position: absolute;
+  bottom: var(--space-16);
+  left: 50%;
+  z-index: 2;
+  display: flex;
+  gap: var(--space-8);
+  max-width: calc(100% - var(--space-32));
+  transform: translateX(-50%);
+}
+
+.transcript__jumps > .transcript__jump {
+  position: static;
+  max-width: none;
+  transform: none;
+  white-space: nowrap;
+}
+
 .transcript__jump--quiet {
   width: var(--touch-target);
   padding: 0;

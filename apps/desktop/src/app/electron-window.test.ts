@@ -4,6 +4,7 @@ import { shell } from "electron";
 import type { DesktopConfiguration } from "../config.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import { DesktopAppOriginPolicy } from "./navigation-policy.js";
+import { desktopBridgeChannels } from "../bridge/desktop-bridge-channels.js";
 import { expect, it, vi } from "vitest";
 import {
   configureDesktopSession,
@@ -59,9 +60,15 @@ it("shows a foreground window before its page loads and keeps a login launch hid
   expect(vi.mocked(login.window.show)).not.toHaveBeenCalled();
 });
 
-it("opens only HTTP(S) links from the focused published-app frame in the system browser", () => {
+it("hands only HTTP(S) links from the focused published-app frame back to the page, never to the system", () => {
   const appUrl = `opensteer-app://view/v1/apps/app_11111111-1111-4111-8111-111111111111/dark/${"a".repeat(43)}/#chart`;
-  const contents = { focusedFrame: { url: appUrl }, setWindowOpenHandler: vi.fn(), on: vi.fn() };
+  const contents = {
+    focusedFrame: { url: appUrl },
+    setWindowOpenHandler: vi.fn(),
+    on: vi.fn(),
+    send: vi.fn(),
+    isDestroyed: () => false,
+  };
   configureDesktopWindowNavigation(
     contents as unknown as WebContents,
     new DesktopAppOriginPolicy(),
@@ -77,9 +84,12 @@ it("opens only HTTP(S) links from the focused published-app frame in the system 
       disposition: "foreground-tab",
       referrer: { url: "", policy: "no-referrer" },
     });
-  for (const url of ["https://example.com", "http://example.com"]) {
+  for (const url of ["https://example.com/", "http://example.com/"]) {
     expect(open(url)).toEqual({ action: "deny" });
-    expect(shell.openExternal).toHaveBeenLastCalledWith(url);
+    expect(contents.send).toHaveBeenLastCalledWith(desktopBridgeChannels.appLink, {
+      url,
+      source: appUrl,
+    });
   }
   for (const url of [
     "file:///etc/passwd",
@@ -90,12 +100,19 @@ it("opens only HTTP(S) links from the focused published-app frame in the system 
     open(url);
   contents.focusedFrame.url = "app://opensteer";
   open("https://example.com/untrusted-source");
-  expect(shell.openExternal).toHaveBeenCalledTimes(2);
+  expect(contents.send).toHaveBeenCalledTimes(2);
+  expect(shell.openExternal).not.toHaveBeenCalled();
 });
 
 it("keeps only same-prefix app frame navigations inside the renderer", () => {
   const prefix = `opensteer-app://view/v1/apps/app_11111111-1111-4111-8111-111111111111/dark/${"a".repeat(43)}/`;
-  const contents = { focusedFrame: { url: prefix }, setWindowOpenHandler: vi.fn(), on: vi.fn() };
+  const contents = {
+    focusedFrame: { url: prefix },
+    setWindowOpenHandler: vi.fn(),
+    on: vi.fn(),
+    send: vi.fn(),
+    isDestroyed: () => false,
+  };
   configureDesktopWindowNavigation(
     contents as unknown as WebContents,
     new DesktopAppOriginPolicy(),
@@ -153,7 +170,13 @@ it("leaves a frame an app embeds to the network policy", () => {
   const origin = `http://${"a".repeat(26)}.localhost:4310`;
   const policy = new DesktopAppOriginPolicy();
   policy.setAttachedHost("http://127.0.0.1:4310");
-  const contents = { focusedFrame: { url: origin }, setWindowOpenHandler: vi.fn(), on: vi.fn() };
+  const contents = {
+    focusedFrame: { url: origin },
+    setWindowOpenHandler: vi.fn(),
+    on: vi.fn(),
+    send: vi.fn(),
+    isDestroyed: () => false,
+  };
   configureDesktopWindowNavigation(contents as unknown as WebContents, policy);
   const redirect = contents.on.mock.calls.find(([name]) => name === "will-redirect")![1] as (
     event: unknown,
@@ -186,7 +209,13 @@ it("keeps real-origin redirects inside the app and opens departures externally",
   const origin = `http://${"a".repeat(26)}.localhost:4310`;
   const policy = new DesktopAppOriginPolicy();
   policy.setAttachedHost("http://127.0.0.1:4310");
-  const contents = { focusedFrame: { url: origin }, setWindowOpenHandler: vi.fn(), on: vi.fn() };
+  const contents = {
+    focusedFrame: { url: origin },
+    setWindowOpenHandler: vi.fn(),
+    on: vi.fn(),
+    send: vi.fn(),
+    isDestroyed: () => false,
+  };
   configureDesktopWindowNavigation(contents as unknown as WebContents, policy);
   const redirect = contents.on.mock.calls.find(
     ([name]) => name === "will-redirect",
@@ -218,5 +247,9 @@ it("keeps real-origin redirects inside the app and opens departures externally",
     redirect({ isMainFrame: false, frame: { url: origin }, url, preventDefault });
     expect(preventDefault).toHaveBeenCalledTimes(denied ? 1 : 0);
   }
-  expect(shell.openExternal).toHaveBeenCalledWith("https://external.test");
+  expect(contents.send).toHaveBeenCalledExactlyOnceWith(desktopBridgeChannels.appLink, {
+    url: "https://external.test",
+    source: origin,
+  });
+  expect(shell.openExternal).not.toHaveBeenCalled();
 });
