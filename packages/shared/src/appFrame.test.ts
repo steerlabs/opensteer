@@ -121,6 +121,13 @@ it("reads a bootstrap's request to open a page only as a web address", async () 
     expect(appLinkRequest(hostile)).toBeNull();
 });
 
+it("reads a bootstrap's press report only as exactly that", async () => {
+  const { appPressReport } = await import("./appFrame.js");
+  expect(appPressReport({ press: true })).toBe(true);
+  for (const other of [null, true, {}, { press: 1 }, { press: "true" }, { url: "https://a.test/" }])
+    expect(appPressReport(other)).toBe(false);
+});
+
 it("routes an app's departures through its own port, set up before the app's scripts", async () => {
   const { appLinkPortMessage } = await import("./appFrame.js");
   const document = prepareAppHtml(
