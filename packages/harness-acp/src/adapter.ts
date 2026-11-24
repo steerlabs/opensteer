@@ -96,6 +96,8 @@ interface ActiveTurn {
   readonly finishedTools: Set<string>;
   /** Prompt sequences whose `session/prompt` RPC has not settled yet. */
   readonly livePrompts: Set<number>;
+  /** Waiters woken when incoming session activity or earlier prompt settlement admits a steer. */
+  readonly steerAdmitWaiters: Set<() => void>;
   assistantHoldActive: boolean;
   guidanceTicket?: GuidanceTicket;
   heldAssistantCharacters: number;
@@ -308,6 +310,7 @@ class AcpHarnessSession implements HarnessSession {
       runId: run.runId,
       runSignal: run.signal,
       livePrompts: new Set(),
+      steerAdmitWaiters: new Set(),
       promptSequence: 0,
       terminal: false,
       stderrStart: this.#stderrPosition(),
@@ -403,6 +406,7 @@ class AcpHarnessSession implements HarnessSession {
     try {
       const result = await promptPromise;
       active.livePrompts.delete(sequence);
+      for (const wake of active.steerAdmitWaiters) wake();
       if (result.usage && !active.terminal) active.usage = result.usage;
       if (active.terminal || superseded()) return;
       const heldDecision = await this.#settleHeldAssistant(active);
@@ -454,13 +458,8 @@ class AcpHarnessSession implements HarnessSession {
       this.#finish(active, interrupted() ? "interrupted" : "completed");
     } catch (error) {
       active.livePrompts.delete(sequence);
+      for (const wake of active.steerAdmitWaiters) wake();
       if (active.terminal || superseded()) return;
-      // If a steering prompt was rejected while an earlier prompt is still live on the
-      // wire, restore ownership to that still-running prompt rather than killing the Run.
-      if (sequence > 1 && active.livePrompts.size > 0 && !interrupted() && !this.#processEnded) {
-        active.promptSequence = Math.max(...active.livePrompts);
-        return;
-      }
       const heldDecision = await this.#settleHeldAssistant(active);
       if (active.terminal || superseded()) return;
       if (interrupted()) {
@@ -552,9 +551,64 @@ class AcpHarnessSession implements HarnessSession {
       blocks,
       this.#lifetime.signal,
     );
+    // Wait briefly for an immediate provider rejection (e.g. busy) before declaring
+    // the steer delivered to the Runner. Any earlier prompt settlement, incoming
+    // session update, or the short admission window confirms the request was accepted
+    // on the wire without blocking long-running turns.
+    let admissionDone = false;
+    const admission = new Promise<void>((resolve, reject) => {
+      const finish = (error?: unknown) => {
+        if (admissionDone) return;
+        admissionDone = true;
+        clearTimeout(timer);
+        active.steerAdmitWaiters.delete(onActivity);
+        if (error !== undefined) reject(error);
+        else resolve();
+      };
+      const onActivity = () => finish();
+      const timer = setTimeout(() => finish(), steerAdmissionWindowMs);
+      active.steerAdmitWaiters.add(onActivity);
+      void promptPromise.then(
+        () => finish(),
+        (error: unknown) => finish(error),
+      );
+    });
     active.promptSequence = sequence;
     active.livePrompts.add(sequence);
     active.stderrStart = stderrStart;
+    try {
+      await admission;
+    } catch (error) {
+      active.livePrompts.delete(sequence);
+      if (active.promptSequence === sequence) {
+        if (active.livePrompts.size > 0) {
+          active.promptSequence = Math.max(...active.livePrompts);
+        } else if (!active.terminal) {
+          if (active.interruptRequested || active.runSignal.aborted || this.#closed) {
+            this.#finish(active, "interrupted");
+          } else {
+            const interpretation = this.#options.hooks.classifyError(error, {
+              operation: "prompt",
+              providerSessionReference: this.providerSessionReference,
+              stderrBeforePrompt: this.#stderrBefore(stderrStart),
+              stderrTail: this.#stderrSince(stderrStart),
+            });
+            if (interpretation.code === harnessSessionBrokenFailureCode) {
+              this.#publisher.latchUnusable(interpretation);
+            }
+            this.#fail(active, interpretation);
+          }
+        }
+      }
+      throw new OpensteerError({
+        cause: error,
+        code: "conflict",
+        message:
+          error instanceof Error && error.message
+            ? `ACP rejected the follow-up steer: ${error.message}`
+            : "ACP rejected the follow-up steer",
+      });
+    }
     void this.#followPrompt(active, sequence, promptPromise, checkOutcome);
   }
 
@@ -825,6 +879,9 @@ class AcpHarnessSession implements HarnessSession {
     const foreign = sessionId !== this.#providerSessionReference;
     const sessionKey = active.childSessions.get(sessionId);
     if (foreign && !sessionKey) return;
+    if (!foreign) {
+      for (const wake of active.steerAdmitWaiters) wake();
+    }
     for (const entry of normalized) {
       const nodeKey = foreign ? sessionKey : entry.nodeKey;
       if (nodeKey && !active.nodes.nodeId(nodeKey)) continue;
@@ -1384,6 +1441,8 @@ function acpFailure(error: OpensteerError): {
     retryable: error.retryable,
   };
 }
+
+const steerAdmissionWindowMs = 50;
 
 const credentialNamePattern =
   /(?:API_KEY|ACCESS_KEY|AUTHORIZATION|COOKIE|CREDENTIAL|PASSWORD|PRIVATE_KEY|SECRET|TOKEN)/iu;
