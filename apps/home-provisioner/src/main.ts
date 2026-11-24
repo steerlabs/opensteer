@@ -78,6 +78,8 @@ async function main(): Promise<void> {
     undefined,
     "google",
     true,
+    // Pool hosts are created in the Homes' own subnet (google-compute.ts, createPoolHost).
+    config.pool.homeCidr,
   );
   const googleProvider = new GoogleCompute({
     ...http,

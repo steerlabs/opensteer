@@ -121,6 +121,8 @@ export function accountClient(
   holder: string = randomUUID(),
   provider?: "google",
   poolConfigured?: boolean,
+  /** The subnet it creates Homes and pool hosts in, which each Home's firewall may reach. */
+  poolNetwork?: string,
 ): AccountApi {
   const headers = async (signal: AbortSignal) => ({
     authorization: `Bearer ${await token(signal)}`,
@@ -136,7 +138,11 @@ export function accountClient(
         json(z.object({ acquired: z.literal(true) })),
         {
           method: "POST",
-          body: poolConfigured !== undefined ? { holder, poolConfigured } : { holder },
+          body: {
+            holder,
+            ...(poolConfigured !== undefined ? { poolConfigured } : {}),
+            ...(poolNetwork !== undefined ? { poolNetwork } : {}),
+          },
           headers: await headers(signal),
         },
       );

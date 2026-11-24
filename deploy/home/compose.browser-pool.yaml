@@ -21,6 +21,9 @@ services:
     cpus: ${OPENSTEER_HOME_LIMIT_RUNNER_CPUS:?Machine limits required}
     mem_limit: ${OPENSTEER_HOME_LIMIT_RUNNER_MEMORY:?Machine limits required}
     memswap_limit: ${OPENSTEER_HOME_LIMIT_RUNNER_MEMORY:?Machine limits required}
+    environment:
+      # As many Runs at once as its memory holds (home_limits); the Host holds the next back.
+      OPENSTEER_MAX_CONCURRENT_RUNS: ${OPENSTEER_HOME_LIMIT_RUNNER_RUNS:?Machine limits required}
   # No browser runs in the VM: not Chromium, not the person's profiles, and no egress proxy that
   # could send a page out from the VM's own address. Compose creates no container for either.
   browser-runtime:

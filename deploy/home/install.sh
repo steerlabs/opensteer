@@ -240,6 +240,7 @@ else
     touch "$home_dir/managed"
     # Pooled only by the boot answer's own flag: never inferred from a missing egress.
     if jq -e '.browserPool == true' "$result" >/dev/null; then touch "$home_dir/browser-pool"; fi
+    save_pool_network "$result"
     if valid_managed_egress "$result"; then
       save_managed_egress "$result"
     fi

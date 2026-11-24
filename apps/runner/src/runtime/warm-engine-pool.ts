@@ -46,10 +46,22 @@ export interface WarmEngine {
 const gibibyte = 1024 ** 3;
 
 /**
+ * The memory this Runner may use: its container's (cgroup's) limit when it has
+ * one below the machine's memory, the machine's otherwise. A Cloud Computer's
+ * Runner is limited well below its VM.
+ */
+export function runnerMemoryBytes(
+  constrained: number | undefined = process.constrainedMemory(),
+  total: number = totalmem(),
+): number {
+  return constrained !== undefined && constrained > 0 && constrained < total ? constrained : total;
+}
+
+/**
  * How many idle engines a computer keeps warm. Each is a resident provider
  * process tree, so a small laptop keeps one or two rather than eight.
  */
-export function warmEngineIdleCap(totalMemoryBytes: number = totalmem()): number {
+export function warmEngineIdleCap(totalMemoryBytes: number = runnerMemoryBytes()): number {
   if (totalMemoryBytes <= 4 * gibibyte) return 1;
   if (totalMemoryBytes <= 8 * gibibyte) return 2;
   return 8;

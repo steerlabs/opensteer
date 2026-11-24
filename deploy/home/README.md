@@ -146,11 +146,19 @@ An Opensteer Cloud Computer's Home is different in two ways, both set by
   Runner what remains. No CPU limit exceeds the machine's CPU count: the
   Runner may use every CPU, and the Host and PostgreSQL up to two each. A
   machine where the Runner would get less than 768 MiB is refused. The
+  Runner runs as many Runs at once as its memory holds at 1 GiB each, at
+  least one, and the Host holds the next one back until one ends. The 1 GiB
+  is a placeholder until a Run is measured on a real Cloud Computer. The
   `OPENSTEER_HOME_*` limit settings above do not apply to it.
+- **It reaches its pool host and nothing else private.** The boot answer's
+  `browserPoolNetwork` (a private subnet and the agent and relay ports) is kept
+  in `pool-network`, and `firewall.sh` allows TCP to that subnet on those two
+  ports before it rejects every private range. Without it the Home reaches
+  nothing private; a malformed or wider one stops the Home from starting.
 
 On Compute Engine's default `e2-medium` (2 vCPUs, 4 GiB) that gives PostgreSQL
 512 MiB, the Host 768 MiB, Caddy and Channel Runtime 256 MiB each, and the
-Runner 1280 MiB and both CPUs. Linux reports somewhat less than 4 GiB as the
+Runner 1280 MiB and both CPUs: one Run at a time. Linux reports somewhat less than 4 GiB as the
 machine's memory, and the Runner's share shrinks by that difference (1100 MiB
 if it reports 3916 MiB). Measured idle, with nobody signed in, the Host used
 189 MiB, the Runner 229 MiB, Channel Runtime 65 MiB, PostgreSQL 14 MiB and

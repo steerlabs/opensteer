@@ -2,6 +2,7 @@ import { createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
 import { openSync, closeSync, fstatSync, readFileSync, constants } from "node:fs";
 import { isBareOrigin, refused } from "@opensteer/core";
 import {
+  BrowserPoolNetworkCidrSchema,
   CloudComputerHostnameSchema,
   defaultBrowserPoolAdminPort,
 } from "@opensteer/control-plane-protocol";
@@ -48,7 +49,8 @@ const googleSchema = z.object({
 const ipv4Cidr = z.string().regex(/^(?:\d{1,3}\.){3}\d{1,3}\/(?:[0-9]|[12][0-9]|3[0-2])$/u);
 
 const poolSchema = z.object({
-  OPENSTEER_POOL_HOME_CIDR: ipv4Cidr,
+  // Each Home's firewall opens exactly this network (on the pool's two ports): private only.
+  OPENSTEER_POOL_HOME_CIDR: BrowserPoolNetworkCidrSchema,
   OPENSTEER_POOL_PROVISIONER_CIDR: ipv4Cidr,
   OPENSTEER_POOL_LOCAL_SSD_COUNT: integer(1, 24).default(1),
   OPENSTEER_POOL_BOOT_DISK_SIZE_GB: integer(20, 65_536).default(40),

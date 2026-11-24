@@ -30,6 +30,11 @@ it("refuses to start without the browser pool, since every Cloud Computer's brow
   expect(() => loadConfig({ ...google, OPENSTEER_POOL_PROVISIONER_KEY: provisionerKey })).toThrow(
     "OPENSTEER_POOL_HOME_CIDR",
   );
+  // The Homes' subnet is the one network each Home's firewall opens: never a public or wider one.
+  for (const cidr of ["0.0.0.0/0", "8.8.8.0/24", "10.128.0.1/20"])
+    expect(() => loadConfig({ ...google, ...pool, OPENSTEER_POOL_HOME_CIDR: cidr })).toThrow(
+      "OPENSTEER_POOL_HOME_CIDR",
+    );
   expect(loadConfig({ ...google, ...pool }).pool).toMatchObject({
     homeCidr: "10.40.0.0/20",
     provisionerCidr: "10.50.0.0/24",

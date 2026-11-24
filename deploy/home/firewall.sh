@@ -1,6 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[[ ( $# == 1 || ( $# -ge 2 && $# -le 3 && ( $2 == check || $2 == apply ) && ( ${3:-false} == true || ${3:-false} == false ) ) ) && $1 =~ ^[1-9][0-9]*$ ]] || { echo 'Home firewall requires the namespace owner PID.' >&2; exit 1; }
+[[ ( $# == 1 || ( ( $# == 2 || $# == 3 || $# == 5 ) && ( $2 == check || $2 == apply ) && ( ${3:-false} == true || ${3:-false} == false ) ) ) && $1 =~ ^[1-9][0-9]*$ ]] || { echo 'Home firewall requires the namespace owner PID.' >&2; exit 1; }
+
+# A Cloud Computer's pool network: <private IPv4 CIDR> <agent port>,<relay port>, from its boot
+# answer. The only private destination the pod may reach, and only on those two TCP ports. Why
+# that is narrow enough: Google's own rule (opensteer-pool-hosts-home) lets only machines tagged
+# as Cloud Computers reach machines tagged as pool hosts, on exactly these ports; other Homes in
+# the subnet listen on neither, and Google's rules do not let Homes reach each other. The agent
+# port answers only requests signed with the key the Home registered for its slot, and the relay
+# only a TLS client holding the relay key registered for it. The Host, Runner, gateway and Channel
+# Runtime share this one network namespace (and one uid), so this one rule serves them all.
+pool_rule=''
+if (($# == 5)); then
+  pool_cidr=$4 pool_ports=$5
+  valid_pool=false
+  if [[ $pool_cidr =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})/([1-9]|[12][0-9]|3[0-2])$ ]]; then
+    a=${BASH_REMATCH[1]} b=${BASH_REMATCH[2]} c=${BASH_REMATCH[3]} d=${BASH_REMATCH[4]} prefix=${BASH_REMATCH[5]}
+    if ((a <= 255 && b <= 255 && c <= 255 && d <= 255)); then
+      address=$(((a << 24) | (b << 16) | (c << 8) | d))
+      if ((address % (1 << (32 - prefix)) == 0)) &&
+        { ((a == 10 && prefix >= 8)) || ((a == 172 && b >= 16 && b <= 31 && prefix >= 12)) ||
+          ((a == 192 && b == 168 && prefix >= 16)); }; then
+        valid_pool=true
+      fi
+    fi
+  fi
+  if [[ $pool_ports =~ ^([1-9][0-9]{0,4}),([1-9][0-9]{0,4})$ ]] &&
+    ((BASH_REMATCH[1] <= 65535 && BASH_REMATCH[2] <= 65535 && BASH_REMATCH[1] != BASH_REMATCH[2])); then
+    :
+  else
+    valid_pool=false
+  fi
+  $valid_pool || { echo 'Home firewall refused an invalid pool network.' >&2; exit 1; }
+  pool_rule="-A OPENSTEER-HOME -d $pool_cidr -p tcp -m multiport --dports $pool_ports -j RETURN"
+fi
 
 policy() {
   local tool=$1 loopback=$2
@@ -10,6 +43,7 @@ policy() {
     printf '%s\n' "-A OPENSTEER-HOME -d $loopback -o lo -j RETURN"
     printf '%s\n' '-A OPENSTEER-HOME -m conntrack --ctstate RELATED,ESTABLISHED --ctdir REPLY -j RETURN'
     printf '%s\n' '-A OPENSTEER-HOME -p tcp -m multiport --dports 25,465,587 -j REJECT'
+    if [[ $tool == iptables-restore && -n $pool_rule ]]; then printf '%s\n' "$pool_rule"; fi
     if [[ $tool == ip6tables-restore && $ipv6 == true ]]; then
       # Local IPv6 neighbor discovery is required to reply on published IPv6 ports.
       for type in 135 136; do

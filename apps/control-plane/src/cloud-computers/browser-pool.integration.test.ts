@@ -316,12 +316,15 @@ integration("Browser pool Account service", () => {
       authorization: "Bearer provisioner-ok",
       [cloudComputerLeaseHeader]: leaseHolder,
     };
-    const acquireLease = async (poolConfigured = slotsPerHost !== undefined) => {
+    const acquireLease = async (
+      poolConfigured = slotsPerHost !== undefined,
+      poolNetwork?: string,
+    ) => {
       const response = await app.inject({
         method: "POST",
         url: cloudComputerLeasePath,
         headers: { authorization: "Bearer provisioner-ok" },
-        payload: { holder: leaseHolder, poolConfigured },
+        payload: { holder: leaseHolder, poolConfigured, ...(poolNetwork ? { poolNetwork } : {}) },
       });
       expect(response.statusCode).toBe(200);
     };
@@ -692,7 +695,8 @@ integration("Browser pool Account service", () => {
     );
     const h = await buildHarness("2");
     try {
-      await h.acquireLease(true);
+      // The provisioner's Home subnet, where it creates the pool hosts too.
+      await h.acquireLease(true, "10.128.0.0/20");
       // A free egress endpoint is never handed to the Home: only its pool host holds one (T9).
       await h.cloudStore.addEgressEndpoint({
         url: "https://egress.example.test:8443",
@@ -723,6 +727,26 @@ integration("Browser pool Account service", () => {
       const { boot } = await h.bootAndClaimComputer(computer, accountId);
       expect(boot.browserPool).toBe(true);
       expect(boot).not.toHaveProperty("egress");
+      // The only private network its firewall lets it reach: the pool's, on the two ports.
+      expect(boot.browserPoolNetwork).toEqual({
+        cidr: "10.128.0.0/20",
+        agentPort: 7310,
+        relayPort: 7312,
+      });
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("gives a Home no pool network when the provisioner holding the lease reported none", async () => {
+    const h = await buildHarness("2");
+    try {
+      await h.acquireLease(true);
+      const { accountId, computer } = await h.provisionComputer(1);
+      const { boot } = await h.bootAndClaimComputer(computer, accountId);
+      expect(boot.browserPool).toBe(true);
+      // Its firewall then opens nothing private: it fails closed toward the pool.
+      expect(boot).not.toHaveProperty("browserPoolNetwork");
     } finally {
       await h.app.close();
     }

@@ -186,7 +186,8 @@ export const browserPoolMigration = {
  * `browser_mode = 'local'`, moves forward and is never dropped: a live one gets its pool slot
  * (the pool's default guest size, as a slot made today would get without overrides); one already
  * deleted or being deleted had no slot and has none to erase. Its VM keeps its old in-VM browser
- * until it is replaced, whose boot answer then says browserPool.
+ * until it is replaced, whose boot answer then says browserPool. The provisioner's lease also
+ * keeps the network its pool hosts live in, which each Home's boot answer carries for its firewall.
  */
 export async function upBrowserAlwaysPooledMigration(
   db: Kysely<ControlPlaneDatabaseSchema>,
@@ -216,6 +217,15 @@ export async function upBrowserAlwaysPooledMigration(
       alter column browser_mode set default 'pool',
       drop constraint cloud_computers_browser_mode_check,
       add constraint cloud_computers_browser_mode_check check (browser_mode = 'pool')
+  `.execute(db);
+  await sql`
+    alter table cloud_computer_provisioner_lease
+      add column if not exists pool_network cidr
+        constraint cloud_computer_provisioner_lease_pool_network_check check (
+          pool_network <<= '10.0.0.0/8'
+          or pool_network <<= '172.16.0.0/12'
+          or pool_network <<= '192.168.0.0/16'
+        )
   `.execute(db);
 }
 

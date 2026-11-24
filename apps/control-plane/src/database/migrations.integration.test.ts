@@ -449,7 +449,7 @@ integration("browser pool expand-only migration (0036_browser_pool)", () => {
   });
 });
 
-integration("every Cloud Computer's browser in the pool (0039_browser_always_pooled)", () => {
+integration("every Cloud Computer's browser in the pool (0040_browser_always_pooled)", () => {
   const databaseName = `opensteer_always_pooled_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
   let maintenance: Pool;
   let database: Kysely<ControlPlaneDatabaseSchema>;
@@ -472,7 +472,9 @@ integration("every Cloud Computer's browser in the pool (0039_browser_always_poo
         drop constraint cloud_computers_browser_mode_check,
         add constraint cloud_computers_browser_mode_check check (browser_mode in ('local', 'pool')),
         alter column browser_mode set default 'local';
-      delete from public.kysely_migration where name = '0039_browser_always_pooled';
+      alter table public.cloud_computer_provisioner_lease drop column pool_network;
+      -- This migration and any after it, which the migrator then runs again in name order.
+      delete from public.kysely_migration where name >= '0040_browser_always_pooled';
     `.execute(database);
   });
   afterAll(async () => {
@@ -544,6 +546,13 @@ integration("every Cloud Computer's browser in the pool (0039_browser_always_poo
         database,
       ),
     ).rejects.toThrow(/cloud_computers_browser_mode_check/u);
+    // The lease keeps the pool network its provisioner reported, a private one only.
+    await expect(
+      sql`
+        insert into public.cloud_computer_provisioner_lease (singleton, holder, expires_at, pool_network)
+        values (true, gen_random_uuid(), now(), '8.8.8.0/24')
+      `.execute(database),
+    ).rejects.toThrow(/pool_network/u);
   });
 });
 

@@ -144,7 +144,12 @@ it("sizes a Cloud Computer's Home from its machine: no limit adds up past it, ro
           `OPENSTEER_HOME_LIMIT_${name}_CPUS`,
           `OPENSTEER_HOME_LIMIT_${name}_MEMORY`,
         ])
+        .concat("OPENSTEER_HOME_LIMIT_RUNNER_RUNS")
         .sort(),
+    );
+    // Runs at once: the Runner's memory over the allowance for one Run (1 GiB), at least one.
+    expect(limits.OPENSTEER_HOME_LIMIT_RUNNER_RUNS).toBe(
+      `${Math.max(1, Math.floor(mebibytes(limits.OPENSTEER_HOME_LIMIT_RUNNER_MEMORY!) / 1024))}`,
     );
     const total = Object.values(pooledServices).reduce(
       (sum, name) => sum + mebibytes(limits[`OPENSTEER_HOME_LIMIT_${name}_MEMORY`]!),
@@ -173,10 +178,14 @@ it("sizes a Cloud Computer's Home from its machine: no limit adds up past it, ro
     OPENSTEER_HOME_LIMIT_GATEWAY_MEMORY: "256m",
     OPENSTEER_HOME_LIMIT_RUNNER_CPUS: "2",
     OPENSTEER_HOME_LIMIT_RUNNER_MEMORY: "1280m",
+    // An e2-medium runs one Run at a time; a second waits for it.
+    OPENSTEER_HOME_LIMIT_RUNNER_RUNS: "1",
     OPENSTEER_HOME_LIMIT_CHANNEL_CPUS: "1",
     OPENSTEER_HOME_LIMIT_CHANNEL_MEMORY: "256m",
   });
   expect(homeLimits(16384, 4).OPENSTEER_HOME_LIMIT_RUNNER_MEMORY).toBe("9984m");
+  expect(homeLimits(16384, 4).OPENSTEER_HOME_LIMIT_RUNNER_RUNS).toBe("9");
+  expect(homeLimits(8192, 2).OPENSTEER_HOME_LIMIT_RUNNER_RUNS).toBe("4");
 });
 
 it("refuses a machine too small for a Cloud Computer's Home instead of overcommitting it", () => {
@@ -194,8 +203,13 @@ it("applies the machine's limits on a pooled Cloud Computer only, never on a sel
       mem_limit: `\${OPENSTEER_HOME_LIMIT_${name}_MEMORY:?Machine limits required}`,
       memswap_limit: `\${OPENSTEER_HOME_LIMIT_${name}_MEMORY:?Machine limits required}`,
     });
-  // The self-hosted recipe keeps its own limits and their OPENSTEER_HOME_* overrides.
+  expect(override.services.runner?.environment).toEqual({
+    OPENSTEER_MAX_CONCURRENT_RUNS: "${OPENSTEER_HOME_LIMIT_RUNNER_RUNS:?Machine limits required}",
+  });
+  // The self-hosted recipe keeps its own limits and their OPENSTEER_HOME_* overrides, and the
+  // Runner's own default number of Runs.
   expect(read("compose.yaml")).not.toContain("OPENSTEER_HOME_LIMIT_");
+  expect(read("compose.yaml")).not.toContain("OPENSTEER_MAX_CONCURRENT_RUNS");
   expect(composeEnvironment(["managed", "browser-pool"])).toContain(
     "OPENSTEER_HOME_LIMIT_RUNNER_MEMORY=1280m",
   );

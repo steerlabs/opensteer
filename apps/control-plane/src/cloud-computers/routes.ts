@@ -133,8 +133,8 @@ export function registerCloudComputerRoutes(
   app.post(cloudComputerLeasePath, async (request, reply) => {
     privateResponse(reply);
     await options.verifyProvisioner(request.headers.authorization);
-    const { holder, poolConfigured } = CloudComputerLeaseSchema.parse(request.body);
-    if (!(await store.lease(holder, true, poolConfigured))) {
+    const { holder, poolConfigured, poolNetwork } = CloudComputerLeaseSchema.parse(request.body);
+    if (!(await store.lease(holder, true, poolConfigured, poolNetwork))) {
       throw new ControlPlaneError("conflict", "Another Cloud Computer provisioner holds the lease");
     }
     return { acquired: true };

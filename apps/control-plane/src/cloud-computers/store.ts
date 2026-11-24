@@ -15,6 +15,7 @@ import {
   cloudWords,
   type ManagedHomeClaimReceipt,
   CloudComputerBootReleaseSchema,
+  CloudComputerBrowserPoolNetworkSchema,
   CloudComputerBootResponseSchema,
   CloudComputerDesiredSchema,
   CloudComputerManagedHomeSchema,
@@ -1085,20 +1086,32 @@ export class CloudComputerStore {
       throw new ControlPlaneError("conflict", "The holder does not have an expired lease");
   }
 
-  async lease(holder: string, acquire: boolean, poolConfigured?: boolean): Promise<boolean> {
+  async lease(
+    holder: string,
+    acquire: boolean,
+    poolConfigured?: boolean,
+    poolNetwork?: string,
+  ): Promise<boolean> {
     const now = this.#now();
     const expires = new Date(now.getTime() + 10 * 60_000);
     const poolFlag = poolConfigured ?? null;
+    const network = poolNetwork ?? null;
     const result = acquire
       ? await sql`
-          insert into cloud_computer_provisioner_lease (singleton, holder, expires_at, pool_configured)
-          values (true, ${holder}::uuid, ${expires}, ${poolFlag})
+          insert into cloud_computer_provisioner_lease
+            (singleton, holder, expires_at, pool_configured, pool_network)
+          values (true, ${holder}::uuid, ${expires}, ${poolFlag}, ${network}::cidr)
           on conflict (singleton) do update set
             holder = excluded.holder,
             expires_at = excluded.expires_at,
             pool_configured = case
               when ${poolFlag}::boolean is not null then ${poolFlag}::boolean
               when cloud_computer_provisioner_lease.holder = excluded.holder then cloud_computer_provisioner_lease.pool_configured
+              else null
+            end,
+            pool_network = case
+              when ${network}::cidr is not null then ${network}::cidr
+              when cloud_computer_provisioner_lease.holder = excluded.holder then cloud_computer_provisioner_lease.pool_network
               else null
             end
           where cloud_computer_provisioner_lease.expires_at <= ${now}
@@ -1648,6 +1661,7 @@ export class CloudComputerStore {
           .executeTakeFirstOrThrow();
       }
       const { endpoint: backupEndpoint, bucket, prefix } = backup;
+      const poolNetwork = await this.#poolNetwork(tx);
       return {
         managedHome,
         ipv6Enabled: row.ipv6Enabled,
@@ -1664,6 +1678,8 @@ export class CloudComputerStore {
           : {}),
         // Its browser runs on a pool host, which alone holds its egress password (T9).
         browserPool: true,
+        // The pool network its firewall may reach; without one it reaches nothing private.
+        ...(poolNetwork ? { browserPoolNetwork: poolNetwork } : {}),
         backup: {
           endpoint: backupEndpoint,
           bucket,
@@ -1675,6 +1691,21 @@ export class CloudComputerStore {
         },
       };
     });
+  }
+
+  /**
+   * The network the provisioner holding the lease creates pool hosts in, with the ports this
+   * account publishes in each Home's pool target: one source for each.
+   */
+  async #poolNetwork(tx: TransactionDb) {
+    const result = await sql<{ poolNetwork: string | null }>`
+      select host(pool_network) || '/' || masklen(pool_network) as "poolNetwork"
+        from cloud_computer_provisioner_lease where singleton
+    `.execute(tx);
+    const cidr = result.rows[0]?.poolNetwork;
+    if (!cidr) return undefined;
+    const { agentPort, relayPort } = this.#options.config.browserPool;
+    return CloudComputerBrowserPoolNetworkSchema.parse({ cidr, agentPort, relayPort });
   }
 
   #egressCredentials(endpoint: Selectable<CloudComputerEgressEndpointTable>) {

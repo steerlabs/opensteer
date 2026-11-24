@@ -537,7 +537,8 @@ const migrationProvider = {
       // A Cloud Computer is one person's, bought and paid by that person.
       ...onePersonAccountMigrations,
       "0038_remove_platform_verification": platformVerificationRemovalMigration,
-      "0039_browser_always_pooled": browserAlwaysPooledMigration,
+      // Lands after 0039 (problem reports): the migrator applies in name order.
+      "0040_browser_always_pooled": browserAlwaysPooledMigration,
     };
   },
 };

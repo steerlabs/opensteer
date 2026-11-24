@@ -198,9 +198,52 @@ export type CloudComputerReport = z.infer<typeof CloudComputerReportSchema>;
 export const CloudComputerReportResponseSchema = z.object({ recorded: z.boolean() });
 export type CloudComputerReportResponse = z.infer<typeof CloudComputerReportResponseSchema>;
 
+/** Whether `text` is a private IPv4 network (10/8, 172.16/12, 192.168/16) at its own address. */
+function isPrivateIpv4Network(text: string): boolean {
+  const match =
+    /^(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\/([1-9]|[12]\d|3[0-2])$/u.exec(
+      text,
+    );
+  if (!match) return false;
+  const octets = match.slice(1, 5).map(Number);
+  if (octets.some((octet) => octet > 255)) return false;
+  const prefix = Number(match[5]);
+  const address = octets.reduce((value, octet) => value * 256 + octet, 0);
+  const hostSize = 2 ** (32 - prefix);
+  if (address % hostSize !== 0) return false;
+  const [a, b] = octets as [number, number];
+  return (
+    (a === 10 && prefix >= 8) ||
+    (a === 172 && b >= 16 && b <= 31 && prefix >= 12) ||
+    (a === 192 && b === 168 && prefix >= 16)
+  );
+}
+
+/**
+ * The network a Cloud Computer's pool hosts live in: the provisioner's Home subnet, where it
+ * creates both Homes and pool hosts. Always private, and never wider than a private range.
+ */
+export const BrowserPoolNetworkCidrSchema = z
+  .string()
+  .refine(isPrivateIpv4Network, "Expected a private IPv4 network at its own address");
+
+const poolPortSchema = z.number().int().min(1).max(65_535);
+
+/** What a Cloud Computer's Home may reach of the browser pool: that network, on two ports. */
+export const CloudComputerBrowserPoolNetworkSchema = z
+  .strictObject({
+    cidr: BrowserPoolNetworkCidrSchema,
+    agentPort: poolPortSchema,
+    relayPort: poolPortSchema,
+  })
+  .refine((network) => network.agentPort !== network.relayPort, "Expected two different ports");
+export type CloudComputerBrowserPoolNetwork = z.infer<typeof CloudComputerBrowserPoolNetworkSchema>;
+
 export const CloudComputerLeaseSchema = z.strictObject({
   holder: z.uuid(),
   poolConfigured: z.boolean().optional(),
+  /** The provisioner's Home subnet, where its pool hosts live too. */
+  poolNetwork: BrowserPoolNetworkCidrSchema.optional(),
 });
 export const CloudComputerCheckSchema = z.discriminatedUnion("operation", [
   z.strictObject({ operation: z.literal("orphan") }),
@@ -327,6 +370,8 @@ export const CloudComputerBootResponseSchema = z.strictObject({
   egress: CloudComputerEgressSchema.optional(),
   managedHome: CloudComputerManagedHomeSchema.optional(),
   browserPool: z.boolean().optional(),
+  /** With browserPool: the only private network, and ports, the Home's firewall lets it reach. */
+  browserPoolNetwork: CloudComputerBrowserPoolNetworkSchema.optional(),
   ipv6Enabled: z.boolean(),
   restoreSnapshot: CloudComputerSnapshotSchema.optional(),
   backup: z.strictObject({

@@ -77,9 +77,14 @@ clamp() { if (($1 < $2)); then echo "$2"; elif (($1 > $3)); then echo "$3"; else
 # runs here). The memory limits add up to the machine less what the kernel, Docker and the system
 # keep (an eighth of it, at least 1 GiB: a Cloud Computer measured idle used about 800 MiB outside
 # its containers), so the services together can never take more than the machine has. CPU limits are each service's ceiling of CPU time, not a reservation: none is above
-# the machine's CPU count, and the Runner may use them all.
+# the machine's CPU count, and the Runner may use them all. The Runner runs as many Runs at once as
+# its memory holds at run_allowance MiB each, at least one; the Host holds the next one back until
+# one ends.
 home_limits() {
-  local memory=$1 cpus=$2 reserve budget postgres host agents two small=256
+  local memory=$1 cpus=$2 reserve budget postgres host agents runs two small=256
+  # Memory for one Run of the person's own agents. PLACEHOLDER: 1 GiB until a Run is measured on
+  # a real Cloud Computer; replace it with that figure.
+  local run_allowance=1024
   [[ $memory =~ ^[0-9]+$ ]] || fail "Invalid machine memory: $memory"
   if [[ ! $cpus =~ ^[0-9]+$ ]] || ((cpus < 1)); then fail "Invalid machine CPU count: $cpus"; fi
   reserve=$(clamp $((memory / 8)) 1024 "$memory")
@@ -88,12 +93,14 @@ home_limits() {
   host=$(clamp $((budget / 5)) 768 2048)
   agents=$((budget - postgres - host - 2 * small))
   ((agents >= 768)) || fail "This machine (${memory} MiB) is too small for a Cloud Computer's Home."
+  runs=$(clamp $((agents / run_allowance)) 1 "$agents")
   two=$(clamp 2 1 "$cpus")
   printf '%s\n' \
     "OPENSTEER_HOME_LIMIT_POSTGRES_CPUS=$two" "OPENSTEER_HOME_LIMIT_POSTGRES_MEMORY=${postgres}m" \
     "OPENSTEER_HOME_LIMIT_HOST_CPUS=$two" "OPENSTEER_HOME_LIMIT_HOST_MEMORY=${host}m" \
     "OPENSTEER_HOME_LIMIT_GATEWAY_CPUS=1" "OPENSTEER_HOME_LIMIT_GATEWAY_MEMORY=${small}m" \
     "OPENSTEER_HOME_LIMIT_RUNNER_CPUS=$cpus" "OPENSTEER_HOME_LIMIT_RUNNER_MEMORY=${agents}m" \
+    "OPENSTEER_HOME_LIMIT_RUNNER_RUNS=$runs" \
     "OPENSTEER_HOME_LIMIT_CHANNEL_CPUS=1" "OPENSTEER_HOME_LIMIT_CHANNEL_MEMORY=${small}m"
 }
 
@@ -309,19 +316,39 @@ host_pid() {
   owner=$(compose ps -q host) && [[ -n $owner ]] && docker inspect --format '{{.State.Pid}}' "$owner"
 }
 
-apply_firewall() {
-  local pid=$1
-  if [[ -f "$home_dir/ipv6.enabled" ]]; then
-    "$home_dir/firewall.sh" "$pid" apply true
-  else
-    "$home_dir/firewall.sh" "$pid"
-  fi
+# The pool network (CIDR, then agent,relay ports) a Cloud Computer's firewall lets it reach.
+pool_network_args() {
+  local cidr ports
+  [[ -f "$home_dir/pool-network" ]] || return 0
+  read -r cidr ports < "$home_dir/pool-network" || return
+  printf '%s\n' "$cidr" "$ports"
 }
 
-check_firewall() {
-  local ipv6=false
+firewall() {
+  local pid=$1 action=$2 ipv6=false pool=() line listed
   if [[ -f "$home_dir/ipv6.enabled" ]]; then ipv6=true; fi
-  "$home_dir/firewall.sh" "$1" check "$ipv6"
+  listed=$(pool_network_args) || return
+  if [[ -n $listed ]]; then while IFS= read -r line; do pool+=("$line"); done <<< "$listed"; fi
+  "$home_dir/firewall.sh" "$pid" "$action" "$ipv6" "${pool[@]}"
+}
+
+apply_firewall() { firewall "$1" apply; }
+
+check_firewall() { firewall "$1" check; }
+
+# Keeps a pooled Cloud Computer's pool network from its boot answer for its firewall. firewall.sh
+# checks it again in full; this refuses anything that is not a plain CIDR and two port numbers.
+save_pool_network() {
+  local result=$1 network
+  jq -e '.browserPool == true and .browserPoolNetwork != null' "$result" >/dev/null || return 0
+  network=$(jq -er '.browserPoolNetwork |
+    select((.cidr | type) == "string" and (.agentPort | type) == "number" and
+      (.relayPort | type) == "number" and .agentPort == (.agentPort | floor) and
+      .relayPort == (.relayPort | floor)) |
+    "\(.cidr) \(.agentPort),\(.relayPort)"' "$result") || fail 'The boot answer has an invalid pool network.'
+  [[ $network =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}\ [0-9]{1,5},[0-9]{1,5}$ ]] ||
+    fail 'The boot answer has an invalid pool network.'
+  printf '%s\n' "$network" > "$home_dir/pool-network"
 }
 
 start_pod() {
