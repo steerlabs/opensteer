@@ -274,7 +274,9 @@ describe("AgentTranscript", () => {
       );
       expect(markup).not.toContain("Run stopped.");
       expect(markup).toContain("Run cut short");
-      expect(markup).toContain("restart its engine to make sure another task had stopped");
+      expect(markup).toContain(
+        "end its shared engine to make sure another task had stopped; it will start again when work next needs it",
+      );
       expect(markup).toContain("send a message to continue");
     }
   });

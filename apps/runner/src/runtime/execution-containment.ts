@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { createHash } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -434,4 +434,36 @@ async function listDarwinProcesses(variable: string): Promise<readonly ListedPro
     });
   }
   return found;
+}
+
+let cachedMachineBootId: string | null | undefined;
+
+/**
+ * Reads a stable identifier for the current OS boot (changes on machine reboot).
+ * Returns `undefined` when the platform cannot supply one so unknown stays unknown.
+ */
+export function readMachineBootId(
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  if (platform === process.platform && cachedMachineBootId !== undefined) {
+    return cachedMachineBootId ?? undefined;
+  }
+  let resolved: string | undefined;
+  try {
+    if (platform === "linux") {
+      const value = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      if (value) resolved = `linux:${value}`;
+    } else if (platform === "darwin") {
+      const output = execFileSync("/usr/sbin/sysctl", ["-n", "kern.boottime"], {
+        encoding: "utf8",
+        timeout: 2_000,
+      });
+      const match = /sec\s*=\s*(\d+),\s*usec\s*=\s*(\d+)/u.exec(output);
+      if (match) resolved = `darwin:${match[1]}.${match[2]}`;
+    }
+  } catch {
+    resolved = undefined;
+  }
+  if (platform === process.platform) cachedMachineBootId = resolved ?? null;
+  return resolved;
 }

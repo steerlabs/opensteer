@@ -1373,7 +1373,7 @@ it.each([false, true])(
     expect(view.container.textContent).not.toContain("This run stopped.");
     expect(view.container.textContent).toContain("Run cut short");
     expect(view.container.textContent).toContain(
-      "restart its engine to make sure another task had stopped",
+      "end its shared engine to make sure another task had stopped; it will start again when work next needs it",
     );
     expect(view.container.textContent).toContain("send a message to continue");
   },

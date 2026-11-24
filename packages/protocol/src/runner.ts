@@ -1723,6 +1723,8 @@ export const RunnerDescriptorSchema = z
   .object({
     agentsStoppedSince: IsoDateTimeSchema.nullable().optional(),
     bootId: RunnerBootIdSchema,
+    /** Stable identity of the host OS boot; changes on machine reboot. */
+    machineBootId: z.string().trim().min(1).max(128).optional(),
     // Capability names are an extensible set, independent of required semantics.
     capabilities: z
       .array(z.string())

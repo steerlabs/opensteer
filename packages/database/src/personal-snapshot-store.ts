@@ -26,7 +26,6 @@ import {
   taskPageThreadsFromRows,
   threadProviderRetry,
   threadRunQueued,
-  threadRunStartHoldReason,
   type TaskExternalWork,
 } from "./personal-task-store.js";
 
@@ -141,7 +140,6 @@ export async function detailThreadValue(tx: Tx, viewerId: UserId, threadId: Thre
     .selectAll("threads")
     .select(taskPageThreadSelections())
     .select(threadRunQueued.as("runQueued"))
-    .select(threadRunStartHoldReason.as("runStartHoldReason"))
     .select(taskExternalWorkSelection)
     .select(threadProviderRetry.as("retry"))
     .where("threads.id", "=", threadId)

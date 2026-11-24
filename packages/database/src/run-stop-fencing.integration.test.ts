@@ -923,6 +923,330 @@ integration.sequential("Run stop fencing", () => {
       expect(runItem?.kind === "run" ? runItem.stopConfirmedAt : undefined).toBeTruthy();
     }
   });
+
+  it("S2+S3: keeps held Runs and refuses new follow-up Runs after a Runner restart with unknown earlier-boot reap", async ({
+    storeFixture,
+  }) => {
+    const { fixture, running, database, store } = storeFixture;
+    const f = await fixture("s3-reboot-unknown");
+    const run1 = await running(f, "s3-unproven-1");
+    await database
+      .updateTable("providerSessions")
+      .set({ providerSessionReference: "native-session-s3-unknown" })
+      .where("threadId", "=", f.thread.id)
+      .execute();
+    await store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      event: pendingEvent({
+        bindingGeneration: f.bindingGeneration,
+        data: {
+          code: "execution_termination_unproven",
+          message:
+            "Stopping could not be confirmed. Something from this Run may still be running on that device.",
+          retryable: false,
+          status: "failed",
+        },
+        environmentId: f.environmentId,
+        ordinal: f.ordinal++,
+        runId: run1.id,
+        threadId: f.thread.id,
+        type: "run.failed",
+      }),
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+    });
+    // Queue Run 2 and mark it held on previous-stop-unconfirmed.
+    const nextSent = await store.enqueueThreadInput({
+      content: [{ text: "Follow up while held", type: "text" }],
+      idempotencyKey: "s3-follow-up-1",
+      policy: "queue",
+      requestedBy: f.userId,
+      source: { kind: "human" },
+      threadId: f.thread.id,
+    });
+    await store.claimCommand(nextSent.command!.id, "test-dispatcher");
+    const heldError = Object.assign(new Error("Stopping could not be confirmed."), {
+      cause: {
+        code: "conflict",
+        message: "Stopping could not be confirmed.",
+        reason: "previous-stop-unconfirmed",
+        retryable: true,
+      },
+    });
+    await store.retryCommand(nextSent.command!.id, heldError);
+
+    // Runner restarts on the same machine as boot B2 with earlier-boot reap UNKNOWN
+    // (capabilities omits earlier-boots-contained-v1).
+    const boot2 = `rbt_${randomUUID()}` as RunnerDescriptor["bootId"];
+    await database
+      .updateTable("runners")
+      .set({ capabilities: jsonValue([]) })
+      .where("id", "=", f.runnerId)
+      .execute();
+    await store.attachRunnerExecutions({
+      dispatchingRunIds: [],
+      executions: [],
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: boot2,
+      runnerId: f.runnerId,
+    });
+
+    // Run 2 MUST remain held on previous-stop-unconfirmed.
+    const heldAfterRestart = await database
+      .selectFrom("runs")
+      .select(["status", "startHoldReason"])
+      .where("id", "=", nextSent.run!.id)
+      .executeTakeFirstOrThrow();
+    expect(heldAfterRestart).toEqual({
+      status: "queued",
+      startHoldReason: "previous-stop-unconfirmed",
+    });
+
+    // Attempting to bind a follow-up Run on boot B2 MUST be refused with previous-stop-unconfirmed.
+    await store.claimCommand(nextSent.command!.id, "test-dispatcher");
+    await expect(
+      store.acquireExecutionBinding({
+        bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+        continuationIdentity,
+        harnessInstanceId: f.harness.id,
+        leaseTokenHash: `lease-${randomUUID()}`,
+        runId: nextSent.run!.id,
+        runnerBootId: boot2,
+        runnerId: f.runnerId,
+        threadId: f.thread.id,
+      }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      reason: "previous-stop-unconfirmed",
+    });
+  });
+
+  it("S2+S3 lift (1): lifts hold and admits follow-up after a later verified reap (earlier-boots-contained-v1)", async ({
+    storeFixture,
+  }) => {
+    const { fixture, running, database, store } = storeFixture;
+    const f = await fixture("s3-lift-verified-reap");
+    await database
+      .updateTable("runners")
+      .set({ machineBootId: "linux:machine-boot-1" })
+      .where("id", "=", f.runnerId)
+      .execute();
+    const run1 = await running(f, "s3-reap-1");
+    await database
+      .updateTable("providerSessions")
+      .set({ providerSessionReference: "native-session-s3-reap" })
+      .where("threadId", "=", f.thread.id)
+      .execute();
+    await store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      event: pendingEvent({
+        bindingGeneration: f.bindingGeneration,
+        data: {
+          code: "execution_termination_unproven",
+          message:
+            "Stopping could not be confirmed. Something from this Run may still be running on that device.",
+          retryable: false,
+          status: "failed",
+        },
+        environmentId: f.environmentId,
+        ordinal: f.ordinal++,
+        runId: run1.id,
+        threadId: f.thread.id,
+        type: "run.failed",
+      }),
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+    });
+    const nextSent = await store.enqueueThreadInput({
+      content: [{ text: "Follow up after verified reap", type: "text" }],
+      idempotencyKey: "s3-reap-next",
+      policy: "queue",
+      requestedBy: f.userId,
+      source: { kind: "human" },
+      threadId: f.thread.id,
+    });
+    await store.claimCommand(nextSent.command!.id, "test-dispatcher");
+    await store.retryCommand(
+      nextSent.command!.id,
+      Object.assign(new Error("Stopping could not be confirmed."), {
+        cause: {
+          code: "conflict",
+          message: "Stopping could not be confirmed.",
+          reason: "previous-stop-unconfirmed",
+          retryable: true,
+        },
+      }),
+    );
+
+    // Boot 2 restarts with unknown reap: stays held.
+    const boot2 = `rbt_${randomUUID()}` as RunnerDescriptor["bootId"];
+    await database
+      .updateTable("runners")
+      .set({ capabilities: jsonValue([]), machineBootId: "linux:machine-boot-1" })
+      .where("id", "=", f.runnerId)
+      .execute();
+    await store.attachRunnerExecutions({
+      dispatchingRunIds: [],
+      executions: [],
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: boot2,
+      runnerId: f.runnerId,
+    });
+    expect(
+      (
+        await database
+          .selectFrom("runs")
+          .select("startHoldReason")
+          .where("id", "=", nextSent.run!.id)
+          .executeTakeFirstOrThrow()
+      ).startHoldReason,
+    ).toBe("previous-stop-unconfirmed");
+
+    // Boot 3 restarts with a verified earlier-boot reap (earlier-boots-contained-v1):
+    // attach confirms Run 1, lifts the hold on Run 2, and Run 2 binds cleanly.
+    const boot3 = `rbt_${randomUUID()}` as RunnerDescriptor["bootId"];
+    await database
+      .updateTable("runners")
+      .set({
+        capabilities: jsonValue(["earlier-boots-contained-v1"]),
+        machineBootId: "linux:machine-boot-1",
+      })
+      .where("id", "=", f.runnerId)
+      .execute();
+    await store.attachRunnerExecutions({
+      dispatchingRunIds: [],
+      executions: [],
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: boot3,
+      runnerId: f.runnerId,
+    });
+    const run1After = await database
+      .selectFrom("runs")
+      .select(["status", "stopConfirmedAt"])
+      .where("id", "=", run1.id)
+      .executeTakeFirstOrThrow();
+    expect(run1After.status).toBe("interrupted");
+    expect(run1After.stopConfirmedAt).not.toBeNull();
+    const run2After = await database
+      .selectFrom("runs")
+      .select(["status", "startHoldReason"])
+      .where("id", "=", nextSent.run!.id)
+      .executeTakeFirstOrThrow();
+    expect(run2After).toEqual({ status: "queued", startHoldReason: null });
+    await store.claimCommand(nextSent.command!.id, "test-dispatcher");
+    const bound = await store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+      continuationIdentity,
+      harnessInstanceId: f.harness.id,
+      leaseTokenHash: `lease-${randomUUID()}`,
+      machineBootId: "linux:machine-boot-1",
+      runId: nextSent.run!.id,
+      runnerBootId: boot3,
+      runnerId: f.runnerId,
+      threadId: f.thread.id,
+    });
+    expect(bound.runnerBootId).toBe(boot3);
+  });
+
+  it("S2+S3 lift (2): lifts hold and admits follow-up after a new machine boot even when reap is unknown", async ({
+    storeFixture,
+  }) => {
+    const { fixture, running, database, store } = storeFixture;
+    const f = await fixture("s3-lift-machine-boot");
+    await database
+      .updateTable("runners")
+      .set({ machineBootId: "linux:machine-boot-old" })
+      .where("id", "=", f.runnerId)
+      .execute();
+    const run1 = await running(f, "s3-reboot-1");
+    await database
+      .updateTable("providerSessions")
+      .set({ providerSessionReference: "native-session-s3-reboot" })
+      .where("threadId", "=", f.thread.id)
+      .execute();
+    await store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      event: pendingEvent({
+        bindingGeneration: f.bindingGeneration,
+        data: {
+          code: "execution_termination_unproven",
+          message:
+            "Stopping could not be confirmed. Something from this Run may still be running on that device.",
+          retryable: false,
+          status: "failed",
+        },
+        environmentId: f.environmentId,
+        ordinal: f.ordinal++,
+        runId: run1.id,
+        threadId: f.thread.id,
+        type: "run.failed",
+      }),
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+    });
+    const nextSent = await store.enqueueThreadInput({
+      content: [{ text: "Follow up after machine reboot", type: "text" }],
+      idempotencyKey: "s3-reboot-next",
+      policy: "queue",
+      requestedBy: f.userId,
+      source: { kind: "human" },
+      threadId: f.thread.id,
+    });
+    await store.claimCommand(nextSent.command!.id, "test-dispatcher");
+    await store.retryCommand(
+      nextSent.command!.id,
+      Object.assign(new Error("Stopping could not be confirmed."), {
+        cause: {
+          code: "conflict",
+          message: "Stopping could not be confirmed.",
+          reason: "previous-stop-unconfirmed",
+          retryable: true,
+        },
+      }),
+    );
+
+    // Machine reboots (new machineBootId), even though earlier-boot reap returned unknown!
+    const boot2 = `rbt_${randomUUID()}` as RunnerDescriptor["bootId"];
+    await database
+      .updateTable("runners")
+      .set({ capabilities: jsonValue([]), machineBootId: "linux:machine-boot-new" })
+      .where("id", "=", f.runnerId)
+      .execute();
+    await store.attachRunnerExecutions({
+      dispatchingRunIds: [],
+      executions: [],
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: boot2,
+      runnerId: f.runnerId,
+    });
+
+    const run1After = await database
+      .selectFrom("runs")
+      .select(["status", "stopConfirmedAt"])
+      .where("id", "=", run1.id)
+      .executeTakeFirstOrThrow();
+    expect(run1After.status).toBe("interrupted");
+    expect(run1After.stopConfirmedAt).not.toBeNull();
+    const run2After = await database
+      .selectFrom("runs")
+      .select(["status", "startHoldReason"])
+      .where("id", "=", nextSent.run!.id)
+      .executeTakeFirstOrThrow();
+    expect(run2After).toEqual({ status: "queued", startHoldReason: null });
+    await store.claimCommand(nextSent.command!.id, "test-dispatcher");
+    const bound = await store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+      continuationIdentity,
+      harnessInstanceId: f.harness.id,
+      leaseTokenHash: `lease-${randomUUID()}`,
+      machineBootId: "linux:machine-boot-new",
+      runId: nextSent.run!.id,
+      runnerBootId: boot2,
+      runnerId: f.runnerId,
+      threadId: f.thread.id,
+    });
+    expect(bound.runnerBootId).toBe(boot2);
+  });
 });
 function pendingEvent<T extends PendingAgentEvent>(input: Omit<T, "emittedAt">): T {
   return {

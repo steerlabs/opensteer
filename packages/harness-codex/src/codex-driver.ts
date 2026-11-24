@@ -874,8 +874,6 @@ class CodexHarnessAdapter implements HarnessAdapter {
   readonly #servers = new Set<CodexAppServer>();
   /** Starts in flight, which closing the adapter cancels and waits out. */
   readonly #starting = new Set<Promise<unknown>>();
-  /** Shared app-server starts in flight, which retiring waits out and ends. */
-  readonly #sharedStarting = new Set<Promise<CodexAppServer>>();
   /** Ends every process the adapter starts, the account's shared one included. */
   readonly #lifetime = new AbortController();
   /** The account's shared app-server, or its start in flight, and what it was started with. */
@@ -1179,11 +1177,6 @@ class CodexHarnessAdapter implements HarnessAdapter {
     }
     // The account's process outlives the session that asked for it.
     const started = this.#startServer(context, shared, this.#lifetime.signal);
-    this.#sharedStarting.add(started);
-    void started.then(
-      () => this.#sharedStarting.delete(started),
-      () => this.#sharedStarting.delete(started),
-    );
     const entry = { key, server: started };
     this.#shared = entry;
     started.catch(() => {

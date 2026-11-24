@@ -2547,14 +2547,15 @@ export async function createHostRuntime(
           });
         },
         onAttach: async (identity, executions) => {
-          const connectionIsCurrent = await store.touchRunnerConnection({
+          const touched = await store.touchRunnerConnectionForAttach({
             connectionGeneration: identity.connectionGeneration,
             runnerId: identity.runnerId,
           });
-          if (!connectionIsCurrent) {
+          if (!touched.current) {
             throw new Error("Runner connection fence is no longer current");
           }
           const attached = await store.attachRunnerExecutions({
+            checkUnconfirmedStops: touched.hasUnconfirmedStop,
             dispatchingRunIds: dispatchingRunIds(),
             executions,
             ...(identity.agentsStoppedSince ? { stoppedComputerName: identity.name } : {}),

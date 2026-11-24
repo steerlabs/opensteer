@@ -771,11 +771,21 @@ export function migrationProvider(options?: {
                       add column if not exists start_hold_reason text check (start_hold_reason in ('previous-stop-unconfirmed')),
                       add column if not exists stop_confirmed_at timestamptz;
                     alter table threads
-                      add column if not exists failure_code text;
+                      add column if not exists failure_code text,
+                      add column if not exists run_start_hold_reason text check (run_start_hold_reason in ('previous-stop-unconfirmed')),
+                      add column if not exists unconfirmed_stop_run_id text;
+                    alter table runners
+                      add column if not exists machine_boot_id text;
+                    alter table run_attempts
+                      add column if not exists machine_boot_id text;
+                    create index if not exists threads_unconfirmed_stop_idx
+                      on threads(environment_id)
+                      where unconfirmed_stop_run_id is not null or run_start_hold_reason is not null;
                     update threads t
-                      set failure_code = last_run.code
+                      set failure_code = last_run.code,
+                          unconfirmed_stop_run_id = case when last_run.code = 'execution_termination_unproven' then last_run.id else t.unconfirmed_stop_run_id end
                       from (
-                        select distinct on (thread_id) thread_id, failure->>'code' as code
+                        select distinct on (thread_id) thread_id, id, failure->>'code' as code
                         from runs
                         where maintenance is null
                         order by thread_id, run_ordinal desc

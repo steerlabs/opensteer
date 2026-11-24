@@ -3864,45 +3864,69 @@ describe("one Codex app-server per account", () => {
     }
   });
 
-  it("H2(a): interrupts a turn whose turn/start reply arrives after closeTimeoutMs and closes cleanly without retiring neighbours", async () => {
+  it("H2(a): interrupts a late follow-up turn/start reply after the old active-turn path is unavailable and retries root unload without retiring neighbours", async () => {
     const dir = await mkdtemp(join(tmpdir(), "opensteer-codex-late-turn-start-"));
     const turnStartRelease = join(dir, "turn-start-release");
-    const neverReleased = join(dir, "never-release");
-    const fixture = await setup("long-stream-held", {
+    const childCloseRelease = join(dir, "child-close-release");
+    const fixture = await setup("subagents-late-root-followup", {
       requestTimeoutMs: 5_000,
-      threadCloseMaxMs: 250,
+      threadCloseMaxMs: 400,
       serverArguments: [
         "--unique-threads",
-        "--ignore-interrupt",
-        `--hold-turn-start-file=${turnStartRelease}`,
-        `--release-file=${neverReleased}`,
+        "--unique-turns",
+        `--hold-followup-turn-start-file=${turnStartRelease}`,
+        `--delay-child-unsubscribe-ms=250`,
+        `--hold-close-file=${childCloseRelease}`,
       ],
     });
     try {
       const stopping = await fixture.adapter.startSession(taskContext(fixture, "stopping"));
       const other = await fixture.adapter.startSession(taskContext(fixture, "other"));
       const observer = observe(stopping.events);
-      void stopping.execute(fixture.turn("Write at length"));
+      void stopping.execute(fixture.turn("Start a background child"));
+      // Wait for root turn 1 to finish while child 1 stays running (active.root === "idle").
+      await observer.waitFor("run.phase");
+      // Steer starts a follow-up turn/start (no execute() active-turn interrupt fallback).
+      const steering = stopping.steer!({
+        attachments: new Map(),
+        input: fixture.turn("Follow up on root").inputs[0]!,
+      }).catch(() => undefined);
       await vi.waitFor(async () =>
         expect(await fixture.capture()).toContainEqual({
           fakeTurnStartHeld: stopping.providerSessionReference,
         }),
       );
-      // Direct stop() (no interrupt() beforehand): waits closeTimeoutMs (250ms),
-      // sends thread/unsubscribe before turn/start replies; then turn/start replies
-      // late at ~320ms while unload is still awaiting thread/closed.
+      // stop() waits 400ms for rootStart, then round 0 unsubscribes root and child:
+      // root's unload times out at +400ms (unclosed.add(root)), while child's
+      // thread/unsubscribe replies at +250ms and emits fakeCloseHeld so its own
+      // 400ms close window runs until +650ms.
       const stopPromise = stopping.stop();
-      await vi.waitFor(async () =>
-        expect(
-          (await fixture.capture()).some(
-            (message) =>
-              message.method === "thread/unsubscribe" &&
-              (message.params as JsonRecord).threadId === stopping.providerSessionReference,
+      await vi.waitFor(
+        async () =>
+          expect((await fixture.capture()).some((message) => "fakeCloseHeld" in message)).toBe(
+            true,
           ),
-        ).toBe(true),
+        { interval: 10 },
       );
+      const closeHeldAt = Date.now();
+      await vi.waitFor(() => expect(Date.now() - closeHeldAt).toBeGreaterThanOrEqual(180), {
+        interval: 10,
+      });
+      // Deliver the late root turn/start reply AFTER root's round-0 unload returned false
+      // and with no execute() active-turn interrupt path.
       await writeFile(turnStartRelease, "");
+      await vi
+        .waitFor(
+          async () =>
+            expect(await fixture.capture()).toContainEqual({
+              fakeThreadClosed: stopping.providerSessionReference,
+            }),
+          { interval: 10, timeout: 120 },
+        )
+        .catch(() => undefined);
+      await writeFile(childCloseRelease, "");
       await stopPromise;
+      await steering;
       await observer.done;
       const captured = await fixture.capture();
       const threadId = stopping.providerSessionReference;

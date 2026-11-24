@@ -3875,6 +3875,7 @@ describe("RunnerRuntime", () => {
       readonly retryMs?: number;
       readonly unprovenLastResortMs?: number;
       readonly sharedEngineProcess?: boolean;
+      readonly earlierBootsContained?: boolean;
       readonly listProcesses?: ConstructorParameters<
         typeof ExecutionContainment
       >[0]["listProcesses"];
@@ -3915,6 +3916,9 @@ describe("RunnerRuntime", () => {
         agentSkills: testAgentSkills,
         plugins: noPlugins,
         bootId: "boot-test",
+        ...(options.earlierBootsContained !== undefined
+          ? { earlierBootsContained: options.earlierBootsContained }
+          : {}),
         browserHarnessExecutable: testBrowserHarnessExecutable,
         deploymentShape: testDeploymentShape,
         environmentId,
@@ -4764,6 +4768,76 @@ describe("RunnerRuntime", () => {
       }
     });
 
+    it("S1: polls and contains a late-spawning dedicated engine whose session.stop() hangs even after the last-resort timer fired early", async () => {
+      const opened = deferred<void>();
+      const reached = deferred<void>();
+      const neverSettlingStop = new Promise<void>(() => undefined);
+      let lateProcessAlive = false;
+      let signalCount = 0;
+      let listCallsWhileOpenPending = 0;
+      let openSettled = false;
+      const f = sharedStopFixture({
+        session: () => {
+          openSettled = true;
+          lateProcessAlive = true;
+          return new SharedEngineSession(neverSettlingStop, "own");
+        },
+        listProcesses: async () => {
+          if (!openSettled) listCallsWhileOpenPending += 1;
+          const scope = f.driver.context?.commandEnvironment[executionScopeVariable];
+          return lateProcessAlive && scope
+            ? [
+                {
+                  identity: "late-dedicated-s1",
+                  pid: 99_151,
+                  ppid: 1,
+                  scope,
+                  signal: () => {
+                    signalCount += 1;
+                    // Survive the first SIGTERM so the Runner must terminate/poll after the late open.
+                    if (signalCount >= 2) lateProcessAlive = false;
+                  },
+                },
+              ]
+            : [];
+        },
+        startGate: opened.promise,
+        openReached: () => reached.resolve(),
+        settleMs: 60,
+        retryMs: 30,
+        unprovenLastResortMs: 40,
+        sharedEngineProcess: false,
+      });
+      const execute = executeCommand(f.environmentId);
+      await reconcile(f.registry, execute);
+      try {
+        await f.runtime.handleCommand(execute, f.sink);
+        await reached.promise;
+        await f.runtime.handleCommand(stopOf(execute), f.sink);
+        await waitUntil(() => f.ends().length === 1);
+        expect(f.ends()[0]).toMatchObject({
+          type: "run.failed",
+          data: { code: runTerminationUnprovenCode },
+        });
+        await waitUntil(() => f.runtime.activeRunIds().length === 0);
+        // Wait until the early last-resort timer has already fired while the open is still pending.
+        const checksAtUnproven = listCallsWhileOpenPending;
+        await waitUntil(() => listCallsWhileOpenPending > checksAtUnproven);
+        // Now the dedicated open spawns its process and returns a session whose stop() hangs forever.
+        opened.resolve();
+        // The Runner must terminate and poll the Run's scope after the late open settles,
+        // kill the late process, lift the hold, and send the verified run.interrupted receipt.
+        await waitUntil(() => !lateProcessAlive && signalCount >= 2);
+        await waitUntil(() => f.ends().some((event) => event.type === "run.interrupted"));
+        expect(await f.runtime.handleCommand(nextTurn(execute), f.sink)).toEqual({
+          status: "accepted",
+        });
+      } finally {
+        opened.resolve();
+        await f.runtime.close();
+      }
+    });
+
     it("H5(a): runs its own scoped last resort within a bound after an unproven stop, lifting the hold and sending late confirmation", async () => {
       let retiredReason: string | undefined;
       let processAlive = true;
@@ -4856,6 +4930,32 @@ describe("RunnerRuntime", () => {
       } finally {
         stopGate.resolve();
         await f.runtime.close();
+      }
+    });
+
+    it("S2: recheckThreadStop on a fresh Runner with empty maps returns proven=false when earlier-boot reap was unknown, and proven=true only when verified", async () => {
+      const unknownRunner = sharedStopFixture({
+        session: () => new SharedEngineSession(Promise.resolve()),
+        earlierBootsContained: false,
+      });
+      const verifiedRunner = sharedStopFixture({
+        session: () => new SharedEngineSession(Promise.resolve()),
+        earlierBootsContained: true,
+      });
+      try {
+        // A fresh Runner with no record of the held attempt and no verified earlier-boot
+        // reap has no evidence that an earlier boot's stop completed.
+        expect(await unknownRunner.runtime.recheckThreadStop(createId("thread"))).toEqual({
+          proven: false,
+        });
+        // Only when the Runner's own startup reap verified earlier boots are gone does
+        // an empty-map recheck return proven=true.
+        expect(await verifiedRunner.runtime.recheckThreadStop(createId("thread"))).toEqual({
+          proven: true,
+        });
+      } finally {
+        await unknownRunner.runtime.close();
+        await verifiedRunner.runtime.close();
       }
     });
   });

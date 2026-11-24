@@ -995,6 +995,12 @@ export async function commitRunnerEvent(
               })
               .where("id", "=", run.id)
               .executeTakeFirstOrThrow();
+            await tx
+              .updateTable("threads")
+              .set({ unconfirmedStopRunId: null })
+              .where("id", "=", run.threadId)
+              .where("unconfirmedStopRunId", "=", run.id)
+              .execute();
             if (run.providerSessionId) {
               await tx
                 .updateTable("providerSessions")

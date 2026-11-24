@@ -3171,7 +3171,7 @@ export function runInterruptedMessage(
   run: Pick<RunEntry, "interruptedCause" | "status">,
 ): string | null {
   if (isRunEngineRetired(run)) {
-    return "This Run was cut short: Opensteer had to restart its engine to make sure another task had stopped. What it was doing at that moment may not have finished; send a message to continue.";
+    return "This Run was cut short: Opensteer had to end its shared engine to make sure another task had stopped; it will start again when work next needs it. What it was doing at that moment may not have finished; send a message to continue.";
   }
   return null;
 }

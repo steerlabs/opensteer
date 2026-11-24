@@ -301,6 +301,7 @@ async function activateRunnerConnection(
           : descriptor.device
             ? jsonValue(descriptor.device)
             : null,
+      machineBootId: descriptor.machineBootId ?? null,
       lastSeenAt: seenAt,
       maxConcurrentRuns: descriptor.modules.agents?.maxConcurrentRuns ?? null,
       moduleDescriptors: jsonValue(descriptor.modules),
@@ -2081,4 +2082,41 @@ export async function touchRunnerConnection(
     .where("revokedAt", "is", null)
     .executeTakeFirst(databaseOperationOptions());
   return result.numUpdatedRows === 1n;
+}
+
+/**
+ * Refreshes the Runner's attach fence and, in the same single statement, checks
+ * the partial unconfirmed-stop index so an ordinary Home with no unconfirmed
+ * stops incurs zero extra startup queries.
+ */
+export async function touchRunnerConnectionForAttach(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly connectionGeneration: number;
+    readonly runnerId: RunnerId;
+  },
+): Promise<{ readonly current: boolean; readonly hasUnconfirmedStop: boolean }> {
+  const seenAt = new Date();
+  const row = await database
+    .updateTable("runners")
+    .set({
+      lastSeenAt: seenAt,
+      updatedAt: seenAt,
+    })
+    .where("id", "=", input.runnerId)
+    .where("connectionGeneration", "=", String(input.connectionGeneration))
+    .where("revokedAt", "is", null)
+    .returning(
+      sql<boolean>`exists (
+        select 1
+        from threads
+        inner join execution_environments on execution_environments.id = threads.environment_id
+        where execution_environments.runner_id = runners.id
+          and (threads.unconfirmed_stop_run_id is not null or threads.run_start_hold_reason is not null)
+      )`.as("hasUnconfirmedStop"),
+    )
+    .executeTakeFirst(databaseOperationOptions());
+  return row
+    ? { current: true, hasUnconfirmedStop: Boolean(row.hasUnconfirmedStop) }
+    : { current: false, hasUnconfirmedStop: false };
 }

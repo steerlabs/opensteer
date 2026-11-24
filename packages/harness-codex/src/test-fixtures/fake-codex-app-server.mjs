@@ -145,6 +145,16 @@ const holdMcpStatusFile = process.argv
 const holdTurnStartFile = process.argv
   .find((argument) => argument.startsWith("--hold-turn-start-file="))
   ?.slice("--hold-turn-start-file=".length);
+// Opt-in: hold follow-up (2nd+) turn/start reply until this file appears.
+const holdFollowupTurnStartFile = process.argv
+  .find((argument) => argument.startsWith("--hold-followup-turn-start-file="))
+  ?.slice("--hold-followup-turn-start-file=".length);
+// Opt-in: delay child thread/unsubscribe replies so root unload times out first.
+const delayChildUnsubscribeMs = Number(
+  process.argv
+    .find((argument) => argument.startsWith("--delay-child-unsubscribe-ms="))
+    ?.split("=")[1] ?? 0,
+);
 // Opt-in: the first resume after an unsubscribe meets the thread still closing.
 const closingOnce = process.argv.includes("--closing-once");
 let closingOnceUsed = false;
@@ -738,19 +748,26 @@ function handleClientMethod(message) {
         send({ id: message.id, result: { status: "notSubscribed" } });
         break;
       }
-      thread.subscribed = false;
-      send({ id: message.id, result: { status: "unsubscribed" } });
-      // Real Codex 0.162.0 does not close a thread whose turn is in flight
-      // unless that turn was asked to interrupt.
-      if (neverClose || (thread.inFlightTurn && !thread.turnInterrupted)) break;
-      if (holdCloseFile && !existsSync(holdCloseFile)) {
-        capture({ fakeCloseHeld: thread.id });
-        thread.closing = setInterval(() => {
-          if (!existsSync(holdCloseFile)) return;
-          closeThread(thread);
-        }, 10);
-      } else if (closingOnce && !closingOnceUsed) thread.closing = "held";
-      else thread.closing = setTimeout(() => closeThread(thread), 0);
+      const finishUnsubscribe = () => {
+        thread.subscribed = false;
+        send({ id: message.id, result: { status: "unsubscribed" } });
+        // Real Codex 0.162.0 does not close a thread whose turn is in flight
+        // unless that turn was asked to interrupt.
+        if (neverClose || (thread.inFlightTurn && !thread.turnInterrupted)) return;
+        if (holdCloseFile && !existsSync(holdCloseFile)) {
+          capture({ fakeCloseHeld: thread.id });
+          thread.closing = setInterval(() => {
+            if (!existsSync(holdCloseFile)) return;
+            closeThread(thread);
+          }, 10);
+        } else if (closingOnce && !closingOnceUsed) thread.closing = "held";
+        else thread.closing = setTimeout(() => closeThread(thread), 0);
+      };
+      if (thread.parent && delayChildUnsubscribeMs > 0) {
+        setTimeout(() => threadScope.run(thread, finishUnsubscribe), delayChildUnsubscribeMs);
+      } else {
+        finishUnsubscribe();
+      }
       break;
     }
     case "mcpServerStatus/list": {
@@ -831,14 +848,19 @@ function handleClientMethod(message) {
         break;
       }
       if (!delayedTurnStarts.has(message)) {
+        current().turnsStarted = (current().turnsStarted ?? 0) + 1;
         current().inFlightTurn = true;
         current().turnInterrupted = false;
-        if (holdTurnStartFile && !existsSync(holdTurnStartFile)) {
+        const holdFile =
+          holdFollowupTurnStartFile && current().turnsStarted > 1
+            ? holdFollowupTurnStartFile
+            : holdTurnStartFile;
+        if (holdFile && !existsSync(holdFile)) {
           delayedTurnStarts.add(message);
           const heldThread = current();
           capture({ fakeTurnStartHeld: heldThread.id });
           const timer = setInterval(() => {
-            if (!existsSync(holdTurnStartFile)) return;
+            if (!existsSync(holdFile)) return;
             clearInterval(timer);
             threadScope.run(heldThread, () => handleClientMethod(message));
           }, 10);
@@ -2458,6 +2480,11 @@ function handleTurnStart(message) {
     send({ id: "unknown-rpc", method: "fake/unsupported", params: { threadId, turnId } });
     return;
   }
+  if (scenario === "subagents-late-root-followup" && thread.turnsStarted > 1) {
+    thread.activeTurnId = turnId;
+    thread.inFlightTurn = true;
+    return;
+  }
   if (scenario.startsWith("subagents")) {
     sendResponseUsage("response", threadId, turnId, responseUsage.rootDelegates);
     // A subagent asking before the Runner has heard of it.
@@ -2485,7 +2512,7 @@ function handleTurnStart(message) {
     });
     sendResponseUsage("response", childThreadOf(), "child-turn-1", responseUsage.childRuns);
     if (scenario === "subagents") sendChildApproval();
-    if (scenario === "subagents-late-sibling") {
+    if (scenario === "subagents-late-sibling" || scenario === "subagents-late-root-followup") {
       // Root finishes its turn while child 1 keeps running (root idle).
       const child = threads.get(childThreadOf());
       if (child) {

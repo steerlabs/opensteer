@@ -827,7 +827,9 @@ describe("a task's turn", () => {
       }),
     );
     expect(retired.label).toBe("Run cut short");
-    expect(retired.detail).toContain("restart its engine to make sure another task had stopped");
+    expect(retired.detail).toContain(
+      "end its shared engine to make sure another task had stopped; it will start again when work next needs it",
+    );
     expect(retired.marker).toBe("stopped");
 
     const stopped = activityFeedPresentation(run({ status: "interrupted" }));

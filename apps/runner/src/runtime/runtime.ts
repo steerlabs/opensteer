@@ -207,6 +207,8 @@ export interface RunnerRuntimeOptions {
   readonly bootId: string;
   /** Proves each execution's processes gone; built from the boot and data directory when omitted. */
   readonly containment?: ExecutionContainment;
+  /** Whether this Runner's startup reap verified that all earlier boots' processes are gone. */
+  readonly earlierBootsContained?: boolean;
   /** The Runner's whole data directory: the root model-executed tools must never read. */
   readonly dataDirectory: string;
   readonly deploymentShape: RunnerConfig["deploymentShape"];
@@ -487,6 +489,7 @@ export class RunnerRuntime {
   readonly #programExecutor: Pick<TriggerProgramExecutor, "execute">;
   readonly #runs = new Map<RunId, ActiveRun>();
   readonly #containment: ExecutionContainment;
+  readonly #earlierBootsContained: boolean;
   /** Engines kept running between a Thread's Runs. */
   readonly #warm: WarmEnginePool;
   /**
@@ -667,6 +670,7 @@ export class RunnerRuntime {
     this.#uncontainedRetryMs = options.stopTimings?.uncontainedRetryMs ?? uncontainedRetryMs;
     this.#unprovenLastResortMs =
       options.stopTimings?.unprovenLastResortMs ?? unprovenStopLastResortMs;
+    this.#earlierBootsContained = options.earlierBootsContained === true;
     this.#credentialRefreshClock = options.credentialRefreshClock ?? systemClock;
     this.#attachmentCache = options.attachmentCache;
     this.#agentSkills = options.agentSkills;
@@ -2382,9 +2386,11 @@ export class RunnerRuntime {
       const proven = await hold.runLastResort();
       return { proven };
     }
+    let matchedUnverified = false;
     let stillUnproven = false;
     for (const [key, pending] of this.#unverifiedRunEnds.entries()) {
       if (pending.report.event.threadId !== threadId) continue;
+      matchedUnverified = true;
       const proof = await this.#containment.terminate(pending.scope).catch(() => "unknown");
       if (proof !== "proven" || pending.engineStopped?.done === false) {
         stillUnproven = true;
@@ -2398,7 +2404,10 @@ export class RunnerRuntime {
       this.#rememberEndReceipt(report);
       void this.#connection?.send(report).catch(() => undefined);
     }
-    return { proven: !stillUnproven };
+    if (matchedUnverified) return { proven: !stillUnproven };
+    // A Runner whose in-memory maps hold no record of the attempt has no evidence
+    // about it unless this Runner's own startup reap verified earlier boots are gone.
+    return { proven: this.#earlierBootsContained };
   }
 
   #flushUnverifiedRunEnds(threadId: ThreadId): void {
@@ -2503,8 +2512,18 @@ export class RunnerRuntime {
         return {
           stopping: opening.then(
             (late) => {
-              lateLastResort = retireFor(late);
-              return stopEvidence(late);
+              if (late.engineProcess === "shared") {
+                lateLastResort = retireFor(late);
+                return stopEvidence(late);
+              }
+              // A dedicated engine's own Run-scoped process tree is the entire
+              // engine: once its late open settles, give session.stop() the
+              // Run's stop grace bound from this moment and then let the
+              // existing scope poll terminate and verify the scope whether or
+              // not stop() ever settles.
+              const lateStop = stopEvidence(late);
+              lateStop.catch(() => undefined);
+              return settleBy(lateStop, Date.now() + this.#stopGraceMs).then(() => undefined);
             },
             (error: unknown) => {
               if (error instanceof HarnessStopUnprovenError && error.retireEngine) {
@@ -2559,6 +2578,11 @@ export class RunnerRuntime {
       // A session that opened after its Run was stopped is stopped like any other,
       // and containment is checked again after it stops.
       const stopping = stopEvidence(current);
+      if (current.engineProcess !== "shared") {
+        stopping.catch(() => undefined);
+        await settleBy(stopping, Math.min(deadline, Date.now() + this.#stopGraceMs));
+        return { recheckContainment: true };
+      }
       return (await settleBy(stopping, deadline)) === boundPassed
         ? { stopping, lastResort: retireFor(current) }
         : { recheckContainment: true };

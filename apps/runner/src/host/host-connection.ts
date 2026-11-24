@@ -1,4 +1,4 @@
-import type { ExecutionContainment } from "../runtime/execution-containment.js";
+import { readMachineBootId, type ExecutionContainment } from "../runtime/execution-containment.js";
 import { AppServerError } from "../apps/app-server-manager.js";
 import { harnessMinimumVersion } from "@opensteer/core";
 import { meetsMinimumVersion } from "@opensteer/harness";
@@ -268,6 +268,8 @@ export interface ReconnectingHostConnectionOptions {
   readonly agents?: RunnerAgentsConnection;
   readonly browserBridge?: RunnerConfig["browserBridge"];
   readonly bootId: RunnerDescriptor["bootId"];
+  /** Stable OS boot identity override for tests; defaults to the host's OS boot ID. */
+  readonly machineBootId?: string | null;
   readonly config: RunnerConfig;
   /** The computer this Runner runs on, read once at start. */
   readonly device?: RunnerDescriptor["device"];
@@ -307,6 +309,7 @@ export class ReconnectingHostConnection {
   readonly #agents: RunnerAgentsConnection | undefined;
   readonly #browserBridge: RunnerConfig["browserBridge"];
   readonly #bootId: RunnerDescriptor["bootId"];
+  readonly #machineBootId: string | undefined;
   readonly #config: Omit<RunnerConfig, "enrollmentToken">;
   readonly #device: RunnerDescriptor["device"];
   readonly #platform: NodeJS.Platform;
@@ -393,6 +396,10 @@ export class ReconnectingHostConnection {
     this.#agentsStoppedSince = options.agentsStoppedSince;
     this.#browserBridge = options.browserBridge;
     this.#bootId = options.bootId;
+    this.#machineBootId =
+      options.machineBootId === null
+        ? undefined
+        : (options.machineBootId ?? readMachineBootId(options.platform ?? process.platform));
     const { enrollmentToken, ...config } = options.config;
     this.#config = config;
     this.#device = options.device;
@@ -853,6 +860,7 @@ export class ReconnectingHostConnection {
         ? {}
         : { agentsStoppedSince: this.#agentsStoppedSince }),
       bootId: this.#bootId,
+      ...(this.#machineBootId ? { machineBootId: this.#machineBootId } : {}),
       capabilities: [
         ...runnerCapabilities(harnessDrivers),
         ...(agents?.runFileOptions || agents?.runtime.homeFileOptions?.()

@@ -27,6 +27,7 @@ import {
   OpensteerError,
   MessageContentSchema,
   harnessUsageLimitFailureCode,
+  runTerminationUnprovenCode,
   ReplyTargetSchema,
   type RequestCancellationReason,
   type RunId,
@@ -595,9 +596,11 @@ async function finalizeRunOutcome(
       conversationId: replyTarget.conversationId,
       text:
         input.status === "failed"
-          ? `Something went wrong and the agent could not finish. ${failureSummary(input.failure)} Open the task in Opensteer: ${threadUrl}`
+          ? input.failure?.code === runTerminationUnprovenCode
+            ? `Opensteer could not confirm this Run stopped. Something from this Run may still be running on that device. Open the task in Opensteer: ${threadUrl}`
+            : `Something went wrong and the agent could not finish. ${failureSummary(input.failure)} Open the task in Opensteer: ${threadUrl}`
           : input.interruptedCause === "engine-retired"
-            ? `This Run was cut short: Opensteer had to restart its engine to make sure another task had stopped. What it was doing at that moment may not have finished; send a message to continue. Open the task in Opensteer: ${threadUrl}`
+            ? `This Run was cut short: Opensteer had to end its shared engine to make sure another task had stopped; it will start again when work next needs it. What it was doing at that moment may not have finished; send a message to continue. Open the task in Opensteer: ${threadUrl}`
             : `The agent was stopped. Open the task in Opensteer: ${threadUrl}`,
     });
   }
@@ -738,6 +741,13 @@ async function finalizeRunOutcome(
     })
     .where("id", "=", run.id)
     .executeTakeFirstOrThrow();
+  if (input.status === "failed" && input.failure?.code === runTerminationUnprovenCode) {
+    await transaction
+      .updateTable("threads")
+      .set({ unconfirmedStopRunId: run.id })
+      .where("id", "=", run.threadId)
+      .execute();
+  }
   if (mutation) deleteTerminalRunReceipts(transaction, mutation, run.id);
   if (run.assignmentId) {
     await settleAssignmentAfterRun(transaction, {

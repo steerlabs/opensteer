@@ -19,7 +19,7 @@ import type {
   TaskReader,
   ThreadMutationAdmission,
 } from "@opensteer/database";
-import { personTaskReader } from "@opensteer/database";
+import { earlierBootProvenContained, personTaskReader } from "@opensteer/database";
 import type { CommandService, RunnerRegistry } from "@opensteer/orchestration";
 import type { HarnessInstanceCatalog, HarnessModelDescriptor } from "@opensteer/protocol";
 import {
@@ -57,12 +57,14 @@ type Command<K extends HostApiCommand["type"]> = Extract<
 export type ThreadServiceStore = Pick<
   OpensteerStore,
   | "clearThreadStartHold"
+  | "confirmThreadUnconfirmedStop"
   | "findThreadCreationByIdempotency"
   | "getEnvironment"
   | "getHarnessCatalog"
   | "getHarnessInstance"
   | "hasAcceptedThreadInput"
   | "readTask"
+  | "readThreadUnconfirmedStop"
 >;
 export class ThreadService {
   readonly options: {
@@ -445,11 +447,32 @@ export class ThreadService {
     signal: AbortSignal,
   ): Promise<{ readonly proven: boolean }> {
     const thread = await this.assertTarget(actor, command.threadId);
-    if (!this.options.runners.recheckThreadStop) {
+    const identity = this.options.runners.identityForEnvironment(thread.environmentId);
+    if (!identity || !this.options.runners.recheckThreadStop) {
       throw new OpensteerError({
         code: "runner_offline",
         message: "That device is offline",
       });
+    }
+    const unconfirmed = await this.options.store.readThreadUnconfirmedStop(thread.id);
+    if (
+      unconfirmed &&
+      (unconfirmed.runnerId !== identity.runnerId || unconfirmed.runnerBootId !== identity.bootId)
+    ) {
+      // A Runner from a different boot has no record of the held attempt: confirm ONLY
+      // when its own start verified earlier-boot containment or the machine rebooted.
+      const proven = earlierBootProvenContained({
+        attemptRunnerId: unconfirmed.runnerId,
+        attemptRunnerBootId: unconfirmed.runnerBootId,
+        attemptMachineBootId: unconfirmed.machineBootId,
+        currentRunnerId: identity.runnerId,
+        currentRunnerBootId: identity.bootId,
+        currentMachineBootId: identity.machineBootId ?? null,
+        earlierBootsContained: identity.capabilities.includes("earlier-boots-contained-v1"),
+      });
+      if (!proven) return { proven: false };
+      await this.options.store.confirmThreadUnconfirmedStop(thread.id, unconfirmed.runId);
+      return { proven: true };
     }
     const result = await this.options.runners.recheckThreadStop(
       thread.environmentId,

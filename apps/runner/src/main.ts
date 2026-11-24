@@ -364,6 +364,7 @@ async function startAgentsRunner(input: {
     browserHarnessExecutable: execution.browserHarnessExecutable,
     bootId,
     containment,
+    earlierBootsContained: input.earlierBootsContained,
     dataDirectory: config.dataDirectory,
     deploymentShape: config.deploymentShape,
     environmentId,
