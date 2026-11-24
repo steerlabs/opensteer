@@ -16,6 +16,7 @@ import {
 } from "@opensteer/core";
 import { commandAttempts, runCommandEffect } from "./command-effect.js";
 import {
+  AgentConnectionStore,
   admitCommand,
   commandSubject,
   type CommandRequestOrigin,
@@ -439,12 +440,10 @@ export class CommandRequestService {
       if (name) notes.set(field.path, { name });
     }
     if (command.type === "connection.update") {
-      const now = await this.#database
-        .selectFrom("agentConnections")
-        .select(["label", "accessMode", "grant"])
-        .where("id", "=", command.connectionId)
-        .where("userId", "=", owner)
-        .executeTakeFirst();
+      // As the person's own list of connections draws it: shown to the person, never admitted by.
+      const now = (await new AgentConnectionStore(this.#database).list(owner)).find(
+        ({ id }) => id === command.connectionId,
+      );
       if (now)
         for (const key of ["label", "accessMode", "grant"] as const) {
           const proposed = command[key];

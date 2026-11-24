@@ -91,7 +91,6 @@ export function commandRequestView(
   const part = request.command;
   if (!part) return null;
   const state = stateOf(request);
-  const outcome = part.outcome;
   return {
     requestId: request.id,
     sentence: part.sentence ?? part.summary,
@@ -106,10 +105,7 @@ export function commandRequestView(
       label: path.split(".").map(commandFieldLabel).join(" › "),
     })),
     state,
-    line:
-      state === "refused" && outcome?.status === "failed"
-        ? `${commandRequestWords.refused} ${outcome.message}`.trim()
-        : commandRequestWords[state],
+    line: commandRequestWords[state],
     approve: state === "pending" ? { label: commandRequestWords.approve } : null,
     decline: state === "pending" ? { label: commandRequestWords.decline } : null,
   };

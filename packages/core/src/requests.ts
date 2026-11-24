@@ -664,7 +664,7 @@ export const CommandRequestPartSchema = z.object({
    */
   notes: z
     .array(
-      z.strictObject({
+      z.object({
         path: z.string().min(1).max(400),
         name: z.string().min(1).max(240).optional(),
         current: z.string().min(1).max(16_000).optional(),

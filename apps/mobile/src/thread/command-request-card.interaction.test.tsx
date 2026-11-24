@@ -149,12 +149,10 @@ describe("a command an agent proposed, on the phone", () => {
 
   it("approves exactly the command as proposed, then says what it came to, never failed when unknown", async () => {
     const host = new MockHostClient();
-    const dispatch = vi
-      .spyOn(host, "dispatch")
-      .mockResolvedValue({
-        type: "request.command.approve",
-        outcome: { status: "unknown" },
-      } as never);
+    const dispatch = vi.spyOn(host, "dispatch").mockResolvedValue({
+      type: "request.command.approve",
+      outcome: { status: "unknown" },
+    } as never);
     const node = await mount(host);
     await press(node, "Approve");
     await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce());

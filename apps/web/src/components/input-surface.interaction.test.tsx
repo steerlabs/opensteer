@@ -951,7 +951,7 @@ describe("a command an agent proposed", () => {
     await click(node, "Approve");
     await vi.waitFor(() =>
       expect(node.querySelector(".command-request [role=status]")?.textContent).toBe(
-        "Approved, but the Home refused it, so nothing changed. The Home refused it, so nothing changed.",
+        "Approved, but the Home refused it, so nothing changed.",
       ),
     );
     act(() => root.unmount());
