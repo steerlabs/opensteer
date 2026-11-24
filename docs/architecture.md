@@ -748,26 +748,57 @@ Who learns what depends on who runs the machine:
    [deploy/monitoring](../deploy/monitoring/README.md). The event that matters most is its own:
    `account.cloud_computer.not_ready`, a person who paid and has no working Cloud Computer. Each
    Cloud Computer's Host sends a **health report** every 15 minutes, with the credentials its backup
-   report uses. The account keeps only the latest one, and the person sees the same report in that
-   Home's Settings ("What Opensteer can see about this computer"). **What the operator of a Cloud
-   Computer can see:** its release version, each service healthy or not, its disk as a bucket, its
-   last backup and update results, its problem codes with counts and times, and the account's own
-   record of its setup and billing. **What it cannot see through these:** anything the person or an
-   agent did or holds on it, including pages, tasks, messages, files, accounts, sign-ins, names,
-   logs and error text.
-3. **People's own devices and self-hosted Homes: nothing is sent** unless the person turns on
-   "Send problem reports to Opensteer" (off by default, shown with exactly what would be sent).
-   Then the same report goes every 15 minutes, with no account in it, to the account service,
-   which keeps only counts per code and day, or to a self-hoster's own address
-   (`OPENSTEER_PROBLEM_REPORTS_URL`). The setting is a person-view command: no agent can turn it
-   on or off, or ask.
+   report uses. The account keeps only the latest one (`cloud_computer_health`, shown to the
+   operator in `show <id>`). When a report names a problem that needs someone, the account logs
+   `account.cloud_computer.unhealthy` with the computer's id, its version and those codes, and Cloud
+   Logging keeps that line for its retention period. The person sees the exact bytes in that Home's
+   Settings ("What Opensteer can see about this computer"). **What the operator of a Cloud Computer
+   can see:**
+   - the report: the computer's kind and release version, its disk as a range, each service healthy
+     or not, its last backup and update results with their times to the minute, and its problem
+     codes with their fixed details, counts and times to the minute;
+   - the address the report comes from, which is the computer's own;
+   - the account's own record of its setup, billing and backups.
+
+   **What it cannot see through these:** anything the person or an agent did or holds on it,
+   including pages, tasks, messages, files, accounts, sign-ins, names, logs and error text.
+
+3. **People's own devices and self-hosted Homes: nothing is sent** unless the person turns it on.
+   It is off by default, Settings shows the exact bytes before anything is sent, and while it is off
+   nothing even wakes to check. Where a report goes is configuration, never the person's choice or
+   an agent's:
+   - **A Mac linked to the Opensteer account** (`OPENSTEER_PERSONAL_ACCOUNT_ISSUER`, which the
+     desktop passes) sends Opensteer once a day only `{schema, home, version, codes}`: its kind, its
+     version, and each problem code with a bucketed count (`1`, `2-9`, `10-99`, `100+`;
+     `OpensteerProblemReportSchema`). No times, no services, no backup or update results, no account
+     or id.
+     - Opensteer also sees the internet address the report comes from, and the load balancer's request
+       logs may keep it.
+     - The account service logs nothing of a report. It keeps only how many reports named each code
+       with each bucket on each day (`problem_report_counts`).
+     - Those counts are untrusted. The endpoint is anonymous, so anyone can add to them. With one
+       budget per replica (600 a minute, whatever address a request gives), a flood can crowd real
+       reports out for that minute. No alert reads these counts.
+   - **A self-hosted Linux Home** (`deploy/home`) names no Opensteer account. It sends nothing, and
+     its switch stays off and cannot be turned on, unless `OPENSTEER_HOME_PROBLEM_REPORTS_URL` names
+     the self-hoster's own collector. That collector then receives the full health report every 15
+     minutes, and what it keeps is up to whoever runs it.
+   - **Turning it on or off** is an ordinary command at the door (`settings.problemReports.set`,
+     class `approve`). The person's own app changes it at once. An agent with standing to propose Home
+     settings may propose either; that becomes a Request, and nothing changes until the person
+     approves it. A connection whose grant does not reach Home settings reads it as not found.
+
+The machine status is read only where `OPENSTEER_MACHINE_STATUS=root-maintenance` says root's
+maintenance writes it (`deploy/home` sets it). There the file is in `host-data`, which no Runner
+mounts, and the Host itself writes only in subfolders of that volume. Anywhere else an agent's shell
+could write the file, so it is not read.
 
 Rule 3 of AGENTS.md (nothing leaves the Home before it is in the Disconnect set) is about effects
 done for a connection, and a report is not one. It is the Home's own, sent on its own timer, never
-for a connection or a Run, and carries nothing a connection produced except counts by code. An
+for a connection or a Run, and carries nothing a connection produced except codes and counts. An
 agent reads problems through `opensteer_state` (area `problems`, for the person's own agents and
-`everything` grants; outside a grant it does not exist), and nothing more: no tool sends a report,
-reads one back, or changes where it goes or what it holds.
+`everything` grants; outside a grant it does not exist) and may propose the setting as above. No
+tool sends a report, reads one back, or changes where it goes or what it holds.
 
 Not built yet, and where each would attach. A consent prompt at first run would set the same
 setting, once, after setup. Crash reports from devices (Sentry's protocol, so a self-hoster could

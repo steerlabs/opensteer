@@ -79,7 +79,7 @@ DIGEST_CHANNEL=projects/opensteer-production/notificationChannels/222 \
 3. for each `policies/*.yaml`, with `${ACCOUNT_HOST}` filled in:
    `gcloud alpha monitoring policies create --policy-from-file=<file> --notification-channels=<page or digest channel>`
 
-Run it once per project. To change a policy, update it with
+Run it once per project: it is not idempotent, and a second run stops at the metric with "already exists". To change a policy, update it with
 `gcloud alpha monitoring policies update <name> --policy-from-file=<file>`, or delete it and run
 the script again.
 

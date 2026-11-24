@@ -184,14 +184,19 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
       env[`${prefix}IPV6`] === undefined && env[`${prefix}IPV6_FILE`] === undefined
         ? false
         : read("IPV6", z.enum(["off", "on"])) === "on",
-    /** A person who paid and has no ready Cloud Computer this many minutes on is a page. */
+    /**
+     * A person who paid and has no ready Cloud Computer this many minutes after its readiness
+     * began is a page. At least 15, and keep it above the provisioner's own readiness deadline
+     * (`OPENSTEER_HOME_READINESS_TIMEOUT_MS`, 10 minutes by default), inside which a first set-up
+     * (a few minutes) and a restore before boot-complete finish or are reported failed.
+     */
     notReadyAfterMinutes:
       env[`${prefix}NOT_READY_MINUTES`] === undefined &&
       env[`${prefix}NOT_READY_MINUTES_FILE`] === undefined
         ? 30
         : read(
             "NOT_READY_MINUTES",
-            z.string().regex(/^\d+$/u).transform(Number).pipe(z.number().int().min(5).max(1_440)),
+            z.string().regex(/^\d+$/u).transform(Number).pipe(z.number().int().min(15).max(1_440)),
           ),
     /** Sent a GET after each clean billing pass, so a monitor knows the pass still runs. */
     heartbeatUrl:

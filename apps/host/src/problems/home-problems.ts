@@ -1,4 +1,4 @@
-import { readFile, stat, statfs } from "node:fs/promises";
+import { lstat, readFile, statfs } from "node:fs/promises";
 import { join } from "node:path";
 import type { HostConfig } from "@opensteer/config";
 import {
@@ -11,11 +11,14 @@ import type { ProblemReporting } from "@opensteer/protocol";
 import {
   HomeHealthReportSchema,
   MachineStatusSchema,
+  OpensteerProblemReportSchema,
   ReleaseVersionSchema,
   cloudComputerHealthPath,
   compareProblems,
   diskBucket,
+  problemCountBucket,
   problemReportsPath,
+  reportTime,
   problemsLimit,
   type DiskBucket,
   type HomeHealthReport,
@@ -29,8 +32,10 @@ export const machineStatusFile = "machine-status.json";
 /** A machine status older than this says nothing about services now. */
 const machineStatusFreshMs = 15 * 60_000;
 const backupOverdueMs = 36 * 60 * 60_000;
-/** How often a Home that reports sends its report. */
+/** How often a Cloud Computer, or a Home sending to its own collector, sends its report. */
 export const problemReportIntervalMs = 15 * 60_000;
+/** How often a person's own Home sends Opensteer its codes: once a day. */
+export const opensteerReportIntervalMs = 24 * 60 * 60_000;
 
 type Destination =
   | {
@@ -71,8 +76,10 @@ export function reportVersion(value: string | undefined): string {
  * person's Settings, `opensteer_state` area `problems` and the report: what the database keeps
  * (`readStoredProblems`), what the machine's root maintenance wrote, and the disk. The report is
  * sent by this Home on its own timer, never for a connection or a Run, to one address from
- * configuration: the Opensteer account for a Cloud Computer (its operator's health report), and on
- * any other Home only while the person has turned it on.
+ * configuration: the full health report to the Opensteer account for a Cloud Computer (its
+ * operator) or to a self-hoster's own collector, and only codes with bucketed counts, once a day,
+ * from a person's own Home to Opensteer. Nothing but a Cloud Computer sends anything unless the
+ * person turned it on, and while it is off there is no timer at all.
  */
 export class HomeProblems {
   readonly #database: Kysely<DatabaseSchema>;
@@ -85,6 +92,9 @@ export class HomeProblems {
   readonly #now: () => number;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #sending: Promise<void> | undefined;
+  /** Set by `setSending` before anything else it does, so an Off already counts mid-send. */
+  #on = false;
+  #closed = false;
   #last: Pick<ProblemReporting, "lastSentAt" | "lastResult"> = {};
 
   constructor(options: {
@@ -92,9 +102,10 @@ export class HomeProblems {
     readonly dataDirectory: string;
     readonly home: HomeHealthReport["home"];
     /**
-     * Whether root's maintenance writes the machine status here: a networked Linux Home, where
-     * the file is in a volume no Runner mounts. Never on a Mac, where nothing of root's writes
-     * it and the person's own agents could.
+     * Whether root's maintenance writes the machine status here (`OPENSTEER_MACHINE_STATUS`,
+     * set only by deploy/home): the file is in host-data, which no Runner mounts, and the Host
+     * itself writes only in subfolders. Anywhere else an agent's shell might write it, so unset
+     * it is never read.
      */
     readonly readsMachineStatus: boolean;
     readonly version: string;
@@ -124,7 +135,7 @@ export class HomeProblems {
       .slice(0, problemsLimit);
   }
 
-  /** Exactly what this Home sends, or would send: the person's preview and the upload are one. */
+  /** The full health report: what a Cloud Computer or a Home's own collector receives. */
   async report(): Promise<HomeHealthReport> {
     const [problems, machine, disk] = await Promise.all([
       this.problems(),
@@ -153,35 +164,62 @@ export class HomeProblems {
     };
   }
 
-  async view() {
-    const [problems, reporting, report] = await Promise.all([
-      this.problems(),
-      this.reporting(),
-      this.report(),
-    ]);
-    return { problems, reporting, report };
+  /**
+   * Exactly the bytes this Home sends, or would send, to its destination: the preview the person
+   * sees and the upload are this one string. Null where there is nowhere to send.
+   */
+  async body(): Promise<string | null> {
+    const kind = this.#destination.kind;
+    if (kind === "none") return null;
+    if (kind === "operator" || kind === "own") return JSON.stringify(await this.report());
+    const totals = new Map<string, number>();
+    for (const problem of await this.problems())
+      totals.set(problem.code, (totals.get(problem.code) ?? 0) + problem.count);
+    const codes = Object.fromEntries(
+      [...totals].map(([code, total]) => [code, problemCountBucket(total)]),
+    );
+    const home = this.#home === "cloud-computer" ? "other" : this.#home;
+    return JSON.stringify(
+      OpensteerProblemReportSchema.parse({ schema: 1, home, version: this.#version, codes }),
+    );
   }
 
-  /** The person's own choice; a Cloud Computer's report is not theirs to turn off. */
+  async view() {
+    const [problems, reporting, body] = await Promise.all([
+      this.problems(),
+      this.reporting(),
+      this.body(),
+    ]);
+    return { problems, reporting, body };
+  }
+
+  /** Whether a timer is set: none while nothing will be sent (rule 7). */
+  scheduled(): boolean {
+    return this.#timer !== undefined;
+  }
+
+  /**
+   * The person's own choice, approved by them at the door; a Cloud Computer's report is not
+   * theirs to turn off. Off counts at once, before the setting is written.
+   */
   async setSending(send: boolean): Promise<ProblemReporting> {
-    if (this.#destination.kind !== "operator")
+    if (this.#destination.kind !== "operator") {
+      if (!send) this.#stop();
       await setProblemReportsSetting(this.#database, send ? "on" : "off");
-    const reporting = await this.reporting();
-    if (reporting.mode === "on") this.#schedule(0);
-    return reporting;
+      this.#on = send;
+      if (send) this.#schedule(60_000);
+    }
+    return this.reporting();
   }
 
   /** Sends the report once, if this Home sends one. Never throws: the result is remembered. */
   async sendOnce(): Promise<void> {
     const destination = this.#destination;
-    if (destination.kind === "none") return;
-    if (
-      destination.kind !== "operator" &&
-      (await readProblemReportsSetting(this.#database)) !== "on"
-    )
-      return;
-    const report = await this.report();
-    const at = new Date(this.#now()).toISOString();
+    if (destination.kind === "none" || !this.#sends()) return;
+    const body = await this.body();
+    // An Off that landed while the body was built stops it here, before anything leaves.
+    if (body === null || !this.#sends()) return;
+    const at = reportTime(this.#now());
     try {
       const response = await this.#fetch(destination.url, {
         method: "POST",
@@ -197,7 +235,7 @@ export class HomeProblems {
               }
             : {}),
         },
-        body: JSON.stringify(report),
+        body,
       });
       await response.body?.cancel().catch(() => undefined);
       this.#last = { lastSentAt: at, lastResult: response.ok ? "sent" : "refused" };
@@ -206,27 +244,45 @@ export class HomeProblems {
     }
   }
 
-  /** Starts the timer: a first report a minute or two after start, then every 15 minutes. */
-  start(): void {
-    this.#schedule(60_000 + Math.floor(Math.random() * 60_000));
+  /**
+   * Starts the timer only where something will be sent: always on a Cloud Computer, elsewhere
+   * only while the person has it on. Off, nothing wakes.
+   */
+  async start(): Promise<void> {
+    const kind = this.#destination.kind;
+    if (kind === "none") return;
+    this.#on = kind === "operator" || (await readProblemReportsSetting(this.#database)) === "on";
+    if (this.#on) this.#schedule(60_000 + Math.floor(Math.random() * 60_000));
   }
 
   async close(): Promise<void> {
-    if (this.#timer) clearTimeout(this.#timer);
-    this.#timer = undefined;
+    this.#closed = true;
+    this.#stop();
     await this.#sending;
   }
 
-  #schedule(delayMs: number): void {
-    if (this.#destination.kind === "none") return;
+  #sends(): boolean {
+    return !this.#closed && (this.#destination.kind === "operator" || this.#on);
+  }
+
+  #stop(): void {
+    this.#on = false;
     if (this.#timer) clearTimeout(this.#timer);
+    this.#timer = undefined;
+  }
+
+  #schedule(delayMs: number): void {
+    if (this.#destination.kind === "none" || !this.#sends()) return;
+    if (this.#timer) clearTimeout(this.#timer);
+    const interval =
+      this.#destination.kind === "opensteer" ? opensteerReportIntervalMs : problemReportIntervalMs;
     this.#timer = setTimeout(() => {
       this.#timer = undefined;
       this.#sending ??= this.sendOnce()
         .catch(() => undefined)
         .finally(() => {
           this.#sending = undefined;
-          this.#schedule(problemReportIntervalMs + Math.floor(Math.random() * 60_000));
+          this.#schedule(interval + Math.floor(Math.random() * 60_000));
         });
     }, delayMs);
     this.#timer.unref();
@@ -236,8 +292,10 @@ export class HomeProblems {
     if (!this.#readsMachineStatus) return { status: {} };
     const path = join(this.#dataDirectory, machineStatusFile);
     try {
-      const [text, info] = await Promise.all([readFile(path, "utf8"), stat(path)]);
-      if (text.length > 16_384) return { status: {} };
+      // Only a plain file root wrote, never a link to somewhere else.
+      const info = await lstat(path);
+      if (!info.isFile() || info.size > 16_384) return { status: {} };
+      const text = await readFile(path, "utf8");
       const parsed = MachineStatusSchema.safeParse(JSON.parse(text));
       if (!parsed.success) return { status: {} };
       const fresh = this.#now() - info.mtimeMs < machineStatusFreshMs;
@@ -265,7 +323,7 @@ export function machineProblems(
   disk: DiskBucket | undefined,
   now: number,
 ): Problem[] {
-  const at = new Date(machine.at ?? now).toISOString();
+  const at = reportTime(machine.at ?? now);
   const problems: Problem[] = [];
   for (const [service, health] of Object.entries(machine.status.services ?? {}))
     if (health === "unhealthy" || health === "stopped")
@@ -290,7 +348,7 @@ export function machineProblems(
       code: "backup.overdue",
       count: 1,
       firstSeenAt: backup.at,
-      lastSeenAt: new Date(now).toISOString(),
+      lastSeenAt: reportTime(now),
       fields: {},
     });
   const update = machine.status.lastUpdate;
@@ -306,8 +364,8 @@ export function machineProblems(
     problems.push({
       code: "disk.nearly_full",
       count: 1,
-      firstSeenAt: new Date(now).toISOString(),
-      lastSeenAt: new Date(now).toISOString(),
+      firstSeenAt: reportTime(now),
+      lastSeenAt: reportTime(now),
       fields: { disk },
     });
   return problems;

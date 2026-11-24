@@ -1,3 +1,4 @@
+import { problemCountBucket } from "@opensteer/protocol/problems";
 import { outsideName } from "@opensteer/shared/outsideName";
 import { chatParityProvider } from "./chat-parity.js";
 import { ItemTextStore } from "../host/item-text-store.js";
@@ -2697,13 +2698,20 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     // The preview keeps no durable session history to page back through.
     "machine.access.history": async () => rpcSuccess({ nextCursor: null, sessions: [] }),
     // A computer's placed tasks are counted in this read, from the tasks the preview holds.
-    // The preview has no problems and sends no report; it shows what one would hold.
-    "problems.get": async () =>
-      rpcSuccess({
+    // The preview sends nothing; it shows the bytes a Mac would send Opensteer, as a Host does.
+    "problems.get": async () => {
+      const totals = new Map<string, number>();
+      for (const { code, count } of client.problems)
+        totals.set(code, (totals.get(code) ?? 0) + count);
+      const codes = Object.fromEntries(
+        [...totals].map(([code, total]) => [code, problemCountBucket(total)]),
+      );
+      return rpcSuccess({
         problems: client.problems,
         reporting: client.problemReporting(),
-        report: { schema: 1, home: "mac", version: "0.0.0", problems: client.problems },
-      }),
+        body: JSON.stringify({ schema: 1, home: "mac", version: "0.0.0", codes }),
+      });
+    },
     "machines.list": async () => {
       const snapshot = client.getSnapshot();
       const tasks = snapshot.tasks?.entries ?? [];
@@ -4502,10 +4510,14 @@ export class MockHostClient implements HostClient {
   /** The problems the preview's Home has, for a scenario or a test. */
   setProblems(
     problems: readonly import("@opensteer/protocol/problems").Problem[],
-    options: { readonly cloudComputer?: boolean } = {},
+    options: {
+      readonly cloudComputer?: boolean;
+      readonly destination?: "opensteer" | "own" | "none";
+    } = {},
   ): void {
     this.#state.problems = [...problems];
     if (options.cloudComputer) this.#state.problemReports = "operator";
+    if (options.destination) this.#state.problemDestination = options.destination;
   }
 
   setSearchSuggestionsAvailable(available: boolean): void {
@@ -13873,10 +13885,11 @@ class MockHostState {
   }
   /** `operator` stands for a Cloud Computer, whose report its operator always receives. */
   problemReports: "off" | "on" | "operator" = "off";
+  problemDestination: "opensteer" | "own" | "none" = "opensteer";
   /** What a preview shows as this Home's problems; none until a test or a scenario sets some. */
   problems: import("@opensteer/protocol/problems").Problem[] = [];
   problemReporting(): import("@opensteer/protocol").ProblemReporting {
-    return { mode: this.problemReports, destination: "opensteer" };
+    return { mode: this.problemReports, destination: this.problemDestination };
   }
   setProblemReportsChoice(send: boolean): import("@opensteer/protocol").ProblemReporting {
     if (this.problemReports !== "operator") this.problemReports = send ? "on" : "off";

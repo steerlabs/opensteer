@@ -3286,7 +3286,7 @@ export async function createHostRuntime(
       database: store.database,
       dataDirectory: resolve(config.dataDirectory),
       home: personalHomeKind(config) ?? "other",
-      readsMachineStatus: config.exposure === "networked",
+      readsMachineStatus: config.machineStatus === "root-maintenance",
       version: process.env.OPENSTEER_RELEASE_VERSION ?? "0.0.0",
       destination: problemReportDestination(config),
     });
@@ -3867,7 +3867,7 @@ export async function createHostRuntime(
     continuations.start();
     automationFailures.start();
     quietTasks.start();
-    homeProblems.start();
+    void homeProblems.start().catch(() => undefined);
     let closed = false;
     let closingStep: string | undefined;
     hostAuthorityPublisher?.start();

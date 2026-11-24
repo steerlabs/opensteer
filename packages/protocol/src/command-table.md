@@ -41,7 +41,7 @@ edit. Callers: (a) your own agent at Full access, (b) your own agent below Full 
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `execution.preferences.remember` | new-task defaults ← `selection`,`accessMode` (mode above the caller's own is approve) | preference / approve | now/ask | ask | now/ask | nf | A | `admin-svc:369`; review G2: raising the mode new tasks start in lifts a gate (`packages/database/src/harness-store.ts:1098-1131`); D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
 | `viewer.timeZone.update` | the person's time zone | preference | now | ask | now | nf | A | echoes only, stores nothing (`admin-svc:366-367`) |
-| `settings.problemReports.set` | whether this Home sends its problem reports | person-view | nf | nf | nf | nf | — | the person's own choice of what leaves the Home |
+| `settings.problemReports.set` | whether this Home sends its problem reports | approve | ask | ask | ask | nf | — | an agent proposes; the person approves its Request |
 | `viewer.quietTasks.update` | quiet-task days | preference | now | ask | now | nf | A | `admin-svc:342` |
 | `viewer.name.update` | the owner's display name | identity | ask | ask | ask | nf | — | refused today (`admin-svc:135-137`) |
 | `settings.idleCompaction.set` | Claude idle compaction policy | preference | now | ask | now | nf | B | refused today (`admin-svc:130-134`) and its store write takes no identity (`admin-svc:334-340`) |

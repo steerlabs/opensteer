@@ -350,7 +350,7 @@ export class AdministrationService {
         return { type: command.type, policy };
       }
       case "settings.problemReports.set": {
-        // Person-view: the door answers every agent not_found before this runs.
+        // An agent's proposal reaches here only as the person, once they approved its Request.
         if (!dependencies.problems)
           throw new OpensteerError({ code: "not_found", message: "This Home sends no reports" });
         return {

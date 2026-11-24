@@ -17,9 +17,9 @@ export const problemReportsMigration: Migration = {
       create table if not exists public.problem_report_counts (
         day date not null,
         code text not null,
-        reports integer not null default 0 check (reports >= 0),
-        total integer not null default 0 check (total >= 0),
-        primary key (day, code)
+        bucket text not null check (bucket in ('1', '2-9', '10-99', '100+')),
+        reports bigint not null default 0 check (reports >= 0),
+        primary key (day, code, bucket)
       );
     `.execute(database);
   },

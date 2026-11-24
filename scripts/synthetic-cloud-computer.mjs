@@ -1,30 +1,37 @@
 #!/usr/bin/env node
 // The synthetic purchase: one person's whole Cloud Computer path, end to end, against an
-// Opensteer account service in Stripe TEST mode, so a broken purchase is found before a person
-// finds it (deploy/monitoring/policies/page-synthetic-failed-twice.yaml).
+// Opensteer account service selling in Stripe TEST mode, so a broken purchase is found before a
+// person finds it (deploy/monitoring/policies/page-synthetic-failed-twice.yaml).
 //
-//   1. sign in with the account service's review sign-in
-//   2. check out, and pay with Stripe's test card through Stripe's API (no browser)
-//   3. wait, within a bound, for the Cloud Computer to be ready
-//   4. open its address and check the Home answers as the one the account claimed
-//   5. delete it (which cancels its subscription) and wait until the machine and its DNS name
-//      are gone
+//   1. sign in with the synthetic purchase's OWN account (the account service's
+//      OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL; never App Review's)
+//   2. delete any Cloud Computer an earlier run left in that account, and wait until it is gone
+//   3. check out, and pay on Stripe's own hosted Checkout page in a headless Chromium, with
+//      Stripe's test card 4242 4242 4242 4242
+//   4. wait, within a bound, for the Cloud Computer to be ready
+//   5. open its address and check the Home answers as the one the account claimed
+//   6. delete it (which cancels its subscription) and wait until the machine and its DNS name
+//      are gone; this runs whatever happened before, and is itself checked
 //
-// It is safe to run every few hours: it starts only when the review account has no live Cloud
-// Computer, and it only ever touches the one it created, by its id. A run that fails after it
-// created one still deletes that one. It writes one JSON line per run, `synthetic.run.passed`
-// or `synthetic.run.failed` with the failed step, and exits with that step's code.
+// What it proves: the account's checkout, Stripe's hosted page taking a test card, the webhook
+// or the 60-second pass turning a payment into a Cloud Computer, the provisioner making a real VM,
+// the Home's set-up and claim, and deletion with its VM and DNS name gone. What it does not prove:
+// live-mode Stripe (it refuses a session that is not `cs_test_`), a real card, or renewal.
+//
+// It only ever acts in its own account, and only on Cloud Computers it made or an earlier run
+// left there. It writes one JSON line, `synthetic.run.passed`, or `synthetic.run.failed` with the
+// failed step, and exits with that step's code.
 //
 // Configuration (each also as <NAME>_FILE):
-//   OPENSTEER_SYNTHETIC_ACCOUNT_URL              https origin of the account service
-//   OPENSTEER_SYNTHETIC_REVIEW_EMAIL             its review sign-in (OPENSTEER_APP_REVIEW_EMAIL)
-//   OPENSTEER_SYNTHETIC_REVIEW_PASSWORD          and password
-//   OPENSTEER_SYNTHETIC_STRIPE_PUBLISHABLE_KEY   the account's Stripe test publishable key (pk_test_)
-//   OPENSTEER_SYNTHETIC_READY_MINUTES            bound for step 3 (default 30)
-//   OPENSTEER_SYNTHETIC_GONE_MINUTES             bound for step 5 (default 20)
-//   OPENSTEER_SYNTHETIC_HEARTBEAT_URL            optional: a GET after a passing run
+//   OPENSTEER_SYNTHETIC_ACCOUNT_URL       https origin of the account service
+//   OPENSTEER_SYNTHETIC_EMAIL             its synthetic sign-in (OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL)
+//   OPENSTEER_SYNTHETIC_PASSWORD          and password
+//   OPENSTEER_SYNTHETIC_READY_MINUTES     bound for step 4 (default 30)
+//   OPENSTEER_SYNTHETIC_GONE_MINUTES      bound for steps 2 and 6 (default 20)
+//   OPENSTEER_SYNTHETIC_HEARTBEAT_URL     optional: a GET after a passing run
 //
-// No dependencies: it runs with Node 22 or later and nothing else.
+// It needs Node 22 or later and playwright-core 1.62.1 with its Chromium (the repository has
+// both; deploy/monitoring/synthetic-cronjob.yaml runs it in Playwright's own image).
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve4, resolve6 } from "node:dns/promises";
@@ -34,7 +41,7 @@ import { pathToFileURL } from "node:url";
 export const steps = {
   configuration: 2,
   "sign-in": 10,
-  "account-not-empty": 11,
+  leftover: 11,
   checkout: 12,
   payment: 13,
   ready: 14,
@@ -65,16 +72,10 @@ export function readConfiguration(env = process.env) {
     if (fallback !== undefined) return fallback;
     return fail("configuration", `${name} is required`);
   };
-  const origin = new URL(value("OPENSTEER_SYNTHETIC_ACCOUNT_URL"));
-  if (
-    origin.protocol !== "https:" ||
-    origin.origin !== value("OPENSTEER_SYNTHETIC_ACCOUNT_URL").replace(/\/$/u, "")
-  )
+  const given = value("OPENSTEER_SYNTHETIC_ACCOUNT_URL");
+  const origin = new URL(given);
+  if (origin.protocol !== "https:" || origin.origin !== given.replace(/\/$/u, ""))
     fail("configuration", "OPENSTEER_SYNTHETIC_ACCOUNT_URL must be a bare https origin");
-  const stripeKey = value("OPENSTEER_SYNTHETIC_STRIPE_PUBLISHABLE_KEY");
-  // Only ever Stripe's test mode: a live key would charge a real card.
-  if (!/^pk_test_[A-Za-z0-9]+$/u.test(stripeKey))
-    fail("configuration", "the Stripe key must be a test publishable key (pk_test_)");
   const minutes = (name, fallback) => {
     const parsed = Number(value(name, String(fallback)));
     if (!Number.isInteger(parsed) || parsed < 1 || parsed > 240)
@@ -84,9 +85,8 @@ export function readConfiguration(env = process.env) {
   const heartbeat = value("OPENSTEER_SYNTHETIC_HEARTBEAT_URL", "");
   return {
     origin: origin.origin,
-    email: value("OPENSTEER_SYNTHETIC_REVIEW_EMAIL"),
-    password: value("OPENSTEER_SYNTHETIC_REVIEW_PASSWORD"),
-    stripeKey,
+    email: value("OPENSTEER_SYNTHETIC_EMAIL"),
+    password: value("OPENSTEER_SYNTHETIC_PASSWORD"),
     readyMs: minutes("OPENSTEER_SYNTHETIC_READY_MINUTES", 30) * 60_000,
     goneMs: minutes("OPENSTEER_SYNTHETIC_GONE_MINUTES", 20) * 60_000,
     ...(heartbeat ? { heartbeat: new URL(heartbeat) } : {}),
@@ -130,67 +130,52 @@ function accountClient(config, fetch) {
   };
 }
 
-/**
- * Pays an open Stripe Checkout Session with the test card, through the same calls Stripe's
- * hosted checkout page makes with the publishable key. These endpoints are Stripe's own and not
- * documented; if Stripe changes them, this step fails with code `payment`.
- */
-async function payWithTestCard(config, fetch, checkoutUrl) {
-  const session = /\/(cs_test_[A-Za-z0-9]+)/u.exec(new URL(checkoutUrl).pathname)?.[1];
-  if (!session) fail("payment", "the checkout address is not a Stripe test Checkout Session");
-  const stripe = async (path, form) => {
-    const response = await fetch(`https://api.stripe.com/v1/${path}`, {
-      method: "POST",
-      signal: AbortSignal.timeout(30_000),
-      headers: {
-        authorization: `Bearer ${config.stripeKey}`,
-        "content-type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams(form),
-    });
-    const json = await response.json().catch(() => ({}));
-    if (!response.ok)
-      fail(
-        "payment",
-        `Stripe ${path.split("/")[0]} ${path.split("/").at(-1)}: HTTP ${response.status} ${json?.error?.code ?? ""}`.trim(),
-      );
-    return json;
-  };
-  const page = await stripe(`payment_pages/${session}/init`, {
-    browser_locale: "en-US",
-    eid: "NA",
-    redirect_type: "url",
-  });
-  const amount = page?.total_summary?.due ?? page?.line_item_group?.total ?? page?.invoice?.total;
-  const method = await stripe("payment_methods", {
-    type: "card",
-    "card[number]": "4242424242424242",
-    "card[cvc]": "123",
-    "card[exp_month]": "12",
-    "card[exp_year]": String(new Date().getUTCFullYear() + 5),
-    "billing_details[name]": "Opensteer synthetic purchase",
-    "billing_details[email]": config.email,
-    "billing_details[address][country]": "US",
-    "billing_details[address][postal_code]": "94103",
-  });
-  const confirmed = await stripe(`payment_pages/${session}/confirm`, {
-    eid: "NA",
-    payment_method: method.id,
-    expected_payment_method_type: "card",
-    ...(amount === undefined ? {} : { expected_amount: String(amount) }),
-    ...(page?.init_checksum ? { init_checksum: page.init_checksum } : {}),
-    ...(page?.customer_email ? {} : { email: config.email }),
-  });
-  if (confirmed?.status && confirmed.status !== "complete" && confirmed.status !== "open")
-    fail("payment", `Stripe said ${confirmed.status}`);
+async function launchChromium() {
+  const { chromium } = await import("playwright-core");
+  return chromium.launch({ headless: true });
 }
 
-async function until(deadlineMs, everyMs, check, sleep) {
-  const end = Date.now() + deadlineMs;
+/**
+ * Pays a Stripe test-mode Checkout Session on Stripe's own hosted page, as a person would: the
+ * documented surface, in a headless Chromium, with Stripe's test card. Refuses anything but a
+ * test session, so it can never charge a real card.
+ */
+async function payOnCheckoutPage(config, launchBrowser, checkoutUrl) {
+  const url = new URL(checkoutUrl);
+  if (url.hostname !== "checkout.stripe.com" || !/\/cs_test_[A-Za-z0-9]+/u.test(url.pathname))
+    fail("payment", "the checkout address is not a Stripe test-mode Checkout page");
+  const browser = await launchBrowser().catch(() => fail("payment", "Chromium did not start"));
+  try {
+    const page = await browser.newPage();
+    await page.goto(checkoutUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    const optional = async (selector, text) => {
+      const field = page.locator(selector);
+      if (await field.isVisible({ timeout: 2_000 }).catch(() => false)) await field.fill(text);
+    };
+    await optional("#email", config.email);
+    const year = String((new Date().getUTCFullYear() + 5) % 100).padStart(2, "0");
+    await page.locator("#cardNumber").fill("4242424242424242", { timeout: 30_000 });
+    await page.locator("#cardExpiry").fill(`12${year}`);
+    await page.locator("#cardCvc").fill("123");
+    await optional("#billingName", "Opensteer synthetic purchase");
+    await optional("#billingPostalCode", "94103");
+    await page.locator('button[type="submit"]').click();
+    // Paid: the page sends the browser back to the account's own return address.
+    await page.waitForURL((next) => !next.hostname.endsWith("stripe.com"), { timeout: 120_000 });
+  } catch (error) {
+    if (error instanceof StepFailed) throw error;
+    fail("payment", `Stripe's Checkout page could not be completed (${error?.name ?? "error"})`);
+  } finally {
+    await browser.close().catch(() => undefined);
+  }
+}
+
+async function until(deadlineMs, everyMs, check, sleep, now) {
+  const end = now() + deadlineMs;
   for (;;) {
     const answer = await check();
     if (answer !== undefined) return answer;
-    if (Date.now() >= end) return undefined;
+    if (now() >= end) return undefined;
     await sleep(everyMs);
   }
 }
@@ -207,13 +192,15 @@ async function nameResolves(hostname, dns) {
 }
 
 /**
- * One run. `fetch`, `dns`, `sleep` and `log` are the outside world, given so that a test can
- * stand in for them. Returns the exit code.
+ * One run. `fetch`, `dns`, `launchBrowser`, `sleep`, `now` and `log` are the outside world, given so
+ * that a test can stand in for them. Returns the exit code.
  */
 export async function runSyntheticPurchase(config, world = {}) {
   const fetch = world.fetch ?? globalThis.fetch;
   const dns = world.dns ?? { resolve4, resolve6 };
+  const launchBrowser = world.launchBrowser ?? launchChromium;
   const sleep = world.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
+  const clock = world.now ?? Date.now;
   const log = world.log ?? ((line) => console.log(JSON.stringify(line)));
   const started = Date.now();
   const seconds = {};
@@ -221,60 +208,72 @@ export async function runSyntheticPurchase(config, world = {}) {
     seconds[step] = Math.round((Date.now() - started) / 1000);
   };
   const account = accountClient(config, fetch);
+  /** What this run bought: everything in its own account that was not there when it began. */
+  let known;
   let computerId;
-  let hostname;
+  const hostnames = new Map();
 
-  const list = async () => {
+  const list = async (step) => {
     const { status, json } = await account("GET", "/v1/account/cloud-computers");
     if (status !== 200 || !Array.isArray(json?.computers))
-      fail("sign-in", `listing Cloud Computers answered HTTP ${status}`);
+      fail(step, `listing Cloud Computers answered HTTP ${status}`);
+    for (const computer of json.computers)
+      if (computer.address) hostnames.set(computer.id, new URL(computer.address).hostname);
     return json.computers;
   };
-  const show = async (step) => {
-    const { status, json } = await account("GET", `/v1/account/cloud-computers/${computerId}`);
-    if (status !== 200) fail(step, `reading ${computerId} answered HTTP ${status}`);
+  const show = async (id, step) => {
+    const { status, json } = await account("GET", `/v1/account/cloud-computers/${id}`);
+    if (status !== 200) fail(step, `reading ${id} answered HTTP ${status}`);
+    if (json?.address) hostnames.set(id, new URL(json.address).hostname);
     return json;
   };
 
-  const deleteAndWait = async () => {
-    const removal = await account("DELETE", `/v1/account/cloud-computers/${computerId}`, {
-      confirmation: `DELETE:${computerId}`,
-    });
-    if (removal.status !== 200) fail("delete", `deleting answered HTTP ${removal.status}`);
-    mark("delete");
+  /** Deletes one of its own Cloud Computers and waits until the machine and its name are gone. */
+  const deleteAndWait = async (id, steps) => {
+    const view = await show(id, steps.delete);
+    if (view.status !== "deleted" && !view.deletion) {
+      const removal = await account("DELETE", `/v1/account/cloud-computers/${id}`, {
+        confirmation: `DELETE:${id}`,
+      });
+      if (removal.status !== 200) fail(steps.delete, `deleting answered HTTP ${removal.status}`);
+    }
     const gone = await until(
       config.goneMs,
       15_000,
       async () => {
-        const view = await show("gone");
-        if (view.status !== "deleted" || !view.deletion?.computerDestroyedAt) return undefined;
+        const now = await show(id, steps.gone);
+        if (now.status !== "deleted" || !now.deletion?.computerDestroyedAt) return undefined;
+        const hostname = hostnames.get(id);
         if (hostname && (await nameResolves(hostname, dns))) return undefined;
         return true;
       },
       sleep,
+      clock,
     );
     if (!gone)
       fail(
-        "gone",
+        steps.gone,
         `the machine or its DNS name was not gone within ${config.goneMs / 60_000} minutes`,
       );
-    mark("gone");
   };
 
+  let result;
   try {
     const signIn = await account("POST", "/api/auth/sign-in/app-review", {
       email: config.email,
       password: config.password,
     });
-    if (signIn.status !== 200) fail("sign-in", `the review sign-in answered HTTP ${signIn.status}`);
-    const before = await list();
-    if (before.some((computer) => computer.status !== "deleted"))
-      fail(
-        "account-not-empty",
-        "the review account already has a live Cloud Computer; nothing was touched",
-      );
-    const known = new Set(before.map((computer) => computer.id));
+    if (signIn.status !== 200)
+      fail("sign-in", `the synthetic sign-in answered HTTP ${signIn.status}`);
+    // Its own account: anything live in it was left by an earlier run, and goes first.
+    const before = await list("sign-in");
     mark("sign-in");
+    for (const leftover of before.filter((computer) => computer.status !== "deleted")) {
+      await deleteAndWait(leftover.id, { delete: "leftover", gone: "leftover" });
+      log({ event: "synthetic.run.leftover-deleted", computerId: leftover.id });
+    }
+    known = new Set(before.map((computer) => computer.id));
+    mark("leftover");
 
     const checkout = await account("POST", "/v1/account/cloud-computers/checkout", {
       requestId: randomUUID(),
@@ -285,17 +284,18 @@ export async function runSyntheticPurchase(config, world = {}) {
         `checkout answered HTTP ${checkout.status} ${checkout.json?.error?.code ?? ""}`.trim(),
       );
     mark("checkout");
-    await payWithTestCard(config, fetch, checkout.json.url);
+    await payOnCheckoutPage(config, launchBrowser, checkout.json.url);
     // The account's own computer appears once Stripe's webhook (or its 60-second pass) arrives.
     computerId = await until(
       5 * 60_000,
       5_000,
       async () => {
-        const created = (await list()).filter((computer) => !known.has(computer.id));
+        const created = (await list("payment")).filter((computer) => !known.has(computer.id));
         if (created.length > 1) fail("payment", "more than one new Cloud Computer appeared");
         return created[0]?.id;
       },
       sleep,
+      clock,
     );
     if (!computerId) fail("payment", "no Cloud Computer appeared within 5 minutes of paying");
     mark("payment");
@@ -304,15 +304,15 @@ export async function runSyntheticPurchase(config, world = {}) {
       config.readyMs,
       15_000,
       async () => {
-        const view = await show("ready");
+        const view = await show(computerId, "ready");
         if (view.status === "needs_attention")
           fail("ready", `the Cloud Computer needs attention (${view.reasonCode ?? "no code"})`);
         return view.status === "ready" ? view : undefined;
       },
       sleep,
+      clock,
     );
     if (!ready) fail("ready", `not ready within ${config.readyMs / 60_000} minutes`);
-    hostname = new URL(ready.address).hostname;
     mark("ready");
 
     // The Home answers at its address as the Home the account claimed for this person.
@@ -335,33 +335,41 @@ export async function runSyntheticPurchase(config, world = {}) {
     if (configured?.data?.setupState !== "complete")
       fail("home", "the Home does not say it was claimed");
     mark("home");
-
-    await deleteAndWait();
-    log({ event: "synthetic.run.passed", computerId, seconds });
-    if (config.heartbeat)
-      await fetch(config.heartbeat, { signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
-    return 0;
+    result = { event: "synthetic.run.passed" };
   } catch (error) {
     const step = error instanceof StepFailed ? error.step : "configuration";
     const detail = error instanceof StepFailed ? error.detail : "the run stopped unexpectedly";
-    log({
-      event: "synthetic.run.failed",
-      step,
-      detail,
-      ...(computerId ? { computerId } : {}),
-      seconds,
-    });
-    // Never leave a Cloud Computer this run made, so the next run starts clean.
-    if (computerId && step !== "delete" && step !== "gone")
-      await deleteAndWait().catch((cleanup) =>
-        log({
-          event: "synthetic.run.cleanup-failed",
-          step: cleanup instanceof StepFailed ? cleanup.step : "delete",
-          computerId,
-        }),
-      );
-    return steps[step] ?? 1;
+    result = { event: "synthetic.run.failed", step, detail };
+  } finally {
+    // Whatever happened, nothing this run bought is left running: every Cloud Computer in its
+    // own account that was not there when it began, the one it knew and any that appeared late.
+    if (known) {
+      const made = new Set(computerId ? [computerId] : []);
+      try {
+        for (const computer of await list("delete"))
+          if (!known.has(computer.id) && computer.status !== "deleted") made.add(computer.id);
+      } catch {
+        // The list is read again by the next run, which deletes what is left.
+      }
+      for (const id of made)
+        try {
+          await deleteAndWait(id, { delete: "delete", gone: "gone" });
+          mark("gone");
+        } catch (error) {
+          const step = error instanceof StepFailed ? error.step : "delete";
+          if (result?.event !== "synthetic.run.failed")
+            result = { event: "synthetic.run.failed", step, detail: error?.detail ?? "" };
+          log({ event: "synthetic.run.cleanup-failed", step, computerId: id });
+        }
+    }
   }
+  log({ ...result, ...(computerId ? { computerId } : {}), seconds });
+  if (result.event === "synthetic.run.passed") {
+    if (config.heartbeat)
+      await fetch(config.heartbeat, { signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
+    return 0;
+  }
+  return steps[result.step] ?? 1;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

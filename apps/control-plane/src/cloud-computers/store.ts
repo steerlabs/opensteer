@@ -7,11 +7,10 @@ import {
 import { freeBackupTargets } from "./backup-capacity.js";
 import { cloudComputerSetupFailure } from "../server/events.js";
 import {
-  CloudComputerHealthViewSchema,
   problemTable,
-  type CloudComputerHealthView,
   type CloudComputerSetupFailure,
   type HomeHealthReport,
+  type OpensteerProblemReport,
   type ProblemCode,
 } from "@opensteer/protocol/problems";
 import { deletionView } from "./deletion-view.js";
@@ -989,10 +988,14 @@ export class CloudComputerStore {
       const claim = operatorClaimError(row.claimError);
       const code = cloudComputerSetupFailure(row.lastError, claim);
       const claimed = row.bootstrapReceiptAt !== null;
+      // Working means ready and claimed for its buyer. Anything else past the limit, claimed
+      // before or not (after a Resume, a reboot, a VM that never came back), is a person who
+      // pays and has no working computer: readiness restarts its clock on each of those.
+      const working = row.phase === "ready" && claimed;
       if (
         row.phase === "failed" ||
         claim !== null ||
-        (!claimed && now - row.readinessStartedAt.getTime() >= notReadyAfterMs)
+        (!working && now - row.readinessStartedAt.getTime() >= notReadyAfterMs)
       ) {
         findings.push({
           event: "account.cloud_computer.not_ready",
@@ -2016,58 +2019,28 @@ export class CloudComputerStore {
     ];
   }
 
-  /** Adds one report from a person's own Home to the counts per code; nothing else is kept. */
-  async countProblemReport(report: HomeHealthReport): Promise<void> {
+  /**
+   * Adds one person's own Home's report to how many reports named each code with each bucket
+   * today. Nothing else of it is kept or logged: not its version, kind, address or time.
+   */
+  async countProblemReport(report: OpensteerProblemReport): Promise<void> {
     const day = this.#now().toISOString().slice(0, 10);
-    const counts = new Map<ProblemCode, number>();
-    for (const problem of report.problems)
-      counts.set(problem.code, (counts.get(problem.code) ?? 0) + problem.count);
-    if (!counts.size) return;
+    const rows = Object.entries(report.codes).map(([code, bucket]) => ({
+      day,
+      code,
+      bucket: bucket!,
+      reports: "1",
+    }));
+    if (!rows.length) return;
     await this.#db
       .insertInto("problemReportCounts")
-      .values([...counts].map(([code, total]) => ({ day, code, reports: 1, total })))
+      .values(rows)
       .onConflict((conflict) =>
-        conflict.columns(["day", "code"]).doUpdateSet((eb) => ({
-          reports: eb("problemReportCounts.reports", "+", 1),
-          total: eb("problemReportCounts.total", "+", eb.ref("excluded.total")),
+        conflict.columns(["day", "code", "bucket"]).doUpdateSet((eb) => ({
+          reports: eb("problemReportCounts.reports", "+", "1"),
         })),
       )
       .execute();
-  }
-
-  /**
-   * What Opensteer can see about one person's Cloud Computer: the latest health report it sent,
-   * exactly as stored, and the account's own record of its setup.
-   */
-  async healthForAccount(
-    id: CloudComputerId,
-    accountId: ControlPlaneAccountId,
-  ): Promise<CloudComputerHealthView> {
-    const row = await this.#db
-      .selectFrom("cloudComputers")
-      .leftJoin("cloudComputerHealth", "cloudComputerHealth.computerId", "cloudComputers.id")
-      .select([
-        "cloudComputers.phase",
-        "cloudComputers.lastError",
-        "cloudComputers.claimError",
-        "cloudComputers.bootstrapReceiptAt",
-        "cloudComputerHealth.receivedAt",
-        "cloudComputerHealth.report",
-      ])
-      .where("cloudComputers.id", "=", id)
-      .where("cloudComputers.accountId", "=", accountId)
-      .executeTakeFirst();
-    if (!row) throw missing();
-    const failure = cloudComputerSetupFailure(row.lastError, operatorClaimError(row.claimError));
-    return CloudComputerHealthViewSchema.parse({
-      setup: {
-        phase: row.phase === "ready" && row.bootstrapReceiptAt === null ? "claiming" : row.phase,
-        ...(failure ? { failure } : {}),
-      },
-      ...(row.receivedAt && row.report
-        ? { receivedAt: row.receivedAt.toISOString(), report: row.report }
-        : {}),
-    });
   }
 
   async setupCodeForReadyHome(

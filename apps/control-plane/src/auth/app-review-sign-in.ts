@@ -11,9 +11,15 @@ export interface AppReviewSignInConfig {
   readonly password: string;
 }
 
-export function appReviewSignIn(config: AppReviewSignInConfig) {
-  const email = normalizeIdentityEmail(config.email);
-  const passwordDigest = createHash("sha256").update(config.password).digest();
+/**
+ * Password sign-in for a fixed few configured accounts only: App Review's, and the synthetic
+ * purchase's own. Each signs in only as itself.
+ */
+export function appReviewSignIn(configs: AppReviewSignInConfig | readonly AppReviewSignInConfig[]) {
+  const accounts = (Array.isArray(configs) ? configs : [configs]).map((config) => ({
+    email: normalizeIdentityEmail(config.email),
+    passwordDigest: createHash("sha256").update(config.password).digest(),
+  }));
   return {
     id: "app-review",
     endpoints: {
@@ -33,11 +39,14 @@ export function appReviewSignIn(config: AppReviewSignInConfig) {
           if (ctx.headers?.get("origin") !== new URL(ctx.context.baseURL).origin) {
             throw new APIError("FORBIDDEN", { message: "Request origin is not allowed" });
           }
-          const passwordMatches = timingSafeEqual(
-            passwordDigest,
-            createHash("sha256").update(ctx.body.password).digest(),
+          const given = createHash("sha256").update(ctx.body.password).digest();
+          const named = ctx.body.email.normalize("NFKC").trim().toLowerCase();
+          // Every account's password is compared, so the time taken names none of them.
+          const matched = accounts.filter(
+            (account) => timingSafeEqual(account.passwordDigest, given) && account.email === named,
           );
-          if (ctx.body.email.normalize("NFKC").trim().toLowerCase() !== email || !passwordMatches) {
+          const email = matched[0]?.email;
+          if (!email) {
             ctx.context.logger.warn("App Review sign-in refused: invalid credentials");
             throw new APIError("UNAUTHORIZED", { message: "Email or password is incorrect" });
           }

@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
-  CloudComputerHealthViewSchema,
   HomeHealthReportSchema,
   MachineStatusSchema,
+  OpensteerProblemReportSchema,
   ProblemSchema,
   ReleaseVersionSchema,
+  ReportTimeSchema,
   compareProblems,
+  problemCountBucket,
+  reportTime,
   diskBucket,
   problemCodes,
   problemTable,
@@ -14,12 +17,37 @@ import {
 } from "./problems.js";
 
 /**
- * Every leaf a report can hold, by kind. A string is allowed only as an enum, a literal, an ISO
- * time or the release version; any other string could carry an address, a name or an error's
- * own text, which no report may (docs/architecture.md, "Problems and reports").
+ * Whether a pattern can carry chosen text: unanchored, an open repetition (`*`, `+`, `{n,}`), a
+ * wildcard, or a class with letters in it. Letters may appear only as fixed words.
+ */
+function openPattern(pattern: RegExp): boolean {
+  const source = pattern.source;
+  if (!source.startsWith("^") || !source.endsWith("$")) return true;
+  const body = source.replace(/\\[.\-:]/gu, "");
+  return /[*+]|\{\d+,\}|\\[wWsSpP]|\[\^|\[[^\]]*[a-zA-Z][^\]]*\]|\./u.test(body);
+}
+
+/**
+ * Every leaf a report can hold, by kind. A string is allowed only as an enum, a literal or a
+ * bounded string every pattern of which is closed; an array only with a maximum length. Anything
+ * else could carry an address, a name or an error's own text, which no report may
+ * (docs/architecture.md, "Problems and reports"). Nothing is exempt by name.
  */
 function freeTextLeaves(schema: z.ZodType, path: string, out: string[]): void {
   const def = (schema as unknown as { _zod: { def: Record<string, unknown> } })._zod.def;
+  // What its checks say: a maximum length, its patterns, a string format such as a datetime.
+  const checks = ((def.checks ?? []) as readonly { _zod: { def: Record<string, unknown> } }[]).map(
+    (check) => check._zod.def,
+  );
+  const maximum = checks.find((check) => check.check === "max_length")?.maximum as
+    number | undefined;
+  const patterns = checks
+    .filter((check) => check.check === "string_format" && check.format === "regex")
+    .map((check) => check.pattern as RegExp);
+  const format =
+    (def.format as string | undefined) ??
+    (checks.find((check) => check.check === "string_format" && check.format !== "regex")?.format as
+      string | undefined);
   switch (def.type) {
     case "enum":
     case "literal":
@@ -34,9 +62,10 @@ function freeTextLeaves(schema: z.ZodType, path: string, out: string[]): void {
       return;
     }
     case "string": {
-      if (schema === ReleaseVersionSchema) return;
-      if ((def as { format?: string }).format === "datetime") return;
-      out.push(path);
+      if (format !== undefined && format !== "regex") out.push(`${path} (a ${format})`);
+      else if (!patterns.length) out.push(path);
+      else if (patterns.some(openPattern)) out.push(`${path} (an open pattern)`);
+      if (maximum === undefined || maximum > 64) out.push(`${path} (no bounded length)`);
       return;
     }
     case "optional":
@@ -45,6 +74,7 @@ function freeTextLeaves(schema: z.ZodType, path: string, out: string[]): void {
     case "default":
       return freeTextLeaves(def.innerType as z.ZodType, path, out);
     case "array":
+      if (maximum === undefined || maximum > 64) out.push(`${path} (no maximum length)`);
       return freeTextLeaves(def.element as z.ZodType, `${path}[]`, out);
     case "record": {
       freeTextLeaves(def.keyType as z.ZodType, `${path}{key}`, out);
@@ -97,7 +127,7 @@ describe("problems", () => {
     for (const [name, schema] of [
       ["report", HomeHealthReportSchema],
       ["machine status", MachineStatusSchema],
-      ["the owner's view", CloudComputerHealthViewSchema],
+      ["what a person's own Home sends Opensteer", OpensteerProblemReportSchema],
     ] as const) {
       const leaves: string[] = [];
       freeTextLeaves(schema, name, leaves);
@@ -118,9 +148,87 @@ describe("problems", () => {
     );
     expect(leaves).toEqual([
       "report.note",
+      "report.note (no bounded length)",
       "report.detail (not strict)",
       "report.size (an unbounded number)",
     ]);
+  });
+
+  it("the guard finds the three leaks the review put in: open arrays, fine times, free version tags", () => {
+    const leaves: string[] = [];
+    freeTextLeaves(
+      HomeHealthReportSchema.extend({
+        // A byte string spelled as small numbers.
+        bytes: z.array(z.number().int().min(0).max(255)),
+        // Any number of fractional digits.
+        at: z.iso.datetime(),
+        // A pre-release tag of free letters: "1.0.0-timjang.gmail.com".
+        tag: z
+          .string()
+          .max(64)
+          .regex(/^\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[a-z0-9]{1,20}(?:\.[a-z0-9]{1,20}){0,3})?$/u),
+        // And the plain shapes of the same: an unbounded tail, no length, no anchor.
+        tail: z
+          .string()
+          .max(40)
+          .regex(/^v\d+$/u),
+        long: z.string().regex(/^\d{1,6}$/u),
+        loose: z
+          .string()
+          .max(20)
+          .regex(/\d{1,6}/u),
+      }),
+      "report",
+      leaves,
+    );
+    expect(leaves).toEqual([
+      "report.bytes (no maximum length)",
+      "report.at (a datetime)",
+      "report.at (no bounded length)",
+      "report.tag (an open pattern)",
+      "report.tail (an open pattern)",
+      "report.long (no bounded length)",
+      "report.loose (an open pattern)",
+    ]);
+  });
+
+  it("refuses the review's three leaks as values too", () => {
+    expect(ReleaseVersionSchema.safeParse("1.0.0-timjang.gmail.com").success).toBe(false);
+    expect(ReleaseVersionSchema.safeParse("1.0.0-rc.2").success).toBe(true);
+    expect(
+      ReportTimeSchema.safeParse(
+        "2026-11-24T10:00:00.1234567890123456789012345678901234567890123456789Z",
+      ).success,
+    ).toBe(false);
+    expect(ReportTimeSchema.safeParse("2026-11-24T10:00:59Z").success).toBe(false);
+    expect(reportTime("2026-11-24T10:42:59.999Z")).toBe("2026-11-24T10:42:00Z");
+    expect(
+      HomeHealthReportSchema.safeParse({
+        ...report,
+        lastUpdate: { result: "updated", at: "2026-11-24T09:00:00Z", toVersion: "1.0.0-a.b.c" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("sends a person's own Home's Opensteer report as codes and bucketed counts only", () => {
+    expect([1, 2, 9, 10, 99, 100, 1_000_000].map(problemCountBucket)).toEqual([
+      "1",
+      "2-9",
+      "2-9",
+      "10-99",
+      "10-99",
+      "100+",
+      "100+",
+    ]);
+    const body = { schema: 1, home: "mac", version: "1.4.0", codes: { "stop.unconfirmed": "2-9" } };
+    expect(OpensteerProblemReportSchema.parse(body)).toEqual(body);
+    for (const bad of [
+      { ...body, home: "cloud-computer" },
+      { ...body, codes: { "stop.unconfirmed": 3 } },
+      { ...body, codes: { "cloud_computer.not_ready": "1" } },
+      { ...body, at: "2026-11-24T10:00:00Z" },
+    ])
+      expect(OpensteerProblemReportSchema.safeParse(bad).success).toBe(false);
   });
 
   it("refuses anything outside the schema: unknown fields, other codes' fields, text", () => {

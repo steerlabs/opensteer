@@ -68,10 +68,7 @@ describe("deploy/monitoring", () => {
       ),
     );
     const unalerted = Object.keys(accountEvents).filter(
-      (event) =>
-        !alerted.has(event) &&
-        event !== "account.problem_report.received" &&
-        event !== "account.heartbeat.failed",
+      (event) => !alerted.has(event) && event !== "account.heartbeat.failed",
     );
     expect(unalerted).toEqual([]);
   });

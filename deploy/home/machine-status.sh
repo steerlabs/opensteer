@@ -27,7 +27,7 @@ record_backup_result() {
     '' | repository-unreachable | snapshot-failed | restart-failed | report-refused) ;;
     *) failure=snapshot-failed ;;
   esac
-  jq -nc --arg result "$1" --arg failure "$failure" --arg at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+  jq -nc --arg result "$1" --arg failure "$failure" --arg at "$(date -u +'%Y-%m-%dT%H:%M:00Z')" \
     '{result: $result, at: $at} + (if $failure == "" then {} else {failure: $failure} end)' \
     > "$home_dir/last-backup.json.new" && mv -f -- "$home_dir/last-backup.json.new" "$home_dir/last-backup.json"
 }
@@ -37,7 +37,7 @@ record_update_result() {
   local version='^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$' from=${2:-} to=${3:-}
   [[ $from =~ $version ]] || from=''
   [[ $to =~ $version ]] || to=''
-  jq -nc --arg result "$1" --arg from "$from" --arg to "$to" --arg at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" '
+  jq -nc --arg result "$1" --arg from "$from" --arg to "$to" --arg at "$(date -u +'%Y-%m-%dT%H:%M:00Z')" '
     {result: $result, at: $at}
     + (if $from == "" then {} else {fromVersion: $from} end)
     + (if $to == "" then {} else {toVersion: $to} end)' \

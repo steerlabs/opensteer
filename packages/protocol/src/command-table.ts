@@ -521,12 +521,13 @@ export const commandTable: CommandTable = {
     governs: home("time-zone"),
     effect: "database",
   },
-  // What leaves the Home is the person's alone to choose: no agent turns it on, off or asks.
+  // What leaves the Home is the person's to decide: an agent may propose it either way, and
+  // nothing changes until the person approves its Request.
   "settings.problemReports.set": {
     family: "settings",
     scope: "home",
     step: "none",
-    faces: [personView],
+    faces: one("approve"),
     governsKinds: ["home"],
     governs: home("problem-reports"),
     effect: "database",

@@ -1,5 +1,10 @@
 import { harnessKinds } from "@opensteer/core";
-import type { Problem, ProblemCode, ProblemFields } from "@opensteer/protocol/problems";
+import {
+  reportTime,
+  type Problem,
+  type ProblemCode,
+  type ProblemFields,
+} from "@opensteer/protocol/problems";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
@@ -90,8 +95,9 @@ export async function readStoredProblems(database: Kysely<DatabaseSchema>): Prom
   for (const row of result.rows) {
     const fields = fieldsOf(row.code, row.field);
     const key = `${row.code} ${JSON.stringify(fields)}`;
-    const firstSeenAt = row.firstSeenAt.toISOString();
-    const lastSeenAt = row.lastSeenAt.toISOString();
+    // To the minute, as every report time is (ReportTimeSchema).
+    const firstSeenAt = reportTime(row.firstSeenAt);
+    const lastSeenAt = reportTime(row.lastSeenAt);
     const known = merged.get(key);
     merged.set(
       key,

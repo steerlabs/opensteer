@@ -718,17 +718,17 @@
       "faces": [
         {
           "when": null,
-          "class": "person-view",
+          "class": "approve",
           "answers": {
-            "a": "not_found",
-            "b": "not_found",
-            "c": "not_found",
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
             "d": "not_found"
           }
         }
       ],
       "step": "—",
-      "note": "the person's own choice of what leaves the Home",
+      "note": "an agent proposes; the person approves its Request",
       "effect": {
         "where": "database",
         "why": "administration-service.ts:352: one update of personal_settings",

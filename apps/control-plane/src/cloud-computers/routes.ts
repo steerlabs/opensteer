@@ -60,8 +60,8 @@ import type { ControlPlaneStore } from "../database/store.js";
 import { toWebHeaders } from "../portal/routes.js";
 import { cloudComputerSetupFailure, logAccountEvent } from "../server/events.js";
 import {
-  CloudComputerHealthViewSchema,
   HomeHealthReportSchema,
+  OpensteerProblemReportSchema,
   problemReportsPath,
 } from "@opensteer/protocol/problems";
 import { ControlPlaneError } from "../server/errors.js";
@@ -78,6 +78,8 @@ export interface CloudComputerRouteOptions {
   readonly kickBilling?: () => void;
   /** The Opensteer website, the one origin allowed to read the public offer from a page. */
   readonly websiteOrigin?: URL;
+  /** How many reports from people's own Homes a replica takes a minute; 600 unless a test says. */
+  readonly problemReportsPerMinute?: number;
 }
 
 const params = z.object({ id: CloudComputerIdSchema });
@@ -254,27 +256,27 @@ export function registerCloudComputerRoutes(
     return reply.code(204).send();
   });
 
-  // A report from a person's own Home, sent only while they turned it on. Anonymous: it carries
-  // no account, and only its codes and counts are kept.
-  const problemReportLimit = new BootRateLimit(10);
-  app.post(problemReportsPath, { bodyLimit: 16_384 }, async (request, reply) => {
+  // A person's own Home's codes, once a day, only while they turned it on. Anonymous: it carries
+  // no account and no id, nothing of it is logged, and only how many reports named each code with
+  // each bucket on each day is kept. One budget for each replica, whoever sends: behind the load
+  // balancer the sending address cannot be told apart or trusted, so it is not used.
+  const problemReportsPerMinute = options.problemReportsPerMinute ?? 600;
+  let problemReportWindow = { startedAt: 0, count: 0 };
+  app.post(problemReportsPath, { bodyLimit: 4_096 }, async (request, reply) => {
     privateResponse(reply);
-    if (!problemReportLimit.allow("problem-report", request.ip))
+    const report = OpensteerProblemReportSchema.safeParse(request.body);
+    if (!report.success) throw new ControlPlaneError("bad_request", "Invalid problem report");
+    const now = Date.now();
+    if (now - problemReportWindow.startedAt >= 60_000)
+      problemReportWindow = { startedAt: now, count: 0 };
+    if (++problemReportWindow.count > problemReportsPerMinute)
       return reply
         .code(429)
         .header("retry-after", "60")
         .send({
           error: { code: "rate_limited", message: "Too many problem reports" },
         });
-    const report = HomeHealthReportSchema.safeParse(request.body);
-    if (!report.success || report.data.home === "cloud-computer")
-      throw new ControlPlaneError("bad_request", "Invalid problem report");
     await store.countProblemReport(report.data);
-    logAccountEvent(request.log, "account.problem_report.received", {
-      home: report.data.home,
-      version: report.data.version,
-      codes: report.data.problems.map(({ code }) => code),
-    });
     return reply.code(204).send();
   });
 
@@ -465,14 +467,6 @@ export function registerCloudComputerRoutes(
     const { accountId } = await read(request);
     return CloudComputerViewSchema.parse(
       await store.show(params.parse(request.params).id, accountId),
-    );
-  });
-  // What Opensteer can see about the person's own Cloud Computer.
-  app.get(`${ownerPath}/health`, async (request, reply) => {
-    privateResponse(reply);
-    const { accountId } = await read(request);
-    return CloudComputerHealthViewSchema.parse(
-      await store.healthForAccount(params.parse(request.params).id, accountId),
     );
   });
   app.post(accountCloudComputerCheckoutPath, async (request, reply) => {

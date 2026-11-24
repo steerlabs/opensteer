@@ -105,6 +105,42 @@ integration("Account OAuth freshness PostgreSQL boundary", () => {
     await database.destroy();
   });
 
+  it("signs the synthetic purchase in as its own Account only, beside App Review (S7)", async () => {
+    const appReview = {
+      email: "appreview-two@opensteer.com",
+      password: "review-test-password-with-at-least-24-characters",
+    };
+    const syntheticSignIn = {
+      email: "synthetic@opensteer.com",
+      password: "synthetic-test-password-with-24-characters",
+    };
+    const auth = createControlPlaneAuth(database, { ...config, appReview, syntheticSignIn });
+    const signIn = (body: Record<string, string>) =>
+      auth.handler(
+        new Request(new URL("/api/auth/sign-in/app-review", publicOrigin), {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: publicOrigin.origin },
+          body: JSON.stringify(body),
+        }),
+      );
+    // Each password signs in only its own account.
+    expect(
+      (await signIn({ email: appReview.email, password: syntheticSignIn.password })).status,
+    ).toBe(401);
+    expect(
+      (await signIn({ email: syntheticSignIn.email, password: appReview.password })).status,
+    ).toBe(401);
+    expect((await signIn(syntheticSignIn)).status).toBe(200);
+    expect(
+      await database
+        .selectFrom("users")
+        .select("email")
+        .where("email", "in", [appReview.email, syntheticSignIn.email])
+        .execute(),
+    ).toEqual([{ email: syntheticSignIn.email }]);
+    await database.deleteFrom("users").where("email", "=", syntheticSignIn.email).execute();
+  });
+
   it("admits only the configured App Review credentials into a normal Account session", async () => {
     const appReview = {
       email: "appreview@opensteer.com",

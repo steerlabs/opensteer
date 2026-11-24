@@ -71,9 +71,9 @@ import { cloudComputerBillingSettledMigration } from "./migration.js";
 import { cloudComputerOperatorUsage, runCloudComputerOperator } from "./operator.js";
 import type { StripeBilling, StripeSubscription } from "./stripe.js";
 import {
-  accountCloudComputerHealthPath,
   cloudComputerHealthPath,
   problemReportsPath,
+  reportTime,
   type HomeHealthReport,
 } from "@opensteer/protocol/problems";
 
@@ -373,6 +373,7 @@ integration("Cloud Computer Account service", () => {
           kickBootstrap,
           kickBilling,
           stripeWebhookSecret: webhookSecret,
+          problemReportsPerMinute: 4,
           verifyProvisioner: googleServiceAccountVerifier({
             audience: publicOrigin.origin,
             email: provisionerEmail,
@@ -1419,8 +1420,8 @@ integration("Cloud Computer Account service", () => {
     expect((await read()).json()).toHaveProperty("lastBackupAt", later.completedAt);
   });
 
-  it("keeps each Cloud Computer's latest health report, shows its owner exactly that, and counts a person's report by code only", async () => {
-    const { account, id } = await buy();
+  it("keeps each Cloud Computer's latest health report for its operator, and counts a person's codes only", async () => {
+    const { id } = await buy();
     const current = (await getDesired(id))!;
     const oidc = (await bootable(current)).managedHome!.oidc;
     const report: HomeHealthReport = {
@@ -1433,8 +1434,8 @@ integration("Cloud Computer Account service", () => {
         {
           code: "stop.unconfirmed",
           count: 2,
-          firstSeenAt: now.toISOString(),
-          lastSeenAt: now.toISOString(),
+          firstSeenAt: reportTime(now),
+          lastSeenAt: reportTime(now),
           fields: {},
         },
       ],
@@ -1448,7 +1449,8 @@ integration("Cloud Computer Account service", () => {
         },
         payload,
       });
-    const read = () => requestAs(account, "GET", accountCloudComputerHealthPath(id));
+    const show = async () =>
+      ((await runCloudComputerOperator(cloud, ["show", id])) as { health: unknown }).health;
     // Only a booted Home, with its own credentials, and only the fixed schema.
     expect((await send(report)).statusCode).toBe(401);
     expect((await complete(current)).statusCode).toBe(200);
@@ -1458,29 +1460,26 @@ integration("Cloud Computer Account service", () => {
     for (const bad of [
       { ...report, note: "https://example.com/a-private-page" },
       { ...report, home: "server" },
+      { ...report, version: "1.0.0-timjang.gmail.com" },
+      { ...report, problems: [{ ...report.problems[0], firstSeenAt: now.toISOString() }] },
       { ...report, problems: [{ ...report.problems[0], fields: { detail: "Bearer TOKEN" } }] },
     ])
       expect((await send(bad)).statusCode).toBe(400);
-    expect((await read()).json()).toEqual({ setup: { phase: "provisioning" } });
+    expect(await show()).toBeNull();
     expect((await send(report)).statusCode).toBe(204);
-    expect((await read()).json()).toEqual({
-      setup: { phase: "provisioning" },
-      receivedAt: now.toISOString(),
-      report,
-    });
+    expect(await show()).toEqual({ receivedAt: now, report });
     // The next report replaces it; nothing older is kept.
     now = new Date(now.getTime() + 15 * 60_000);
     const later = { ...report, services: { host: "healthy", runner: "healthy" }, problems: [] };
     expect((await send(later)).statusCode).toBe(204);
-    expect((await read()).json()).toMatchObject({ receivedAt: now.toISOString(), report: later });
+    expect(await show()).toEqual({ receivedAt: now, report: later });
     expect(await database.selectFrom("cloudComputerHealth").select("computerId").execute()).toEqual(
       [{ computerId: id }],
     );
-    // Another person reads nothing of it.
-    const other = await createAccount();
-    expect((await requestAs(other, "GET", accountCloudComputerHealthPath(id))).statusCode).toBe(
-      404,
-    );
+    // There is no route for anyone else to read it.
+    expect(
+      (await http({ method: "GET", url: `/v1/account/cloud-computers/${id}/health` })).statusCode,
+    ).toBe(404);
 
     // Ready and claimed, then an hour with no report: the watch says so.
     await database
@@ -1495,38 +1494,48 @@ integration("Cloud Computer Account service", () => {
       ),
     ).toEqual([{ event: "account.cloud_computer.report_missing", computerId: id, minutes: 61 }]);
 
-    // A person's own Home: anonymous, never a Cloud Computer's, only counts by code and day.
+    // A person's own Home: its kind, version and each code with a bucketed count, nothing else.
     const personal = {
-      ...report,
+      schema: 1,
       home: "mac",
-      services: undefined,
-      problems: [
-        ...report.problems,
-        {
-          code: "engine.inspection_failed",
-          count: 1,
-          firstSeenAt: now.toISOString(),
-          lastSeenAt: now.toISOString(),
-          fields: { engine: "codex" },
-        },
-      ],
+      version: "1.4.0",
+      codes: { "stop.unconfirmed": "2-9", "engine.inspection_failed": "1" },
     };
     const anonymous = (payload: unknown) =>
       http({ method: "POST", url: problemReportsPath, payload });
-    expect((await anonymous({ ...personal, home: "cloud-computer" })).statusCode).toBe(400);
-    expect((await anonymous({ ...personal, account: "alex@example.com" })).statusCode).toBe(400);
+    for (const bad of [
+      { ...personal, home: "cloud-computer" },
+      { ...personal, account: "alex@example.com" },
+      { ...personal, codes: { "stop.unconfirmed": 1_000_000 } },
+      report,
+    ])
+      expect((await anonymous(bad)).statusCode).toBe(400);
+    const logged = logs.length;
     expect((await anonymous(personal)).statusCode).toBe(204);
     expect((await anonymous(personal)).statusCode).toBe(204);
     expect(
       await database
         .selectFrom("problemReportCounts")
-        .select(["code", "reports", "total"])
+        .select(["code", "bucket", "reports"])
         .orderBy("code")
         .execute(),
     ).toEqual([
-      { code: "engine.inspection_failed", reports: 2, total: 2 },
-      { code: "stop.unconfirmed", reports: 2, total: 4 },
+      { code: "engine.inspection_failed", bucket: "1", reports: "2" },
+      { code: "stop.unconfirmed", bucket: "2-9", reports: "2" },
     ]);
+    // Nothing of a report is logged.
+    expect(logs.slice(logged).join("")).toBe("");
+    // One budget a minute for every sender, whatever address it gives (S3): here, four.
+    const spoofed = (address: string) =>
+      http({
+        method: "POST",
+        url: problemReportsPath,
+        headers: { "x-forwarded-for": address },
+        payload: personal,
+      });
+    expect((await spoofed("198.51.100.1")).statusCode).toBe(204);
+    expect((await spoofed("198.51.100.2")).statusCode).toBe(204);
+    expect((await spoofed("198.51.100.3")).statusCode).toBe(429);
   });
 
   it("assigns a late egress endpoint and serves it only to the current booted Home", async () => {
@@ -1719,6 +1728,18 @@ integration("Cloud Computer Account service", () => {
     expect(await findings("account.pool.low")).toEqual([
       { event: "account.pool.low", pool: "backup", free: 1 },
       { event: "account.pool.low", pool: "egress", free: 0 },
+    ]);
+    // Claimed, then resumed or rebooted and never ready again: readiness starts over, and once the
+    // limit passes it is a person who pays and has no working computer (R2).
+    await database
+      .updateTable("cloudComputers")
+      .set({ phase: "booting", readinessStartedAt: now, lastBackupAt: now })
+      .where("id", "=", id)
+      .execute();
+    expect(await findings("account.cloud_computer.not_ready")).toEqual([]);
+    now = new Date(now.getTime() + 31 * 60_000);
+    expect(await findings("account.cloud_computer.not_ready")).toEqual([
+      { event: "account.cloud_computer.not_ready", computerId: id, phase: "booting", minutes: 31 },
     ]);
   });
 

@@ -82,6 +82,8 @@ it("loads optional managed Home settings from the Account runtime directory", ()
     expect(watched?.heartbeatUrl?.href).toBe("https://hc.example.com/ping/billing");
     for (const [name, value] of [
       ["OPENSTEER_CLOUD_COMPUTER_NOT_READY_MINUTES", "2"],
+      // Below the provisioner's own readiness deadline and a normal first set-up's margin.
+      ["OPENSTEER_CLOUD_COMPUTER_NOT_READY_MINUTES", "14"],
       ["OPENSTEER_CLOUD_COMPUTER_HEARTBEAT_URL", "http://hc.example.com/ping/billing"],
     ] as const)
       expect(() => loadControlPlaneConfig({ ...environment, [name]: value })).toThrow(
@@ -131,6 +133,32 @@ describe("control-plane configuration", () => {
         OPENSTEER_CONTROL_PLANE_DATABASE_URL: "https://db.example/opensteer",
       }),
     ).toThrow(/PostgreSQL/u);
+  });
+
+  it("gives the synthetic purchase its own sign-in, never the App Review account (S7)", () => {
+    expect(loadControlPlaneConfig(validEnvironment).syntheticSignIn).toBeUndefined();
+    const synthetic = {
+      OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL: "Synthetic@Example.com",
+      OPENSTEER_SYNTHETIC_SIGN_IN_PASSWORD: "s".repeat(24),
+    };
+    expect(loadControlPlaneConfig({ ...validEnvironment, ...synthetic }).syntheticSignIn).toEqual({
+      email: "synthetic@example.com",
+      password: "s".repeat(24),
+    });
+    expect(() =>
+      loadControlPlaneConfig({
+        ...validEnvironment,
+        OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL: "synthetic@example.com",
+      }),
+    ).toThrow("email and password together");
+    expect(() =>
+      loadControlPlaneConfig({
+        ...validEnvironment,
+        ...synthetic,
+        OPENSTEER_APP_REVIEW_EMAIL: "synthetic@example.com",
+        OPENSTEER_APP_REVIEW_PASSWORD: "r".repeat(24),
+      }),
+    ).toThrow("must not be the App Review account");
   });
 
   it("enables App Review sign-in only with a valid email and a long password together", () => {

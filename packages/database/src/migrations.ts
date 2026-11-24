@@ -851,6 +851,8 @@ export function migrationProvider(options?: {
                       on trigger_occurrences(updated_at) where status = 'unknown';
                     create index if not exists bridge_deliveries_unknown
                       on bridge_deliveries(updated_at) where status = 'unknown';
+                    create index if not exists threads_unconfirmed_stop_run
+                      on threads(updated_at) where unconfirmed_stop_run_id is not null;
                   `.execute(database);
                 },
               },

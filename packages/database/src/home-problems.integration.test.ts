@@ -60,7 +60,7 @@ it("reads this Home's problems from the rows it keeps, as codes and counts only"
       expect.objectContaining({
         code: "engine.inspection_failed",
         count: 1,
-        firstSeenAt: "2026-11-24T08:00:00.000Z",
+        firstSeenAt: "2026-11-24T08:00:00Z",
         fields: { engine: "codex" },
       }),
       expect.objectContaining({ code: "sign_in.unfinished", count: 2, fields: { surface: "web" } }),

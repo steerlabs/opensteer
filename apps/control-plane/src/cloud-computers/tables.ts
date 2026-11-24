@@ -96,12 +96,13 @@ export interface CloudComputerHealthTable {
   report: ColumnType<import("@opensteer/protocol/problems").HomeHealthReport, string, string>;
 }
 
-/** How many reports from people's own Homes named each problem code, by day. */
+/** How many reports from people's own Homes named each problem code with each bucket, by day. */
 export interface ProblemReportCountTable {
   day: ColumnType<string, string, string>;
   code: string;
-  reports: number;
-  total: number;
+  bucket: string;
+  /** A bigint: one report adds one, so no sender can overflow it. */
+  reports: ColumnType<string, string, string>;
 }
 
 export interface CloudComputerCheckoutTable {

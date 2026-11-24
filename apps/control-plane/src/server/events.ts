@@ -33,8 +33,6 @@ export const accountEvents = {
   "account.pool.low": "warn",
   /** Removing a deleted computer's stored backups is not finished; it is retried. */
   "account.backup.erasure_pending": "error",
-  /** A Home's own problem report (people's devices and self-hosted Homes, when turned on). */
-  "account.problem_report.received": "info",
   /** A heartbeat request was not answered with success. */
   "account.heartbeat.failed": "warn",
 } as const satisfies Record<string, "error" | "warn" | "info">;

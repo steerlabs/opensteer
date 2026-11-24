@@ -218,6 +218,14 @@ const HostEnvironmentSchema = z.object({
    * Opensteer account: a self-hoster's own collector. Never read on a Cloud Computer.
    */
   OPENSTEER_PROBLEM_REPORTS_URL: optionalUrl,
+  /**
+   * `root-maintenance`: this Home's root maintenance writes `machine-status.json` into the Host's
+   * data folder, where no agent's shell can write (deploy/home sets it). Unset, it is never read.
+   */
+  OPENSTEER_MACHINE_STATUS: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.literal("root-maintenance").optional(),
+  ),
   OPENSTEER_PORTAL_ORIGIN: optionalUrl,
   OPENSTEER_CANONICAL_ORIGIN: z.url(),
   OPENSTEER_RUNTIME_ORIGIN: optionalUrl,
@@ -336,6 +344,8 @@ export interface HostConfig {
   readonly personalAccountIssuer?: URL;
   /** A self-hoster's own address for problem reports; see `OPENSTEER_PROBLEM_REPORTS_URL`. */
   readonly problemReportsOrigin?: URL;
+  /** Whether root's maintenance writes the machine status; see `OPENSTEER_MACHINE_STATUS`. */
+  readonly machineStatus?: "root-maintenance";
   readonly exposure: HostExposure;
   /** Absent means the default for the exposure: see `hostTrustedProxy`. */
   readonly trustedProxy?: TrustedProxy;
@@ -676,6 +686,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
           ),
         }
       : {}),
+    ...(parsed.OPENSTEER_MACHINE_STATUS ? { machineStatus: parsed.OPENSTEER_MACHINE_STATUS } : {}),
     ...(portalOrigin ? { portalOrigin } : {}),
     exposure,
     ...(parsed.OPENSTEER_TRUSTED_PROXY === undefined

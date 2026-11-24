@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
   createId,
   opensteerHostNativeOAuthClients,
@@ -924,6 +925,21 @@ describe("networked Personal Home", () => {
         OPENSTEER_PERSONAL_ACCOUNT_ISSUER: "https://accounts.example.com",
       }).personalAccountIssuer,
     ).toEqual(new URL("https://accounts.example.com"));
+  });
+
+  it("reads the machine status only where root's maintenance says it writes it (S1)", () => {
+    expect(parseHostConfig(home).machineStatus).toBeUndefined();
+    expect(
+      parseHostConfig({ ...home, OPENSTEER_MACHINE_STATUS: "" }).machineStatus,
+    ).toBeUndefined();
+    expect(
+      parseHostConfig({ ...home, OPENSTEER_MACHINE_STATUS: "root-maintenance" }).machineStatus,
+    ).toBe("root-maintenance");
+    expect(() => parseHostConfig({ ...home, OPENSTEER_MACHINE_STATUS: "yes" })).toThrow();
+    // deploy/home is the one place that sets it.
+    expect(
+      readFileSync(new URL("../../../deploy/home/compose.yaml", import.meta.url), "utf8"),
+    ).toContain("OPENSTEER_MACHINE_STATUS: root-maintenance");
   });
 
   it("boots a managed Home that is claimed and signed in to by its Account alone", () => {

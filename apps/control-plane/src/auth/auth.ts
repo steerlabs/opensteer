@@ -46,6 +46,7 @@ interface ControlPlaneAuthConfig {
   readonly googleClientId?: string;
   readonly googleClientSecret?: string;
   readonly appReview?: AppReviewSignInConfig;
+  readonly syntheticSignIn?: AppReviewSignInConfig;
   /** Minted before this runs; a process that outlives the secret needs a restart. */
   readonly apple?: { readonly clientId: string; readonly clientSecret: string };
 }
@@ -146,7 +147,7 @@ export function createControlPlaneAuth(
       },
     },
     disabledPaths: [
-      ...(config.appReview ? [] : ["/sign-in/app-review"]),
+      ...(config.appReview || config.syntheticSignIn ? [] : ["/sign-in/app-review"]),
       "/change-email",
       "/change-password",
       "/delete-user",
@@ -162,7 +163,15 @@ export function createControlPlaneAuth(
     ],
     emailAndPassword: { enabled: false },
     plugins: [
-      ...(config.appReview ? [appReviewSignIn(config.appReview)] : []),
+      ...(config.appReview || config.syntheticSignIn
+        ? [
+            appReviewSignIn(
+              [config.appReview, config.syntheticSignIn].filter(
+                (account): account is AppReviewSignInConfig => account !== undefined,
+              ),
+            ),
+          ]
+        : []),
       // The provider uses the JWT issuer; pin it across both public hostnames.
       jwt({
         disableSettingJwtHeader: true,
