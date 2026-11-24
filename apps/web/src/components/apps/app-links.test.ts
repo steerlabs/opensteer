@@ -7,7 +7,7 @@ let clock = 100_000;
 
 beforeEach(() => {
   vi.resetModules();
-  vi.useFakeTimers({ toFake: ["setInterval"] });
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   active = true;
   clock += 60_000;
   vi.spyOn(performance, "now").mockImplementation(() => clock);
@@ -47,6 +47,7 @@ const pointAway = (element: Element) =>
 async function links() {
   const module = await import("./app-links.js");
   module.watchAppInput();
+  module.watchFrameFocus();
   const open = vi.fn();
   const ask = vi.fn();
   return { ...module, open, ask, places: { open, ask } };
@@ -212,4 +213,17 @@ it("goes to the person's own browser without a workspace, and names pages briefl
   // The whole site, port included, however long; only the path gives way.
   const site = `${"login.".repeat(12)}example.com:8443`;
   expect(appLinkLabel(`https://${site}/x/y`)).toBe(site + "…");
+});
+
+it("polls which frame holds focus only while an app frame is on screen", async () => {
+  const { watchFrameFocus } = await import("./app-links.js");
+  expect(vi.getTimerCount()).toBe(0);
+  const first = watchFrameFocus();
+  const second = watchFrameFocus();
+  expect(vi.getTimerCount()).toBe(1);
+  first();
+  first();
+  expect(vi.getTimerCount()).toBe(1);
+  second();
+  expect(vi.getTimerCount()).toBe(0);
 });

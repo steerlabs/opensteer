@@ -48,6 +48,9 @@ const pointedFrames = new Map<HTMLIFrameElement, number>();
 let focusedFrame: Element | null = null;
 const focusLeftAt = new Map<Element, number>();
 let watching = false;
+/** App frames on screen, each holding the focus poll; it runs only while one is. */
+let framesWatched = 0;
+let focusPoll: ReturnType<typeof setInterval> | undefined;
 
 function now(): number {
   return performance.now();
@@ -88,7 +91,29 @@ export function watchAppInput(): void {
     },
     { capture: true, passive: true },
   );
-  window.setInterval(() => noteFocus(now()), 200);
+}
+
+/**
+ * Follows which frame holds focus while an app frame is on screen, and returns its release. Focus
+ * moving between frames raises nothing on this page, so it is polled; with no frame on screen
+ * there is nothing to follow, and the poll stops.
+ */
+export function watchFrameFocus(): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  framesWatched += 1;
+  if (framesWatched === 1) {
+    noteFocus(now());
+    focusPoll = setInterval(() => noteFocus(now()), 200);
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    framesWatched -= 1;
+    if (framesWatched > 0) return;
+    clearInterval(focusPoll);
+    focusPoll = undefined;
+  };
 }
 
 /** The frame on this page the request speaks for, while it holds focus. */
