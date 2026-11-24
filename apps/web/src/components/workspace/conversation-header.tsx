@@ -1,4 +1,4 @@
-import { heldThread, taskCanBeDone, taskMark, threadMark } from "@opensteer/client/host";
+import { heldThread, taskCanBeDone, taskMark } from "@opensteer/client/host";
 import { TaskIconEditor } from "../task-icon-editor.js";
 import { ThreadTitleEditor } from "../thread-title-editor.js";
 import { useHostSelector, useThreadTranscriptSelector } from "@opensteer/client/react";
@@ -7,6 +7,7 @@ import {
   assignmentPresentation,
   assignmentRequester,
   placeList,
+  sameFields,
   threadRequester,
   threadStopTarget,
   workerAssignment,
@@ -25,7 +26,7 @@ import { TaskBadge, TaskMark, WorkingRing, taskStateWords } from "./task-mark.js
 import { AreaLink } from "./area-link.js";
 import { destinationPlaceKey, type WorkspaceNavigation } from "./navigation.js";
 import { DrawerButton } from "./place-stage.js";
-import { useTaskDirectory } from "./task-directory.js";
+import { useTaskMark, useTaskStanding } from "./task-directory.js";
 import { LivePlace } from "./viewfinder.js";
 import { useBarYield } from "./bar-yield.js";
 import { useWorkspace } from "./workspace-context.js";
@@ -66,17 +67,17 @@ export function ConversationHeader({
   readonly titleRef?: React.Ref<HTMLHeadingElement>;
 }) {
   const { drawer, nav, phone, work } = useWorkspace();
-  const directory = useTaskDirectory(hostClient);
-  const voice = directory.snapshot.voiceThreadId === threadId;
-  const row = directory.rows.get(threadId);
+  // This task's own standing and mark: another task changing never redraws its head.
+  const voice = useHostSelector(hostClient, selectVoiceThreadId) === threadId;
+  const standing = useTaskStanding(hostClient, threadId);
   const [menuOpen, setMenuOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [changingIcon, setChangingIcon] = useState(false);
-  const canChangeIcon = directory.snapshot.taskMarksAvailable;
-  const canRename = useHostSelector(hostClient, (snapshot) => snapshot.threadRenameAvailable);
+  const canChangeIcon = useHostSelector(hostClient, selectTaskMarksAvailable);
+  const canRename = useHostSelector(hostClient, selectThreadRenameAvailable);
   const menuRef = useRef<HTMLButtonElement | null>(null);
   const docked = work && !phone;
-  const tone = row ? row.tone : null;
+  const tone = standing?.tone ?? null;
   const selectRequester = useCallback(
     (snapshot: HostSnapshot) => threadRequester(snapshot, threadId),
     [threadId],
@@ -104,7 +105,8 @@ export function ConversationHeader({
     onPictureYield?.(yielded >= barRanks.picture);
   }, [onPictureYield, yielded]);
   const menu = true;
-  const taskMark = threadMark(threadId, directory.snapshot);
+  const taskMark = useTaskMark(hostClient, threadId);
+  const requesterMark = useTaskMark(hostClient, requester?.threadId ?? null);
   return (
     <header className="conv-header">
       {requester ? (
@@ -116,7 +118,7 @@ export function ConversationHeader({
             to={nav.threadPath(requester.threadId)}
           >
             <Icon name="arrow-left" />
-            <TaskMark size={16} mark={threadMark(requester.threadId, directory.snapshot)} />
+            <TaskMark size={16} mark={requesterMark} />
             <span className="conv-header__back-title">{requester.title}</span>
           </AreaLink>
         </nav>
@@ -179,14 +181,14 @@ export function ConversationHeader({
               </span>
             )}
           </h1>
-          {(cause ?? (row?.tone === "failed" ? row.line : null)) ? (
+          {(cause ?? standing?.failure ?? null) ? (
             <p
               className="conv-header__cause"
               ref={(node) => {
                 if (node) node.title = node.textContent ?? "";
               }}
             >
-              {cause ?? (row?.tone === "failed" ? row.line : null)}
+              {cause ?? standing?.failure}
             </p>
           ) : null}
         </div>
@@ -312,6 +314,10 @@ export function ConversationHeader({
  */
 const barRanks = { family: 1, find: 2, count: 3, mark: 4, picture: 5 } as const;
 
+const selectVoiceThreadId = (snapshot: HostSnapshot) => snapshot.voiceThreadId;
+const selectTaskMarksAvailable = (snapshot: HostSnapshot) => snapshot.taskMarksAvailable;
+const selectThreadRenameAvailable = (snapshot: HostSnapshot) => snapshot.threadRenameAvailable;
+
 function sameRequester(left: RequesterLink | null, right: RequesterLink | null): boolean {
   return left === right || (left?.threadId === right?.threadId && left?.title === right?.title);
 }
@@ -327,6 +333,26 @@ function sameRequester(left: RequesterLink | null, right: RequesterLink | null):
 const selectTranscriptRunQueue = (
   view: import("@opensteer/client/react").ThreadTranscriptSnapshot,
 ) => view.runQueue;
+
+/**
+ * What the task's menu says and offers, read live, since the shell around it is the stable
+ * projection. The task itself decides Done, not a list row: delegated work and Done tasks past
+ * the loaded pages are open here without one.
+ */
+function taskActionFacts(snapshot: HostSnapshot, threadId: string) {
+  const assignment = workerAssignment(snapshot.assignments, threadId);
+  const presentation = assignment ? assignmentPresentation(assignment, snapshot) : null;
+  const held = heldThread(snapshot, threadId);
+  return {
+    assignmentId: assignment?.id ?? null,
+    canBeDone: held !== null && taskCanBeDone(snapshot, held),
+    handedOut: assignment !== null && presentation?.open === true,
+    isDone: held?.doneAt != null,
+    requester: assignment ? assignmentRequester(assignment, snapshot) : null,
+    stopBlocked: presentation?.stopBlocked ?? null,
+    thread: snapshot.threads.find(({ id }) => id === threadId) ?? null,
+  };
+}
 
 function TaskActions({
   onConfirming,
@@ -344,32 +370,28 @@ function TaskActions({
   readonly threadId: string;
   readonly title: string;
 }) {
-  const { hostClient, reportActionError, setTaskDone, snapshot } = useShell();
+  const { hostClient, reportActionError, setTaskDone } = useShell();
+  const selectFacts = useCallback(
+    (snapshot: HostSnapshot) => taskActionFacts(snapshot, threadId),
+    [threadId],
+  );
+  const { assignmentId, canBeDone, handedOut, isDone, requester, stopBlocked, thread } =
+    useHostSelector(hostClient, selectFacts, sameFields);
   const { review, ask, dismiss } = useActionReview(hostClient);
   const runQueue = useThreadTranscriptSelector(hostClient, threadId, selectTranscriptRunQueue);
   useEffect(() => {
     onConfirming(review !== null);
   }, [onConfirming, review]);
-  const assignment = workerAssignment(snapshot.assignments, threadId);
-  const presentation = assignment ? assignmentPresentation(assignment, snapshot) : null;
-  const handedOut = assignment !== null && presentation?.open === true;
-  const thread = snapshot.threads.find((item) => item.id === threadId);
-  const running =
-    !handedOut && thread !== undefined && threadStopTarget({ runQueue, thread }) !== null;
+  const running = !handedOut && thread !== null && threadStopTarget({ runQueue, thread }) !== null;
   const stoppable = handedOut || running;
-  // The task itself decides, not a list row: delegated work and Done tasks
-  // past the loaded pages are open here without one.
-  const held = heldThread(snapshot, threadId);
-  const canBeDone = held !== null && taskCanBeDone(snapshot, held);
-  const isDone = held?.doneAt != null;
   if (!stoppable && !canBeDone && onRename === null && onChangeIcon === null) return null;
   if (review) {
     return (
       <div className="conversation-menu__confirm" role="group" aria-label={`Stop ${title}?`}>
         <p className="task-stop__question">Stop “{title}”?</p>
         <p className="task-stop__detail">
-          {review.action.kind === "stop-assignment" && assignment
-            ? `It stops for good, and ${assignmentRequester(assignment, snapshot)} is told. Nothing it already did is undone.`
+          {review.action.kind === "stop-assignment" && requester !== null
+            ? `It stops for good, and ${requester} is told. Nothing it already did is undone.`
             : "Its run stops now and it waits for you. Nothing it already did is undone."}
         </p>
         <div className="task-stop__actions">
@@ -423,13 +445,13 @@ function TaskActions({
       ) : null}
       {stoppable ? (
         <button
-          aria-disabled={presentation?.stopBlocked ? true : undefined}
+          aria-disabled={stopBlocked ? true : undefined}
           className="picker__row picker__row--danger"
           onClick={() => {
-            if (!presentation?.stopBlocked)
+            if (!stopBlocked)
               ask(
-                handedOut && assignment
-                  ? { kind: "stop-assignment", assignmentId: assignment.id }
+                handedOut && assignmentId !== null
+                  ? { kind: "stop-assignment", assignmentId }
                   : { kind: "stop-run", threadId },
               );
           }}
@@ -440,9 +462,7 @@ function TaskActions({
           </span>
           <span className="picker__label-stack">
             <span className="picker__label">Stop task…</span>
-            {presentation?.stopBlocked ? (
-              <span className="picker__detail">{presentation.stopBlocked}</span>
-            ) : null}
+            {stopBlocked ? <span className="picker__detail">{stopBlocked}</span> : null}
           </span>
         </button>
       ) : null}

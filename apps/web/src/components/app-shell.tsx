@@ -197,6 +197,11 @@ export interface ShellContext {
   reportActionError: (error: unknown) => void;
   /** Marks shared Done or reopens a task; a refusal is reported here. */
   setTaskDone: (threadId: string, done: boolean) => void;
+  /**
+   * The stable projection (`sameStableHostSnapshot`) everywhere but Home and an open ask on a
+   * call. A surface that shows a field it leaves out, or a thread field it does not compare,
+   * selects that field itself with `useHostSelector`.
+   */
   snapshot: HostSnapshot;
 }
 
@@ -1329,11 +1334,15 @@ const selectBrowsersKnown = (snapshot: HostSnapshot) =>
 const selectDeploymentId = (snapshot: HostSnapshot) => snapshot.deploymentId;
 const selectUserId = (snapshot: HostSnapshot) => snapshot.user?.id ?? null;
 
-/** Home at the root and a task under /tasks stream; other routes stay stable. */
+/**
+ * Home at the root streams; every other route, a task's included, follows the stable projection.
+ * A task's view reads its live parts through selectors keyed to that task (`useThreadRow`,
+ * `useThreadScope`), so another task, tab or assignment changing never redraws it.
+ */
 function ShellRouteOutlet() {
   const { pathname } = useLocation();
   return (
-    <ShellScope live={pathname === "/" || pathname.startsWith("/tasks/")}>
+    <ShellScope live={pathname === "/"}>
       <Outlet />
     </ShellScope>
   );

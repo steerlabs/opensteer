@@ -1,5 +1,6 @@
 import { requestDecision } from "@opensteer/client/host";
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useHostSelector } from "@opensteer/client/react";
 import type { BrowserSourceId } from "@opensteer/core";
 import {
   browserSignInProblemClearsInChrome,
@@ -13,6 +14,7 @@ import {
   type ChromeSignInAvailability,
   type ChromeSignInChoice,
   type HostClient,
+  type HostSnapshot,
   type RequestView,
 } from "@opensteer/client/host";
 import {
@@ -37,13 +39,20 @@ export function ThreadBrowserSignInAction({
   readonly disabled: boolean;
   readonly request: RequestView;
 }) {
-  const { hostClient, snapshot } = useShell();
+  const { hostClient } = useShell();
   const environment = useShellChromeEnvironment();
   const sessionId = request.payload.kind === "browser.sign-in" ? request.payload.sessionId : null;
-  const session = snapshot.browserSessions.find(({ id }) => id === sessionId);
-  const profileName = session?.profileId
-    ? (snapshot.browserProfiles.find(({ id }) => id === session.profileId)?.name ?? null)
-    : null;
+  // The stable shell leaves browser sessions out; the profile signing in is read live.
+  const selectProfileName = useCallback(
+    (snapshot: HostSnapshot) => {
+      const session = snapshot.browserSessions.find(({ id }) => id === sessionId);
+      return session?.profileId
+        ? (snapshot.browserProfiles.find(({ id }) => id === session.profileId)?.name ?? null)
+        : null;
+    },
+    [sessionId],
+  );
+  const profileName = useHostSelector(hostClient, selectProfileName);
   return (
     <BrowserSignInRequestBody
       client={hostClient}
