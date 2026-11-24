@@ -14,6 +14,7 @@ import {
   type Socket,
 } from "node:net";
 import { createServer as createTlsServer, type Server, type TLSSocket } from "node:tls";
+import { limitConnectionsPerSource } from "./per-source.js";
 import {
   readLine,
   type PoolRelayAnswer,
@@ -42,6 +43,12 @@ export interface RelayServerOptions {
 }
 
 export const relayMaximumConnections = 1024;
+/**
+ * One Home's share of the relay. From the code, a Home holds one tunnel per open bridge stream
+ * of its one browser (its runtime control channel, and one per attached page or CDP session);
+ * 64 is room for that, and 16 Homes would be needed to take the whole relay.
+ */
+export const relayConnectionsPerSource = 64;
 
 export function createRelayServer(options: RelayServerOptions): Server {
   const server = createTlsServer(
@@ -57,6 +64,7 @@ export function createRelayServer(options: RelayServerOptions): Server {
     (socket) => void tunnel(socket, options),
   );
   server.maxConnections = relayMaximumConnections;
+  limitConnectionsPerSource(server, relayConnectionsPerSource);
   // A failed handshake is the client's; it never stops the listener.
   server.on("tlsClientError", () => undefined);
   return server;
@@ -158,6 +166,7 @@ export function createRelayAuthServer(
     );
   });
   server.maxConnections = relayMaximumConnections;
+  limitConnectionsPerSource(server, relayConnectionsPerSource);
   return server;
 }
 

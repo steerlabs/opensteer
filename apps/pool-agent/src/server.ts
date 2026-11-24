@@ -30,10 +30,17 @@ import {
   SlotNotFound,
   type PoolAgent,
 } from "./agent.js";
+import { limitConnectionsPerSource } from "./per-source.js";
 import { ProfilesFull } from "./profiles.js";
 
 const maximumBodyBytes = 64 * 1024;
 export const maximumConnections = 256;
+/**
+ * One Home's share of the agent port, all unauthenticated until each request's signature is
+ * checked. A Home's controller makes short signed calls for its one slot; 16 at once is ample,
+ * and 16 Homes would be needed to take the whole port.
+ */
+export const homeConnectionsPerSource = 16;
 
 const phase = z.enum(["running", "paused", "stopped"]);
 const fence = z.strictObject({
@@ -189,6 +196,7 @@ export function createHomeServer(options: PoolAgentServerOptions): Server {
         };
       });
     }),
+    homeConnectionsPerSource,
   );
 }
 
@@ -343,7 +351,8 @@ export async function listen(
   return server.address() as AddressInfo | string;
 }
 
-function harden(server: Server): Server {
+function harden(server: Server, perSource?: number): Server {
+  if (perSource !== undefined) limitConnectionsPerSource(server, perSource);
   server.headersTimeout = 5_000;
   server.requestTimeout = 10_000;
   // A call can take as long as its slowest step (a restore, a cold boot) plus the queue.
