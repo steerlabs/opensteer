@@ -591,7 +591,8 @@ final class MacOwnerInputWorker {
       if !combo.modifiers.isDisjoint(with: [.cmd, .ctrl, .alt]) {
         MacVideoDiagnostic.write(["event": "owner-menu-shortcut-miss", "streamId": lease.streamID,
           "combo": MenuShortcutIndex.key(for: combo), "shortcuts": snap?.shortcuts ?? [],
-          "disabled": snap?.disabled ?? [], "complete": snap?.complete ?? false])
+          "disabled": snap?.disabled ?? [], "complete": snap?.complete ?? false,
+          "uptimeUs": DispatchTime.now().uptimeNanoseconds / 1000])
       }
       return false
     }
@@ -609,7 +610,8 @@ final class MacOwnerInputWorker {
       failure: "This app's menu did not accept that shortcut.") { throw error }
     MacVideoDiagnostic.write(["event": "owner-menu-shortcut-hit", "streamId": lease.streamID,
       "combo": MenuShortcutIndex.key(for: combo), "shortcuts": snap?.shortcuts ?? [],
-      "disabled": snap?.disabled ?? [], "complete": snap?.complete ?? false])
+      "disabled": snap?.disabled ?? [], "complete": snap?.complete ?? false,
+      "uptimeUs": DispatchTime.now().uptimeNanoseconds / 1000])
     shortcutPolicy.invalidate()
     return true
   }

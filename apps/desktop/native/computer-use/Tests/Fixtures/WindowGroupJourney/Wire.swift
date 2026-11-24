@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Darwin
 
 @MainActor final class WireJourney {
@@ -505,6 +506,321 @@ extension WireJourney {
       return answer
     }
     passed()
+    if ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_REDO_STRESS"] == "1" {
+      let dispatchLog = out.appendingPathComponent("dispatch.jsonl")
+      let diagLog = out.appendingPathComponent("owner-video.jsonl")
+      let meta = (try? JSONSerialization.jsonObject(with: Data(contentsOf: out.appendingPathComponent("receiver-metadata.json"))) as? [String: Any]) ?? [:]
+      let fixturePid = (meta["pid"] as? Int).map(pid_t.init) ?? 0
+      func readState() async throws -> [String: Any] {
+        try await Contracts.command(out, "owner-state")
+        return try JSONSerialization.jsonObject(with: Data(contentsOf: out.appendingPathComponent("owner-state.json"))) as! [String: Any]
+      }
+      func keyUpCount() throws -> Int {
+        try String(contentsOf: dispatchLog, encoding: .utf8).split(separator: "\n").filter {
+          let row = try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+          return row?["type"] as? Int == Int(NSEvent.EventType.keyUp.rawValue)
+        }.count
+      }
+      func rawRedoCount() throws -> Int {
+        try String(contentsOf: dispatchLog, encoding: .utf8).split(separator: "\n").filter {
+          let row = try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+          return row?["type"] as? Int == Int(NSEvent.EventType.keyDown.rawValue)
+            && row?["code"] as? Int == 6
+            && (row?["flags"] as? Int ?? 0) & 0x120000 == 0x120000
+        }.count
+      }
+      func waitKeyUp(after before: Int) async throws {
+        let by = Date().addingTimeInterval(2)
+        while try keyUpCount() <= before, Date() < by { try await Task.sleep(nanoseconds: 5_000_000) }
+      }
+      func diagOffset() -> UInt64 {
+        (try? FileManager.default.attributesOfItem(atPath: diagLog.path)[.size] as? UInt64) ?? 0
+      }
+      func diagShortcutEvents(since offset: UInt64) -> [[String: Any]] {
+        guard let handle = try? FileHandle(forReadingFrom: diagLog) else { return [] }
+        defer { try? handle.close() }
+        try? handle.seek(toOffset: offset)
+        guard let data = try? handle.readToEnd(), let text = String(data: data, encoding: .utf8) else { return [] }
+        return text.split(separator: "\n").compactMap { line in
+          guard line.contains("owner-menu-shortcut"),
+            let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
+          else { return nil }
+          return obj
+        }
+      }
+      func probeRedoAX() -> [String: Any] {
+        guard fixturePid > 0 else { return ["error": "no-pid"] }
+        let appEl = AXUIElementCreateApplication(fixturePid)
+        AXUIElementSetMessagingTimeout(appEl, 0.2)
+        var barVal: CFTypeRef?
+        let barStatus = AXUIElementCopyAttributeValue(appEl, kAXMenuBarAttribute as CFString, &barVal)
+        guard barStatus == .success, let barVal else { return ["barStatus": barStatus.rawValue] }
+        let bar = unsafeBitCast(barVal, to: AXUIElement.self)
+        var barChildrenVal: CFTypeRef?
+        let bcStatus = AXUIElementCopyAttributeValue(bar, kAXChildrenAttribute as CFString, &barChildrenVal)
+        guard bcStatus == .success, let barChildren = barChildrenVal as? [AXUIElement] else {
+          return ["barChildrenStatus": bcStatus.rawValue]
+        }
+        for barItem in barChildren {
+          var titleVal: CFTypeRef?
+          _ = AXUIElementCopyAttributeValue(barItem, kAXTitleAttribute as CFString, &titleVal)
+          if (titleVal as? String) != "Edit" { continue }
+          var subVal: CFTypeRef?
+          let subStatus = AXUIElementCopyAttributeValue(barItem, kAXChildrenAttribute as CFString, &subVal)
+          guard subStatus == .success, let menus = subVal as? [AXUIElement], let editMenu = menus.first else {
+            return ["editSubStatus": subStatus.rawValue]
+          }
+          var itemsVal: CFTypeRef?
+          let itemsStatus = AXUIElementCopyAttributeValue(editMenu, kAXChildrenAttribute as CFString, &itemsVal)
+          guard itemsStatus == .success, let items = itemsVal as? [AXUIElement] else {
+            return ["editItemsStatus": itemsStatus.rawValue]
+          }
+          for item in items {
+            let names = ["AXMenuItemCmdModifiers", "AXMenuItemCmdChar", "AXMenuItemCmdVirtualKey", kAXEnabledAttribute, kAXTitleAttribute] as CFArray
+            var vals: CFArray?
+            let rStatus = AXUIElementCopyMultipleAttributeValues(item, names, AXCopyMultipleAttributeOptions(rawValue: 0), &vals)
+            if rStatus == .success, let list = vals as? [AnyObject], list.count == 5, (list[4] as? String) == "Redo" {
+              return [
+                "found": true,
+                "title": list[4] as? String ?? "",
+                "cmdChar": list[1] as? String ?? String(describing: list[1]),
+                "cmdModifiers": (list[0] as? NSNumber)?.intValue ?? -1,
+                "enabled": (list[3] as? NSNumber)?.boolValue ?? false,
+                "rawEnabledType": String(describing: type(of: list[3])),
+              ]
+            }
+          }
+          return ["found": false, "editItemCount": items.count]
+        }
+        return ["found": false, "editMenuMissing": true]
+      }
+      func activeContext(after mark: Int? = nil, excluding: String? = nil) async throws -> String {
+        let ctx = try await editingContext(streamA, after: mark ?? inputMark) { c in
+          guard let id = c["contextId"] as? String, let field = c["field"] as? [String: Any] else { return false }
+          return id != excluding && field["sensitive"] as? Bool == false
+        }
+        return try (ctx["contextId"] as? String).unwrap("stress editing context")
+      }
+      _ = try await input([["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]])
+      let iterations = Int(ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_REDO_STRESS_COUNT"] ?? "200") ?? 200
+      let failOnMiss = ProcessInfo.processInfo.environment["OPENSTEER_MAC_OWNER_REDO_STRESS_FAIL_ON_MISS"] == "1"
+      var gapReports: [[String: Any]] = []
+      var totalMisses = 0
+      for gapMs in [0, 50, 250] {
+        let beforeClearMark = editingMark
+        try await Contracts.command(out, "owner-clear")
+        _ = try await input([["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]])
+        var currentCtx = try await activeContext(after: beforeClearMark)
+        var expectedLen = 0
+        var hits = 0
+        var misses = 0
+        var staleUndos = 0
+        var staleRedos = 0
+        var missDetails: [[String: Any]] = []
+        for i in 0..<iterations {
+          let beforeKU = try keyUpCount()
+          let typed = try await input([
+            ["kind": "key", "action": "down", "code": "KeyA", "key": "a", "modifiers": [], "text": "a"],
+            ["kind": "key", "action": "up", "code": "KeyA", "key": "a", "modifiers": []],
+          ])
+          try require(typed["outcome"] as? String == "dispatched", "stress type refused at gap=\(gapMs) iter=\(i)")
+          try await waitKeyUp(after: beforeKU)
+          let beforeUndoMark = editingMark
+          var undoRes = try await input([["kind": "command", "command": "undo", "contextId": currentCtx]])
+          if undoRes["outcome"] as? String == "stale" {
+            staleUndos += 1
+            currentCtx = try await activeContext()
+            let retryUndoMark = editingMark
+            undoRes = try await input([["kind": "command", "command": "undo", "contextId": currentCtx]])
+            let undoDoneUsRetry = DispatchTime.now().uptimeNanoseconds / 1000
+            try require(undoRes["outcome"] as? String == "dispatched", "stress undo refused at gap=\(gapMs) iter=\(i): \(undoRes)")
+            let redoCtx = try await activeContext(after: retryUndoMark, excluding: currentCtx)
+            if gapMs > 0 {
+              let targetUs = undoDoneUsRetry + UInt64(gapMs) * 1000
+              let nowUs = DispatchTime.now().uptimeNanoseconds / 1000
+              if targetUs > nowUs { try await Task.sleep(nanoseconds: (targetUs - nowUs) * 1000) }
+            }
+            let dOff = diagOffset()
+            let rawBefore = try rawRedoCount()
+            let redoSendUs = DispatchTime.now().uptimeNanoseconds / 1000
+            let beforeRedoMark = editingMark
+            let redoRes = try await input([["kind": "command", "command": "redo", "contextId": redoCtx]])
+            let redoDoneUs = DispatchTime.now().uptimeNanoseconds / 1000
+            let diags = diagShortcutEvents(since: dOff).filter { ($0["combo"] as? String) == "cmd+shift+z" }
+            let rawAfter = try rawRedoCount()
+            let state = try await readState()
+            let textLen = (state["text"] as? String)?.count ?? -1
+            let isHit = redoRes["outcome"] as? String == "dispatched"
+              && textLen == expectedLen + 1
+              && rawAfter == rawBefore
+              && !diags.contains(where: { ($0["event"] as? String) == "owner-menu-shortcut-miss" })
+            if redoRes["outcome"] as? String == "stale" { staleRedos += 1 }
+            if isHit {
+              hits += 1
+              expectedLen += 1
+              currentCtx = try await activeContext(after: beforeRedoMark, excluding: redoCtx)
+            } else {
+              misses += 1
+              totalMisses += 1
+              let firstProbe = probeRedoAX()
+              var enabledAfterUndoMs: Double = -1
+              if (firstProbe["enabled"] as? Bool) == true {
+                enabledAfterUndoMs = Double(DispatchTime.now().uptimeNanoseconds / 1000 - undoDoneUsRetry) / 1000.0
+              } else {
+                let deadline = Date().addingTimeInterval(1.0)
+                while Date() < deadline {
+                  try await Task.sleep(nanoseconds: 2_000_000)
+                  let p = probeRedoAX()
+                  if (p["enabled"] as? Bool) == true {
+                    enabledAfterUndoMs = Double(DispatchTime.now().uptimeNanoseconds / 1000 - undoDoneUsRetry) / 1000.0
+                    break
+                  }
+                }
+              }
+              if missDetails.count < 50 {
+                missDetails.append([
+                  "iter": i,
+                  "actualGapMs": Double(redoSendUs - undoDoneUsRetry) / 1000.0,
+                  "redoElapsedMs": Double(redoDoneUs - redoSendUs) / 1000.0,
+                  "redoOutcome": redoRes["outcome"] as? String ?? "unknown",
+                  "redoReason": redoRes["reason"] as? String ?? "",
+                  "rawKeyPosted": rawAfter > rawBefore,
+                  "textLen": textLen,
+                  "expectedLen": expectedLen + 1,
+                  "ownerState": state,
+                  "diags": diags,
+                  "firstAxProbe": firstProbe,
+                  "enabledAfterUndoMs": enabledAfterUndoMs,
+                ])
+              }
+              expectedLen = max(0, textLen)
+              currentCtx = try await activeContext(after: beforeRedoMark)
+            }
+            continue
+          }
+          let undoDoneUs = DispatchTime.now().uptimeNanoseconds / 1000
+          try require(undoRes["outcome"] as? String == "dispatched", "stress undo refused at gap=\(gapMs) iter=\(i): \(undoRes)")
+          let redoCtx = try await activeContext(after: beforeUndoMark, excluding: currentCtx)
+          if gapMs > 0 {
+            let targetUs = undoDoneUs + UInt64(gapMs) * 1000
+            let nowUs = DispatchTime.now().uptimeNanoseconds / 1000
+            if targetUs > nowUs {
+              try await Task.sleep(nanoseconds: (targetUs - nowUs) * 1000)
+            }
+          }
+          let dOff = diagOffset()
+          let rawBefore = try rawRedoCount()
+          let redoSendUs = DispatchTime.now().uptimeNanoseconds / 1000
+          let beforeRedoMark = editingMark
+          let redoRes = try await input([["kind": "command", "command": "redo", "contextId": redoCtx]])
+          let redoDoneUs = DispatchTime.now().uptimeNanoseconds / 1000
+          let diags = diagShortcutEvents(since: dOff).filter { ($0["combo"] as? String) == "cmd+shift+z" }
+          let rawAfter = try rawRedoCount()
+          let state = try await readState()
+          let textLen = (state["text"] as? String)?.count ?? -1
+          let isHit = redoRes["outcome"] as? String == "dispatched"
+            && textLen == expectedLen + 1
+            && rawAfter == rawBefore
+            && !diags.contains(where: { ($0["event"] as? String) == "owner-menu-shortcut-miss" })
+          if redoRes["outcome"] as? String == "stale" { staleRedos += 1 }
+          if isHit {
+            hits += 1
+            expectedLen += 1
+            currentCtx = try await activeContext(after: beforeRedoMark, excluding: redoCtx)
+          } else {
+            misses += 1
+            totalMisses += 1
+            let firstProbe = probeRedoAX()
+            var enabledAfterUndoMs: Double = -1
+            if (firstProbe["enabled"] as? Bool) == true {
+              enabledAfterUndoMs = Double(DispatchTime.now().uptimeNanoseconds / 1000 - undoDoneUs) / 1000.0
+            } else {
+              let deadline = Date().addingTimeInterval(1.0)
+              while Date() < deadline {
+                try await Task.sleep(nanoseconds: 2_000_000)
+                let p = probeRedoAX()
+                if (p["enabled"] as? Bool) == true {
+                  enabledAfterUndoMs = Double(DispatchTime.now().uptimeNanoseconds / 1000 - undoDoneUs) / 1000.0
+                  break
+                }
+              }
+            }
+            if missDetails.count < 50 {
+              missDetails.append([
+                "iter": i,
+                "actualGapMs": Double(redoSendUs - undoDoneUs) / 1000.0,
+                "redoElapsedMs": Double(redoDoneUs - redoSendUs) / 1000.0,
+                "redoOutcome": redoRes["outcome"] as? String ?? "unknown",
+                "redoReason": redoRes["reason"] as? String ?? "",
+                "rawKeyPosted": rawAfter > rawBefore,
+                "textLen": textLen,
+                "expectedLen": expectedLen + 1,
+                "ownerState": state,
+                "diags": diags,
+                "firstAxProbe": firstProbe,
+                "enabledAfterUndoMs": enabledAfterUndoMs,
+              ])
+            }
+            expectedLen = max(0, textLen)
+            currentCtx = try await activeContext(after: beforeRedoMark)
+          }
+        }
+        gapReports.append([
+          "gapMs": gapMs,
+          "iterations": iterations,
+          "hits": hits,
+          "misses": misses,
+          "staleUndos": staleUndos,
+          "staleRedos": staleRedos,
+          "missDetails": missDetails,
+        ])
+      }
+      // Opposite case: Redo when there is truly nothing to redo.
+      let beforeNothingMark = editingMark
+      try await Contracts.command(out, "owner-clear")
+      _ = try await input([["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]])
+      let freshKU = try keyUpCount()
+      _ = try await input([
+        ["kind": "key", "action": "down", "code": "KeyF", "key": "f", "modifiers": [], "text": "f"],
+        ["kind": "key", "action": "up", "code": "KeyF", "key": "f", "modifiers": []],
+      ])
+      try await waitKeyUp(after: freshKU)
+      let nothingCtx = try await activeContext(after: beforeNothingMark)
+      let nothingDiagOff = diagOffset()
+      let nothingRawBefore = try rawRedoCount()
+      let nothingStartUs = DispatchTime.now().uptimeNanoseconds / 1000
+      let nothingRes = try await input([["kind": "command", "command": "redo", "contextId": nothingCtx]])
+      let nothingElapsedMs = Double(DispatchTime.now().uptimeNanoseconds / 1000 - nothingStartUs) / 1000.0
+      let nothingRawAfter = try rawRedoCount()
+      let nothingState = try await readState()
+      let nothingDiags = diagShortcutEvents(since: nothingDiagOff)
+      let nothingText = nothingState["text"] as? String ?? ""
+      let nothingOk = nothingText == "f"
+      let report: [String: Any] = [
+        "gaps": gapReports,
+        "totalMisses": totalMisses,
+        "nothingToRedo": [
+          "ok": nothingOk,
+          "outcome": nothingRes["outcome"] as? String ?? "",
+          "reason": nothingRes["reason"] as? String ?? "",
+          "elapsedMs": nothingElapsedMs,
+          "textAfter": nothingText,
+          "rawKeyPosted": nothingRawAfter > nothingRawBefore,
+          "ownerState": nothingState,
+          "diags": nothingDiags,
+        ],
+      ]
+      try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+        .write(to: out.appendingPathComponent("redo-stress-report.json"))
+      localKeys.cancel()
+      try person.finishEvidence(sent: try localKeys.recorded(), out: out, front: originalFront, pointer: originalPointer, complete: true)
+      localEvidenceCompleted = true
+      if failOnMiss {
+        try require(totalMisses == 0, "Redo stress had \(totalMisses) misses; see redo-stress-report.json")
+        try require(nothingOk, "Nothing-to-redo changed text to \(nothingText)")
+      }
+      return
+    }
     start("person-waits-for-agent-mutation")
     let dispatchLog = out.appendingPathComponent("dispatch.jsonl")
     func dispatchedKeys() throws -> Int {
