@@ -66,7 +66,7 @@ export interface PersonalResourceReadOptions {
   /** A kind's first complete read for this viewer landed. */
   loaded?(kind: PersonalResourceKind): void;
   /** The Host moved past what this client installed; its next read is coming. */
-  behind?(kind: PersonalResourceKind): void;
+  behind?(kind: PersonalResourceKind, reply?: boolean): void;
   /** Whether a kind's newest read could not be installed (too large, or malformed). */
   unreadable?(kind: PersonalResourceKind, unreadable: boolean): void;
 }
@@ -144,7 +144,7 @@ export class PersonalResourceReads implements PersonalResourcePort {
       this.#known.set(kind, revision);
       if (signalKinds.has(kind)) this.#installed.set(kind, revision);
       else if (this.#installed.has(kind) && this.#installed.get(kind) !== revision)
-        this.#options.behind?.(kind);
+        this.#options.behind?.(kind, reply);
       // What flies is judged when it lands: older than this push, it installs nothing.
       const installed = this.#installed.get(kind);
       // Only a live push of a Runner kind waits; the Host's reply to an attach is read at once.

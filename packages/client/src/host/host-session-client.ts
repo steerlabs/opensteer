@@ -253,8 +253,6 @@ export interface HttpHostClientOptions {
 
 // Keep thumbnails across remounts without retaining unbounded file bytes on phones.
 const attachmentCacheByteBudget = 32 * 1024 * 1024;
-/** Bounded LRU retention of last-known browser usage across task switches. */
-const maxRetainedBrowserUsageThreads = 16;
 
 type AttachmentRead = {
   readonly controller: AbortController;
@@ -386,12 +384,16 @@ export class HttpHostClient {
   readonly #automationReads = new Map<string, { again: boolean }>();
   readonly #readAutomations = new Set<string>();
   /**
-   * Per conversation whose browser usage has been read and not since invalidated,
-   * the Runs that read covered. Retained across task switches (bounded with
-   * `#browserUses`) so revisiting an unchanged task needs no read.
+   * Per currently shown conversation whose browser usage has been freshly read
+   * and not since invalidated, the Runs that read covered. Cleared whenever the
+   * task is left, so revisiting always revalidates while `#browserUses` keeps
+   * last known usage visible for first paint until the reader is swept.
    */
   readonly #browserUsageRead = new Map<string, Set<string>>();
   readonly #browserUsageReads = new Map<string, { again: "full" | "missing" | null }>();
+  #browserUsageEpoch = 0;
+  readonly #browserUsageStaleAt = new Map<string, number>();
+  #browserUsageAllStaleAt = 0;
   readonly #browserUses = new Map<string, readonly BrowserSessionUsageProjection[]>();
   /**
    * The shape a conversation's Runs were last collected from: a streamed reply
@@ -724,7 +726,12 @@ export class HttpHostClient {
         this.#visibility !== "background" && this.#snapshot.session !== "authentication-required",
       watchChanged: () => this.#stream.watchResources(),
       // Rows stay on screen; the inventory is only no longer known to be complete.
-      behind: (kind) => kind === "tab" && this.#tabs.markInventoryStale(),
+      behind: (kind, reply) => {
+        if (kind === "tab") this.#tabs.markInventoryStale();
+        // Archiving a browser profile changes which sessions `thread.browserUsage.get` returns
+        // and only sends a `browser-profile` resource update; refresh shown tasks on live bumps.
+        if (kind === "browser-profile" && !reply) this.#refreshShownBrowserUsage();
+      },
       unreadable: (kind, unreadable) => {
         const held = this.#snapshot.unreadableResources ?? [];
         if (held.includes(kind) === unreadable) return;
@@ -1165,8 +1172,10 @@ export class HttpHostClient {
         ...this.#snapshot,
         assignments: mergeAssignments(this.#snapshot.assignments, [result.assignment]),
       });
-    if (result.type === "browser.profile.delete" && command.type === result.type)
+    if (result.type === "browser.profile.delete" && command.type === result.type) {
       this.browserHistory.drop(command.profileId);
+      this.#refreshShownBrowserUsage();
+    }
     if (
       "threadId" in command &&
       (command.type.startsWith("thread.input") || command.type === "thread.sendMessage")
@@ -1448,12 +1457,24 @@ export class HttpHostClient {
     return reader;
   }
 
-  /** Disposes the parked readers whose scope the stream no longer keeps. */
+  /** Disposes the parked readers whose scope the stream no longer keeps, and drops their browser usage. */
   #sweepReaders() {
+    const dropped = new Set<string>();
     for (const [threadId, reader] of this.#scopeReaders) {
       if (this.#threadReaders.has(threadId) || this.#reader(threadId) === reader) continue;
       reader.dispose();
       this.#scopeReaders.delete(threadId);
+      dropped.add(threadId);
+    }
+    for (const threadId of this.#browserUses.keys()) {
+      if (!this.#showsThread(threadId) && !this.#scopeReaders.has(threadId)) dropped.add(threadId);
+    }
+    for (const threadId of Object.keys(this.#snapshot.browserUsage ?? {})) {
+      if (!this.#showsThread(threadId) && !this.#scopeReaders.has(threadId)) dropped.add(threadId);
+    }
+    if (dropped.size) {
+      const patch = this.#dropBrowserUsage(dropped);
+      if (patch) this.#update({ ...this.#snapshot, ...patch });
     }
   }
 
@@ -1593,10 +1614,9 @@ export class HttpHostClient {
       }
 
       if (detailGeneration !== state.generation) {
-        const reattached = detailGeneration !== 0;
         detailGeneration = state.generation;
-        // Browser usage notices reach attached clients; reattached details refresh in full.
-        this.#ensureBrowserUsage(threadId, reattached ? "full" : "missing");
+        // Retained usage is for first paint only; always revalidate a task when shown or reattached.
+        this.#ensureBrowserUsage(threadId, "full");
       } else if (this.#browserUsageRead.has(threadId)) {
         this.#checkBrowserUsageRuns();
       }
@@ -1620,33 +1640,25 @@ export class HttpHostClient {
     this.#assignmentsRead.delete(threadId);
     this.#automationReads.delete(threadId);
     this.#readAutomations.delete(threadId);
+    this.#browserUsageRead.delete(threadId);
     this.#browserUsageReads.delete(threadId);
     this.#browserUsageRunSources.delete(threadId);
+    this.#browserUsageStaleAt.delete(threadId);
     const { [threadId]: automationState, ...threadAutomations } = this.#snapshot.threadAutomations;
     let browserUsage = this.#snapshot.browserUsage;
     let browserUsageChanged = false;
     let browserUsesChanged = false;
     if (dropBrowserUsage) {
-      this.#browserUsageRead.delete(threadId);
       browserUsesChanged = this.#browserUses.delete(threadId);
       if (browserUsage && threadId in browserUsage) {
         const { [threadId]: _dropped, ...rest } = browserUsage;
         browserUsage = rest;
         browserUsageChanged = true;
       }
-    } else {
-      const currentBrowserState = browserUsage?.[threadId];
-      if (currentBrowserState?.loading) {
-        const { [threadId]: _abandoned, ...rest } = browserUsage!;
-        browserUsage = rest;
-        browserUsageChanged = true;
-      }
-      const trimmed = this.#trimRetainedBrowserUsage(browserUsage);
-      if (trimmed.changed) {
-        browserUsage = trimmed.browserUsage;
-        browserUsageChanged = true;
-        browserUsesChanged = true;
-      }
+    } else if (browserUsage?.[threadId]?.loading) {
+      const { [threadId]: _abandoned, ...rest } = browserUsage;
+      browserUsage = rest;
+      browserUsageChanged = true;
     }
     if (browserUsageChanged || automationState || browserUsesChanged)
       this.#update({
@@ -1671,6 +1683,8 @@ export class HttpHostClient {
     this.#browserUsageRead.clear();
     this.#browserUsageReads.clear();
     this.#browserUsageRunSources.clear();
+    this.#browserUsageStaleAt.clear();
+    this.#browserUsageAllStaleAt = ++this.#browserUsageEpoch;
     this.#browserUses.clear();
     this.#deniedAssignments.clear();
     for (const key of ["open", "active", "done", "done-count"]) this.#taskReads.stop(key);
@@ -1954,6 +1968,12 @@ export class HttpHostClient {
     const visitsChanged = old?.visits !== state.visits;
     const taskChanges = state.taskChanges.length > 0 && old?.taskChanges !== state.taskChanges;
     const doneMoves: DoneMove[] = [];
+    const removedUsage = new Set<string>();
+    if (replaced && old?.tasks) {
+      for (const id of old.tasks.keys()) {
+        if (!state.tasks.has(id) && !this.#showsThread(id)) removedUsage.add(id);
+      }
+    }
     if (taskChanges) {
       for (const row of state.taskChanges) {
         const held = heldThread(this.#snapshot, row.id);
@@ -1972,6 +1992,7 @@ export class HttpHostClient {
         }
         if ("removed" in row) {
           this.#removedTasks.add(row.id);
+          removedUsage.add(row.id);
           continue;
         }
         if (held)
@@ -2014,11 +2035,18 @@ export class HttpHostClient {
       old?.attention !== state.attention ||
       old.snapshot?.counts.pendingRequestCount !== shell.counts.pendingRequestCount ||
       old.snapshot?.counts.needsYouCount !== shell.counts.needsYouCount;
+    for (const id of removedUsage) {
+      if (this.#showsThread(id)) continue;
+      this.#scopeReaders.get(id)?.dispose();
+      this.#scopeReaders.delete(id);
+    }
+    const browserUsageDrop = removedUsage.size ? this.#dropBrowserUsage(removedUsage) : undefined;
     if (
       tasksChanged ||
       taskChanges ||
       visitsChanged ||
       attentionChanged ||
+      browserUsageDrop !== undefined ||
       connection !== this.#snapshot.connection
     ) {
       const taskLists =
@@ -2035,6 +2063,7 @@ export class HttpHostClient {
           connection,
           connectionInterrupted: attached ? false : this.#snapshot.connectionInterrupted,
           ...taskLists,
+          ...browserUsageDrop,
           ...(attentionChanged
             ? {
                 attentionSummaries: [...state.attention.values()],
@@ -2681,6 +2710,10 @@ export class HttpHostClient {
     }
   }
 
+  #browserUsageVersion(threadId: string): number {
+    return Math.max(this.#browserUsageAllStaleAt, this.#browserUsageStaleAt.get(threadId) ?? 0);
+  }
+
   #ensureBrowserUsage(threadId: string, mode: "full" | "missing"): void {
     if (
       this.#disposed ||
@@ -2699,11 +2732,9 @@ export class HttpHostClient {
     const known = this.#browserUsageRead.get(threadId);
     const runIds = [...this.#browserUsageRunIds(threadId)].sort();
     const scope = mode === "full" || !known ? null : runIds.filter((runId) => !known.has(runId));
-    if (scope?.length === 0) {
-      this.#touchRetainedBrowserUsage(threadId);
-      return;
-    }
+    if (scope?.length === 0) return;
     const read: { again: "full" | "missing" | null } = { again: null };
+    const startedAt = this.#browserUsageVersion(threadId);
     this.#browserUsageReads.set(threadId, read);
     if (!this.#snapshot.browserUsage?.[threadId]) {
       this.#update({
@@ -2714,7 +2745,7 @@ export class HttpHostClient {
         },
       });
     }
-    void this.#readBrowserUsage(threadId, scope ?? runIds, scope === null, read)
+    void this.#readBrowserUsage(threadId, scope ?? runIds, scope === null, read, startedAt)
       .catch(() => false)
       .then((settled) => {
         if (this.#browserUsageReads.get(threadId) !== read) return;
@@ -2727,17 +2758,27 @@ export class HttpHostClient {
           this.#update({ ...this.#snapshot, browserUsage: rest });
         }
         if (read.again) this.#ensureBrowserUsage(threadId, read.again);
+        else if (settled && this.#browserUsageRead.has(threadId)) this.#checkBrowserUsageRuns();
       });
   }
 
   /** The Host says these conversations gained a browser use. */
   #browserUsageChanged(threadIds: readonly string[]): void {
     for (const threadId of threadIds) {
-      if (this.#showsThread(threadId)) this.#ensureBrowserUsage(threadId, "full");
-      // Not shown here, so not read now: keep last known usage visible, and
-      // refresh it whole the next time this conversation is opened.
-      else this.#browserUsageRead.delete(threadId);
+      if (!this.#showsThread(threadId)) continue;
+      // Mark coverage stale the moment a notice lands (keeping data on screen);
+      // only a read started after this notice may mark coverage fresh again.
+      this.#browserUsageStaleAt.set(threadId, ++this.#browserUsageEpoch);
+      this.#browserUsageRead.delete(threadId);
+      this.#ensureBrowserUsage(threadId, "full");
     }
+  }
+
+  #refreshShownBrowserUsage(): void {
+    const shown = new Set<string>();
+    if (this.#activeThreadId) shown.add(this.#activeThreadId);
+    for (const threadId of this.#observedThreads.keys()) shown.add(threadId);
+    if (shown.size > 0) this.#browserUsageChanged([...shown]);
   }
 
   /** False when the read was given up on before it could answer anything. */
@@ -2746,6 +2787,7 @@ export class HttpHostClient {
     runIds: readonly string[],
     whole: boolean,
     read: { again: "full" | "missing" | null },
+    startedAt: number,
   ): Promise<boolean> {
     const generation = this.#viewerGeneration;
     const userId = this.#snapshot.user?.id;
@@ -2816,9 +2858,11 @@ export class HttpHostClient {
       return true;
     }
     if (!current()) return false;
-    const known = whole ? new Set<string>() : new Set(this.#browserUsageRead.get(threadId));
-    for (const runId of runIds) known.add(runId);
-    this.#browserUsageRead.set(threadId, known);
+    if (startedAt === this.#browserUsageVersion(threadId)) {
+      const known = whole ? new Set<string>() : new Set(this.#browserUsageRead.get(threadId));
+      for (const runId of runIds) known.add(runId);
+      this.#browserUsageRead.set(threadId, known);
+    }
     this.#replaceBrowserUsage(threadId, [...uses.values()], { runIds: whole ? null : runIds });
     return true;
   }
@@ -2851,48 +2895,41 @@ export class HttpHostClient {
       previousStatus?.loading !== nextStatus.loading || previousStatus.error !== nextStatus.error;
     const usesChanged =
       previousUses === undefined || JSON.stringify(previousUses) !== JSON.stringify(nextUses);
-    const baseUsage = { ...this.#snapshot.browserUsage, [threadId]: nextStatus };
-    const trimmed = this.#trimRetainedBrowserUsage(baseUsage);
-    if (!statusChanged && !usesChanged && !trimmed.changed) return;
+    if (!statusChanged && !usesChanged) return;
     this.#update({
       ...this.#snapshot,
-      ...(trimmed.browserUsage === undefined ? {} : { browserUsage: trimmed.browserUsage }),
-      browserUses:
-        usesChanged || trimmed.changed
-          ? [...this.#browserUses.values()].flat()
-          : this.#snapshot.browserUses,
+      browserUsage: { ...this.#snapshot.browserUsage, [threadId]: nextStatus },
+      browserUses: usesChanged
+        ? [...this.#browserUses.values()].flat()
+        : this.#snapshot.browserUses,
     });
   }
 
-  #touchRetainedBrowserUsage(threadId: string): void {
-    const existing = this.#browserUses.get(threadId);
-    if (!existing) return;
-    this.#browserUses.delete(threadId);
-    this.#browserUses.set(threadId, existing);
-  }
-
-  #trimRetainedBrowserUsage(browserUsage: HostSnapshot["browserUsage"]): {
-    readonly browserUsage: HostSnapshot["browserUsage"];
-    readonly changed: boolean;
-  } {
-    if (this.#browserUses.size <= maxRetainedBrowserUsageThreads) {
-      return { browserUsage, changed: false };
-    }
-    let nextUsage = browserUsage;
-    let changed = false;
-    for (const id of this.#browserUses.keys()) {
-      if (this.#browserUses.size <= maxRetainedBrowserUsageThreads) break;
-      if (this.#showsThread(id)) continue;
-      this.#browserUses.delete(id);
-      this.#browserUsageRead.delete(id);
-      this.#browserUsageRunSources.delete(id);
-      if (nextUsage && id in nextUsage) {
-        const { [id]: _evicted, ...rest } = nextUsage;
-        nextUsage = rest;
+  #dropBrowserUsage(
+    threadIds: Iterable<string>,
+  ): Pick<HostSnapshot, "browserUsage" | "browserUses"> | undefined {
+    let browserUsage = this.#snapshot.browserUsage;
+    let browserUsageChanged = false;
+    let browserUsesChanged = false;
+    for (const threadId of threadIds) {
+      this.#browserUsageRead.delete(threadId);
+      this.#browserUsageReads.delete(threadId);
+      this.#browserUsageRunSources.delete(threadId);
+      this.#browserUsageStaleAt.delete(threadId);
+      if (this.#browserUses.delete(threadId)) browserUsesChanged = true;
+      if (browserUsage && threadId in browserUsage) {
+        const { [threadId]: _dropped, ...rest } = browserUsage;
+        browserUsage = rest;
+        browserUsageChanged = true;
       }
-      changed = true;
     }
-    return { browserUsage: nextUsage, changed };
+    if (!browserUsageChanged && !browserUsesChanged) return undefined;
+    return {
+      ...(browserUsage === undefined ? {} : { browserUsage }),
+      browserUses: browserUsesChanged
+        ? [...this.#browserUses.values()].flat()
+        : this.#snapshot.browserUses,
+    };
   }
 
   /**
@@ -4627,7 +4664,7 @@ export class HttpHostClient {
               const id = scope.threadId;
               this.#threadDeployment.delete(id);
               this.#threadState.forget(id);
-              this.#clearDetailReads(id);
+              this.#clearDetailReads(id, true);
             }
           }
           this.#bodies.clear();
@@ -4692,9 +4729,7 @@ export class HttpHostClient {
    * resource kinds compare revisions.
    */
   #noticesMissed() {
-    // Retained browser usage for tasks not currently shown may have missed a
-    // `host.browser-usage-changed` notice while disconnected; keep last known
-    // uses visible, but require a refresh on next revisit.
+    this.#browserUsageAllStaleAt = ++this.#browserUsageEpoch;
     this.#browserUsageRead.clear();
     this.#update({ ...this.#snapshot, appsRevision: this.#snapshot.appsRevision + 1 });
   }
