@@ -31,6 +31,9 @@ import {
   generateSystemCaFixtureCertificates,
   runSystemCaSmokeLifecycle,
 } from "./system-ca-smoke-support.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("system-ca", 180000);
 
 const home = process.env.HOME ?? "";
 if (!(home === "/Users/admin" && process.env.OPENSTEER_SYSTEM_CA_E2E_ARTIFACT_DIR)) {

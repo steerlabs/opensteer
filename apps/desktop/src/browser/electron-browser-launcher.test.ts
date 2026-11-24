@@ -5374,12 +5374,27 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       const beforeViews = electron.views.length;
       popupHandler({ url: "about:blank", disposition: "new-window" }).createWindow({});
       const popupView = electron.views[beforeViews]!;
+      const origPopupSend = popupView.webContents.debugger.sendCommand;
+      popupView.webContents.debugger.sendCommand = vi.fn(
+        (method: string, params?: Record<string, unknown>, sid?: string) =>
+          method === "Target.getTargetInfo"
+            ? Promise.resolve({ targetInfo: { targetId: "target-popup-s5" } })
+            : origPopupSend(method, params, sid),
+      );
       const popupWillNavigate = popupView.webContents.on.mock.calls.find(
         ([name]) => name === "will-navigate",
       )![1];
       const preventPopupExt = vi.fn();
       popupWillNavigate({ preventDefault: preventPopupExt }, extUrls[0]);
       expect(preventPopupExt).toHaveBeenCalledOnce();
+
+      // S5: when the popup is announced and no router retains it (e.g., after Disconnect), the
+      // inherited connection-controlled flag is released instead of staying sticky forever.
+      await vi.waitFor(() => {
+        const afterAnnounce = vi.fn();
+        popupWillNavigate({ preventDefault: afterAnnounce }, extUrls[0]);
+        expect(afterAnnounce).not.toHaveBeenCalled();
+      });
 
       await channel.close();
     } finally {
@@ -7072,5 +7087,30 @@ it("answers a connection's browser_connect the one sentence for a command outsid
   } finally {
     await router.close();
     await browser.close();
+  }
+});
+
+it("does not block channel release or other channels' domain work behind a held Runtime.enable attachment (P1)", async () => {
+  const hub = await hubPage("21");
+  try {
+    await (await hub.page.cdp()).detach();
+    const attachment = hub.hold("Runtime.enable");
+    const keep = await hub.page.agentCdp();
+    const first = await hub.page.agentCdp();
+    const subscribing = first.send("Runtime.enable").catch((error: unknown) => error);
+    await vi.waitFor(() => expect(attachment.replies).toHaveLength(1));
+
+    // P1: detaching the subscribing channel must complete immediately (not block on #serializeOwnership),
+    // its abandoned subscription must reject promptly, and another channel's domain command must not wait.
+    expect(await within(first.detach())).toBe("fulfilled");
+    expect(await within(subscribing)).toBe("fulfilled");
+    expect(await subscribing).toBeInstanceOf(Error);
+    expect(await within(keep.send("Network.enable"))).toBe("fulfilled");
+
+    attachment.release();
+    attachment.replies[0]!.resolve({});
+    await keep.detach();
+  } finally {
+    await hub.browser.close();
   }
 });

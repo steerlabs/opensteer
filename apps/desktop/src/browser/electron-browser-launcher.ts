@@ -1181,6 +1181,15 @@ class ElectronBrowserContext implements BrowserContext {
     }
     this.#events.emit("target", "Target.targetCreated", { targetInfo });
     this.#events.emit("page", page);
+    // S5: if a popup inherited connection control from its opener at creation, but no connected
+    // agent retained it when announced (for example after Disconnect), release the inherited flag.
+    if (
+      targetId &&
+      page.isConnectionControlled() &&
+      !this.#connectionControlledTargets.has(targetId)
+    ) {
+      page.setConnectionControlled(false);
+    }
   }
 
   #securePreferences(wake = false): WebPreferences {
@@ -3286,10 +3295,11 @@ class ElectronDebuggerHub {
       if (method === "Target.setAutoAttach") return this.#autoAttach(channel, parameters);
     }
     if (method === "Runtime.enable") {
-      return this.#changeDomain(channel, "Runtime", () => this.#subscribe(channel));
+      return this.#subscribe(channel);
     }
     if (method === "Runtime.disable") {
       return this.#changeDomain(channel, "Runtime", async () => {
+        channel.runtimeEpoch += 1;
         const owners = this.#domainOwners.get("Runtime");
         owners?.delete(channel);
         channel.enabledDomains.delete("Runtime");
@@ -3519,6 +3529,7 @@ class ElectronDebuggerHub {
 
   async release(channel: ElectronCdpChannel): Promise<void> {
     if (!this.#channels.delete(channel)) return;
+    channel.markReleased();
     if (this.#profileInventory?.channel === channel)
       void this.#closeProfileInventory(this.#profileInventory);
     if (channel.targetSessionId)
@@ -3573,7 +3584,10 @@ class ElectronDebuggerHub {
     this.#closed = true;
     const channels = [...this.#channels];
     this.#channels.clear();
-    for (const channel of channels) channel.clearListeners();
+    for (const channel of channels) {
+      channel.markReleased();
+      channel.clearListeners();
+    }
     try {
       await withTimeout(this.#terminate(new Error("Electron CDP target is closing.")), 2_000, {
         timeoutError: () => new Error("Electron CDP target teardown timed out."),
@@ -3645,22 +3659,45 @@ class ElectronDebuggerHub {
     return attachment;
   }
 
-  /** Reports the contexts that exist to a channel that enables Runtime, then each change. */
-  async #subscribe(channel: ElectronCdpChannel): Promise<Record<string, never>> {
-    if (this.#domainOwners.get("Runtime")?.has(channel)) return {};
-    const attachment = this.#attachment ?? this.#attach();
-    await attachment;
-    if (this.#closed || !this.#channels.has(channel)) throw new Error("CDP channel is closed.");
-    const owners = this.#domainOwners.get("Runtime") ?? new Set<ElectronCdpChannel>();
-    owners.add(channel);
-    channel.enabledDomains.add("Runtime");
-    this.#domainOwners.set("Runtime", owners);
-    for (const context of this.#contexts.entries()) {
-      channel.emit("Runtime.executionContextCreated", {
-        context: context.description,
+  /**
+   * Reports the contexts that exist to a channel that enables Runtime, then each change.
+   * Waits for `#attachment` BEFORE entering `#serializeOwnership` (P1) so a held Chromium
+   * `Runtime.enable` never blocks `release()` or other channels' domain/screencast work.
+   */
+  #subscribe(channel: ElectronCdpChannel): Promise<Record<string, never>> {
+    if (this.#domainOwners.get("Runtime")?.has(channel)) return Promise.resolve({});
+    const epoch = channel.runtimeEpoch;
+    const subscription = (async (): Promise<Record<string, never>> => {
+      const attachment = this.#attachment ?? this.#attach();
+      await Promise.race([attachment, channel.released]);
+      if (this.#closed || !this.#channels.has(channel)) throw new Error("CDP channel is closed.");
+      return this.#serializeOwnership(async () => {
+        if (this.#closed || !this.#channels.has(channel)) throw new Error("CDP channel is closed.");
+        if (channel.runtimeEpoch !== epoch || this.#domainOwners.get("Runtime")?.has(channel)) {
+          return {};
+        }
+        const owners = this.#domainOwners.get("Runtime") ?? new Set<ElectronCdpChannel>();
+        owners.add(channel);
+        channel.enabledDomains.add("Runtime");
+        this.#domainOwners.set("Runtime", owners);
+        for (const context of this.#contexts.entries()) {
+          channel.emit("Runtime.executionContextCreated", {
+            context: context.description,
+          });
+        }
+        return {};
       });
-    }
-    return {};
+    })();
+    const completed = subscription.then(
+      () => undefined,
+      () => undefined,
+    );
+    channel.domainChanges.set("Runtime", completed);
+    void completed.then(() => {
+      if (channel.domainChanges.get("Runtime") === completed)
+        channel.domainChanges.delete("Runtime");
+    });
+    return subscription;
   }
 
   /**
@@ -4463,9 +4500,11 @@ class ElectronCdpChannel implements CdpSession, CdpChannel {
   /** This channel's domain enables and disables that have not completed. */
   readonly domainChanges = new Map<string, Promise<void>>();
   readonly enabledDomains = new Set<string>();
+  runtimeEpoch = 0;
   readonly role: ChannelRole;
   targetSessionId: string | undefined;
   targetConnection: Promise<string> | undefined;
+  readonly #released = Promise.withResolvers<never>();
   readonly #worlds = new CdpProductIsolation();
   readonly #events = new EventEmitter();
   readonly #hub: ElectronDebuggerHub;
@@ -4474,6 +4513,15 @@ class ElectronCdpChannel implements CdpSession, CdpChannel {
   constructor(hub: ElectronDebuggerHub, role: ChannelRole) {
     this.#hub = hub;
     this.role = role;
+    void this.#released.promise.catch(() => undefined);
+  }
+
+  get released(): Promise<never> {
+    return this.#released.promise;
+  }
+
+  markReleased(): void {
+    this.#released.reject(new Error("CDP channel is closed."));
   }
 
   close(): Promise<void> {

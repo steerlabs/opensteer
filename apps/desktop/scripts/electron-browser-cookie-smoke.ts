@@ -14,6 +14,9 @@ import { acquireElectronLocalProfile } from "../src/browser/electron-local-profi
 import { assertCookies } from "./test-support/native-profile-smoke.js";
 import { requireSmokeProtectedStorage } from "./test-support/require-smoke-protected-storage.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("cookies", 180000);
 const root = realpathSync(mkdtempSync(path.join(tmpdir(), "native-cookie-proof-")));
 const userData = path.join(root, "user-data");
 mkdirSync(path.join(userData, "session"), { recursive: true });

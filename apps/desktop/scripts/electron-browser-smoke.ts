@@ -59,6 +59,9 @@ import { DesktopAppOriginPolicy } from "../src/app/navigation-policy.js";
 import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launcher.js";
 import { idleCpuPhase } from "./electron-idle-cpu-smoke.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("browser", 360000);
 
 const smokeDownloads = smokeDesktopDownloads();
 

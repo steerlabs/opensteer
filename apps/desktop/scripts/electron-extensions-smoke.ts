@@ -38,6 +38,12 @@ import {
 } from "../src/browser/electron-browser-launcher.js";
 import { ProfileExtensions } from "../src/browser/profile-extensions.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard(
+  `extensions${process.env.EXTENSIONS_SMOKE_PHASE ? `:${process.env.EXTENSIONS_SMOKE_PHASE}` : ""}`,
+  360_000,
+);
 
 // Real Electron, real extensions: an agent loads an unpacked MV3 extension into a
 // saved profile over CDP, the extension runs as it would in Chrome, and the
@@ -655,7 +661,63 @@ async function checkConnectedAgentBesideExtension(
   probeClient.close();
   await probePage.close();
 
-  checks.push("a connected agent beside an extension (M1, M2, M5, S1, N1, N2, N4)");
+  // S9: a connected agent attaching to a page with an open alert() receives its session immediately,
+  // can dismiss the dialog with Page.handleJavaScriptDialog, and can then evaluate in the page.
+  const dialogPage = await browser.context.createPage();
+  const dialogTargetId = await dialogPage.targetId();
+  router.claimTarget(sessionId, dialogTargetId);
+  await load(dialogPage, `${origin}/dialog-s9`);
+  const dialogPlatform = await dialogPage.cdp();
+  await dialogPlatform.send("Page.enable");
+  const dialogOpened = new Promise<void>((resolve) => {
+    dialogPlatform.on("Page.javascriptDialogOpening", () => resolve());
+  });
+  void contents(dialogPage)
+    .executeJavaScript('setTimeout(() => alert("s9-dialog"), 0)')
+    .catch(() => undefined);
+  await withTimeout(dialogOpened, 5_000, {
+    timeoutError: () => new Error("S9 failed: alert() dialog did not open"),
+  });
+  const dialogClient = router.openStandardClient(sessionId, {
+    wholeContext: false,
+    connection: true,
+    lineage: { attachmentId: "smoke-conn-s9", seedTargetId: dialogTargetId },
+  });
+  const { sessionId: dialogSession } = (await withTimeout(
+    dialogClient.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: dialogTargetId, flatten: true },
+    }),
+    3_000,
+    { timeoutError: () => new Error("S9 failed: connection attach stalled on open alert()") },
+  )) as { sessionId: string };
+  await withTimeout(
+    dialogClient.send({
+      method: "Page.handleJavaScriptDialog",
+      sessionId: dialogSession,
+      parameters: { accept: true },
+    }),
+    3_000,
+    { timeoutError: () => new Error("S9 failed: Page.handleJavaScriptDialog stalled") },
+  );
+  const afterDialog = (await withTimeout(
+    dialogClient.send({
+      method: "Runtime.evaluate",
+      sessionId: dialogSession,
+      parameters: { expression: "1 + 1", returnByValue: true },
+    }),
+    5_000,
+    { timeoutError: () => new Error("S9 failed: Runtime.evaluate stalled after dialog dismiss") },
+  )) as { result?: { value?: unknown } };
+  assert.equal(
+    afterDialog.result?.value,
+    2,
+    `S9 failed: Runtime.evaluate after dialog dismiss returned ${JSON.stringify(afterDialog)}`,
+  );
+  dialogClient.close();
+  await dialogPage.close();
+
+  checks.push("a connected agent beside an extension (M1, M2, M5, S1, N1, N2, N4, S9)");
 }
 
 async function webStore(
@@ -882,12 +944,6 @@ async function runPhases(all: string[]): Promise<void> {
   }
   console.log("[extensions-smoke] passed");
 }
-
-// A failure reports and exits instead of opening Electron's error dialog.
-process.on("uncaughtException", (error) => {
-  console.error("[extensions-smoke] uncaught", error);
-  app.exit(1);
-});
 
 if (phase) {
   void main().then(

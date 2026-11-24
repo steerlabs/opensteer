@@ -53,6 +53,9 @@ import {
 import { runTabRestoreTrial } from "./electron-tab-restore-trial.js";
 import { requireSmokeProtectedStorage } from "./test-support/require-smoke-protected-storage.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("quit", 360000);
 
 const smokeDownloads = smokeDesktopDownloads();
 

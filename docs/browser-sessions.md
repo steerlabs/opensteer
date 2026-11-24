@@ -336,15 +336,16 @@ can call `Extensions.getExtensions` and `Extensions.triggerAction`, sent from an
 profile; only a backend that keeps extensions answers that domain). Tasks below Full access or under
 a connected agent's lineage are refused `Extensions.loadUnpacked` and `Extensions.uninstall`;
 connected agents are refused the entire `Extensions.*` domain, cannot open or navigate to
-`chrome-extension:` pages (whether over CDP, `tab.open`, or page-initiated navigations, subframes,
-redirects, or popups), have `chrome-extension:` subresource requests cancelled once a connected
-agent binds the page, and are isolated from extension targets and content-script execution worlds
-(with agent-chosen world names namespaced so they never match or probe extension worlds). Two
-residuals remain: main-world DOM mutations written directly into a page by an extension's content
-script remain readable from the page's default world, and a tab opened via `tab.open` is not marked
-connection-controlled until a connected agent binds it via CDP, so before binding a page can probe
-web-accessible extension resources just as any website can in Chrome (while CDP attach refuses any
-tab at a `chrome-extension:` address). The person's own actions in their own app (installing from the Web Store window or removing
+`chrome-extension:` pages over CDP or `tab.open`, have page-initiated navigations, subframes,
+redirects, popups, and subresource requests to `chrome-extension:` URLs blocked or cancelled once a
+connected agent binds the page via CDP, and are isolated from extension targets and content-script
+execution worlds (with agent-chosen world names namespaced so they never match or probe extension
+worlds). Two residuals remain: main-world DOM mutations written directly into a page by an
+extension's content script remain readable from the page's default world, and a tab opened via
+`tab.open` is not marked connection-controlled until a connected agent binds it via CDP (which is
+for ever for an agent that never binds it), so before binding that page can navigate itself, load
+subframes, `window.open`, or probe any web-accessible extension page or resource just as any
+website can in Chrome (while CDP attach itself refuses any tab at a `chrome-extension:` address). The person's own actions in their own app (installing from the Web Store window or removing
 an extension from the toolbar's Extensions menu, each with a native confirmation dialog) stay on the
 desktop bridge as the person's hand in their own browser, just like installing or removing an
 extension in Chrome. The person sees every extension in the toolbar's Extensions menu (with a quiet

@@ -63,6 +63,9 @@ import type {
   DisplaySmokeResult,
   DisplaySmokeScenario,
 } from "./electron-display-renderer-smoke.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("display", 180000);
 
 const artifactDirectory =
   process.env.OPENSTEER_DISPLAY_E2E_ARTIFACT_DIR ?? path.join(tmpdir(), "opensteer-display-e2e");

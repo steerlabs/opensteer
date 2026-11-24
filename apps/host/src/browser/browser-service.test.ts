@@ -10625,7 +10625,9 @@ describe("work under a connection's authority never uses the clipboard or change
       /Extensions\.getExtensions is not available to a connected agent/u,
     );
 
-    // S-c: root-state Target.* events naming chrome-extension: targets never reach a connectionWork subscriber.
+    // S-c & S4: root-state Target.* events naming chrome-extension: targets AND subsequent no-URL
+    // Target.targetDestroyed / Target.detachedFromTarget events for those hidden IDs never reach a
+    // connectionWork subscriber.
     const rootEvents: unknown[] = [];
     const connectedRoot = await service.attachCdpForAgent(
       { ...connectedBinding, sessionId: connectedOpened.session.id },
@@ -10648,15 +10650,40 @@ describe("work under a connection's authority never uses the clipboard or change
     runtime.sendServer({
       type: "cdp.event",
       event: {
+        method: "Target.detachedFromTarget",
+        parameters: { sessionId: "ext-sess", targetId: "ext-target" },
+        sequence: 2,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetDestroyed",
+        parameters: { targetId: "ext-target" },
+        sequence: 3,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
         method: "Target.targetCreated",
         parameters: {
           targetInfo: { targetId: "web-target", type: "page", url: "https://example.test/" },
         },
-        sequence: 2,
+        sequence: 4,
       },
     });
-    await vi.waitFor(() => expect(rootEvents).toHaveLength(1));
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetDestroyed",
+        parameters: { targetId: "web-target" },
+        sequence: 5,
+      },
+    });
+    await vi.waitFor(() => expect(rootEvents).toHaveLength(2));
     expect(JSON.stringify(rootEvents)).not.toContain("chrome-extension:");
+    expect(JSON.stringify(rootEvents)).not.toContain("ext-target");
     expect(JSON.stringify(rootEvents)).toContain("web-target");
 
     connectedRoot.close();

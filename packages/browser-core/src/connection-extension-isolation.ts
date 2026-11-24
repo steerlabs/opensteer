@@ -54,6 +54,49 @@ const remoteObjectKeys = new Set([
 
 const contextIdKeys = new Set(["contextId", "executionContextId", "uniqueContextId"]);
 
+const scriptOrWorldMethods = new Set([
+  "Runtime.evaluate",
+  "Runtime.callFunctionOn",
+  "Runtime.awaitPromise",
+  "Runtime.compileScript",
+  "Runtime.runScript",
+  "Runtime.addBinding",
+  "Runtime.removeBinding",
+  "Runtime.getProperties",
+  "Runtime.globalLexicalScopeNames",
+  "Runtime.queryObjects",
+  "Runtime.releaseObject",
+  "Page.createIsolatedWorld",
+  "Page.addScriptToEvaluateOnNewDocument",
+  "Debugger.setBreakpointByUrl",
+  "Debugger.setBreakpoint",
+  "Debugger.setBreakpointOnFunctionCall",
+  "Debugger.evaluateOnCallFrame",
+  "Debugger.getScriptSource",
+  "Debugger.setScriptSource",
+  "Debugger.continueToLocation",
+  "Debugger.restartFrame",
+  "DOM.resolveNode",
+  "DOM.requestNode",
+]);
+
+function referencesAnyRuntimeId(params: unknown, depth = 0): boolean {
+  if (depth > 32 || !params || typeof params !== "object") return false;
+  if (Array.isArray(params)) return params.some((item) => referencesAnyRuntimeId(item, depth + 1));
+  for (const [key, field] of Object.entries(params as Record<string, unknown>)) {
+    if (field === undefined) continue;
+    if (
+      contextIdKeys.has(key) ||
+      remoteObjectKeys.has(key) ||
+      key === "scriptId" ||
+      key === "callFrameId"
+    )
+      return true;
+    if (field && typeof field === "object" && referencesAnyRuntimeId(field, depth + 1)) return true;
+  }
+  return false;
+}
+
 export type ExtensionEventOutcome =
   | { readonly action: "compromised" }
   | { readonly action: "drop" }
@@ -107,22 +150,20 @@ export class ConnectionExtensionIsolation {
     return [...this.#allowedContexts.values()].map((context) => ({ context }));
   }
 
-  /** Whether a command specifies a context or remote-object ID that requires Runtime inventory first. */
-  needsRuntimeInventory(params: CdpParameters | undefined, depth = 0): boolean {
-    if (depth > 32 || !params || typeof params !== "object") return false;
-    if (Array.isArray(params))
-      return params.some((item) => this.needsRuntimeInventory(item as CdpParameters, depth + 1));
-    for (const [key, field] of Object.entries(params)) {
-      if (field === undefined) continue;
-      if (contextIdKeys.has(key) || remoteObjectKeys.has(key)) return true;
-      if (
-        field &&
-        typeof field === "object" &&
-        this.needsRuntimeInventory(field as CdpParameters, depth + 1)
-      )
-        return true;
-    }
-    return false;
+  /**
+   * Whether a command runs script, touches execution worlds/breakpoints, or names a context/object/
+   * script/call-frame ID and must wait for Runtime inventory first (S9). Non-script/non-ID commands
+   * such as `Page.handleJavaScriptDialog` always pass through immediately. On shared-tab backends
+   * without eager attach-time inventory (`includeScriptMethods = false`), only ID-bearing commands
+   * trigger lazy inventory.
+   */
+  needsRuntimeInventory(
+    method: string,
+    params: CdpParameters | undefined,
+    includeScriptMethods = true,
+  ): boolean {
+    if (includeScriptMethods && scriptOrWorldMethods.has(method)) return true;
+    return referencesAnyRuntimeId(params);
   }
 
   /** Filters and scrubs a page/child CDP event; signals `"compromised"` if this channel entered an extension page. */

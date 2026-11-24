@@ -33,6 +33,9 @@ import { configureDesktopSession } from "../src/app/electron-window.js";
 import { DesktopAppOriginPolicy } from "../src/app/navigation-policy.js";
 import { DesktopUsbDeviceAccess } from "../src/app/usb-device-access.js";
 import type { UsbSmokeChoice } from "./electron-usb-renderer-smoke.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("usb", 180000);
 
 const smokeDownloads = smokeDesktopDownloads();
 

@@ -205,7 +205,7 @@ it("never places a script in a context it was not reported in", () => {
   expect(() => worlds.assertCommand("Debugger.getScriptSource", { scriptId: "7" })).not.toThrow();
 });
 
-it("refuses Debugger.setBreakpointByUrl urlRegex, scriptHash, and non-web URLs so conditions cannot run in preload worlds (N1 preload)", () => {
+it("refuses Debugger.setBreakpointByUrl with a non-empty condition outside explicit http(s)/extension URLs while keeping conditionless breakpoints available to your own agents (N1 preload, S2)", () => {
   const worlds = new CdpProductIsolation();
   worlds.observe("Runtime.executionContextCreated", { context: { id: 1, name: "" } });
   worlds.observe("Runtime.executionContextCreated", {
@@ -214,12 +214,19 @@ it("refuses Debugger.setBreakpointByUrl urlRegex, scriptHash, and non-web URLs s
   worlds.observe("Debugger.scriptParsed", { scriptId: "page-1", executionContextId: 1 });
   worlds.observe("Debugger.scriptParsed", { scriptId: "preload-1", executionContextId: 2 });
 
+  // Non-empty condition with urlRegex, scriptHash, or non-http(s)/extension URL is refused.
   for (const params of [
     { urlRegex: ".*", lineNumber: 0, condition: "window.pwn = true, false" },
-    { scriptHash: "deadbeef", lineNumber: 0 },
-    { url: "file:///app/browser-page-preload.cjs", lineNumber: 0 },
-    { url: "opensteer://preload", lineNumber: 0 },
-    { lineNumber: 0 },
+    { scriptHash: "deadbeef", lineNumber: 0, condition: "window.pwn = true, false" },
+    {
+      url: "file:///app/browser-page-preload.cjs",
+      lineNumber: 0,
+      condition: "window.pwn = true, false",
+    },
+    { url: "opensteer://preload", lineNumber: 0, condition: "window.pwn = true, false" },
+    { url: "blob:https://example.test/x", lineNumber: 0, condition: "window.pwn = true, false" },
+    { url: "data:text/javascript,1", lineNumber: 0, condition: "window.pwn = true, false" },
+    { lineNumber: 0, condition: "window.pwn = true, false" },
   ]) {
     expect(
       () => worlds.assertCommand("Debugger.setBreakpointByUrl", params),
@@ -227,18 +234,26 @@ it("refuses Debugger.setBreakpointByUrl urlRegex, scriptHash, and non-web URLs s
     ).toThrow();
   }
 
-  expect(() =>
-    worlds.assertCommand("Debugger.setBreakpointByUrl", {
-      url: "https://example.test/app.js",
-      lineNumber: 0,
-    }),
-  ).not.toThrow();
-  expect(() =>
-    worlds.assertCommand("Debugger.setBreakpointByUrl", {
+  // S2: without a non-empty condition, your own agents keep urlRegex, scriptHash, and file:/blob:/data: URLs.
+  for (const params of [
+    { urlRegex: ".*", lineNumber: 0 },
+    { urlRegex: ".*", lineNumber: 0, condition: "" },
+    { scriptHash: "deadbeef", lineNumber: 0 },
+    { url: "file:///app/page.js", lineNumber: 0 },
+    { url: "blob:https://example.test/x", lineNumber: 0 },
+    { url: "data:text/javascript,1", lineNumber: 0 },
+    { url: "https://example.test/app.js", lineNumber: 0, condition: "x > 1" },
+    {
       url: "chrome-extension://abcdefghijklmnopabcdefghijklmnop/content.js",
       lineNumber: 0,
-    }),
-  ).not.toThrow();
+      condition: "x > 1",
+    },
+  ]) {
+    expect(
+      () => worlds.assertCommand("Debugger.setBreakpointByUrl", params),
+      JSON.stringify(params),
+    ).not.toThrow();
+  }
 
   // Result locations naming preload or unseen scripts are stripped instead of throwing after setting.
   const result = {

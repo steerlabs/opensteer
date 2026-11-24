@@ -17,6 +17,9 @@ import { registerDesktopAppScheme } from "../src/app/app-protocol.js";
 import { ElectronHostNetwork } from "../src/app/electron-host-network.js";
 import { forwardHostRoute } from "../src/app/host-route.js";
 import { DesktopHostTransport } from "../src/connections/host-transport.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("attachment", 180000);
 
 const profile = mkdtempSync(path.join(tmpdir(), "opensteer-attachment-electron-"));
 app.setPath("userData", profile);

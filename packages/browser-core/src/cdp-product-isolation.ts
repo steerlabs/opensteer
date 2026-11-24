@@ -154,17 +154,23 @@ export class CdpProductIsolation {
         "Page script registration belongs to another channel or Opensteer platform code.",
       );
     if (method === "Debugger.setBreakpointByUrl") {
-      // urlRegex, scriptHash, and non-web URLs (e.g. file:// preloads) let breakpoint `condition`
-      // expressions run inside Opensteer's preload or platform isolated worlds.
-      if (params.urlRegex !== undefined || params.scriptHash !== undefined)
+      // S2: only a non-empty `condition` runs agent JavaScript in a matched script's world before
+      // `Debugger.paused` can be filtered; conditionless breakpoints in preload worlds are dropped
+      // and auto-resumed. Refuse a non-empty condition unless `url` parses to http(s) or
+      // `chrome-extension:` (with neither `urlRegex` nor `scriptHash`).
+      const hasCondition =
+        typeof params.condition === "string"
+          ? params.condition.trim().length > 0
+          : params.condition !== undefined;
+      if (
+        hasCondition &&
+        (params.urlRegex !== undefined ||
+          params.scriptHash !== undefined ||
+          !isAllowedProductBreakpointUrl(params.url))
+      )
         throw new SessionCdpRouterError(
           "forbidden",
-          "Debugger.setBreakpointByUrl cannot use urlRegex or scriptHash because breakpoints could enter Opensteer's preload or platform worlds.",
-        );
-      if (!isAllowedProductBreakpointUrl(params.url))
-        throw new SessionCdpRouterError(
-          "forbidden",
-          "Debugger.setBreakpointByUrl requires an explicit http(s) or extension URL so breakpoints cannot enter Opensteer's preload or platform worlds.",
+          "Debugger.setBreakpointByUrl with a condition requires an explicit http(s) or extension URL without urlRegex or scriptHash so conditions cannot run in Opensteer's preload or platform worlds.",
         );
     }
     if (

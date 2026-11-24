@@ -6170,16 +6170,33 @@ export class BrowserService {
       if (pooledRelay) void pooledRelay.close().catch(this.#onError);
       onClosed?.();
     };
+    const hiddenRootTargets = new Set<string>();
     const unsubscribe = broker.subscribeCdp((event) => {
       if (event.scriptAttachmentId !== scriptAttachmentId) return;
-      if (
-        connectionWork &&
-        event.method.startsWith("Target.") &&
-        isChromeExtensionUrl(
-          (event.parameters as { targetInfo?: { url?: unknown } } | undefined)?.targetInfo?.url,
-        )
-      )
-        return;
+      if (connectionWork && event.method.startsWith("Target.")) {
+        const params = event.parameters as
+          { targetId?: unknown; targetInfo?: { targetId?: unknown; url?: unknown } } | undefined;
+        const targetId =
+          typeof params?.targetInfo?.targetId === "string"
+            ? params.targetInfo.targetId
+            : typeof params?.targetId === "string"
+              ? params.targetId
+              : undefined;
+        if (isChromeExtensionUrl(params?.targetInfo?.url)) {
+          if (targetId) {
+            if (hiddenRootTargets.size >= 1_024) {
+              const oldest = hiddenRootTargets.values().next().value;
+              if (oldest !== undefined) hiddenRootTargets.delete(oldest);
+            }
+            hiddenRootTargets.add(targetId);
+          }
+          return;
+        }
+        if (targetId && hiddenRootTargets.has(targetId)) {
+          if (event.method === "Target.targetDestroyed") hiddenRootTargets.delete(targetId);
+          return;
+        }
+      }
       onEvent(event);
     }, close);
     const inRunnerAdmission = Boolean(lane?.inRunnerAdmission);

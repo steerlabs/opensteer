@@ -59,6 +59,9 @@ import {
   electronBrowserPartition,
 } from "../src/browser/electron-browser-launcher.js";
 import { DesktopDownloads } from "../src/downloads/desktop-downloads.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("downloads", 180000);
 
 const artifactDirectory =
   process.env.OPENSTEER_DOWNLOADS_E2E_ARTIFACT_DIR ??
