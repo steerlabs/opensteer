@@ -2,6 +2,7 @@ import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import {
   ModelSelectionSchema,
   createId,
+  harnessSessionBrokenFailureCode,
   harnessUsageLimitFailureCode,
   type HarnessInstanceId,
 } from "@opensteer/core";
@@ -14,13 +15,15 @@ import {
   type HarnessRunInput,
   type HarnessSessionContext,
 } from "@opensteer/harness";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  antigravityHarnessCapabilities,
   antigravityModelDescriptors,
+  antigravityPermissionDisposition,
   antigravitySessionPolicy,
   classifyAntigravityAcpError,
   normalizeAntigravityUpdate,
@@ -61,17 +64,19 @@ const initial: readonly AcpSessionConfigOption[] = [
 ];
 
 describe("Antigravity ACP policy", () => {
-  it("uses Zed identity, read-only files, resume, and explicit access-mode mappings", () => {
+  it("uses Opensteer identity, prompt steering, read-only files, resume, and explicit access-mode mappings", () => {
+    expect(antigravityHarnessCapabilities.steering).toBe(true);
+    expect(antigravityHarnessCapabilities.messageAttachments?.nativeImages?.steering).toBe(true);
     expect(antigravitySessionPolicy(1)).toMatchObject({
       accessModeIds: {
         "approval-required": "default",
         "auto-accept-edits": "auto_edit",
-        auto: "default",
+        auto: "auto",
         "full-access": "yolo",
       },
       cancel: { behavior: "wait-for-prompt" },
       clientCapabilities: { elicitation: true, fileSystem: "read-only", terminal: false },
-      clientInfo: { name: "zed", version: "0.0.0" },
+      clientInfo: { name: "opensteer", version: "0.0.0" },
       eagerAuthentication: true,
       model: {
         effortCategory: "thought_level",
@@ -79,6 +84,165 @@ describe("Antigravity ACP policy", () => {
         type: "config-options",
       },
       resume: { method: "resume", suppressReplay: false },
+      steering: "prompt",
+    });
+  });
+
+  it("enforces access modes via permissionDisposition when the 1.5 CLI stays in default mode", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opensteer-antigravity-perms-"));
+    temporaryDirectories.push(root);
+    const workspacePath = join(root, "workspace");
+    const outsidePath = join(root, "outside");
+    await mkdir(workspacePath);
+    await mkdir(outsidePath);
+    await symlink(outsidePath, join(workspacePath, "escape-link"));
+
+    const editInside = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: {
+        id: "call-1",
+        kind: "edit",
+        locations: [{ path: join(workspacePath, "src", "file.ts") }],
+      },
+    };
+    const editEscape = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: {
+        id: "call-2",
+        kind: "edit",
+        locations: [{ path: join(workspacePath, "escape-link", "secret.txt") }],
+      },
+    };
+    const executeCall = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: { id: "call-3", kind: "execute", rawInput: { CommandLine: "rm -rf /tmp/x" } },
+    };
+    const opensteerMcp = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: {
+        id: "call-4",
+        kind: "other",
+        rawInput: { ServerName: "opensteer", ToolName: "opensteer_task_read" },
+      },
+    };
+
+    const deleteInside = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: {
+        id: "call-del",
+        kind: "delete",
+        locations: [{ path: join(workspacePath, "src", "file.ts") }],
+      },
+    };
+    const moveInside = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: {
+        id: "call-move",
+        kind: "move",
+        locations: [{ path: join(workspacePath, "src", "file.ts") }],
+      },
+    };
+    const spoofedTitleMcp = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: {
+        id: "call-spoof",
+        kind: "other",
+        title: "Run mcp_opensteer_task_read",
+      },
+    };
+    const opensteerMetaMcp = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: {
+        id: "call-meta",
+        kind: "other",
+        meta: { mcp: { server: "opensteer", tool: "opensteer_task_read" } },
+      },
+    };
+
+    expect(
+      antigravityPermissionDisposition(executeCall, {
+        accessMode: "full-access",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("allow");
+    expect(
+      antigravityPermissionDisposition(editInside, {
+        accessMode: "auto-accept-edits",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("allow");
+    expect(
+      antigravityPermissionDisposition(deleteInside, {
+        accessMode: "auto-accept-edits",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("ask");
+    expect(
+      antigravityPermissionDisposition(moveInside, {
+        accessMode: "auto-accept-edits",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("ask");
+    expect(
+      antigravityPermissionDisposition(editEscape, {
+        accessMode: "auto-accept-edits",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("ask");
+    expect(
+      antigravityPermissionDisposition(executeCall, {
+        accessMode: "auto-accept-edits",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("ask");
+    expect(
+      antigravityPermissionDisposition(spoofedTitleMcp, {
+        accessMode: "auto-accept-edits",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("ask");
+    expect(
+      antigravityPermissionDisposition(opensteerMcp, {
+        accessMode: "auto-accept-edits",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("allow");
+    expect(
+      antigravityPermissionDisposition(opensteerMetaMcp, {
+        accessMode: "auto-accept-edits",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("allow");
+    expect(
+      antigravityPermissionDisposition(editInside, {
+        accessMode: "approval-required",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("ask");
+  });
+
+  it("classifies missing Claude thinking signatures as harness_session_broken", () => {
+    const error = classifyAntigravityAcpError(
+      new Error("messages.1.content.0.thinking.signature: Field required"),
+      {
+        operation: "prompt",
+        providerSessionReference: "11111111-1111-4111-8111-111111111111",
+        stderrTail: "",
+      },
+    );
+    expect(error).toMatchObject({
+      code: harnessSessionBrokenFailureCode,
+      retryable: true,
     });
   });
 

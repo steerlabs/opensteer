@@ -33,9 +33,8 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   const prepared = vi.spyOn(runtime, "prepareAntigravityRuntime").mockResolvedValue({
     directory,
     executable,
-    harness: executable,
     protocolVersion: 1,
-    version: "1.4.1",
+    version: "1.5.16",
   });
   const providerState = {
     kind: "isolated" as const,
