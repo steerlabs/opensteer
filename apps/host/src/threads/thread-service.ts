@@ -56,6 +56,7 @@ type Command<K extends HostApiCommand["type"]> = Extract<
  */
 export type ThreadServiceStore = Pick<
   OpensteerStore,
+  | "clearThreadStartHold"
   | "findThreadCreationByIdempotency"
   | "getEnvironment"
   | "getHarnessCatalog"

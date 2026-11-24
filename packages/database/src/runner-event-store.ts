@@ -978,7 +978,7 @@ export async function commitRunnerEvent(
           ) {
             const confirmedAt = mutation.state.now;
             clearHeldThreadId = run.threadId;
-            await lockStatementThread(tx, event.threadId, context.channelInputs);
+            await lockStatementThread(tx, event.threadId);
             await lockRunProjectionRows(tx, {
               threadIds: [run.threadId],
               runIds: [run.id],

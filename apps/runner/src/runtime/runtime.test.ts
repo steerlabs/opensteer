@@ -669,16 +669,8 @@ describe("RunnerRuntime", () => {
       const registry = new HarnessRegistry();
       registry.registerDriver(driver);
       const environmentId = createId("environment");
-      const plans: HarnessSandboxRunPlan[] = [];
       const runtime = configuredRuntime({
         environmentId,
-        harnessSandbox: {
-          plan: async (plan) => {
-            plans.push(plan);
-            return (launch) => launch;
-          },
-          planProgram: async () => (launch) => launch,
-        },
         registry,
       });
       const base = executeCommand(environmentId, "claude");
@@ -695,7 +687,6 @@ describe("RunnerRuntime", () => {
           ...context.writableRoots,
           context.workspacePath,
           ...Object.values(context.commandEnvironment),
-          ...plans.flatMap((plan) => [...plan.writableRoots, plan.workspacePath]),
         ];
         if (personalContext) {
           // The person's own Run works in Agent home, as before.

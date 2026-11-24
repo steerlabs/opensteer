@@ -2697,6 +2697,7 @@ describe("durable harness catalogs", () => {
         ],
       }),
       recordHarnessCatalogs,
+      clearThreadStartHold: async () => false,
       rememberExecutionChoice: rememberChoice,
       removeHarnessInstance,
       updateHarnessInstance,
