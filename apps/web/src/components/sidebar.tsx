@@ -74,6 +74,7 @@ import { useConnectionDot } from "./connection-shell.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
 import { Icon } from "./icon.js";
 import { Popover } from "./popover.js";
+import { ConnectedAgentsNow } from "./connected-agents-now.js";
 import { createPortal } from "react-dom";
 import { fromLivePage } from "../ui-utils.js";
 import { useToast } from "./toast.js";
@@ -747,6 +748,10 @@ export function Sidebar({
           </button>
         )}
       </div>
+
+      {!collapsed && (!mobile || mobileOpen) ? (
+        <ConnectedAgentsNow hostClient={hostClient} onNavigate={onCloseMobile} />
+      ) : null}
 
       <SidebarSearch
         badges={presentations.badges}

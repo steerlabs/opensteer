@@ -52,22 +52,26 @@ export function useSessionTask(hostClient: HostClient, threadId: string): Sessio
 }
 
 /** Ends this agent's session on this task, bound to the session the person saw. */
+export function stopSessionAction(hostClient: HostClient, threadId: string, sessionId: string) {
+  return {
+    label: "stop this agent",
+    done: "stopped",
+    happened: "this agent was stopped",
+    execute: () =>
+      hostClient.dispatch({
+        type: "agent.session.stop",
+        threadId,
+        agentSessionId: sessionId,
+        idempotencyKey: mutationIdempotencyKey(`agent-session-stop:${sessionId}`),
+      }),
+  };
+}
+
 function useStopSession(threadId: string, sessionId: string | null) {
   const { hostClient } = useShell();
   return useAction(
     hostClient,
-    {
-      label: "stop this agent",
-      done: "stopped",
-      happened: "this agent was stopped",
-      execute: () =>
-        hostClient.dispatch({
-          type: "agent.session.stop",
-          threadId,
-          agentSessionId: sessionId!,
-          idempotencyKey: mutationIdempotencyKey(`agent-session-stop:${sessionId}`),
-        }),
-    },
+    stopSessionAction(hostClient, threadId, sessionId!),
     `agent-session-stop:${sessionId ?? ""}`,
   );
 }

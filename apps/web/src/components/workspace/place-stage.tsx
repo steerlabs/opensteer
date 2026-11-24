@@ -29,7 +29,7 @@ import {
 import { useBrowserThreadPair } from "../browser/browser-thread-pair.js";
 import { Icon } from "../icon.js";
 import { useToastToolbar } from "../toast.js";
-import { SidebarRestoreButton } from "../sidebar-chrome.js";
+import { ConnectedAgentsHeader, SidebarRestoreButton } from "../sidebar-chrome.js";
 import { TaskMark, TaskBadge } from "./task-mark.js";
 import { AppTab } from "./app-tab.js";
 import { useListedBrowserPresentations } from "./identity.js";
@@ -527,21 +527,24 @@ export function DrawerButton({ countYield }: { readonly countYield?: number } = 
   const { openDrawer } = useWorkspace();
   const count = useWorkspaceAttention();
   return (
-    <button
-      aria-controls="app-sidebar"
-      aria-label={count > 0 ? `Open sidebar, ${count} need you` : "Open sidebar"}
-      className="drawer-btn"
-      onClick={openDrawer}
-      type="button"
-    >
-      <Icon name="panel" />
-      {count > 0 ? (
-        <span aria-hidden className="side-needs side-needs--inline" data-yield={countYield}>
-          <span className="side-needs__bang">!</span>
-          {count}
-        </span>
-      ) : null}
-    </button>
+    <>
+      <button
+        aria-controls="app-sidebar"
+        aria-label={count > 0 ? `Open sidebar, ${count} need you` : "Open sidebar"}
+        className="drawer-btn"
+        onClick={openDrawer}
+        type="button"
+      >
+        <Icon name="panel" />
+        {count > 0 ? (
+          <span aria-hidden className="side-needs side-needs--inline" data-yield={countYield}>
+            <span className="side-needs__bang">!</span>
+            {count}
+          </span>
+        ) : null}
+      </button>
+      <ConnectedAgentsHeader />
+    </>
   );
 }
 

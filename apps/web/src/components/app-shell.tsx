@@ -1161,7 +1161,12 @@ export function AppShell({
                   ) : null}
                   <VoiceIsland ask={<VoiceAsk />} />
                   <SidebarChromeProvider
+                    hostClient={hostClient}
                     onRestore={toggleSidebar}
+                    showConnectedAgents={
+                      !fullWindow &&
+                      (mobileNavigation ? !(mobileNavigationOpen && drawerReady) : sidebarCollapsed)
+                    }
                     restoreVisible={!fullWindow && !mobileNavigation && sidebarCollapsed}
                   >
                     {fullWindow ? (

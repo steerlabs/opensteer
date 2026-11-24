@@ -129,6 +129,7 @@ async function renderOpensteer(): Promise<void> {
               MockCloudComputerAccount,
               mockCloudComputerScenes,
               mockConnectedAgentScenes,
+              mockAgentWorkLiveScenes,
               mockConnectedAgents,
               mockIphoneSetupScenes,
               mockSubagentScenes,
@@ -185,8 +186,14 @@ async function renderOpensteer(): Promise<void> {
               // `?mock-device-states`: a Device asleep and one waiting for an update.
               if (search.has("mock-device-states")) client.mockDeviceStates();
               // `?mock-agent-work`: connected agents working tasks themselves (with `?mock-agents`).
-              if (search.has("mock-agent-work"))
-                client.mockAgentWork({ long: search.get("mock-agent-work") === "long" });
+              const mockWork = search.get("mock-agent-work");
+              if (mockWork !== null) {
+                const livePanel = mockAgentWorkLiveScenes.find((scene) => scene === mockWork);
+                client.mockAgentWork({
+                  long: mockWork === "long",
+                  ...(livePanel ? { livePanel } : {}),
+                });
+              }
               // `?mock-iphone-setup` lets this window set up iPhones as Opensteer on a Mac does,
               // playing a whole setup; `?mock-iphone-setup=<state>` holds it at one state.
               const iphoneScene = search.get("mock-iphone-setup");

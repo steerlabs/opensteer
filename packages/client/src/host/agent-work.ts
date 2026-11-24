@@ -195,12 +195,16 @@ const knownTools = new Set([
   "plugin_call",
 ]);
 
-export function operationRow(operation: AgentOperationView): OperationRow {
+export function operationAction(operation: AgentOperationView): string {
   const target = operation.target.name;
   const tool = knownTools.has(operation.tool) ? operation.tool : "other";
   // Past tense only for what ran; a waiting, running, refused or uncertain one may not have.
   const ran = operation.outcome === "completed" || operation.outcome === "failed";
-  const base = workWords(`op.${ran ? "" : "base."}${tool}` as "op.tab_open", { target });
+  return workWords(`op.${ran ? "" : "base."}${tool}` as "op.tab_open", { target });
+}
+
+export function operationRow(operation: AgentOperationView): OperationRow {
+  const base = operationAction(operation);
   const device = operation.target.device;
   const action = device ? workWords("op.onDevice", { action: base, device: device.name }) : base;
   const decision = operation.decision;

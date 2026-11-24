@@ -385,7 +385,11 @@ import {
 } from "./mock-automations.js";
 import { MockChromeSignIns } from "./mock-chrome-sign-ins.js";
 import { personalResourceKinds } from "@opensteer/protocol/resources";
-import { mockAgentWork, mockAgentWorkThreads } from "./mock-agent-work.js";
+import {
+  mockAgentWork,
+  mockAgentWorkThreads,
+  type MockAgentWorkLiveScene,
+} from "./mock-agent-work.js";
 import { mockComputerUseMessageId, mockComputerUseTurn } from "./mock-computer-use-transcript.js";
 import { MockComputerViews } from "./mock-computer-views.js";
 import {
@@ -5157,6 +5161,7 @@ export class MockHostClient implements HostClient {
       readonly long?: boolean;
       readonly question?: boolean;
       readonly questionChoices?: readonly string[];
+      readonly livePanel?: MockAgentWorkLiveScene;
     } = {},
   ): void {
     this.#state.mockAgentWork(options);
@@ -7817,6 +7822,7 @@ class MockHostState {
       readonly long?: boolean;
       readonly question?: boolean;
       readonly questionChoices?: readonly string[];
+      readonly livePanel?: MockAgentWorkLiveScene;
     } = {},
   ): void {
     const template = this.snapshot.threads.find(({ purpose }) => purpose === "task");
@@ -7828,25 +7834,33 @@ class MockHostState {
       template,
       connections: this.connections,
       ...(options.long ? { long: true } : {}),
+      ...(options.livePanel ? { livePanel: options.livePanel } : {}),
       ...(options.question ? { question: true } : {}),
       ...(options.questionChoices ? { questionChoices: options.questionChoices } : {}),
     });
     this.#agentOperations = seed.operations;
-    this.connections = this.connections.map((connection) =>
-      connection.label === "ChatGPT"
-        ? {
-            ...connection,
-            verificationWithdrawnAt: new Date(this.now().getTime() - 3 * 86_400_000).toISOString(),
-          }
-        : connection,
-    );
+    if (!options.livePanel)
+      this.connections = this.connections.map((connection) =>
+        connection.label === "ChatGPT"
+          ? {
+              ...connection,
+              verificationWithdrawnAt: new Date(
+                this.now().getTime() - 3 * 86_400_000,
+              ).toISOString(),
+            }
+          : connection,
+      );
     this.tabCatalog.markSharedFromChrome(TabIdSchema.parse("mock-tab-0-0"));
     const at = this.now().toISOString();
     // The working agent uses a tab of its own; the waiting one, a tab the person shares.
-    const placed: Readonly<Record<string, string>> = {
-      "mock-tab-1-0": mockAgentWorkThreads.working,
-      "mock-tab-0-0": mockAgentWorkThreads.waiting,
-    };
+    const placed: Readonly<Record<string, string>> =
+      options.livePanel === "one"
+        ? { "mock-tab-1-0": mockAgentWorkThreads.shopping }
+        : {
+            "mock-tab-1-0": mockAgentWorkThreads.working,
+            "mock-tab-0-0": mockAgentWorkThreads.waiting,
+            ...(options.livePanel ? { "mock-tab-1-1": mockAgentWorkThreads.shopping } : {}),
+          };
     const browserSessions = this.snapshot.browserSessions.map((session) => {
       if (!session.catalog?.tabs.some(({ id }) => id in placed)) return session;
       const tabs = session.catalog.tabs.map((tab) =>
@@ -7857,7 +7871,9 @@ class MockHostState {
                 {
                   threadId: ThreadIdSchema.parse(placed[tab.id]!),
                   holding: true,
-                  acting: placed[tab.id] === mockAgentWorkThreads.working,
+                  acting: seed.threads.some(
+                    ({ id, status }) => id === placed[tab.id] && status === "running",
+                  ),
                   lastActiveAt: at,
                 },
               ],

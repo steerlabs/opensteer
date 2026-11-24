@@ -9,6 +9,11 @@ import { plainSentence, sentenceWith, type SentencePart } from "./sentence-parts
 export const agentWorkCopy = {
   "work.someAgent": "A connected agent",
   "work.working": "{agent} is working",
+  "now.workingIn": "{agent} is working in {place}",
+  "now.workingInPlaces": "{agent} is working in {count} places",
+  "now.workingCount": "{count} agents working",
+  "now.needsYouCount": "{count} agents need you",
+  "now.alsoWorking": " · {count} working",
   "work.waiting": "{agent} needs you",
   "work.idle": "{agent} is idle",
   "work.stopped": "Stopped by you",

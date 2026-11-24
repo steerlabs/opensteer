@@ -23,6 +23,7 @@ export const mockAgentWorkThreads = {
   waiting: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-0000000000a2"),
   stopped: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-0000000000a3"),
   ended: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-0000000000a4"),
+  shopping: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-0000000000a5"),
 } as const;
 export const mockAgentOperationRequestId = RequestIdSchema.parse(
   "req_00000000-0000-4000-8000-0000000000b1",
@@ -50,6 +51,9 @@ function connectionOf(connections: readonly AgentConnection[], label: string): S
   return found;
 }
 
+export const mockAgentWorkLiveScenes = ["one", "three", "needs-you", "long-panel"] as const;
+export type MockAgentWorkLiveScene = (typeof mockAgentWorkLiveScenes)[number];
+
 export function mockAgentWork(input: {
   readonly now: Date;
   readonly userId: string;
@@ -57,6 +61,7 @@ export function mockAgentWork(input: {
   readonly connections: readonly AgentConnection[];
   /** Long profile, device, tab and task names, and a Request without the agent's reason. */
   readonly long?: boolean;
+  readonly livePanel?: MockAgentWorkLiveScene;
   /**
    * The working agent also asks the person to sign in, as the Home words `ask_person`:
    * the agent's own choices on the Request, and no direct operation in its parts.
@@ -108,6 +113,18 @@ export function mockAgentWork(input: {
   const errand = connectionOf(input.connections, "Errand");
   const shop = connectionOf(input.connections, "Shop helper");
   const lisbon = profile("Travel");
+  const livePanel = input.livePanel;
+  const liveWaiting = livePanel === "needs-you";
+  const longPanel = livePanel === "long-panel";
+  const workingAgent = liveWaiting ? grok : claude;
+  const otherAgent = liveWaiting
+    ? claude
+    : longPanel
+      ? { ...grok, label: "Grok research assistant for the entire household" }
+      : grok;
+  const otherPlace = liveWaiting
+    ? lisbon
+    : profile(longPanel ? "Household shopping and weekly groceries shared with family" : "Work");
   const shopping = input.long
     ? "Household shopping and weekly groceries (shared with family)"
     : "Shopping";
@@ -262,6 +279,53 @@ export function mockAgentWork(input: {
       ],
     },
   };
+  const shopperSession = "ags_00000000-0000-4000-8000-0000000000d5";
+  if (livePanel) {
+    slots[mockAgentWorkThreads.shopping] = {
+      sessionId: shopperSession,
+      connection: connectionOf(input.connections, "ChatGPT"),
+      status: "active",
+      endReason: null,
+      operations: [
+        op(
+          mockAgentWorkThreads.shopping,
+          shopperSession,
+          {
+            tool: "browser_use",
+            target: profile("Shopping"),
+            state: "handed-off",
+            outcome: null,
+            completedAt: null,
+          },
+          0.5,
+        ),
+      ],
+    };
+    const firstThread = mockAgentWorkThreads.working;
+    slots[firstThread] = {
+      ...slots[firstThread]!,
+      connection: workingAgent,
+      operations: [
+        op(
+          firstThread,
+          sessions.working,
+          {
+            tool: liveWaiting ? "tab_open" : "tab_list",
+            target: liveWaiting ? profile("Work") : lisbon,
+          },
+          1,
+        ),
+      ],
+    };
+    const otherThread = mockAgentWorkThreads.waiting;
+    slots[otherThread] = {
+      ...slots[otherThread]!,
+      connection: otherAgent,
+      operations: liveWaiting
+        ? []
+        : [op(otherThread, sessions.waiting, { tool: "tab_open", target: otherPlace }, 2)],
+    };
+  }
   const task = (
     id: string,
     title: string,
@@ -293,14 +357,16 @@ export function mockAgentWork(input: {
   });
   const calls =
     "const page = await tab('Shopping');\nawait page.click('Add to cart');\nawait page.click('Place order');";
+  const requestTarget = liveWaiting ? otherPlace : profile(shopping);
+  const requestAgent = liveWaiting ? claude : grok;
   const request = RequestSchema.parse({
     agentOperation: {
       operationId: "aop_00000000-0000-4000-8000-000000000107",
-      connectionId: grok.id,
-      summary: `${shopping} · Studio Mac\nGrok wants to run a script in ${shopping}.`,
+      connectionId: requestAgent.id,
+      summary: `${requestTarget.name} · Studio Mac\n${requestAgent.label} wants to run a script in ${requestTarget.name}.`,
       calls,
       agentReason: input.long ? null : "Buy the $12 phone case you asked for.",
-      target: profile(shopping),
+      target: requestTarget,
       decisionFieldId: "operation-decision",
     },
     callId: `operation:aop_00000000-0000-4000-8000-000000000107:mock`,
@@ -316,8 +382,8 @@ export function mockAgentWork(input: {
     payload: { kind: "person.question" },
     presentation: {
       kind: "form",
-      title: `Run a script in ${shopping}?`,
-      detail: `${shopping} · Studio Mac\nGrok wants to run a script in ${shopping}.\n\nWhat it will run:\n${calls}${input.long ? "" : "\n\nThe agent's own reason (its words, not checked): Buy the $12 phone case you asked for."}`,
+      title: `Run a script in ${requestTarget.name}?`,
+      detail: `${requestTarget.name} · Studio Mac\n${requestAgent.label} wants to run a script in ${requestTarget.name}.\n\nWhat it will run:\n${calls}${input.long ? "" : "\n\nThe agent's own reason (its words, not checked): Buy the $12 phone case you asked for."}`,
       fields: [
         {
           id: "operation-decision",
@@ -380,29 +446,45 @@ export function mockAgentWork(input: {
   });
   return {
     threads: [
-      task(
-        mockAgentWorkThreads.working,
-        "Find flights to Lisbon",
-        "running",
-        12,
-        0,
-        sessions.working,
-      ),
-      task(
-        mockAgentWorkThreads.waiting,
-        input.long
-          ? "Buy the replacement phone case and a screen protector before the trip on Friday"
-          : "Buy the phone case",
-        "waiting",
-        4,
-        1,
-        sessions.waiting,
-      ),
+      ...(livePanel
+        ? [
+            task(
+              mockAgentWorkThreads.shopping,
+              "Find a desk chair",
+              "running",
+              0.5,
+              0,
+              shopperSession,
+            ),
+          ]
+        : []),
+      ...(livePanel === "one"
+        ? []
+        : [
+            task(
+              mockAgentWorkThreads.working,
+              "Find flights to Lisbon",
+              "running",
+              12,
+              0,
+              sessions.working,
+            ),
+            task(
+              mockAgentWorkThreads.waiting,
+              input.long
+                ? "Buy the replacement phone case and a screen protector before the trip on Friday"
+                : "Buy the phone case",
+              livePanel && !liveWaiting ? "running" : "waiting",
+              4,
+              !livePanel || liveWaiting ? 1 : 0,
+              sessions.waiting,
+            ),
+          ]),
       task(mockAgentWorkThreads.stopped, "Renew the parking permit", "idle", 90),
       task(mockAgentWorkThreads.ended, "Compare running shoes", "idle", 45),
     ],
     requests: {
-      [mockAgentWorkThreads.waiting]: [request],
+      ...(!livePanel || liveWaiting ? { [mockAgentWorkThreads.waiting]: [request] } : {}),
       ...(input.question ? { [mockAgentWorkThreads.working]: [question] } : {}),
     },
     operations: Object.values(slots).flatMap(({ operations, connection }) =>
