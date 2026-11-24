@@ -251,7 +251,6 @@ export class ScopedThreadReader implements ThreadViewSource {
               id: run.id,
               status: run.status,
               ...(run.startHoldReason ? { startHoldReason: run.startHoldReason } : {}),
-              ...(run.finishing ? { finishing: true as const } : {}),
               createdAt: run.createdAt ?? state.snapshot!.thread.askedAt,
               threadId: this.#detail.scope.threadId,
               runOrdinal: run.runOrdinal ?? 0,

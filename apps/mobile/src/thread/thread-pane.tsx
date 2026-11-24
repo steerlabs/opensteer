@@ -24,8 +24,6 @@ import {
   conversationRows,
   conversationTurnRevealing,
   groupTranscriptEntries,
-  liveTurn,
-  threadCurrentRun,
   passwordsSetupOffer,
   incomingTranscriptMessages,
   observedSequence,
@@ -118,7 +116,6 @@ import { TranscriptHostClientContext } from "./attachment-views.js";
 import { AgentSessionPane } from "./agent-session.js";
 import { useSessionTask } from "./agent-session-hooks.js";
 import { Composer } from "./composer.js";
-import { LiveLine, LiveLineRunContext } from "./live-line.js";
 import { ConversationLinksProvider } from "./conversation-links.js";
 import { PersonalReferenceProvider } from "../markdown/reference-navigation.js";
 import { ComposerDockLayout, DockScrollView, OverDock } from "./composer-dock.js";
@@ -693,17 +690,6 @@ function ThreadPaneForUser(
     heldGroups.current = reuseUnchangedGroups(heldGroups.current, grouped);
     return heldGroups.current;
   }, [grouped]);
-  // A task's turn under way, for the line above its composer. A conversation
-  // types its reply instead.
-  const currentRun =
-    thread === null ? null : threadCurrentRun({ runQueue: threadDetail.runQueue, thread });
-  const liveTask = useMemo(
-    () =>
-      conversational || voiceThread
-        ? null
-        : liveTurn(groups, currentRun, { reachesLatest: !detached }),
-    [conversational, voiceThread, groups, currentRun, detached],
-  );
   const stopTarget =
     thread === null ? null : threadStopTarget({ runQueue: threadDetail.runQueue, thread });
   const keptStop = useKeptComputerStop(hostClient, stopTarget?.id ?? null);
@@ -1239,13 +1225,9 @@ function ThreadPaneForUser(
     () => threadDetail.runQueue.filter((run) => run.threadId === threadId),
     [threadDetail.runQueue, threadId],
   );
-  // The line above the composer speaks for a Run under way; this one only stands in before it.
   const indicator = useMemo(
-    () =>
-      liveTask === null
-        ? threadActivityIndicator(activity, { conversation: conversational, groups, startHold })
-        : null,
-    [activity, conversational, groups, liveTask, startHold],
+    () => threadActivityIndicator(activity, { conversation: conversational, groups, startHold }),
+    [activity, conversational, groups, startHold],
   );
   // How each task this Thread finished ended, held while it reads the same.
   const heldOutcomes = useRef<ReadonlyMap<string, TaskOutcome>>(new Map());
@@ -1753,13 +1735,6 @@ function ThreadPaneForUser(
   // with the keyboard up on a small phone, anything else docked here leaves
   // no room for the words being edited. It all returns on Save or Cancel.
   const editingInPlace = editing.edit !== null;
-  // A waiting message open for editing, or a docked request, holds the line's place.
-  const liveLine =
-    liveTask !== null &&
-    !editingInPlace &&
-    !(liveTask.state === "waiting" && dockableRequests.length > 0)
-      ? liveTask
-      : null;
   const dock = (
     <>
       {/* An older window can't say what runs now; back at the latest, it returns. */}
@@ -1852,7 +1827,6 @@ function ThreadPaneForUser(
                   />
                 )
               ) : null}
-              {liveLine ? <LiveLine connected={live} live={liveLine} /> : null}
               {/* Kept mounted while a waiting message is edited: it owns a send in flight. */}
               <View style={editingInPlace && !editingReply ? styles.hidden : undefined}>
                 <Composer
@@ -1952,28 +1926,26 @@ function ThreadPaneForUser(
           <AgentMemoryContext value={agentMemory}>
             <AgentListNestedContext value>
               <TranscriptComputersContext.Provider value={computers}>
-                <LiveLineRunContext value={liveLine?.runId ?? null}>
-                  <TranscriptSurfacesContext.Provider value={surfaces}>
-                    <TranscriptAppTabsContext.Provider value={appTabs}>
-                      {/* Beside a page, the screen already keeps the keyboard clear. */}
-                      <PersonalReferenceProvider
-                        client={hostClient}
+                <TranscriptSurfacesContext.Provider value={surfaces}>
+                  <TranscriptAppTabsContext.Provider value={appTabs}>
+                    {/* Beside a page, the screen already keeps the keyboard clear. */}
+                    <PersonalReferenceProvider
+                      client={hostClient}
+                      deploymentId={deploymentId}
+                      threadId={threadId}
+                    >
+                      <ConversationLinksProvider
                         deploymentId={deploymentId}
+                        hostClient={hostClient}
                         threadId={threadId}
                       >
-                        <ConversationLinksProvider
-                          deploymentId={deploymentId}
-                          hostClient={hostClient}
-                          threadId={threadId}
-                        >
-                          <ComposerDockLayout avoidKeyboard={companion === null} dock={dock}>
-                            {transcript}
-                          </ComposerDockLayout>
-                        </ConversationLinksProvider>
-                      </PersonalReferenceProvider>
-                    </TranscriptAppTabsContext.Provider>
-                  </TranscriptSurfacesContext.Provider>
-                </LiveLineRunContext>
+                        <ComposerDockLayout avoidKeyboard={companion === null} dock={dock}>
+                          {transcript}
+                        </ComposerDockLayout>
+                      </ConversationLinksProvider>
+                    </PersonalReferenceProvider>
+                  </TranscriptAppTabsContext.Provider>
+                </TranscriptSurfacesContext.Provider>
               </TranscriptComputersContext.Provider>
             </AgentListNestedContext>
           </AgentMemoryContext>
