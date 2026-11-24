@@ -228,9 +228,17 @@ final class MacOwnerAttachment: @unchecked Sendable {
 @PersonInputActor
 private final class OwnerShortcutPolicy {
   private var index: MenuShortcutIndex?
+  private var pid: pid_t?
   nonisolated init() {}
+  func invalidate() {
+    index?.invalidate()
+  }
   func route(_ combo: KeyCombo, pid: pid_t) throws -> ActionRunner.KeyRoute {
     guard !combo.modifiers.isEmpty else { return .keystroke }
+    if self.pid != pid {
+      index?.invalidate()
+      self.pid = pid
+    }
     let index = self.index ?? MenuShortcutIndex()
     self.index = index
     let app = AXUIElementCreateApplication(pid)
@@ -273,6 +281,7 @@ final class MacOwnerInputWorker {
     if forgetField {
       focusedField = nil; selection = nil
       pendingTextMutation = false
+      shortcutPolicy.invalidate()
       contexts.reset()
     }
     lease.heldDeadline.withLock { $0 = nil }
@@ -586,6 +595,7 @@ final class MacOwnerInputWorker {
     } else { status = AXUIElementPerformAction(item, kAXPressAction as CFString) }
     if let error = ActionRunner.pressOutcome(status, whatMayHaveHappened: "the shortcut ran",
       failure: "This app's menu did not accept that shortcut.") { throw error }
+    shortcutPolicy.invalidate()
     return true
   }
 

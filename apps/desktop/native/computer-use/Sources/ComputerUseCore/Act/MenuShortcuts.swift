@@ -20,6 +20,12 @@ import Foundation
 final class MenuShortcutIndex {
   struct Built<Node> {
     var shortcuts: [String: Node] = [:]
+    /// Shortcuts belonging to menu items that were disabled when the menu bar
+    /// was read. They are not pressed from this cache, but looking one up
+    /// invalidates the index so an item enabled since (such as Edit › Redo
+    /// after Undo) is found on the live menu bar without re-reading menus for
+    /// ordinary shifted keys that no menu owns.
+    var disabled: Set<String> = []
     var reserved: Set<String> = []
     /// Every menu was read. An index that ran out of time, or met a menu
     /// that did not answer, cannot say a shortcut is absent — only that it
@@ -76,7 +82,9 @@ final class MenuShortcutIndex {
     let key = Self.key(for: combo)
     // Checked here, once, before an index is built for a key no app owns.
     if Self.systemReserved.contains(key) { return .reserved }
-    if let cached = built?.shortcuts[key], !Self.exists(cached) {
+    if built?.disabled.contains(key) == true {
+      invalidate()
+    } else if let cached = built?.shortcuts[key], !Self.exists(cached) {
       invalidate()
     }
     let index = built ?? buildIndex(applicationElement)
@@ -237,10 +245,17 @@ final class MenuShortcutIndex {
           for submenu in submenus { reserve(submenu, depth: depth + 1) }
           continue
         }
-        if let info, info.enabled, let combo = info.combo {
+        if let info, let combo = info.combo {
           let key = key(for: combo)
-          if built.shortcuts[key] == nil, !built.reserved.contains(key) {
-            built.shortcuts[key] = item
+          if !built.reserved.contains(key) {
+            if info.enabled {
+              if built.shortcuts[key] == nil {
+                built.shortcuts[key] = item
+                built.disabled.remove(key)
+              }
+            } else if built.shortcuts[key] == nil {
+              built.disabled.insert(key)
+            }
           }
         }
         for submenu in submenus {
@@ -268,7 +283,10 @@ final class MenuShortcutIndex {
       guard inTime() else { break }
       for container in children(menu) { index(container, depth: 0, inApplicationMenu: false) }
     }
-    for key in built.reserved { built.shortcuts[key] = nil }
+    for key in built.reserved {
+      built.shortcuts[key] = nil
+      built.disabled.remove(key)
+    }
     if expired { built.complete = false }
     return built
   }

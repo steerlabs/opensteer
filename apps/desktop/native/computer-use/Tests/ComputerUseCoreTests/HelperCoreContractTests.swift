@@ -660,6 +660,81 @@ final class HelperCoreContractTests: XCTestCase {
     XCTAssertEqual(state.latest?.observationId, "0123456789abcdef")
   }
 
+  /// A menu item that was disabled when an earlier shortcut built the index
+  /// (such as Edit › Redo before Undo runs) must re-read the menu bar when
+  /// looked up later, without rebuilding for ordinary shifted keys that no
+  /// menu owns.
+  @WorkActor
+  func testDisabledMenuShortcutRebuildsIndexWhenEnabledLater() throws {
+    let appElement = AXUIElementCreateApplication(getpid())
+    final class State: @unchecked Sendable {
+      var canRedo = false
+      var builds = 0
+    }
+    let state = State()
+    final class Node {
+      let element: AXUIElement
+      let info: MenuShortcutIndex.ItemInfo?
+      let children: [Node]
+      init(_ element: AXUIElement, _ info: MenuShortcutIndex.ItemInfo? = nil, _ children: [Node] = []) {
+        self.element = element
+        self.info = info
+        self.children = children
+      }
+    }
+    let index = MenuShortcutIndex(build: { element in
+      state.builds += 1
+      let canRedo = state.canRedo
+      let bar = Node(element, nil, [
+        Node(element, MenuShortcutIndex.ItemInfo(title: "Apple"), [Node(element)]),
+        Node(element, MenuShortcutIndex.ItemInfo(title: "Fixture"), [Node(element)]),
+        Node(element, MenuShortcutIndex.ItemInfo(title: "File"), [
+          Node(element, nil, [
+            Node(element, MenuShortcutIndex.ItemInfo(
+              combo: try? KeyComboParser.parse("cmd+s"), enabled: true, title: "Save")),
+          ]),
+        ]),
+        Node(element, MenuShortcutIndex.ItemInfo(title: "Edit"), [
+          Node(element, nil, [
+            Node(element, MenuShortcutIndex.ItemInfo(
+              combo: try? KeyComboParser.parse("cmd+z"), enabled: !canRedo, title: "Undo")),
+            Node(element, MenuShortcutIndex.ItemInfo(
+              combo: try? KeyComboParser.parse("cmd+shift+z"), enabled: canRedo, title: "Redo")),
+          ]),
+        ]),
+      ])
+      let collected = MenuShortcutIndex.collect(
+        menuBar: bar, children: { $0.children }, read: { $0.info }, deadline: .distantFuture)
+      var built = MenuShortcutIndex.Built<AXUIElement>()
+      built.shortcuts = collected.shortcuts.mapValues(\.element)
+      built.disabled = collected.disabled
+      built.reserved = collected.reserved
+      built.complete = collected.complete
+      return built
+    })
+
+    guard case .item = index.lookup(try KeyComboParser.parse("cmd+s"), applicationElement: appElement) else {
+      return XCTFail("Save must resolve from the initial menu index")
+    }
+    XCTAssertEqual(state.builds, 1)
+
+    guard case .none = index.lookup(try KeyComboParser.parse("shift+x"), applicationElement: appElement) else {
+      return XCTFail("An ordinary shifted letter must not match a menu item")
+    }
+    XCTAssertEqual(state.builds, 1, "Unindexed shifted keys must not rebuild the menu bar")
+
+    guard case .item = index.lookup(try KeyComboParser.parse("cmd+z"), applicationElement: appElement) else {
+      return XCTFail("Undo must resolve while enabled")
+    }
+    XCTAssertEqual(state.builds, 1)
+
+    state.canRedo = true
+    guard case .item = index.lookup(try KeyComboParser.parse("cmd+shift+z"), applicationElement: appElement) else {
+      return XCTFail("Redo must rebuild the menu index after being disabled during an earlier lookup")
+    }
+    XCTAssertEqual(state.builds, 2, "Looking up a previously disabled shortcut must rebuild the menu index once")
+  }
+
   /// Posted events to a hidden app are dropped silently; the refusal comes
   /// before anything is posted, and a shown app is unaffected.
   @WorkActor
