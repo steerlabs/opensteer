@@ -1,14 +1,18 @@
-import { createId, type RunnerId, type UserId } from "@opensteer/core";
+import { createId, type RunnerId, type ThreadId, type UserId } from "@opensteer/core";
 import {
   describeStore,
   enrollTestRunner,
   pendingEvent,
   testContinuationIdentity,
+  testModelSelection,
   type StoreFixture,
 } from "@opensteer/database/test-support/store";
+import { RealtimeHub } from "@opensteer/orchestration";
+import { createBrowserSessionId, type HostToClientMessage } from "@opensteer/protocol";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
 import { expect } from "vitest";
+import { announceBrowserUsage } from "./browser-presence.js";
 import { BrowserService, type BrowserRuntimePlacement } from "./browser-service.js";
 import { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import { browserAccessResponse } from "@opensteer/client/host";
@@ -490,6 +494,170 @@ describeStore("Host browser homes", (it) => {
         }),
       ]);
     } finally {
+      await browser.close();
+    }
+  });
+
+  it("publishes host.browser-usage-changed through RealtimeHub for exactly the observed threads referencing an archived profile", async ({
+    storeFixture: fixture,
+  }) => {
+    const run = await setup(fixture);
+    const realtime = new RealtimeHub();
+    const browser = new BrowserService({
+      deploymentId: createId("deployment"),
+      hostOrigin: new URL("https://host.test"),
+      repository: fixture.store,
+      signer: {} as never,
+      personal: true,
+      localProfiles: new BrowserLocalProfiles({
+        deploymentId: createId("deployment"),
+        baseUrl: new URL("https://host.test"),
+        repository: fixture.store,
+      }),
+      onSessionsChanged: () => undefined,
+      onUsageChanged: (credits) => announceBrowserUsage(realtime, credits),
+      targetResolver: { placements: () => [], resolve: () => undefined },
+    });
+    const makeThread = async (title: string) =>
+      (
+        await fixture.store.createThread({
+          createdBy: run.userId,
+          environmentId: run.environmentId,
+          harnessInstanceId: run.harnessInstance.id,
+          idempotencyKey: `archive-notice-${title}-${randomUUID()}`,
+          modelSelection: testModelSelection,
+          title,
+        })
+      ).thread.id;
+    const affectedThreadA = await makeThread("Affected A");
+    const affectedThreadB = await makeThread("Affected B");
+    const unaffectedThread = await makeThread("Unaffected");
+    const observe = (threadIds: readonly ThreadId[]) => {
+      const observed = new Set(threadIds);
+      const messages: HostToClientMessage[] = [];
+      const unregister = realtime.registerConnection({
+        userId: run.userId,
+        sessionId: createId("authSession"),
+        sync: {
+          attached: true,
+          wake: () => undefined,
+          observesThread: (id: string) => observed.has(id as ThreadId),
+        } as never,
+        sink: {
+          id: randomUUID(),
+          send: async (message) => {
+            messages.push(message);
+          },
+          close: () => undefined,
+        },
+      });
+      return { messages, unregister };
+    };
+    const viewerAffected = observe([affectedThreadA, affectedThreadB]);
+    const viewerUnaffected = observe([unaffectedThread]);
+    try {
+      const archivedProfile = await fixture.store.createBrowserProfile({
+        ownerId: run.userId,
+        name: "Work",
+        homeRunnerId: run.runnerId,
+        idempotencyKey: "archive-notice-work",
+      });
+      const keptProfile = await fixture.store.createBrowserProfile({
+        ownerId: run.userId,
+        name: "Personal",
+        homeRunnerId: run.runnerId,
+        idempotencyKey: "archive-notice-personal",
+      });
+      const insertSession = async (
+        profileId: typeof archivedProfile.id,
+        state: "ready" | "closed",
+      ) => {
+        const sessionId = createBrowserSessionId();
+        await sql`insert into browser_sessions(id,tab_group_id,origin,profile_id,placement_key,runner_id,runtime_id,state)
+          values(${sessionId},${sessionId},'person',${profileId},'personal',${run.runnerId},'browser',${state})`.execute(
+          fixture.database,
+        );
+        return sessionId;
+      };
+      const sessionClosed = await insertSession(archivedProfile.id, "closed");
+      const sessionReady = await insertSession(archivedProfile.id, "ready");
+      const sessionKept = await insertSession(keptProfile.id, "ready");
+      await fixture.store.recordBrowserSessionUse({
+        ownerId: run.userId,
+        sessionId: sessionClosed,
+        threadId: affectedThreadA,
+        page: { site: "https://a.example", title: "A" },
+      });
+      await fixture.store.recordBrowserSessionUse({
+        ownerId: run.userId,
+        sessionId: sessionReady,
+        threadId: affectedThreadB,
+        page: { site: "https://b.example", title: "B" },
+      });
+      await fixture.store.recordBrowserSessionUse({
+        ownerId: run.userId,
+        sessionId: sessionKept,
+        threadId: unaffectedThread,
+        page: { site: "https://kept.example", title: "Kept" },
+      });
+
+      expect(
+        await fixture.store.getThreadBrowserUsage({
+          ownerId: run.userId,
+          threadId: affectedThreadA,
+          runIds: [],
+        }),
+      ).not.toEqual([]);
+      expect(
+        await fixture.store.getThreadBrowserUsage({
+          ownerId: run.userId,
+          threadId: affectedThreadB,
+          runIds: [],
+        }),
+      ).not.toEqual([]);
+
+      await browser.deleteProfile({ ownerId: run.userId, profileId: archivedProfile.id });
+
+      expect(viewerAffected.messages).toHaveLength(1);
+      expect(viewerAffected.messages[0]).toMatchObject({
+        type: "host.browser-usage-changed",
+      });
+      expect(
+        [
+          ...(
+            viewerAffected.messages[0] as Extract<
+              HostToClientMessage,
+              { type: "host.browser-usage-changed" }
+            >
+          ).threadIds,
+        ].sort(),
+      ).toEqual([affectedThreadA, affectedThreadB].sort());
+      expect(viewerUnaffected.messages).toEqual([]);
+
+      expect(
+        await fixture.store.getThreadBrowserUsage({
+          ownerId: run.userId,
+          threadId: affectedThreadA,
+          runIds: [],
+        }),
+      ).toEqual([]);
+      expect(
+        await fixture.store.getThreadBrowserUsage({
+          ownerId: run.userId,
+          threadId: affectedThreadB,
+          runIds: [],
+        }),
+      ).toEqual([]);
+      expect(
+        await fixture.store.getThreadBrowserUsage({
+          ownerId: run.userId,
+          threadId: unaffectedThread,
+          runIds: [],
+        }),
+      ).not.toEqual([]);
+    } finally {
+      viewerAffected.unregister();
+      viewerUnaffected.unregister();
       await browser.close();
     }
   });

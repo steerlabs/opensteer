@@ -1103,7 +1103,9 @@ export async function createHostRuntime(
       baseUrl: config.canonicalOrigin,
       beforeProfileOpen: (runnerId: RunnerId) =>
         runnerBrowsers.requirePersonalProfileInventory(runnerId),
-      onReconciled: async (profileId) => {
+      onReconciled: async (profileId, usageThreadIds) => {
+        if (usageThreadIds.length)
+          browser.announceUsage(usageThreadIds.map((threadId) => ({ threadId, joined: false })));
         await browser.fenceLocalProfile(profileId);
       },
     });

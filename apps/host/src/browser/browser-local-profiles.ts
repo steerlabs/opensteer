@@ -3,6 +3,7 @@ import {
   type BrowserProfileId,
   type DeploymentId,
   type RunnerId,
+  type ThreadId,
   type UserId,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
@@ -34,7 +35,10 @@ export class BrowserLocalProfiles {
     repository: BrowserLocalProfileRepository;
     baseUrl: URL;
     beforeProfileOpen?: (runnerId: RunnerId) => void;
-    onReconciled?: (profileId: BrowserProfileId) => Promise<void>;
+    onReconciled?: (
+      profileId: BrowserProfileId,
+      usageThreadIds: readonly ThreadId[],
+    ) => Promise<void>;
   };
   constructor(options: BrowserLocalProfiles["options"]) {
     this.options = options;
@@ -118,8 +122,8 @@ export class BrowserLocalProfiles {
       )
         refuse("The browser inventory contains a conflicting profile binding.");
       seen.add(binding.profileId);
-      await this.options.repository.reconcileBrowserProfileInventory(claim);
-      await this.options.onReconciled?.(binding.profileId);
+      const reconciled = await this.options.repository.reconcileBrowserProfileInventory(claim);
+      await this.options.onReconciled?.(binding.profileId, reconciled?.usageThreadIds ?? []);
     }
   }
 }

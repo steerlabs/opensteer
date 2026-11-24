@@ -160,6 +160,40 @@ it("gives scoped browser usage notices only to a synchronized viewer of that tas
   expect(selected.close).not.toHaveBeenCalled();
 });
 
+it("splits browser usage notices exceeding 100 observed threads across multiple frames", () => {
+  const hub = new RealtimeHub();
+  const ownerId = createId("user");
+  const observedIds = Array.from({ length: 125 }, () => createId("thread"));
+  const unobservedId = createId("thread");
+  const observedSet = new Set(observedIds);
+  const messages: HostToClientMessage[] = [];
+  const unregister = hub.registerConnection({
+    userId: ownerId,
+    sessionId: createId("authSession"),
+    sync: {
+      attached: true,
+      wake: () => undefined,
+      observesThread: (id: string) => observedSet.has(id as (typeof observedIds)[number]),
+    } as never,
+    sink: {
+      id: crypto.randomUUID(),
+      send: async (message) => {
+        messages.push(message);
+      },
+      close: vi.fn(),
+    },
+  });
+  try {
+    hub.publishBrowserUsageChanged([...observedIds, observedIds[0]!, unobservedId]);
+    expect(messages).toEqual([
+      { type: "host.browser-usage-changed", threadIds: observedIds.slice(0, 100) },
+      { type: "host.browser-usage-changed", threadIds: observedIds.slice(100) },
+    ]);
+  } finally {
+    unregister();
+  }
+});
+
 it("sends show to attached sessions of the person once and leaves reconnects empty", async () => {
   const hub = new RealtimeHub();
   const ownerId = createId("user");

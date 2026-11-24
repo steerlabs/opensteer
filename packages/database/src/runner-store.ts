@@ -11,6 +11,7 @@ import { cancelPending } from "./request-cancellation.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 
 import { lockBrowserProfile } from "./browser-profile-storage-store.js";
+import { listBrowserProfileUsageThreads } from "./browser-session-store.js";
 import {
   archiveRunnerBrowserProfiles,
   finishRunnerBrowserProfileRemoval,
@@ -29,6 +30,7 @@ import {
   type RequestId,
   type RunId,
   type RunnerId,
+  type ThreadId,
   type UserId,
   nonTerminalRunStatuses,
   OpensteerError,
@@ -903,6 +905,7 @@ export async function revokeRunner(
     readonly id: BrowserProfileId;
     readonly ownerId: UserId;
   }[];
+  readonly browserUsageThreadIds: readonly ThreadId[];
   readonly cancelledRequestIds: readonly RequestId[];
   readonly closedBrowserSessions: readonly BrowserSessionId[];
 
@@ -1001,6 +1004,7 @@ export async function revokeRunner(
           })),
         endedSessionIds: [],
         deletedBrowserProfiles: [],
+        browserUsageThreadIds: [],
         cancelledRequestIds: [],
         closedBrowserSessions: [],
 
@@ -1030,8 +1034,9 @@ export async function revokeRunner(
         ).map(({ id }) => id),
       );
     })(personalTransaction);
-    return (async (transaction) =>
-      administrationCommand(transaction, options.administration, async () => {
+    return (async (transaction) => {
+      let browserUsageThreadIds: readonly ThreadId[] = [];
+      const result = await administrationCommand(transaction, options.administration, async () => {
         const revokedAt = new Date();
         await requireRunnerIsRevocable(transaction, runnerId);
         const deviceEffects = await lockDeviceRemovalInTransaction(transaction, { runnerId });
@@ -1079,6 +1084,13 @@ export async function revokeRunner(
           transaction,
           profileIds,
           revokedAt,
+        );
+        const newlyArchivedProfileIds = deletedBrowserProfiles
+          .filter((profile) => profile.archivedAt === null)
+          .map((profile) => profile.id);
+        browserUsageThreadIds = await listBrowserProfileUsageThreads(
+          transaction,
+          newlyArchivedProfileIds,
         );
         if (deletedBrowserProfiles.length) mutation.bumpResource("browser-profile");
 
@@ -1220,7 +1232,9 @@ export async function revokeRunner(
           closedBrowserSessions,
           revokedComputerConnectionIds: revokedComputerConnections.connectionIds,
         };
-      }))(personalTransaction);
+      });
+      return { ...result, browserUsageThreadIds };
+    })(personalTransaction);
   });
 }
 
