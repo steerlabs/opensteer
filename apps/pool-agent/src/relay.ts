@@ -166,7 +166,6 @@ export function createRelayAuthServer(
     );
   });
   server.maxConnections = relayMaximumConnections;
-  limitConnectionsPerSource(server, relayConnectionsPerSource);
   return server;
 }
 

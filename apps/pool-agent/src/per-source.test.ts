@@ -6,10 +6,10 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
-import { connect, type AddressInfo, type Server, type Socket } from "node:net";
+import { connect, createConnection, type AddressInfo, type Server, type Socket } from "node:net";
 import { afterEach, expect, it, vi } from "vitest";
 import { limitConnectionsPerSource } from "./per-source.js";
-import { relayConnectionsPerSource, createRelayServer } from "./relay.js";
+import { createRelayAuthServer, relayConnectionsPerSource, createRelayServer } from "./relay.js";
 import { homeConnectionsPerSource, createHomeServer } from "./server.js";
 
 class FakeSocket extends EventEmitter {
@@ -114,4 +114,27 @@ it("limits the agent port's unauthenticated requests to its share per Home", asy
   });
   expect(homeConnectionsPerSource).toBe(16);
   expect(await closedOf(server, homeConnectionsPerSource + 1)).toBe(1);
+});
+
+it("keeps the relay's own question to the agent, over its Unix socket, out of any share", async () => {
+  // A Unix socket's connections have no source address: a share would refuse every one, and
+  // with it every relay hello.
+  const directory = mkdtempSync(join(tmpdir(), "relay-auth-"));
+  const path = join(directory, "auth.sock");
+  const server = createRelayAuthServer(() => ({ ok: false, code: "parked" }));
+  await new Promise<void>((resolve) => server.listen(path, resolve));
+  servers.push(server);
+  const socket = createConnection(path);
+  opened.push(socket);
+  const answer = new Promise<string>((resolve, reject) => {
+    let text = "";
+    socket.on("data", (chunk) => (text += String(chunk)));
+    socket.once("close", () => resolve(text));
+    socket.once("error", reject);
+  });
+  socket.write(
+    `${JSON.stringify({ hello: { v: 1, slot: "bps_1", term: 1, nonce: "A".repeat(22) }, clientKey: "key" })}\n`,
+  );
+  expect(JSON.parse(await answer)).toEqual({ ok: false, code: "parked" });
+  rmSync(directory, { recursive: true, force: true });
 });
