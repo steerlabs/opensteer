@@ -29,6 +29,7 @@ import {
   admitWatchControlRequest,
   commandAdmission,
   createDatabase,
+  triggerAnchorStopIsHeld,
 } from "./index.js";
 import "./connection.js";
 import { issueRunGrant } from "./run-grants.js";
@@ -3419,6 +3420,359 @@ integration.sequential("Trigger failure auto-pause", () => {
       webhookRouteKey: `whk_${randomUUID().replaceAll("-", "")}`,
     });
     expect(blankFallback.trigger.name).toBe("Automation");
+  });
+
+  it("does not hand off an automation while its anchor has an unconfirmed Stop", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createScheduleTrigger, database, store, triggers } = storeFixture;
+    const fixture = await createFixture("automation-held-stop");
+    const created = await createScheduleTrigger(fixture, "automation-held-stop");
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    const input = await store.enqueueThreadInput({
+      content: [{ type: "text", text: "Fixture for the unconfirmed Run" }],
+      idempotencyKey: "automation-held-stop-input",
+      policy: "queue",
+      requestedBy: fixture.userId,
+      source: { kind: "human" },
+      threadId: fixture.threadId,
+    });
+    if (!input.run) throw new Error("Expected the fixture Run");
+
+    // Claim BEFORE the hold arrives (forced order: hold arrives between claim and hand-off).
+    expect(await store.claimCommand(occurrence.commandId, "held-stop-test")).toBeTruthy();
+    await database
+      .updateTable("threads")
+      .set({ inputQueuePaused: true, unconfirmedStopRunId: input.run.id })
+      .where("id", "=", fixture.threadId)
+      .executeTakeFirstOrThrow();
+
+    let failure: unknown;
+    try {
+      await triggers.startExecution({
+        commandId: occurrence.commandId,
+        runnerBootId: "held-stop-test",
+        runnerId: fixture.runnerId,
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(/stop|hold/i);
+    expect(triggerAnchorStopIsHeld(failure)).toBe(true);
+
+    // Occurrence stays pending (not dropped, not failed) and the person sees the waiting sentence.
+    const row = await database
+      .selectFrom("triggerOccurrences")
+      .select(["status", "executionGeneration"])
+      .where("id", "=", occurrence.id)
+      .executeTakeFirstOrThrow();
+    expect(row).toEqual({ status: "pending", executionGeneration: 0 });
+    const detail = await triggers.getForOwner(
+      created.trigger.id,
+      fixture.userId,
+      5,
+      personTaskReader,
+    );
+    expect(detail?.trigger.waitingReason).toBe(
+      "Waiting until Opensteer confirms its task stopped on that device.",
+    );
+    const listed = await triggers.listForOwner({
+      ownerId: fixture.userId,
+      reader: personTaskReader,
+    });
+    expect(listed.find((item) => item.id === created.trigger.id)?.waitingReason).toBe(
+      "Waiting until Opensteer confirms its task stopped on that device.",
+    );
+
+    // Returning the held command leaves it pending and unlisted/unclaimable while the hold stands.
+    await store.retryCommand(occurrence.commandId, failure, { provenNotStarted: true });
+    expect(
+      (await store.listPendingCommands()).some((command) => command.id === occurrence.commandId),
+    ).toBe(false);
+    expect(await store.claimCommand(occurrence.commandId, "held-stop-test")).toBeNull();
+  });
+
+  it("A2: lifts a held firing and Watch exactly once when Stop proof arrives, keeping FIFO order across two held firings", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, database, store, triggers } = storeFixture;
+    const fixture = await createFixture("automation-held-lift");
+    const routeKey = `whk_${randomUUID().replaceAll("-", "")}`;
+    const webhook = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "a2-lift-webhook",
+      name: "Held webhook",
+      script: { interpreter: null, text: "console.log('ok')" },
+      source: { kind: "webhook" },
+      webhookRouteKey: routeKey,
+    });
+    const watch = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "a2-lift-watch",
+      name: "Held watch",
+      script: { interpreter: null, text: "console.log('watch')" },
+      source: { kind: "watch" },
+    });
+    const input = await store.enqueueThreadInput({
+      content: [{ type: "text", text: "Unproven stop run" }],
+      idempotencyKey: "a2-lift-run-input",
+      policy: "queue",
+      requestedBy: fixture.userId,
+      source: { kind: "human" },
+      threadId: fixture.threadId,
+    });
+    if (!input.run) throw new Error("Expected fixture Run");
+    await database
+      .updateTable("runs")
+      .set({
+        status: "failed",
+        failure: jsonValue({
+          code: "execution_termination_unproven",
+          message: "Stopping could not be confirmed.",
+          retryable: false,
+          status: "failed",
+        }),
+      })
+      .where("id", "=", input.run.id)
+      .execute();
+    await database
+      .updateTable("threads")
+      .set({ inputQueuePaused: true, unconfirmedStopRunId: input.run.id })
+      .where("id", "=", fixture.threadId)
+      .execute();
+
+    // Two webhook firings arrive while anchor is held: neither is dropped nor failed.
+    const first = (
+      await triggers.enqueueWebhook({ headers: {}, method: "POST", payload: { n: 1 }, routeKey })
+    ).occurrence;
+    const second = (
+      await triggers.enqueueWebhook({ headers: {}, method: "POST", payload: { n: 2 }, routeKey })
+    ).occurrence;
+    expect(await store.claimCommand(first.commandId, "a2-lift")).toBeNull();
+    expect(await store.claimCommand(second.commandId, "a2-lift")).toBeNull();
+
+    // Watch activation is omitted while held, yet desired stays "active" in the database.
+    const heldWatches = await triggers.reconcileWatchesForRunner({
+      earlierBootsContained: true,
+      environmentId: fixture.environmentId,
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: "rbt_a2_1",
+      runnerConnectionGeneration: 1,
+      runnerId: fixture.runnerId,
+    });
+    expect(heldWatches.activations).toEqual([]);
+    const watchRowWhileHeld = await database
+      .selectFrom("triggerWatchActivations")
+      .select("desired")
+      .where("triggerId", "=", watch.trigger.id)
+      .executeTakeFirstOrThrow();
+    expect(watchRowWhileHeld.desired).toBe("active");
+
+    // Proof arrives: confirmThreadUnconfirmedStop clears the hold and wakes commands, schedules & watches.
+    const reactions: string[] = [];
+    const unsubscribe = installPersonalMutationHooks(database, {
+      wake() {},
+      react: (reaction) => {
+        reactions.push(reaction.type);
+      },
+      onFailure(error) {
+        throw error;
+      },
+    });
+    try {
+      expect(await store.confirmThreadUnconfirmedStop(fixture.threadId, input.run.id)).toBe(true);
+    } finally {
+      unsubscribe();
+    }
+    expect(reactions).toContain("executionCommandsChanged");
+    expect(reactions).toContain("triggerSchedulesChanged");
+    expect(reactions).toContain("watchesChanged");
+
+    // Waiting sentence clears.
+    const detailAfter = await triggers.getForOwner(
+      webhook.trigger.id,
+      fixture.userId,
+      5,
+      personTaskReader,
+    );
+    expect(detailAfter?.trigger.waitingReason).toBeNull();
+
+    // Second firing is still blocked behind first (FIFO order kept).
+    expect(
+      await store.claimCommand(second.commandId, "a2-lift", { includeBlocked: true }),
+    ).toMatchObject({ blocked: "firing-ahead", triggerId: webhook.trigger.id });
+    expect(await store.claimCommand(first.commandId, "a2-lift")).toBeTruthy();
+    const startedFirst = await triggers.startExecution({
+      commandId: first.commandId,
+      runnerBootId: "rbt_a2_1",
+      runnerId: fixture.runnerId,
+    });
+    expect(startedFirst.executionGeneration).toBe(1);
+    const completedAt = new Date().toISOString();
+    await triggers.completeExecution({
+      executionGeneration: 1,
+      output: {
+        completedAt,
+        error: null,
+        exitCode: 0,
+        occurrenceId: first.id,
+        result: { ok: 1 },
+        status: "succeeded",
+        stderr: "",
+        stdout: "",
+      },
+      runnerBootId: "rbt_a2_1",
+      runnerId: fixture.runnerId,
+    });
+
+    // After first finishes, second goes once; first cannot be claimed again.
+    expect(await store.claimCommand(first.commandId, "a2-lift")).toBeNull();
+    expect(await store.claimCommand(second.commandId, "a2-lift")).toBeTruthy();
+    const startedSecond = await triggers.startExecution({
+      commandId: second.commandId,
+      runnerBootId: "rbt_a2_1",
+      runnerId: fixture.runnerId,
+    });
+    expect(startedSecond.executionGeneration).toBe(1);
+
+    // Watch is now admitted and activated.
+    const liftedWatches = await triggers.reconcileWatchesForRunner({
+      earlierBootsContained: true,
+      environmentId: fixture.environmentId,
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: "rbt_a2_1",
+      runnerConnectionGeneration: 2,
+      runnerId: fixture.runnerId,
+    });
+    expect(liftedWatches.activations.map((item) => item.activation.triggerId)).toEqual([
+      watch.trigger.id,
+    ]);
+  });
+
+  it("A2: Disconnect of an automation's connection while its anchor is held ends the firing and never runs it", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, database, store, triggers } = storeFixture;
+    const fixture = await createFixture("automation-held-disconnect");
+    const connections = new AgentConnectionStore(database);
+    const connection = await connections.create({
+      accessMode: "full-access",
+      clientName: "Connected Automation Agent",
+      expiresAt: new Date(Date.now() + 60 * 60 * 1_000),
+      grant: { scope: "everything" },
+      label: "Connected Automation Agent",
+      resource: "https://opensteer.test/mcp",
+      userId: fixture.userId,
+    });
+    await connections.activate(connection.id, "a2-disconnect-token");
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: connection.id })
+      .where("id", "=", fixture.threadId)
+      .execute();
+
+    const created = await triggers.create({
+      actorConnectionId: connection.id,
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "a2-disconnect-trigger",
+      name: "Connected automation",
+      script: { interpreter: null, text: "console.log('ok')" },
+      source: { kind: "webhook" },
+      webhookRouteKey: `whk_${randomUUID().replaceAll("-", "")}`,
+    });
+    const occurrence = await triggers.enqueueManual({
+      actorConnectionId: connection.id,
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    const input = await store.enqueueThreadInput({
+      content: [{ type: "text", text: "Unproven stop run" }],
+      idempotencyKey: "a2-disconnect-run",
+      policy: "queue",
+      requestedBy: fixture.userId,
+      source: { kind: "human" },
+      threadId: fixture.threadId,
+    });
+    if (!input.run) throw new Error("Expected fixture Run");
+    await database
+      .updateTable("threads")
+      .set({ inputQueuePaused: true, unconfirmedStopRunId: input.run.id })
+      .where("id", "=", fixture.threadId)
+      .execute();
+
+    // While connected and held, firing is held (not listed, not claimable).
+    expect(await store.claimCommand(occurrence.commandId, "a2-disconnect")).toBeNull();
+
+    // Disconnect revokes the connection while the anchor is still held.
+    await connections.revoke(fixture.userId, connection.id);
+    // Ended connection MUST win over anchor hold: listed and claimed with terminalFailure, never held.
+    expect(
+      (await store.listPendingCommands()).some((command) => command.id === occurrence.commandId),
+    ).toBe(true);
+    const claimed = await store.claimCommand(occurrence.commandId, "a2-disconnect");
+    expect(claimed?.terminalFailure).toMatch(/no longer active/i);
+    // startExecution also refuses as forbidden (not held).
+    let handoffError: unknown;
+    try {
+      await triggers.startExecution({
+        commandId: occurrence.commandId,
+        runnerBootId: "rbt_a2_disc",
+        runnerId: fixture.runnerId,
+      });
+    } catch (error) {
+      handoffError = error;
+    }
+    expect(triggerAnchorStopIsHeld(handoffError)).toBe(false);
+    expect((handoffError as Error).message).toMatch(/no longer active/i);
+
+    // Coordinator settles the terminal failure; lifting the anchor hold afterward NEVER runs it.
+    await store.failCommand(occurrence.commandId, claimed!.terminalFailure!);
+    await store.confirmThreadUnconfirmedStop(fixture.threadId, input.run.id);
+    expect(await store.claimCommand(occurrence.commandId, "a2-disconnect")).toBeNull();
+    const finalRow = await database
+      .selectFrom("triggerOccurrences")
+      .select(["status", "executionGeneration"])
+      .where("id", "=", occurrence.id)
+      .executeTakeFirstOrThrow();
+    expect(finalRow).toEqual({ status: "failed", executionGeneration: 0 });
+  });
+
+  it("A2: allows an automation to run normally when its anchor was stopped by the person and is not held", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createScheduleTrigger, database, store, triggers } = storeFixture;
+    const fixture = await createFixture("automation-stopped-not-held");
+    const created = await createScheduleTrigger(fixture, "automation-stopped-not-held");
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    // Anchor stopped cleanly by the person: queue is paused, no unconfirmed Stop hold.
+    await database
+      .updateTable("threads")
+      .set({ inputQueuePaused: true, unconfirmedStopRunId: null })
+      .where("id", "=", fixture.threadId)
+      .execute();
+    expect(await store.claimCommand(occurrence.commandId, "stopped-clean")).toBeTruthy();
+    const started = await triggers.startExecution({
+      commandId: occurrence.commandId,
+      runnerBootId: "rbt_clean",
+      runnerId: fixture.runnerId,
+    });
+    expect(started.executionGeneration).toBe(1);
   });
 
   /**

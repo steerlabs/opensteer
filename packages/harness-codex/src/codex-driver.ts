@@ -217,6 +217,8 @@ const childFramesHeldMax = 64;
 interface CodexChildContext {
   selection?: Promise<void>;
   finishing?: boolean;
+  stopRequested?: boolean;
+  stopDeferred?: PromiseWithResolvers<void>;
   parentKey?: string | null;
   model: string | null;
   effort: string | null;
@@ -256,6 +258,8 @@ interface ActiveTurn {
   readonly toolLifetime: AbortController;
   interruptPromise?: Promise<void>;
   interruptRequested: boolean;
+  /** True once `#performInterrupt` has finished dispatching interrupts to every known child turn. */
+  childInterruptsDispatched?: boolean;
   /** True while the initial `turn/start` request is awaiting its reply. */
   turnStartInFlight: boolean;
   providerTurnId?: string;
@@ -1742,14 +1746,41 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
   async stopNode(nodeId: ExecutionNodeId): Promise<void> {
     const active = this.#activeTurn;
     const threadId = active?.nodes.keyForNode(nodeId);
-    const turnId = threadId ? active?.childTurns.get(threadId) : undefined;
-    if (!active || active.terminal || active.interruptRequested || !threadId || !turnId)
+    if (!active || active.terminal || active.interruptRequested || !threadId)
       throw new OpensteerError({
         code: "conflict",
         message: "Codex has no running child turn for this subagent",
       });
-    const request = this.#interruptTurnOnce(this.#requireClient(), threadId, turnId);
-    if (request) await request;
+    const turnId = active.childTurns.get(threadId);
+    if (turnId) {
+      const request = this.#interruptTurnOnce(this.#requireClient(), threadId, turnId);
+      if (request) await request;
+      return;
+    }
+    // The subagent node is live (`node.started` emitted from `subAgentActivity`),
+    // but its child `turn/started` has not arrived yet: remember Stop and interrupt
+    // the child turn as soon as it starts.
+    const context = active.children.get(threadId);
+    if (!context || context.completedTurns.size > 0 || active.nodes.nodeId(threadId) !== nodeId)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Codex has no running child turn for this subagent",
+      });
+    context.stopRequested = true;
+    context.stopDeferred ??= Promise.withResolvers<void>();
+    context.stopDeferred.promise.catch(() => undefined);
+    await withTimeout(
+      Promise.race([context.stopDeferred.promise, active.completion.promise]),
+      this.#config.requestTimeoutMs,
+      {
+        timeoutError: () =>
+          new OpensteerError({
+            code: "timeout",
+            message: "Codex child turn did not start before subagent stop timed out",
+            retryable: true,
+          }),
+      },
+    );
   }
 
   async interrupt(): Promise<void> {
@@ -2109,11 +2140,13 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         return request ? [request] : [];
       });
       if (childRequests.length > 0) await Promise.allSettled(childRequests);
+      active.childInterruptsDispatched = true;
       // A turn still starting is interrupted once it has an id to name.
       if (active.root === "starting") await active.rootStart?.promise;
       if (active.terminal) return;
+      const rootIdle = (): boolean => active.root === "idle";
       // Between root turns only the children were running.
-      if (active.root === "idle") {
+      if (rootIdle()) {
         this.#publishTerminal(active, "interrupted");
         return;
       }
@@ -2125,9 +2158,18 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         );
         if (rootRequest) await rootRequest;
       }
+      if (active.terminal) return;
+      // If the root turn completed after the idle check above while a child's
+      // terminal event never arrived, settle as interrupted from what we know
+      // instead of waiting out the request bound; `#unload` still requires
+      // close proof for every child thread before the Run is proven stopped.
+      if (rootIdle()) {
+        this.#publishTerminal(active, "interrupted");
+        return;
+      }
       // On a shared server once stop is under way, `#unload` owns waiting for
       // close; on a dedicated server `#stop` calls us to wait for completion first.
-      if ((this.#closed && this.#server?.dedicated === false) || active.terminal) return;
+      if (this.#closed && this.#server?.dedicated === false) return;
       await withTimeout(active.completion.promise, this.#config.requestTimeoutMs, {
         timeoutError: () =>
           new OpensteerError({
@@ -2736,6 +2778,18 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       active.childTurns.set(childThreadId, turnId);
       active.nodes.update(childThreadId, { stopSupported: true });
       this.#ownTurn(active, childThreadId, turnId);
+      if (context.stopRequested) {
+        const deferred = context.stopDeferred;
+        const request = this.#interruptTurnOnce(this.#requireClient(), childThreadId, turnId);
+        if (request) {
+          void request.then(
+            () => deferred?.resolve(),
+            (error) => deferred?.reject(error),
+          );
+        } else {
+          deferred?.resolve();
+        }
+      }
     }
     if (method === "error") {
       if (
@@ -2840,6 +2894,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         if (active.childTurns.get(childThreadId) !== nativeTurn) return;
         active.retry.recover(childThreadId);
         active.childTurns.delete(childThreadId);
+        context.stopDeferred?.resolve();
         if (this.#openTurns.get(childThreadId) === nativeTurn)
           this.#openTurns.delete(childThreadId);
         active.nodes.complete(
@@ -3161,7 +3216,11 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     if (status === "completed" && active.childTurns.size > 0) {
       active.retry.recover();
       active.root = "idle";
-      if (!active.interruptRequested) {
+      if (active.interruptRequested) {
+        if (active.childInterruptsDispatched) {
+          this.#publishTerminal(active, "interrupted");
+        }
+      } else {
         this.#publish({ data: { phase: "background" }, type: "run.phase" });
       }
       return;

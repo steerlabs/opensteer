@@ -176,7 +176,7 @@ export class WatchService {
       runnerId: identity.runnerId,
     });
     const desired: WatchReconcileActivation[] = [];
-    const lineage: WatchCapabilityScope[] = [];
+    const toVerify: WatchCapabilityScope[] = [];
     for (const context of snapshot.activations) {
       const scope: WatchCapabilityScope = {
         activationId: context.activation.id,
@@ -193,7 +193,7 @@ export class WatchService {
         `watch:${context.activation.id}`,
       );
       const browserCdp = hasBrowser ? this.#watchBrowserTokens.issue(scope) : null;
-      if (context.connectionId) lineage.push(scope);
+      toVerify.push(scope);
       desired.push({
         activationId: context.activation.id,
         anchorThreadId: context.activation.anchorThreadId,
@@ -224,7 +224,7 @@ export class WatchService {
       {
         connectionGeneration: identity.connectionGeneration,
         filterDesired: async () => {
-          for (const scope of lineage) {
+          for (const scope of toVerify) {
             try {
               await this.#store.assertActiveWatchBinding(scope);
             } catch (error) {

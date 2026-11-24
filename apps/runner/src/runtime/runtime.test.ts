@@ -3880,6 +3880,7 @@ describe("RunnerRuntime", () => {
       readonly listProcesses?: ConstructorParameters<
         typeof ExecutionContainment
       >[0]["listProcesses"];
+      readonly watchSupervisor?: ConstructorParameters<typeof RunnerRuntime>[0]["watchSupervisor"];
     }) {
       const driver = new FakeHarnessDriver("test-driver", options.session);
       const create = driver.create.bind(driver);
@@ -3919,6 +3920,9 @@ describe("RunnerRuntime", () => {
         bootId: "boot-test",
         ...(options.earlierBootsContained !== undefined
           ? { earlierBootsContained: options.earlierBootsContained }
+          : {}),
+        ...(options.watchSupervisor !== undefined
+          ? { watchSupervisor: options.watchSupervisor }
           : {}),
         browserHarnessExecutable: testBrowserHarnessExecutable,
         deploymentShape: testDeploymentShape,
@@ -4928,6 +4932,99 @@ describe("RunnerRuntime", () => {
         expect(await f.runtime.handleCommand(nextTurn(execute), f.sink)).toEqual({
           status: "accepted",
         });
+      } finally {
+        stopGate.resolve();
+        await f.runtime.close();
+      }
+    });
+
+    it("A2: refuses trigger.execute and omits Watches for an anchor thread held on an unconfirmed Stop", async () => {
+      const stopGate = deferred<void>();
+      const session = new SharedEngineSession(stopGate.promise, "shared");
+      const reconciledDesired: string[][] = [];
+      const f = sharedStopFixture({
+        session: () => session,
+        settleMs: 30,
+        retryMs: 60_000,
+        unprovenLastResortMs: 60_000,
+        watchSupervisor: {
+          activeActivationIds: () => [],
+          close: async () => undefined,
+          connectionLost: async () => undefined,
+          reconcile: async (command) => {
+            reconciledDesired.push(command.desired.map((item) => item.activationId));
+          },
+        },
+      });
+      const execute = executeCommand(f.environmentId);
+      await reconcile(f.registry, execute);
+      try {
+        await f.runtime.handleCommand(execute, f.sink);
+        await waitUntil(() => f.driver.contexts.length === 1);
+        await f.runtime.handleCommand(stopOf(execute), f.sink);
+        await waitUntil(() => f.ends().length === 1);
+        await waitUntil(() => f.runtime.activeRunIds().length === 0);
+
+        const heldTrigger = triggerCommand(f.environmentId);
+        const anchoredTrigger: Extract<RunnerCommand, { type: "trigger.execute" }> = {
+          ...heldTrigger,
+          context: {
+            ...heldTrigger.context,
+            anchorThreadId: execute.context.threadId,
+          },
+        };
+        expect(await f.runtime.handleCommand(anchoredTrigger, f.sink)).toMatchObject({
+          status: "rejected",
+          error: { code: "conflict", reason: "previous-stop-unconfirmed", retryable: true },
+        });
+
+        const heldActivationId = createId("triggerWatchActivation");
+        const otherActivationId = createId("triggerWatchActivation");
+        const watchReconcile = RunnerCommandSchema.parse({
+          commandId: createId("command"),
+          correlationId: CorrelationIdSchema.parse("a2-watch-reconcile"),
+          desired: [
+            {
+              activationId: heldActivationId,
+              agentHome: { computerId: createId("runner"), path: "/runner/home" },
+              anchorThreadId: execute.context.threadId,
+              capabilities: {
+                browserCdp: null,
+                mcp: {
+                  expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                  token: "mcp-1",
+                  url: "https://host.example/internal/v1/mcp",
+                },
+              },
+              executionGeneration: 1,
+              revisionId: createId("triggerRevision"),
+              triggerId: createId("trigger"),
+            },
+            {
+              activationId: otherActivationId,
+              agentHome: { computerId: createId("runner"), path: "/runner/home" },
+              anchorThreadId: createId("thread"),
+              capabilities: {
+                browserCdp: null,
+                mcp: {
+                  expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                  token: "mcp-2",
+                  url: "https://host.example/internal/v1/mcp",
+                },
+              },
+              executionGeneration: 1,
+              revisionId: createId("triggerRevision"),
+              triggerId: createId("trigger"),
+            },
+          ],
+          environmentId: f.environmentId,
+          reconcileGeneration: 1,
+          type: "watch.reconcile",
+        }) as Extract<RunnerCommand, { type: "watch.reconcile" }>;
+        expect(await f.runtime.handleCommand(watchReconcile, f.sink)).toEqual({
+          status: "accepted",
+        });
+        expect(reconciledDesired).toEqual([[otherActivationId]]);
       } finally {
         stopGate.resolve();
         await f.runtime.close();

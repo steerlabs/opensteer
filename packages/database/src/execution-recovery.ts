@@ -1,6 +1,11 @@
 import { deleteTerminalRunReceipts } from "./personal-runner-receipts.js";
 import { drainAssignmentCancellation } from "./assignment-store.js";
-import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
+import {
+  commitPersonalMutation,
+  wakeExecutionCommands,
+  wakeTriggerSchedules,
+  wakeWatches,
+} from "./personal-mutation.js";
 import { executionDate } from "./personal-transaction.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { recordPersonWaited } from "./run-visibility.js";
@@ -886,6 +891,7 @@ export async function confirmThreadUnconfirmedStop(
       .set({ unconfirmedStopRunId: null })
       .where("id", "=", threadId)
       .where("unconfirmedStopRunId", "=", runId)
+      .returning("environmentId")
       .executeTakeFirst();
     if (shouldPromote && unproven.providerSessionId) {
       await transaction
@@ -911,11 +917,15 @@ export async function confirmThreadUnconfirmedStop(
         .where("status", "=", "current")
         .execute();
     }
-    const changed = shouldPromote || heldIds.length > 0 || clearedThread.numUpdatedRows > 0n;
+    const changed = shouldPromote || heldIds.length > 0 || clearedThread !== undefined;
     if (!changed) return false;
     await projectThreadState(transaction, threadId, confirmedAt, true);
     if (shouldPromote) await publishTranscriptRun(transaction, mutation, runId);
     await publishRunQueue(transaction, threadId);
+    if (clearedThread) {
+      await wakeTriggerSchedules(transaction);
+      await wakeWatches(transaction, clearedThread.environmentId);
+    }
     return true;
   });
 }

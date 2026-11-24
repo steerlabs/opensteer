@@ -63,12 +63,60 @@ interface ListedProcess {
   readonly ppid: number;
   readonly processGroupId?: number;
   readonly scope: string | null;
+  /** True when this process's start environment or identity could not be read. */
+  readonly unreadable?: boolean;
   /** How to signal it when that is not `process.kill`. */
   readonly signal?: (name: NodeJS.Signals) => void;
 }
 
+/** Result of one process scan; `incomplete` means the scanner knows it could have missed a member. */
+interface ProcessInventory {
+  readonly processes: readonly ListedProcess[];
+  readonly incomplete?: boolean;
+}
+
 /** Every process of the Runner's user, with the marker each carries. */
-type ProcessLister = (variable: string) => Promise<readonly ListedProcess[]>;
+type ProcessLister = (variable: string) => Promise<readonly ListedProcess[] | ProcessInventory>;
+
+type ProcessProbe = (pid: number) => "alive" | "gone" | "unknown";
+
+function normalizeInventory(result: readonly ListedProcess[] | ProcessInventory): {
+  readonly processes: readonly ListedProcess[];
+  readonly incomplete: boolean;
+} {
+  if (Array.isArray(result)) {
+    return {
+      processes: result,
+      incomplete: result.some((process) => process.unreadable === true),
+    };
+  }
+  const inventory = result as ProcessInventory;
+  return {
+    processes: inventory.processes,
+    incomplete:
+      inventory.incomplete === true ||
+      inventory.processes.some((process) => process.unreadable === true),
+  };
+}
+
+function defaultProbeAlive(pid: number): "alive" | "gone" | "unknown" {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return "unknown";
+  try {
+    process.kill(pid, 0);
+    return "alive";
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === "ESRCH") return "gone";
+    if (code === "EPERM") return "alive";
+    return "unknown";
+  }
+}
+
+function pidFromIdentity(identity: string): number {
+  const prefix = identity.split("@", 1)[0];
+  const pid = Number(prefix);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : 0;
+}
 
 /**
  * Finds, stops and proves gone every process one execution started.
@@ -97,6 +145,7 @@ export class ExecutionContainment {
   readonly #bootId: string;
   readonly #installation: string;
   readonly #list: ProcessLister | undefined;
+  readonly #probeAlive: ProcessProbe | undefined;
   readonly #terminationGraceMs: number;
   /** The processes noted for each execution before its engine was told to stop. */
   readonly #noted = new Map<string, Set<string>>();
@@ -106,6 +155,7 @@ export class ExecutionContainment {
     /** The Runner's data directory, which one Runner process holds at a time. */
     readonly dataDirectory: string;
     readonly listProcesses?: ProcessLister;
+    readonly probeAlive?: ProcessProbe;
     readonly platform?: NodeJS.Platform;
     readonly terminationGraceMs?: number;
   }) {
@@ -114,7 +164,13 @@ export class ExecutionContainment {
       .update(options.dataDirectory)
       .digest("base64url")
       .slice(0, 16);
-    this.#list = options.listProcesses ?? processListerFor(options.platform ?? process.platform);
+    const platform = options.platform ?? process.platform;
+    this.#list = options.listProcesses ?? processListerFor(platform);
+    this.#probeAlive =
+      options.probeAlive ??
+      (options.listProcesses === undefined && (platform === "linux" || platform === "darwin")
+        ? defaultProbeAlive
+        : undefined);
     this.#terminationGraceMs = options.terminationGraceMs ?? terminationGraceMs;
   }
 
@@ -143,7 +199,7 @@ export class ExecutionContainment {
     if (!list) return [];
     const scope = this.scope(executionId);
     const noted = this.#noted.get(scope) ?? new Set<string>();
-    const processes = await list(executionScopeVariable);
+    const { processes } = normalizeInventory(await list(executionScopeVariable));
     const groups = new Set(processGroups);
     for (const process of processes)
       if (process.processGroupId !== undefined && groups.has(process.processGroupId))
@@ -184,11 +240,9 @@ export class ExecutionContainment {
     const list = this.#list;
     if (!list) return "unverifiable";
     const scope = this.scope(executionId);
-    const members = membersOf(
-      await list(executionScopeVariable),
-      (candidate) => candidate === scope,
-      new Set(),
-    );
+    const scan = normalizeInventory(await list(executionScopeVariable));
+    if (scan.incomplete) return "unverifiable";
+    const members = membersOf(scan.processes, (candidate) => candidate === scope, new Set());
     const pids = new Set(members.map(({ pid }) => pid));
     return members.filter(({ ppid }) => !pids.has(ppid)).length;
   }
@@ -246,13 +300,49 @@ export class ExecutionContainment {
       return "unverifiable";
     }
     // Followed until gone: a member whose parent dies is handed to init and
-    // is no longer below anything that carries the marker.
+    // is no longer below anything that carries the marker. Any previously seen
+    // member whose fate cannot be observed (incomplete scan or PID still alive
+    // outside the user listing) keeps termination unverifiable rather than proven.
     const found = new Set<string>(noted);
+    const foundPids = new Map<string, number>();
+    for (const identity of found) {
+      const pid = pidFromIdentity(identity);
+      if (pid > 0) foundPids.set(identity, pid);
+    }
+    let lastScanUnverifiable = false;
     const remaining = async (): Promise<readonly ListedProcess[]> => {
-      const members = membersOf(await list(executionScopeVariable), matches, found);
+      const scan = normalizeInventory(await list(executionScopeVariable));
+      const members = membersOf(scan.processes, matches, found);
       observe?.(members);
+      const presentIdentities = new Set(members.map(({ identity }) => identity));
+      const listedByPid = new Map(scan.processes.map((process) => [process.pid, process.identity]));
+      let unobservedFate = false;
+      const nextFound = new Set<string>();
+      for (const member of members) {
+        nextFound.add(member.identity);
+        foundPids.set(member.identity, member.pid);
+      }
+      for (const previous of found) {
+        if (presentIdentities.has(previous)) continue;
+        if (scan.incomplete) {
+          nextFound.add(previous);
+          unobservedFate = true;
+          continue;
+        }
+        const pid = foundPids.get(previous) ?? pidFromIdentity(previous);
+        if (pid > 0) {
+          const currentAtPid = listedByPid.get(pid);
+          // A different start identity at the same PID proves PID reuse after exit.
+          if (currentAtPid !== undefined && currentAtPid !== previous) continue;
+          if (this.#probeAlive && this.#probeAlive(pid) !== "gone") {
+            nextFound.add(previous);
+            unobservedFate = true;
+          }
+        }
+      }
       found.clear();
-      for (const { identity } of members) found.add(identity);
+      for (const identity of nextFound) found.add(identity);
+      lastScanUnverifiable = scan.incomplete || unobservedFate;
       return members;
     };
     let processes: readonly ListedProcess[];
@@ -262,12 +352,13 @@ export class ExecutionContainment {
       await stopEngine();
     }
     processes = await remaining();
-    if (processes.length === 0) return "proven";
+    if (processes.length === 0) return lastScanUnverifiable ? "unverifiable" : "proven";
     signal(processes, "SIGTERM");
     processes = await waitUntilGone(remaining, this.#terminationGraceMs);
-    if (processes.length === 0) return "proven";
+    if (processes.length === 0) return lastScanUnverifiable ? "unverifiable" : "proven";
     processes = await waitUntilGone(remaining, killSettleMs, "SIGKILL");
-    return processes.length === 0 ? "proven" : "unknown";
+    if (processes.length > 0) return "unknown";
+    return lastScanUnverifiable ? "unverifiable" : "proven";
   }
 }
 
@@ -363,44 +454,192 @@ async function listSupervisedProcesses(variable: string): Promise<readonly Liste
   }));
 }
 
+const linuxProcSliceSize = 128;
+
 /** A process's start identity remains readable after it loses its start environment. */
-async function listLinuxProcesses(variable: string): Promise<readonly ListedProcess[]> {
+export async function listLinuxProcesses(
+  variable: string,
+  procRoot = "/proc",
+): Promise<ProcessInventory> {
+  const maxAttempts = 5;
+  let last: { readonly processes: readonly ListedProcess[]; readonly incomplete: boolean } = {
+    processes: [],
+    incomplete: true,
+  };
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const scan = await scanLinuxProcOnce(variable, procRoot);
+    last = { processes: scan.processes, incomplete: scan.incomplete || scan.vanished };
+    if (scan.incomplete || !scan.vanished) return last;
+  }
+  return last;
+}
+
+async function scanLinuxProcOnce(
+  variable: string,
+  procRoot: string,
+): Promise<{
+  readonly processes: readonly ListedProcess[];
+  readonly incomplete: boolean;
+  readonly vanished: boolean;
+}> {
+  let entries: string[];
+  try {
+    entries = readdirSync(procRoot);
+  } catch {
+    return { processes: [], incomplete: true, vanished: false };
+  }
   const prefix = `${variable}=`;
+  const myUid = process.getuid?.();
   const found: ListedProcess[] = [];
-  // /proc entries are kernel-backed memory; reading them synchronously avoids thousands of
-  // sequential libuv threadpool round-trips per scan under CPU load.
-  for (const entry of readdirSync("/proc")) {
+  const readablePids = new Set<number>();
+  const accessDenied: {
+    readonly entry: string;
+    readonly pid: number;
+    readonly ppid: number;
+    readonly processGroupId: number;
+    readonly startTime: string;
+  }[] = [];
+  let incomplete = false;
+  let vanished = false;
+  let processed = 0;
+  // /proc entries are kernel-backed memory; reading them in bounded slices avoids
+  // both libuv threadpool saturation and multi-hundred-ms event-loop stalls.
+  for (const entry of entries) {
     if (!/^[1-9][0-9]*$/u.test(entry)) continue;
+    processed++;
+    if (processed % linuxProcSliceSize === 0) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
     const pid = Number(entry);
     if (pid === process.pid) continue;
-    let environ = "";
-    try {
-      environ = readFileSync(`/proc/${entry}/environ`, "latin1");
-    } catch {
-      // Linux removes a zombie's address space before its PID is reaped.
-      // Its start identity must remain listed even when environ returns ESRCH.
-    }
-    const scope = environ.split("\0").find((value) => value.startsWith(prefix));
     let stat: string;
     try {
-      stat = readFileSync(`/proc/${entry}/stat`, "latin1");
-    } catch {
+      stat = readFileSync(`${procRoot}/${entry}/stat`, "latin1");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (code === "ENOENT" || code === "ESRCH") vanished = true;
+      else incomplete = true;
       continue;
     }
     // The command name is parenthesized and may hold anything; after its
-    // closing parenthesis the parent pid is the second field and the start
-    // time, in clock ticks since boot, the twentieth.
-    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    // closing parenthesis the state is field 0, parent pid field 1, pgid field 2,
+    // and start time in clock ticks since boot field 19.
+    const close = stat.lastIndexOf(")");
+    if (close < 0) {
+      incomplete = true;
+      continue;
+    }
+    const fields = stat.slice(close + 2).split(" ");
+    const state = fields[0];
     const ppid = Number(fields[1]);
+    const processGroupId = Number(fields[2]);
+    const startTime = fields[19];
+    if (
+      !state ||
+      !Number.isSafeInteger(ppid) ||
+      !Number.isSafeInteger(processGroupId) ||
+      !startTime ||
+      !/^[0-9]+$/u.test(startTime)
+    ) {
+      incomplete = true;
+      continue;
+    }
+    let environ = "";
+    try {
+      environ = readFileSync(`${procRoot}/${entry}/environ`, "latin1");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (code === "ESRCH" && state === "Z") {
+        // Linux removes a zombie's address space before its PID is reaped.
+        // Its start identity must remain listed even when environ returns ESRCH.
+        found.push({
+          identity: `${pid}@${startTime}`,
+          pid,
+          ppid,
+          processGroupId,
+          scope: null,
+        });
+        readablePids.add(pid);
+        continue;
+      }
+      if (code === "ENOENT" || code === "ESRCH") {
+        vanished = true;
+        continue;
+      }
+      if (code === "EACCES" || code === "EPERM") {
+        accessDenied.push({ entry, pid, ppid, processGroupId, startTime });
+        continue;
+      }
+      incomplete = true;
+      continue;
+    }
+    const scope = environ.split("\0").find((value) => value.startsWith(prefix));
     found.push({
-      identity: `${pid}@${fields[19] ?? ""}`,
+      identity: `${pid}@${startTime}`,
       pid,
       ppid,
-      processGroupId: Number(fields[2]),
+      processGroupId,
       scope: scope ? scope.slice(prefix.length) : null,
     });
+    readablePids.add(pid);
   }
-  return found;
+  for (const denied of accessDenied) {
+    // Check whether an unreadable /proc/<pid>/environ is a setuid child of our user
+    // (realUid === myUid && effectiveUid !== myUid) or a direct child of this Runner.
+    // Pre-existing non-dumpable login daemons (e.g. sshd with realUid === effectiveUid === myUid
+    // under root sshd) and unrelated system daemons are kept in the tree as unreadable nodes
+    // only if they sit under our execution's tree, without poisoning unrelated scans.
+    if (denied.ppid === process.pid) {
+      incomplete = true;
+      found.push({
+        identity: `${denied.pid}@${denied.startTime}`,
+        pid: denied.pid,
+        ppid: denied.ppid,
+        processGroupId: denied.processGroupId,
+        scope: null,
+        unreadable: true,
+      });
+      continue;
+    }
+    let status: string;
+    try {
+      status = readFileSync(`${procRoot}/${denied.entry}/status`, "latin1");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (code === "ENOENT" || code === "ESRCH") vanished = true;
+      else incomplete = true;
+      continue;
+    }
+    const uidLine = /^Uid:\s+(\d+)\s+(\d+)/mu.exec(status);
+    if (!uidLine) {
+      incomplete = true;
+      continue;
+    }
+    const realUid = Number(uidLine[1]);
+    const effectiveUid = Number(uidLine[2]);
+    const isSetuidForUs = myUid === undefined || (realUid === myUid && effectiveUid !== myUid);
+    if (isSetuidForUs) {
+      incomplete = true;
+      found.push({
+        identity: `${denied.pid}@${denied.startTime}`,
+        pid: denied.pid,
+        ppid: denied.ppid,
+        processGroupId: denied.processGroupId,
+        scope: null,
+        unreadable: true,
+      });
+    } else if (readablePids.has(denied.ppid)) {
+      // Keep as a tree node (not globally incomplete unless it sits under our execution).
+      found.push({
+        identity: `${denied.pid}@${denied.startTime}`,
+        pid: denied.pid,
+        ppid: denied.ppid,
+        processGroupId: denied.processGroupId,
+        scope: null,
+      });
+    }
+  }
+  return { processes: found, incomplete, vanished };
 }
 
 /**
@@ -408,32 +647,55 @@ async function listLinuxProcesses(variable: string): Promise<readonly ListedProc
  * A scope holds no whitespace, so the first one after the variable's name ends
  * it.
  */
-async function listDarwinProcesses(variable: string): Promise<readonly ListedProcess[]> {
+async function listDarwinProcesses(variable: string): Promise<ProcessInventory> {
   const uid = process.getuid?.();
-  if (uid === undefined) return [];
-  const { stdout } = await execFileAsync(
-    "/bin/ps",
-    ["-E", "-ww", "-U", String(uid), "-o", "pid=,ppid=,pgid=,lstart=,command="],
-    { maxBuffer: 64 * 1_024 * 1_024 },
-  );
+  if (uid === undefined) return { processes: [], incomplete: true };
+  let stdout: string;
+  let stderr: string;
+  try {
+    ({ stdout, stderr } = await execFileAsync(
+      "/bin/ps",
+      ["-E", "-ww", "-U", String(uid), "-o", "pid=,ppid=,pgid=,lstart=,command="],
+      { maxBuffer: 64 * 1_024 * 1_024 },
+    ));
+  } catch {
+    return { processes: [], incomplete: true };
+  }
+  let incomplete = stderr.trim().length > 0;
   const marker = ` ${variable}=`;
   const found: ListedProcess[] = [];
   for (const line of stdout.split("\n")) {
+    if (line.trim().length === 0) continue;
     // `lstart` is always five words: weekday, month, day, time and year.
-    const words = line.trimStart().split(/\s+/u, 8);
+    const words = line.trimStart().split(/\s+/u, 9);
+    if (words.length < 8) {
+      incomplete = true;
+      continue;
+    }
     const [pid, ppid, processGroupId] = words.slice(0, 3).map(Number);
-    if (!Number.isSafeInteger(pid) || pid === process.pid || !Number.isSafeInteger(ppid)) continue;
+    const lstart = words.slice(3, 8);
+    if (
+      !Number.isSafeInteger(pid) ||
+      !Number.isSafeInteger(ppid) ||
+      !Number.isSafeInteger(processGroupId) ||
+      !/^\d{2}:\d{2}:\d{2}$/u.test(lstart[3] ?? "") ||
+      !/^\d{4}$/u.test(lstart[4] ?? "")
+    ) {
+      incomplete = true;
+      continue;
+    }
+    if (pid === process.pid) continue;
     const at = line.indexOf(marker);
     const scope = at < 0 ? null : line.slice(at + marker.length).split(/\s/u, 1)[0] || null;
     found.push({
-      identity: `${pid}@${words.slice(3, 8).join(" ")}`,
+      identity: `${pid}@${lstart.join(" ")}`,
       pid: pid!,
       ppid: ppid!,
-      ...(processGroupId === undefined ? {} : { processGroupId }),
+      processGroupId: processGroupId!,
       scope,
     });
   }
-  return found;
+  return { processes: found, ...(incomplete ? { incomplete: true } : {}) };
 }
 
 let cachedMachineBootId: string | null | undefined;

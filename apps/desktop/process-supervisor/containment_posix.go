@@ -16,6 +16,9 @@ type posixProcessContainment struct {
 }
 
 func newProcessContainment() (processContainment, error) {
+	if err := enableChildSubreaper(); err != nil {
+		return nil, err
+	}
 	return &posixProcessContainment{}, nil
 }
 
@@ -53,25 +56,29 @@ func (containment *posixProcessContainment) wait(command *exec.Cmd) <-chan targe
 }
 
 func (containment *posixProcessContainment) graceful() error {
-	return containment.signal(syscall.SIGTERM)
+	err := containment.signal(syscall.SIGTERM)
+	_ = signalSubreaperDescendants(containment.processGroupID, syscall.SIGTERM)
+	return err
 }
 
 func (containment *posixProcessContainment) force() error {
-	return containment.signal(syscall.SIGKILL)
+	err := containment.signal(syscall.SIGKILL)
+	_ = signalSubreaperDescendants(containment.processGroupID, syscall.SIGKILL)
+	return err
 }
 
 func (containment *posixProcessContainment) empty() (bool, error) {
 	if containment.processGroupID < 1 {
-		return true, nil
+		return subreaperDescendantsEmpty(0)
 	}
 	err := syscall.Kill(-containment.processGroupID, 0)
 	if err == nil || errors.Is(err, syscall.EPERM) {
 		return false, nil
 	}
-	if errors.Is(err, syscall.ESRCH) {
-		return true, nil
+	if !errors.Is(err, syscall.ESRCH) {
+		return false, err
 	}
-	return false, err
+	return subreaperDescendantsEmpty(containment.processGroupID)
 }
 
 func (containment *posixProcessContainment) signal(signal syscall.Signal) error {

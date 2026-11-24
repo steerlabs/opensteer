@@ -242,6 +242,7 @@ export async function assertActiveTriggerExecutionBinding(
       "threads.doneAt as threadDoneAt",
       "threads.removedAt as threadRemovedAt",
       "threads.status as threadStatus",
+      "threads.unconfirmedStopRunId as threadUnconfirmedStopRunId",
       "triggerOccurrences.admittedGrantRevision",
       "triggerOccurrences.admittedAccessMode",
     ])
@@ -273,6 +274,7 @@ export async function assertActiveTriggerExecutionBinding(
         },
       )
     : null;
+  if (row.threadUnconfirmedStopRunId !== null) throw new TriggerAnchorStopHeld();
   if (
     !(await admitThreadExecution(database, row.anchorThreadId, row.createdBy)) ||
     (connection &&
@@ -301,6 +303,7 @@ export async function assertActiveWatchBinding(
       "threads.doneAt as threadDoneAt",
       "threads.removedAt as threadRemovedAt",
       "threads.status as threadStatus",
+      "threads.unconfirmedStopRunId as threadUnconfirmedStopRunId",
     ])
     .where("triggerWatchActivations.id", "=", input.activationId)
     .where("triggerWatchActivations.triggerId", "=", input.triggerId)
@@ -319,6 +322,7 @@ export async function assertActiveWatchBinding(
     row.threadStatus === "archived" ||
     row.threadDoneAt !== null ||
     row.threadRemovedAt !== null ||
+    row.threadUnconfirmedStopRunId !== null ||
     row.anchorThreadId !== input.anchorThreadId ||
     row.createdBy !== input.createdBy ||
     row.environmentId !== input.environmentId
@@ -1116,7 +1120,10 @@ export class TriggerStore {
       .selectFrom("triggers")
       .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
       .selectAll("triggers")
-      .select("threads.title as anchorThreadTitle")
+      .select([
+        "threads.title as anchorThreadTitle",
+        "threads.unconfirmedStopRunId as anchorUnconfirmedStopRunId",
+      ])
       .where("triggers.createdBy", "=", input.ownerId)
       .$if(input.reader.kind === "work", (q) => q.where(automationReaderSees(input.reader)))
       .$if(input.originConnectionId !== undefined, (q) =>
@@ -1204,10 +1211,10 @@ export class TriggerStore {
     return rows.map((row) => {
       const occurrence = latest.get(row.id);
       const watch = row.kind === "watch" ? watches.get(row.id) : undefined;
-      const { anchorThreadTitle, ...trigger } = row;
+      const { anchorThreadTitle, anchorUnconfirmedStopRunId, ...trigger } = row;
       const revision = currentRevisions.get(row.currentRevisionId);
       return TriggerSummarySchema.parse({
-        ...triggerFromRow(trigger, !revision?.executable),
+        ...triggerFromRow(trigger, !revision?.executable, anchorUnconfirmedStopRunId !== null),
         anchorThreadTitle,
         latestOccurrence: occurrence
           ? {
@@ -1264,231 +1271,276 @@ export class TriggerStore {
     readonly reconcileGeneration: number;
     readonly unavailable?: true;
   }> {
-    return commitPersonalMutation(this.#database, async (transaction) => {
-      if (input.earlierBootsContained === false) {
-        // Lock candidate triggers before trigger_watch_activations so halting an uncontained
-        // prior-boot watch respects triggers (189) -> trigger_watch_activations (190) lock order.
-        const candidateTriggerIds = (
+    return commitPersonalMutation(
+      this.#database,
+      async (transaction) => {
+        const candidates = await transaction
+          .selectFrom("triggerWatchActivations")
+          .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
+          .select(["triggerWatchActivations.anchorThreadId", "triggers.id as triggerId"])
+          .where("triggerWatchActivations.environmentId", "=", input.environmentId)
+          .where("triggerWatchActivations.desired", "=", "active")
+          .where("triggers.kind", "=", "watch")
+          .execute();
+        // Lock candidate anchor `threads` (186) before `triggers` (187) and
+        // `trigger_watch_activations` (188) so the unconfirmed-stop hold cannot race activation.
+        const candidateThreadIds = [
+          ...new Set(candidates.map(({ anchorThreadId }) => anchorThreadId)),
+        ].sort();
+        if (candidateThreadIds.length > 0) {
           await transaction
-            .selectFrom("triggerWatchActivations")
-            .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
-            .select("triggers.id")
-            .distinct()
-            .where("triggerWatchActivations.environmentId", "=", input.environmentId)
-            .where("triggerWatchActivations.desired", "=", "active")
-            .where("triggers.kind", "=", "watch")
-            .orderBy("triggers.id", "asc")
-            .execute()
-        ).map(({ id }) => id);
-        if (candidateTriggerIds.length > 0) {
-          await transaction
-            .selectFrom("triggers")
+            .selectFrom("threads")
             .select("id")
-            .where("id", "in", candidateTriggerIds)
+            .where("id", "in", candidateThreadIds)
             .orderBy("id", "asc")
-            .forNoKeyUpdate()
+            .forShare()
             .execute();
         }
-      }
-      const rows = await transaction
-        .selectFrom("triggerWatchActivations")
-        .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
-        .innerJoin("triggerRevisions", "triggerRevisions.id", "triggerWatchActivations.revisionId")
-        .selectAll("triggerWatchActivations")
-        .select(executableProgram.as("executable"))
-        .where("triggerWatchActivations.environmentId", "=", input.environmentId)
-        .where("triggerWatchActivations.desired", "=", "active")
-        .where("triggers.kind", "=", "watch")
-        .orderBy("triggerWatchActivations.id", "asc")
-        .forNoKeyUpdate("triggerWatchActivations")
-        .execute();
-      const activations: WatchActivationContext[] = [];
-      let unavailable = false;
-      let halted = false;
-      for (const row of rows) {
-        const trigger = await transaction
-          .selectFrom("triggers")
-          .selectAll()
-          .where("id", "=", row.triggerId)
-          .executeTakeFirstOrThrow();
-        const admission = await triggerLaunchStanding(transaction, trigger);
-        if (
-          trigger.status !== "active" ||
-          trigger.currentRevisionId !== row.revisionId ||
-          !row.executable ||
-          admission.kind !== "admitted" ||
-          admission.environmentId !== row.environmentId
-        ) {
-          await transaction
-            .updateTable("triggerWatchActivations")
-            .set({
-              desired: "stopped",
-              leaseExpiresAt: null,
-              observed: sql`case when runner_id is null then 'stopped' else observed end`,
-              updatedAt: new Date(),
-            })
-            .where("id", "=", row.id)
-            .execute();
-          continue;
+        const lockedThreadIds = new Set(candidateThreadIds);
+        if (input.earlierBootsContained === false) {
+          const candidateTriggerIds = [
+            ...new Set(candidates.map(({ triggerId }) => triggerId)),
+          ].sort();
+          if (candidateTriggerIds.length > 0) {
+            await transaction
+              .selectFrom("triggers")
+              .select("id")
+              .where("id", "in", candidateTriggerIds)
+              .orderBy("id", "asc")
+              .forNoKeyUpdate()
+              .execute();
+          }
         }
-        if (row.observed === "halted") {
-          continue;
+        const rows = await transaction
+          .selectFrom("triggerWatchActivations")
+          .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
+          .innerJoin(
+            "triggerRevisions",
+            "triggerRevisions.id",
+            "triggerWatchActivations.revisionId",
+          )
+          .selectAll("triggerWatchActivations")
+          .select(executableProgram.as("executable"))
+          .where("triggerWatchActivations.environmentId", "=", input.environmentId)
+          .where("triggerWatchActivations.desired", "=", "active")
+          .where("triggers.kind", "=", "watch")
+          .orderBy("triggerWatchActivations.id", "asc")
+          .forNoKeyUpdate("triggerWatchActivations")
+          .execute();
+        for (const row of rows) {
+          if (!lockedThreadIds.has(row.anchorThreadId)) {
+            throw new TriggerOccurrenceSetChanged();
+          }
         }
-        if (input.unavailableReason !== undefined) {
-          await transaction
-            .updateTable("triggerWatchActivations")
-            .set({
-              healthySince: null,
-              lastError: input.unavailableReason.slice(0, 20_000),
-              lastExitCode: null,
-              leaseExpiresAt: null,
-              observed: "backoff",
-              updatedAt: new Date(),
-            })
-            .where("id", "=", row.id)
-            .execute();
-          unavailable = true;
-          continue;
-        }
-        const witness = await automationHandoffWitness(transaction, trigger);
-        const sameExecution =
-          row.runnerBootId === input.runnerBootId &&
-          !row.terminalEvidenceAt &&
-          row.observed !== "stopped" &&
-          row.observed !== "expired";
-        const priorBootUncontained =
-          !sameExecution &&
-          input.earlierBootsContained === false &&
-          row.runnerBootId !== null &&
-          row.runnerBootId !== input.runnerBootId &&
-          !row.terminalEvidenceAt &&
-          row.observed !== "stopped" &&
-          row.observed !== "expired";
-        if (priorBootUncontained) {
-          const now = new Date();
-          const detail =
-            "Watch did not start on the new boot because earlier-boot process containment could not be verified.";
-          await transaction
-            .updateTable("triggers")
-            .set({
-              failingSince: trigger.failingSince ?? now,
-              watchCrashNotifiedAt: trigger.watchCrashNotifiedAt ?? now,
-              updatedAt: now,
-            })
-            .where("id", "=", trigger.id)
-            .execute();
-          await transaction
-            .updateTable("triggerWatchActivations")
-            .set({
-              healthySince: null,
-              lastError: detail,
-              leaseExpiresAt: null,
-              observed: "halted",
-              updatedAt: now,
-            })
-            .where("id", "=", row.id)
-            .execute();
-          if (!trigger.watchCrashNotifiedAt) {
-            await recordAutomationFailure(transaction, {
-              activationId: row.id,
-              detail,
-              reason: "watch-halted",
-              triggerId: trigger.id,
+        const activations: WatchActivationContext[] = [];
+        let unavailable = false;
+        let halted = false;
+        for (const row of rows) {
+          const trigger = await transaction
+            .selectFrom("triggers")
+            .selectAll()
+            .where("id", "=", row.triggerId)
+            .executeTakeFirstOrThrow();
+          const admission = await triggerLaunchStanding(transaction, trigger);
+          if (
+            trigger.status === "active" &&
+            trigger.currentRevisionId === row.revisionId &&
+            row.executable &&
+            admission.kind === "held" &&
+            admission.environmentId === row.environmentId
+          ) {
+            // Anchor has an unconfirmed Stop: keep `desired = 'active'` so proof lifts it,
+            // and omit it from desired activations sent to the Runner while held.
+            continue;
+          }
+          if (
+            trigger.status !== "active" ||
+            trigger.currentRevisionId !== row.revisionId ||
+            !row.executable ||
+            admission.kind !== "admitted" ||
+            admission.environmentId !== row.environmentId
+          ) {
+            await transaction
+              .updateTable("triggerWatchActivations")
+              .set({
+                desired: "stopped",
+                leaseExpiresAt: null,
+                observed: sql`case when runner_id is null then 'stopped' else observed end`,
+                updatedAt: new Date(),
+              })
+              .where("id", "=", row.id)
+              .execute();
+            continue;
+          }
+          if (row.observed === "halted") {
+            continue;
+          }
+          if (input.unavailableReason !== undefined) {
+            await transaction
+              .updateTable("triggerWatchActivations")
+              .set({
+                healthySince: null,
+                lastError: input.unavailableReason.slice(0, 20_000),
+                lastExitCode: null,
+                leaseExpiresAt: null,
+                observed: "backoff",
+                updatedAt: new Date(),
+              })
+              .where("id", "=", row.id)
+              .execute();
+            unavailable = true;
+            continue;
+          }
+          const witness = await automationHandoffWitness(transaction, trigger);
+          const sameExecution =
+            row.runnerBootId === input.runnerBootId &&
+            !row.terminalEvidenceAt &&
+            row.observed !== "stopped" &&
+            row.observed !== "expired";
+          const priorBootUncontained =
+            !sameExecution &&
+            input.earlierBootsContained === false &&
+            row.runnerBootId !== null &&
+            row.runnerBootId !== input.runnerBootId &&
+            !row.terminalEvidenceAt &&
+            row.observed !== "stopped" &&
+            row.observed !== "expired";
+          if (priorBootUncontained) {
+            const now = new Date();
+            const detail =
+              "Watch did not start on the new boot because earlier-boot process containment could not be verified.";
+            await transaction
+              .updateTable("triggers")
+              .set({
+                failingSince: trigger.failingSince ?? now,
+                watchCrashNotifiedAt: trigger.watchCrashNotifiedAt ?? now,
+                updatedAt: now,
+              })
+              .where("id", "=", trigger.id)
+              .execute();
+            await transaction
+              .updateTable("triggerWatchActivations")
+              .set({
+                healthySince: null,
+                lastError: detail,
+                leaseExpiresAt: null,
+                observed: "halted",
+                updatedAt: now,
+              })
+              .where("id", "=", row.id)
+              .execute();
+            if (!trigger.watchCrashNotifiedAt) {
+              await recordAutomationFailure(transaction, {
+                activationId: row.id,
+                detail,
+                reason: "watch-halted",
+                triggerId: trigger.id,
+              });
+            }
+            halted = true;
+            continue;
+          }
+          const nextExecutionGeneration = sameExecution
+            ? Number(row.executionGeneration)
+            : Number(row.executionGeneration) + 1;
+          if (!Number.isSafeInteger(nextExecutionGeneration)) {
+            throw new OpensteerError({
+              code: "internal",
+              message: "Watch execution generation overflow",
             });
           }
-          halted = true;
-          continue;
-        }
-        const nextExecutionGeneration = sameExecution
-          ? Number(row.executionGeneration)
-          : Number(row.executionGeneration) + 1;
-        if (!Number.isSafeInteger(nextExecutionGeneration)) {
-          throw new OpensteerError({
-            code: "internal",
-            message: "Watch execution generation overflow",
+          const binding = {
+            ...(sameExecution ? {} : { ...witness, terminalEvidenceAt: null }),
+            contactLostAt: null,
+            executionGeneration: nextExecutionGeneration,
+            leaseExpiresAt: input.leaseExpiresAt,
+            ...(sameExecution
+              ? {}
+              : { healthySince: null, observed: "starting" as const, restartCount: 0 }),
+            runnerBootId: input.runnerBootId,
+            runnerConnectionGeneration: input.runnerConnectionGeneration,
+            runnerId: input.runnerId,
+            updatedAt: new Date(),
+          };
+          const preserve = row.connectionId !== null && !sameExecution;
+          if (preserve) {
+            if (
+              row.runnerId !== input.runnerId ||
+              Number(row.runnerConnectionGeneration) > input.runnerConnectionGeneration
+            )
+              continue;
+            const now = new Date();
+            await transaction
+              .updateTable("triggerWatchActivations")
+              .set({
+                desired: "stopped",
+                observed: "stopped",
+                leaseExpiresAt: null,
+                updatedAt: now,
+                terminalEvidenceAt: row.terminalEvidenceAt ?? now,
+                contactLostAt: row.terminalEvidenceAt ? row.contactLostAt : now,
+              })
+              .where("id", "=", row.id)
+              .execute();
+          }
+          const { executable: _executable, ...prior } = row;
+          const updated = preserve
+            ? await transaction
+                .insertInto("triggerWatchActivations")
+                .values({
+                  ...prior,
+                  ...binding,
+                  id: createId("triggerWatchActivation"),
+                  createdAt: new Date(),
+                  lastError: null,
+                  lastExitCode: null,
+                  stderrTail: "",
+                  stdoutTail: "",
+                })
+                .returningAll()
+                .executeTakeFirstOrThrow()
+            : await transaction
+                .updateTable("triggerWatchActivations")
+                .set(binding)
+                .where("id", "=", row.id)
+                .where((eb) =>
+                  eb.exists(
+                    eb
+                      .selectFrom("threads")
+                      .select("threads.id")
+                      .where("threads.id", "=", trigger.anchorThreadId)
+                      .where("threads.unconfirmedStopRunId", "is", null),
+                  ),
+                )
+                .returningAll()
+                .executeTakeFirstOrThrow();
+          activations.push({
+            activation: watchActivationFromRow(updated),
+            ...(updated.connectionId ? { connectionId: updated.connectionId } : {}),
+            agentHome: (await personalSettings(transaction)).agentHome,
           });
         }
-        const binding = {
-          ...(sameExecution ? {} : { ...witness, terminalEvidenceAt: null }),
-          contactLostAt: null,
-          executionGeneration: nextExecutionGeneration,
-          leaseExpiresAt: input.leaseExpiresAt,
-          ...(sameExecution
-            ? {}
-            : { healthySince: null, observed: "starting" as const, restartCount: 0 }),
-          runnerBootId: input.runnerBootId,
-          runnerConnectionGeneration: input.runnerConnectionGeneration,
-          runnerId: input.runnerId,
-          updatedAt: new Date(),
-        };
-        const preserve = row.connectionId !== null && !sameExecution;
-        if (preserve) {
-          if (
-            row.runnerId !== input.runnerId ||
-            Number(row.runnerConnectionGeneration) > input.runnerConnectionGeneration
-          )
-            continue;
-          const now = new Date();
-          await transaction
-            .updateTable("triggerWatchActivations")
-            .set({
-              desired: "stopped",
-              observed: "stopped",
-              leaseExpiresAt: null,
-              updatedAt: now,
-              terminalEvidenceAt: row.terminalEvidenceAt ?? now,
-              contactLostAt: row.terminalEvidenceAt ? row.contactLostAt : now,
-            })
-            .where("id", "=", row.id)
-            .execute();
-        }
-        const { executable: _executable, ...prior } = row;
-        const updated = preserve
-          ? await transaction
-              .insertInto("triggerWatchActivations")
-              .values({
-                ...prior,
-                ...binding,
-                id: createId("triggerWatchActivation"),
-                createdAt: new Date(),
-                lastError: null,
-                lastExitCode: null,
-                stderrTail: "",
-                stdoutTail: "",
-              })
-              .returningAll()
-              .executeTakeFirstOrThrow()
-          : await transaction
-              .updateTable("triggerWatchActivations")
-              .set(binding)
-              .where("id", "=", row.id)
-              .returningAll()
-              .executeTakeFirstOrThrow();
-        activations.push({
-          activation: watchActivationFromRow(updated),
-          ...(updated.connectionId ? { connectionId: updated.connectionId } : {}),
-          agentHome: (await personalSettings(transaction)).agentHome,
-        });
-      }
-      const generation = await sql<{
-        generation: string;
-      }>`
+        const generation = await sql<{
+          generation: string;
+        }>`
         select nextval('public.trigger_watch_reconcile_generation')::text as generation
       `.execute(transaction);
-      const reconcileGeneration = Number(generation.rows[0]?.generation);
-      if (!Number.isSafeInteger(reconcileGeneration) || reconcileGeneration < 1) {
-        throw new OpensteerError({
-          code: "internal",
-          message: "Invalid watch reconcile generation",
-        });
-      }
-      return {
-        activations,
-        ...(halted ? { halted: true } : {}),
-        reconcileGeneration,
-        ...(unavailable ? { unavailable: true } : {}),
-      };
-    });
+        const reconcileGeneration = Number(generation.rows[0]?.generation);
+        if (!Number.isSafeInteger(reconcileGeneration) || reconcileGeneration < 1) {
+          throw new OpensteerError({
+            code: "internal",
+            message: "Invalid watch reconcile generation",
+          });
+        }
+        return {
+          activations,
+          ...(halted ? { halted: true } : {}),
+          reconcileGeneration,
+          ...(unavailable ? { unavailable: true } : {}),
+        };
+      },
+      (error) => error instanceof TriggerOccurrenceSetChanged,
+    );
   }
   async stopConnectionWatch(id: TriggerWatchActivationId, generation: number): Promise<void> {
     await this.#database
@@ -1751,7 +1803,11 @@ export class TriggerStore {
           .onRef("authorThread.id", "=", "triggers.createdByThreadId")
           .on(readerSees(reader, sql.ref("authorThread.origin_connection_id"))),
       )
-      .select(["threads.title as anchorThreadTitle", "authorThread.title as createdByThreadTitle"])
+      .select([
+        "threads.title as anchorThreadTitle",
+        "threads.unconfirmedStopRunId as anchorUnconfirmedStopRunId",
+        "authorThread.title as createdByThreadTitle",
+      ])
       .where("triggers.id", "=", triggerId)
       .where("triggers.createdBy", "=", ownerId)
       .$if(originConnectionId !== undefined, (q) =>
@@ -1760,7 +1816,7 @@ export class TriggerStore {
       .$if(reader.kind === "work", (q) => q.where(automationReaderSees(reader)));
     const row = await query.executeTakeFirst();
     if (!row) return null;
-    const { anchorThreadTitle, createdByThreadTitle, ...trigger } = row;
+    const { anchorThreadTitle, anchorUnconfirmedStopRunId, createdByThreadTitle, ...trigger } = row;
     const [revision, occurrences, activation] = await Promise.all([
       this.#database
         .selectFrom("triggerRevisions")
@@ -1867,7 +1923,7 @@ export class TriggerStore {
       downstreamRunsTruncated: downstreamRunRows.length > 100,
       occurrences: occurrences.map(occurrenceFromRow),
       revision: parsed,
-      trigger: triggerFromRow(trigger, parsed.script === null),
+      trigger: triggerFromRow(trigger, parsed.script === null, anchorUnconfirmedStopRunId !== null),
     };
   }
   enqueueWebhook(input: {
@@ -2213,8 +2269,9 @@ export class TriggerStore {
       .where("triggers.kind", "=", "schedule")
       .where("triggers.status", "=", "active")
       .where(executableProgram)
-      // As the claim: a paused chat's schedule is not due, so the loop neither spins nor backs off.
+      // As the claim: a paused chat's or Stop-held anchor's schedule is not due, so the loop neither spins nor backs off.
       .where((eb) => eb.not(triggerChatHeld()))
+      .where((eb) => eb.not(triggerAnchorStopHeld()))
       .executeTakeFirst();
     return row?.next ? new Date(row.next) : null;
   }
@@ -2253,8 +2310,9 @@ export class TriggerStore {
         .where("triggers.status", "=", "active")
         .where("triggers.nextFireAt", "<=", now)
         .where(executableProgram)
-        // A paused chat's schedule does not fire: no occurrence, no move, no pause, no error.
-        .where((eb) => eb.not(triggerChatHeld()));
+        // A paused chat's or Stop-held anchor's schedule does not fire: no occurrence, no move, no pause, no error.
+        .where((eb) => eb.not(triggerChatHeld()))
+        .where((eb) => eb.not(triggerAnchorStopHeld()));
     const candidate = await dueSchedules(this.#database)
       .select("triggers.id")
       .limit(1)
@@ -2289,7 +2347,7 @@ export class TriggerStore {
         // due read is held (nothing created, nothing moved); only an end pauses the automation.
         const standing = await triggerLaunchStanding(transaction, trigger);
         await seam?.afterAuthority?.();
-        if (standing.kind === "waiting") return held;
+        if (standing.kind === "waiting" || standing.kind === "held") return held;
         if (standing.kind === "refused" || standing.kind === "lost") {
           // Authority can be unavailable transiently — an offline Runner — or refused for a chat
           // without personal context. Pausing keeps the Trigger recoverable by its owner;
@@ -2518,12 +2576,12 @@ export class TriggerStore {
         .selectAll()
         .where("id", "=", occurrence.triggerId)
         .executeTakeFirstOrThrow();
-      await requireTriggerLaunchAuthority(transaction, trigger);
+      await requireTriggerLaunchAuthority(transaction, trigger, { lockAnchor: true });
       let executionGeneration = occurrence.executionGeneration;
       if (occurrence.status === "pending") {
         const witness = await automationHandoffWitness(transaction, trigger);
         executionGeneration += 1;
-        await transaction
+        const updated = await transaction
           .updateTable("triggerOccurrences")
           .set({
             ...witness,
@@ -2537,7 +2595,19 @@ export class TriggerStore {
             updatedAt: new Date(),
           })
           .where("id", "=", occurrence.id)
-          .execute();
+          .where((eb) =>
+            eb.exists(
+              eb
+                .selectFrom("threads")
+                .select("threads.id")
+                .where("threads.id", "=", trigger.anchorThreadId)
+                .where("threads.unconfirmedStopRunId", "is", null),
+            ),
+          )
+          .executeTakeFirst();
+        if (!updated || updated.numUpdatedRows !== 1n) {
+          throw new TriggerAnchorStopHeld();
+        }
       } else if (
         occurrence.status !== "running" ||
         occurrence.runnerId !== input.runnerId ||
@@ -3479,7 +3549,7 @@ async function enqueueOccurrence(
   readonly occurrence: TriggerOccurrence;
   readonly wasDuplicate: boolean;
 }> {
-  await requireTriggerLaunchAuthority(transaction, trigger);
+  await requireTriggerLaunchAuthority(transaction, trigger, { allowAnchorStopHeld: true });
   const revision = await transaction
     .selectFrom("triggerRevisions")
     .select(["id", executableProgram.as("executable")])
@@ -3513,7 +3583,9 @@ async function enqueueOccurrence(
       message: `Automation already has ${MAX_PENDING_TRIGGER_OCCURRENCES} pending occurrences, its durable limit`,
     });
   }
-  const admission = await requireTriggerLaunchAuthority(transaction, trigger);
+  const admission = await requireTriggerLaunchAuthority(transaction, trigger, {
+    allowAnchorStopHeld: true,
+  });
   const occurrenceId = createId("triggerOccurrence");
   const commandId = createId("command");
   const now = new Date();
@@ -3860,12 +3932,31 @@ async function automationHandoffWitness(
  * authority and Disconnect read it) that is paused, as SQL over the unaliased `triggers` row, for
  * the schedule's claim and deadline. Its schedule does not fire until the chat is back.
  */
+const anchorStopHeldWaitingReason =
+  "Waiting until Opensteer confirms its task stopped on that device.";
+
 function triggerChatHeld() {
   return sql<boolean>`exists (
     select 1 from agent_connections
     where agent_connections.id = triggers.origin_connection_id
       and agent_connections.bridge_account_id is not null
       and ${connectionState()} = 'waiting')`;
+}
+
+/**
+ * The automation's anchor task has an unconfirmed Stop (`threads.unconfirmed_stop_run_id`).
+ * Excluded from due schedules until proof clears the hold, unless its own connection has ended
+ * (in which case Disconnect pauses it rather than leaving it held).
+ */
+function triggerAnchorStopHeld() {
+  return sql<boolean>`exists (
+    select 1 from threads
+    where threads.id = triggers.anchor_thread_id
+      and threads.unconfirmed_stop_run_id is not null)
+    and not exists (
+      select 1 from agent_connections
+      where agent_connections.id = triggers.origin_connection_id
+        and ${connectionState()} = 'ended')`;
 }
 /** The refusal of a program for a lineage without personal context. */
 function noProgramWithoutPersonalContext(): OpensteerError {
@@ -3888,12 +3979,32 @@ class TriggerChatWaiting extends OpensteerError {
 }
 
 /**
+ * The launch refusal for an automation whose anchor task has an unconfirmed Stop:
+ * its firing stays held (not dropped, not failed) until proof clears the anchor hold.
+ */
+class TriggerAnchorStopHeld extends OpensteerError {
+  constructor() {
+    super({
+      code: "conflict",
+      reason: "previous-stop-unconfirmed",
+      message:
+        "Stopping could not be confirmed. Automation is held while something from the previous Run may still be running on that device.",
+    });
+  }
+}
+
+/**
  * Whether a launch refusal is the one a waiting chat causes, from the same read that refused it:
  * its work is held, never failed. A lineage without personal context is refused as itself, paused
  * or not.
  */
 export function triggerChatIsWaiting(error: unknown): boolean {
   return error instanceof TriggerChatWaiting;
+}
+
+/** Whether a launch refusal is caused by an unconfirmed Stop hold on the anchor task. */
+export function triggerAnchorStopIsHeld(error: unknown): boolean {
+  return error instanceof TriggerAnchorStopHeld;
 }
 
 /**
@@ -3906,24 +4017,38 @@ export function triggerChatIsWaiting(error: unknown): boolean {
 async function triggerLaunchStanding(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   trigger: Pick<TriggerRow, "anchorThreadId" | "createdBy" | "originConnectionId">,
+  options?: { readonly lockAnchor?: boolean },
 ): Promise<
   | Awaited<ReturnType<typeof lineageExecutionStanding>>
   | { readonly kind: "refused"; readonly reason: string }
 > {
   if (!(await lineagePersonalContext(database, trigger.originConnectionId)))
     return { kind: "refused", reason: noProgramWithoutPersonalContext().message };
-  return lineageExecutionStanding(database, {
-    threadId: trigger.anchorThreadId,
-    userId: trigger.createdBy,
-    agentConnectionId: trigger.originConnectionId,
-  });
+  return lineageExecutionStanding(
+    database,
+    {
+      threadId: trigger.anchorThreadId,
+      userId: trigger.createdBy,
+      agentConnectionId: trigger.originConnectionId,
+    },
+    options,
+  );
 }
 async function requireTriggerLaunchAuthority(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   trigger: Pick<TriggerRow, "anchorThreadId" | "createdBy" | "originConnectionId">,
+  options?: { readonly lockAnchor?: boolean; readonly allowAnchorStopHeld?: boolean },
 ) {
-  const standing = await triggerLaunchStanding(database, trigger);
+  const standing = await triggerLaunchStanding(
+    database,
+    trigger,
+    options?.lockAnchor ? { lockAnchor: true } : undefined,
+  );
   if (standing.kind === "waiting") throw new TriggerChatWaiting();
+  if (standing.kind === "held") {
+    if (options?.allowAnchorStopHeld) return { environmentId: standing.environmentId };
+    throw new TriggerAnchorStopHeld();
+  }
   if (standing.kind === "refused") throw noProgramWithoutPersonalContext();
   if (standing.kind === "lost")
     throw new OpensteerError({
@@ -3987,7 +4112,11 @@ function withoutSchedulePayload(source: TriggerSource): TriggerSource {
     schedule,
   };
 }
-function triggerFromRow(row: TriggerRow, needsProgramUpdate = false): Trigger {
+function triggerFromRow(
+  row: TriggerRow,
+  needsProgramUpdate = false,
+  anchorStopHeld = false,
+): Trigger {
   // Version gates execution while the stored status preserves the owner's intent.
   const blocked = needsProgramUpdate && row.status !== "archived";
   return TriggerSchema.parse({
@@ -4002,7 +4131,11 @@ function triggerFromRow(row: TriggerRow, needsProgramUpdate = false): Trigger {
     name: row.name,
     nextFireAt: blocked ? null : (row.nextFireAt?.toISOString() ?? null),
     pauseReason: blocked ? TRIGGER_SCRIPT_UPDATE_REASON : row.pauseReason,
-    waitingReason: blocked ? null : row.waitingReason,
+    waitingReason: blocked
+      ? null
+      : row.status === "active" && anchorStopHeld
+        ? anchorStopHeldWaitingReason
+        : row.waitingReason,
     status: blocked ? "paused" : row.status,
     updatedAt: row.updatedAt.toISOString(),
     webhookRouteKey: row.webhookRouteKey,

@@ -1902,6 +1902,9 @@ export async function createHostRuntime(
         case "triggerPaused":
           void firingInterrupts?.wake();
           break;
+        case "watchesChanged":
+          watchService?.changed(reaction.environmentId);
+          break;
         case "runnerRevoked":
           void runnerRegistry?.revoke(reaction.runnerId).catch(reportMutationFailure);
           break;

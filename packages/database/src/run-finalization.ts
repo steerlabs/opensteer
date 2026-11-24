@@ -2,7 +2,7 @@ import { deleteTerminalRunReceipts } from "./personal-runner-receipts.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { refreshRequestState } from "./request-persistence.js";
 import { ChannelConversationIdSchema } from "@opensteer/channel-core";
-import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
+import { commitPersonalMutation, wakeWatches, type PersonalMutation } from "./personal-mutation.js";
 import {
   advancePersonalRunFinish,
   beginPersonalRunFinish,
@@ -747,6 +747,7 @@ async function finalizeRunOutcome(
       .set({ unconfirmedStopRunId: run.id })
       .where("id", "=", run.threadId)
       .execute();
+    if (!offline) await wakeWatches(transaction, thread.environmentId);
   }
   if (mutation) deleteTerminalRunReceipts(transaction, mutation, run.id);
   if (run.assignmentId) {

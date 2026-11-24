@@ -336,6 +336,12 @@ Stop interrupts that Run, or ends that agent session with everything it has in f
 connected agent's next call naming the task is refused with `stopped_by_person`; its next call
 without a `taskId` is refused once with the same notice, then may start a new session.
 
+A confirmed Stop proves that the engine and every process of it that this device can attribute to
+the task have ended. If the device cannot complete a clean process scan, Stop stays unconfirmed
+and holds the task. A program an agent asked the system to start outside its own process tree —
+such as an app opened through the system, a launch agent, a container, or work on a remote
+machine — is not ended by Stop and is not part of that proof.
+
 ### Disconnect
 
 Disconnect revokes the connection in one transaction (`AgentConnectionStore.revoke`). It locks the
@@ -379,7 +385,9 @@ A boot mode of the Mac's Runners, not a flag the Home has to honour.
 3. It shows a confirmed Stop time only after each old Runner exited, the desktop proved its
    processes are gone (`apps/runner/src/runtime/execution-containment.ts`), and each new Runner
    reported that earlier boots are contained. Otherwise it says "Couldn't confirm everything
-   stopped".
+   stopped". That confirmation proves the Runners, their engines, and every process of them that
+   this Mac can attribute to their work have ended; a program an agent asked the system to start
+   outside its own process tree is not ended by Stop and is not part of the proof.
 
 It needs no Home to be reachable. The Home learns of it from the Runner's signed hello and also
 refuses to start work on a stopped Runner. An owner view open during the restart ends with
@@ -720,6 +728,13 @@ public certificates, real IPv6, a pristine Ubuntu install or a VM reboot.
 - **Disconnected can include an uncertain end.** "Check its last action" marks it.
 - **Opensteer can stop what happens next, not undo what was done.** That includes everything the
   person's own agents did for a connected agent with `tasks`, and anything an agent copied out.
+- **What a confirmed Stop proves.** A confirmed Stop proves that the engine and every process of
+  it that this device can attribute to the task have ended (on Linux, the process supervisor also
+  acts as a child subreaper; on Windows, it uses a Job Object). If the device cannot complete a
+  clean process scan, Stop stays unconfirmed and holds the task. A program an agent asked the
+  system to start outside its own process tree — such as an app opened through the system, a
+  launch agent, a container, or work on a remote machine — is not ended by Stop and is not part
+  of the proof.
 - **Two agents granted the same profile share its signed-in state.** Each sees only its own pages
   over `browser_connect`, but cookies and sign-ins belong to the profile. Give each agent its own
   profile to keep accounts apart.

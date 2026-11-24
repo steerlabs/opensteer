@@ -112,6 +112,7 @@ export type PersonalCommitReaction =
   | { readonly type: "runnerRevoked"; readonly runnerId: RunnerId }
   | { readonly type: "triggerSchedulesChanged" }
   | { readonly type: "triggerPaused" }
+  | { readonly type: "watchesChanged"; readonly environmentId: EnvironmentId }
   | { readonly type: "authorityChanged"; readonly scopes: ReadonlySet<ScopeAuthority> }
   | {
       readonly type: "requestChanged";
@@ -785,6 +786,13 @@ export function wakeTriggerSchedules(tx: PersonalMutationTransaction) {
 export function wakePausedTriggerInterrupts(tx: PersonalMutationTransaction) {
   return commitPersonalMutation(tx, async (_tx, mutation) => {
     mutation.react({ type: "triggerPaused" });
+  });
+}
+
+/** A task's hold state changed; the Host reconciles Watches on its environment. */
+export function wakeWatches(tx: PersonalMutationTransaction, environmentId: EnvironmentId) {
+  return commitPersonalMutation(tx, async (_tx, mutation) => {
+    mutation.react({ type: "watchesChanged", environmentId });
   });
 }
 

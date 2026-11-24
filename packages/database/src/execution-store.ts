@@ -792,41 +792,47 @@ export async function acquireExecutionBinding(
         .orderBy("ordinal", "desc")
         .limit(1)
         .executeTakeFirst();
-      if (
-        priorAttempt &&
-        (priorAttempt.runnerId !== input.runnerId ||
-          priorAttempt.runnerBootId !== input.runnerBootId)
-      ) {
-        const runner = await transaction
-          .selectFrom("runners")
-          .select(["capabilities", "machineBootId"])
-          .where("id", "=", input.runnerId)
-          .executeTakeFirstOrThrow();
-        const proven = earlierBootProvenContained({
-          attemptRunnerId: priorAttempt.runnerId,
-          attemptRunnerBootId: priorAttempt.runnerBootId,
-          attemptMachineBootId: priorAttempt.machineBootId,
-          currentRunnerId: input.runnerId,
-          currentRunnerBootId: input.runnerBootId,
-          currentMachineBootId:
-            input.machineBootId !== undefined ? input.machineBootId : runner.machineBootId,
-          earlierBootsContained: runner.capabilities.includes("earlier-boots-contained-v1"),
+      const sameBoot =
+        priorAttempt !== undefined &&
+        priorAttempt.runnerId === input.runnerId &&
+        priorAttempt.runnerBootId === input.runnerBootId;
+      if (!priorAttempt || sameBoot) {
+        throw new OpensteerError({
+          code: "conflict",
+          message:
+            "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
+          reason: "previous-stop-unconfirmed",
         });
-        if (!proven) {
-          throw new OpensteerError({
-            code: "conflict",
-            message:
-              "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
-            reason: "previous-stop-unconfirmed",
-          });
-        }
-        await transaction
-          .updateTable("threads")
-          .set({ unconfirmedStopRunId: null })
-          .where("id", "=", input.threadId)
-          .where("unconfirmedStopRunId", "=", thread.unconfirmedStopRunId)
-          .execute();
       }
+      const runner = await transaction
+        .selectFrom("runners")
+        .select(["capabilities", "machineBootId"])
+        .where("id", "=", input.runnerId)
+        .executeTakeFirstOrThrow();
+      const proven = earlierBootProvenContained({
+        attemptRunnerId: priorAttempt.runnerId,
+        attemptRunnerBootId: priorAttempt.runnerBootId,
+        attemptMachineBootId: priorAttempt.machineBootId,
+        currentRunnerId: input.runnerId,
+        currentRunnerBootId: input.runnerBootId,
+        currentMachineBootId:
+          input.machineBootId !== undefined ? input.machineBootId : runner.machineBootId,
+        earlierBootsContained: runner.capabilities.includes("earlier-boots-contained-v1"),
+      });
+      if (!proven) {
+        throw new OpensteerError({
+          code: "conflict",
+          message:
+            "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
+          reason: "previous-stop-unconfirmed",
+        });
+      }
+      await transaction
+        .updateTable("threads")
+        .set({ unconfirmedStopRunId: null })
+        .where("id", "=", input.threadId)
+        .where("unconfirmedStopRunId", "=", thread.unconfirmedStopRunId)
+        .execute();
     }
     // A reference only identifies native state; it does not prove that the
     // first input was accepted. Earlier unstarted attempts need an ordered

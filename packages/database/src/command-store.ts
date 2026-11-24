@@ -1,5 +1,5 @@
 import { PersonalRevisionSchema } from "@opensteer/protocol/resources";
-import { assignmentWasCancelled } from "./execution-authority.js";
+import { assignmentWasCancelled, lineageExecutionStanding } from "./execution-authority.js";
 import { assertRequestRevision, refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
@@ -176,41 +176,66 @@ async function claimObservedCommand(
   // queued Run is, and listed again when the chat is back.
   // AA2 / Y11 / T10: Enforce one firing at a time (and FIFO webhook order) here at trigger claim,
   // never on the shared listPendingCommands dispatch query.
+  let triggerAuthorityLost = false;
   if (observed.type === "trigger.execute") {
     if (await triggerCommandHeld(transaction, observed.id)) return null;
     const candidate = await transaction
       .selectFrom("triggerOccurrences")
-      .select(["createdAt", "id", "triggerId"])
-      .where("commandId", "=", observed.id)
+      .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+      .select([
+        "triggerOccurrences.createdAt",
+        "triggerOccurrences.id",
+        "triggerOccurrences.triggerId",
+        "triggers.anchorThreadId",
+        "triggers.createdBy",
+        "triggers.originConnectionId",
+      ])
+      .where("triggerOccurrences.commandId", "=", observed.id)
       .executeTakeFirst();
     if (candidate) {
-      await transaction
-        .selectFrom("triggers")
-        .select("id")
-        .where("id", "=", candidate.triggerId)
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      const blocker = await transaction
-        .selectFrom("triggerOccurrences")
-        .select("id")
-        .where("triggerId", "=", candidate.triggerId)
-        .where("id", "!=", candidate.id)
-        .where((eb) =>
-          eb.or([
-            eb("status", "=", "running"),
-            eb.and([
-              eb("status", "=", "pending"),
-              sql<boolean>`(created_at, id) < (${candidate.createdAt}, ${candidate.id})`,
+      // Lock the anchor `threads` row (`FOR SHARE`, rank 186) before `triggers` (187)
+      // and check standing + anchor unconfirmed-stop hold in one statement.
+      const standing = await lineageExecutionStanding(
+        transaction,
+        {
+          threadId: candidate.anchorThreadId,
+          userId: candidate.createdBy,
+          agentConnectionId: candidate.originConnectionId,
+        },
+        { lockAnchor: true },
+      );
+      if (standing.kind === "waiting" || standing.kind === "held") return null;
+      if (standing.kind === "lost") {
+        triggerAuthorityLost = true;
+      } else {
+        await transaction
+          .selectFrom("triggers")
+          .select("id")
+          .where("id", "=", candidate.triggerId)
+          .forNoKeyUpdate()
+          .executeTakeFirst();
+        const blocker = await transaction
+          .selectFrom("triggerOccurrences")
+          .select("id")
+          .where("triggerId", "=", candidate.triggerId)
+          .where("id", "!=", candidate.id)
+          .where((eb) =>
+            eb.or([
+              eb("status", "=", "running"),
+              eb.and([
+                eb("status", "=", "pending"),
+                sql<boolean>`(created_at, id) < (${candidate.createdAt}, ${candidate.id})`,
+              ]),
             ]),
-          ]),
-        )
-        .limit(1)
-        .executeTakeFirst();
-      if (blocker) {
-        return {
-          blocked: "firing-ahead",
-          triggerId: candidate.triggerId,
-        };
+          )
+          .limit(1)
+          .executeTakeFirst();
+        if (blocker) {
+          return {
+            blocked: "firing-ahead",
+            triggerId: candidate.triggerId,
+          };
+        }
       }
     }
   }
@@ -335,15 +360,16 @@ async function claimObservedCommand(
       .executeTakeFirst();
     if (predecessor) return null;
   }
-  let terminalFailure =
-    (observed.type === "run.execute" || observed.type === "trigger.execute") &&
-    (!observed.threadId ||
-      !observed.environmentId ||
-      !(await threadExecutionIsAvailableToUser(
-        transaction,
-        observed.threadId,
-        observed.requestedBy,
-      )))
+  let terminalFailure = triggerAuthorityLost
+    ? "Automation execution authority is no longer active."
+    : (observed.type === "run.execute" || observed.type === "trigger.execute") &&
+        (!observed.threadId ||
+          !observed.environmentId ||
+          !(await threadExecutionIsAvailableToUser(
+            transaction,
+            observed.threadId,
+            observed.requestedBy,
+          )))
       ? "Execution authority for this Thread is no longer available."
       : undefined;
   if (observed.type === "run.execute") {
@@ -1518,9 +1544,33 @@ export async function listPendingCommands(
           expression("commands.type", "!=", "run.execute"),
           expression.and([
             expression("threads.inputQueuePaused", "=", false),
+            expression("threads.unconfirmedStopRunId", "is", null),
             expression("runs.status", "=", "queued"),
             expression("runs.startHoldReason", "is", null),
           ]),
+        ]),
+      )
+      .where((expression) =>
+        expression.or([
+          expression("commands.type", "!=", "trigger.execute"),
+          expression("threads.unconfirmedStopRunId", "is", null),
+          expression.exists(
+            expression
+              .selectFrom("triggerOccurrences as ended_occurrence")
+              .innerJoin(
+                "triggers as ended_trigger",
+                "ended_trigger.id",
+                "ended_occurrence.triggerId",
+              )
+              .innerJoin("agentConnections", (join) =>
+                join.on(
+                  sql<boolean>`agent_connections.id = coalesce(ended_occurrence.connection_id, ended_trigger.origin_connection_id)`,
+                ),
+              )
+              .select("ended_occurrence.id")
+              .whereRef("ended_occurrence.commandId", "=", "commands.id")
+              .where(sql<boolean>`${connectionState()} = 'ended'`),
+          ),
         ]),
       )
       .where((expression) =>

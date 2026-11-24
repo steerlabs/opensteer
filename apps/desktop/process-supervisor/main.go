@@ -182,6 +182,9 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer
 			if isEmpty {
 				return drainedExitCode(targetExitCode(targetResult))
 			}
+			if forced {
+				_ = containment.force()
+			}
 		}
 	}
 }

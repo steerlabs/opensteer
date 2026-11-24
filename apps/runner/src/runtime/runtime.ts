@@ -1865,13 +1865,16 @@ export class RunnerRuntime {
         case "trigger.execute":
           return this.#admitTriggerProgram(command, sink);
         case "watch.reconcile": {
-          await this.#watchSupervisor.reconcile(command, sink);
-          const desired = new Set(command.desired.map(({ activationId }) => activationId));
+          const desired = command.desired.filter(
+            (item) => !this.#uncontainedThreads.has(item.anchorThreadId),
+          );
+          await this.#watchSupervisor.reconcile({ ...command, desired }, sink);
+          const desiredIds = new Set(desired.map(({ activationId }) => activationId));
           for (const report of this.#endedAttempts.values())
             if (
               typeof report !== "string" &&
               report.type === "runner.watch-status" &&
-              !desired.has(report.activationId)
+              !desiredIds.has(report.activationId)
             )
               void sink.send(report).catch(() => undefined);
           return { status: "accepted" };
@@ -3166,6 +3169,14 @@ export class RunnerRuntime {
     if (this.#endedAttempts.has(key) || this.#unverifiedTriggerEnds.has(key))
       return reject("conflict", "Trigger attempt already stopped", false);
     if (this.#draining) return reject("conflict", "Runner is draining", true);
+    if (this.#uncontainedThreads.has(command.context.anchorThreadId)) {
+      return reject(
+        "conflict",
+        "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
+        true,
+        { reason: "previous-stop-unconfirmed" },
+      );
+    }
     if (this.#triggerPrograms.has(command.context.occurrenceId)) {
       return reject("conflict", "Trigger occurrence is already active", false);
     }
