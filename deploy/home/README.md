@@ -149,9 +149,10 @@ An Opensteer Cloud Computer's Home is different in two ways, both set by
 
 On Compute Engine's default `e2-medium` (2 vCPUs, 4 GiB) that gives PostgreSQL
 512 MiB, the Host 768 MiB, Caddy and Channel Runtime 256 MiB each, and the
-Runner 1792 MiB and both CPUs; Linux reports a little under 4 GiB as the
-machine's memory, so the Runner gets about 1.6 GiB there. Whether the person's
-own agents' Runs fit in that has not been measured on a real machine.
+Runner 1792 MiB and both CPUs. Linux reports somewhat less than 4 GiB as the
+machine's memory, and the Runner's share shrinks by that difference (1612 MiB
+if it reports 3916 MiB). Whether the person's own agents' Runs fit in that has
+not been measured on a real machine.
 
 Disk and networking are billed apart from the machine. [Google machine specifications](https://cloud.google.com/compute/docs/general-purpose-machines) · [Compute Engine prices](https://cloud.google.com/compute/vm-instance-pricing)
 
