@@ -722,6 +722,60 @@ claim, backup, restore, refusal without `--replace`, image-only rollback and the
 On Colima it runs arm64; locally it runs the server's own architecture. It does not prove
 public certificates, real IPv6, a pristine Ubuntu install or a VM reboot.
 
+## Problems and reports
+
+A **problem** is a code from one table (`packages/protocol/src/problems.ts`): a severity
+(someone has to act now, or worth knowing), one plain sentence with what to do, and at most a few
+fields that are enums or bounded whole numbers. Its schema is strict, and
+`packages/protocol/src/problems.test.ts` fails if a free-text field is ever added, so a problem
+never carries an address, a title, task text, a file path, an account or device name, a token or
+an error's own words. A Home derives its problems from what it already keeps
+(`readStoredProblems`, `packages/database/src/home-problems.ts`) and from what its machine's
+maintenance writes as fixed values (`deploy/home/machine-status.sh`); one read gives them
+(`HomeProblems`, `apps/host/src/problems/home-problems.ts`). Adding a code is one entry in the
+table and one place that counts it.
+
+Who learns what depends on who runs the machine:
+
+1. **The person, always.** Settings → General → Problems shows this Home's problems in the
+   table's words. Nothing leaves for that.
+2. **Opensteer, for what it runs itself**, with no question asked, because it is its own
+   infrastructure. Its services log one stable event for each failure the
+   [runbook](cloud-computer-operations.md#when-something-goes-wrong) names
+   (`apps/control-plane/src/server/events.ts` and the provisioner's `home-provisioner.*`), with
+   the same field names everywhere. Each job that must run sends a heartbeat, an HTTP GET to an
+   address from configuration, at the end of each successful pass. The alerts are files in
+   [deploy/monitoring](../deploy/monitoring/README.md). The event that matters most is its own:
+   `account.cloud_computer.not_ready`, a person who paid and has no working Cloud Computer. Each
+   Cloud Computer's Host sends a **health report** every 15 minutes, with the credentials its backup
+   report uses. The account keeps only the latest one, and the person sees the same report in that
+   Home's Settings ("What Opensteer can see about this computer"). **What the operator of a Cloud
+   Computer can see:** its release version, each service healthy or not, its disk as a bucket, its
+   last backup and update results, its problem codes with counts and times, and the account's own
+   record of its setup and billing. **What it cannot see through these:** anything the person or an
+   agent did or holds on it, including pages, tasks, messages, files, accounts, sign-ins, names,
+   logs and error text.
+3. **People's own devices and self-hosted Homes: nothing is sent** unless the person turns on
+   "Send problem reports to Opensteer" (off by default, shown with exactly what would be sent).
+   Then the same report goes every 15 minutes, with no account in it, to the account service,
+   which keeps only counts per code and day, or to a self-hoster's own address
+   (`OPENSTEER_PROBLEM_REPORTS_URL`). The setting is a person-view command: no agent can turn it
+   on or off, or ask.
+
+Rule 3 of AGENTS.md (nothing leaves the Home before it is in the Disconnect set) is about effects
+done for a connection, and a report is not one. It is the Home's own, sent on its own timer, never
+for a connection or a Run, and carries nothing a connection produced except counts by code. An
+agent reads problems through `opensteer_state` (area `problems`, for the person's own agents and
+`everything` grants; outside a grant it does not exist), and nothing more: no tool sends a report,
+reads one back, or changes where it goes or what it holds.
+
+Not built yet, and where each would attach. A consent prompt at first run would set the same
+setting, once, after setup. Crash reports from devices (Sentry's protocol, so a self-hoster could
+point them at their own collector) would be a second switch beside it, with the desktop's
+`crashReporter` started with uploads off until the person chooses. A "Report a problem" form would
+send this same report and the person's own words, after showing both, from the Problems group.
+Session recording and product analytics on devices are never to be built.
+
 ## What was measured
 
 - **Two unmodified agents on one Home** (`tests/second-agent.integration.test.ts`). A real Home,

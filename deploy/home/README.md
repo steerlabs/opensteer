@@ -230,6 +230,18 @@ Set `OPENSTEER_HOME_RELEASE_MANIFEST_URL` in `config.env` for scheduled updates
 on a bring-your-own Home, or supply a manifest to `update` directly. The Opensteer
 account can set `releaseManifestUrl` in the managed boot response to schedule updates.
 
+## Problems and reports
+
+The maintenance timer hands the Host what only the machine knows, as fixed values: each service's
+health, the last scheduled backup's result and the last update's result
+(`machine-status.sh`, written as `machine-status.json` in the Host's data volume). The Host shows
+these with its own problems under Settings → General → Problems. It sends nothing unless the
+person turns on "Send problem reports to Opensteer". Then the same report goes every 15 minutes to
+the Opensteer account, or to your own address: set `OPENSTEER_HOME_PROBLEM_REPORTS_URL` in
+`config.env` to an `https://` origin that accepts `POST /v1/problem-reports`. A managed Home (an
+Opensteer Cloud Computer) always sends its health report to the Opensteer account that runs it; see
+[architecture](../../docs/architecture.md#problems-and-reports).
+
 ## Managed release and verification
 
 Generate the standalone cloud-init artifact with
