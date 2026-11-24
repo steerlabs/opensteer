@@ -742,7 +742,7 @@ export interface ThreadTable {
   removedAt: Generated<Date | null>;
   inputQueuePaused: Generated<boolean>;
   inputQueuePausedBy: Generated<UserId | null>;
-  accessMode: Generated<ThreadAccessMode>;
+  accessMode: ThreadAccessMode;
 
   purpose: TaskPurpose;
   id: ThreadId;
