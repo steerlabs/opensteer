@@ -77,6 +77,7 @@ import { installPublishedAppProtocol } from "./app/published-app-protocol.js";
 import { installDesktopAppProtocol, registerDesktopAppScheme } from "./app/app-protocol.js";
 import {
   desktopApplicationName,
+  desktopNativeHelperPlatform,
   readDesktopConfiguration,
   readEmbeddedDesktopRelease,
   type DesktopMode,
@@ -304,6 +305,7 @@ if (acceptLaunch()) {
       app.isPackaged,
       embeddedRelease.application.name,
       process.env.OPENSTEER_DESKTOP_MODE?.trim() === "test" ? "test" : defaultMode(),
+      Boolean(process.env.OPENSTEER_DESKTOP_TRIAL_ROOT?.trim()),
     ),
   );
   app.setAboutPanelOptions({
@@ -368,6 +370,7 @@ async function runDesktop(
     entryArgument: process.argv[1],
     executablePath: process.execPath,
     scheme: new URL(loaded.config.release.oauth.accountCallback).protocol.slice(0, -1),
+    trial: loaded.config.trial !== null,
   });
   const uninstallAppProtocol = installDesktopAppProtocol(
     protocol,
@@ -384,7 +387,7 @@ async function runDesktop(
     preference: await loadDesktopUpdatePreference(loaded.config.dataDirectory, reportEvent),
   });
   const downloads = new DesktopDownloads({
-    directory: () => app.getPath("downloads"),
+    directory: () => loaded.config.trial?.downloads ?? app.getPath("downloads"),
     staging: path.join(loaded.config.dataDirectory, "partial-downloads"),
   });
   shutdown.add({
@@ -547,13 +550,14 @@ async function runDesktop(
         resourcesPath: process.resourcesPath,
       }),
     log: (event, fields) => reportEvent(event, fields),
+    platform: desktopNativeHelperPlatform(loaded.config),
     teamId: desktopComputerUseTeamId(app.isPackaged),
   });
   shutdown.add(computerUseShutdownStep(computerUse));
   // One Opensteer Passwords connection for this desktop. A development build
   // talks only to the development broker, whose vault holds test data.
   const dictation = new DictationService({
-    platform: process.platform,
+    platform: desktopNativeHelperPlatform(loaded.config),
     arch: process.arch,
     osMajor: Number(release().split(".")[0]),
     translated: app.runningUnderARM64Translation,
@@ -587,6 +591,7 @@ async function runDesktop(
         resourcesPath: process.resourcesPath,
       }),
     development: !app.isPackaged,
+    platform: desktopNativeHelperPlatform(loaded.config),
     protocolVersion: passwordsBrokerProtocolVersion,
     log: (event, fields) => reportEvent(event, fields),
   });
@@ -595,7 +600,7 @@ async function runDesktop(
     catalog: deploymentCatalog,
   });
   const passwordsLoginAuthority =
-    process.platform === "darwin"
+    desktopNativeHelperPlatform(loaded.config) === "darwin"
       ? new PasswordsLoginAuthority({
           broker: passwords.broker(),
           ownOrigins: ownOrigins.current,
@@ -662,6 +667,7 @@ async function runDesktop(
     userDataDirectory: app.getPath("userData"),
     accountIssuer: loaded.config.accountUrl,
     extraCertificateAuthorities: loaded.config.extraCertificateAuthorities,
+    agentHome: loaded.config.trial?.agentHome ?? null,
     catalog: deploymentCatalog,
     computerUse: computerUseForSlots,
     credentials: new NativePersonalDeploymentCredentials(protectedStorage, { privateFiles }),
