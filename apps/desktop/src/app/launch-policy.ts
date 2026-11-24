@@ -8,14 +8,35 @@ import { hiddenDesktopLaunchArgument } from "../supervisor/open-at-login.js";
  * TLS keys; Electron honours those switches and its fuses cover only Node's.
  * Refusing every argument the app did not define closes that whole class
  * instead of chasing individual switch names. Development launches are left
- * to the developer.
+ * to the developer, but for one class: a switch that changes how certificates
+ * are checked reaches every network context of the process, the person's
+ * browser profiles and tabs among them, so no launch takes one. A development
+ * launch that needs to trust a stand-in service pins its key on that service's
+ * own session (`electron-service-network.ts`).
  */
+const certificateSwitches = [
+  "--ignore-certificate-errors",
+  "--ignore-certificate-errors-spki-list",
+  "--ignore-urlfetcher-cert-requests",
+  "--allow-insecure-localhost",
+];
 export function assertDesktopLaunch(input: {
   readonly argv: readonly string[];
   readonly callbackScheme: string;
   readonly environment: NodeJS.ProcessEnv;
   readonly packaged: boolean;
 }): void {
+  for (const argument of input.argv.slice(1)) {
+    // Chromium on a Mac and Linux takes a switch with one dash or two, in any case.
+    const name = `--${argument
+      .split("=", 1)[0]!
+      .toLowerCase()
+      .replace(/^-{1,2}/u, "")}`;
+    if (argument.startsWith("-") && certificateSwitches.includes(name))
+      throw new Error(
+        `Opensteer doesn’t accept the launch option ${describeArgument(argument)}, because it would change how certificates are checked in every browser profile.`,
+      );
+  }
   if (!input.packaged) return;
   if (input.environment.SSLKEYLOGFILE !== undefined) {
     throw new Error(

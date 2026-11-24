@@ -9,12 +9,7 @@ import { promisify } from "node:util";
 import { chromium } from "playwright-core";
 import { describe, expect, it, vi } from "vitest";
 import { createId, ModelSelectionSchema, requestOptionDeclines } from "@opensteer/core";
-import {
-  Deferred,
-  type HarnessSession,
-  type HarnessVoiceCall,
-  nativeUserHarnessRuntimeBoundary,
-} from "@opensteer/harness";
+import { Deferred, type HarnessSession, type HarnessVoiceCall } from "@opensteer/harness";
 import { hostCommandPlatform, resolveCommand } from "@opensteer/shared/command";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { CodexHarnessDriver } from "./codex-driver.js";
@@ -236,15 +231,12 @@ describe.skipIf(!qualify).each([
         personalContext: false,
         personLineage: false,
         machineAccessNotice: "No other computers are reachable.",
-        machineAccessPlatform: undefined,
-        machineAccessRelaySocket: undefined,
         modelSelection: ModelSelectionSchema.parse({
           providerId: "openai",
           modelId: "gpt-6.1-terra",
           options: { effort: "low", speed: "priority" },
         }),
         environment,
-        runtimeBoundary: nativeUserHarnessRuntimeBoundary,
         signal: lifetime.signal,
         providerState: {
           kind: "ambient",

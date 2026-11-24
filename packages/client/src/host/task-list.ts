@@ -1,6 +1,7 @@
 import { assignmentTitle, workerAssignment } from "./assignment-presentation.js";
 import {
   requestTitleText,
+  runTerminationUnprovenCode,
   type IconName,
   type MarkColor,
   type WaitingRequest,
@@ -29,6 +30,8 @@ export interface TaskRow {
   readonly icon: IconName | null;
   readonly color: MarkColor | null;
   readonly tone: TaskTone;
+  /** Machine failure code when `tone === "failed"`, e.g. `execution_termination_unproven`. */
+  readonly failureCode?: string | null;
   /** What is happening, in words: what it needs, where it works, why it stopped, what it said. */
   readonly line: string;
   /** Where a working task is acting, as briefly as a person would say it: a site, an app or a phone. */
@@ -301,6 +304,7 @@ function rowOf(
   const { thread } = entry;
   const held = snapshot.threads.find(({ id }) => id === thread.id) ?? thread;
   const tone = thread.pendingRequests > 0 || asks.length > 0 ? "needs-you" : taskTone(thread);
+  const failureCode = entry.failureCode ?? thread.failureCode ?? null;
   const done = thread.doneAt !== null;
   const stopped = tone === "finished" || tone === "failed";
   const unread = isThreadUnread({
@@ -314,6 +318,7 @@ function rowOf(
     icon: held.icon,
     color: held.color,
     tone,
+    ...(failureCode ? { failureCode } : {}),
     line:
       tone === "waiting"
         ? (taskWaitingReason(snapshot, thread.id)?.label ?? "Waiting")
@@ -389,7 +394,9 @@ function taskLine(
     case "waiting":
       return "Waiting";
     case "failed":
-      return entry.failure ?? "Couldn’t finish";
+      return (entry.failureCode ?? entry.thread.failureCode) === runTerminationUnprovenCode
+        ? "Couldn’t confirm it stopped"
+        : (entry.failure ?? "Couldn’t finish");
     case "finished":
       return entry.lastReply ?? "Finished";
   }
@@ -412,14 +419,14 @@ export function taskTime(row: TaskRow, now: number): string | null {
 export function taskRowLabel(row: TaskRow): string {
   const title = row.title;
   const head = row.unread && row.tone !== "needs-you" ? `${title}, unread` : title;
-  const state = stateWord(row.tone);
+  const state = stateWord(row.tone, row.failureCode);
   if (state === null) return `${head}: ${row.line}`;
   return row.line.toLocaleLowerCase() === state.toLocaleLowerCase()
     ? `${head}, ${state}`
     : `${head}, ${state}: ${row.line}`;
 }
 
-function stateWord(tone: TaskTone): string | null {
+function stateWord(tone: TaskTone, failureCode?: string | null): string | null {
   switch (tone) {
     case "needs-you":
       return "needs you";
@@ -429,7 +436,9 @@ function stateWord(tone: TaskTone): string | null {
       // The line already says it.
       return null;
     case "failed":
-      return "couldn’t finish";
+      return failureCode === runTerminationUnprovenCode
+        ? "couldn’t confirm it stopped"
+        : "couldn’t finish";
     case "finished":
       return "finished";
   }
@@ -446,6 +455,7 @@ export function sameTaskRow(left: TaskRow, right: TaskRow): boolean {
     left.icon === right.icon &&
     left.color === right.color &&
     left.tone === right.tone &&
+    (left.failureCode ?? null) === (right.failureCode ?? null) &&
     left.line === right.line &&
     left.place === right.place &&
     left.unread === right.unread &&
@@ -492,7 +502,12 @@ export function taskAttention(snapshot: TaskListSource): readonly TaskAttention[
   });
 }
 export type TaskWaitingReasonKind =
-  "paused-queue" | "other-reader" | "account-preparing" | "computer-offline" | "open-helper";
+  | "paused-queue"
+  | "other-reader"
+  | "account-preparing"
+  | "computer-offline"
+  | "open-helper"
+  | "stop-unconfirmed";
 export interface TaskWaitingReason {
   readonly kind: TaskWaitingReasonKind;
   readonly label: string;
@@ -552,6 +567,7 @@ export function taskWaitingReason(
   const preparing = threadStartHold({
     thread: {
       ...thread,
+      runStartHoldReason: thread.runStartHoldReason ?? shellRow?.runStartHoldReason ?? null,
       harnessLabel:
         thread.harnessLabel ||
         snapshot.harnesses.find(({ id }) => id === thread.harnessInstanceId)?.name ||
@@ -560,7 +576,15 @@ export function taskWaitingReason(
     runQueue: own,
     environments: snapshot.environments,
   });
-  if (preparing) return { kind: "account-preparing", label: preparing };
+  if (preparing) {
+    const unconfirmed =
+      (thread.runStartHoldReason ?? shellRow?.runStartHoldReason) === "previous-stop-unconfirmed" ||
+      own.some(
+        (entry) =>
+          entry.threadId === threadId && entry.startHoldReason === "previous-stop-unconfirmed",
+      );
+    return { kind: unconfirmed ? "stop-unconfirmed" : "account-preparing", label: preparing };
+  }
   const environment = snapshot.environments.find(
     (environment) => environment.id === thread.environmentId,
   );
@@ -658,11 +682,14 @@ export function quietSeenScope(
     : null;
 }
 
-function queuedRun(thread: Pick<HostSnapshot["threads"][number], "id" | "askedAt">) {
+function queuedRun(
+  thread: Pick<HostSnapshot["threads"][number], "id" | "askedAt" | "runStartHoldReason">,
+) {
   return {
     id: `queued:${thread.id}`,
     threadId: thread.id,
     status: "queued" as const,
+    ...(thread.runStartHoldReason ? { startHoldReason: thread.runStartHoldReason } : {}),
     createdAt: thread.askedAt,
     runOrdinal: 0,
   };

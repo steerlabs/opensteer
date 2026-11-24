@@ -46,7 +46,7 @@ describe("a task a connected agent works itself", () => {
     expect(activity.textContent).toContain("Connected agent · https://claude.ai");
     expect(activity.textContent).toContain("Listed tabs in Travel on Studio Mac");
     expect(activity.textContent).toContain("Reading only");
-    expect(activity.textContent).toContain("Allowed by Auto");
+    expect(activity.textContent).toContain("Allowed by you");
     expect(activity.textContent).toContain("Uncertain");
     expect(activity.textContent).toContain("can’t say whether this happened");
     const dispatch = vi.spyOn(client, "dispatch");
@@ -294,9 +294,9 @@ describe("who a connected agent is", () => {
     return container;
   }
 
-  it("names a verified pair, a self-given name as self-given, and an app on this computer", async () => {
+  it("names a verified agent, a self-given name as self-given, and an app on this computer", async () => {
     expect((await agentPage(6)).querySelector(".agent-who--verified")?.textContent).toContain(
-      "Verified: “Errand via AgentPay”",
+      "Verified: “AgentPay”",
     );
     act(() => page?.unmount());
     const grok = await agentPage(1);

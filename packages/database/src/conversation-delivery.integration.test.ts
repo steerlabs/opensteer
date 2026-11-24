@@ -626,7 +626,6 @@ integration.sequential("conversation delivery", () => {
             ],
 
             maxConcurrentRuns: 4,
-            providerStateModes: ["isolated"],
           },
         },
       };

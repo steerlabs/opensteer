@@ -30,6 +30,8 @@ export function transcriptRuns(database: Kysely<DatabaseSchema>) {
       "completedAt",
       "terminalReplyMessageId",
       "failure",
+      "interruptedCause",
+      "stopConfirmedAt",
       "providerRetry",
       "maintenance",
       "phase",
@@ -57,10 +59,20 @@ export function describeTranscriptRun(
   const view = {
     status,
     ...(run.completedAt ? { endedAt: run.completedAt.toISOString() } : {}),
+    ...(run.stopConfirmedAt ? { stopConfirmedAt: run.stopConfirmedAt.toISOString() } : {}),
+    ...(run.interruptedCause ? { interruptedCause: run.interruptedCause } : {}),
     ...(run.terminalReplyMessageId ? { replyMessageId: run.terminalReplyMessageId } : {}),
     ...(usage ? { usage } : {}),
     ...(run.failure
-      ? { failure: { ...run.failure, message: utf8Prefix(run.failure.message, 512) } }
+      ? {
+          failure: {
+            ...run.failure,
+            message: utf8Prefix(run.failure.message, 512),
+            ...(run.failure.ownerMessage !== undefined
+              ? { ownerMessage: utf8Prefix(run.failure.ownerMessage, 512) }
+              : {}),
+          },
+        }
       : {}),
     ...(active && !run.finishIntent && run.providerRetry?.status === "retrying"
       ? {
@@ -72,7 +84,12 @@ export function describeTranscriptRun(
       : {}),
   };
   while (utf8ByteLength(JSON.stringify(view)) > 1_920) {
-    if (view.failure?.message) {
+    if (view.failure?.ownerMessage) {
+      view.failure.ownerMessage = utf8Prefix(
+        view.failure.ownerMessage,
+        Math.floor(utf8ByteLength(view.failure.ownerMessage) / 2),
+      );
+    } else if (view.failure?.message) {
       view.failure.message = utf8Prefix(
         view.failure.message,
         Math.floor(utf8ByteLength(view.failure.message) / 2),

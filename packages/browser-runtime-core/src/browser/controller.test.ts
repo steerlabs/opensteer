@@ -410,6 +410,54 @@ describe("BrowserController", () => {
     }
   });
 
+  it("holds a viewer joining mid-wake until wake finishes instead of casting about:blank", async () => {
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+    await controller.start();
+    const id = ledger.snapshot()[0]!.id;
+    const navStarted = Promise.withResolvers<void>();
+    const finishNav = Promise.withResolvers<void>();
+    let wokenPage: FakePage | null = null;
+    try {
+      await ledger.sleep(id, () => null);
+      const createPage = context.createPage.bind(context);
+      vi.spyOn(context, "createPage").mockImplementationOnce(async (...args) => {
+        const next = (await createPage(...args)) as FakePage;
+        wokenPage = next;
+        next.cdpSession.responses.set("Page.navigate", async (params?: Record<string, unknown>) => {
+          navStarted.resolve();
+          await finishNav.promise;
+          next.navigate(String(params?.url ?? "https://example.test/"), "Example");
+          return { frameId: await next.targetId(), loaderId: next.loaderId };
+        });
+        return next;
+      });
+      const waking = ledger.wake(id);
+      await navStarted.promise;
+      // Mid-wake: record.live exists (binding is non-null) with surface.state === "suspended".
+      expect(ledger.binding(id)?.surface.state).toBe("suspended");
+      expect(ledger.waking(id)).not.toBeNull();
+      let subscribedSettled = false;
+      const subscribed = controller.handle({ type: "stream.subscribe", surfaceId: id }).then(() => {
+        subscribedSettled = true;
+      });
+      for (let turn = 0; turn < 10; turn += 1) await flushMicrotasks();
+      expect(subscribedSettled).toBe(false);
+      expect(commandsNamed("Page.startScreencast", wokenPage!)).toHaveLength(0);
+      finishNav.resolve();
+      await waking;
+      await subscribed;
+      expect(subscribedSettled).toBe(true);
+      await vi.waitFor(() =>
+        expect(commandsNamed("Page.startScreencast", wokenPage!)).toHaveLength(1),
+      );
+    } finally {
+      finishNav.resolve();
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
   it("waits for the page's load on every try of an agent's resume, and ends the wait with its operation (V3)", async () => {
     const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
     await controller.start();
@@ -2914,12 +2962,17 @@ describe("BrowserController", () => {
     await ledger.close();
   });
 
+  // The reader's finding 1 on 5ebc2cbbd: the person turned to B and straight back to A while A's
+  // start was being prepared, and A stayed blank until an unrelated event. This test used to need
+  // a capture change to see A pictured again. The tab in view is pictured with nothing else
+  // happening, and a flip the follow view never saw costs no restart.
   it.each([false, true])(
-    "restarts after A→B→A cancels a cast attempt (startup pending: %s)",
+    "pictures A after A→B→A with nothing else happening, and restarts it once for a new capture (startup pending: %s)",
     async (pending) => {
       let capture = { width: 1280, height: 720, rasterScale: 1, revision: 1 };
       const listeners = new Set<() => void>();
       const attempts: AbortSignal[] = [];
+      const painted = Promise.withResolvers<void>();
       Object.assign(page, {
         capture: {
           read: () => capture,
@@ -2931,12 +2984,17 @@ describe("BrowserController", () => {
         applyGeometry: async () => undefined,
         settleRendering: async (signal: AbortSignal) => {
           attempts.push(signal);
+          // A's first paint comes only when the test says so, unless the wait is given up.
           if (pending && attempts.length === 1)
-            await new Promise<void>((resolve) =>
-              signal.addEventListener("abort", () => resolve(), { once: true }),
-            );
+            await Promise.race([
+              painted.promise,
+              new Promise<void>((resolve) =>
+                signal.addEventListener("abort", () => resolve(), { once: true }),
+              ),
+            ]);
         },
       });
+      const starts = () => commandsNamed("Page.startScreencast", page).length;
       const controller = createController();
       await controller.start();
       const first = activeSurfaceId();
@@ -2944,18 +3002,31 @@ describe("BrowserController", () => {
       await flushMicrotasks();
       const subscription = controller.handle({ type: "stream.subscribe", captureRegion: true });
       await flushMicrotasks();
-      const starts = commandsNamed("Page.startScreencast", page).length;
       await Promise.all([ledger.activate(second.id), ledger.activate(first)]);
+      await flushMicrotasks();
+      if (pending) {
+        // A's paint is still waited for: the person never left it, as the follow view reads it.
+        expect(attempts[0]?.aborted).toBe(false);
+        expect(starts()).toBe(0);
+        painted.resolve();
+      }
       await subscription;
       await flushMicrotasks();
-      if (pending) expect(attempts[0]?.aborted).toBe(true);
+      expect(starts()).toBe(1);
+      page.cdpSession.emit("Page.screencastFrame", {
+        sessionId: 1,
+        data: jpeg(1280, 720).toString("base64"),
+        metadata: { deviceWidth: 1280, deviceHeight: 720 },
+      });
+      await flushMicrotasks();
+      expect(sink.frames.at(-1)?.header.capture).toEqual({ width: 1280, height: 720, revision: 1 });
       capture = { width: 800, height: 600, rasterScale: 1, revision: 2 };
       for (const listener of listeners) listener();
       await flushMicrotasks();
-      expect(commandsNamed("Page.startScreencast", page)).toHaveLength(starts + 1);
+      expect(starts()).toBe(2);
       expect(attempts.at(-1)?.aborted).toBe(false);
       page.cdpSession.emit("Page.screencastFrame", {
-        sessionId: 1,
+        sessionId: 2,
         data: jpeg(800, 600).toString("base64"),
         metadata: { deviceWidth: 800, deviceHeight: 600 },
       });
@@ -2965,7 +3036,7 @@ describe("BrowserController", () => {
       page.cdpSession.emit("Page.javascriptDialogClosed", {});
       await flushMicrotasks();
       await controller.handle({ type: "viewport.set", surfaceId: first, width: 1300, height: 800 });
-      expect(commandsNamed("Page.startScreencast", page).length).toBeGreaterThan(starts + 1);
+      expect(starts()).toBeGreaterThan(2);
       await controller.close();
       await ledger.close();
     },
@@ -3170,7 +3241,8 @@ describe("BrowserController", () => {
         expect(ledger.binding(surfaceId)?.surface.loading).toBe(loading);
         expect(retainRendering).toHaveBeenCalledTimes(3);
         expect(holds).toBe(1);
-        expect(vi.getTimerCount()).toBe(0);
+        // The paint backoff timer is gone; only the running cast's first-frame timer remains.
+        expect(vi.getTimerCount()).toBe(1);
         page.cdpSession.emit("Page.screencastFrame", {
           sessionId: 1,
           data: jpeg(1280, 720).toString("base64"),
@@ -3178,6 +3250,7 @@ describe("BrowserController", () => {
         });
         await flushMicrotasks();
         expect(sink.frames).toHaveLength(1);
+        expect(vi.getTimerCount()).toBe(0);
         await controller.handle({ type: "stream.unsubscribe" });
         expect(holds).toBe(0);
       } finally {
@@ -3788,6 +3861,129 @@ describe("BrowserController", () => {
       for (let turn = 0; turn < 10; turn += 1) await flushMicrotasks();
       expect(sink.messages.filter((message) => message.type === "browser.error")).toEqual([]);
     } finally {
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it("closes an agent's tab or a person's tab without waiting on a held size write or drag cancel (X3)", async () => {
+    const controller = createController();
+    const heldSize = gate({ label: "agent-tab held size", deadlineMs: 2_000 });
+    const heldPersonSize = gate({ label: "person-tab held size", deadlineMs: 2_000 });
+    const heldDragCancel = gate({ label: "person-tab held drag cancel", deadlineMs: 2_000 });
+    let pendingAgentFollow1: Promise<void> | undefined;
+    let pendingAgentFollow2: Promise<void> | undefined;
+    let pendingPersonFollow: Promise<void> | undefined;
+    try {
+      await controller.start();
+
+      // 1. Agent opens a tab; view starts a size write that Chromium holds; agent closes the tab.
+      const agentPage = new FakePage({ title: "Agent tab", url: "https://example.test/agent" });
+      vi.spyOn(context, "createPage").mockImplementationOnce(async () => {
+        context.addPage(agentPage);
+        return agentPage;
+      });
+      const createId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId: createId,
+        command: {
+          method: "Target.createTarget",
+          parameters: { url: "https://example.test/agent" },
+        },
+      });
+      const created = sink.messages.find(
+        (message) => message.type === "cdp.result" && message.requestId === createId,
+      );
+      if (created?.type !== "cdp.result") throw new Error("Target.createTarget failed");
+      const agentTargetId = String((created.result as { targetId: string }).targetId);
+      const agentSurfaceId = ledger.surfaceIdForTarget(agentTargetId)!;
+      expect(agentSurfaceId).toBeDefined();
+
+      agentPage.cdpSession.responses.set("Emulation.setDeviceMetricsOverride", () =>
+        heldSize.enter(),
+      );
+      pendingAgentFollow1 = controller.handle({
+        type: "viewport.follow",
+        surfaceId: agentSurfaceId,
+        width: 900,
+        height: 650,
+      });
+      await heldSize.entered;
+      pendingAgentFollow2 = controller.handle({
+        type: "viewport.follow",
+        surfaceId: agentSurfaceId,
+        width: 880,
+        height: 640,
+      });
+
+      const closeId = randomUUID();
+      await withTimeout(
+        controller.handle({
+          type: "cdp.command",
+          requestId: closeId,
+          command: { method: "Target.closeTarget", parameters: { targetId: agentTargetId } },
+        }),
+        500,
+        { timeoutError: () => new Error("Target.closeTarget waited on held viewport.follow") },
+      );
+      expect(
+        sink.messages.find(
+          (message) => message.type === "cdp.result" && message.requestId === closeId,
+        ),
+      ).toMatchObject({ type: "cdp.result", result: { success: true } });
+      expect(ledger.snapshot().map((surface) => surface.id)).not.toContain(agentSurfaceId);
+
+      // 2. Person tab has a held pointer drag and an in-flight size write; person closes it.
+      const personPage = new FakePage({ title: "Person tab", url: "https://example.test/person" });
+      vi.spyOn(context, "createPage").mockImplementationOnce(async () => {
+        context.addPage(personPage);
+        return personPage;
+      });
+      await controller.handle({ type: "surface.open", url: "https://example.test/person" });
+      const personSurfaceId = ledger.surfaceIdForTarget(await personPage.targetId())!;
+      expect(personSurfaceId).toBeDefined();
+      const personViewport = ledger.viewportOf(personSurfaceId)!;
+      await controller.handle({
+        type: "input.pointer",
+        action: "down",
+        button: "left",
+        surfaceId: personSurfaceId,
+        viewportWidth: personViewport.width,
+        viewportHeight: personViewport.height,
+        x: 0.25,
+        y: 0.25,
+        producerId: "00000000-0000-4000-8000-000000000001",
+      });
+      personPage.cdpSession.responses.set("Input.cancelDragging", () => heldDragCancel.enter());
+      personPage.cdpSession.responses.set("Emulation.setDeviceMetricsOverride", () =>
+        heldPersonSize.enter(),
+      );
+      pendingPersonFollow = controller.handle({
+        type: "viewport.follow",
+        surfaceId: personSurfaceId,
+        width: 840,
+        height: 600,
+      });
+      await heldDragCancel.entered;
+
+      await withTimeout(
+        controller.handle({ type: "surface.close", surfaceId: personSurfaceId }),
+        500,
+        { timeoutError: () => new Error("surface.close waited on held size/drag cleanup") },
+      );
+      expect(ledger.snapshot().map((surface) => surface.id)).not.toContain(personSurfaceId);
+
+      heldSize.release();
+      heldDragCancel.release();
+      heldPersonSize.release();
+      await Promise.all([pendingAgentFollow1, pendingAgentFollow2, pendingPersonFollow]);
+      expect(sink.messages.filter((message) => message.type === "browser.error")).toEqual([]);
+    } finally {
+      heldSize.release();
+      heldDragCancel.release();
+      heldPersonSize.release();
+      await Promise.allSettled([pendingAgentFollow1, pendingAgentFollow2, pendingPersonFollow]);
       await controller.close();
       await ledger.close();
     }

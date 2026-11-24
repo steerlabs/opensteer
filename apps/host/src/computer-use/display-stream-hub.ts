@@ -72,6 +72,7 @@ const displayReplayBudgetMs = 500;
  */
 const macUnmeasuredReplayBytes = 512 * 1_024;
 const displayKeyframeRetryMs = 1_500;
+const displayResumeTimeoutMs = 2_000;
 /** How often a Mac viewer's path is re-measured while it sits empty. */
 const displayRoundTripPingMs = 2_000;
 /** How long after a viewer's input it still counts as driving the window. */
@@ -216,6 +217,7 @@ interface Stream {
   cacheBytes: number;
   refreshAt: number;
   refreshPendingAt: number | null;
+  resumeDeadline: number | null;
   stopAt: number | null;
 }
 export interface DisplayStreamHubOptions {
@@ -486,6 +488,7 @@ export class DisplayStreamHub {
         cacheBytes: 0,
         refreshAt: -Infinity,
         refreshPendingAt: null,
+        resumeDeadline: null,
         stopAt: null,
         holder: null,
         holderSequence: -1,
@@ -601,7 +604,8 @@ export class DisplayStreamHub {
     } else this.#demand(attached);
     if (!joining || !this.#replay(attached, viewer)) {
       this.#viewerState(attached, viewer, attached.state);
-      if (joining && attached.state.state === "live") this.#refresh(attached);
+      if (joining && (attached.state.state === "live" || attached.state.state === "warming"))
+        this.#refresh(attached);
     }
     const close = (trigger = "detach", code?: number) => {
       if (!attached.viewers.delete(viewer)) return;
@@ -684,7 +688,9 @@ export class DisplayStreamHub {
         ) {
           throw new Error("Invalid display sequence or stream");
         }
-        if (stream.target && !stream.viewers.size) {
+        if (!stream.viewers.size) {
+          stream.sequence = header.sequence;
+          stream.mediaGeneration = header.generation;
           this.#json(socket, { type: "display.ack", sequence: header.sequence });
           return;
         }
@@ -703,6 +709,7 @@ export class DisplayStreamHub {
         // arrive first. A protected generation's media is never published; a newer
         // generation's is, and its first frame makes the stream live.
         if (header.generation === stream.generation && header.generation > stream.withheldThrough) {
+          stream.resumeDeadline = null;
           if (header.key && !stream.firstKey) {
             this.#log(stream, "first-frame");
             stream.firstKey = true;
@@ -913,6 +920,18 @@ export class DisplayStreamHub {
       event.state === "failed"
     )
       stream.withheldThrough = Math.max(stream.withheldThrough, event.generation);
+    if (
+      (event.state !== "protected" && event.state !== "screen-off") ||
+      (event.state === "protected" && event.reason !== "paused") ||
+      event.state === "screen-off"
+    ) {
+      if (
+        event.generation > stream.withheldThrough ||
+        (event.state === "protected" && event.reason !== "paused") ||
+        event.state === "screen-off"
+      )
+        stream.resumeDeadline = null;
+    }
     const waking = event.state === "live" && stream.state.state === "screen-off";
     const becameLive = event.state === "live" && stream.state.state !== "live";
     stream.generation = event.generation;
@@ -1655,6 +1674,12 @@ export class DisplayStreamHub {
         this.#end(stream, displayViewerCloseCodes.tryAgain, "Display start timed out");
         continue;
       }
+      if (stream.resumeDeadline !== null && this.#now() >= stream.resumeDeadline) {
+        if (stream.viewers.size)
+          this.#end(stream, displayViewerCloseCodes.tryAgain, "Display resume timed out");
+        else stream.resumeDeadline = null;
+        continue;
+      }
       if (stream.stopAt !== null && this.#now() >= stream.stopAt) {
         this.#end(stream, displayViewerCloseCodes.ended, "Display demand ended");
         continue;
@@ -1672,7 +1697,7 @@ export class DisplayStreamHub {
         }
       }
       if (
-        stream.state.state === "live" &&
+        (stream.state.state === "live" || stream.state.state === "warming") &&
         stream.refreshPendingAt !== null &&
         ([...stream.viewers].some((viewer) => viewer.waiting) ||
           (!stream.target && this.#cachedDeltaBytes(stream) > displayGopRefreshBytes)) &&
@@ -1782,9 +1807,28 @@ export class DisplayStreamHub {
         for (const old of warming.slice(0, Math.max(0, warming.length - macDisplayMaxWarmWindows)))
           this.#end(old, displayViewerCloseCodes.ended, "Warm capacity eviction");
       } else {
+        // Fence pre-disconnect generations so an in-flight frame cannot leak
+        // past a delayed privacy shield on rejoin, while reporting "warming"
+        // (never a synthetic privacy shield) until a new generation arrives.
         stream.withheldThrough = Math.max(stream.withheldThrough, stream.generation);
-        this.#publishState(stream, { ...stream.state, state: "protected" });
+        stream.resumeDeadline = null;
+        if (stream.state.state === "live" || stream.state.state === "starting")
+          this.#publishState(stream, {
+            type: "display.state",
+            state: "warming",
+            generation: stream.generation,
+            width: stream.state.width,
+            height: stream.state.height,
+          });
       }
+    } else if (
+      !stream.target &&
+      stream.generation > 0 &&
+      stream.withheldThrough >= stream.generation &&
+      (stream.state.state === "warming" ||
+        (stream.state.state === "protected" && stream.state.reason === "paused"))
+    ) {
+      stream.resumeDeadline ??= this.#now() + displayResumeTimeoutMs;
     }
     this.#send(stream, {
       ...stream.fence,

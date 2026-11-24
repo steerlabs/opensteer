@@ -60,10 +60,16 @@ export class BrowserLocalProfiles {
     runnerId: RunnerId,
     target: BrowserRuntimeTarget,
     bind = true,
+    /** A pooled reattach's step: the lookup ends with it, and nothing is bound after. */
+    signal?: AbortSignal,
   ): Promise<Extract<BrowserAttachTicketIdentity, { kind: "profile-local" }>> {
+    signal?.throwIfAborted();
     this.options.beforeProfileOpen?.(runnerId);
     if (!target.localProfileStorage) refuse("Update this computer to open browser profiles.");
-    let storage = await this.storage(profileId);
+    let storage = await (signal
+      ? abortable(this.storage(profileId), signal)
+      : this.storage(profileId));
+    signal?.throwIfAborted();
     if (storage.kind === "unbound" && bind)
       storage = await this.options.repository.bindBrowserProfile({
         version: 1,
@@ -126,4 +132,23 @@ export class BrowserLocalProfiles {
 }
 function refuse(message: string): never {
   throw new OpensteerError({ code: "conflict", message });
+}
+
+/** Ends the wait when the signal fires; the work itself is a read and changes nothing. */
+function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason ?? new Error("The operation was aborted."));
+    if (signal.aborted) return abort();
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
 }

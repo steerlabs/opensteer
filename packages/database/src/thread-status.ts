@@ -190,7 +190,10 @@ export async function projectThreadState(
         (eb) =>
           eb
             .selectFrom("runs")
-            .select("runs.status as activeStatus")
+            .select([
+              "runs.status as activeStatus",
+              "runs.startHoldReason as activeStartHoldReason",
+            ])
             .where("runs.threadId", "=", threadId)
             .where("runs.maintenance", "is", null)
             .where("runs.status", "in", nonTerminalRunStatuses)
@@ -226,9 +229,12 @@ export async function projectThreadState(
         )`.as("agentSession"),
         "threads.status",
         "threads.inputQueuePaused",
+        "threads.failureCode",
         "threads.failurePreview",
+        "threads.runStartHoldReason",
         "threads.latestRunCompletedAt",
         "active.activeStatus",
+        "active.activeStartHoldReason",
         "last.lastStatus",
         "last.lastMaintenance",
         "last.lastFailure",
@@ -238,7 +244,9 @@ export async function projectThreadState(
       .executeTakeFirstOrThrow();
     const before = Number(row.unread ?? false);
     const thread = row;
-    const active = row.activeStatus ? { status: row.activeStatus } : undefined;
+    const active = row.activeStatus
+      ? { status: row.activeStatus, startHoldReason: row.activeStartHoldReason }
+      : undefined;
     const last = row.lastStatus
       ? { status: row.lastStatus, maintenance: row.lastMaintenance, failure: row.lastFailure }
       : undefined;
@@ -253,15 +261,26 @@ export async function projectThreadState(
             agentSession: row.agentSession as "active" | "waiting" | null,
           });
     const failure = last?.failure;
+    const failureCode = failed && failure ? failure.code : null;
     const failurePreview =
-      failed && failure ? plainTextExcerpt(failure.message, taskLineMaxLength) : null;
-    const changed = status !== thread.status || failurePreview !== thread.failurePreview;
+      failed && failure
+        ? plainTextExcerpt(failure.ownerMessage ?? failure.message, taskLineMaxLength)
+        : null;
+    const runStartHoldReason =
+      active?.status === "queued" ? (active.startHoldReason ?? null) : null;
+    const changed =
+      status !== thread.status ||
+      failureCode !== thread.failureCode ||
+      failurePreview !== thread.failurePreview ||
+      runStartHoldReason !== thread.runStartHoldReason;
     if (changed || force) {
       await tx
         .updateTable("threads")
         .set({
           status,
+          failureCode,
           failurePreview,
+          runStartHoldReason,
           ...(last?.maintenance ? {} : { updatedAt }),
         })
         .where("id", "=", threadId)

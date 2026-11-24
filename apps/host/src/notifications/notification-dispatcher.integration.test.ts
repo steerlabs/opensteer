@@ -15,7 +15,7 @@ import {
   NotificationStateStore,
   NotificationStore,
 } from "@opensteer/database";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { startVerticalStack, type VerticalStack } from "../agents/vertical-stack.test-support.js";
@@ -71,7 +71,6 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
         );
         return registry;
       },
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
     });
     const database = stack.host.store.database;
     const owner = await database

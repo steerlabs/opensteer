@@ -426,30 +426,30 @@ const launchProof = `
   }
   require 'Agent home working directory' test "$(pwd -P)" = /workspaces
   require 'read Agent home input' test "$(cat home-proof-input)" = agent-home
-  require 'mask Runner identity' test ! -r /var/lib/opensteer/identity.json
-  for file in main_token environment_id browser_token; do
-    require "mask Runner secret $file" test ! -r "/var/lib/opensteer/.secrets/$file"
-  done
-  runner_pid=$(cat home-proof-runner-pid)
-  require 'prevent access through Runner proc root' test ! -r "/proc/$runner_pid/root/var/lib/opensteer/identity.json"
-  require 'mask Runner process environment' test ! -r "/proc/$runner_pid/environ"
+  require 'run as the Runner user' test "$(id -u)" = 10001
+  require 'engine home is the Runner user home' test "$HOME" = /home/opensteer
   require 'browser harness executable' test -x "$OPENSTEER_BROWSER_HARNESS"
-  require 'mask another profile credential' test ! -r /var/lib/opensteer/private/harness-state/harness-profiles/home-proof-other/provider-home/auth.json
-  printf '%s' confined > home-proof-result
+  printf '%s' launched > home-proof-result
 `;
 
-const verifyHarnessLaunch = `function verifyHarnessLaunch() {
+// One shared app-server serves every conversation of the account, so its own
+// folder and environment are not the conversation's: Codex runs a
+// conversation's commands in the folder the driver opened it with and with the
+// environment its shell policy sets, and so does the proof.
+const verifyHarnessLaunch = `let proofCwd;
+let proofEnv;
+function verifyHarnessLaunch() {
   const home = process.env.CODEX_HOME;
   if (!home?.startsWith("/var/lib/opensteer/private/harness-state/harness-profiles/")) {
     throw new Error("The test engine did not receive its isolated provider home");
   }
   writeFileSync(home + "/auth.json", '{"homeProof":"synthetic"}', { mode: 0o600 });
   writeFileSync(home + "/sessions/home-proof-state", "synthetic engine state", { mode: 0o600 });
-  const proof = launchProofShell("/bin/sh", ["-ec", launchProof], { encoding: "utf8" });
+  const proof = launchProofShell("/bin/sh", ["-ec", launchProof], { cwd: proofCwd, env: proofEnv, encoding: "utf8" });
   if (proof.status !== 0) {
     const reason = proof.stderr?.trim() || proof.error?.message || \`exit \${proof.status}\`;
     writeFileSync("/workspaces/home-proof-result", \`failed: \${reason}\`);
-    throw new Error(\`Container harness confinement or Agent home failed: \${reason}\`);
+    throw new Error(\`Container engine launch or Agent home failed: \${reason}\`);
   }
 }`;
 
@@ -462,8 +462,7 @@ function assertEngineState() {
     `
     state=/var/lib/opensteer/private/harness-state
     test "$(cat "$state/harness-profiles/$1/provider-home/auth.json")" = '{"homeProof":"synthetic"}'
-    test "$(cat "$state/harness-stores/codex/store/sessions/home-proof-state")" = 'synthetic engine state'
-    test "$(cat "$state/harness-profiles/home-proof-other/provider-home/auth.json")" = synthetic-other
+    test "$(cat /home/opensteer/.codex/sessions/home-proof-state)" = 'synthetic engine state'
   `,
     "proof",
     proofHarnessId,
@@ -1151,11 +1150,6 @@ async function managedProof(directory, shipped) {
   const feedUrl = `https://${feedAddress}:${feedPort}/manifest.json`;
   let feedAddressAdded = false;
   let feedServerAttempted = false;
-  const work = {
-    organizationId: `org_${randomUUID()}`,
-    organizationName: "Fixture's Work Home",
-    assignmentId: `was_${randomUUID()}`,
-  };
   const unit = managedProject;
   let bootRequests = 0;
   let completeRequests = 0;
@@ -1190,7 +1184,6 @@ async function managedProof(directory, shipped) {
           ipv6Enabled: false,
           release,
           releaseManifestUrl: feedUrl,
-          work,
           backup: {
             endpoint: backupFixture.endpoint,
             bucket: backupFixture.bucket,
@@ -1334,7 +1327,6 @@ async function managedProof(directory, shipped) {
         hostKeyFingerprint: hostKeyFingerprint(discovered.publicKey.spki),
       },
       claim: { cloudComputerId, generation: managedHome.generation },
-      work,
       owner,
       link: {
         generation: linkGeneration,
@@ -1442,12 +1434,6 @@ async function managedProof(directory, shipped) {
     assert.equal(bootRequests, 2);
     assert.equal(completeRequests, 2);
     vm(`test -e /etc/systemd/system/${unit}-update.timer`, { managed: true });
-    assert.deepEqual(
-      JSON.parse(
-        docker(["exec", container("host", true), "printenv", "OPENSTEER_MANAGED_HOME_WORK_JSON"]),
-      ),
-      work,
-    );
     for (const [service, image] of Object.entries(release.images)) {
       assert.equal(
         docker(["inspect", "--format", "{{.Config.Image}}", container(service, true)]),
@@ -1784,10 +1770,15 @@ try {
       readFileSync(resolve(fixtures, captureFile)),
     );
     assert.match(original, /case "turn\/start":/u);
+    assert.match(original, /case "thread\/start": \{/u);
     writeFileSync(
       resolve(fixtureDirectory, "engine.mjs"),
       `import { spawnSync as launchProofShell } from 'node:child_process';\n${verifyHarnessLaunch}\nconst launchProof = ${JSON.stringify(launchProof)};\n${original
         .replace("createRequire(import.meta.url)", 'createRequire("/app/package.json")')
+        .replace(
+          'case "thread/start": {',
+          'case "thread/start": {\n      if (!message.params.ephemeral) { proofCwd = message.params.cwd; proofEnv = { ...process.env, ...message.params.config?.["shell_environment_policy.set"] }; }',
+        )
         .replace(
           'case "turn/start":',
           'case "turn/start":\n      if (!ephemeralThreads.has(message.params.threadId)) verifyHarnessLaunch();',
@@ -1975,7 +1966,7 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
     Boolean(discovery),
   );
   await check(
-    "a sandboxed Codex can write its profile and store, use Agent home, and cannot read another profile or Runner credentials",
+    "Codex runs as the Runner user in Agent home and keeps its account home and conversations",
     async () => {
       docker([
         "exec",
@@ -1983,14 +1974,8 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
         "sh",
         "-ec",
         `
-        test -r /var/lib/opensteer/identity.json
-        test -r /var/lib/opensteer/.secrets/main_token
         umask 077
-        other=/var/lib/opensteer/private/harness-state/harness-profiles/home-proof-other/provider-home
-        mkdir -p "$other"
-        printf '%s' synthetic-other > "$other/auth.json"
         printf '%s' ${quote("agent-home")} > /workspaces/home-proof-input
-        node -p "require('/var/lib/opensteer/readiness/connected.json').pid" > /workspaces/home-proof-runner-pid
       `,
       ]);
       const { harness } = await dispatch(api, ownerCookie, {
@@ -2047,7 +2032,7 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
         await dispatch(api, ownerCookie, {
           type: "thread.sendMessage",
           threadId: thread.id,
-          content: [{ type: "text", text: "Run the Home confinement fixture." }],
+          content: [{ type: "text", text: "Run the Home launch fixture." }],
         });
         const exit = await proof;
         if (exit[0] !== 0) {
@@ -2065,10 +2050,10 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
           assert.deepEqual(
             exit,
             [0, null],
-            ["No result from the sandboxed shell", ...details].join("\n"),
+            ["No result from the engine's shell", ...details].join("\n"),
           );
         }
-        assert.equal(output.trim(), "confined");
+        assert.equal(output.trim(), "launched");
         proofThreadId = thread.id;
         proofHarnessId = harness.id;
         assertEngineState();

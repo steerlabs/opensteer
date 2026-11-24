@@ -176,8 +176,13 @@ describe("one connected agent on the phone", () => {
       await open(connection.id, client);
       expect(row("withdrawn", "withdrawn").label).toMatch(/^No longer verified since /u);
       // Its name is the title; the who rows add only where its access goes.
-      expect(section("who")?.rows.map(({ label }) => label)).toEqual([
-        "Holds the access: “ChatGPT” · https://chatgpt.com",
+      // What the origin is (outside name quoted), then the origin, which the row draws as an address.
+      expect(section("who")?.rows).toEqual([
+        expect.objectContaining({
+          addressIn: "detail",
+          detail: "https://chatgpt.com",
+          label: "Holds the access: “ChatGPT”",
+        }),
       ]);
       expect(section("withdrawn")?.footer?.text).toBe("Check its last action or disconnect it.");
       expect(readAsDrawn(row("withdrawn", "disconnect").label)).toBe("Disconnect “ChatGPT”");
@@ -219,16 +224,15 @@ describe("one connected agent on the phone", () => {
     ]);
     expect(row("tasks", "tasks")).toMatchObject({ value: true });
     expect(row("mode", "auto")).toMatchObject({ selected: true });
-    expect(row("activity", "unavailable").label).toBe(
-      "This Opensteer doesn’t keep a list of what connected agents did yet.",
-    );
+    // Its Recent activity is what the Home reports for it (connections.activity): nothing yet.
+    expect(row("activity", "empty").label).toBe("Nothing yet.");
     expect(
       section("about")?.rows.map((candidate) => [
         candidate.label,
         "detail" in candidate ? candidate.detail : null,
       ]),
     ).toEqual([
-      ["Calls itself", "“TravelBot Agent”"],
+      ["Calls itself", "TravelBot Agent"],
       ["Address it uses", "https://trips.example"],
       // The day it was added, never read as where it stands now.
       ["Added", expect.any(String)],

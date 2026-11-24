@@ -66,7 +66,7 @@ if [[ -n $managed ]]; then
       rm -f -- "$token_path"
       exit 0
     fi
-    for file in install.sh managed-boot.sh common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml; do
+    for file in install.sh managed-boot.sh common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml compose.browser-pool.yaml; do
       install -m 0700 "$source_dir/$file" "$boot/$file"
     done
     install -m 0600 "$managed" "$boot/spec.json.new"
@@ -238,9 +238,8 @@ else
   if [[ -n $managed ]]; then
     if jq -e '.ipv6Enabled' "$result" >/dev/null; then touch "$home_dir/ipv6.enabled"; fi
     touch "$home_dir/managed"
-    if jq -e '.work != null' "$result" >/dev/null; then
-      jq -ce .work "$result" | save_secret "$home_dir/managed-work.json"
-    fi
+    # Pooled only by the boot answer's own flag: never inferred from a missing egress.
+    if jq -e '.browserPool == true' "$result" >/dev/null; then touch "$home_dir/browser-pool"; fi
     if valid_managed_egress "$result"; then
       save_managed_egress "$result"
     fi

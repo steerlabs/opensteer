@@ -309,16 +309,18 @@ func (s *Session) screenState() *screenSession {
 		opener := func(ctx context.Context, name string) (xpcChannel, error) { return s.OpenXPC(ctx, name) }
 		stateConn := &warmDeviceInfo{life: life, open: opener}
 		procConn := &warmProcesses{life: life, dial: s}
+		lockConn := &warmLockdown{life: life, open: s.openWarmLockdown}
 		s.screen = &screenSession{
 			lifeCancel: lifeCancel,
 			closeWarm: func() {
 				stateConn.close()
 				procConn.close()
+				lockConn.close()
 			},
 			backend: nativeScreen{
 				open:      opener,
 				dial:      s,
-				lock:      s.readLockState,
+				lock:      lockConn.read,
 				apps:      &appCache{life: life},
 				stateConn: stateConn,
 				procConn:  procConn,
@@ -436,20 +438,21 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 	s.mu.Lock()
 	s.observation = nil
 	s.mu.Unlock()
+	beforeSample := s.privacySample()
 	before, err := s.backend.State(ctx)
 	if err != nil {
 		s.hideDisplay("protected", "target-unavailable")
 		return nil, err
 	}
 	if reason := before.screenBlocker(); reason != "" {
-		s.applyPrivacy(before, nil, false)
+		s.applyPrivacySample(before, nil, false, &beforeSample)
 		if err := guard(); err != nil {
 			return nil, err
 		}
 		return s.screenStatus(p, before, reason), nil
 	}
 	first, firstKnown := s.foregroundChecked(ctx)
-	s.applyPrivacy(before, first, firstKnown)
+	s.applyPrivacySample(before, first, firstKnown, &beforeSample)
 	private := first != nil && first.AppID == opensteerAppID
 	var jpegData []byte
 	var g Geometry
@@ -528,6 +531,7 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 			}
 		}
 	}
+	afterSample := s.privacySample()
 	after, err := s.backend.State(ctx)
 	if err != nil {
 		s.hideDisplay("protected", "target-unavailable")
@@ -540,11 +544,11 @@ func (s *screenSession) observe(ctx context.Context, p *wire.ObserveParams, guar
 		if final != nil && final.AppID == opensteerAppID {
 			foreground, private, ax, finalKnown = final, true, unavailableAX(), true
 		} else if final != nil && foreground != nil && final.AppID != foreground.AppID {
-			s.applyPrivacy(after, final, finalKnown)
+			s.applyPrivacySample(after, final, finalKnown, &afterSample)
 			return nil, wire.Fail(wire.StaleObservation)
 		}
 	}
-	s.applyPrivacy(after, foreground, finalKnown)
+	s.applyPrivacySample(after, foreground, finalKnown, &afterSample)
 	if err := guard(); err != nil {
 		return nil, err
 	}

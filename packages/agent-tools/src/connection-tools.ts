@@ -2,6 +2,11 @@ import { requestOperationCallsMaxLength, type AgentGrant } from "@opensteer/core
 import { z } from "zod";
 import type { AgentTool, AgentToolName } from "./tools/index.js";
 import { opensteer_task_create } from "./tools/threads.js";
+import {
+  connectionStateAreas,
+  connectionStateDescription,
+  type StateArea,
+} from "./tools/commands.js";
 import { ask_person } from "./tools/person.js";
 
 const callsLimit = requestOperationCallsMaxLength.toLocaleString("en-US");
@@ -85,6 +90,8 @@ export function connectionToolDescription(tool: AgentTool, grant: AgentGrant): s
 }
 
 function describeConnectionTool(tool: AgentTool, grant: AgentGrant): string {
+  if (tool.name === "opensteer_state")
+    return connectionStateDescription(connectionStateAreas(grant));
   const profile = connectionHasBrowserProfiles(grant);
   const chrome = connectionHasChromeTabs(grant);
   const { apps, phones } = connectionComputerKinds(grant);
@@ -142,11 +149,16 @@ const pluginArguments = z.strictObject({ path: z.string(), input: z.unknown().no
 
 export const connectionTaskCreateInput = z
   .strictObject(opensteer_task_create.input.shape)
-  .omit({ observationId: true, aiAccountId: true, model: true });
+  .omit({ aiAccountId: true, model: true });
 
 export function connectionToolInput(tool: AgentTool, grant: AgentGrant): z.ZodObject {
   let input: z.ZodObject = tool.input;
   switch (tool.name) {
+    case "opensteer_state":
+      input = z.strictObject({
+        area: z.enum(connectionStateAreas(grant) as [StateArea, ...StateArea[]]),
+      });
+      break;
     case "ask_person":
       input = tool.input.safeExtend({ questions: z.array(singleQuestion).length(1) });
       break;
@@ -180,9 +192,6 @@ export function connectionToolInput(tool: AgentTool, grant: AgentGrant): z.ZodOb
       break;
     case "plugin_resume":
       input = tool.input.required({ taskId: true });
-      break;
-    case "opensteer_task_send":
-      input = z.strictObject(tool.input.shape).omit({ observationId: true });
       break;
     case "opensteer_task_create":
       input = connectionTaskCreateInput;

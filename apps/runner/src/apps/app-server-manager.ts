@@ -9,7 +9,7 @@ import type { AppRuntimeSpec } from "@opensteer/protocol";
 import type { HarnessProcessLaunchWrapper } from "@opensteer/harness";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import type { ProgramLaunchPlanner } from "../agent/program-executor.js";
+import type { ProgramLaunchPlanner } from "../agent/script-executor.js";
 import type { TerminationProof } from "../runtime/execution-containment.js";
 
 interface Server {

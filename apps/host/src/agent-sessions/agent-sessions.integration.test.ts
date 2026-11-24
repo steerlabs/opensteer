@@ -2,11 +2,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
-  BackgroundModelChoiceSchema,
   BrowserSessionIdSchema,
   DeviceIdSchema,
   OpensteerError,
-  HarnessIdSchema,
   ToolBlockedError,
   agentSessionIdleMs,
   createId,
@@ -23,18 +21,17 @@ import {
   NotificationStore,
   installBrowserPoolSlot,
   agentOperationRequestLifetimeMs,
-  decideAgentOperation,
   listAgentOperations,
   needsYouPage,
   readTranscriptItem,
   readBrowserPoolSlot,
-  reopenAgentOperation,
 } from "@opensteer/database";
 import { createStoreFixture, describeStore } from "@opensteer/database/test-support/store";
 import { expect, vi } from "vitest";
-import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
+import { sql } from "kysely";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { withDatabaseOperationSignal } from "@opensteer/database";
 import { randomUUID } from "node:crypto";
-import { createAgentReviewer } from "./agent-reviewer.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import { BrowserReplService } from "../browser-use/browser-repl-service.js";
 import { BrowserPoolGate } from "../browser/browser-pool-gate.js";
@@ -54,11 +51,7 @@ import {
   lastService,
 } from "../mcp/connection-caller.test-support.js";
 import type { TabServicePort } from "../tabs/ports.js";
-import {
-  AgentSessionService,
-  OperationOutcomeUnknown,
-  type AgentReviewerPort,
-} from "./agent-session-service.js";
+import { AgentSessionService, OperationOutcomeUnknown } from "./agent-session-service.js";
 
 type Fixture = Awaited<ReturnType<typeof createStoreFixture>>;
 const profile = createId("browserProfile") as BrowserProfileId;
@@ -117,8 +110,6 @@ async function setUp(
   options: {
     readonly accessMode?: ThreadAccessMode;
     readonly grant?: AgentGrant;
-    readonly reviewer?: AgentReviewerPort;
-    readonly reviewTimeoutMs?: number;
     readonly run?: Awaited<ReturnType<Fixture["startRunFixture"]>>;
     readonly browserConnect?: Pick<BrowserToolPorts, "issueTicket"> &
       Pick<BrowserToolPorts["tabs"], "open" | "bindBrowserScript">;
@@ -130,8 +121,6 @@ async function setUp(
   const sessions = new AgentSessionService({
     store: storeFixture.store,
     holdMs: 0,
-    ...(options.reviewer ? { reviewer: options.reviewer } : {}),
-    ...(options.reviewTimeoutMs !== undefined ? { reviewTimeoutMs: options.reviewTimeoutMs } : {}),
   });
   const unexpectedTabOperation = () => {
     throw new Error("This fixture runs scripts by profile ID.");
@@ -529,152 +518,375 @@ describeStore("an external agent's direct work through sessions", (it) => {
       expect(gate.held).toBe(0);
     });
 
-  it("records a fake background model's allow decision before executing an Auto effect", async ({
+  it("gives a holder whose hand-off commits while a restart settles it a durable outcome before the restart goes on", async ({
     storeFixture,
   }) => {
-    const backgroundText = vi
-      .fn<Parameters<typeof createAgentReviewer>[0]["runners"]["backgroundText"]>()
-      .mockResolvedValue({ ok: true, text: "allow" });
-    const f = await storeFixture.startRunFixture("reviewer-model");
-    const harness = {
-      ...(await storeFixture.database
-        .selectFrom("harnessInstances")
-        .selectAll()
-        .where("environmentId", "=", f.environmentId)
-        .executeTakeFirstOrThrow()),
-      driverKind: HarnessIdSchema.parse("codex"),
-      sourceId: "codex",
+    const f = await storeFixture.startRunFixture("pool-handoff-window");
+    const identity = {
+      runnerId: f.runnerId,
+      runtimeId: "pooled-browser",
+      slotId: "slot",
+      instanceId: randomUUID(),
+      term: 1,
+      epoch: 1,
     };
-    const catalog = HarnessInstanceCatalogSchema.parse({
-      driverKind: harness.driverKind,
-      harnessInstanceId: harness.id,
-      status: "ready",
-      continuationIdentity: {
-        driverKind: harness.driverKind,
-        continuationKey: "runner:v1:" + "a".repeat(43),
-      },
-      connections: [],
-      models: [
-        {
-          providerId: "openai",
-          modelId: "review-model",
-          nativeModelId: "review-model",
-          displayName: "Review model",
-          isDefault: false,
-          options: [],
+    await installBrowserPoolSlot(storeFixture.database, identity);
+    const gate = new BrowserPoolGate();
+    gate.set({ recovered: true, away: null, hold: null });
+    const database = storeFixture.database;
+    // The operation's row is locked by another session just before the hand-off's write, so that
+    // write waits: the holder is between its reservation and the execution's own settler.
+    const locked = Promise.withResolvers<void>();
+    const unlock = Promise.withResolvers<void>();
+    let holder: Promise<unknown> | undefined;
+    const s = await setUp(storeFixture, "pool-handoff-window", {
+      run: f,
+      pooledBrowser: () => ({
+        identity: () => identity,
+        pageDocument: () => undefined,
+        reserve: async (signal) => {
+          const { id } = await database
+            .selectFrom("agentOperations")
+            .select("id")
+            .where("tool", "=", "browser_use")
+            .executeTakeFirstOrThrow();
+          holder = database.transaction().execute(async (tx) => {
+            await tx
+              .selectFrom("agentOperations")
+              .select("id")
+              .where("id", "=", id)
+              .forUpdate()
+              .execute();
+            locked.resolve();
+            await unlock.promise;
+          });
+          await locked.promise;
+          return gate.reserve(signal);
         },
-      ],
-    });
-    const reviewer = createAgentReviewer({
-      model: BackgroundModelChoiceSchema.parse({
-        engine: harness.driverKind,
-        account: harness.id,
-        model: "review-model",
       }),
-      store: {
-        getAgentHomeSettings: storeFixture.store.getAgentHomeSettings.bind(storeFixture.store),
-        listEnvironmentsForUser: storeFixture.store.listEnvironmentsForUser.bind(
-          storeFixture.store,
-        ),
-        listHarnessInstances: async () => [harness],
-        listHarnessCatalogs: async () => [
-          {
-            environmentId: f.environmentId,
-            harnessInstanceId: harness.id,
-            catalog,
-            capturedAt: new Date(),
-          },
-        ],
-      },
-      runners: {
-        isAvailable: () => true,
-        canRunHarness: () => true,
-        identityForEnvironment: () =>
-          ({ capabilities: ["background-text-v1"] }) as ReturnType<
-            Parameters<typeof createAgentReviewer>[0]["runners"]["identityForEnvironment"]
-          >,
-        backgroundText,
-      },
     });
-    const s = await setUp(storeFixture, "session-auto", { accessMode: "auto", reviewer, run: f });
-    // The resolver must use the connection owner's authorized environment.
-    const result = await s.ok("browser_use", { ...script, operationKey: "reviewed-open" });
-    expect(result).toMatchObject({ status: "completed" });
-    expect(backgroundText).toHaveBeenCalledOnce();
-    expect(s.runBrowserScript).toHaveBeenCalledOnce();
-    const receipt = await storeFixture.database
-      .selectFrom("agentOperations")
-      .select(["decision", "requestId", "state"])
-      .where("operationKey", "=", "reviewed-open")
-      .executeTakeFirstOrThrow();
-    expect(receipt).toEqual({ decision: { by: "reviewer" }, requestId: null, state: "completed" });
+    s.runBrowserScript.mockResolvedValueOnce({ content: [{ type: "text", text: "ran" }] });
+    const call = s.call("browser_use", script);
+    const waiting = async () =>
+      Number(
+        (
+          await sql<{ count: string }>`
+            select count(*)::text as count from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock'
+          `.execute(database)
+        ).rows[0]?.count ?? 0,
+      );
+    // The hand-off's write waits on the lock; the restart begins and settles every holder.
+    await vi.waitFor(async () => expect(await waiting()).toBeGreaterThan(0), { timeout: 10_000 });
+    gate.set({ hold: "restart" });
+    const settled = gate.settleHolders();
+    await vi.waitFor(async () => expect(await waiting()).toBeGreaterThan(1), { timeout: 10_000 });
+    // The hand-off commits first, then the settlement's own write.
+    unlock.resolve();
+    await holder;
+    await settled;
+    // Before the restart may stop the guest, the handed-off operation has its outcome: refused,
+    // since nothing can have been sent while the hold stood.
+    expect(
+      await database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome"])
+        .where("tool", "=", "browser_use")
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ state: "refused", outcome: "refused" });
+    await call;
+    gate.set({ hold: null });
+    expect(gate.held).toBe(0);
   });
 
-  it("asks the person when the reviewer never returns or observes cancellation", async ({
+  it("lets a holder's settler take its own refusal of a handed-off operation as the outcome, with nothing more read", async ({
     storeFixture,
   }) => {
-    const answer = Promise.withResolvers<"allow">();
-    const review = vi.fn(() => answer.promise);
-    const s = await setUp(storeFixture, "session-review-timeout", {
-      accessMode: "auto",
-      reviewer: { review },
-      reviewTimeoutMs: 25,
+    const f = await storeFixture.startRunFixture("pool-settler-answer");
+    const identity = {
+      runnerId: f.runnerId,
+      runtimeId: "pooled-browser",
+      slotId: "slot",
+      instanceId: randomUUID(),
+      term: 1,
+      epoch: 1,
+    };
+    await installBrowserPoolSlot(storeFixture.database, identity);
+    const database = storeFixture.database;
+    // The seam: the reservation the holder takes is this one, so its settler is held here, and
+    // the work is held after its hand-off, before anything is sent.
+    let settle: (() => Promise<void>) | undefined;
+    const work = Promise.withResolvers<{ content: { type: "text"; text: string }[] }>();
+    const s = await setUp(storeFixture, "pool-settler-answer", {
+      run: f,
+      pooledBrowser: () => ({
+        identity: () => identity,
+        pageDocument: () => undefined,
+        reserve: async () => ({
+          release: () => {},
+          // The holder's own settler, the first registered (the execution's replaces it later).
+          onForcedEnd: (settler: () => Promise<void>) => {
+            settle ??= settler;
+          },
+        }),
+      }),
     });
+    s.runBrowserScript.mockImplementationOnce(() => work.promise);
+    const call = s.call("browser_use", script);
+    const state = async () =>
+      (
+        await database
+          .selectFrom("agentOperations")
+          .select("state")
+          .where("tool", "=", "browser_use")
+          .executeTakeFirstOrThrow()
+      ).state;
+    await vi.waitFor(async () => expect(await state()).toBe("handed-off"), { timeout: 10_000 });
+    expect(settle).toBeDefined();
+    // The settler reads the row once, writes its refusal, and takes that write's answer as the
+    // outcome: no second read of the operation.
+    // Counted on every Kysely the Home holds (the service's own store included), outside a
+    // transaction: the reads, not the refusal's own write.
+    let kysely = Object.getPrototypeOf(database) as {
+      selectFrom: (...args: unknown[]) => unknown;
+    };
+    while (!Object.hasOwn(kysely, "selectFrom")) kysely = Object.getPrototypeOf(kysely);
+    const select = kysely.selectFrom;
+    const operationReads: unknown[] = [];
+    kysely.selectFrom = function (this: { isTransaction: boolean }, ...args: unknown[]) {
+      if (!this.isTransaction && args[0] === "agentOperations") operationReads.push(args[0]);
+      return select.apply(this, args);
+    };
     try {
-      expect(await s.ok("browser_use", script)).toMatchObject({
-        status: "pending",
-        requestId: expect.any(String),
-      });
-      expect(review).toHaveBeenCalledOnce();
-      expect(s.runBrowserScript).not.toHaveBeenCalled();
+      await settle!();
     } finally {
-      answer.resolve("allow");
+      kysely.selectFrom = select;
     }
+    expect(operationReads).toHaveLength(1);
+    expect(await state()).toBe("refused");
+    work.resolve({ content: [{ type: "text", text: "ran" }] });
+    await call.catch(() => undefined);
   });
 
-  it.for(["revision", "mode", "generation"] as const)(
-    "rejects a late Auto review after the %s changes",
-    async (changed, { storeFixture }) => {
-      const entered = Promise.withResolvers<void>();
-      const answer = Promise.withResolvers<"allow">();
-      const review = vi
-        .fn<AgentReviewerPort["review"]>()
-        .mockImplementationOnce(() => {
-          entered.resolve();
-          return answer.promise;
-        })
-        .mockResolvedValue("ask");
-      const s = await setUp(storeFixture, "session-review-cas", {
-        accessMode: "auto",
-        reviewer: { review },
-      });
-      const running = s.ok("browser_use", script);
-      try {
-        await entered.promise;
-        const old = await storeFixture.database
-          .selectFrom("agentOperations")
-          .selectAll()
-          .where("connectionId", "=", s.agent.id)
-          .executeTakeFirstOrThrow();
-        const approved = await decideAgentOperation(storeFixture.database, old, { by: "reviewer" });
-        const facts = {
-          ...old,
-          ...(changed === "revision" ? { grantRevision: old.grantRevision + 1 } : {}),
-          ...(changed === "mode" ? { mode: "approval-required" as const } : {}),
-          ...(changed === "generation" ? { targetGeneration: "replacement" } : {}),
-        };
-        const newRound = await reopenAgentOperation(storeFixture.database, approved, facts);
-        expect(newRound).toMatchObject({ state: "admitted", decision: null });
+  it("ends a restart's settlement of a holder whose row stays locked with the step's deadline", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("pool-settle-locked");
+    const identity = {
+      runnerId: f.runnerId,
+      runtimeId: "pooled-browser",
+      slotId: "slot",
+      instanceId: randomUUID(),
+      term: 1,
+      epoch: 1,
+    };
+    await installBrowserPoolSlot(storeFixture.database, identity);
+    const gate = new BrowserPoolGate();
+    gate.set({ recovered: true, away: null, hold: null });
+    const database = storeFixture.database;
+    const locked = Promise.withResolvers<void>();
+    const unlock = Promise.withResolvers<void>();
+    let holder: Promise<unknown> | undefined;
+    const s = await setUp(storeFixture, "pool-settle-locked", {
+      run: f,
+      pooledBrowser: () => ({
+        identity: () => identity,
+        pageDocument: () => undefined,
+        reserve: async (signal) => {
+          const { id } = await database
+            .selectFrom("agentOperations")
+            .select("id")
+            .where("tool", "=", "browser_use")
+            .executeTakeFirstOrThrow();
+          holder = database.transaction().execute(async (tx) => {
+            await tx
+              .selectFrom("agentOperations")
+              .select("id")
+              .where("id", "=", id)
+              .forUpdate()
+              .execute();
+            locked.resolve();
+            await unlock.promise;
+          });
+          await locked.promise;
+          return gate.reserve(signal);
+        },
+      }),
+    });
+    s.runBrowserScript.mockResolvedValueOnce({ content: [{ type: "text", text: "ran" }] });
+    const call = s.call("browser_use", script);
+    void call.catch(() => undefined);
+    await vi.waitFor(
+      async () =>
         expect(
-          await decideAgentOperation(storeFixture.database, old, { by: "reviewer" }),
-        ).toMatchObject({ state: "admitted", decision: null });
-        expect(s.runBrowserScript).not.toHaveBeenCalled();
-      } finally {
-        answer.resolve("allow");
-        await running.catch(() => undefined);
-      }
-    },
-  );
+          Number(
+            (
+              await sql<{ count: string }>`
+                select count(*)::text as count from pg_stat_activity
+                where datname = current_database() and wait_event_type = 'Lock'
+              `.execute(database)
+            ).rows[0]?.count ?? 0,
+          ),
+        ).toBeGreaterThan(0),
+      { timeout: 10_000 },
+    );
+    gate.set({ hold: "restart" });
+    // The row stays locked: the settlement waits on it only until its step's deadline.
+    const started = Date.now();
+    const settled = withDatabaseOperationSignal(
+      AbortSignal.timeout(1_000),
+      Date.now() + 1_000,
+      () => gate.settleHolders(),
+    );
+    const outcome = await withTimeout(settled, 10_000, {
+      timeoutError: () => new Error("The settlement still waits on the locked row."),
+    }).then(
+      () => "settled",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    expect(outcome).not.toBe("The settlement still waits on the locked row.");
+    expect(outcome).not.toBe("settled");
+    expect(Date.now() - started).toBeLessThan(5_000);
+    // And nothing of it is left behind: no statement of the settlement still waits on the row
+    // after its step ended (only the hand-off's own write does).
+    await vi.waitFor(async () =>
+      expect(
+        (
+          await sql<{ query: string }>`
+            select query from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock'
+              and query like 'update "agent_operations" set "state" = $1, "outcome"%'
+          `.execute(database)
+        ).rows,
+      ).toEqual([]),
+    );
+    unlock.resolve();
+    await holder;
+    gate.set({ hold: null });
+  });
+
+  it("settles a holder whose operation was reviewed again while it waited, with its current revision", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("pool-settle-revised");
+    const identity = {
+      runnerId: f.runnerId,
+      runtimeId: "pooled-browser",
+      slotId: "slot",
+      instanceId: randomUUID(),
+      term: 1,
+      epoch: 1,
+    };
+    await installBrowserPoolSlot(storeFixture.database, identity);
+    const gate = new BrowserPoolGate();
+    gate.set({ recovered: true, away: null, hold: null });
+    const database = storeFixture.database;
+    const locked = Promise.withResolvers<void>();
+    const unlock = Promise.withResolvers<void>();
+    let holder: Promise<unknown> | undefined;
+    const s = await setUp(storeFixture, "pool-settle-revised", {
+      run: f,
+      pooledBrowser: () => ({
+        identity: () => identity,
+        pageDocument: () => undefined,
+        reserve: async (signal) => {
+          const { id } = await database
+            .selectFrom("agentOperations")
+            .select("id")
+            .where("tool", "=", "browser_use")
+            .executeTakeFirstOrThrow();
+          // The operation is reviewed again under a newer grant while its holder waits: the
+          // review commits after the hand-off and the restart's settlement both read it.
+          holder = database.transaction().execute(async (tx) => {
+            await tx
+              .selectFrom("agentOperations")
+              .select("id")
+              .where("id", "=", id)
+              .forUpdate()
+              .execute();
+            await tx
+              .updateTable("agentOperations")
+              .set({ grantRevision: sql`grant_revision + 1` })
+              .where("id", "=", id)
+              .execute();
+            locked.resolve();
+            await unlock.promise;
+          });
+          await locked.promise;
+          return gate.reserve(signal);
+        },
+      }),
+    });
+    s.runBrowserScript.mockResolvedValueOnce({ content: [{ type: "text", text: "ran" }] });
+    const call = s.call("browser_use", script);
+    void call.catch(() => undefined);
+    const waiting = async () =>
+      Number(
+        (
+          await sql<{ count: string }>`
+            select count(*)::text as count from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock'
+          `.execute(database)
+        ).rows[0]?.count ?? 0,
+      );
+    await vi.waitFor(async () => expect(await waiting()).toBeGreaterThan(0), { timeout: 10_000 });
+    gate.set({ hold: "restart" });
+    const settled = gate.settleHolders();
+    await vi.waitFor(async () => expect(await waiting()).toBeGreaterThan(1), { timeout: 10_000 });
+    unlock.resolve();
+    await holder;
+    await settled;
+    expect(
+      await database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome"])
+        .where("tool", "=", "browser_use")
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ state: "refused", outcome: "refused" });
+    await call;
+    gate.set({ hold: null });
+  });
+
+  it("refuses a pooled operation whose reservation failed under the revision it holds now, after it was reviewed again", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("pool-reserve-revised");
+    const identity = {
+      runnerId: f.runnerId,
+      runtimeId: "pooled-browser",
+      slotId: "slot",
+      instanceId: randomUUID(),
+      term: 1,
+      epoch: 1,
+    };
+    await installBrowserPoolSlot(storeFixture.database, identity);
+    const database = storeFixture.database;
+    const s = await setUp(storeFixture, "pool-reserve-revised", {
+      run: f,
+      pooledBrowser: () => ({
+        identity: () => identity,
+        pageDocument: () => undefined,
+        // The operation is reviewed again while its reservation waits; then the reservation
+        // fails, with nothing handed off.
+        reserve: async () => {
+          await database
+            .updateTable("agentOperations")
+            .set({ grantRevision: sql`grant_revision + 1` })
+            .where("tool", "=", "browser_use")
+            .execute();
+          throw new Error("The browser could not be reserved.");
+        },
+      }),
+    });
+    await s.call("browser_use", script).catch(() => undefined);
+    expect(
+      await database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome"])
+        .where("tool", "=", "browser_use")
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ state: "refused", outcome: "refused" });
+  });
 
   it("starts a session on the first direct call, continues it across transports, and refuses input to its task", async ({
     storeFixture,

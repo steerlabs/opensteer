@@ -16,7 +16,6 @@ import {
 import { parseAgentExecutionConfig } from "../apps/runner/src/app-config.js";
 import { createHarnessRegistry } from "../apps/runner/src/harness/harness-registry.js";
 import { ModelSelectionSchema } from "../packages/core/src/index.js";
-import { nativeUserHarnessRuntimeBoundary } from "../packages/harness/src/index.js";
 import {
   addCleanup,
   browserAvailable,
@@ -72,7 +71,6 @@ describe("live agent-created browser profile", () => {
             runtimeCacheDirectory: path.join(tmpdir(), "opensteer-test-runtime-cache"),
           },
         ),
-        harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
         runTimeoutMs: 600_000,
       });
       await browserAvailable(stack);

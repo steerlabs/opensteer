@@ -27,7 +27,13 @@ import {
   type ThreadId,
   type TriggerId,
 } from "@opensteer/core";
-import { createDatabase, migrateToLatest, OpensteerStore, TriggerStore } from "@opensteer/database";
+import {
+  commandAdmission,
+  createDatabase,
+  migrateToLatest,
+  OpensteerStore,
+  TriggerStore,
+} from "@opensteer/database";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { commitPersonalMutation } from "@opensteer/database/personal-mutation";
 import { recordedTransactionConflicts } from "@opensteer/database/test-support/lock-order";
@@ -40,18 +46,17 @@ import {
 } from "@opensteer/orchestration";
 import { hostApi, type HostApiServerContext, type RunnerDescriptor } from "@opensteer/protocol";
 import {
-  TRIGGER_PROGRAM_UPDATE_REASON,
-  TRIGGER_PROGRAM_VERSION_REFUSAL,
+  TRIGGER_SCRIPT_UPDATE_REASON,
   TriggerControlInputSchema,
   TriggerRevisionSchema,
   TriggerSummarySchema,
   TriggerSchema,
+  type AutomationScript,
   type TriggerOccurrence,
-  type TriggerProgram,
   type TriggerSource,
 } from "@opensteer/triggers";
 import { sql } from "kysely";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -78,10 +83,9 @@ const applicationName = "opensteer-trigger-authority-integration-test";
 const now = new Date("2040-01-02T08:00:00.000Z");
 const plusThirty = "2040-01-02T08:30:00.000Z";
 const nextHour = "2040-01-02T09:00:00.000Z";
-const program: TriggerProgram = {
-  language: "javascript",
-  source: "export default async () => ({ verified: true })",
-  toolContractVersion: 5,
+const script: AutomationScript = {
+  interpreter: null,
+  text: "console.log(JSON.stringify({ verified: true }));",
 };
 const cron: TriggerSource = {
   kind: "schedule",
@@ -172,9 +176,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
       publicUrl: new URL("https://trigger-authority.opensteer.test"),
       store: backing,
       threads: store,
-      tokens: {
-        deriveSecret: (_purpose, key) => createHash("sha256").update(key).digest("hex"),
-      },
     });
   }
   const triggers = triggerService();
@@ -363,19 +364,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
         };
       },
     );
-    for (const status of ["paused", "active"] as const) {
-      await check(`A1 ${status}`, f.child.id, `set_status ${status}`, status, async () => {
-        await agentTrigger(f.childToken, {
-          operation: "set_status",
-          status,
-          triggerId: created.trigger.id,
-        });
-        const detail = await personDetail(f, created.trigger.id);
-        expect(detail.trigger.status).toBe(status);
-        expect(detail.trigger.nextFireAt).toBe(status === "paused" ? null : nextHour);
-        return detail.trigger;
-      });
-    }
     await check(
       "A1 cancel pending",
       f.child.id,
@@ -398,13 +386,26 @@ integration.sequential("Trigger authority through real Host services and Postgre
         };
       },
     );
+    for (const status of ["paused", "active"] as const) {
+      await check(`A1 ${status}`, f.child.id, `set_status ${status}`, status, async () => {
+        await agentTrigger(f.childToken, {
+          operation: "set_status",
+          status,
+          triggerId: created.trigger.id,
+        });
+        const detail = await personDetail(f, created.trigger.id);
+        expect(detail.trigger.status).toBe(status);
+        expect(detail.trigger.nextFireAt).toBe(status === "paused" ? null : nextHour);
+        return detail.trigger;
+      });
+    }
     for (const input of [
       {
         operation: "update",
         expectedRevisionId: created.revision.id,
-        program: {
-          ...program,
-          source: "export default () => 'unauthorized'",
+        script: {
+          ...script,
+          text: "console.log('unauthorized')",
         },
         triggerId: created.trigger.id,
       },
@@ -413,11 +414,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
         payload: {
           execute: "injected",
         },
-        triggerId: created.trigger.id,
-      },
-      {
-        operation: "set_status",
-        status: "archived",
         triggerId: created.trigger.id,
       },
     ] as const) {
@@ -435,9 +431,20 @@ integration.sequential("Trigger authority through real Host services and Postgre
         status: "active",
         currentRevisionId: created.revision.id,
       });
-      expect(detail.revision.program).toEqual(program);
+      expect(detail.revision.script).toEqual(script);
       expect(detail.occurrences).toHaveLength(1);
     }
+    // T2: archiving narrows authority, so a same-mode child below Full access runs it now.
+    await check("A1/T2 archived", f.child.id, "set_status archived", "archived", async () => {
+      await agentTrigger(f.childToken, {
+        operation: "set_status",
+        status: "archived",
+        triggerId: created.trigger.id,
+      });
+      const detail = await personDetail(f, created.trigger.id);
+      expect(detail.trigger.status).toBe("archived");
+      return detail.trigger;
+    });
   });
 
   it("A4/F4/F4b: lower modes may see but cannot control higher anchors or define programs", async () => {
@@ -597,10 +604,12 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const replayed = await ownTask(f.fullChildToken, f.fullChild, requestId);
     if (created.type !== "trigger.control.result" || replayed.type !== "trigger.control.result")
       throw new Error("Expected Trigger creation");
-    const trigger = opensteer_automation_create.output.parse(created.result).automation!;
-    expect(opensteer_automation_create.output.parse(replayed.result).automation!.id).toBe(
-      trigger.id,
-    );
+    const createdOutput = opensteer_automation_create.output.parse(created.result);
+    const replayedOutput = opensteer_automation_create.output.parse(replayed.result);
+    if (!("automation" in createdOutput) || !("automation" in replayedOutput))
+      throw new Error("Expected automation creation output");
+    const trigger = createdOutput.automation!;
+    expect(replayedOutput.automation!.id).toBe(trigger.id);
     expect(await children(f.fullChild.id)).toMatchObject([
       {
         id: trigger.taskId,
@@ -806,6 +815,22 @@ integration.sequential("Trigger authority through real Host services and Postgre
         return response;
       },
     );
+    const runningOwn = occurrenceClaims.get(token)!;
+    await triggerStore.completeExecution({
+      executionGeneration: runningOwn.executionGeneration,
+      output: {
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: 0,
+        occurrenceId: runningOwn.occurrenceId,
+        result: null,
+        status: "succeeded",
+        stderr: "",
+        stdout: "",
+      },
+      runnerBootId: runningOwn.runnerBootId,
+      runnerId: runningOwn.runnerId,
+    });
     await store.updateThreadAccessMode({
       accessMode: "approval-required",
       requestedBy: f.ownerId,
@@ -824,9 +849,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
               operation: "update",
               triggerId: own.trigger.id,
               expectedRevisionId: own.revision.id,
-              program: {
-                ...program,
-                source: "export default () => 'person'",
+              script: {
+                ...script,
+                text: "console.log('person')",
               },
             },
             null,
@@ -901,7 +926,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
               input: {
                 anchorThreadId: f.isolatedChild.id,
                 name: "Person route Trigger",
-                program,
+                script,
                 source: cron,
               },
               type: "trigger.create",
@@ -917,9 +942,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
               idempotencyKey: randomUUID(),
               input: {
                 expectedRevisionId: created.revision.id,
-                program: {
-                  ...program,
-                  source: "export default () => 'person route'",
+                script: {
+                  ...script,
+                  text: "console.log('person route')",
                 },
               },
               triggerId: created.trigger.id,
@@ -1130,9 +1155,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
               operation: "update",
               triggerId: created.trigger.id,
               expectedRevisionId: created.revision.id,
-              program: {
-                ...program,
-                source: `export default () => '${label} revision'`,
+              script: {
+                ...script,
+                text: `console.log('${label} revision')`,
               },
             }),
           );
@@ -1233,24 +1258,51 @@ integration.sequential("Trigger authority through real Host services and Postgre
       const input =
         change === "actor-downgrade"
           ? {
-              operation: "update",
+              operation: "update" as const,
               triggerId: created.trigger.id,
               expectedRevisionId: created.revision.id,
-              program: {
-                ...program,
-                source: "export default () => 'raced'",
+              script: {
+                ...script,
+                text: "console.log('raced')",
               },
             }
           : {
-              operation: "set_next_fire",
+              operation: "set_next_fire" as const,
               triggerId: created.trigger.id,
               nextFireAt: plusThirty,
             };
+      const admitCommandPayload =
+        change === "actor-downgrade"
+          ? ({
+              type: "trigger.update",
+              idempotencyKey: `race-${change}`,
+              triggerId: created.trigger.id,
+              input: {
+                expectedRevisionId: created.revision.id,
+                script: {
+                  ...script,
+                  text: "console.log('raced')",
+                },
+              },
+            } as const)
+          : ({
+              type: "trigger.status.set",
+              idempotencyKey: `race-${change}`,
+              triggerId: created.trigger.id,
+              status: "active",
+            } as const);
       const downgrade = commitPersonalMutation(database, async (transaction) => {
         fence.resolve();
         await withTimeout(release.promise, 5_000, {
           timeoutError: () => new Error("Authority race did not release the personal event fence"),
         });
+        if (change === "actor-downgrade") {
+          await transaction
+            .updateTable("runs")
+            .set({ accessMode: "auto" })
+            .where("threadId", "=", actor.id)
+            .execute();
+        }
         await new OpensteerStore(transaction).updateThreadAccessMode({
           accessMode: change === "actor-downgrade" ? "auto" : "full-access",
           requestedBy: f.ownerId,
@@ -1260,7 +1312,13 @@ integration.sequential("Trigger authority through real Host services and Postgre
       await withTimeout(fence.promise, 5_000, {
         timeoutError: () => new Error("Authority change did not acquire the personal event fence"),
       });
-      const mutation = service.manage(f.ownerId, TriggerControlInputSchema.parse(input), actor.id);
+      const mutation = service.manage(f.ownerId, TriggerControlInputSchema.parse(input), actor.id, {
+        commandIdentity: commandAdmission({
+          ownerUserId: f.ownerId,
+          callerKey: `thread:${actor.id}`,
+          command: admitCommandPayload,
+        }),
+      });
       void mutation.catch(() => undefined);
       try {
         await blockedQuery("client_sync_state", mutation);
@@ -1517,9 +1575,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
         name: "Renamed",
       },
       {
-        program: {
-          ...program,
-          source: "export default () => 'edited'",
+        script: {
+          ...script,
+          text: "console.log('edited')",
         },
       },
     ]) {
@@ -1679,7 +1737,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       {
         action: "cancel",
         triggerId: childTrigger.trigger.id,
-        program,
+        script,
       },
     ]) {
       await check(
@@ -1699,7 +1757,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
               expect.objectContaining({
                 type: "text",
                 text: expect.stringMatching(
-                  /(nextFireAt|status|name|program|accept|require|field)/i,
+                  /(nextFireAt|status|name|script|program|accept|require|field)/i,
                 ),
               }),
             ]),
@@ -1731,201 +1789,178 @@ integration.sequential("Trigger authority through real Host services and Postgre
       },
     );
   });
-  it.each([5] as const)(
-    "dispatches only supported version %s after an anchor computer downgrade",
-    async (version) => {
-      const f = await fixture();
-      const identity = {
-        runnerId: f.runnerId,
-        bootId: "authority-boot",
-        connectionGeneration: 1,
-        capabilities: ["execution-plane-v2", "agent-tools-plan-v1"],
-        modules: {
-          agents: {},
-        },
-      } as unknown as RunnerIdentity;
-      const dispatch = vi.fn<RunnerRegistry["dispatch"]>(async (command) => ({
-        type: "runner.command-accepted",
-        commandId: command.commandId,
-        correlationId: command.correlationId,
-      }));
-      const runnerRegistry = {
-        identityForEnvironment: () => identity,
-        dispatch,
-      } as unknown as RunnerRegistry;
-      const dispatcher = new HostCommandDispatcher({
-        store,
-        triggers: triggerStore,
-        runners: runnerRegistry,
-        executionLeaseMs: 90_000,
-        publicUrl: new URL("https://host.test"),
+  it("refuses script dispatch after an anchor computer downgrade", async () => {
+    const f = await fixture();
+    const identity = {
+      runnerId: f.runnerId,
+      bootId: "authority-boot",
+      connectionGeneration: 1,
+      capabilities: ["execution-plane-v2", "agent-tools-plan-v1"],
+      modules: {
+        agents: {},
+      },
+    } as unknown as RunnerIdentity;
+    const dispatch = vi.fn<RunnerRegistry["dispatch"]>(async (command) => ({
+      type: "runner.command-accepted",
+      commandId: command.commandId,
+      correlationId: command.correlationId,
+    }));
+    const runnerRegistry = {
+      identityForEnvironment: () => identity,
+      dispatch,
+    } as unknown as RunnerRegistry;
+    const dispatcher = new HostCommandDispatcher({
+      store,
+      triggers: triggerStore,
+      runners: runnerRegistry,
+      executionLeaseMs: 90_000,
+      publicUrl: new URL("https://host.test"),
 
-        requestResponseVault: {} as never,
-        runToolTokens: {} as never,
-        attachmentRunTokens: {} as never,
-        attachments: {
-          listForRun: async () => [],
-        },
-        browser: {
-          hasBrowserProfiles: async () => false,
-        },
-        egress: {} as never,
-        pluginVersions: async () => [],
-        pluginsTokens: {} as never,
-        triggerControlTokens: {
-          issue: () => "control",
-        } as never,
-      });
-      for (const ingress of ["manual", "schedule", "webhook"] as const) {
-        await database
-          .updateTable("runners")
-          .set({
-            capabilities: sql<
-              RunnerDescriptor["capabilities"]
-            >`${JSON.stringify(["filesystem", "trigger-program-v5"])}::jsonb`,
-          })
-          .where("id", "=", f.runnerId)
-          .execute();
-        const saved = await personCreate(
-          f,
-          f.root,
-          ingress === "webhook"
-            ? {
-                kind: "webhook",
-              }
-            : cron,
-          {
-            ...program,
-            toolContractVersion: version,
-          },
-        );
-        await database
-          .updateTable("runners")
-          .set({
-            capabilities: sql<
-              RunnerDescriptor["capabilities"]
-            >`${JSON.stringify(["filesystem", "browser-profile-create-v1"])}::jsonb`,
-          })
-          .where("id", "=", f.runnerId)
-          .execute();
-        if (version === 5) {
-          await expect(
-            triggers.update(
-              f.ownerId,
-              {
-                triggerId: saved.trigger.id,
-                expectedRevisionId: saved.revision!.id,
-                name: "Unsupported retained v3",
-              },
-              null,
-            ),
-          ).rejects.toMatchObject({
-            message:
-              "Update this computer to run automation programs with tool contract version 5.",
-          });
-        }
-        const occurrence =
-          ingress === "manual"
-            ? await triggers.run(
-                f.ownerId,
-                saved.trigger.id,
-                {
-                  ingress,
-                },
-                null,
-              )
-            : ingress === "webhook"
-              ? (
-                  await triggerStore.enqueueWebhook({
-                    routeKey: (await personDetail(f, saved.trigger.id)).trigger.webhookRouteKey!,
-                    method: "POST",
-                    headers: {},
-                    payload: {
-                      ingress,
-                    },
-                  })
-                ).occurrence
-              : (await triggerStore.claimDueSchedules(new Date(nextHour))).occurrences.find(
-                  ({ triggerId }) => triggerId === saved.trigger.id,
-                )!;
-        expect(occurrence).toBeDefined();
-        const coordinator = new ExecutionCoordinator({
-          dispatcher,
-          dispatcherId: "trigger-compatibility",
-          maxConcurrentRuns: 1,
-          maxConcurrentTriggerPrograms: 1,
-          maxQueuedBytes: 1_000_000,
-          maxQueuedCommands: 8,
-          store: {
-            listPendingCommands: async () =>
-              (await store.listPendingCommands()).filter(({ id }) => id === occurrence.commandId),
-            claimCommand: store.claimCommand.bind(store),
-            failCommand: store.failCommand.bind(store),
-            retryCommand: store.retryCommand.bind(store),
-            markSteerUnknown: store.markSteerUnknown.bind(store),
-          },
-        });
-        // Only the occurrence lane is involved; no engine processes are started.
-        vi.spyOn(dispatcher, "isAvailable").mockReturnValue(true);
-        try {
-          await check(
-            "Runner downgrade dispatch",
-            ingress,
-            `version ${version}`,
-            version === 5 ? "failed without send" : "unchanged send",
-            async () => {
-              dispatch.mockClear();
-              coordinator.start();
-              await vi.waitFor(async () => {
-                const detail = await personDetail(f, saved.trigger.id);
-                expect(detail.occurrences[0]?.status).toBe(version === 5 ? "failed" : "running");
-              });
-              const detail = await personDetail(f, saved.trigger.id);
-              if (version === 5) {
-                expect(dispatch).not.toHaveBeenCalled();
-                expect(detail.occurrences[0]?.error).toEqual({
-                  code: "dispatch_failed",
-                  status: "failed",
-                  retryable: false,
-                  message:
-                    "Update this computer to run automation programs with tool contract version 5.",
-                });
-              } else {
-                expect(dispatch).toHaveBeenCalledOnce();
-                expect(dispatch).toHaveBeenCalledWith(
-                  expect.objectContaining({
-                    type: "trigger.execute",
-                    context: expect.objectContaining({
-                      program: saved.revision.program,
-                    }),
-                  }),
-                  expect.any(AbortSignal),
-                );
-              }
-              return detail;
-            },
-          );
-        } finally {
-          await coordinator.stop();
-        }
-        await triggers.setStatus(
+      requestResponseVault: {} as never,
+      runToolTokens: {} as never,
+      attachmentRunTokens: {} as never,
+      attachments: {
+        listForRun: async () => [],
+      },
+      browser: {
+        hasBrowserProfiles: async () => false,
+      },
+      egress: {} as never,
+      pluginVersions: async () => [],
+      pluginsTokens: {} as never,
+      triggerControlTokens: {
+        issue: () => "control",
+      } as never,
+    });
+    for (const ingress of ["manual", "schedule", "webhook"] as const) {
+      await database
+        .updateTable("runners")
+        .set({
+          capabilities: sql<
+            RunnerDescriptor["capabilities"]
+          >`${JSON.stringify(["filesystem", "automation-script-v1"])}::jsonb`,
+        })
+        .where("id", "=", f.runnerId)
+        .execute();
+      const saved = await personCreate(
+        f,
+        f.root,
+        ingress === "webhook"
+          ? {
+              kind: "webhook",
+            }
+          : cron,
+        script,
+      );
+      await database
+        .updateTable("runners")
+        .set({
+          capabilities: sql<
+            RunnerDescriptor["capabilities"]
+          >`${JSON.stringify(["filesystem", "browser-profile-create-v1"])}::jsonb`,
+        })
+        .where("id", "=", f.runnerId)
+        .execute();
+      await expect(
+        triggers.update(
           f.ownerId,
           {
             triggerId: saved.trigger.id,
-            status: "paused",
+            expectedRevisionId: saved.revision!.id,
+            name: "Unsupported retained script",
           },
           null,
+        ),
+      ).rejects.toMatchObject({
+        message: "Update this computer to run script automations.",
+      });
+      const occurrence =
+        ingress === "manual"
+          ? await triggers.run(
+              f.ownerId,
+              saved.trigger.id,
+              {
+                ingress,
+              },
+              null,
+            )
+          : ingress === "webhook"
+            ? (
+                await triggerStore.enqueueWebhook({
+                  routeKey: (await personDetail(f, saved.trigger.id)).trigger.webhookRouteKey!,
+                  method: "POST",
+                  headers: {},
+                  payload: {
+                    ingress,
+                  },
+                })
+              ).occurrence
+            : (await triggerStore.claimDueSchedules(new Date(nextHour))).occurrences.find(
+                ({ triggerId }) => triggerId === saved.trigger.id,
+              )!;
+      expect(occurrence).toBeDefined();
+      const coordinator = new ExecutionCoordinator({
+        dispatcher,
+        dispatcherId: "trigger-compatibility",
+        maxConcurrentRuns: 1,
+        maxConcurrentTriggerPrograms: 1,
+        maxQueuedBytes: 1_000_000,
+        maxQueuedCommands: 8,
+        store: {
+          listPendingCommands: async () =>
+            (await store.listPendingCommands()).filter(({ id }) => id === occurrence.commandId),
+          claimCommand: store.claimCommand.bind(store),
+          failCommand: store.failCommand.bind(store),
+          retryCommand: store.retryCommand.bind(store),
+          markSteerUnknown: store.markSteerUnknown.bind(store),
+        },
+      });
+      // Only the occurrence lane is involved; no engine processes are started.
+      vi.spyOn(dispatcher, "isAvailable").mockReturnValue(true);
+      try {
+        await check(
+          "Runner downgrade dispatch",
+          ingress,
+          "script",
+          "failed without send",
+          async () => {
+            dispatch.mockClear();
+            coordinator.start();
+            await vi.waitFor(async () => {
+              const detail = await personDetail(f, saved.trigger.id);
+              expect(detail.occurrences[0]?.status).toBe("failed");
+            });
+            const detail = await personDetail(f, saved.trigger.id);
+            expect(dispatch).not.toHaveBeenCalled();
+            expect(detail.occurrences[0]?.error).toEqual({
+              code: "dispatch_failed",
+              status: "failed",
+              retryable: false,
+              message: "Update this computer to run script automations.",
+            });
+            return detail;
+          },
         );
+      } finally {
+        await coordinator.stop();
       }
-    },
-  );
-  it("refuses a previously queued occurrence whose revision uses an older contract", async () => {
+      await triggers.setStatus(
+        f.ownerId,
+        {
+          triggerId: saved.trigger.id,
+          status: "paused",
+        },
+        null,
+      );
+    }
+  });
+  it("refuses a previously queued occurrence whose revision has no script", async () => {
     const f = await fixture(undefined, { rootAccessMode: "full-access" });
     const saved = await personCreate(f, f.root);
     const occurrence = await triggers.run(f.ownerId, saved.trigger.id, {}, null);
     await database
       .updateTable("triggerRevisions")
-      .set({ program: { ...program, toolContractVersion: 3 } })
+      .set({ script: null, legacySource: "export default () => null;" })
       .where("id", "=", saved.revision.id)
       .execute();
     const dispatcher = new HostCommandDispatcher({
@@ -1937,7 +1972,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
             runnerId: f.runnerId,
             bootId: "authority-boot",
             connectionGeneration: 1,
-            capabilities: ["execution-plane-v2", "agent-tools-plan-v1"],
+            capabilities: ["execution-plane-v2", "agent-tools-plan-v1", "automation-script-v1"],
           }) as unknown as RunnerIdentity,
       } as unknown as RunnerRegistry,
       executionLeaseMs: 90_000,
@@ -1958,27 +1993,24 @@ integration.sequential("Trigger authority through real Host services and Postgre
     );
     if (!command) throw new Error("Expected the occurrence's command");
     await expect(dispatcher.dispatch(command, new AbortController().signal)).rejects.toThrow(
-      TRIGGER_PROGRAM_VERSION_REFUSAL,
+      TRIGGER_SCRIPT_UPDATE_REASON,
     );
   });
 
-  it("blocks a flagged schedule until its agent replaces the program through MCP", async () => {
+  it("blocks a flagged schedule until its agent replaces the legacy program with a script through MCP", async () => {
     const f = await fixture(undefined, { rootAccessMode: "full-access" });
     const saved = await personCreate(f, f.root);
     const triggerId = saved.trigger.id;
-    const legacy = {
-      ...program,
-      source: 'export default ({ opensteer }) => opensteer.callTool("integration_list", {})',
-      toolContractVersion: 4,
-    };
+    const legacySource =
+      'export default ({ opensteer }) => opensteer.callTool("integration_list", {})';
     await database
       .updateTable("triggerRevisions")
-      .set({ program: legacy })
+      .set({ script: null, legacySource })
       .where("id", "=", saved.revision.id)
       .execute();
     const pending = await store.listPendingCommands();
     vi.setSystemTime(new Date(nextHour));
-    expect(await triggerStore.claimDueSchedules()).toEqual({
+    expect(await triggerStore.claimDueSchedules()).toMatchObject({
       changed: false,
       occurrences: [],
       failures: [],
@@ -1986,12 +2018,12 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const blocked = {
       status: "paused",
       nextFireAt: null,
-      pauseReason: TRIGGER_PROGRAM_UPDATE_REASON,
+      pauseReason: TRIGGER_SCRIPT_UPDATE_REASON,
     };
     const detail = await personDetail(f, triggerId);
     expect(detail).toMatchObject({
       trigger: blocked,
-      revision: { program: legacy },
+      revision: { script: null, legacySource },
       occurrences: [],
     });
     const rpc = createTriggerRpcHandlers(triggers);
@@ -2006,7 +2038,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       { operation: "set_next_fire", nextFireAt: "2040-01-02T10:30:00.000Z" },
     ]) {
       await expect(manage(f, { ...input, triggerId }, null)).rejects.toThrow(
-        TRIGGER_PROGRAM_UPDATE_REASON,
+        TRIGGER_SCRIPT_UPDATE_REASON,
       );
     }
     expect(await store.listPendingCommands()).toEqual(pending);
@@ -2022,23 +2054,28 @@ integration.sequential("Trigger authority through real Host services and Postgre
     });
     expect(opensteer_automation_read.output.parse(read.structuredContent)).toMatchObject({
       automation: blocked,
-      revision: { id: saved.revision.id, program: legacy },
+      revision: { id: saved.revision.id, script: null, legacySource },
     });
     const changed = await client.callTool({
       name: "opensteer_automation_update",
-      arguments: { automationId: triggerId, expectedRevisionId: saved.revision.id, program },
+      arguments: {
+        automationId: triggerId,
+        expectedRevisionId: saved.revision.id,
+        script: { text: script.text },
+      },
     });
     const repaired = opensteer_automation_update.output.parse(changed.structuredContent);
     const next = "2040-01-02T10:00:00.000Z";
     expect(repaired).toMatchObject({
       automation: { status: "active", pauseReason: null, nextFireAt: next },
-      revision: { program },
+      revision: { script },
     });
-    expect(await triggerStore.claimDueSchedules()).toEqual({
+    expect(await triggerStore.claimDueSchedules()).toMatchObject({
       changed: false,
       occurrences: [],
       failures: [],
     });
+    if (!("revision" in repaired)) throw new Error("Expected automation revision");
     expect((await triggerStore.claimDueSchedules(new Date(next))).occurrences).toEqual([
       expect.objectContaining({ triggerId, revisionId: repaired.revision!.id }),
     ]);
@@ -2059,7 +2096,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const { activation } = (await reconcile()).activations[0]!;
     await database
       .updateTable("triggerRevisions")
-      .set({ program: { ...program, toolContractVersion: 4 } })
+      .set({ script: null, legacySource: "export default () => null;" })
       .where("id", "=", saved.revision.id)
       .execute();
     await expect(
@@ -2071,7 +2108,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     expect((await reconcile()).activations).toEqual([]);
     expect(await personDetail(f, triggerId)).toMatchObject({
       activation: { desired: "stopped", observed: "starting", leaseExpiresAt: null },
-      trigger: { status: "paused", pauseReason: TRIGGER_PROGRAM_UPDATE_REASON },
+      trigger: { status: "paused", pauseReason: TRIGGER_SCRIPT_UPDATE_REASON },
     });
     await triggerStore.applyWatchStatus({
       activationId: activation.id,
@@ -2096,7 +2133,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         operation: "update",
         triggerId,
         expectedRevisionId: saved.revision.id,
-        program,
+        script,
       }),
     );
     expect(repaired.trigger.status).toBe("active");
@@ -2115,7 +2152,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         anchorThreadId: f.root.id,
         idempotencyKey: randomUUID(),
         name: "Flagged webhook",
-        program,
+        script,
         source: { kind: "webhook" },
       },
       null,
@@ -2126,22 +2163,21 @@ integration.sequential("Trigger authority through real Host services and Postgre
     }
     await database
       .updateTable("triggerRevisions")
-      .set({ program: { ...program, toolContractVersion: 4 } })
+      .set({ script: null, legacySource: "export default () => null;" })
       .where("id", "=", saved.revision.id)
       .execute();
     const delivery = {
       routeKey: saved.trigger.webhookRouteKey,
-      secret: saved.webhook.secret,
       method: "POST",
       headers: {},
       payload: null,
     };
-    await expect(triggers.acceptWebhook(delivery)).rejects.toThrow(TRIGGER_PROGRAM_UPDATE_REASON);
+    await expect(triggers.acceptWebhook(delivery)).rejects.toThrow(TRIGGER_SCRIPT_UPDATE_REASON);
     await manage(f, { operation: "set_status", triggerId, status: "paused" }, null);
     const repaired = createdSchema.parse(
       await manage(
         f,
-        { operation: "update", triggerId, expectedRevisionId: saved.revision.id, program },
+        { operation: "update", triggerId, expectedRevisionId: saved.revision.id, script },
         null,
       ),
     );
@@ -2151,106 +2187,83 @@ integration.sequential("Trigger authority through real Host services and Postgre
       repaired.revision.id,
     );
   });
-  it.each([5] as const)(
-    "reconciles Watch version %s against an old stored advertisement",
-    async (version) => {
-      const f = await fixture();
-      const saved = await personCreate(
-        f,
-        f.fullChild,
-        {
-          kind: "watch",
-        },
-        {
-          ...program,
-          toolContractVersion: version,
+  it("reconciles Watch scripts against an old stored advertisement", async () => {
+    const f = await fixture();
+    const saved = await personCreate(f, f.fullChild, { kind: "watch" }, script);
+    await database
+      .updateTable("runners")
+      .set({
+        capabilities: sql<
+          RunnerDescriptor["capabilities"]
+        >`${JSON.stringify(["filesystem", "agent-tools-plan-v1"])}::jsonb`,
+      })
+      .where("id", "=", f.runnerId)
+      .execute();
+    const identity = {
+      runnerId: f.runnerId,
+      bootId: "authority-boot",
+      connectionGeneration: 1,
+      capabilities: ["agent-tools-plan-v1"],
+      modules: {
+        agents: {},
+      },
+    } as unknown as RunnerIdentity;
+    const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
+      async () => undefined,
+    );
+    const service = new WatchService({
+      runnerStore: store,
+      store: triggerStore,
+      runners: {
+        identityForEnvironment: () => identity,
+        reconcileWatches,
+      },
+      browser: {
+        hasBrowserProfiles: async () => false,
+      },
+      browserCdpUrl: "wss://host.test",
+      controlTokens: {
+        issue: () => ({
+          token: "control",
+          expiresAt: nextHour,
+        }),
+      },
+      watchBrowserTokens: {
+        issue: () => ({
+          token: "browser",
+          expiresAt: nextHour,
+        }),
+      },
+      mcpUrl: "https://host.test",
+      onChanged: vi.fn(),
+      onError: vi.fn(),
+    });
+    try {
+      await check(
+        "Runner downgrade Watch",
+        "Host reconciliation",
+        "script",
+        "backoff without activation",
+        async () => {
+          await service.reconcile(f.environmentId);
+          const desired = reconcileWatches.mock.calls[0]?.[2];
+          const detail = await personDetail(f, saved.trigger.id);
+          expect(desired).toEqual([]);
+          expect(detail.activation).toMatchObject({
+            observed: "backoff",
+            lastError: "Update this computer to run script automations.",
+          });
+          return {
+            desired,
+            detail,
+          };
         },
       );
-      await database
-        .updateTable("runners")
-        .set({
-          capabilities: sql<
-            RunnerDescriptor["capabilities"]
-          >`${JSON.stringify(["filesystem", "agent-tools-plan-v1"])}::jsonb`,
-        })
-        .where("id", "=", f.runnerId)
-        .execute();
-      const identity = {
-        runnerId: f.runnerId,
-        bootId: "authority-boot",
-        connectionGeneration: 1,
-        capabilities: ["agent-tools-plan-v1"],
-        modules: {
-          agents: {},
-        },
-      } as unknown as RunnerIdentity;
-      const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
-        async () => undefined,
-      );
-      const service = new WatchService({
-        runnerStore: store,
-        store: triggerStore,
-        runners: {
-          identityForEnvironment: () => identity,
-          reconcileWatches,
-        },
-        browser: {
-          hasBrowserProfiles: async () => false,
-        },
-        browserCdpUrl: "wss://host.test",
-        controlTokens: {
-          issue: () => ({
-            token: "control",
-            expiresAt: nextHour,
-          }),
-        },
-        watchBrowserTokens: {
-          issue: () => ({
-            token: "browser",
-            expiresAt: nextHour,
-          }),
-        },
-        mcpUrl: "https://host.test",
-        onChanged: vi.fn(),
-        onError: vi.fn(),
-      });
-      try {
-        await check(
-          "Runner downgrade Watch",
-          "Host reconciliation",
-          `version ${version}`,
-          version === 5 ? "backoff without activation" : "activation sent",
-          async () => {
-            await service.reconcile(f.environmentId);
-            const desired = reconcileWatches.mock.calls[0]?.[2];
-            const detail = await personDetail(f, saved.trigger.id);
-            if (version === 5) {
-              expect(desired).toEqual([]);
-              expect(detail.activation).toMatchObject({
-                observed: "backoff",
-                lastError:
-                  "Update this computer to run automation programs with tool contract version 5.",
-              });
-            } else {
-              expect(desired).toEqual([
-                expect.objectContaining({
-                  triggerId: saved.trigger.id,
-                }),
-              ]);
-              expect(detail.activation?.lastError).toBeNull();
-            }
-            return {
-              desired,
-              detail,
-            };
-          },
-        );
-      } finally {
-        await service.close();
-      }
-    },
-  );
-  it("admits current-contract create/update through both current MCP and person commands", async () => {
+    } finally {
+      await service.close();
+    }
+  });
+  it("admits script create/update through both current MCP and person commands", async () => {
     const f = await fixture(undefined, {
       rootAccessMode: "full-access",
     });
@@ -2261,16 +2274,13 @@ integration.sequential("Trigger authority through real Host services and Postgre
         },
       },
     } as unknown as HostApiServerContext;
-    const code = {
-      ...program,
-      toolContractVersion: 5 as const,
-    };
+    const code: AutomationScript = { ...script };
     const client = await connectMcp(await mcpEndpoint(), f.rootToken);
     await check(
-      "v3 current Runner admission",
+      "script current Runner admission",
       "person and agent",
       "create/update",
-      "current contract retained",
+      "script retained",
       async () => {
         const person = createdSchema.parse(
           await handleTriggerCommand(
@@ -2281,7 +2291,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
               input: {
                 anchorThreadId: f.root.id,
                 name: "Current person",
-                program: code,
+                script: code,
                 source: cron,
               },
             },
@@ -2297,22 +2307,25 @@ integration.sequential("Trigger authority through real Host services and Postgre
               triggerId: person.trigger.id,
               input: {
                 expectedRevisionId: person.revision.id,
-                program: {
+                script: {
                   ...code,
-                  source: "export default () => 'current'",
+                  text: "console.log('current')",
                 },
               },
             },
             context,
           ),
         );
-        expect(updated.revision.program.toolContractVersion).toBe(5);
+        expect(updated.revision.script).toEqual({
+          interpreter: null,
+          text: "console.log('current')",
+        });
         const mcp = await client.callTool({
           name: "opensteer_automation_create",
           arguments: {
             taskId: f.root.id,
             name: "Current agent",
-            program: code,
+            script: { text: code.text },
             source: {
               kind: "schedule",
               cron: "0 * * * *",
@@ -2322,22 +2335,24 @@ integration.sequential("Trigger authority through real Host services and Postgre
         });
         expect(mcp.isError).not.toBe(true);
         const saved = opensteer_automation_create.output.parse(mcp.structuredContent);
+        if (!("automation" in saved)) throw new Error("Expected automation creation output");
         const changed = await client.callTool({
           name: "opensteer_automation_update",
           arguments: {
             automationId: saved.automation!.id,
             expectedRevisionId: saved.revision!.id,
-            program: {
-              ...code,
-              source: "export default () => 'MCP current'",
+            script: {
+              text: "console.log('MCP current')",
             },
           },
         });
         expect(changed.isError).not.toBe(true);
-        expect(
-          opensteer_automation_update.output.parse(changed.structuredContent).revision!.program
-            .toolContractVersion,
-        ).toBe(5);
+        const changedOutput = opensteer_automation_update.output.parse(changed.structuredContent);
+        if (!("revision" in changedOutput)) throw new Error("Expected automation revision");
+        expect(changedOutput.revision!.script).toEqual({
+          interpreter: null,
+          text: "console.log('MCP current')",
+        });
         return {
           person: updated,
           agent: changed,
@@ -2353,7 +2368,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       capabilities: ["browser-profile-create-v1"],
     },
   ] as const)(
-    "refuses current-contract admission for old stored advertisements %j through commands and MCP",
+    "refuses script admission for old stored advertisements %j through commands and MCP",
     async ({ capabilities }) => {
       const f = await fixture([...capabilities], {
         rootAccessMode: "full-access",
@@ -2365,114 +2380,104 @@ integration.sequential("Trigger authority through real Host services and Postgre
           },
         },
       } as unknown as HostApiServerContext;
-      const code = {
-        ...program,
-        toolContractVersion: 5 as const,
-      };
-      const reason =
-        "Update this computer to run automation programs with tool contract version 5.";
+      const code: AutomationScript = { ...script };
+      const reason = "Update this computer to run script automations.";
       const endpoint = await mcpEndpoint();
       const client = await connectMcp(endpoint, f.rootToken);
-      await check(
-        "v3 old Runner admission",
-        "person and agent",
-        "create/update",
-        reason,
-        async () => {
-          await expect(
-            handleTriggerCommand(
-              triggers,
-              {
-                type: "trigger.create",
-                idempotencyKey: randomUUID(),
-                input: {
-                  anchorThreadId: f.root.id,
-                  name: "Unsupported v3",
-                  program: code,
-                  source: cron,
-                },
-              },
-              context,
-            ),
-          ).rejects.toMatchObject({
-            message: reason,
-          });
-          // Current session can target an old computer: the domain must refuse it even
-          // when the authoring session itself advertises the current input schema.
-          const currentClient = await connectMcp(await mcpEndpoint(), f.rootToken);
-          const refused = await currentClient.callTool({
-            name: "opensteer_automation_create",
-            arguments: {
-              taskId: f.root.id,
-              name: "Unsupported MCP v3",
-              program: code,
-              source: {
-                kind: "schedule",
-                cron: "0 * * * *",
-                timezone: "UTC",
+      await check("old Runner admission", "person and agent", "create/update", reason, async () => {
+        await expect(
+          handleTriggerCommand(
+            triggers,
+            {
+              type: "trigger.create",
+              idempotencyKey: randomUUID(),
+              input: {
+                anchorThreadId: f.root.id,
+                name: "Unsupported script",
+                script: code,
+                source: cron,
               },
             },
-          });
-          expect(refused.isError).toBe(true);
-          expect(JSON.stringify(refused)).toContain(reason);
-          await database
-            .updateTable("runners")
-            .set({
-              capabilities: sql<
-                RunnerDescriptor["capabilities"]
-              >`${JSON.stringify(["trigger-program-v5"])}::jsonb`,
-            })
-            .where("id", "=", f.runnerId)
-            .execute();
-          const saved = await personCreate(f, f.root, cron, program);
-          await database
-            .updateTable("runners")
-            .set({
-              capabilities: sql<
-                RunnerDescriptor["capabilities"]
-              >`${JSON.stringify(capabilities)}::jsonb`,
-            })
-            .where("id", "=", f.runnerId)
-            .execute();
-          const before = await personDetail(f, saved.trigger.id);
-          await expect(
-            handleTriggerCommand(
-              triggers,
-              {
-                type: "trigger.update",
-                idempotencyKey: randomUUID(),
-                triggerId: saved.trigger.id,
-                input: {
-                  expectedRevisionId: saved.revision!.id,
-                  program: code,
-                },
-              },
-              context,
-            ),
-          ).rejects.toMatchObject({
-            message: reason,
-          });
-          const refusedUpdate = await currentClient.callTool({
-            name: "opensteer_automation_update",
-            arguments: {
-              automationId: saved.trigger.id,
-              expectedRevisionId: saved.revision!.id,
-              program: code,
+            context,
+          ),
+        ).rejects.toMatchObject({
+          message: reason,
+        });
+        // Current session can target an old computer: the domain must refuse it even
+        // when the authoring session itself advertises the current input schema.
+        const currentClient = await connectMcp(await mcpEndpoint(), f.rootToken);
+        const refused = await currentClient.callTool({
+          name: "opensteer_automation_create",
+          arguments: {
+            taskId: f.root.id,
+            name: "Unsupported MCP script",
+            script: { text: code.text },
+            source: {
+              kind: "schedule",
+              cron: "0 * * * *",
+              timezone: "UTC",
             },
-          });
-          expect(refusedUpdate.isError).toBe(true);
-          expect(JSON.stringify(refusedUpdate)).toContain(reason);
-          expect(await personDetail(f, saved.trigger.id)).toEqual(before);
-          const tool = (await client.listTools()).tools.find(
-            ({ name }) => name === "opensteer_automation_create",
-          );
-          expect(tool).toBeDefined();
-          return {
-            refused,
-            capabilities,
-          };
-        },
-      );
+          },
+        });
+        expect(refused.isError).toBe(true);
+        expect(JSON.stringify(refused)).toContain(reason);
+        await database
+          .updateTable("runners")
+          .set({
+            capabilities: sql<
+              RunnerDescriptor["capabilities"]
+            >`${JSON.stringify(["automation-script-v1"])}::jsonb`,
+          })
+          .where("id", "=", f.runnerId)
+          .execute();
+        const saved = await personCreate(f, f.root, cron, script);
+        await database
+          .updateTable("runners")
+          .set({
+            capabilities: sql<
+              RunnerDescriptor["capabilities"]
+            >`${JSON.stringify(capabilities)}::jsonb`,
+          })
+          .where("id", "=", f.runnerId)
+          .execute();
+        const before = await personDetail(f, saved.trigger.id);
+        await expect(
+          handleTriggerCommand(
+            triggers,
+            {
+              type: "trigger.update",
+              idempotencyKey: randomUUID(),
+              triggerId: saved.trigger.id,
+              input: {
+                expectedRevisionId: saved.revision!.id,
+                script: code,
+              },
+            },
+            context,
+          ),
+        ).rejects.toMatchObject({
+          message: reason,
+        });
+        const refusedUpdate = await currentClient.callTool({
+          name: "opensteer_automation_update",
+          arguments: {
+            automationId: saved.trigger.id,
+            expectedRevisionId: saved.revision!.id,
+            script: { text: code.text },
+          },
+        });
+        expect(refusedUpdate.isError).toBe(true);
+        expect(JSON.stringify(refusedUpdate)).toContain(reason);
+        expect(await personDetail(f, saved.trigger.id)).toEqual(before);
+        const tool = (await client.listTools()).tools.find(
+          ({ name }) => name === "opensteer_automation_create",
+        );
+        expect(tool).toBeDefined();
+        return {
+          refused,
+          capabilities,
+        };
+      });
     },
   );
 
@@ -2480,7 +2485,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     capabilities: RunnerDescriptor["capabilities"] = [
       "filesystem",
       "environment-list-v1",
-      "trigger-program-v5",
+      "automation-script-v1",
     ],
     options: { readonly rootAccessMode?: Thread["accessMode"] } = {},
   ) {
@@ -2721,7 +2726,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     f: Fixture,
     anchor: Thread,
     source: TriggerSource = cron,
-    code: TriggerProgram = program,
+    code: AutomationScript = script,
   ) {
     return createdSchema.parse(
       await manage(
@@ -2729,7 +2734,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         {
           ...createInput(anchor.id),
           source,
-          program: code,
+          script: code,
         },
         null,
       ),
@@ -2744,7 +2749,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       idempotencyKey: randomUUID(),
       name: "Authority acceptance Trigger",
       operation: "create",
-      program,
+      script,
       source: cron,
     };
   }
@@ -2791,6 +2796,12 @@ integration.sequential("Trigger authority through real Host services and Postgre
     if (operation === "set_next_fire") args.action = "reschedule";
     if (operation === "run") args.action = "run_now";
     if (operation === "cancel") args.action = "cancel_pending";
+    if ("script" in parsed && parsed.script) {
+      args.script =
+        parsed.script.interpreter === null
+          ? { text: parsed.script.text }
+          : { interpreter: parsed.script.interpreter, text: parsed.script.text };
+    }
     if ("source" in parsed && parsed.source?.kind === "schedule") {
       const schedule = parsed.source.schedule;
       args.source = {
@@ -2822,7 +2833,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       return Object.fromEntries(
         Object.entries(value).map(([key, item]) => [
           keys[key] ?? key,
-          ["program", "source", "result", "payload"].includes(key) ? item : domain(item),
+          ["script", "program", "source", "result", "payload"].includes(key) ? item : domain(item),
         ]),
       );
     };
@@ -2904,7 +2915,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
       runnerBootId: "authority-boot",
       runnerId: f.runnerId,
       threadId: anchor.id,
-      toolContractVersion: 5,
     });
     return token;
   }
@@ -2931,7 +2941,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
       executionGeneration: active.executionGeneration,
       revisionId: created.revision.id,
       triggerId: created.trigger.id,
-      toolContractVersion: 5,
     });
     return token;
   }

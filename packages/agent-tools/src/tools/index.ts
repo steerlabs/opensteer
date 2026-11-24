@@ -38,7 +38,9 @@ import {
   opensteer_automation_list,
   opensteer_automation_create,
 } from "./triggers.js";
+import { commandTools } from "./commands.js";
 export const agentTools = [
+  ...commandTools,
   ...aiAccountTools,
   ...tabTools,
   ...appTools,
@@ -83,6 +85,7 @@ export const requestToolNames: readonly AgentToolName[] = agentTools
   .filter((tool) => "opensRequest" in tool && tool.opensRequest === true)
   .map(({ name }) => name);
 
+export { connectionStateAreas, connectionStateDescription, type StateArea } from "./commands.js";
 export * from "./apps.js";
 export * from "./browser.js";
 export * from "./computer.js";

@@ -1,7 +1,5 @@
 import { settingsDestinationTarget } from "./settings-home-model.js";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { workHomeMark } from "@opensteer/client/host";
-import { useWorkPolicy } from "@opensteer/client/react";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { SettingsHomeForm } from "./settings-home-form.js";
 import { GeneralSettingsController } from "./settings-general-controller.js";
@@ -18,24 +16,13 @@ const pages = {
   "sign-ins": SignInsSettingsController,
   "external-agents": ExternalAgentsSettingsController,
 };
-import { DeploymentGate, useAttachedHost, useAttachedHostOf } from "./deployment-gate.js";
+import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import type { SettingsPage } from "./settings-form.types.js";
 export function SettingsScreen() {
   const navigation = useNavigation();
   const { selection } = useMobileState();
-  const deploymentId = selection.deploymentId;
-  const work = workHomeMark(useWorkPolicy(useAttachedHostOf(deploymentId)));
   return (
     <SettingsHomeForm
-      work={
-        work && deploymentId
-          ? {
-              badge: work.badge,
-              title: work.seeTitle,
-              onPress: () => navigation.navigate("WorkHomePolicy", { deploymentId }),
-            }
-          : null
-      }
       onOpen={(route) => {
         // With no Home open, the picker says which page it is choosing a Home for.
         const target = settingsDestinationTarget(route, selection.deploymentId);

@@ -1,7 +1,3 @@
-import {
-  computerActionsUseClipboard,
-  computerClipboardRefusal,
-} from "../computer-use/computer-clipboard.js";
 import { computerMachineProblem } from "./computer-use-discovery.js";
 import { gatherComputerAccess } from "./computer-access.js";
 import {
@@ -229,8 +225,24 @@ export interface ComputerSessionCaller {
   readonly recheck: () => Promise<void>;
 }
 
-/** A computer call's caller: a Run, or a connected agent's session. */
-type ComputerCaller = ToolCaller & { readonly session?: ComputerSessionCaller };
+/**
+ * An automation script driving approved apps or phone screens through `computer_use`.
+ * Every callback re-checks the automation's live binding before sending a command.
+ */
+export interface ComputerProgramCaller {
+  readonly ownerUserId: UserId;
+  readonly threadId: ThreadId;
+  readonly bindingId: string;
+  readonly replKey: RunId;
+  readonly recheck?: () => Promise<void>;
+  readonly connectionWork?: true;
+}
+
+/** A computer call's caller: a Run, a connected agent's session, or an automation script. */
+type ComputerCaller = ToolCaller & {
+  readonly session?: ComputerSessionCaller;
+  readonly program?: ComputerProgramCaller;
+};
 
 /**
  * The key a session's computer work is kept under in the REPL and the computer-use service: its
@@ -262,6 +274,7 @@ export function endSessionComputerWork(
 function computerOwner(caller: ComputerCaller): UserId {
   if (caller.run) return caller.run.requestedBy;
   if (caller.session) return caller.session.ownerUserId;
+  if (caller.program) return caller.program.ownerUserId;
   throw refused("conflict", "This computer context has ended.");
 }
 
@@ -1317,13 +1330,6 @@ export class DeviceService {
     }
     const rawArgs = { ...args };
     delete rawArgs.emit;
-    // Refused before the action is sent: the Mac's clipboard is in no grant.
-    if (
-      row === "act" &&
-      (caller.session || caller.connectionWork) &&
-      computerActionsUseClipboard(rawArgs)
-    )
-      throw refused("forbidden", computerClipboardRefusal);
     const internalArgs = row === "observe" && mac ? { operation, ...rawArgs } : rawArgs;
     if (operation === "bind" && mac) {
       ComputerUseBindParamsSchema.parse(rawArgs);
@@ -1740,12 +1746,22 @@ export class DeviceService {
       throw new DeviceAccessRefusal("device-asleep", current.deviceId, "apps", current.runnerName);
   }
 
-  /** The access facts a computer call reads: the Run's, or the session binding's. */
+  /** The access facts a computer call reads: the Run's, the session binding's, or the automation's. */
   #computerAccessFor(caller: ComputerCaller, tools?: readonly CallableIntegrationTool[]) {
     if (caller.run)
       return this.computerAccess(
         { ownerUserId: caller.run.requestedBy, threadId: caller.threadId },
         caller.run,
+        tools,
+      );
+    if (caller.program)
+      return this.computerAccess(
+        {
+          ownerUserId: caller.program.ownerUserId,
+          agentBindingId: caller.program.bindingId,
+          runId: caller.program.replKey,
+        },
+        undefined,
         tools,
       );
     const session = caller.session;
@@ -1761,9 +1777,31 @@ export class DeviceService {
     );
   }
 
-  /** What the computer-use service checks a session against: the Run, or the session binding. */
+  /** What the computer-use service checks a session against: the Run, session, or automation binding. */
   #computerUseAuthority(caller: ComputerCaller): ComputerUseContext {
     if (caller.run) return caller.run;
+    if (caller.program) {
+      const program = caller.program;
+      const authority: ComputerUseSessionAuthority = {
+        kind: "agent-session",
+        runId: program.replKey,
+        bindingGeneration: 0,
+        threadId: program.threadId,
+        assertDispatch: async () => {
+          await program.recheck?.();
+        },
+        assertActive: async () => {
+          await program.recheck?.();
+          const tools = await this.listCallableTools({
+            ownerUserId: program.ownerUserId,
+            agentBindingId: program.bindingId,
+          });
+          if (!tools.some((tool) => tool.server.transport.type === "computer"))
+            throw refused("forbidden", "This automation no longer has an app or phone.");
+        },
+      };
+      return authority;
+    }
     const session = caller.session;
     if (!session) throw refused("conflict", "This computer context has ended.");
     const authority: ComputerUseSessionAuthority = {
@@ -1790,8 +1828,13 @@ export class DeviceService {
     caller: ComputerCaller,
     request: ComputerReplInvocation,
   ): Promise<ReplReply> {
-    if (!caller?.run && !caller?.session)
+    if (!caller?.run && !caller?.session && !caller?.program)
       throw refused("conflict", "This computer context has ended.");
+    if (caller.program) {
+      request.signal.throwIfAborted();
+      await caller.program.recheck?.();
+      request.signal.throwIfAborted();
+    }
     const session = caller.session;
     // A session stays on its one target, and re-admits before each command it sends.
     if (session) {
@@ -2087,6 +2130,24 @@ export class DeviceService {
       sleep: sleep.signal,
       close: () => this.#connectedComputerWork.delete(sleep),
     };
+  }
+
+  async runProgramComputerCode(program: ComputerProgramCaller, code: string, signal: AbortSignal) {
+    await program.recheck?.();
+    const caller: ComputerCaller = {
+      run: null,
+      threadId: program.threadId,
+      agentBindingId: program.bindingId,
+      ...(program.connectionWork ? { connectionWork: true as const } : {}),
+      program,
+    };
+    this.#replCallers.set(`${program.replKey}:0`, caller);
+    return this.computerRepl.execute(
+      { runId: program.replKey, generation: 0, reportUnknownEffects: true },
+      code,
+      signal,
+      (request) => this.#invokeComputerRepl(caller, request),
+    );
   }
 
   async runSessionComputerCode(session: ComputerSessionCaller, code: string, signal: AbortSignal) {

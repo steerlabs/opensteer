@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { createServer as createTcpServer, type AddressInfo } from "node:net";
 import { createInterface } from "node:readline";
+import type { Duplex } from "node:stream";
 import {
   BrowserAttachTicketClaimsSchema,
   browserRuntimeWireVersion,
@@ -134,8 +135,9 @@ export function attachTicket(runtimeId: string, actor: "agent" | "person"): stri
 
 export function stopShellData() {
   const ticket = [randomUUID(), randomUUID(), randomUUID()].join(".");
-  const connected = Promise.withResolvers<WebSocket>();
+  const connected = Promise.withResolvers<Duplex>();
   let socket: WebSocket | undefined;
+  let wire: Duplex | undefined;
   return {
     ticket,
     accept(authorization: string | undefined, incoming: WebSocket) {
@@ -144,19 +146,22 @@ export function stopShellData() {
         return;
       }
       socket = incoming;
-      connected.resolve(incoming);
+      // Attach the stream immediately so early server frames (the SSH
+      // identification banner) buffer until the SSH client connects.
+      wire = createWebSocketStream(incoming);
+      wire.on("error", () => undefined);
+      connected.resolve(wire);
     },
     async start() {
-      const incoming = await withTimeout(connected.promise, 10_000, {
+      const stream = await withTimeout(connected.promise, 10_000, {
         timeoutError: () => new Error("The shell did not connect to its data socket"),
       });
       const proxy = createTcpServer((tcp) => {
-        const wire = createWebSocketStream(incoming);
-        tcp.on("error", () => wire.destroy());
-        wire.on("error", () => tcp.destroy());
-        tcp.once("close", () => wire.destroy());
-        wire.once("close", () => tcp.destroy());
-        tcp.pipe(wire).pipe(tcp);
+        tcp.on("error", () => stream.destroy());
+        stream.on("error", () => tcp.destroy());
+        tcp.once("close", () => stream.destroy());
+        stream.once("close", () => tcp.destroy());
+        tcp.pipe(stream).pipe(tcp);
       });
       proxy.listen(0, "127.0.0.1");
       await once(proxy, "listening");
@@ -175,6 +180,8 @@ export function stopShellData() {
           "IdentityFile=none",
           "-o",
           "IdentityAgent=none",
+          "-o",
+          "PreferredAuthentications=none",
           "-o",
           "BatchMode=yes",
           "-l",
@@ -221,6 +228,7 @@ export function stopShellData() {
       }
     },
     close() {
+      wire?.destroy();
       socket?.terminate();
     },
   };

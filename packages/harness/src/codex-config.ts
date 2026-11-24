@@ -172,13 +172,61 @@ function providerCredentialProgramRefusal(
   providerId: string,
   provider?: Readonly<Record<string, unknown>>,
 ): string | undefined {
-  if (provider?.auth !== undefined) {
+  if (provider?.auth !== undefined && provider?.auth !== null) {
     return "Your Codex model provider runs a local command to sign in, which Opensteer does not run for tasks a connected agent or chat started.";
   }
-  if (provider?.aws !== undefined || isAmazonBedrockProvider(providerId, provider)) {
+  if (
+    (provider?.aws !== undefined && provider?.aws !== null) ||
+    isAmazonBedrockProvider(providerId, provider)
+  ) {
     return "Your Codex model provider uses AWS credentials (which can run a local credential command or SSO helper from your AWS configuration), which Opensteer does not run for tasks a connected agent or chat started.";
   }
   return undefined;
+}
+
+/**
+ * Checks Codex's merged effective configuration (returned by `config/read` in
+ * stripped mode) so settings inherited from system or managed layers (such as
+ * `/etc/codex/config.toml`, MDM, or enterprise-managed bundles) cannot bypass
+ * Opensteer's per-user home isolation.
+ */
+export function checkCodexEffectiveConfig(
+  effective: Readonly<Record<string, unknown>>,
+): { readonly ok: true } | { readonly ok: false; readonly message: string } {
+  const notify = effective.notify;
+  const hasNotify = Array.isArray(notify)
+    ? notify.length > 0
+    : typeof notify === "string"
+      ? notify.trim().length > 0
+      : notify !== undefined && notify !== null && notify !== false;
+  if (hasNotify) {
+    return {
+      ok: false,
+      message:
+        "Your Codex configuration sets a notify command (for example in system or managed configuration), which Opensteer does not run for tasks a connected agent or chat started.",
+    };
+  }
+  const profileTable =
+    typeof effective.profile === "string" &&
+    isRecord(effective.profiles) &&
+    isRecord(effective.profiles[effective.profile])
+      ? (effective.profiles[effective.profile] as Record<string, unknown>)
+      : undefined;
+  const activeProviderId =
+    typeof profileTable?.model_provider === "string"
+      ? profileTable.model_provider
+      : typeof effective.model_provider === "string"
+        ? effective.model_provider
+        : "openai";
+  const rawProvider =
+    isRecord(effective.model_providers) && isRecord(effective.model_providers[activeProviderId])
+      ? (effective.model_providers[activeProviderId] as Record<string, unknown>)
+      : undefined;
+  const refusal = providerCredentialProgramRefusal(activeProviderId, rawProvider);
+  if (refusal) {
+    return { ok: false, message: refusal };
+  }
+  return { ok: true };
 }
 
 function sanitizeSafeTomlObject(value: unknown): Record<string, TomlValue> | undefined {

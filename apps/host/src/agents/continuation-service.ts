@@ -292,6 +292,7 @@ export async function continuationMessage(
       return `Plugin execution ${execution} was ${request.cancellationReason === "plugin-expired" ? "expired" : "interrupted"}. Earlier calls may have taken effect. Check current state with a safe read; never rerun the program blindly.`;
     return `The person ${request.status === "fulfilled" ? "answered" : "declined"} plugin Request ${request.id}. Call plugin_resume({executionId:${JSON.stringify(execution)}}) to collect the execution's result. Do not repeat the call or program; earlier effects are not rolled back.`;
   }
+  if (request.command) return commandContinuation(request);
   if (request.mode === "durable" && request.status === "cancelled") {
     return `Request ${request.id} was cancelled (${request.cancellationReason}). The requested resource or authority is no longer available. Continue without it; opensteer_request_answer shows status, not the answer.`;
   }
@@ -677,6 +678,43 @@ function passwordSignInContinuation(
       return `The saved-login release for ${site} stopped on ${computerName} before anything was released. Call saved_login_request again if the task still needs it.`;
     case "session-closed":
       return `The browser tab closed before the saved login for ${site} was released.`;
+  }
+}
+
+/** What became of a command the agent proposed, from the Request's own record of it. */
+export function commandContinuation(request: Request): string {
+  const command = request.command!;
+  const asked = `your proposed change “${command.sentence ?? command.summary}” (Request ${request.id})`;
+  const Asked = `${asked[0]!.toUpperCase()}${asked.slice(1)}`;
+  if (request.status === "withdrawn") return `${Asked} was withdrawn; nothing changed.`;
+  if (request.status === "cancelled")
+    return request.cancellationReason === "authority-revoked"
+      ? `${Asked} closed: you can no longer ask for it, so nothing changed.`
+      : `${Asked} was cancelled (${request.cancellationReason}); nothing changed.`;
+  if (request.status === "declined") {
+    const words =
+      request.response?.kind === "form"
+        ? Object.values(request.response.answers)
+            .flat()
+            .filter((value) => value !== "decline")
+            .join(" ")
+            .trim()
+        : "";
+    return [
+      `The person declined ${asked}.`,
+      ...(words ? [`They said: ${JSON.stringify(words.slice(0, 2_000))}`] : []),
+      "Nothing changed. The same proposal is answered as declined for a day; do not repeat it unless something changed.",
+    ].join("\n");
+  }
+  switch (command.outcome?.status) {
+    case "done":
+      return `The person approved ${asked}${command.approved?.changed ? " after changing it" : ""}, and it was made.${command.outcome.result === undefined ? "" : ` Result: ${JSON.stringify(command.outcome.result).slice(0, 4_000)}`}`;
+    case "failed":
+      return `The person approved ${asked}${command.approved?.changed ? " after changing it" : ""}, but it did not happen (${command.outcome.code}): ${command.outcome.message}`;
+    case "unknown":
+      return `The person approved ${asked}, but the Home does not know whether it took effect. Check the current state with a safe read before doing anything else; never repeat it blindly.`;
+    default:
+      return `The person approved ${asked}; it is still being made.`;
   }
 }
 

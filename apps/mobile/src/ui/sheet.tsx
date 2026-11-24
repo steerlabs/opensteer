@@ -156,9 +156,9 @@ function SheetFrame(props: {
         >
           <View style={styles.head}>
             <View style={styles.headSide} />
+            {/* The sheet's name reads whole: it wraps between Close and its balance. */}
             <AppText
               maxFontSizeMultiplier={controlFontScaleLimit}
-              numberOfLines={1}
               role="title"
               style={styles.title}
             >

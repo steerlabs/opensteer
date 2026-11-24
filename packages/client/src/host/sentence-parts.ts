@@ -12,7 +12,8 @@
  * from a page or a provider, not through a name's entrance. Screens isolate each from the
  * direction of the text around it and draw a name in its own weight (the web's `SentenceText`);
  * in plain text (`plainSentence`: a label read aloud, an alert, a copy, the phone) a name stands
- * in quotation marks, so a person can tell where a name ends and Opensteer's words begin.
+ * in quotation marks, so a person can tell where a name ends and Opensteer's words begin. A name
+ * drawn alone (a heading, a title) has nothing to be told from and stands unquoted, everywhere.
  */
 export type SentencePart = string | { readonly address: string } | { readonly name: string };
 
@@ -55,15 +56,20 @@ export function siteOrigin(value: string): string | null {
   }
 }
 
-/** `Send ${code} to ${address}.`, as parts: each interpolated value is an address. */
+/** A name a person gave (a computer, a profile, an app), never drawn as an address. */
+export function named(value: string): { readonly name: string } {
+  return { name: value };
+}
+
+/** `Send ${code} to ${address}.`, as parts: each bare string is an address; `named(...)` is a name. */
 export function sentence(
   strings: TemplateStringsArray,
-  ...addresses: readonly string[]
+  ...slots: readonly (string | { readonly name: string })[]
 ): readonly SentencePart[] {
   return strings.flatMap((words, index) => {
-    const address = addresses[index];
+    const slot = slots[index];
     const parts: SentencePart[] = words === "" ? [] : [words];
-    if (address !== undefined) parts.push({ address });
+    if (slot !== undefined) parts.push(typeof slot === "string" ? { address: slot } : slot);
     return parts;
   });
 }
@@ -93,12 +99,17 @@ export function partText(part: { readonly address: string } | { readonly name: s
 
 /**
  * The sentence as plain text: Opensteer's words as written, each address cleaned, each name
- * cleaned and in quotation marks.
+ * cleaned and in quotation marks (unquoted when it is the whole sentence).
  */
 export function plainSentence(parts: readonly SentencePart[]): string {
+  const quote = parts.length > 1;
   return parts
     .map((part) =>
-      typeof part === "string" ? part : "address" in part ? partText(part) : `“${partText(part)}”`,
+      typeof part === "string"
+        ? part
+        : "address" in part || !quote
+          ? partText(part)
+          : `“${partText(part)}”`,
     )
     .join("");
 }
@@ -111,11 +122,12 @@ export function plainSentence(parts: readonly SentencePart[]): string {
  */
 export function isolatedPlainSentence(parts: readonly SentencePart[]): string {
   const isolate = (text: string) => `\u2068${text}\u2069`;
+  const quote = parts.length > 1;
   return parts
     .map((part) =>
       typeof part === "string"
         ? part
-        : "address" in part
+        : "address" in part || !quote
           ? isolate(partText(part))
           : `“${isolate(partText(part))}”`,
     )
@@ -127,15 +139,16 @@ export function isolatedPlainSentence(parts: readonly SentencePart[]): string {
  * with a name or an address goes through. An address breaks only at its joints and is never
  * hyphenated (a word joiner between each two of a part's characters, a zero-width space at each
  * joint); each name and address is isolated from the direction of the text around it; a name
- * stands in quotation marks. Its words are the same as `plainSentence`'s; what it adds is
- * invisible, so it is for drawing, never for a copy.
+ * stands in quotation marks unless it is the whole sentence. Its words are the same as
+ * `plainSentence`'s; what it adds is invisible, so it is for drawing, never for a copy.
  */
 export function phoneSentence(parts: readonly SentencePart[]): string {
   const isolate = (text: string) => `\u2068${text}\u2069`;
+  const quote = parts.length > 1;
   return parts
     .map((part) => {
       if (typeof part === "string") return part;
-      if ("name" in part) return `“${isolate(partText(part))}”`;
+      if ("name" in part) return quote ? `“${isolate(partText(part))}”` : isolate(partText(part));
       return isolate(
         addressParts(partText(part))
           .map((piece) => Array.from(piece).join("\u2060"))

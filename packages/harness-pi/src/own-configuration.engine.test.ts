@@ -3,11 +3,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createId, ModelSelectionSchema, type ThreadAccessMode } from "@opensteer/core";
-import {
-  nativeUserHarnessRuntimeBoundary,
-  type HarnessEvent,
-  type HarnessSessionContext,
-} from "@opensteer/harness";
+import { type HarnessEvent, type HarnessSessionContext } from "@opensteer/harness";
 import { afterEach, expect, it } from "vitest";
 import { packagedPiExecutable } from "./executable.js";
 import { PiHarnessDriver } from "./pi-driver.js";
@@ -176,8 +172,6 @@ async function piRun(input: {
     historyWindow: { byteCount: 2, hasEarlier: false, itemCount: 0 },
     instructions: "OPENSTEER-INSTRUCTIONS-MARKER",
     machineAccessNotice: "No other computers are reachable.",
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     modelSelection: ModelSelectionSchema.parse({
       modelId: "stub-model",
       options: {},
@@ -193,7 +187,6 @@ async function piRun(input: {
       providerHomeDirectory: undefined,
       store: { directory: agentDirectory, id: "own-configuration" },
     },
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: AbortSignal.timeout(120_000),
     skills: { skills: [] },
     threadId,
@@ -301,8 +294,10 @@ it("still reads the person's own configuration in their own task, as Pi did befo
   expect(run.events.find((event) => event.type === "run.failed")).toBeUndefined();
   expect(run.requests).toHaveLength(1);
   expect(run.commandRan).toBe(true);
-  // Non-vacuous control: the person's shellCommandPrefix and SYSTEM.md are loaded
-  // in their own task; the project's .pi/settings.json stays off under --no-approve.
+  // Non-vacuous control: Pi's driver always passes --no-context-files,
+  // --no-prompt-templates, --no-approve, and --append-system-prompt, so
+  // shellCommandPrefix and ~/.pi/agent/SYSTEM.md are the exact two person
+  // settings Pi loads in their own task (both stay off in stripped mode above).
   expect(run.userPrefixRan).toBe(true);
   expect(run.projectPrefixRan).toBe(false);
   expect(run.body).toContain("PERSON-SYSTEM-MD-MARKER");
@@ -416,8 +411,6 @@ it("refuses others' tasks and background text before spawning Pi when models.jso
       historyWindow: { byteCount: 2, hasEarlier: false, itemCount: 0 },
       instructions: "OPENSTEER-INSTRUCTIONS-MARKER",
       machineAccessNotice: "No other computers are reachable.",
-      machineAccessPlatform: undefined,
-      machineAccessRelaySocket: undefined,
       modelSelection: ModelSelectionSchema.parse({
         modelId: "stub-model",
         options: {},
@@ -433,7 +426,6 @@ it("refuses others' tasks and background text before spawning Pi when models.jso
         providerHomeDirectory: undefined,
         store: { directory: agentDirectory, id: "own-configuration" },
       },
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: AbortSignal.timeout(120_000),
       skills: { skills: [] },
       threadId,
@@ -448,7 +440,8 @@ it("refuses others' tasks and background text before spawning Pi when models.jso
   const othersContext = await makeContext(false);
   await expect(adapter.startSession(othersContext)).rejects.toMatchObject({
     code: "forbidden",
-    message:
+    message: "This engine is not available for this task.",
+    ownerMessage:
       'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.',
   });
   expect(
@@ -496,4 +489,207 @@ it("refuses others' tasks and background text before spawning Pi when models.jso
   }
   expect(events.find((event) => event.type === "run.failed")).toBeUndefined();
   expect(await exists(bangRan)).toBe(true);
+}, 120_000);
+
+it("isolates models.json as a checked copy and re-checks auth.json before each turn on real Pi (G2)", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "opensteer-pi-toctou-")));
+  cleanups.push(() => rm(root, { force: true, maxRetries: 20, recursive: true, retryDelay: 100 }));
+  const home = join(root, "home");
+  const agentDirectory = join(home, ".pi", "agent");
+  const project = join(root, "agent-home");
+  const state = join(root, "state");
+  const modelsBangRan = join(root, "models-bang-ran");
+  const authBangRan = join(root, "auth-bang-ran");
+  await mkdir(agentDirectory, { recursive: true });
+  await mkdir(project, { recursive: true });
+  await mkdir(state, { recursive: true });
+
+  const server = createServer((request, response) => {
+    let text = "";
+    request.on("data", (chunk: Buffer) => (text += chunk.toString("utf8")));
+    request.on("end", () => {
+      if (!request.url?.includes("chat/completions")) {
+        response.writeHead(404);
+        response.end("{}");
+        return;
+      }
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      const chunk = (delta: unknown, finish: string | null) =>
+        response.write(
+          `data: ${JSON.stringify({
+            choices: [{ delta, finish_reason: finish, index: 0 }],
+            id: "stub_toctou",
+            object: "chat.completion.chunk",
+            usage: { completion_tokens: 1, prompt_tokens: 1, total_tokens: 2 },
+          })}\n\n`,
+        );
+      chunk({ content: "done", role: "assistant" }, null);
+      chunk({}, "stop");
+      response.end("data: [DONE]\n\n");
+    });
+  });
+  await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  cleanups.push(() => new Promise((resolveClose) => server.close(() => resolveClose())));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Stub server has no port");
+  const baseUrl = `http://127.0.0.1:${address.port}/v1`;
+
+  await writeFile(
+    join(agentDirectory, "models.json"),
+    JSON.stringify({
+      providers: {
+        openai: {
+          api: "openai-completions",
+          apiKey: "stub-key",
+          baseUrl,
+          models: [{ id: "stub-model", name: "stub-model" }],
+        },
+      },
+    }),
+  );
+  await writeFile(
+    join(agentDirectory, "auth.json"),
+    JSON.stringify({ openai: { key: "stub-auth-key", type: "api_key" } }),
+  );
+
+  const instanceId = createId("harnessInstance");
+  const driver = new PiHarnessDriver({
+    connectMcpServer: async () => ({
+      callTool: async () => ({ content: [], isError: false }),
+      close: async () => undefined,
+      listTools: async () => [],
+    }),
+    executable: packagedPiExecutable(),
+    nodeExecutable: process.execPath,
+  });
+  const adapter = await driver.create({
+    config: {},
+    instanceId,
+    sourceId: "openai",
+  });
+  cleanups.push(() => adapter.close());
+
+  const threadId = createId("thread");
+  const threadStateDirectory = join(state, threadId);
+  await mkdir(threadStateDirectory, { recursive: true });
+  const context: HarnessSessionContext = {
+    accessMode: "approval-required",
+    agentTools: {
+      instructions: "",
+      skills: [],
+      token: "local-stub",
+      tools: [],
+      toolsRevision: "own-configuration",
+      url: "http://127.0.0.1:9/internal/v1/mcp",
+    },
+    commandEnvironment: {},
+    environment: {
+      HOME: home,
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      PI_OFFLINE: "1",
+      PI_TELEMETRY: "0",
+      TMPDIR: state,
+    },
+    environmentId: createId("environment"),
+    harnessInstanceId: instanceId,
+    history: [],
+    historyWindow: { byteCount: 2, hasEarlier: false, itemCount: 0 },
+    instructions: "OPENSTEER-INSTRUCTIONS-MARKER",
+    machineAccessNotice: "No other computers are reachable.",
+    modelSelection: ModelSelectionSchema.parse({
+      modelId: "stub-model",
+      options: {},
+      providerId: "openai",
+    }),
+    personalContext: true,
+    personLineage: false,
+    platformGuide: "",
+    providerState: {
+      continuationKey: root,
+      kind: "ambient",
+      privateStateRoot: state,
+      providerHomeDirectory: undefined,
+      store: { directory: agentDirectory, id: "own-configuration" },
+    },
+    signal: AbortSignal.timeout(120_000),
+    skills: { skills: [] },
+    threadId,
+    threadStateDirectory,
+    workspacePath: project,
+    wrapProcessLaunch: (launch) => launch,
+    writableRoots: [project],
+  };
+
+  const session = await adapter.startSession(context);
+  const events: HarnessEvent[] = [];
+  const observing = (async () => {
+    for await (const event of session.events) events.push(event);
+  })();
+  const runTurn = (text: string) =>
+    session.execute({
+      context: {
+        assignment: null,
+        startedAt: "2026-11-23T00:00:00.000Z",
+        threadState: { previousAssignment: null, previousRun: null },
+      },
+      environment: {},
+      inputs: [
+        {
+          author: { displayName: "Person", kind: "human", principalId: "person" },
+          content: [{ text, type: "text" }],
+          createdAt: new Date().toISOString(),
+          kind: "input",
+          messageId: createId("message"),
+        },
+      ],
+      reports: { messages: [], omittedCount: 0, throughSequence: null },
+      requestedBy: createId("user"),
+      runId: createId("run"),
+      signal: AbortSignal.timeout(120_000),
+    });
+
+  try {
+    // Mutating the person's models.json after startSession never affects the checked copy.
+    await writeFile(
+      join(agentDirectory, "models.json"),
+      JSON.stringify({
+        providers: {
+          openai: {
+            api: "openai-completions",
+            apiKey: `!sh -c 'touch "${modelsBangRan}" && printf stub-key'`,
+            baseUrl,
+            models: [{ id: "stub-model" }],
+          },
+        },
+      }),
+    );
+    await runTurn("First turn after models.json changed.");
+    expect(events.some((event) => event.type === "run.completed")).toBe(true);
+    expect(await exists(modelsBangRan)).toBe(false);
+
+    // Mutating the person's symlinked auth.json before turn 2 is caught before prompting Pi.
+    await writeFile(
+      join(agentDirectory, "auth.json"),
+      JSON.stringify({
+        openai: {
+          key: `!sh -c 'touch "${authBangRan}" && printf stub-auth-key'`,
+          type: "api_key",
+        },
+      }),
+    );
+    const beforeTurn2 = events.length;
+    await runTurn("Second turn after auth.json changed.");
+    const turn2Failed = events.slice(beforeTurn2).find((event) => event.type === "run.failed");
+    expect(turn2Failed?.data).toMatchObject({
+      code: "forbidden",
+      message: "This engine is not available for this task.",
+      ownerMessage:
+        'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.',
+      retryable: false,
+    });
+    expect(await exists(authBangRan)).toBe(false);
+  } finally {
+    await session.stop();
+    await observing;
+  }
 }, 120_000);

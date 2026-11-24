@@ -64,21 +64,25 @@ export class NotificationStateStore {
   }
 
   async setIdleCompactionPolicy(input: {
+    /** An agent's command: admitted again here, in the effect's own transaction (AD3). */
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly policy: IdleCompactionPolicy;
     readonly userId: UserId;
   }): Promise<IdleCompactionPolicy> {
-    return commitPersonalMutation(this.#database, async (transaction, mutation) => {
-      await requirePersonalOwner(transaction, input.userId);
-      const policy = IdleCompactionPolicySchema.parse(input.policy);
-      const updated = await transaction
-        .updateTable("personalSettings")
-        .set({ idleCompactionPolicy: policy })
-        .where("ownerId", "=", input.userId)
-        .where("idleCompactionPolicy", "is distinct from", policy)
-        .executeTakeFirstOrThrow();
-      if (updated.numUpdatedRows) mutation.bumpResource("settings");
-      return policy;
-    });
+    return commitPersonalMutation(this.#database, (transaction, mutation) =>
+      administrationCommand(transaction, input.administration, async () => {
+        await requirePersonalOwner(transaction, input.userId);
+        const policy = IdleCompactionPolicySchema.parse(input.policy);
+        const updated = await transaction
+          .updateTable("personalSettings")
+          .set({ idleCompactionPolicy: policy })
+          .where("ownerId", "=", input.userId)
+          .where("idleCompactionPolicy", "is distinct from", policy)
+          .executeTakeFirstOrThrow();
+        if (updated.numUpdatedRows) mutation.bumpResource("settings");
+        return policy;
+      }),
+    );
   }
   async setQuietTaskDays(input: {
     readonly administration?: AdministrationCommandIdentity | undefined;

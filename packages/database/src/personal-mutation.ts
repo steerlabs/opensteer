@@ -20,6 +20,7 @@ import {
 import {
   isConstraintViolation,
   isTransactionConflict,
+  runDatabaseTransactionOnce,
   withDatabaseTransaction,
 } from "./connection.js";
 import { inheritExecutionClock } from "./personal-transaction.js";
@@ -110,6 +111,7 @@ export type PersonalCommitReaction =
   | { readonly type: "grantsRevoked"; readonly grants: readonly RevokedRunGrant[] }
   | { readonly type: "runnerRevoked"; readonly runnerId: RunnerId }
   | { readonly type: "triggerSchedulesChanged" }
+  | { readonly type: "triggerPaused" }
   | { readonly type: "authorityChanged"; readonly scopes: ReadonlySet<ScopeAuthority> }
   | {
       readonly type: "requestChanged";
@@ -671,7 +673,12 @@ export async function commitPersonalMutation<Result>(
   database: TargetDb,
   action: (tx: PersonalMutationTransaction, mutation: PersonalMutation) => Promise<Result>,
   retryDiscovery?: (error: unknown) => boolean,
-  mode?: "non-retrying",
+  /**
+   * `non-retrying`: one attempt, as the command store needs it. `once-bounded`: one attempt under
+   * the operation's transaction budget, every statement's timeout and its cancel on the signal
+   * included (the pooled browser's store, P17); no other caller uses it.
+   */
+  mode?: "non-retrying" | "once-bounded",
 ): Promise<Result> {
   if (database.isTransaction) {
     const tx = database as PersonalMutationTransaction;
@@ -732,7 +739,12 @@ export async function commitPersonalMutation<Result>(
             rollback(error);
             throw error;
           })
-      : await withDatabaseTransaction(database, actionUnderFence, undefined, rollback);
+      : mode === "once-bounded"
+        ? await runDatabaseTransactionOnce(database, actionUnderFence).catch((error: unknown) => {
+            rollback(error);
+            throw error;
+          })
+        : await withDatabaseTransaction(database, actionUnderFence, undefined, rollback);
   if (suspended) notify(listener, "authority", () => suspended?.committed());
   committed.mutation.publish(listener, committed.notice);
   return committed.result;
@@ -766,6 +778,13 @@ export function wakeExecutionCommands(tx: PersonalMutationTransaction) {
 export function wakeTriggerSchedules(tx: PersonalMutationTransaction) {
   return commitPersonalMutation(tx, async (_tx, mutation) => {
     mutation.react({ type: "triggerSchedulesChanged" });
+  });
+}
+
+/** An automation was paused; the Host interrupts any running firing for it until settled (AA10). */
+export function wakePausedTriggerInterrupts(tx: PersonalMutationTransaction) {
+  return commitPersonalMutation(tx, async (_tx, mutation) => {
+    mutation.react({ type: "triggerPaused" });
   });
 }
 

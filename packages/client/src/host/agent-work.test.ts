@@ -1,9 +1,10 @@
-import type { AgentOperationView } from "@opensteer/core";
+import type { AgentCommandActivity, AgentOperationView } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { mockConnectedAgents } from "../mock/mock-connected-agents.js";
 import { mockAgentWork, mockAgentWorkThreads } from "../mock/mock-agent-work.js";
 import { agentWho, agentWhoOriginParts, agentWithdrawnLine } from "./agent-identity.js";
 import {
+  activityRows,
   operationDecisionField,
   sessionQuestions,
   sessionSlotFromHome,
@@ -14,7 +15,7 @@ import {
   tabAgentLine,
 } from "./agent-work.js";
 import type { ThreadSummary } from "./client.js";
-import { connectedAgentIdentity } from "./connected-agent-view.js";
+import { connectedAgentActivity, connectedAgentIdentity } from "./connected-agent-view.js";
 
 const now = new Date("2026-11-20T12:00:00.000Z");
 const { connections } = mockConnectedAgents("seeded", now);
@@ -49,7 +50,7 @@ describe("an origin that does not parse", () => {
     expect(
       addresses(
         agentWhoOriginParts({
-          role: "platform",
+          role: "verified",
           name: "Claude",
           origin,
           roleLabel: "Holds the access",
@@ -60,10 +61,10 @@ describe("an origin that does not parse", () => {
       clientName: "Grok",
       redirect: origin,
       identityAtConsent: {
-        kind: "platform",
-        platformDirectoryId: "claude",
-        platformName: "Claude",
-        platformOrigin: origin,
+        kind: "verified",
+        directoryId: "claude",
+        displayName: "Claude",
+        origin,
       } as never,
     });
     expect(addresses(unparsed.detailParts)).toEqual([]);
@@ -75,13 +76,13 @@ describe("an origin that does not parse", () => {
 });
 
 describe("who a connected agent is", () => {
-  it("names a verified pair and a verified platform in the Home's words, with a logo only for a verified platform", () => {
+  it("names a verified agent in the Home's words, with a logo only for a known one", () => {
     const errand = agentWho({
       ...named("Errand"),
       redirect: "https://agentpay.example/cb",
     });
     expect(errand).toMatchObject({
-      heading: "Errand via AgentPay",
+      heading: "AgentPay",
       verified: true,
       selfAsserted: false,
       providerId: null,
@@ -232,7 +233,7 @@ describe("one operation in a task's activity", () => {
     });
     expect(rows[2]).toMatchObject({
       action: "Ran a script on Travel on Studio Mac",
-      allowedBy: "Allowed by Auto",
+      allowedBy: "Allowed by you",
       outcome: { label: "Failed", tone: "bad" },
     });
   });
@@ -516,6 +517,51 @@ describe("what a connected agent asks the person itself", () => {
   it("leaves an answered question and any other task's Request alone", () => {
     expect(sessionQuestions([{ ...question, status: "fulfilled" }])).toEqual([]);
     expect(sessionQuestions([{ ...question, originatingAgentSessionId: null }])).toEqual([]);
+  });
+});
+
+describe("a connection's activity, its operations and its commands (C5)", () => {
+  it("is one list, newest first, each command in the Home's sentence with what became of it", () => {
+    const operation = slot("working").operations![0]!;
+    const at = (minutes: number) => new Date(Date.parse(operation.createdAt) + minutes * 60_000);
+    const command = (
+      id: string,
+      minutes: number,
+      status: AgentCommandActivity["status"],
+      outcome: AgentCommandActivity["outcome"] = null,
+    ): AgentCommandActivity => ({
+      id,
+      type: "harness.rename",
+      sentence: `Reviewed agent asked to rename an AI engine account: “${id}”`,
+      status,
+      outcome,
+      requestId: null,
+      createdAt: at(minutes).toISOString(),
+    });
+    const page = {
+      operations: [operation],
+      commands: [
+        command("later", 2, "approved", "done"),
+        command("earlier", -2, "declined"),
+        command("unsure", 1, "approved", "unknown"),
+      ],
+    };
+    const rows = activityRows(page);
+    expect(rows.map(({ id }) => id)).toEqual(["later", "unsure", operation.id, "earlier"]);
+    expect(rows[0]).toMatchObject({
+      action: "Reviewed agent asked to rename an AI engine account: “later”",
+      outcome: { label: "You approved it", tone: "ok" },
+    });
+    expect(rows[1]!.outcome).toEqual({ label: "You approved it · Uncertain", tone: "warn" });
+    expect(rows[1]!.detail).not.toBeNull();
+    expect(rows[3]!.outcome).toEqual({ label: "You declined it", tone: "muted" });
+    const recent = connectedAgentActivity(page);
+    expect(recent.kind === "ready" && recent.items.map(({ id }) => id)).toEqual([
+      "later",
+      "unsure",
+      operation.id,
+      "earlier",
+    ]);
   });
 });
 

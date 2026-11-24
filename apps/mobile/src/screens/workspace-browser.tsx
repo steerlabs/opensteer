@@ -1,10 +1,13 @@
 import { useVerticalBar } from "../ui/vertical-bar.js";
 import { contactSupport } from "../report-mail.js";
 import {
+  browserCloseUnconfirmed,
   browserRestartFailure,
   browserSleepWords,
+  browserNotReady,
   browserStartFailure,
   canRespondToRequests,
+  dismissBrowserSession,
   placeAgentState,
   restartPooledBrowser,
   listedRowThreadId,
@@ -133,11 +136,13 @@ import { Screen } from "../ui/screen.js";
 import { useScreenPresence, type PagePresence } from "../ui/page-presence.js";
 import { NewTaskPane } from "./new-task.js";
 import { ThreadTitlePill } from "./thread-header.js";
+import { AddressSentence } from "../ui/address-text.js";
+import type { SentencePart } from "../ui/sentence-parts.js";
 
 export function OpeningTabScreen({ route }: StaticScreenProps<OpeningTabRoute>): ReactNode {
   return (
     <Screen>
-      <TabStatus title="Opening…" detail={route.params.address} waiting />
+      <TabStatus title="Opening…" detail={[{ address: route.params.address }]} waiting />
     </Screen>
   );
 }
@@ -409,7 +414,11 @@ function ViewedTab(
           <TabStatus action={{ label: "Try again", onPress: retry }} title={state.error} />
         ) : props.tab.kind === "page" && props.tab.state === "asleep" ? (
           // V10: a sleeping tab says it is waking, with its address.
-          <TabStatus detail={props.tab.url ?? null} title={tabWakingWords} waiting />
+          <TabStatus
+            detail={props.tab.url ? [{ address: props.tab.url }] : null}
+            title={tabWakingWords}
+            waiting
+          />
         ) : (
           <TabStatus title="Opening…" waiting />
         )}
@@ -870,7 +879,7 @@ function Focused(
   const notices =
     opening.line === null ? null : (
       <View style={styles.pageLine}>
-        <ActionLine line={opening.line} numberOfLines={2} onDismiss={opening.dismiss} />
+        <ActionLine line={opening.line} onDismiss={opening.dismiss} />
       </View>
     );
   return (
@@ -1001,8 +1010,28 @@ function BrowserTab(props: {
   // A Cloud Computer's browser that could not start stands in for its page; tabs and sign-ins
   // are kept. Every other browser is `not-pooled` and never shows this.
   const sleep = useBrowserSleep(hostClient, tabId);
+  const closeUnconfirmed = browserCloseUnconfirmed(session, sleep.closeUnconfirmed);
+  const [dismissingUnconfirmed, setDismissingUnconfirmed] = useState(false);
   const startFailure = browserStartFailure(sleep.browser);
   const [trying, setTrying] = useState(false);
+  if (closeUnconfirmed) {
+    return (
+      <TabStatus
+        action={{
+          label: closeUnconfirmed.action,
+          onPress: () => {
+            if (dismissingUnconfirmed) return;
+            setDismissingUnconfirmed(true);
+            void dismissBrowserSession(hostClient, closeUnconfirmed.sessionId)
+              .catch(() => Alert.alert(closeUnconfirmed.title, "Try again in a moment."))
+              .finally(() => setDismissingUnconfirmed(false));
+          },
+        }}
+        detail={closeUnconfirmed.detail}
+        title={closeUnconfirmed.title}
+      />
+    );
+  }
   if (startFailure && sleep.browser.kind === "failed") {
     const computerId = sleep.browser.computerId;
     return (
@@ -1029,6 +1058,10 @@ function BrowserTab(props: {
       />
     );
   }
+  // Nothing the person does helps a browser being set up or paused: its words, and no action.
+  const notReady = browserNotReady(sleep.browser);
+  if (notReady)
+    return <TabStatus detail={notReady.detail} title={notReady.title} waiting={notReady.waiting} />;
 
   if ((live || local) && session !== null)
     return (
@@ -1244,8 +1277,8 @@ function TabStatus(props: {
   readonly action?: { readonly label: string; readonly onPress: () => void };
   /** A second way out, under the first. */
   readonly also?: { readonly label: string; readonly onPress: () => void } | undefined;
-  /** Why, under the title, when there is more to say. */
-  readonly detail?: string | null;
+  /** Why, under the title, when there is more to say; with an address, as parts. */
+  readonly detail?: string | readonly SentencePart[] | null;
   readonly title: string;
   readonly waiting?: boolean;
 }): ReactNode {
@@ -1255,11 +1288,18 @@ function TabStatus(props: {
       <AppText role="bodyMedium" style={styles.centred}>
         {props.title}
       </AppText>
-      {props.detail ? (
+      {!props.detail ? null : typeof props.detail === "string" ? (
         <AppText role="secondary" style={styles.centred} tone="muted">
           {props.detail}
         </AppText>
-      ) : null}
+      ) : (
+        <AddressSentence
+          parts={props.detail}
+          role="secondary"
+          style={styles.centred}
+          tone="muted"
+        />
+      )}
       {props.action === undefined ? null : (
         <SecondaryButton label={props.action.label} onPress={props.action.onPress} />
       )}

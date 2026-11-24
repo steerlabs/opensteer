@@ -150,13 +150,14 @@ func (s *screenSession) perform(ctx context.Context, p *wire.PerformParams, guar
 			result.CompletedSteps++
 			continue
 		}
+		sample := s.privacySample()
 		state, err := s.backend.State(ctx)
 		if err != nil {
 			s.hideDisplay("protected", "target-unavailable")
 			return fail(err)
 		}
 		foreground, fgKnown := s.foregroundChecked(ctx)
-		s.applyPrivacy(state, foreground, fgKnown)
+		s.applyPrivacySample(state, foreground, fgKnown, &sample)
 		if foreground != nil && foreground.AppID == opensteerAppID {
 			return fail(wire.Fail(wire.Unsupported))
 		}

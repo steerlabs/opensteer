@@ -1097,6 +1097,32 @@ export class HttpHostClient {
     });
   }
 
+  /**
+   * W15: removes an unconfirmed-closing replaced-browser session from the person's list without
+   * changing its closing state on the Home.
+   */
+  async dismissBrowserSession(sessionId: string): Promise<void> {
+    await this.dispatch({
+      type: "browser.session.dismiss",
+      sessionId,
+      idempotencyKey: globalThis.crypto.randomUUID(),
+    });
+    const browserSessions = this.#snapshot.browserSessions.filter(
+      (session) => session.id !== sessionId,
+    );
+    const browserPools = this.#snapshot.browserPools?.map((pool) => {
+      if (!pool.unconfirmedClosings?.some((entry) => entry.sessionId === sessionId)) return pool;
+      const remaining = pool.unconfirmedClosings.filter((entry) => entry.sessionId !== sessionId);
+      const { unconfirmedClosings: _dropped, ...rest } = pool;
+      return remaining.length ? { ...rest, unconfirmedClosings: remaining } : rest;
+    });
+    this.#update({
+      ...this.#snapshot,
+      browserSessions,
+      ...(browserPools ? { browserPools } : {}),
+    });
+  }
+
   async dispatch(
     command: ClientCommandInput,
     options?: { readonly preserveOrigin?: boolean; readonly expectedLogin?: ClientScope },
@@ -1895,7 +1921,12 @@ export class HttpHostClient {
       SequenceSchema.parse(row.revision),
       row,
     );
-    const entry = { thread, lastReply: row.lastReplyPreview, failure: row.failurePreview };
+    const entry = {
+      thread,
+      lastReply: row.lastReplyPreview,
+      failure: row.failurePreview,
+      failureCode: row.failureCode ?? null,
+    };
     this.#shellEntries.set(row, entry);
     return entry;
   }
@@ -1984,6 +2015,8 @@ export class HttpHostClient {
               latestRunCompletedAt: row.latestRunCompletedAt,
               inputQueuePaused: row.inputQueuePaused ?? held.inputQueuePaused,
               runQueued: row.runQueued,
+              runStartHoldReason: row.runStartHoldReason ?? null,
+              failureCode: row.failureCode ?? null,
               agentSessionId: row.agentSessionId ?? null,
               externalWork: row.externalWork ?? null,
               ...(row.retry === undefined ? {} : { retry: row.retry }),
@@ -2018,13 +2051,11 @@ export class HttpHostClient {
       old?.attention !== state.attention ||
       old.snapshot?.counts.pendingRequestCount !== shell.counts.pendingRequestCount ||
       old.snapshot?.counts.needsYouCount !== shell.counts.needsYouCount;
-    const effectiveWorkPolicy = shell.effectiveWorkPolicy ?? null;
     if (
       tasksChanged ||
       taskChanges ||
       visitsChanged ||
       attentionChanged ||
-      effectiveWorkPolicy !== this.#snapshot.effectiveWorkPolicy ||
       connection !== this.#snapshot.connection
     ) {
       const taskLists =
@@ -2040,7 +2071,6 @@ export class HttpHostClient {
           ...this.#snapshot,
           connection,
           connectionInterrupted: attached ? false : this.#snapshot.connectionInterrupted,
-          effectiveWorkPolicy,
           ...taskLists,
           ...(attentionChanged
             ? {
@@ -2760,27 +2790,41 @@ export class HttpHostClient {
       this.#browserUsageReads.get(threadId) === read &&
       this.#showsThread(threadId);
     const uses = new Map<string, BrowserSessionUsageProjection>();
+    const batches: RunId[][] = [];
+    for (let offset = 0; offset < Math.max(1, runIds.length); offset += browserUsageRunBatchSize) {
+      batches.push(
+        runIds.slice(offset, offset + browserUsageRunBatchSize).map((id) => RunIdSchema.parse(id)),
+      );
+    }
     try {
-      for (
-        let offset = 0;
-        offset < Math.max(1, runIds.length);
-        offset += browserUsageRunBatchSize
-      ) {
-        const response = unwrapRpcResult(
-          await this.rpc["thread.browserUsage.get"]({
-            threadId,
-            runIds: runIds
-              .slice(offset, offset + browserUsageRunBatchSize)
-              .map((id) => RunIdSchema.parse(id)),
-          }),
+      const concurrency = 4;
+      for (let start = 0; start < batches.length; start += concurrency) {
+        // Wait for the whole wave to settle so an early failure cannot release the slot
+        // while sibling RPCs in the same wave are still in flight.
+        const results = await Promise.allSettled(
+          batches
+            .slice(start, start + concurrency)
+            .map((batch) =>
+              this.rpc["thread.browserUsage.get"]({ threadId, runIds: batch }).then(
+                unwrapRpcResult,
+              ),
+            ),
         );
         if (!current()) return false;
-        if (
-          response.threadId !== threadId ||
-          response.uses.some((use) => use.threadId !== threadId)
-        )
-          throw new Error("Browser usage Thread mismatch.");
-        for (const use of response.uses) uses.set(browserUseKey(use.sessionId, use), use);
+        const firstFailure = results.find(
+          (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        if (firstFailure) throw firstFailure.reason;
+        for (const result of results) {
+          if (result.status !== "fulfilled") continue;
+          const response = result.value;
+          if (
+            response.threadId !== threadId ||
+            response.uses.some((use) => use.threadId !== threadId)
+          )
+            throw new Error("Browser usage Thread mismatch.");
+          for (const use of response.uses) uses.set(browserUseKey(use.sessionId, use), use);
+        }
       }
     } catch (error) {
       if (!current()) return false;
@@ -3490,6 +3534,18 @@ export class HttpHostClient {
       threadId,
       type: "thread.inputQueue.resume",
     });
+  }
+
+  async recheckThreadStop(threadId: string): Promise<{ readonly proven: boolean }> {
+    const result = await this.dispatch({
+      idempotencyKey: mutationIdempotencyKey("thread-stop-recheck"),
+      threadId,
+      type: "thread.stop.recheck",
+    });
+    if (result.type !== "thread.stop.recheck") {
+      throw new Error(`Unexpected thread.stop.recheck response: ${result.type}`);
+    }
+    return { proven: result.proven };
   }
 
   /**
@@ -5137,6 +5193,8 @@ function compactThread(
     environmentId: row.environmentId,
     harnessInstanceId: row.harnessInstanceId,
     runQueued: row.runQueued,
+    runStartHoldReason: row.runStartHoldReason ?? null,
+    failureCode: row.failureCode ?? null,
     agentSessionId: row.agentSessionId ?? null,
     externalWork: row.externalWork ?? null,
     ...(row.retry === undefined ? {} : { retry: row.retry }),

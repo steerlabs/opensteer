@@ -219,6 +219,96 @@ describe("desktop configuration", () => {
     }
   });
 
+  it("hands on the authorities someone added for Node, as an absolute path, and none otherwise", () => {
+    const read = (environment: NodeJS.ProcessEnv) =>
+      readDesktopConfiguration({
+        appDataDirectory,
+        defaultMode: "development",
+        environment,
+        packaged: false,
+        resourcesDirectory,
+      });
+    expect(read({}).config.extraCertificateAuthorities).toBeNull();
+    expect(
+      read({ NODE_EXTRA_CA_CERTS: "/etc/company/roots.pem" }).config.extraCertificateAuthorities,
+    ).toBe("/etc/company/roots.pem");
+    // A value the app will not pass on is Node's, not a reason to refuse to open: ignored, said once.
+    const relative = read({ NODE_EXTRA_CA_CERTS: "roots.pem" });
+    expect(relative.config.extraCertificateAuthorities).toBeNull();
+    expect(relative.ignored).toEqual([
+      {
+        name: "NODE_EXTRA_CA_CERTS",
+        reason: "not an absolute path, so not passed to this Mac's Home",
+      },
+    ]);
+    expect(read({}).ignored).toEqual([]);
+  });
+
+  // A released app takes no certificate authority from its environment: any process of the same
+  // person can `launchctl setenv` it, and its Home would then trust that authority for every
+  // outbound call. Ignored, and said once; development and the first-run journey keep it.
+  it("ignores the authorities added for Node in a released app, and says so", () => {
+    const loaded = readDesktopConfiguration({
+      appDataDirectory,
+      defaultMode: "production",
+      environment: baseEnvironment({ NODE_EXTRA_CA_CERTS: "/etc/company/roots.pem" }),
+      packaged: true,
+      releaseManifestPath: packagedDesktopManifest(resourcesDirectory),
+      resourcesDirectory,
+    });
+    expect(loaded.config.extraCertificateAuthorities).toBeNull();
+    expect(loaded.ignored).toEqual([
+      {
+        name: "NODE_EXTRA_CA_CERTS",
+        reason: "a released app takes no certificate authority from its environment",
+      },
+    ]);
+  });
+
+  // The first-run journey's stand-in account service: its one key, accepted by the session that
+  // talks to the account service, in a development launch only.
+  it("pins the account service's key in a development launch, and never in a released app", () => {
+    const key = `${"A".repeat(43)}=`;
+    const development = readDesktopConfiguration({
+      appDataDirectory,
+      defaultMode: "development",
+      environment: {
+        OPENSTEER_DESKTOP_ACCOUNT_CERTIFICATE_KEY: key,
+        OPENSTEER_DESKTOP_ACCOUNT_URL: "https://account.first-run.opensteer.example:45213",
+      },
+      packaged: false,
+      resourcesDirectory,
+    });
+    expect(development.config.accountCertificateKey).toBe(key);
+    expect(() =>
+      readDesktopConfiguration({
+        appDataDirectory,
+        defaultMode: "development",
+        environment: {
+          OPENSTEER_DESKTOP_ACCOUNT_CERTIFICATE_KEY: "not a key",
+          OPENSTEER_DESKTOP_ACCOUNT_URL: "https://account.first-run.opensteer.example:45213",
+        },
+        packaged: false,
+        resourcesDirectory,
+      }),
+    ).toThrow(/OPENSTEER_DESKTOP_ACCOUNT_CERTIFICATE_KEY/u);
+    const released = readDesktopConfiguration({
+      appDataDirectory,
+      defaultMode: "production",
+      environment: baseEnvironment({ OPENSTEER_DESKTOP_ACCOUNT_CERTIFICATE_KEY: key }),
+      packaged: true,
+      releaseManifestPath: packagedDesktopManifest(resourcesDirectory),
+      resourcesDirectory,
+    });
+    expect(released.config.accountCertificateKey).toBeNull();
+    expect(released.ignored).toEqual([
+      {
+        name: "OPENSTEER_DESKTOP_ACCOUNT_CERTIFICATE_KEY",
+        reason: "a released app takes no certificate trust from its environment",
+      },
+    ]);
+  });
+
   it("rejects non-production mode in a packaged app", () => {
     expect(() =>
       readDesktopConfiguration({

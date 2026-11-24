@@ -13,6 +13,7 @@ import { type BrowserCookie } from "@opensteer/browser-profile";
 import {
   BrowserPaintTimeoutError,
   BrowserRuntimeError,
+  screencastEndedEvent,
   pageViewport,
   pageWithTarget,
   normalizeElectronCursor,
@@ -35,6 +36,7 @@ import {
   type LocalProfileEngine,
   type PageCapture,
   type PageGeometry,
+  type PageNavigationPort,
   type Viewport,
   type ViewportCapture,
   type ViewportCaptureRequest,
@@ -93,6 +95,7 @@ import {
   PasskeyBridge,
 } from "@opensteer/browser-runtime-core/passkey-bridge";
 import type { PasskeyAuthenticator } from "@opensteer/browser-runtime-core/passkeys";
+import { DebuggerSessionState } from "./electron-debugger-session.js";
 
 export interface ElectronLocalProfileOpenTiming {
   readonly stage:
@@ -1236,11 +1239,37 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       return () => this.#captureListeners.delete(listener);
     },
   };
+  #navigation: ReturnType<PageNavigationPort["read"]> = {
+    blankDocument: true,
+    finished: 0,
+    pending: false,
+  };
+  readonly #navigationListeners = new Set<() => void>();
+  /**
+   * The page's navigations as Electron's browser side reports them. A main-frame navigation to
+   * another document is pending from `did-start-navigation` until it ends: `did-navigate` and
+   * `did-fail-load` come from the browser side's end of it, when the committed document is the
+   * frame's active one and takes commands (the page's own session hears of the commit,
+   * Page.frameNavigated, before that); `did-stop-loading` ends one that committed nothing.
+   */
+  readonly navigations = {
+    read: () => this.#navigation,
+    subscribe: (listener: () => void): (() => void) => {
+      this.#navigationListeners.add(listener);
+      return () => this.#navigationListeners.delete(listener);
+    },
+  };
+  #navigationChanged(next: Partial<ReturnType<PageNavigationPort["read"]>>): void {
+    this.#navigation = { ...this.#navigation, ...next };
+    for (const listener of this.#navigationListeners) listener();
+  }
   #frameSubscriptionRevision: number | null = null;
   #paintedSurfaceRevision = -1;
   #metricsSurfaceRevision = 0;
   #renderingDemand = false;
   #parked = false;
+  #activeSurfaceCopies = 0;
+  #stalledSurfaceCopies = 0;
   #controlDown = false;
   #contextMenuTrigger: "person" | "agent" | null = null;
   #contextMenuCandidate: "person" | "agent" | null = null;
@@ -1473,6 +1502,30 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       this.#invalidateCursor();
       void this.invalidateSurface().catch(() => undefined);
     });
+    view.webContents.on("did-start-navigation", (details) => {
+      if (details.isMainFrame && !details.isSameDocument)
+        this.#navigationChanged({ pending: true });
+    });
+    view.webContents.on("did-navigate", (_event, url) => {
+      this.#navigationChanged({
+        blankDocument: url === "" || url === "about:blank",
+        finished: this.#navigation.finished + 1,
+        pending: false,
+      });
+    });
+    view.webContents.on("did-fail-load", (_event, code, _text, _url, mainFrame) => {
+      // An aborted navigation (ERR_ABORTED) gave way to another, whose own end follows, or to a
+      // stop, which did-stop-loading ends. Any other failure committed an error page.
+      if (mainFrame && code !== -3)
+        this.#navigationChanged({
+          blankDocument: false,
+          finished: this.#navigation.finished + 1,
+          pending: false,
+        });
+    });
+    view.webContents.on("did-stop-loading", () => {
+      if (this.#navigation.pending) this.#navigationChanged({ pending: false });
+    });
     view.webContents.on("media-started-playing", () => {
       this.#mediaPlaying = true;
     });
@@ -1483,6 +1536,8 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       this.#invalidateCursor();
       // The hub rejects placement while crashed; navigation can recover it.
       this.#cancelPaint("crash");
+      // No navigation is under way in a renderer that is gone: a reload is the next one.
+      if (this.#navigation.pending) this.#navigationChanged({ pending: false });
       this.#fullscreen = false;
       this.#mediaPlaying = false;
       this.#contextMenuTrigger = null;
@@ -1490,6 +1545,8 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     });
     view.webContents.once("destroyed", () => {
       this.#cancelPaint();
+      this.#activeSurfaceCopies = 0;
+      this.#stalledSurfaceCopies = 0;
       this.#passkeyInput.clear();
       this.#humanInput.clear();
       this.#invalidateCursor();
@@ -1891,7 +1948,17 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     if (this.#protection.downloading()) return "download";
     if (this.#webContents.isCurrentlyAudible() || this.#mediaPlaying) return "media";
     if (this.#fullscreen) return "fullscreen";
-    if (this.#webContents.isBeingCaptured()) return "capturing";
+    if (this.#webContents.isBeingCaptured()) {
+      // A timed-out internal capturePage copy can leave Chromium's native capturer
+      // count elevated until the renderer closes; do not let a wedged internal copy
+      // block TabSleeper forever when no active copy, paint wait, or screencast holds it.
+      const wedgedInternalCapture =
+        this.#stalledSurfaceCopies > 0 &&
+        this.#activeSurfaceCopies === 0 &&
+        this.#paintWaiters.size === 0 &&
+        !this.#hub.isScreencasting();
+      if (!wedgedInternalCapture) return "capturing";
+    }
     return null;
   }
 
@@ -2151,19 +2218,17 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
    * scale, whatever device scale factor a page emulates, cropped from the
    * top left when the view is smaller than the page.
    */
-  async captureViewport({
-    clip,
-    format,
-    layout,
-    pageScale,
-    quality,
-    maxImageBytes,
-  }: ViewportCaptureRequest): Promise<ViewportCapture> {
-    const cdp = await this.cdp();
+  async captureViewport(
+    { clip, format, layout, pageScale, quality, maxImageBytes }: ViewportCaptureRequest,
+    signal?: AbortSignal,
+  ): Promise<ViewportCapture> {
+    signal?.throwIfAborted();
+    const cdp = await raceAbort(this.cdp(), signal);
     const release = cdp.retainRendering?.();
     try {
-      await this.#drawnFrame(cdp);
-      const image = await this.#surfaceImage();
+      await this.#drawnFrame(cdp, signal);
+      const image = await this.#surfaceImage(signal);
+      signal?.throwIfAborted();
       const bounds = this.view.getBounds();
       const visible = {
         height: Math.round(bounds.height / pageScale),
@@ -2183,7 +2248,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
         })
         .resize({ ...plan.output, quality: "better" });
       return {
-        data: await this.#encode(cdp, picture, format, quality, maxImageBytes),
+        data: await this.#encode(cdp, picture, format, quality, maxImageBytes, signal),
         ...(crop.right || crop.bottom
           ? {
               cropped: {
@@ -2202,14 +2267,18 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   }
 
   /** A world page scripts and agents never reach. */
-  async #inFrameWorld(cdp: CdpSession, expression: string): Promise<unknown> {
+  async #inFrameWorld(cdp: CdpSession, expression: string, signal?: AbortSignal): Promise<unknown> {
     for (let attempt = 0; ; attempt++) {
+      signal?.throwIfAborted();
       try {
         this.#frameWorld ??= z.object({ executionContextId: z.number().int() }).parse(
-          await cdp.send("Page.createIsolatedWorld", {
-            frameId: await this.targetId(),
-            worldName: "opensteer-frame",
-          }),
+          await raceAbort(
+            cdp.send("Page.createIsolatedWorld", {
+              frameId: await raceAbort(this.targetId(), signal),
+              worldName: "opensteer-frame",
+            }),
+            signal,
+          ),
         ).executionContextId;
         const { exceptionDetails, result } = z
           .object({
@@ -2217,16 +2286,20 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
             result: z.object({ value: z.unknown().optional() }),
           })
           .parse(
-            await cdp.send("Runtime.evaluate", {
-              awaitPromise: true,
-              contextId: this.#frameWorld,
-              expression,
-              returnByValue: true,
-            }),
+            await raceAbort(
+              cdp.send("Runtime.evaluate", {
+                awaitPromise: true,
+                contextId: this.#frameWorld,
+                expression,
+                returnByValue: true,
+              }),
+              signal,
+            ),
           );
         if (exceptionDetails) throw new Error("The page could not run a capture step.");
         return result.value;
       } catch (error) {
+        if (signal?.aborted) throw error;
         // A navigation takes the world with it.
         this.#frameWorld = null;
         if (attempt > 0) throw error;
@@ -2235,19 +2308,54 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   }
 
   /** `capturePage` copies the last frame drawn, which can predate the page's latest change. */
-  async #drawnFrame(cdp: CdpSession): Promise<void> {
+  async #drawnFrame(cdp: CdpSession, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     const frames =
       "new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))";
     // A page that draws nothing has nothing newer to show.
-    await withTimeout(this.#inFrameWorld(cdp, frames), 1_000, {
-      timeoutError: () => new Error("No frame."),
-    }).catch(() => undefined);
+    try {
+      await withTimeout(this.#inFrameWorld(cdp, frames, signal), 1_000, {
+        ...(signal ? { signal } : {}),
+        timeoutError: () => new Error("No frame."),
+      });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+    }
   }
 
-  async #surfaceImage(): Promise<NativeImage> {
-    const copy = () => this.#webContents.capturePage(undefined, { stayHidden: true });
+  async #surfaceImage(signal?: AbortSignal): Promise<NativeImage> {
+    const copy = async (): Promise<NativeImage> => {
+      signal?.throwIfAborted();
+      this.#activeSurfaceCopies += 1;
+      let rawSettled = false;
+      let handedToStalled = false;
+      const raw = this.#webContents.capturePage(undefined, { stayHidden: true });
+      const markSettled = () => {
+        rawSettled = true;
+      };
+      void raw.then(markSettled, markSettled);
+      try {
+        return await raceAbort(raw, signal);
+      } catch (error) {
+        if (signal?.aborted && !rawSettled) {
+          handedToStalled = true;
+          this.#stalledSurfaceCopies += 1;
+          const finishStalled = () => {
+            this.#stalledSurfaceCopies = Math.max(0, this.#stalledSurfaceCopies - 1);
+          };
+          void raw.then(finishStalled, finishStalled);
+        }
+        throw error;
+      } finally {
+        this.#activeSurfaceCopies = Math.max(0, this.#activeSurfaceCopies - 1);
+        if (!handedToStalled) void raw.catch(() => undefined);
+      }
+    };
     // Chromium fails one copy while a navigation swaps the surface.
-    const image = await copy().catch(copy);
+    const image = await copy().catch((error) => {
+      if (signal?.aborted) throw error;
+      return copy();
+    });
     if (image.isEmpty()) throw new Error("The page has no picture yet.");
     return image;
   }
@@ -2258,7 +2366,9 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     format: ViewportCaptureRequest["format"],
     quality: number | undefined,
     maxImageBytes?: number,
+    signal?: AbortSignal,
   ): Promise<string> {
+    signal?.throwIfAborted();
     const exceeds = () =>
       new BrowserRuntimeError("bad_message", "Screenshot exceeds its image budget.", {
         reason: "browser-reply-limit",
@@ -2282,6 +2392,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
             ...(maxImageBytes === undefined ? {} : { maxImageBytes }),
             ...(quality === undefined ? {} : { quality }),
           }),
+          signal,
         ),
       );
     if (encoded === null) throw exceeds();
@@ -2551,9 +2662,34 @@ class ElectronDebuggerHub {
   readonly #pending = new Set<(error: Error) => void>();
   #rendererGeneration = 0;
   #crashed = false;
-  /** Each channel screencasting, with the parameters it asked for, in the order they started. */
   readonly #renderingOwners = new Map<ElectronCdpChannel, number>();
-  readonly #screencastOwners = new Map<ElectronCdpChannel, Record<string, unknown> | undefined>();
+  /**
+   * The page's screencasts, one for each set of settings someone asked for (`castKey`): an owner
+   * gets frames in the format and size it asked for, always, and owners who asked for the same
+   * share one. At most `maxCastsPerPage` at once.
+   */
+  readonly #casts = new Set<Screencast>();
+  /** Each screencasting channel's cast. */
+  readonly #castOf = new Map<ElectronCdpChannel, Screencast>();
+  /**
+   * What each owner was handed, in order: which run's frame, by Chromium's frame `sessionId`. An
+   * ack names only that id, and two runs in two sessions can share one, so this is what tells
+   * which run an ack belongs to.
+   */
+  readonly #handed = new Map<
+    ElectronCdpChannel,
+    { readonly run: CastRun; readonly frame: number }[]
+  >();
+  #castStarts = 0;
+  /** Per-channel cast generation, bumped when `#ownSessionGone` ends that channel's cast (U2). */
+  readonly #castGenerations = new WeakMap<ElectronCdpChannel, number>();
+  /** Per-channel pending cast commands, failed when `#ownSessionGone` ends that channel's cast (U2). */
+  readonly #castPending = new Map<ElectronCdpChannel, Set<(error: Error) => void>>();
+  /**
+   * What belongs to the debugger session now attached, and dies with it: made when the hub attaches
+   * the debugger, discarded at every detach, the hub's own and Electron's (`#debuggerSessionEnded`).
+   */
+  #session = new DebuggerSessionState();
   readonly #webContents: WebContents;
   readonly #setRenderingDemand: (demanded: boolean) => void;
   readonly #prepareInput: () => Promise<void>;
@@ -2599,6 +2735,14 @@ class ElectronDebuggerHub {
     });
     this.#debugger.on("message", (_event, method, parameters, sessionId) => {
       if (sessionId) {
+        // A cast's private session runs only its cast: its frames are for that cast's owners alone.
+        if (
+          this.#session.ownSessionsSeen.has(sessionId) &&
+          !this.#profileInspections.has(sessionId)
+        ) {
+          if (method === "Page.screencastFrame") this.#laneFrame(sessionId, asRecord(parameters));
+          return;
+        }
         const inspectProfile = this.#profileInspections.get(sessionId);
         if (inspectProfile) {
           // It skips every pause; should one arrive anyway, the page never waits on it.
@@ -2626,36 +2770,26 @@ class ElectronDebuggerHub {
         // Its scripts belonged to documents that are gone; a stop reads what is alive then.
         if (this.#profileInventory) void this.#closeProfileInventory(this.#profileInventory);
       }
-      if (
-        method === "Target.detachedFromTarget" &&
-        typeof record.sessionId === "string" &&
-        this.#profileInspections.has(record.sessionId)
-      )
+      // The hub's own sessions are no channel's: none hears of them, by their identity. While an
+      // attach of the hub's own is unanswered, any Target event may be about it: every one waits,
+      // in order, until the answer says which session is the hub's.
+      if (method.startsWith("Target.") && this.#session.ownAttaching > 0) {
+        this.#session.held.push({ method, record });
         return;
-      this.#contexts.observe(method, record);
-      const pageEvent = this.#agentWorlds.observe(method, record);
-      if (method.startsWith("Runtime.executionContext"))
-        for (const channel of this.#channels) channel.observeContextEvent(method, record);
-      const recipients =
-        method === "Page.screencastFrame"
-          ? [...this.#screencastOwners.keys()]
-          : this.#domainOwners.get(method.split(".", 1)[0] ?? "");
-      for (const channel of recipients ?? []) {
-        if (channel.role === "agent" && !pageEvent) {
-          if (method === "Debugger.paused")
-            void this.#command("Debugger.resume").catch(() => undefined);
-          continue;
-        }
-        channel.emit(method, record);
       }
+      this.#targetOrPageEvent(method, record);
     });
     this.#debugger.on("detach", (_event, reason) => {
+      // Every session it held is gone with it, the hub's own among them, and every cast.
+      this.#castsEnded("detached");
+      this.#debuggerSessionEnded();
       this.#interrupt(new Error(`Electron CDP debugger detached: ${reason}.`));
       this.#forgetContexts();
       this.#events.emit("detach", reason);
     });
     webContents.on("render-process-gone", (_event, details) => {
       this.#crashed = true;
+      this.#castsEnded("crashed");
       this.#interrupt(
         new Error(
           `Electron browser page crashed (${details.reason}); reload the page to continue.`,
@@ -2671,6 +2805,8 @@ class ElectronDebuggerHub {
     // hidden in the transparent resting window: until throttling is set again
     // it draws nothing, takes no clicks and gives a screencast no frame.
     webContents.on("did-navigate", () => {
+      // The latest frame was the last document's: no one is handed it now.
+      this.#forgetLatestFrames();
       this.#crashed = false;
       this.#inputReady = null;
       this.#updateThrottling();
@@ -2695,6 +2831,10 @@ class ElectronDebuggerHub {
     return this.#crashed;
   }
 
+  isScreencasting(): boolean {
+    return this.#castOf.size > 0 || this.#castStarts > 0;
+  }
+
   /** Only the fresh page's provider bootstrap may dispatch this initial batch. */
   bootstrapPlatform(install: (channel: ElectronCdpChannel) => void): ElectronCdpChannel {
     if (this.#channels.size || this.#attachment || this.#ownershipPending || this.#closed)
@@ -2707,7 +2847,7 @@ class ElectronDebuggerHub {
       channel.enabledDomains.add(domain);
     }
     install(channel);
-    if (!this.#debugger.isAttached()) this.#debugger.attach("1.3");
+    this.#attachDebugger();
     // All owners and listeners exist before the first command can emit. This
     // fresh-session exception dispatches independent initial enables together;
     // their accounting and every later ownership change remain serialized.
@@ -2783,6 +2923,9 @@ class ElectronDebuggerHub {
     parameters?: Record<string, unknown>,
     cleanup = false,
   ): Promise<unknown> {
+    // A new size makes the latest frame the wrong shape for anyone who joins after it.
+    if (method.startsWith("Emulation.set") || method === "Emulation.clearDeviceMetricsOverride")
+      this.#forgetLatestFrames();
     const command = Promise.withResolvers<unknown>();
     this.#pending.add(command.reject);
     try {
@@ -2884,72 +3027,66 @@ class ElectronDebuggerHub {
         if (generation !== this.#rendererGeneration)
           throw new Error("Electron CDP renderer changed before command dispatch.");
         if (this.#closed || !this.#channels.has(channel)) throw new Error("CDP channel is closed.");
-        if (
-          method === "Input.dispatchMouseEvent" &&
-          parameters?.type === "mouseWheel" &&
-          typeof parameters.deltaX === "number" &&
-          typeof parameters.deltaY === "number"
-        ) {
-          const { cssVisualViewport } = z
-            .object({
-              cssVisualViewport: z.object({
-                zoom: z.number().positive(),
-                scale: z.number().positive(),
-              }),
-            })
-            .parse(await send("Page.getLayoutMetrics"));
-          // Chromium divides native wheel deltas by the emulated/native DPR ratio
-          // and visual page scale. CDP pointer anchors already use CSS coordinates.
-          const density =
-            this.#deviceScaleFactor === null ? 1 : this.#deviceScaleFactor / this.#displayScale();
-          const scale = density * cssVisualViewport.zoom * cssVisualViewport.scale;
-          parameters = {
-            ...parameters,
-            deltaX: parameters.deltaX * scale,
-            deltaY: parameters.deltaY * scale,
-          };
+        const release = this.retainRendering(channel);
+        try {
+          if (
+            method === "Input.dispatchMouseEvent" &&
+            parameters?.type === "mouseWheel" &&
+            typeof parameters.deltaX === "number" &&
+            typeof parameters.deltaY === "number"
+          ) {
+            const { cssVisualViewport } = z
+              .object({
+                cssVisualViewport: z.object({
+                  zoom: z.number().positive(),
+                  scale: z.number().positive(),
+                }),
+              })
+              .parse(await send("Page.getLayoutMetrics"));
+            // Chromium divides native wheel deltas by the emulated/native DPR ratio
+            // and visual page scale. CDP pointer anchors already use CSS coordinates.
+            const density =
+              this.#deviceScaleFactor === null ? 1 : this.#deviceScaleFactor / this.#displayScale();
+            const scale = density * cssVisualViewport.zoom * cssVisualViewport.scale;
+            parameters = {
+              ...parameters,
+              deltaX: parameters.deltaX * scale,
+              deltaY: parameters.deltaY * scale,
+            };
+          }
+          if (generation !== this.#rendererGeneration)
+            throw new Error("Electron CDP renderer changed before command dispatch.");
+          if (this.#closed || !this.#channels.has(channel))
+            throw new Error("CDP channel is closed.");
+          return await send(method, parameters);
+        } finally {
+          release();
         }
-        if (generation !== this.#rendererGeneration)
-          throw new Error("Electron CDP renderer changed before command dispatch.");
-        if (this.#closed || !this.#channels.has(channel)) throw new Error("CDP channel is closed.");
-        return send(method, parameters);
       });
+    }
+    if (
+      method === "Page.captureScreenshot" ||
+      method === "Page.printToPDF" ||
+      (channel.role === "agent" &&
+        (method === "Runtime.evaluate" ||
+          method === "Runtime.callFunctionOn" ||
+          method === "Runtime.awaitPromise"))
+    ) {
+      const release = this.retainRendering(channel);
+      return send(method, parameters).finally(release);
     }
     if (method === "Page.startScreencast") {
-      return this.#serializeOwnership(async () => {
-        const generation = this.#rendererGeneration;
-        const casting = this.#screencastOwners.size > 0;
-        const restarted = this.#screencastOwners.has(channel);
-        const previous = this.#screencastOwners.get(channel);
-        this.#screencastOwners.delete(channel);
-        this.#screencastOwners.set(channel, parameters);
-        this.#updateThrottling();
-        try {
-          if (casting) await send("Page.stopScreencast");
-          this.#assertCurrent(generation);
-          await send(method, this.#deciding()?.[1]);
-          return {};
-        } catch (error) {
-          this.#screencastOwners.delete(channel);
-          // A released channel's cast is not restored for anyone to inherit.
-          if (restarted && this.#channels.has(channel))
-            this.#screencastOwners.set(channel, previous);
-          this.#updateThrottling();
-          throw error;
-        }
-      });
+      return this.#castCommand(channel, (castGeneration) =>
+        this.#startCast(channel, parameters, send, castGeneration),
+      );
     }
     if (method === "Page.stopScreencast") {
-      return this.#serializeOwnership(async () => {
-        if (!this.#screencastOwners.delete(channel)) return {};
-        this.#updateThrottling();
-        if (this.#screencastOwners.size === 0) await send(method, parameters);
+      return this.#castCommand(channel, async () => {
+        await this.#leaveCast(channel, this.#rendererGeneration, parameters);
         return {};
       });
     }
-    if (method === "Page.screencastFrameAck" && this.#deciding()?.[0] !== channel) {
-      return Promise.resolve({});
-    }
+    if (method === "Page.screencastFrameAck") return this.#ackCast(channel, parameters);
     if (method === "Target.setAutoAttach" || method === "Target.sendMessageToTarget") {
       // Out-of-process frames' sessions are the platform's, as the agent
       // router already keeps them.
@@ -3059,13 +3196,8 @@ class ElectronDebuggerHub {
       const context = this.#profileContextGeneration;
       const isolate = asRecord(await this.#dispatch("Runtime.getIsolateId")).id;
       if (typeof isolate !== "string") return null;
-      const info = asRecord(await this.#command("Target.getTargetInfo"));
-      const targetId = asRecord(info.targetInfo).targetId;
-      if (typeof targetId !== "string") return null;
-      const { sessionId } = asRecord(
-        await this.#command("Target.attachToTarget", { targetId, flatten: true }),
-      );
-      if (typeof sessionId !== "string") return null;
+      // A session of the hub's own: attached and let go through its one register.
+      const sessionId = await this.#attachOwn();
       const scripts = new CdpProductIsolation();
       inventory = { channel, sessionId, scripts, isolate, renderer, context };
       this.#profileInspections.set(sessionId, (method, parameters) => {
@@ -3104,9 +3236,7 @@ class ElectronDebuggerHub {
   async #closeProfileInventory(inventory: ProfileInventory): Promise<void> {
     if (this.#profileInventory === inventory) this.#profileInventory = null;
     try {
-      await this.#command("Target.detachFromTarget", { sessionId: inventory.sessionId });
-    } catch {
-      // A renderer change or teardown has ended the session already.
+      await this.#detachOwn(inventory.sessionId);
     } finally {
       this.#profileInspections.delete(inventory.sessionId);
     }
@@ -3139,13 +3269,8 @@ class ElectronDebuggerHub {
       await this.#agentWorlds.observeProfileResult(result, async (observe) => {
         const isolateId = asRecord(await isolate).id;
         if (typeof isolateId !== "string") return;
-        const info = asRecord(await this.#command("Target.getTargetInfo"));
-        const targetId = asRecord(info.targetInfo).targetId;
-        if (typeof targetId !== "string") return;
-        const { sessionId } = asRecord(
-          await this.#command("Target.attachToTarget", { targetId, flatten: true }),
-        );
-        if (typeof sessionId !== "string") return;
+        const sessionId = await this.#attachOwn().catch(() => null);
+        if (sessionId === null) return;
 
         this.#profileInspections.set(sessionId, observe);
         try {
@@ -3161,7 +3286,7 @@ class ElectronDebuggerHub {
               "The page changed while reading its profile.",
             );
         } finally {
-          await this.#command("Target.detachFromTarget", { sessionId }).catch(() => undefined);
+          await this.#detachOwn(sessionId);
           this.#profileInspections.delete(sessionId);
         }
       });
@@ -3223,8 +3348,8 @@ class ElectronDebuggerHub {
     const generation = this.#rendererGeneration;
     const current = () => generation === this.#rendererGeneration;
     await this.#serializeOwnership(async () => {
-      if (this.#screencastOwners.delete(channel) && this.#screencastOwners.size === 0 && current())
-        await this.#command("Page.stopScreencast").catch(() => undefined);
+      await this.#leaveCast(channel, generation).catch(() => undefined);
+      this.#handed.delete(channel);
       for (const domain of channel.enabledDomains) {
         const owners = this.#domainOwners.get(domain);
         owners?.delete(channel);
@@ -3267,7 +3392,7 @@ class ElectronDebuggerHub {
       this.#forcedDisposal.resolve();
       throw error;
     } finally {
-      if (this.#isAttached()) this.#debugger.detach();
+      this.#detachDebugger();
       this.#forgetContexts();
       this.#events.removeAllListeners();
     }
@@ -3284,7 +3409,11 @@ class ElectronDebuggerHub {
     if (this.#teardown) return this.#teardown;
     this.#interrupt(error);
     this.#domainOwners.clear();
-    this.#screencastOwners.clear();
+    // No cast is left; a private session one ran in is let go now, whether or not the
+    // debugger itself is detached after (a channel opened meanwhile keeps it attached).
+    this.#castsEnded("crashed");
+    this.#castOf.clear();
+    this.#casts.clear();
     this.#renderingOwners.clear();
     this.#updateThrottling();
     const teardown = (async () => {
@@ -3295,7 +3424,7 @@ class ElectronDebuggerHub {
           this.#destroyed,
           this.#forcedDisposal.promise,
         ]);
-      if (!this.#closed && this.#channels.size === 0 && this.#isAttached()) this.#debugger.detach();
+      if (!this.#closed && this.#channels.size === 0) this.#detachDebugger();
       this.#forgetContexts();
     })().finally(() => {
       if (this.#teardown === teardown) this.#teardown = null;
@@ -3306,7 +3435,7 @@ class ElectronDebuggerHub {
 
   #attach(): Promise<void> {
     if (this.#attachment) return this.#attachment;
-    if (!this.#debugger.isAttached()) this.#debugger.attach("1.3");
+    this.#attachDebugger();
     this.#contexts.clear();
     // Runtime commands wait until every context has been inventoried.
     const attachment = this.#dispatch("Runtime.enable").then(() => {
@@ -3395,18 +3524,545 @@ class ElectronDebuggerHub {
     }
   }
 
-  /** The screencasting channel whose parameters Chromium's cast uses, with them. */
-  #deciding(): readonly [ElectronCdpChannel, Record<string, unknown> | undefined] | undefined {
-    const owners = [...this.#screencastOwners];
-    return owners.findLast(([owner]) => owner.role === "platform") ?? owners.at(-1);
+  /**
+   * A channel's start: it joins the running cast of the settings it asked for, or that cast
+   * starts. A run's identity is fixed at its start: the session it runs in, and Chromium's frame
+   * `sessionId` (`#laneFrame`); nothing is delivered or kept before the start has resolved. An
+   * owner alone in its cast hands that cast's session to the new one, so the start replaces its
+   * settings with no stop between; otherwise it keeps its old cast's frames until the new one has
+   * started, and joins a cast only once it has left its old one. A start that fails leaves the
+   * channel in the cast it had.
+   */
+  async #startCast(
+    channel: ElectronCdpChannel,
+    parameters: Record<string, unknown> | undefined,
+    send: (method: string, parameters?: Record<string, unknown>) => Promise<unknown>,
+    castGeneration: number,
+  ): Promise<unknown> {
+    const generation = this.#rendererGeneration;
+    const key = castKey(parameters);
+    // A channel closed while its start was queued does nothing: it joins nothing, resolves
+    // nothing and sends Chromium nothing, on every branch below.
+    this.#assertOpen(channel);
+    this.#assertCastCurrent(channel, castGeneration);
+    // Nothing read before an await is used after it unless read again.
+    const running = () =>
+      [...this.#casts].find(
+        (cast) => cast.key === key && cast.run?.started === true && cast.run.lane !== null,
+      );
+    if (running() !== undefined) {
+      // Out of its old cast first, then into the running one, as both are after the leaving.
+      if (this.#castOf.get(channel) !== running()) {
+        await this.#leaveCast(channel, generation);
+        this.#assertCurrent(generation);
+        this.#assertCastCurrent(channel, castGeneration);
+        this.#assertOpen(channel);
+      }
+      const joined = running();
+      if (joined?.run) {
+        this.#joinCast(channel, joined);
+        // One that asks again has reset what it shows: it is handed the latest frame too.
+        this.#replay(channel, joined.run);
+        return {};
+      }
+      // It ended while the channel left its old cast: it starts afresh, below.
+    }
+    const previous = this.#castOf.get(channel);
+    const same = [...this.#casts].find((cast) => cast.key === key);
+    const leavingAlone = previous !== undefined && previous !== same && previous.owners.size === 1;
+    // Casts that run or are starting: one whose renderer died runs nothing and holds no place.
+    const live = [...this.#casts].filter((cast) => cast.run !== null);
+    if (
+      same === undefined &&
+      channel.role !== "platform" &&
+      live.length - (leavingAlone && previous.run !== null ? 1 : 0) >= maxCastsPerPage
+    )
+      throw new Error(
+        `This page is already pictured in ${maxCastsPerPage} formats or sizes at once, the most it gives. Ask for one of those, or ask again when one of them ends.`,
+      );
+    const cast: Screencast = same ?? { key, owners: new Set(), run: null };
+    const left = previous !== undefined && previous !== cast ? previous : undefined;
+    const handed = leavingAlone && left?.run?.lane ? left.run : null;
+    const run: CastRun = {
+      awaitingAck: 0,
+      cast,
+      floor: 0,
+      frameSession: null,
+      lane: null,
+      lastFrame: null,
+      started: false,
+      unhanded: false,
+    };
+    if (handed && left) {
+      run.lane = handed.lane;
+      handed.lane = null;
+      left.run = null;
+      left.owners.delete(channel);
+      this.#castOf.delete(channel);
+      this.#casts.delete(left);
+    }
+    this.#casts.add(cast);
+    cast.run = run;
+    this.#castStarts += 1;
+    this.#updateThrottling();
+    let ending: Screencast | null = null;
+    let released = false;
+    let sentToChromium = false;
+    try {
+      this.#assertCurrent(generation);
+      this.#assertCastCurrent(channel, castGeneration);
+      if (run.lane === null) {
+        run.lane = this.#pageSessionFree(run)
+          ? { id: undefined }
+          : { id: await this.#attachOwn(generation) };
+        // A crash or the debugger's detach while it attached ended this run.
+        if (cast.run !== run)
+          throw new Error("Electron CDP renderer changed before command dispatch.");
+        this.#assertCastCurrent(channel, castGeneration);
+        this.#assertOpen(channel);
+      }
+      const lane = run.lane;
+      const laneKey = lane.id ?? "";
+      // Chromium numbers a session's casts upward, one more for each start it answers: every
+      // earlier run's frames carry at most the higher of what it sent and what it answered.
+      // The count is the debugger session's: one that lets go and attaches again counts afresh.
+      const session = this.#session;
+      const starts = session.laneStarts;
+      run.floor = Math.max(session.laneFrames.get(laneKey) ?? 0, starts.get(laneKey) ?? 0);
+      await (lane.id === undefined
+        ? send("Page.startScreencast", parameters)
+        : this.#command("Page.startScreencast", parameters, lane.id));
+      sentToChromium = true;
+      // Counted while its session lives: one let go meanwhile keeps no count.
+      if (lane.id === undefined || session.ownSessions.has(lane.id))
+        starts.set(laneKey, (starts.get(laneKey) ?? 0) + 1);
+      this.#assertCurrent(generation);
+      this.#assertCastCurrent(channel, castGeneration);
+      if (cast.run !== run || run.lane !== lane)
+        throw new Error("Electron CDP renderer changed before command dispatch.");
+      run.started = true;
+      if (this.#closed || !this.#channels.has(channel)) {
+        // A channel released while it waited joins nothing (its release leaves its old cast);
+        // the cast Chromium now runs for it ends unless someone else is in it.
+        released = true;
+        if (cast.owners.size === 0) ending = cast;
+      } else {
+        // The channel moves in one step, out of its old cast and into this one, so no frame of
+        // this run reaches no one; the old cast, if no one is left in it, ends after.
+        if (left && !handed) ending = this.#leaveMembership(channel);
+        this.#joinCast(channel, cast);
+      }
+      // A frame of this run that came before its start resolved is handed now, to each owner.
+      for (const owner of cast.owners) this.#replay(owner, run);
+    } catch (error) {
+      if (cast.run === run) cast.run = null;
+      const lane = run.lane;
+      // A frame of this run that came before its start failed was handed to no one: Chromium
+      // waits for its ack, which it gets before the run is forgotten.
+      if (run.unhanded && lane && run.frameSession !== null && run.awaitingAck > 0)
+        void this.#command(
+          "Page.screencastFrameAck",
+          { sessionId: run.frameSession },
+          lane.id,
+        ).catch(() => undefined);
+      run.lane = null;
+      // A renderer change, debugger detach, or private-session detach has ended the cast already.
+      const interrupted =
+        generation !== this.#rendererGeneration ||
+        (this.#castGenerations.get(channel) ?? 0) !== castGeneration;
+      if (handed && left && !interrupted && lane !== null) {
+        handed.lane = lane;
+        left.run = handed;
+        this.#casts.add(left);
+        // A released channel's cast is not restored for anyone to inherit.
+        if (this.#channels.has(channel)) this.#joinCast(channel, left);
+        else await this.#endCast(left, generation).catch(() => undefined);
+      } else if (lane?.id !== undefined) {
+        // A session attached for this start is let go, whoever else is in the cast.
+        await this.#detachOwn(lane.id);
+      } else if (
+        sentToChromium &&
+        lane !== null &&
+        generation === this.#rendererGeneration &&
+        this.#pageSessionFree(run)
+      ) {
+        // W3: a start the hub sent on the page's own session and then failed still took effect in
+        // Chromium; stop it when no other run owns that session.
+        await this.#command("Page.stopScreencast", undefined, undefined).catch(() => undefined);
+      }
+      if (cast.owners.size === 0) this.#casts.delete(cast);
+      throw error;
+    } finally {
+      this.#castStarts -= 1;
+      this.#updateThrottling();
+    }
+    // The start is done whatever ending the old cast comes to.
+    if (ending) await this.#endCast(ending, generation).catch(() => undefined);
+    if (released) throw new Error("CDP channel is closed.");
+    return {};
+  }
+
+  #joinCast(channel: ElectronCdpChannel, cast: Screencast): void {
+    cast.owners.add(channel);
+    this.#castOf.set(channel, cast);
+    this.#updateThrottling();
+  }
+
+  /** The channel leaves its cast, and a cast no one is left in ends. */
+  async #leaveCast(
+    channel: ElectronCdpChannel,
+    generation: number,
+    parameters?: Record<string, unknown>,
+  ): Promise<void> {
+    const empty = this.#leaveMembership(channel);
+    if (empty) await this.#endCast(empty, generation, parameters);
+  }
+
+  /**
+   * The channel is no longer one of its cast's owners, at once; the cast, if no one is left in it,
+   * is returned to be ended. What it was handed stays: its late acks go to that run, or nowhere.
+   */
+  #leaveMembership(channel: ElectronCdpChannel): Screencast | null {
+    const cast = this.#castOf.get(channel);
+    if (!cast) return null;
+    cast.owners.delete(channel);
+    this.#castOf.delete(channel);
+    this.#updateThrottling();
+    return cast.owners.size === 0 ? cast : null;
+  }
+
+  /** Whether the page's own session runs no cast but `run`. */
+  #pageSessionFree(run: CastRun): boolean {
+    for (const cast of this.#casts)
+      if (cast.run && cast.run !== run && cast.run.lane && cast.run.lane.id === undefined)
+        return false;
+    return true;
+  }
+
+  /** The run cast in `lane` (undefined: the page's own session), if one is. */
+  #runIn(lane: string | undefined): CastRun | null {
+    for (const cast of this.#casts)
+      if (cast.run?.lane && cast.run.lane.id === lane) return cast.run;
+    return null;
+  }
+
+  /**
+   * A frame Chromium sent in `lane`. It belongs to the run cast there only once that run's start
+   * has resolved and it carries the run's frame `sessionId`: Chromium numbers a session's casts
+   * upward, so a run's first frame names it, and anything at or below the highest id the session
+   * had sent before the run started is an earlier run's, late. A frame that is not the run's is
+   * not delivered, kept or counted.
+   */
+  #laneFrame(lane: string | undefined, frame: Record<string, unknown>): void {
+    const id = Number(frame.sessionId);
+    if (!Number.isFinite(id)) return;
+    const key = lane ?? "";
+    // A session of the hub's own it has let go keeps no count: no cast runs in it again.
+    if (lane !== undefined && !this.#session.ownSessions.has(lane)) return;
+    if (id > (this.#session.laneFrames.get(key) ?? 0)) this.#session.laneFrames.set(key, id);
+    const run = this.#runIn(lane);
+    if (!run) return;
+    if (run.frameSession === null) {
+      if (id <= run.floor) return;
+      run.frameSession = id;
+    } else if (id !== run.frameSession) return;
+    if (!run.started) {
+      // This run's, though its start has not resolved: it is kept, to be handed once it has, and
+      // reaches no one before. Chromium waits for an ack of each frame it sends, and stops for
+      // good at two: one this one replaces is acked here.
+      if (run.unhanded && run.lastFrame !== null && run.lane)
+        void this.#command("Page.screencastFrameAck", { sessionId: id }, run.lane.id).catch(
+          () => undefined,
+        );
+      else run.awaitingAck += 1;
+      run.lastFrame = frame;
+      run.unhanded = true;
+      return;
+    }
+    run.lastFrame = frame;
+    run.unhanded = false;
+    run.awaitingAck += 1;
+    for (const owner of run.cast.owners) this.#hand(owner, run, id, frame);
+  }
+
+  #hand(
+    owner: ElectronCdpChannel,
+    run: CastRun,
+    frame: number,
+    parameters: Record<string, unknown>,
+  ): void {
+    const handed = this.#handed.get(owner) ?? [];
+    handed.push({ frame, run });
+    // An owner that never acks keeps no more than this.
+    if (handed.length > 16) handed.shift();
+    this.#handed.set(owner, handed);
+    owner.emit("Page.screencastFrame", parameters);
+  }
+
+  #replay(channel: ElectronCdpChannel, run: CastRun): void {
+    if (run.lastFrame !== null && run.frameSession !== null) run.unhanded = false;
+    if (run.lastFrame !== null && run.frameSession !== null)
+      this.#hand(channel, run, run.frameSession, run.lastFrame);
+  }
+
+  /**
+   * An owner's ack goes to the run that handed it that frame, in that run's session, once for each
+   * frame Chromium sent there, from whichever of its owners acks first (a slow one holds no one
+   * up). An ack of a run that has ended, or of a frame the owner was never handed, goes nowhere.
+   */
+  #ackCast(channel: ElectronCdpChannel, parameters: CdpParameters | undefined): Promise<unknown> {
+    const frame = Number(asRecord(parameters).sessionId);
+    const handed = this.#handed.get(channel) ?? [];
+    const at = handed.findIndex((entry) => entry.frame === frame);
+    if (at < 0) return Promise.resolve({});
+    const run = handed.splice(0, at + 1).at(-1)!.run;
+    if (run.cast.run !== run || !run.started || !run.lane || run.awaitingAck === 0)
+      return Promise.resolve({});
+    run.awaitingAck -= 1;
+    return this.#command("Page.screencastFrameAck", parameters, run.lane.id);
+  }
+
+  /**
+   * No one is left in `cast`: it ends. Its private session is let go on every path; the page's own
+   * session is asked to stop only while the generation it was asked in lasts (a renderer change
+   * or the debugger's detach has ended that cast already).
+   */
+  async #endCast(
+    cast: Screencast,
+    generation: number,
+    parameters?: Record<string, unknown>,
+  ): Promise<void> {
+    this.#casts.delete(cast);
+    const run = cast.run;
+    cast.run = null;
+    const lane = run?.lane ?? null;
+    if (run) run.lane = null;
+    if (lane === null) return;
+    if (lane.id !== undefined) return this.#detachOwn(lane.id);
+    if (generation !== this.#rendererGeneration) return;
+    await this.#command("Page.stopScreencast", parameters);
+  }
+
+  /**
+   * Chromium casts no more: no cast is left, and no channel owns one until it asks again (its
+   * start is then sent anew); no old frame is handed to anyone. A private session a cast ran in is let go (`crashed`, and on the last channel's
+   * release), or is already gone with the debugger (`detached`).
+   */
+  #castsEnded(how: "crashed" | "detached"): void {
+    // Each channel a cast of which ended is told so on it: Chromium says nothing of it.
+    const told = new Set<ElectronCdpChannel>();
+    for (const cast of this.#casts) for (const owner of cast.owners) told.add(owner);
+    for (const cast of this.#casts) {
+      const lane = cast.run?.lane ?? null;
+      if (cast.run) cast.run.lane = null;
+      cast.run = null;
+      if (how === "crashed" && lane?.id !== undefined) void this.#detachOwn(lane.id);
+      // Ownership ends with the run: a channel owns a cast again only by asking after this.
+      cast.owners.clear();
+    }
+    this.#casts.clear();
+    this.#castOf.clear();
+    this.#handed.clear();
+    this.#updateThrottling();
+    for (const channel of told) channel.castsEnded();
+  }
+
+  /** The hub attaches the debugger, if it is not: a new session, counted afresh. */
+  #attachDebugger(): void {
+    if (this.#debugger.isAttached()) return;
+    this.#debugger.attach("1.3");
+    this.#session = new DebuggerSessionState();
+  }
+
+  /**
+   * The hub lets the debugger go. Electron says nothing of a detach it was asked for (no "detach"
+   * event), so what the session counted ends here too.
+   */
+  #detachDebugger(): void {
+    try {
+      if (this.#isAttached()) this.#debugger.detach();
+    } finally {
+      this.#debuggerSessionEnded();
+    }
+  }
+
+  /**
+   * The debugger session is gone, however it went: its frame and start counts, the hub's own
+   * sessions and every event held for them go with it, and the next session starts from nothing.
+   * A start or attach still answering counts in the session it was asked in, never the next.
+   */
+  #debuggerSessionEnded(): void {
+    this.#session = new DebuggerSessionState();
+  }
+
+  /**
+   * No one is handed a cast's latest frame any more. One kept for a start not yet answered was
+   * never handed to anyone, and Chromium waits for its ack: it is acked here, not forgotten.
+   */
+  #forgetLatestFrames(): void {
+    for (const cast of this.#casts) {
+      const run = cast.run;
+      if (!run || run.lastFrame === null) continue;
+      if (run.unhanded && run.lane && run.frameSession !== null && run.awaitingAck > 0) {
+        run.awaitingAck -= 1;
+        void this.#command(
+          "Page.screencastFrameAck",
+          { sessionId: run.frameSession },
+          run.lane.id,
+        ).catch(() => undefined);
+      }
+      run.lastFrame = null;
+      run.unhanded = false;
+    }
+  }
+
+  /**
+   * A session of the hub's own on this page. Its attach event reaches no channel, even one that
+   * arrives before the attach answers. The attach goes straight to the debugger: a session it
+   * opens is the hub's whatever happens to its caller meanwhile, and one that answers after its
+   * caller was interrupted is let go at once, never left attached.
+   */
+  async #attachOwn(generation = this.#rendererGeneration): Promise<string> {
+    const info = asRecord(await this.#command("Target.getTargetInfo"));
+    const targetId = asRecord(info.targetInfo).targetId;
+    if (typeof targetId !== "string") throw new Error("Browser page target is unavailable");
+    const session = this.#session;
+    return new Promise<string>((resolve, reject) => {
+      {
+        let interrupted = false;
+        const interrupt = (error: Error) => {
+          interrupted = true;
+          reject(error);
+        };
+        this.#pending.add(interrupt);
+        const answered = (sessionId: unknown) => {
+          this.#pending.delete(interrupt);
+          if (typeof sessionId !== "string") {
+            reject(new Error("Page debugger did not return a session"));
+            return;
+          }
+          session.ownSessions.add(sessionId);
+          session.ownSessionsSeen.add(sessionId);
+          if (interrupted || generation !== this.#rendererGeneration || session !== this.#session) {
+            void this.#detachOwn(sessionId);
+            reject(new Error("Electron CDP renderer changed before command dispatch."));
+            return;
+          }
+          resolve(sessionId);
+        };
+        if (this.#webContents.isDestroyed() || !this.#debugger.isAttached()) {
+          this.#pending.delete(interrupt);
+          reject(new Error("Electron CDP target is closed."));
+          return;
+        }
+        // Counted until Chromium answers, not until the caller stops waiting: an interrupted
+        // caller's session is still announced, and is still the hub's.
+        session.ownAttaching += 1;
+        const settled = () => {
+          session.ownAttaching -= 1;
+          if (session.ownAttaching === 0 && session === this.#session) this.#releaseHeldEvents();
+        };
+        const failed = (error: unknown) => {
+          this.#pending.delete(interrupt);
+          reject(error instanceof Error ? error : new Error(String(error)));
+          settled();
+        };
+        // Released on every exit: an answer, a refusal, or a throw before anything was sent.
+        let sent: Promise<unknown>;
+        try {
+          sent = this.#debugger.sendCommand("Target.attachToTarget", { targetId, flatten: true });
+        } catch (error) {
+          failed(error);
+          return;
+        }
+        void sent.then((result) => {
+          answered(asRecord(result).sessionId);
+          settled();
+        }, failed);
+      }
+    });
+  }
+
+  /** An event of the page's own session, to the channels that hear it. */
+  #pageEvent(method: string, record: Record<string, unknown>): void {
+    this.#contexts.observe(method, record);
+    const pageEvent = this.#agentWorlds.observe(method, record);
+    if (method.startsWith("Runtime.executionContext"))
+      for (const channel of this.#channels) channel.observeContextEvent(method, record);
+    if (method === "Page.screencastFrame") {
+      this.#laneFrame(undefined, record);
+      return;
+    }
+    const recipients = this.#domainOwners.get(method.split(".", 1)[0] ?? "");
+    for (const channel of recipients ?? []) {
+      if (channel.role === "agent" && !pageEvent) {
+        if (method === "Debugger.paused")
+          void this.#command("Debugger.resume").catch(() => undefined);
+        continue;
+      }
+      channel.emit(method, record);
+    }
+  }
+
+  /** The Target events held while the hub's own attach was unanswered, in the order they came. */
+  #releaseHeldEvents(): void {
+    const held = this.#session.held;
+    this.#session.held = [];
+    for (const { method, record } of held) this.#targetOrPageEvent(method, record);
+  }
+
+  /** A Target event about one of the hub's own sessions reaches no channel; any other does. */
+  #targetOrPageEvent(method: string, record: Record<string, unknown>): void {
+    const own = typeof record.sessionId === "string" ? record.sessionId : null;
+    if (
+      (method === "Target.attachedToTarget" || method === "Target.detachedFromTarget") &&
+      own !== null &&
+      this.#session.ownSessionsSeen.has(own)
+    ) {
+      if (method === "Target.detachedFromTarget") this.#ownSessionGone(own);
+      return;
+    }
+    this.#pageEvent(method, record);
+  }
+
+  /**
+   * One of the hub's own sessions is let go: once, whatever path asks, and straight to the
+   * debugger, since a crashed page or a teardown refuses every other command.
+   */
+  async #detachOwn(sessionId: string): Promise<void> {
+    if (!this.#session.ownSessions.has(sessionId)) return;
+    this.#session.letGo(sessionId);
+    if (this.#webContents.isDestroyed() || !this.#debugger.isAttached()) return;
+    await this.#debugger
+      .sendCommand("Target.detachFromTarget", { sessionId })
+      .then(() => undefined)
+      .catch(() => undefined);
+  }
+
+  /** Chromium detached one of the hub's own sessions itself: nothing is left to let go. */
+  #ownSessionGone(sessionId: string): void {
+    this.#session.gone(sessionId);
+    const run = this.#runIn(sessionId);
+    if (run) {
+      run.lane = null;
+      if (run.cast.run === run) run.cast.run = null;
+      // Ownership ends with the run, as when a crash ends the casts: a channel owns a cast again
+      // only by asking after this, and each owner is told so on it, as `#castsEnded` tells them.
+      const told = [...run.cast.owners];
+      for (const owner of told) this.#castOf.delete(owner);
+      run.cast.owners.clear();
+      this.#casts.delete(run.cast);
+      this.#updateThrottling();
+      this.#failChannelCasts(told, new Error("Electron screencast session detached."));
+    }
   }
 
   #updateThrottling(): void {
     if (this.#closed || this.#webContents.isDestroyed()) return;
+    // Demand hidden compositing only for active visual operations (screencasts,
+    // screenshots, paint waits, or in-flight input), never for an idle agent CDP channel.
     const demanded =
-      [...this.#channels].some((channel) => channel.role === "agent") ||
-      this.#screencastOwners.size > 0 ||
-      this.#renderingOwners.size > 0;
+      this.#castOf.size > 0 || this.#castStarts > 0 || this.#renderingOwners.size > 0;
     this.#setRenderingDemand(demanded);
   }
 
@@ -3504,9 +4160,63 @@ class ElectronDebuggerHub {
     this.#pending.clear();
   }
 
+  #assertOpen(channel: ElectronCdpChannel): void {
+    if (this.#closed || !this.#channels.has(channel)) throw new Error("CDP channel is closed.");
+  }
+
   #assertCurrent(generation: number): void {
     if (generation !== this.#rendererGeneration)
       throw new Error("Electron CDP renderer changed before command dispatch.");
+  }
+
+  #assertCastCurrent(channel: ElectronCdpChannel, castGeneration: number): void {
+    if ((this.#castGenerations.get(channel) ?? 0) !== castGeneration)
+      throw new Error("Electron screencast session ended before command dispatch.");
+  }
+
+  /**
+   * Serializes one channel's cast start or stop on `#ownershipTail` under that channel's own cast
+   * generation, so ending that channel's cast fails its queued cast commands before they take
+   * effect without touching any other channel's commands (U2).
+   */
+  #castCommand<T>(
+    channel: ElectronCdpChannel,
+    operation: (castGeneration: number) => Promise<T>,
+  ): Promise<T> {
+    const castGeneration = this.#castGenerations.get(channel) ?? 0;
+    const command = Promise.withResolvers<T>();
+    let pending = this.#castPending.get(channel);
+    if (!pending) {
+      pending = new Set();
+      this.#castPending.set(channel, pending);
+    }
+    pending.add(command.reject);
+    const settle = () => {
+      const set = this.#castPending.get(channel);
+      set?.delete(command.reject);
+      if (set?.size === 0) this.#castPending.delete(channel);
+    };
+    void command.promise.then(settle, settle);
+    void this.#serializeOwnership(() => {
+      this.#assertCastCurrent(channel, castGeneration);
+      return operation(castGeneration);
+    }).then(command.resolve, command.reject);
+    return command.promise;
+  }
+
+  /** Ends cast commands held for `channels` alone, after telling each channel its cast ended (U2). */
+  #failChannelCasts(channels: readonly ElectronCdpChannel[], error: Error): void {
+    const pending: Array<(error: Error) => void> = [];
+    for (const channel of channels) {
+      this.#castGenerations.set(channel, (this.#castGenerations.get(channel) ?? 0) + 1);
+      const set = this.#castPending.get(channel);
+      if (set) {
+        for (const reject of set) pending.push(reject);
+        this.#castPending.delete(channel);
+      }
+    }
+    for (const channel of channels) channel.castsEnded();
+    for (const reject of pending) reject(error);
   }
 
   /**
@@ -3641,6 +4351,11 @@ class ElectronCdpChannel implements CdpSession, CdpChannel {
     }
     this.#events.emit("event", method, parameters);
     this.#events.emit(method, parameters);
+  }
+
+  /** The hub ended this channel's casts itself: said on it, to whoever listens for exactly that. */
+  castsEnded(): void {
+    if (!this.#closed) this.#events.emit(screencastEndedEvent, {});
   }
 
   clearListeners(): void {
@@ -3808,4 +4523,78 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+/**
+ * The most casts one page runs at once, each its own capture and encode on every frame the page
+ * draws: the person's view here, the same page on their phone at another size, and one agent's
+ * picture. A request for a fourth is refused and takes nothing from the casts that run; the
+ * person's own view (a platform channel) is never the one refused.
+ */
+const maxCastsPerPage = 3;
+
+/** One of a page's screencasts: the settings it was asked for, its owners, and its current run. */
+interface Screencast {
+  readonly key: string;
+  readonly owners: Set<ElectronCdpChannel>;
+  run: CastRun | null;
+}
+
+/** A cast as Chromium runs it, from one start: its identity is fixed there. */
+interface CastRun {
+  readonly cast: Screencast;
+  /** Where it runs: the page's own session (`id` undefined) or a private one; null once ended. */
+  lane: { readonly id: string | undefined } | null;
+  /** Whether its start has resolved: nothing is delivered or kept before. */
+  started: boolean;
+  /** Chromium's frame `sessionId` for it, from its first frame above `floor`. */
+  frameSession: number | null;
+  /** The highest frame id its session had sent when it started: anything at or below is earlier runs'. */
+  floor: number;
+  /** Its latest frame, for an owner that joins it: a still page sends no other. */
+  lastFrame: Record<string, unknown> | null;
+  /** Whether `lastFrame` reached no one yet: kept before its start resolved. */
+  unhanded: boolean;
+  /**
+   * Frames Chromium sent in it and has had no ack for. Chromium sends no more while two wait:
+   * every one it sent is acked once.
+   */
+  awaitingAck: number;
+}
+
+/** A cast's settings with Chromium's defaults filled in, so equal settings compare equal. */
+function castKey(parameters: Record<string, unknown> | undefined): string {
+  const value = parameters ?? {};
+  const format = value.format === "jpeg" ? "jpeg" : "png";
+  return JSON.stringify({
+    everyNthFrame: value.everyNthFrame ?? 1,
+    format,
+    maxHeight: value.maxHeight ?? null,
+    maxWidth: value.maxWidth ?? null,
+    quality: format === "jpeg" ? (value.quality ?? 80) : null,
+  });
+}
+
+function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) {
+    void promise.catch(() => undefined);
+    return Promise.reject(signal.reason ?? new Error("Operation aborted."));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      reject(signal.reason ?? new Error("Operation aborted."));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }

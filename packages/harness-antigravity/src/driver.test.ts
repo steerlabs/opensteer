@@ -8,7 +8,6 @@ import {
 import { AcpHarnessAdapter, type AcpSessionConfigOption } from "@opensteer/harness-acp";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
-  nativeUserHarnessRuntimeBoundary,
   spawnSupervised,
   type HarnessEvent,
   type HarnessRunInput,
@@ -499,8 +498,6 @@ async function setupTurn(scenario: TurnScenario, deadlineMs = 500) {
     personalContext: true,
     personLineage: true,
     machineAccessNotice: "No other computers are reachable.",
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     modelSelection: ModelSelectionSchema.parse({
       modelId: "gemini-test",
       options: {},
@@ -514,7 +511,6 @@ async function setupTurn(scenario: TurnScenario, deadlineMs = 500) {
       providerHomeDirectory: join(directory, "profile"),
       store: { directory, id: "test-store" },
     },
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     skills: undefined,
     threadId: createId("thread"),
@@ -644,7 +640,6 @@ it("refuses a task that is not the person's own before starting Antigravity", as
       config: {},
       environment: fixture.context.environment,
       providerState: fixture.context.providerState,
-      runtimeBoundary: fixture.context.runtimeBoundary,
       signal: AbortSignal.timeout(2_000),
       sourceId: "google",
       workingDirectory: fixture.context.workspacePath,
@@ -659,8 +654,9 @@ it("refuses a task that is not the person's own before starting Antigravity", as
         adapter.startSession({ ...fixture.context, personLineage: false }),
       ).rejects.toMatchObject({
         code: "forbidden",
-        message:
-          "Antigravity starts with your own Antigravity settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
+        message: "This engine is not available for this task.",
+        ownerMessage:
+          "Antigravity is not yet verified to keep your settings out of tasks a connected agent or chat started, so it runs only tasks you started yourself that no connected agent or chat has written to.",
       });
     } finally {
       await adapter.close();

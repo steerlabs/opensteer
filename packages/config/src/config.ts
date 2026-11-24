@@ -1,8 +1,6 @@
-import { WorkHomeMarkerSchema, type WorkHomeMarker } from "@opensteer/control-plane-protocol";
 import { hostExposurePolicy, normalizePersonName } from "@opensteer/core";
 import {
   allowsPlaintextRunnerTransport,
-  BackgroundModelChoiceSchema,
   DeploymentIdSchema,
   DeploymentKindSchema,
   DeploymentShapeSchema,
@@ -13,7 +11,6 @@ import {
   opensteerHostNativeOAuthClients,
   RunnerIdSchema,
   RuntimeModeSchema,
-  type BackgroundModelChoice,
   type DeploymentId,
   type DeploymentShape,
   type EnvironmentId,
@@ -174,7 +171,6 @@ const configuredSecret = (maximumLength: number) =>
 const bindAddress = z.union([z.ipv4(), z.ipv6(), z.literal("localhost")]);
 const HostEnvironmentSchema = z.object({
   OPENSTEER_AUTH_SECRET: configuredSecret(8_192),
-  OPENSTEER_AGENT_REVIEW_MODEL: optionalPath,
   OPENSTEER_BIND_ADDRESS: bindAddress.default("127.0.0.1"),
   OPENSTEER_BROWSER_ATTACH_KEY_ID: z
     .string()
@@ -229,7 +225,11 @@ const HostEnvironmentSchema = z.object({
       .optional(),
   ),
   OPENSTEER_MANAGED_HOME_GENERATION: optionalPositiveInteger,
-  OPENSTEER_MANAGED_HOME_WORK_JSON: z.string().optional(),
+  /** `browserPool: true` in the Cloud Computer's boot answer, and nothing else, sets it. */
+  OPENSTEER_MANAGED_HOME_BROWSER_POOL: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.literal("true").optional(),
+  ),
   OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN: optionalUrl,
   OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID: z.preprocess(
     (value) => (value === "" ? undefined : value),
@@ -263,7 +263,6 @@ export interface HostConfig {
     readonly browserExtensionDirectory?: string;
   };
   readonly authSecret: string;
-  readonly agentReviewModel?: BackgroundModelChoice;
   readonly bindAddress: string;
   readonly canonicalOrigin: URL;
   /**
@@ -341,8 +340,12 @@ export interface HostConfig {
     readonly accountOrigin: URL;
     readonly cloudComputerId: string;
     readonly generation: number;
-    readonly work?: WorkHomeMarker;
     readonly oidc: { readonly clientId: string; readonly clientSecret: string };
+    /**
+     * Its browser runs on a pool host: from `browserPool: true` in its boot answer only, never
+     * from a missing egress or anything a page or a connected agent can reach.
+     */
+    readonly browserPool?: true;
   };
   readonly privateKeyPath: string | undefined;
   readonly publicKeyPath: string | undefined;
@@ -612,13 +615,6 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
           : join(homedir(), "Opensteer")),
     },
     authSecret: parsed.OPENSTEER_AUTH_SECRET,
-    ...(parsed.OPENSTEER_AGENT_REVIEW_MODEL
-      ? {
-          agentReviewModel: BackgroundModelChoiceSchema.parse(
-            JSON.parse(parsed.OPENSTEER_AGENT_REVIEW_MODEL),
-          ),
-        }
-      : {}),
     bindAddress: parsed.OPENSTEER_BIND_ADDRESS,
     canonicalOrigin,
     browserRuntime,
@@ -688,9 +684,9 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
 }
 
 function parseManagedHome(parsed: {
+  readonly OPENSTEER_MANAGED_HOME_BROWSER_POOL?: "true" | undefined;
   readonly OPENSTEER_MANAGED_HOME_ID?: string | undefined;
   readonly OPENSTEER_MANAGED_HOME_GENERATION?: number | undefined;
-  readonly OPENSTEER_MANAGED_HOME_WORK_JSON?: string | undefined;
   readonly OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN?: string | undefined;
   readonly OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID?: string | undefined;
   readonly OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET?: string | undefined;
@@ -703,10 +699,11 @@ function parseManagedHome(parsed: {
     parsed.OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET,
   ];
   const configured = values.filter((value) => value !== undefined).length;
-  const work = parsed.OPENSTEER_MANAGED_HOME_WORK_JSON
-    ? WorkHomeMarkerSchema.parse(JSON.parse(parsed.OPENSTEER_MANAGED_HOME_WORK_JSON))
-    : undefined;
-  if (configured === 0 && !work) return undefined;
+  if (configured === 0) {
+    if (parsed.OPENSTEER_MANAGED_HOME_BROWSER_POOL)
+      throw new Error("OPENSTEER_MANAGED_HOME_BROWSER_POOL is only for a Cloud Computer's Home");
+    return undefined;
+  }
   if (configured !== values.length)
     throw new Error(
       "OPENSTEER_MANAGED_HOME_ID, OPENSTEER_MANAGED_HOME_GENERATION, OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN, OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID and OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET must be configured together",
@@ -718,11 +715,11 @@ function parseManagedHome(parsed: {
     ),
     cloudComputerId: parsed.OPENSTEER_MANAGED_HOME_ID!,
     generation: parsed.OPENSTEER_MANAGED_HOME_GENERATION!,
-    ...(work ? { work } : {}),
     oidc: {
       clientId: parsed.OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID!,
       clientSecret: parsed.OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET!,
     },
+    ...(parsed.OPENSTEER_MANAGED_HOME_BROWSER_POOL ? { browserPool: true as const } : {}),
   };
 }
 

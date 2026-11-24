@@ -222,11 +222,6 @@ printf '0:%s\\n' "$mode"
   payload = CloudComputerBootResponseSchema.parse({
     ...payload,
     releaseManifestUrl: "https://release.example.test/home/stable.json",
-    work: {
-      organizationId: `org_${id.slice(3)}`,
-      organizationName: "Fixture's Work Home",
-      assignmentId: `was_${id.slice(3)}`,
-    },
   });
   await run("boot", output);
   assert.deepEqual(JSON.parse(readFileSync(output)), payload);

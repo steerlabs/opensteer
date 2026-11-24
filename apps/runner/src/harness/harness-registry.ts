@@ -2,6 +2,7 @@ import { claudeInstallGuidance } from "@opensteer/harness-claude";
 import { harnessCatalog } from "@opensteer/core";
 import { HarnessRegistry } from "@opensteer/harness";
 import { hostCommandPlatform, resolveCommand } from "@opensteer/shared/command";
+import { redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import type { AgentExecutionConfig } from "../app-config.js";
 import type { RunnerLogger } from "../host/host-connection.js";
 import { harnessDriverFactories, type HarnessDriverRuntime } from "./harness-drivers.js";
@@ -24,8 +25,19 @@ export function createHarnessRegistry(
   const registry = new HarnessRegistry(
     logger
       ? {
-          log: (level, message, fields) =>
-            level === "warn" ? logger.error(message, fields) : logger.info(message, fields),
+          log: (level, message, fields) => {
+            const scrubbedMessage = redactNetworkCredentials(message);
+            const scrubbedFields = fields
+              ? Object.fromEntries(
+                  Object.entries(fields).map(([key, value]) => [
+                    key,
+                    typeof value === "string" ? redactNetworkCredentials(value) : value,
+                  ]),
+                )
+              : undefined;
+            if (level === "warn") logger.error(scrubbedMessage, scrubbedFields);
+            else logger.info(scrubbedMessage, scrubbedFields);
+          },
         }
       : {},
   );
@@ -57,7 +69,6 @@ export function createHarnessRegistry(
           entry.kind === "claude"
             ? claudeInstallGuidance
             : `${entry.label}'s CLI is not installed on this computer. Install it from ${installed.installUrl}${entry.runtime.shape === "installed" ? ". Opensteer finds it within a minute; if it doesn't, restart Opensteer." : `, or add an Opensteer-managed ${entry.label} account.`}`,
-        missingWhereIsolated: `${entry.label} isn’t included on this computer, so it can’t run here.`,
         scope: entry.runtime.shape === "installed" ? "all" : "ambient",
         update: {
           ...installedEngineUpdateFacts[entry.kind as keyof typeof installedEngineUpdateFacts],

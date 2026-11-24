@@ -1,5 +1,3 @@
-import { isWorkHomeDatabase } from "./work-home-context.js";
-import { WorkHomeStore } from "./work-home.js";
 import { AgentConnectionIdentityAtConsentSchema } from "@opensteer/control-plane-protocol";
 import type { ThreadId, UserId } from "@opensteer/core";
 import type { DurablePersonalResourceKind } from "@opensteer/protocol/resources";
@@ -57,11 +55,13 @@ export function taskView(task: Task) {
     doneReason: task.doneReason,
     pendingRequestCount: task.pendingRequestCount,
     lastReplyPreview: task.lastReplyPreview,
+    ...(task.failureCode ? { failureCode: task.failureCode } : { failureCode: null }),
     failurePreview: task.failurePreview,
     latestRunCompletedAt: task.latestRunCompletedAt?.toISOString() ?? null,
     environmentId: task.environmentId,
     harnessInstanceId: task.harnessInstanceId,
     runQueued: task.runQueued,
+    ...(task.runStartHoldReason ? { runStartHoldReason: task.runStartHoldReason } : {}),
     ...(task.externalWork?.status === "active"
       ? { agentSessionId: task.externalWork.sessionId }
       : {}),
@@ -81,10 +81,8 @@ export async function buildPersonalShellSnapshot(
     ...(selectedThreadId ? { selectedThreadId } : {}),
   });
   const attention = await readPendingAttention(tx);
-  const workPolicy = isWorkHomeDatabase(tx) ? await new WorkHomeStore(tx).applied() : undefined;
   const { pendingRequestCount, pendingRequestsRevision, needsYouCount, unreadTaskCount } = state;
   return PersonalShellSnapshotSchema.parse({
-    ...(workPolicy ? { effectiveWorkPolicy: workPolicy } : {}),
     deploymentId: state.deploymentId,
     viewerId,
     epoch: state.epoch,

@@ -206,7 +206,6 @@ integration.sequential("An Android phone joining a Deployment", () => {
           environmentIds: [createId("environment")],
           harnessDrivers: [],
           maxConcurrentRuns: 1,
-          providerStateModes: ["isolated"],
           workspaceBackings: ["local-directory"],
           localStorage: {
             storageAuthorityId: `lsa_${randomUUID()}`,

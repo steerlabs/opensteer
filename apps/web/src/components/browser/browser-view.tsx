@@ -2,12 +2,15 @@ import { presentClientIssue } from "@opensteer/client/feedback";
 import { WebTabNotice } from "../devices/web-tab-notice.js";
 import { useFreshPicture } from "./fresh-picture.js";
 import {
+  browserCloseUnconfirmed,
   browserSiteForTab,
   browserRestartFailure,
   browserSiteLabel,
   browserSleepWords,
+  browserNotReady,
   browserStartFailure,
   browserWakeLine,
+  dismissBrowserSession,
   tabWakingWords,
   restartPooledBrowser,
   type BrowserCommand,
@@ -674,25 +677,40 @@ export function PlaceBrowserView({
       ]
     : [];
 
+  const closeUnconfirmed = browserCloseUnconfirmed(session, sleep.closeUnconfirmed);
+  const [dismissingUnconfirmed, setDismissingUnconfirmed] = useState(false);
+  const dismissUnconfirmed = () => {
+    if (!closeUnconfirmed || dismissingUnconfirmed) return;
+    setDismissingUnconfirmed(true);
+    void dismissBrowserSession(hostClient, closeUnconfirmed.sessionId)
+      .catch(onReportError)
+      .finally(() => setDismissingUnconfirmed(false));
+  };
   const startFailure = browserStartFailure(sleep.browser);
+  // Nothing the person does helps a browser being set up or paused: its words, and no action.
+  const notReady = browserNotReady(sleep.browser);
   const ended = lastingReason
     ? { title: lastingReason, detail: null }
-    : startFailure
-      ? { title: startFailure.title, detail: startFailure.detail }
-      : activationError
-        ? { title: activationError, detail: null }
-        : dormant
-          ? null
-          : placeEnded(
-              session,
-              tabListed,
-              whole,
-              presentationError ??
-                (viewer.error ? presentClientIssue(viewer.error).title : null) ??
-                retentionError ??
-                mode.error ??
-                nativePresentation.error,
-            );
+    : closeUnconfirmed
+      ? { title: closeUnconfirmed.title, detail: closeUnconfirmed.detail }
+      : startFailure
+        ? { title: startFailure.title, detail: startFailure.detail }
+        : notReady
+          ? { title: notReady.title, detail: notReady.detail }
+          : activationError
+            ? { title: activationError, detail: null }
+            : dormant
+              ? null
+              : placeEnded(
+                  session,
+                  tabListed,
+                  whole,
+                  presentationError ??
+                    (viewer.error ? presentClientIssue(viewer.error).title : null) ??
+                    retentionError ??
+                    mode.error ??
+                    nativePresentation.error,
+                );
   const placement = nativePresentation.placement;
   const geometry = nativeBrowserGeometry(placement);
   const prePaint =
@@ -927,7 +945,16 @@ export function PlaceBrowserView({
                   Retry viewing
                 </button>
               ) : null}
-              {startFailure && !lastingReason ? (
+              {closeUnconfirmed && !lastingReason ? (
+                <button
+                  className="btn"
+                  disabled={dismissingUnconfirmed}
+                  onClick={dismissUnconfirmed}
+                  type="button"
+                >
+                  {closeUnconfirmed.action}
+                </button>
+              ) : startFailure && !lastingReason ? (
                 <button
                   className="btn"
                   disabled={restarting}

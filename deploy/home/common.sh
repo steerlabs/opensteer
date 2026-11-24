@@ -6,7 +6,7 @@ unset release_env volume_env stage_project
 services=(host gateway runner browser-runtime browser-egress channel-runtime)
 default_home_dir=/etc/opensteer-home
 # The recipe a Home keeps in its directory and runs from.
-recipe_files=(compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh)
+recipe_files=(compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml compose.browser-pool.yaml common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh)
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 
 lock_home() {
@@ -19,29 +19,29 @@ compose() {
   project=$(sed -n "s/^COMPOSE_PROJECT_NAME='\([^']*\)'$/\1/p" "$home_dir/config.env") || return
   local args=(--project-directory "$home_dir" --env-file "$home_dir/config.env"
     --env-file "${release_env:-$home_dir/images.env}" -f "$home_dir/compose.yaml")
-  local apparmor='' oidc_path='' work_marker=''
+  local apparmor='' oidc_path=''
   if [[ -s "$home_dir/runner-apparmor.name" ]]; then
     apparmor=$(cat "$home_dir/runner-apparmor.name") || return
     args+=(-f "$home_dir/compose.apparmor.yaml")
   fi
   if [[ -f "$home_dir/ipv6.enabled" ]]; then args+=(-f "$home_dir/compose.ipv6.yaml"); fi
+  # A Cloud Computer whose boot answer said browserPool: its browser runs on a pool host.
+  if [[ -f "$home_dir/browser-pool" ]]; then args+=(-f "$home_dir/compose.browser-pool.yaml"); fi
   if [[ -s "$home_dir/secrets/egress_url" ]]; then
     args+=(-f "$home_dir/compose.egress.yaml")
-  elif [[ -f "$home_dir/managed" ]]; then
+  elif [[ -f "$home_dir/managed" && ! -f "$home_dir/browser-pool" ]]; then
+    # A pooled Cloud Computer's browser leaves through its own address on the pool host.
     args+=(-f "$home_dir/compose.egress-pending.yaml")
   fi
   if [[ -s "$home_dir/secrets/oidc_client_secret" ]]; then
     oidc_path=/run/secrets/oidc_client_secret
-  fi
-  if [[ -s "$home_dir/managed-work.json" ]]; then
-    work_marker=$(cat "$home_dir/managed-work.json") || return
   fi
   if [[ -n ${volume_env:-} ]]; then args+=(--env-file "$volume_env");
   elif [[ -f "$home_dir/volumes.env" ]]; then args+=(--env-file "$home_dir/volumes.env"); fi
   if [[ -n ${stage_project:-$project} ]]; then args+=(--project-name "${stage_project:-$project}"); fi
   env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \
     OPENSTEER_HOME_RUNNER_APPARMOR="$apparmor" OPENSTEER_HOME_OIDC_CLIENT_SECRET_PATH="$oidc_path" \
-    OPENSTEER_HOME_WORK_MARKER="$work_marker" docker compose "${args[@]}" "$@"
+    docker compose "${args[@]}" "$@"
 }
 
 publish_file() {
@@ -380,7 +380,7 @@ compose_down_home() {
 remove_home_files() {
   rm -rf -- "${home_dir:?}/"{secrets,boot,identity,restore.pending,update.pending,restore.pending.retired,update.pending.retired}
   rm -rf -- "$home_dir/"{install,backup,update,egress,images.placeholder}.??????
-  rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,update-database.dump,managed-work.json,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
+  rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,compose.browser-pool.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,browser-pool,update-database.dump,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
 }
 
 # Whether this Home was installed with --local-images.

@@ -18,6 +18,7 @@ import { lockBrowserHomeRunner } from "./browser-home-store.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { enqueueChannelConversationStatus } from "./channel-deliveries.js";
 import { nearestListedThread } from "./thread-lineage.js";
+import { readerSees, type TaskReader } from "./task-reader.js";
 import { requestSettlementActor, readRequestSettlementProvenance } from "./request-settlement.js";
 import {
   AssignmentIdSchema,
@@ -260,10 +261,9 @@ export class RequestStore {
       readonly machineId: DeviceId;
       readonly access: "browser" | "apps" | "files";
       readonly reason: string;
-      readonly originatingRunId: RunId;
       readonly originatingThreadId: ThreadId;
       readonly requestedBy: UserId;
-    },
+    } & RequestOriginInput,
     isOnline: () => boolean,
   ): Promise<RequestMutation> {
     return commitPersonalMutation(this.#database, async (transaction) => {
@@ -275,6 +275,15 @@ export class RequestStore {
       if (!machine)
         throw new OpensteerError({ code: "forbidden", message: "Owned computer not found" });
       const label = { browser: "Browser", apps: "Apps", files: "Files and commands" }[input.access];
+      const origin: RequestOriginInput =
+        "originatingRunId" in input && input.originatingRunId !== undefined
+          ? { originatingRunId: input.originatingRunId }
+          : "originatingOccurrenceId" in input && input.originatingOccurrenceId !== undefined
+            ? { originatingOccurrenceId: input.originatingOccurrenceId }
+            : "originatingWatchActivationId" in input &&
+                input.originatingWatchActivationId !== undefined
+              ? { originatingWatchActivationId: input.originatingWatchActivationId }
+              : { originatingAgentSessionId: input.originatingAgentSessionId! };
       return createRequestInTransaction(
         this.#links,
         transaction,
@@ -283,7 +292,7 @@ export class RequestStore {
           kind: "device.access",
           mode: "durable",
           requiredActor: "owner",
-          originatingRunId: input.originatingRunId,
+          ...origin,
           originatingThreadId: input.originatingThreadId,
           requestedBy: input.requestedBy,
           payload: {
@@ -852,6 +861,7 @@ export class RequestStore {
 
   async agentPage(input: {
     readonly ownerId: UserId;
+    readonly reader?: TaskReader;
     readonly scope: import("./thread-store.js").AgentThreadListScope;
     readonly scopeId: string;
     readonly connectionAuthority?: Extract<
@@ -903,6 +913,8 @@ export class RequestStore {
             .innerJoin("threads", "threads.id", "requests.originatingThreadId")
             .where("threads.createdBy", "=", input.ownerId)
             .where("threads.removedAt", "is", null);
+          if (input.reader?.kind === "work")
+            query = query.where(readerSees(input.reader, sql.ref("threads.origin_connection_id")));
           if (lineageRootThreadId !== null)
             query = query.where("threads.lineageRootThreadId", "=", lineageRootThreadId);
           if (input.scope.kind === "connection")
@@ -974,6 +986,7 @@ export class RequestStore {
     readonly definitionId: "android-phone" | "iphone-screen" | "macos-app";
     readonly idempotencyKey?: string;
     readonly originatingOccurrenceId?: TriggerOccurrenceId | null;
+    readonly originatingWatchActivationId?: TriggerWatchActivationId | null;
     readonly originatingRunId: RunId | null;
     readonly ownerUserId: UserId;
     readonly deviceId: DeviceId;
@@ -989,22 +1002,21 @@ export class RequestStore {
     }
     const app = input.app === null ? null : ComputerAppIdentitySchema.parse(input.app);
     const access = IntegrationAccessSchema.parse(input.access);
-    const origin =
-      input.originatingRunId === null
-        ? input.originatingOccurrenceId
-          ? ({
-              originatingOccurrenceId: input.originatingOccurrenceId,
-            } as const)
-          : null
-        : input.originatingOccurrenceId
-          ? null
-          : ({
-              originatingRunId: input.originatingRunId,
-            } as const);
+    const origins = [
+      input.originatingRunId ? ({ originatingRunId: input.originatingRunId } as const) : null,
+      input.originatingOccurrenceId
+        ? ({ originatingOccurrenceId: input.originatingOccurrenceId } as const)
+        : null,
+      input.originatingWatchActivationId
+        ? ({ originatingWatchActivationId: input.originatingWatchActivationId } as const)
+        : null,
+    ].filter((entry) => entry !== null);
+    const origin = origins.length === 1 ? origins[0]! : null;
     if (!origin) {
       throw new OpensteerError({
         code: "bad_request",
-        message: "A computer app access Request originates from exactly one Run or Occurrence",
+        message:
+          "A computer app access Request originates from exactly one Run, Occurrence, or Watch",
       });
     }
     return commitPersonalMutation(this.#database, async (personalTransaction) => {
@@ -1828,7 +1840,7 @@ export class RequestStore {
         .innerJoin("agentConnections", "agentConnections.id", "agentSessions.connectionId")
         .select("agentConnections.id")
         .where("agentSessions.id", "=", input.originatingAgentSessionId)
-        .where(liveConnection(tx))
+        .where(liveConnection())
         .where("agentConnections.grantRevision", "=", input.grantRevision)
         .forShare("agentConnections")
         .executeTakeFirst();
@@ -3576,7 +3588,7 @@ export async function lockActiveDurableRequestAuthority(
       .where("agentSessions.id", "=", request.originatingAgentSessionId)
       .where("agentSessions.status", "=", "active")
       .whereRef("agentConnections.grantRevision", "=", "agentOperations.grantRevision")
-      .where(liveConnection(transaction))
+      .where(liveConnection())
       .forShare("agentConnections")
       .executeTakeFirst();
     if (!live)

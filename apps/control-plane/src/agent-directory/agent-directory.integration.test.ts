@@ -10,7 +10,7 @@ import {
   ownTestDatabaseProducer,
   type TestDatabase,
 } from "@opensteer/database/test-support/database";
-import { createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify, type JSONWebKeySet } from "jose";
+import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from "jose";
 import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ConnectLifecycleService } from "../account/connect-lifecycle.js";
@@ -89,9 +89,6 @@ integration("AgentDirectoryStore and signed GET route integration", () => {
   });
 
   it("persists entries, bumps revision monotonically, and serves a document signed by Account JWKS", async () => {
-    const { publicKey } = await generateKeyPair("EdDSA", { crv: "Ed25519" });
-    const raw = await exportJWK(publicKey);
-
     const addedPlatform = await directoryStore.add({
       id: "agentpay",
       displayName: "AgentPay",
@@ -99,28 +96,16 @@ integration("AgentDirectoryStore and signed GET route integration", () => {
     });
     expect(addedPlatform.revision).toBe(2);
 
-    const addedEmbedder = await directoryStore.add({
+    const addedSecond = await directoryStore.add({
       id: "errand",
       displayName: "Errand",
       origins: ["https://errand.example"],
-      keys: {
-        keys: [
-          { kty: "OKP", crv: "Ed25519", x: raw.x!, kid: "errand-1", use: "sig", alg: "EdDSA" },
-        ],
-      },
-      embedsVia: ["agentpay"],
     });
-    expect(addedEmbedder.revision).toBe(3);
+    expect(addedSecond.revision).toBe(3);
 
     const updated = await directoryStore.update("errand", {
       displayName: "Errand Assistant",
       origins: ["https://errand.example"],
-      keys: {
-        keys: [
-          { kty: "OKP", crv: "Ed25519", x: raw.x!, kid: "errand-1", use: "sig", alg: "EdDSA" },
-        ],
-      },
-      embedsVia: ["agentpay"],
     });
     expect(updated.revision).toBe(4);
 

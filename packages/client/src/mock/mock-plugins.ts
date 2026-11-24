@@ -1603,8 +1603,14 @@ export class MockPlugins {
             : null;
         if (source.kind === "catalog" && !entry)
           throw refusal("not_found", "Catalog entry not found");
-        const name = entry?.name ?? (source.kind === "catalog" ? source.catalogId : source.name);
-        if (source.kind !== "catalog" && source.url.includes("broken"))
+        const name =
+          entry?.name ??
+          (source.kind === "catalog"
+            ? source.catalogId
+            : source.kind === "folder"
+              ? (source.name ?? source.directory)
+              : source.name);
+        if (source.kind !== "catalog" && source.kind !== "folder" && source.url.includes("broken"))
           return {
             type: command.type,
             result: {

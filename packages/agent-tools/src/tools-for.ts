@@ -20,10 +20,12 @@ const computer = ["computer"] as const;
 const plugins = ["plugins"] as const;
 const settings = ["settings"] as const;
 export const agentToolFamilies: Readonly<Record<AgentToolName, ToolFamily>> = {
+  // Home commands: offered with any family, and cut to what the caller holds by the one rule.
+  opensteer_commands: ["tasks", "browser", "computer", "plugins"],
+  opensteer_command: ["tasks", "browser", "computer", "plugins"],
+  // Read like a command, area by area, cut by the one admission (AC1).
+  opensteer_state: ["tasks", "browser", "computer", "plugins"],
   opensteer_ai_account_list: settings,
-  opensteer_ai_account_update: settings,
-  opensteer_defaults_read: settings,
-  opensteer_defaults_update: settings,
   tab_list: ["tasks", "browser"],
   tab_open: browser,
   tab_close: browser,
@@ -35,8 +37,6 @@ export const agentToolFamilies: Readonly<Record<AgentToolName, ToolFamily>> = {
   app_stop: settings,
   app_delete: settings,
   computer_list: computer,
-  computer_update: settings,
-  computer_remove: settings,
   computer_use: computer,
   computer_apps: computer,
   computer_access_request: "widen",
@@ -44,8 +44,6 @@ export const agentToolFamilies: Readonly<Record<AgentToolName, ToolFamily>> = {
   browser_use: browser,
   browser_connect: browser,
   browser_profile_list: browser,
-  browser_profile_update: settings,
-  browser_profile_remove: settings,
   browser_profile_request: "widen",
   saved_login_request: browser,
   chrome_cookies_request: "widen",
@@ -121,6 +119,9 @@ export function grantOffersTool(
 
 const connectionSurface: ReadonlySet<AgentToolName> = new Set([
   "discover",
+  "opensteer_commands",
+  "opensteer_command",
+  "opensteer_state",
   "ask_person",
   "browser_use",
   "browser_connect",
@@ -169,7 +170,6 @@ export function toolsFor(caller: {
     (tool) =>
       tool.callers.some((kind) => kind === caller.kind) &&
       (caller.personalContext !== false || !tool.name.startsWith("opensteer_automation_")) &&
-      (caller.program?.kind !== "watch" || tool.name !== "app_access_request") &&
       (!("capability" in tool) ||
         !caller.capabilities ||
         caller.capabilities[tool.capability] === true) &&

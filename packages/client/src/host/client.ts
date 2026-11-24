@@ -146,7 +146,6 @@ export interface EnvironmentSummary {
   id: string;
   kind: ExecutionEnvironmentKind;
   name: string;
-  providerStateModes: ("ambient" | "isolated")[];
   runnerId: string | null;
   status: EnvironmentStatus;
 
@@ -237,6 +236,10 @@ export interface ThreadSummary {
   harnessLabel: string;
   /** A Run waits to start and none is executing, as the shell's task row says. */
   runQueued?: boolean;
+  /** Why a queued Run is being held back from starting on its device. */
+  runStartHoldReason?: import("@opensteer/core").RunStartHoldReason | null;
+  /** Machine failure code when the task's latest Run failed. */
+  failureCode?: string | null;
   /** A connected agent or a chat started this task, so the person's own engine rules do not apply. */
   startedByOther?: boolean | undefined;
   /** A connected agent works this task itself; Stop it with `agent.session.stop`. */
@@ -287,6 +290,7 @@ export interface ThreadAutomation {
  */
 export interface TaskEntry {
   readonly failure: string | null;
+  readonly failureCode?: string | null;
   readonly lastReply: string | null;
   readonly thread: ThreadSummary;
 }
@@ -302,6 +306,7 @@ export interface RunQueueEntry {
   maintenance?: Run["maintenance"];
   createdAt: string;
   id: string;
+  startHoldReason?: import("@opensteer/core").RunStartHoldReason | null;
   status: "queued" | "starting" | "running" | "waiting";
   threadId: string;
   runOrdinal: number;
@@ -526,7 +531,16 @@ export interface RunEntry {
   createdAt: string;
   /** When it ended, which settles what a page before its end left open. */
   endedAt?: string;
-  error: { code: string; message: string; retryable: boolean } | null;
+  /** Why an interrupted Run ended without a person asking to stop it. */
+  interruptedCause?: import("@opensteer/core").RunInterruptedCause;
+  /** When late confirmation proved this Run stopped after an earlier unconfirmed stop. */
+  stopConfirmedAt?: string;
+  error: {
+    code: string;
+    message: string;
+    ownerMessage?: string | undefined;
+    retryable: boolean;
+  } | null;
   id: string;
   kind: "run";
   /**
@@ -764,6 +778,8 @@ export interface PersonalTabLineage {
 export interface BrowserSessionSummary {
   /** Host freshness for bootstrap lifecycle reconciliation. */
   updatedAt?: string;
+  /** W15: Stop never got its replaced browser's confirmation; kept closing honestly. */
+  closeUnconfirmed?: true | undefined;
   navigationVersion?: 1 | undefined;
   opener?: BrowserSessionOpener;
   access: "read" | "read-write";
@@ -893,8 +909,6 @@ export interface HostSnapshot {
     readonly manageComputers: boolean;
     readonly managePrivateResources: boolean;
   } | null;
-  /** Undefined before the shell arrives and null when it reports a personal Home. */
-  effectiveWorkPolicy?: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy | null;
   needsYou: import("@opensteer/protocol").NeedsYouPage | null;
   attentionSummaries?: readonly import("zod").infer<
     typeof import("@opensteer/protocol/personal-sync").PersonalShellSnapshotSchema
@@ -1070,13 +1084,14 @@ export interface TriggerDetail {
   occurrences: TriggerOccurrence[];
   revision: TriggerRevision;
   trigger: Trigger;
+  webhook?: { scope: "local" | "public"; url?: string | null | undefined } | null | undefined;
 }
 
 export interface CreatedTrigger {
   revision: TriggerRevision;
   trigger: Trigger;
   wasDuplicate: boolean;
-  webhook?: { secret: string; url: string } | undefined;
+  webhook?: { scope?: "local" | "public" | undefined; url: string } | undefined;
 }
 
 /** One page of a computer's session history, newest session first. */
@@ -1140,6 +1155,11 @@ export interface HostClient extends TabsClient {
    * through `restartPooledBrowser`.
    */
   readonly restartPooledBrowser?: (computerId: string) => Promise<void>;
+  /**
+   * W15: removes an unconfirmed-closing replaced-browser session from the person's list without
+   * changing its underlying closing state.
+   */
+  readonly dismissBrowserSession?: (sessionId: string) => Promise<void>;
   /** Popups this client's own input opens from one tab, as each one opens. */
   readonly subscribeBrowserPopups?: (
     sessionId: string,
@@ -1453,6 +1473,7 @@ export interface HostClient extends TabsClient {
   rememberExecution(choice: ExecutionChoice): Promise<ExecutionPreferences>;
   /** Lets a queue a Stop paused admit work again. Idempotent on the Host. */
   resumeThreadInputQueue(threadId: string): Promise<void>;
+  recheckThreadStop(threadId: string): Promise<{ readonly proven: boolean }>;
   sendBrowserCommand(sessionId: string, command: BrowserCommand): void;
   stopMachineAccessSession(sessionId: string): Promise<boolean>;
   /**

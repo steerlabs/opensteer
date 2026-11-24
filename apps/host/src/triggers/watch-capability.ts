@@ -18,7 +18,6 @@ export const WatchCapabilityScopeSchema = z.strictObject({
   executionGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   revisionId: TriggerRevisionIdSchema,
   triggerId: TriggerIdSchema,
-  toolContractVersion: z.literal(5),
 });
 export type WatchCapabilityScope = z.infer<typeof WatchCapabilityScopeSchema>;
 export type WatchCapabilityClaims<Audience extends string> = WatchCapabilityScope & {

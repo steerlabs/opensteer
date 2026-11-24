@@ -5,7 +5,6 @@ import {
   cloudWords,
   type CloudComputerDetail,
   type CloudComputerScreen as CloudScreen,
-  type WorkHomeCard,
 } from "@opensteer/client/computers";
 import { useCloudComputer } from "@opensteer/client/react";
 import type { DesktopCloudComputerActInput } from "@opensteer/protocol/desktop";
@@ -17,7 +16,7 @@ import { useCopy } from "../ui/copy-mark.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
-import { workHomeSections } from "./work-home.js";
+import { addressDetail } from "../ui/sentence-parts.js";
 
 /**
  * Opensteer Cloud Computer on the phone. Checkout and billing happen on the Opensteer
@@ -55,9 +54,6 @@ export function CloudComputerScreen(): ReactNode {
   const act = (input: DesktopCloudComputerActInput) => void cloud.act?.(input);
   const sections = cloudComputerSections({
     screen: cloud.screen,
-    work: cloud.work,
-    // One page of what an organization can see, read from inside that work Home.
-    onSeeWork: (deploymentId) => navigation.navigate("WorkHomePolicy", { deploymentId }),
     pending: cloud.pending,
     actionFailure: cloud.actionFailure,
     portalOrigin: client.portalOrigin,
@@ -154,9 +150,6 @@ function changes(): NativeSettingsSection {
 /** The screen as Settings sections: pure, so each state is checked without a device. */
 export function cloudComputerSections(props: {
   readonly screen: CloudScreen;
-  /** Work Homes organizations assigned this person, shown beside the personal screen. */
-  readonly work?: readonly WorkHomeCard[];
-  readonly onSeeWork?: (deploymentId: string) => void;
   readonly pending: "suspend" | "resume" | "delete" | null;
   readonly actionFailure: string | null;
   readonly portalOrigin: string | null;
@@ -171,20 +164,6 @@ export function cloudComputerSections(props: {
   readonly onResume: (computer: CloudComputerDetail) => void;
   readonly onDelete: (computer: CloudComputerDetail) => void;
 }): readonly NativeSettingsSection[] {
-  const personal = personalSections(props);
-  const work = workHomeSections(props.work ?? [], {
-    listed: props.listed,
-    onOpen: props.onOpen,
-    onSee: props.onSeeWork ?? (() => undefined),
-  });
-  if (work.length === 0) return personal;
-  const [lead, ...rest] = personal;
-  return lead ? [lead, ...work, ...rest] : work;
-}
-
-function personalSections(
-  props: Parameters<typeof cloudComputerSections>[0],
-): readonly NativeSettingsSection[] {
   const { screen } = props;
   const lead: NativeSettingsSection = {
     key: "lead",
@@ -206,7 +185,7 @@ function personalSections(
                 kind: "status",
                 tone: "neutral",
                 label: cloudWords("cloud.checkoutWebAddress"),
-                detail: url,
+                ...addressDetail(url),
               },
               {
                 key: "copy",
@@ -327,7 +306,7 @@ function personalSections(
           key: "open",
           kind: "button",
           label: cloudWords("cloud.ready.open"),
-          detail: computer.host ?? address,
+          ...addressDetail(computer.host ?? address),
           disabled: !listed,
           onPress: () => {
             if (deploymentId) props.onOpen(deploymentId);
@@ -356,7 +335,7 @@ function personalSections(
         kind: "status",
         tone: computer.status.tone,
         label: computer.status.label,
-        ...(address === null ? {} : { detail: address }),
+        ...(address === null ? {} : addressDetail(address)),
       },
       ...(address === null
         ? []
@@ -380,7 +359,7 @@ function personalSections(
               key: "browser-address",
               kind: "text" as const,
               label: cloudWords("cloud.ip.address"),
-              detail: computer.browserAddress,
+              ...addressDetail(computer.browserAddress),
             },
           ]
         : []),

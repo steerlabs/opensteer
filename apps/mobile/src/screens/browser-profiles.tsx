@@ -57,7 +57,7 @@ export function BrowserProfilesScreen({
               ? "This deployment is no longer on this phone."
               : `Open ${row.name} to manage its browser profiles.`}
           </AppText>
-          {failure === null ? null : <ActionLine line={failure} numberOfLines={2} />}
+          {failure === null ? null : <ActionLine line={failure} />}
           {row === undefined ? null : (
             <SecondaryButton
               busy={opening}
@@ -265,7 +265,7 @@ function BrowserProfilesSettings({
             </>
           )}
           {creation.line === null ? null : (
-            <ActionLine line={creation.line} numberOfLines={2} onDismiss={creation.dismiss} />
+            <ActionLine line={creation.line} onDismiss={creation.dismiss} />
           )}
           <AppText role="caption" tone="muted">
             Your own agents can use every profile.
@@ -494,11 +494,7 @@ function ProfileRow({
         </>
       )}
       {line === null ? null : (
-        <ActionLine
-          line={line}
-          numberOfLines={2}
-          onDismiss={renaming.line ? renaming.dismiss : deleting.dismiss}
-        />
+        <ActionLine line={line} onDismiss={renaming.line ? renaming.dismiss : deleting.dismiss} />
       )}
     </View>
   );

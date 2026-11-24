@@ -5,6 +5,8 @@ import { transcriptPreview } from "./transcript-store.js";
 import { refreshInputQueue } from "./waiting-inputs.js";
 import { assignmentWasCancelled } from "./execution-authority.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
+import { connectionRequests } from "./request-agent-response.js";
+import type { ThreadCallerAuthority } from "./thread-caller.js";
 
 import { revokeRunGrants, type RevokedRunGrant } from "./run-grants.js";
 import {
@@ -38,31 +40,30 @@ import { lockRunProjectionRows, lockThreadProviderSession } from "./run-projecti
 import { runReply } from "./run-reply.js";
 const assignmentResultPreviewMaxBytes = 8 * 1_024;
 const truncatedReplyNote = "\n\n[Reply truncated. The full reply is in the task.]";
-export async function assignmentSummaryInTransaction(
-  transaction: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
+interface AssignmentSummaryOptions {
+  readonly connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
+  readonly ownerVerified?: boolean;
+  readonly scope?: "everything" | "selected";
+}
+
+function buildAssignmentSummary(
   row: Selectable<DelegationTable>,
-): Promise<AssignmentSummary> {
-  const worker = await transaction
-    .selectFrom("threads")
-    .select(["environmentId", "id", "title", "icon", "color", "status", "pendingRequestCount"])
-    .where("id", "=", row.childThreadId)
-    .executeTakeFirstOrThrow();
-  const [currentRun, parentRun] = await Promise.all([
-    transaction
-      .selectFrom("runs")
-      .select(["id", "status", "modelSelection"])
-      .where("assignmentId", "=", row.id)
-      .orderBy("runOrdinal", "desc")
-      .limit(1)
-      .executeTakeFirstOrThrow(),
-    row.parentRunId === null
-      ? Promise.resolve(null)
-      : transaction
-          .selectFrom("runs")
-          .select("modelSelection")
-          .where("id", "=", row.parentRunId)
-          .executeTakeFirstOrThrow(),
-  ]);
+  worker: {
+    readonly environmentId: string;
+    readonly id: ThreadId;
+    readonly title: string;
+    readonly icon: string | null;
+    readonly color: string | null;
+    readonly status: string;
+    readonly pendingRequestCount: number;
+  },
+  currentRun: {
+    readonly id: RunId;
+    readonly status: string;
+    readonly modelSelection: unknown;
+  },
+  parentRun: { readonly modelSelection: unknown } | null,
+): AssignmentSummary {
   const workerModel = ModelSelectionSchema.parse(currentRun.modelSelection);
   const assigningModel =
     parentRun === null ? null : ModelSelectionSchema.parse(parentRun.modelSelection);
@@ -98,6 +99,96 @@ export async function assignmentSummaryInTransaction(
       color: worker.color,
     },
   });
+}
+
+export async function assignmentSummariesInTransaction(
+  transaction: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
+  rows: readonly Selectable<DelegationTable>[],
+  options?: AssignmentSummaryOptions,
+): Promise<AssignmentSummary[]> {
+  if (rows.length === 0) return [];
+  const childThreadIds = [...new Set(rows.map((row) => row.childThreadId))];
+  const assignmentIds = [...new Set(rows.map((row) => row.id))];
+  const parentRunIds = [
+    ...new Set(rows.map((row) => row.parentRunId).filter((id): id is RunId => id !== null)),
+  ];
+  const visibleRequests = options?.connectionAuthority
+    ? await connectionRequests(
+        transaction as Transaction<DatabaseSchema>,
+        options.connectionAuthority,
+        {
+          ownerVerified: options.ownerVerified ?? true,
+          ...(options.scope ? { scope: options.scope } : {}),
+        },
+      )
+    : undefined;
+  const [workers, currentRuns, parentRuns] = await Promise.all([
+    transaction
+      .selectFrom("threads")
+      .select([
+        "environmentId",
+        "id",
+        "title",
+        "icon",
+        "color",
+        "status",
+        ...(visibleRequests
+          ? [
+              sql<number>`(
+                select count(*)::int from (${visibleRequests}) as visible_requests
+                where visible_requests.originating_thread_id = threads.id
+                  and visible_requests.status = 'pending'
+              )`.as("pendingRequestCount"),
+            ]
+          : (["pendingRequestCount"] as const)),
+      ])
+      .where("id", "in", childThreadIds)
+      .execute(),
+    transaction
+      .selectFrom("runs")
+      .distinctOn("assignmentId")
+      .select(["assignmentId", "id", "status", "modelSelection"])
+      .where("assignmentId", "in", assignmentIds)
+      .orderBy("assignmentId")
+      .orderBy("runOrdinal", "desc")
+      .execute(),
+    parentRunIds.length === 0
+      ? Promise.resolve([])
+      : transaction
+          .selectFrom("runs")
+          .select(["id", "modelSelection"])
+          .where("id", "in", parentRunIds)
+          .execute(),
+  ]);
+  const workersById = new Map(workers.map((worker) => [worker.id, worker]));
+  const currentRunsByAssignment = new Map(
+    currentRuns
+      .filter(
+        (run): run is typeof run & { assignmentId: AssignmentId } => run.assignmentId !== null,
+      )
+      .map((run) => [run.assignmentId, run]),
+  );
+  const parentRunsById = new Map(parentRuns.map((run) => [run.id, run]));
+  return rows.map((row) => {
+    const worker = workersById.get(row.childThreadId);
+    if (!worker) throw new Error(`Worker thread not found for assignment ${row.id}`);
+    const currentRun = currentRunsByAssignment.get(row.id);
+    if (!currentRun) throw new Error(`Current run not found for assignment ${row.id}`);
+    const parentRun =
+      row.parentRunId === null ? null : (parentRunsById.get(row.parentRunId) ?? null);
+    if (row.parentRunId !== null && !parentRun)
+      throw new Error(`Parent run not found for assignment ${row.id}`);
+    return buildAssignmentSummary(row, worker, currentRun, parentRun);
+  });
+}
+
+export async function assignmentSummaryInTransaction(
+  transaction: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
+  row: Selectable<DelegationTable>,
+  options?: AssignmentSummaryOptions,
+): Promise<AssignmentSummary> {
+  const [summary] = await assignmentSummariesInTransaction(transaction, [row], options);
+  return summary!;
 }
 
 type AssignmentReturnWake = (assignmentId: AssignmentId) => void | Promise<void>;

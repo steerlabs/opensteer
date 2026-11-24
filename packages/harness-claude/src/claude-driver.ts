@@ -79,7 +79,6 @@ import {
   HarnessSessionRegistry,
   SubagentNodes,
   TurnPublisher,
-  attachmentSandboxPaths,
   assertFreshProviderSessionContext,
   initialContinuationContextPrompt,
   clampConnectionLabel,
@@ -215,57 +214,6 @@ const claudeManagedBoundarySettings = Object.freeze({
 const claudeManagedOwnSettings = Object.freeze({
   disableRemoteControl: true,
 }) satisfies NonNullable<Options["managedSettings"]>;
-
-export function managedClaudeSettings(
-  context: Pick<
-    HarnessSessionContext,
-    "machineAccessPlatform" | "machineAccessRelaySocket" | "runtimeBoundary" | "providerState"
-  > &
-    Pick<Partial<HarnessSessionContext>, "attachmentDirectory" | "attachmentRoot">,
-  configuration: HarnessEngineConfiguration = "stripped",
-): NonNullable<Options["managedSettings"]> {
-  const base = configuration === "own" ? claudeManagedOwnSettings : claudeManagedBoundarySettings;
-  if (context.runtimeBoundary.kind === "native-user") return base;
-  // The denied root is the Runner's whole data directory — its identity keys
-  // and every profile's provider state, not merely this harness's own files —
-  // so nothing the model runs may read or write any part of it.
-  const privateRoot = resolve(context.providerState.privateStateRoot);
-  const attachmentPaths = attachmentSandboxPaths({
-    attachmentDirectory: context.attachmentDirectory,
-    attachmentRoot: context.attachmentRoot,
-    privateStateRoot: privateRoot,
-  });
-  return {
-    ...base,
-    permissions: {
-      deny: [`Read(${privateRoot}/**)`, `Edit(${privateRoot}/**)`],
-    },
-    sandbox: {
-      allowUnsandboxedCommands: false,
-      enabled: true,
-      failIfUnavailable: true,
-      filesystem: {
-        ...(attachmentPaths ? { allowRead: [attachmentPaths.directory] } : {}),
-        denyRead: [privateRoot, ...(attachmentPaths ? [attachmentPaths.root] : [])],
-        denyWrite: [privateRoot, ...(attachmentPaths ? [attachmentPaths.root] : [])],
-      },
-      // Linux has no path-selective form, so the allowance is every Unix socket.
-      // That is accepted because an isolated-service pod's only other AF_UNIX
-      // endpoint is Claude's own mux-proxy bridge, egress is already restricted,
-      // and the relay grants no more than the far machine's policy allows.
-      // Revisit if a pod ever exposes a sensitive Unix socket. macOS has the
-      // path-selective form and must use it.
-      ...(context.machineAccessRelaySocket
-        ? {
-            network:
-              context.machineAccessPlatform === "linux"
-                ? { allowAllUnixSockets: true }
-                : { allowUnixSockets: [context.machineAccessRelaySocket] },
-          }
-        : {}),
-    },
-  };
-}
 
 const providerRouteFlags = [
   "CLAUDE_CODE_USE_ANTHROPIC_AWS",
@@ -546,7 +494,6 @@ const claudeHarnessCapabilities: HarnessCapabilities = Object.freeze({
   approvals: true,
   attachments: true,
   messageAttachments: {
-    darwinIsolatedServiceSandbox: true as const,
     nativeImages: {
       maxBytes: attachmentMaxBytes,
       maxPixels: attachmentImageMaxPixels,
@@ -1200,12 +1147,7 @@ export class ClaudeHarnessDriver implements HarnessDriver {
             cwd: context.workingDirectory,
             disallowedTools: [...claudeDelegationTools],
             env: environment,
-            managedSettings: managedClaudeSettings({
-              machineAccessPlatform: undefined,
-              machineAccessRelaySocket: undefined,
-              providerState: context.providerState,
-              runtimeBoundary: context.runtimeBoundary,
-            }),
+            managedSettings: claudeManagedBoundarySettings,
             pathToClaudeCodeExecutable: dependencies.executable,
             permissionMode: "default",
             persistSession: false,
@@ -1437,11 +1379,7 @@ class ClaudeHarnessAdapter implements HarnessAdapter {
             cwd: directory,
             env: environment,
             pathToClaudeCodeExecutable: this.#dependencies.executable,
-            managedSettings: managedClaudeSettings({
-              ...context,
-              machineAccessPlatform: undefined,
-              machineAccessRelaySocket: undefined,
-            }),
+            managedSettings: claudeManagedBoundarySettings,
             skills: [],
             plugins: [],
             tools: [],
@@ -1760,6 +1698,7 @@ class ClaudeHarnessSession implements HarnessSession {
         },
         log: this.#log,
         logContext: { harness: "claude", runId: run.runId },
+        secrets: engineDiagnosticSecrets(environment, 4),
       }),
       idle: false,
       wakePending: false,
@@ -1794,6 +1733,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#settled = new Deferred<void>();
     const abort = () => {
       active.interrupted = true;
+      active.retry.dispose();
       this.#abortActive(active, run.signal.reason ?? new Error("Claude turn interrupted"));
     };
     if (!run.signal.aborted) run.signal.addEventListener("abort", abort, { once: true });
@@ -1947,6 +1887,7 @@ class ClaudeHarnessSession implements HarnessSession {
     const active = this.#activeTurn;
     if (!active || active.terminal) return;
     active.interrupted = true;
+    active.retry.dispose();
     this.#abortActive(active, new Error("Claude turn interrupted"));
     await active.completion.promise;
   }
@@ -2344,7 +2285,7 @@ class ClaudeHarnessSession implements HarnessSession {
       promptSuggestions: false,
       includePartialMessages: true,
       maxTurns: this.#config.maxTurns,
-      managedSettings: managedClaudeSettings(this.#context, own ? "own" : "stripped"),
+      managedSettings: own ? claudeManagedOwnSettings : claudeManagedBoundarySettings,
       // Beside the person's own servers when the engine has its own
       // configuration. A server of theirs named `opensteer` (Opensteer's own
       // connection instructions name it so) is replaced by this one, which
@@ -2397,7 +2338,7 @@ class ClaudeHarnessSession implements HarnessSession {
             claudeTaskStopTool,
           ],
       stderr: (chunk) => this.#activeTurn?.stderr.append(chunk),
-      // The Runner's sandbox and the process supervisor have to enclose the
+      // The Runner's containment and the process supervisor have to enclose the
       // whole harness process tree, and a custom spawn is the SDK's only seam
       // for that. The SDK reads nothing but stdin and stdout from what this
       // returns — the `stderr` option above is wired by the spawn it replaces —
@@ -2410,7 +2351,7 @@ class ClaudeHarnessSession implements HarnessSession {
         const mcpConfig = privateMcpConfig(args, this.#context.threadStateDirectory);
         let supervised: SupervisedProcess;
         try {
-          // The wrapper runs last so the Runner's sandbox sees the complete
+          // The wrapper runs last so the Runner's containment sees the complete
           // command: every provider flag the SDK added is already in place.
           const launch = this.#context.wrapProcessLaunch({
             args: mcpConfig.args,
@@ -3713,6 +3654,7 @@ class ClaudeHarnessSession implements HarnessSession {
     const active = this.#activeTurn;
     if (active && !active.terminal) {
       active.interrupted = true;
+      active.retry.dispose();
       this.#abortActive(active, new Error("Claude session stopped"));
       await active.completion.promise;
     }

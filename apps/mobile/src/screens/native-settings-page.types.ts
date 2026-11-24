@@ -1,5 +1,6 @@
 import type { ReactElement } from "react";
 import type { RowMark } from "../ui/integration-icon.js";
+import type { SentencePart } from "../ui/sentence-parts.js";
 import type { SFSymbolName } from "../ui/symbol.js";
 
 /** Meaning colours only: green working, red broken, amber needs you, grey off. */
@@ -43,7 +44,17 @@ export type NativeSettingsRow =
       readonly key: string;
       readonly kind: "text";
       readonly label: string;
+      /**
+       * The label as words and addresses, where it is a sentence holding addresses among its
+       * words (`sentenceWith`): each address drawn as one, the sentence read as `label`.
+       */
+      readonly labelParts?: readonly SentencePart[];
       readonly detail?: string;
+      /**
+       * Which of its words is an email address, a host or a URL (`isAddress`): the row draws it as
+       * one, whole and wrapping only at its joints, and reads it aloud and copies it as it is.
+       */
+      readonly addressIn?: "label" | "detail";
       /** A person's round initial, leading an identity row. */
       readonly initial?: string;
     }
@@ -54,6 +65,11 @@ export type NativeSettingsRow =
       readonly label: string;
       /** Something to read or copy under the status, such as an address. */
       readonly detail?: string;
+      /**
+       * Which of its words is an email address, a host or a URL (`isAddress`): the row draws it as
+       * one, whole and wrapping only at its joints, and reads it aloud and copies it as it is.
+       */
+      readonly addressIn?: "label" | "detail";
       readonly steps?: readonly NativeSettingsStep[];
     }
   | {
@@ -71,6 +87,11 @@ export type NativeSettingsRow =
       readonly kind: "button";
       readonly label: string;
       readonly detail?: string;
+      /**
+       * Which of its words is an email address, a host or a URL (`isAddress`): the row draws it as
+       * one, whole and wrapping only at its joints, and reads it aloud and copies it as it is.
+       */
+      readonly addressIn?: "label" | "detail";
       /** The row opens a page about this thing rather than acting at once. */
       readonly opens?: boolean;
       /** The integration or plugin whose mark leads the row. */

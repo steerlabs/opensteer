@@ -1,5 +1,4 @@
-import { announceEnrollmentPreview, WorkHomeEnrollmentRefused } from "./enrollment-preview.js";
-import type { ExecutionContainment } from "../runtime/execution-containment.js";
+import { readMachineBootId, type ExecutionContainment } from "../runtime/execution-containment.js";
 import { AppServerError } from "../apps/app-server-manager.js";
 import { harnessMinimumVersion } from "@opensteer/core";
 import { meetsMinimumVersion } from "@opensteer/harness";
@@ -20,6 +19,7 @@ import type {
   HostRunFileRequest,
 } from "@opensteer/protocol";
 import {
+  CorrelationIdSchema,
   HomeFileOutputImageExtensionSchema,
   agentHomeFilesCapability,
   homeFilesOutputImageMaxBytes,
@@ -32,7 +32,6 @@ import {
   runnerRestartingCloseCode,
   sameRunnerConnectionFence,
   computerAppMaxTimeoutMs,
-  workHomeEnrollmentPreviewRequiredReason,
 } from "@opensteer/protocol";
 import { openAppTunnel } from "../apps/app-tunnel.js";
 import type { HostAppRequest, HostAppsSync } from "@opensteer/protocol";
@@ -101,6 +100,8 @@ import {
   RunnerRuntime,
   errorCatalog,
   type HarnessDriverAvailability,
+  type ProxyTokenRenewalResult,
+  type ProxyTokenRenewalTarget,
   type RefreshedRunCredentials,
   type RunnerMessageSink,
 } from "../runtime/runtime.js";
@@ -108,7 +109,10 @@ import { probeFullDiskAccess, type FullDiskAccessProbeOptions } from "../shell/f
 import type { PreparedShellModule } from "../shell/shell-host-key.js";
 import { ShellModuleHandler } from "../shell/shell-module-handler.js";
 
-const maximumFrameBytes = 1024 * 1024;
+/** Maximum inbound Host->Runner control WebSocket frame size; accommodates worst-case JSON-escaped trigger.execute (AA14.6). */
+export const runnerControlMaxFrameBytes = 4 * 1024 * 1024;
+const maximumFrameBytes = runnerControlMaxFrameBytes;
+const maximumOutboundFrameBytes = 1024 * 1024;
 const maximumQueuedInboundBytes = 4 * maximumFrameBytes;
 const maximumQueuedInboundItems = 64;
 const maximumBufferedOutboundBytes = 8 * 1024 * 1024;
@@ -270,6 +274,8 @@ export interface ReconnectingHostConnectionOptions {
   readonly agents?: RunnerAgentsConnection;
   readonly browserBridge?: RunnerConfig["browserBridge"];
   readonly bootId: RunnerDescriptor["bootId"];
+  /** Stable OS boot identity override for tests; defaults to the host's OS boot ID. */
+  readonly machineBootId?: string | null;
   readonly config: RunnerConfig;
   /** The computer this Runner runs on, read once at start. */
   readonly device?: RunnerDescriptor["device"];
@@ -289,7 +295,6 @@ export interface ReconnectingHostConnectionOptions {
     readonly runnerId: RunnerIdentity["runnerId"];
   }) => Promise<void> | void;
   readonly onDisconnected?: () => Promise<void> | void;
-  readonly enrollmentNotice?: (message: string) => void;
   /** Called once, instead of reconnecting, when the Host revokes this identity. */
   readonly onRevoked?: () => Promise<void> | void;
   /** Host OS platform override for tests; defaults to `process.platform`. */
@@ -310,6 +315,7 @@ export class ReconnectingHostConnection {
   readonly #agents: RunnerAgentsConnection | undefined;
   readonly #browserBridge: RunnerConfig["browserBridge"];
   readonly #bootId: RunnerDescriptor["bootId"];
+  readonly #machineBootId: string | undefined;
   readonly #config: Omit<RunnerConfig, "enrollmentToken">;
   readonly #device: RunnerDescriptor["device"];
   readonly #platform: NodeJS.Platform;
@@ -329,7 +335,6 @@ export class ReconnectingHostConnection {
   readonly #logger: RunnerLogger;
   readonly #onConnected: ReconnectingHostConnectionOptions["onConnected"];
   readonly #onDisconnected: ReconnectingHostConnectionOptions["onDisconnected"];
-  readonly #enrollmentNotice: ReconnectingHostConnectionOptions["enrollmentNotice"];
   readonly #onRevoked: ReconnectingHostConnectionOptions["onRevoked"];
   readonly #runtimeVersion: string;
   readonly #shellModule: ReconnectingHostConnectionOptions["shellModule"];
@@ -353,6 +358,11 @@ export class ReconnectingHostConnection {
   readonly #credentialWaiters = new Map<
     string,
     (credentials: RefreshedRunCredentials | undefined) => void
+  >();
+  /** On-demand proxy token renewals this connection has asked for and not yet been answered. */
+  readonly #proxyTokenWaiters = new Map<
+    string,
+    (result: ProxyTokenRenewalResult | undefined) => void
   >();
   #enrollmentCredential: RunnerEnrollmentCredential | undefined;
   /**
@@ -397,6 +407,10 @@ export class ReconnectingHostConnection {
     this.#agentsStoppedSince = options.agentsStoppedSince;
     this.#browserBridge = options.browserBridge;
     this.#bootId = options.bootId;
+    this.#machineBootId =
+      options.machineBootId === null
+        ? undefined
+        : (options.machineBootId ?? readMachineBootId(options.platform ?? process.platform));
     const { enrollmentToken, ...config } = options.config;
     this.#config = config;
     this.#device = options.device;
@@ -424,7 +438,6 @@ export class ReconnectingHostConnection {
       : undefined;
     this.#onConnected = options.onConnected;
     this.#onDisconnected = options.onDisconnected;
-    this.#enrollmentNotice = options.enrollmentNotice;
     this.#onRevoked = options.onRevoked;
     this.#runtimeVersion = options.runtimeVersion;
     this.#shellModule = options.shellModule;
@@ -461,35 +474,13 @@ export class ReconnectingHostConnection {
   async run(signal: AbortSignal): Promise<void> {
     let failures = 0;
     let reportedUnenrollable = false;
-    let previewChecked = false;
     while (!signal.aborted) {
-      if (
-        !previewChecked &&
-        this.#enrollmentNotice &&
-        this.#config.runnerKind === "local" &&
-        this.#enrollmentCredential &&
-        (this.#identity.lastConnectionGeneration === 0 || this.#reenroll)
-      ) {
-        await announceEnrollmentPreview(
-          {
-            hostOrigin: this.#config.hostUrl,
-            controlCaPath: this.#config.controlCaPath,
-            mode: this.#config.mode,
-          },
-          this.#enrollmentCredential.enrollmentToken,
-          signal,
-          this.#enrollmentNotice,
-        );
-        if (signal.aborted) break;
-        previewChecked = true;
-      }
       try {
         await this.#connectOnce(signal);
         failures = 0;
         reportedUnenrollable = false;
       } catch (error) {
         if (signal.aborted) break;
-        if (error instanceof WorkHomeEnrollmentRefused) throw error;
         // Removal is the one refusal that retrying can never fix: this identity
         // is gone from the Deployment, and reconnecting would only ask a Host
         // that has already answered. Stop, and say so once.
@@ -535,7 +526,8 @@ export class ReconnectingHostConnection {
       const ceiling = this.#unenrollable()
         ? unenrollableReconnectDelayMs
         : Math.min(
-            (this.#agents?.runtime.attachInventory().length ?? 0) > 0
+            (this.#agents?.runtime.attachInventory().length ?? 0) > 0 ||
+              (this.#agents?.runtime.attachFiringInventory().length ?? 0) > 0
               ? reconnectDelayHoldingRunsMs
               : maximumReconnectDelayMs,
             500 * 2 ** Math.min(failures, 6),
@@ -686,6 +678,9 @@ export class ReconnectingHostConnection {
         new WebSocketMessageSink(socket, this.#fence),
         (runId) => this.#refreshRunCredentials(socket, runId),
         welcome.acceptsAttemptStopState === true,
+        welcome.acceptsAutomationScripts === true
+          ? (target) => this.#renewProxyToken(socket, target)
+          : undefined,
       );
       const browserHandler = this.#browserModuleHandler();
       const integrationsHandler = this.#integrationsHandler;
@@ -790,8 +785,6 @@ export class ReconnectingHostConnection {
       "Host did not acknowledge the Runner identity proof",
     );
     if (response.type === "host.error") {
-      if (response.error.reason === workHomeEnrollmentPreviewRequiredReason)
-        throw new WorkHomeEnrollmentRefused(response.error.message);
       // The Host deliberately does not say whether the identity is unknown or
       // the signature is wrong, because that would let an unauthenticated peer
       // enumerate enrolled Runners. It does not need to: this Runner knows
@@ -882,6 +875,7 @@ export class ReconnectingHostConnection {
         ? {}
         : { agentsStoppedSince: this.#agentsStoppedSince }),
       bootId: this.#bootId,
+      ...(this.#machineBootId ? { machineBootId: this.#machineBootId } : {}),
       capabilities: [
         ...runnerCapabilities(harnessDrivers),
         ...(agents?.runFileOptions || agents?.runtime.homeFileOptions?.()
@@ -959,7 +953,6 @@ export class ReconnectingHostConnection {
       computerTool: 1,
       ...(agents.runFileOptions ? { runFiles: 1 as const } : {}),
       maxConcurrentRuns: this.#config.maxConcurrentRuns,
-      providerStateModes: [...agents.runtime.providerStateModes()],
     };
   }
 
@@ -1154,6 +1147,32 @@ export class ReconnectingHostConnection {
       }).catch(() => undefined);
     } finally {
       this.#credentialWaiters.delete(requestId);
+    }
+  }
+
+  /** Asks the Host for a fresh capability token for an active watch or firing on demand. */
+  async #renewProxyToken(
+    socket: WebSocket,
+    target: ProxyTokenRenewalTarget,
+  ): Promise<ProxyTokenRenewalResult | undefined> {
+    const requestId = CorrelationIdSchema.parse(randomUUID());
+    const answered = new Promise<ProxyTokenRenewalResult | undefined>((resolve) => {
+      this.#proxyTokenWaiters.set(requestId, resolve);
+    });
+    try {
+      await sendWireMessage(socket, {
+        ...this.#fence.fence,
+        requestId,
+        target,
+        type: "runner.proxy-token.renew",
+      });
+      return await withTimeout(answered, handshakeTimeoutMs, {
+        abortFallback: "Runner connection closed",
+        signal: AbortSignal.timeout(handshakeTimeoutMs * 2),
+        timeoutError: () => new Error("Host did not answer a proxy token renewal"),
+      }).catch(() => undefined);
+    } finally {
+      this.#proxyTokenWaiters.delete(requestId);
     }
   }
 
@@ -1400,6 +1419,14 @@ export class ReconnectingHostConnection {
             );
             this.#credentialWaiters.delete(message.requestId);
             break;
+          case "host.proxy-token.renewed":
+            this.#proxyTokenWaiters.get(message.requestId)?.({
+              browserCdp: message.browserCdp,
+              mcp: message.mcp,
+              ...(message.reason !== undefined ? { reason: message.reason } : {}),
+            });
+            this.#proxyTokenWaiters.delete(message.requestId);
+            break;
           default:
             if (stoppedReplies && !stoppedWorkAllowed[message.type])
               await stoppedReplies.handle(message);
@@ -1412,9 +1439,12 @@ export class ReconnectingHostConnection {
       // The Host hears the first settings.json read, then every Run this Runner
       // holds, and answers which continue here before it dispatches anything.
       await work.initialReports();
+      const firings =
+        welcome.acceptsAutomationScripts === true ? work.attachFiringInventory?.() : undefined;
       await sink.send({
         complete: true,
         executions: work.attachInventory(),
+        ...(firings && firings.length > 0 ? { firings } : {}),
         type: "runner.executions.attach",
       });
       for (;;) {
@@ -1438,6 +1468,7 @@ export class ReconnectingHostConnection {
       }
       this.#ticketWaiters.clear();
       this.#credentialWaiters.clear();
+      this.#proxyTokenWaiters.clear();
       await Promise.allSettled(supervision);
       await work.close();
     }
@@ -1483,11 +1514,12 @@ export const stoppedWorkAllowed = {
   "host.run-file.receive": false,
   "host.run-file.send": false,
   "host.runs.revoked": true,
+  "host.thread.stop.recheck": true,
   "host.voice": false,
 } satisfies Record<
   Exclude<
     RunnerWorkMessage["type"],
-    "host.grants.credentials" | "host.shell.probe-full-disk-access"
+    "host.grants.credentials" | "host.proxy-token.renewed" | "host.shell.probe-full-disk-access"
   >,
   boolean
 >;
@@ -1519,6 +1551,9 @@ interface RunnerWorkSession {
     RunnerOperationalReport,
     { readonly type: "runner.executions.attach" }
   >["executions"];
+  attachFiringInventory?(): NonNullable<
+    Extract<RunnerOperationalReport, { readonly type: "runner.executions.attach" }>["firings"]
+  >;
   /** What the Host must hear before it dispatches anything: the first read of settings.json. */
   initialReports(): Promise<void>;
   handle(message: RunnerWorkMessage): Promise<void>;
@@ -1647,6 +1682,10 @@ export class AgentsWorkSession implements RunnerWorkSession {
     return this.#options.agents.runtime.attachInventory();
   }
 
+  attachFiringInventory(): ReturnType<NonNullable<RunnerWorkSession["attachFiringInventory"]>> {
+    return this.#options.agents.runtime.attachFiringInventory();
+  }
+
   async handle(message: RunnerWorkMessage): Promise<void> {
     switch (message.type) {
       case "host.background-text":
@@ -1717,11 +1756,33 @@ export class AgentsWorkSession implements RunnerWorkSession {
       case "host.live.resync":
         this.#options.agents.runtime.resynchronizeLive(message.runId);
         return;
+      case "host.thread.stop.recheck": {
+        void this.#options.agents.runtime
+          .recheckThreadStop(message.threadId)
+          .then(
+            ({ proven }) =>
+              this.#options.sink.send({
+                type: "runner.thread.stop.recheck.result",
+                requestId: message.requestId,
+                proven,
+              }),
+            () =>
+              this.#options.sink.send({
+                type: "runner.thread.stop.recheck.result",
+                requestId: message.requestId,
+                proven: false,
+              }),
+          )
+          .catch(() => undefined);
+        return;
+      }
       case "host.executions.acked":
-        this.#options.agents.runtime.acknowledge(message.acks);
+        this.#options.agents.runtime.acknowledge(message.acks, message.firingAcks);
         return;
       case "host.executions.renewed":
         this.#options.agents.runtime.renewLeases(message);
+        return;
+      case "host.proxy-token.renewed":
         return;
       // In order with commands: a revocation names Runs the Host saw this
       // connection execute, so it must never overtake the execute it follows.
@@ -2547,11 +2608,19 @@ function reachOnlyWorkSession(
             error: notRunningAgents,
           });
           return;
+        case "host.thread.stop.recheck":
+          await sink.send({
+            type: "runner.thread.stop.recheck.result",
+            requestId: message.requestId,
+            proven: true,
+          });
+          return;
         // A computer that runs no agents holds no Runs to stop, resume or renew.
         case "host.runs.revoked":
         case "host.executions.attached":
         case "host.executions.acked":
         case "host.executions.renewed":
+        case "host.proxy-token.renewed":
           return;
       }
     },
@@ -2594,16 +2663,22 @@ export class CausallyOrderedRunnerSink implements RunnerMessageSink {
 
   readonly #refresh: ((runId: RunId) => Promise<RefreshedRunCredentials | undefined>) | undefined;
   readonly #acceptsAttemptStopState: boolean;
+  readonly #renewProxyToken:
+    ((target: ProxyTokenRenewalTarget) => Promise<ProxyTokenRenewalResult | undefined>) | undefined;
   #publishOutputImage: RunnerMessageSink["publishOutputImage"] | undefined;
 
   constructor(
     delegate: RunnerReportSink,
     refresh?: (runId: RunId) => Promise<RefreshedRunCredentials | undefined>,
     acceptsAttemptStopState = false,
+    renewProxyToken?: (
+      target: ProxyTokenRenewalTarget,
+    ) => Promise<ProxyTokenRenewalResult | undefined>,
   ) {
     this.#delegate = delegate;
     this.#refresh = refresh;
     this.#acceptsAttemptStopState = acceptsAttemptStopState;
+    this.#renewProxyToken = renewProxyToken;
   }
 
   setOutputImagePublisher(publisher: RunnerMessageSink["publishOutputImage"] | undefined): void {
@@ -2618,6 +2693,11 @@ export class CausallyOrderedRunnerSink implements RunnerMessageSink {
   refreshRunCredentials(runId: RunId): Promise<RefreshedRunCredentials | undefined> {
     if (this.#closed || !this.#refresh) return Promise.resolve(undefined);
     return this.#refresh(runId);
+  }
+
+  renewProxyToken(target: ProxyTokenRenewalTarget): Promise<ProxyTokenRenewalResult | undefined> {
+    if (this.#closed || !this.#renewProxyToken) return Promise.resolve(undefined);
+    return this.#renewProxyToken(target);
   }
 
   send(message: RunnerOperationalReport): Promise<void> {
@@ -2753,7 +2833,7 @@ export class WebSocketMessageSink implements RunnerMessageSink {
       frame = serializeJsonFrame(parsed);
       if (
         parsed.type === "runner.harness-catalog" &&
-        Buffer.byteLength(frame, "utf8") > maximumFrameBytes
+        Buffer.byteLength(frame, "utf8") > maximumOutboundFrameBytes
       ) {
         parsed = fitHarnessCatalogFrame(parsed);
         frame = serializeJsonFrame(parsed);
@@ -2763,7 +2843,7 @@ export class WebSocketMessageSink implements RunnerMessageSink {
       return Promise.reject(error);
     }
     const bytes = Buffer.byteLength(frame, "utf8");
-    if (bytes > maximumFrameBytes) {
+    if (bytes > maximumOutboundFrameBytes) {
       this.#socket.close(1009, "Runner frame exceeded size limit");
       return Promise.reject(new Error("Runner frame exceeded size limit"));
     }
@@ -2840,7 +2920,7 @@ function fitHarnessCatalogFrame(
     .toSorted((left, right) => right.savedBytes - left.savedBytes);
 
   for (const candidate of replacements) {
-    if (frameBytes <= maximumFrameBytes) break;
+    if (frameBytes <= maximumOutboundFrameBytes) break;
     catalogs[candidate.index] = candidate.replacement;
     frameBytes -= candidate.savedBytes;
   }
@@ -2929,7 +3009,7 @@ export function runnerCapabilities(
     "browser-page-input-v1",
     "browser-profile-create-v1",
     "environment-list-v1",
-    "trigger-program-v5",
+    "automation-script-v1",
     "native-place-input-v1",
     "execution-plane-v2",
     "filesystem",
@@ -2975,7 +3055,7 @@ async function sendWireMessage(socket: WebSocket, message: RunnerToHostMessage):
       ? RunnerWireProofSchema.parse(message)
       : RunnerToHostMessageSchema.parse(message);
   const frame = serializeJsonFrame(parsed);
-  if (Buffer.byteLength(frame, "utf8") > maximumFrameBytes) {
+  if (Buffer.byteLength(frame, "utf8") > maximumOutboundFrameBytes) {
     throw new Error("Runner authentication frame exceeded size limit");
   }
   await new Promise<void>((resolvePromise, reject) => {

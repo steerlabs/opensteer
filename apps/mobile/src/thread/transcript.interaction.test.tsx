@@ -469,6 +469,26 @@ describe("native transcript prose", () => {
     expect(container.textContent).not.toContain("Execution details");
   });
 
+  it("says stopping could not be confirmed instead of failed when termination is unproven", () => {
+    const unproven: RunEntry = {
+      ...run,
+      error: {
+        code: "execution_termination_unproven",
+        message: "The Runner could not verify that all Run processes stopped.",
+        retryable: false,
+      },
+      status: "failed",
+    };
+    for (const conversation of [false, true]) {
+      const { container, render } = setup(conversation);
+      render([unproven]);
+      expect(container.textContent).not.toContain("This run failed");
+      expect(container.textContent).not.toContain("Opensteer couldn’t finish");
+      expect(container.textContent).toContain("Couldn’t confirm this stopped");
+      expect(container.textContent).toContain("may still be running on that device");
+    }
+  });
+
   it("shows Opensteer typing while it answers, with nothing under it to press", () => {
     const { container, render } = setup(true);
     render([run, note, { ...command, completedAt: null, state: "running" }]);
@@ -1338,5 +1358,86 @@ it.each([false, true])(
     expect(view.container.textContent).not.toContain("Show full message");
   },
 );
+
+it.each([false, true])(
+  "explains in plain words when a shared engine retired under another task's stop (Chat: %s)",
+  (conversation) => {
+    const view = setup(conversation);
+    view.render([
+      {
+        ...run,
+        interruptedCause: "engine-retired",
+        status: "interrupted",
+      },
+    ]);
+    expect(view.container.textContent).not.toContain("This run stopped.");
+    expect(view.container.textContent).toContain("Run cut short");
+    expect(view.container.textContent).toContain(
+      "end its shared engine to make sure another task had stopped; it will start again when work next needs it",
+    );
+    expect(view.container.textContent).toContain("send a message to continue");
+  },
+);
+
+it("shows Check again on an unproven stop and calls recheckThreadStop without any force-unlock action", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  const recheck = vi.spyOn(client, "recheckThreadStop").mockResolvedValue({ proven: false });
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  roots.push(root);
+  const threadId = ThreadIdSchema.parse(createId("thread"));
+  const unproven: RunEntry = {
+    ...run,
+    error: {
+      code: "execution_termination_unproven",
+      message: "Stopping could not be confirmed.",
+      retryable: false,
+    },
+    status: "failed",
+  };
+  const [group] = groupTranscriptEntries([unproven]);
+  await act(async () => {
+    root.render(
+      <TranscriptHostClientContext value={client}>
+        <TaskScopeContext
+          value={{
+            focused: true,
+            hostClient: client,
+            onOpenSubagent: () => undefined,
+            onViewWork: () => undefined,
+            threadId,
+          }}
+        >
+          <PaneRow
+            activityKey={null}
+            conversation={false}
+            group={group!}
+            highlightRequestId={null}
+            onOpenActivity={vi.fn()}
+            onOpenStep={vi.fn()}
+            onOpenThread={vi.fn()}
+            spacingTop={0}
+            viewerUserId={null}
+          />
+        </TaskScopeContext>
+      </TranscriptHostClientContext>,
+    );
+  });
+  expect(container.textContent).toContain("Couldn’t confirm this stopped");
+  expect(container.textContent).toContain("Check again");
+  expect(container.textContent).not.toContain("Force unlock");
+  expect(container.textContent).not.toContain("Ignore");
+  const button = [...container.querySelectorAll("button")].find(
+    (node) => node.textContent === "Check again",
+  );
+  expect(button).toBeDefined();
+  await act(async () => {
+    button!.click();
+  });
+  expect(recheck).toHaveBeenCalledWith(threadId);
+  expect(container.textContent).toContain("Still couldn’t confirm this stopped");
+  client.dispose();
+});
 
 vi.mock("../report-mail.js", () => ({ contactSupport: vi.fn() }));

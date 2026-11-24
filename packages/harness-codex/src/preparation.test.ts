@@ -14,11 +14,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import {
-  isolatedServiceHarnessRuntimeBoundary,
-  nativeUserHarnessRuntimeBoundary,
-  type HarnessProviderState,
-} from "@opensteer/harness";
+import type { HarnessProviderState } from "@opensteer/harness";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { CodexHarnessDriver } from "./codex-driver.js";
 import { CodexHarnessConfigSchema, TESTED_CODEX_CLI_VERSION } from "./config.js";
@@ -51,7 +47,6 @@ describe("Codex native store preparation", () => {
     const rolloutPath = await writeSyntheticRollout(store, workspace, threadId);
     const profileA = providerState(root, store, "profile-a");
     const profileB = providerState(root, store, "profile-b");
-    const profileC = providerState(root, store, "profile-c-isolated-service");
     const driver = new CodexHarnessDriver({
       launch: { arguments: [], executable: codexExecutable },
     });
@@ -59,7 +54,6 @@ describe("Codex native store preparation", () => {
       config: {},
       environment: isolatedEnvironment(osHome),
       providerState,
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: workspace,
@@ -91,17 +85,6 @@ describe("Codex native store preparation", () => {
     expect(await readdir(profileASqlite)).toContain("state_5.sqlite");
     expect(await readdir(join(profileHome(profileB), "sqlite"))).toContain("state_5.sqlite");
 
-    const isolatedServiceContext = {
-      ...context(profileC),
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-    };
-    await driver.prepare(isolatedServiceContext);
-    expect(indexedThreadCount(profileC)).toBe(0);
-    await expect(driver.inspect(isolatedServiceContext)).resolves.toMatchObject({
-      status: "authentication-required",
-    });
-    expect(await readdir(join(profileHome(profileC), "sqlite"))).toContain("state_5.sqlite");
-
     await rm(profileHome(profileA), { force: true, recursive: true });
     expect(await readFile(rolloutPath, "utf8")).toContain(threadId);
     await expect(resumeThread(profileB, workspace, osHome, threadId)).resolves.toBe(threadId);
@@ -119,7 +102,6 @@ describe("Codex native store preparation", () => {
       config: {},
       environment: isolatedEnvironment(osHome),
       providerState: profile,
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: root,
@@ -177,7 +159,6 @@ describe("Codex native store preparation", () => {
       config: {},
       environment: isolatedEnvironment(osHome),
       providerState: profile,
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: root,

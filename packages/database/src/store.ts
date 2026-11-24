@@ -120,7 +120,11 @@ import {
   type BrowserSessionWithAttachmentCountRecord,
 } from "./browser-session-store.js";
 import * as commandStore from "./command-store.js";
-import { type ClaimedCommand, type RunnerControlInput } from "./command-store.js";
+import {
+  type BlockedCommandClaim,
+  type ClaimedCommand,
+  type RunnerControlInput,
+} from "./command-store.js";
 import * as computerUseStore from "./computer-use-store.js";
 import * as credentialStore from "./credential-store.js";
 import { type CredentialRecord } from "./credential-store.js";
@@ -157,9 +161,11 @@ import { OwnerProfileStore } from "./owner-profile-store.js";
 import {
   installPersonMessageWake,
   publishPersonMessage,
+  publishProgramPersonMessage,
   type PersonMessageReady,
   type PersonMessageInput,
   type PersonMessageResult,
+  type ProgramPersonMessageInput,
 } from "./person-message-store.js";
 import { RequestStore } from "./request-store.js";
 import { IntegrationRequestStore } from "./integration-request-store.js";
@@ -539,10 +545,7 @@ export class OpensteerStore {
     readonly bytesOut?: number;
     readonly endedAt?: Date;
     /** A Stop the person may click twice; the second click reports the first. */
-    readonly idempotency?: {
-      readonly key: string;
-      readonly requestedBy: UserId;
-    };
+    readonly idempotency?: machineStore.ShellStopIdempotency;
     readonly reason: ShellCloseReason;
     readonly sessionId: ShellSessionId;
   }): Promise<{
@@ -659,6 +662,12 @@ export class OpensteerStore {
   }): Promise<boolean> {
     return runnerStore.touchRunnerConnection(this.#database, input);
   }
+  async touchRunnerConnectionForAttach(input: {
+    readonly connectionGeneration: number;
+    readonly runnerId: RunnerId;
+  }): Promise<{ readonly current: boolean; readonly hasUnconfirmedStop: boolean }> {
+    return runnerStore.touchRunnerConnectionForAttach(this.#database, input);
+  }
   async createBrowserProfile(input: {
     readonly homeRunnerId?: RunnerId | null;
     readonly idempotencyKey: string;
@@ -740,6 +749,8 @@ export class OpensteerStore {
     readonly profileId: BrowserProfileId | null;
     readonly runtimeId: string;
     readonly pooled?: true;
+    readonly onPooledComputer?: true;
+    readonly pooledRunner?: RunnerId;
   }): Promise<BrowserSessionRecord> {
     return browserSessionStore.createBrowserSession(this.#database, input);
   }
@@ -863,8 +874,11 @@ export class OpensteerStore {
   ): Promise<BrowserSessionRecord | null> {
     return browserSessionStore.getBrowserSessionForOwner(this.#database, sessionId, ownerId);
   }
-  async listBrowserSessions(ownerId: UserId): Promise<readonly BrowserSessionRecord[]> {
-    return browserSessionStore.listBrowserSessions(this.#database, ownerId);
+  async listBrowserSessions(
+    ownerId: UserId,
+    options?: { readonly pooled?: boolean },
+  ): Promise<readonly BrowserSessionRecord[]> {
+    return browserSessionStore.listBrowserSessions(this.#database, ownerId, options);
   }
   async listBrowserSessionThreads(input: {
     readonly ownerId: UserId;
@@ -887,9 +901,16 @@ export class OpensteerStore {
   async transitionBrowserSession(input: {
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
-    readonly state: HostedBrowserSessionState;
+    readonly state: Exclude<HostedBrowserSessionState, "closed">;
   }) {
     return browserSessionStore.transitionBrowserSession(this.#database, input);
+  }
+  /** Closes a session that is not pooled; a pooled one is refused in the statement itself. */
+  async closeUnpooledBrowserSession(input: {
+    readonly from?: readonly HostedBrowserSessionState[];
+    readonly sessionId: BrowserSessionId;
+  }) {
+    return browserSessionStore.closeUnpooledBrowserSession(this.#database, input);
   }
   async renewActiveExecutionBindings(input: {
     readonly activeRunIds: readonly RunId[];
@@ -1380,7 +1401,11 @@ export class OpensteerStore {
     readonly assignmentId: AssignmentId;
     readonly ownerId: UserId;
     readonly reader: TaskReader;
-  }): Promise<AssignmentView | null> {
+    readonly connectionAuthority?: Extract<
+      import("./thread-caller.js").ThreadCallerAuthority,
+      { kind: "connection" }
+    >;
+  }): Promise<(AssignmentView & { readonly pendingRequests?: number }) | null> {
     return threadStore.getAssignmentForOwner(this.#database, input);
   }
   async listThreadAssignmentsForOwner(input: {
@@ -1424,6 +1449,10 @@ export class OpensteerStore {
     ownerId: UserId,
     lineageConnectionId?: string,
     nativeOnly?: boolean,
+    connectionAuthority?: Extract<
+      import("./thread-caller.js").ThreadCallerAuthority,
+      { kind: "connection" }
+    >,
   ): Promise<Thread | null> {
     return threadStore.getThreadForOwner(
       this.#database,
@@ -1431,6 +1460,7 @@ export class OpensteerStore {
       ownerId,
       lineageConnectionId,
       nativeOnly,
+      connectionAuthority,
     );
   }
   /** A task as its reader may see it; one it may not read is null, as a missing one. */
@@ -1534,6 +1564,27 @@ export class OpensteerStore {
   }> {
     return threadStore.updateThreadExecutionSelection(this.#database, input);
   }
+  async clearThreadStartHold(threadId: ThreadId): Promise<boolean> {
+    return executionRecovery.clearThreadStartHold(this.#database, threadId);
+  }
+  async readThreadUnconfirmedStop(
+    threadId: ThreadId,
+  ): Promise<executionRecovery.ThreadUnconfirmedStop | null> {
+    return executionRecovery.readThreadUnconfirmedStop(this.#database, threadId);
+  }
+  async confirmThreadUnconfirmedStop(
+    threadId: ThreadId,
+    runId: RunId,
+    confirmedAt?: Date,
+  ): Promise<boolean> {
+    return executionRecovery.confirmThreadUnconfirmedStop(
+      this.#database,
+      threadId,
+      runId,
+      confirmedAt,
+    );
+  }
+
   async resumeThreadInputQueue(input: {
     readonly authority?: import("./thread-caller.js").ThreadCallerAuthority;
     readonly idempotencyKey: string;
@@ -1694,10 +1745,20 @@ export class OpensteerStore {
   async listPendingCommands(limit = 500): Promise<readonly PendingCommandRow[]> {
     return commandStore.listPendingCommands(this.#database, limit);
   }
+  claimCommand(commandId: CommandRow["id"], dispatcherId: string): Promise<ClaimedCommand | null>;
+  claimCommand(
+    commandId: CommandRow["id"],
+    dispatcherId: string,
+    options?: { readonly includeBlocked?: boolean },
+  ): Promise<ClaimedCommand | BlockedCommandClaim | null>;
   async claimCommand(
     commandId: CommandRow["id"],
     dispatcherId: string,
-  ): Promise<ClaimedCommand | null> {
+    options?: { readonly includeBlocked?: boolean },
+  ): Promise<ClaimedCommand | BlockedCommandClaim | null> {
+    if (options) {
+      return commandStore.claimCommand(this.#database, commandId, dispatcherId, options);
+    }
     return commandStore.claimCommand(this.#database, commandId, dispatcherId);
   }
   async finalizeRunInitialContext(input: {
@@ -1730,8 +1791,15 @@ export class OpensteerStore {
   }> {
     return commandStore.loadSteerDispatchInput(this.#database, commandId);
   }
-  async retryCommand(commandId: CommandRow["id"], error: unknown): Promise<void> {
-    return commandStore.retryCommand(this.#database, this.#links, commandId, error);
+  async markCommandFrameSent(commandId: CommandRow["id"]): Promise<void> {
+    return commandStore.markCommandFrameSent(this.#database, commandId);
+  }
+  async retryCommand(
+    commandId: CommandRow["id"],
+    error: unknown,
+    options?: { readonly provenNotStarted?: boolean | undefined },
+  ): Promise<void> {
+    return commandStore.retryCommand(this.#database, this.#links, commandId, error, options);
   }
   async failCommand(
     commandId: CommandRow["id"],
@@ -1739,6 +1807,7 @@ export class OpensteerStore {
     queuedInputCancellation:
       "activation-input" | "authority-cohort" | "seed-input" = "activation-input",
     failureCode: "dispatch_failed" | "runner_restarted" = "dispatch_failed",
+    options?: { readonly provenNotStarted?: boolean | undefined },
   ): Promise<void> {
     return commandStore.failCommand(
       this.#database,
@@ -1747,6 +1816,7 @@ export class OpensteerStore {
       publicMessage,
       queuedInputCancellation,
       failureCode,
+      options,
     );
   }
   async refuseSteer(
@@ -1769,6 +1839,7 @@ export class OpensteerStore {
     readonly continuationIdentity: ProviderContinuationIdentity;
     readonly harnessInstanceId: HarnessInstanceId;
     readonly leaseTokenHash: string;
+    readonly machineBootId?: string | null;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
     readonly runId: RunId;
@@ -1885,6 +1956,7 @@ export class OpensteerStore {
     readonly leaseExpiresAt: Date;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
+    readonly checkUnconfirmedStops?: boolean;
   }): Promise<{
     readonly resumed: readonly ResumedExecution[];
     readonly results: readonly ExecutionAttachment[];
@@ -1967,6 +2039,9 @@ export class OpensteerStore {
   publishPersonMessage(input: PersonMessageInput): Promise<PersonMessageResult> {
     return publishPersonMessage(this.#database, input);
   }
+  publishProgramPersonMessage(input: ProgramPersonMessageInput): Promise<PersonMessageResult> {
+    return publishProgramPersonMessage(this.#database, input);
+  }
   async personalMessageSendKeys(
     ownerId: UserId,
     sessionId: string,
@@ -2029,7 +2104,7 @@ export type { ThreadMutationAdmission } from "./thread-store.js";
 export type { AdmittedThreadInputRequest } from "./thread-store.js";
 export type { AdmittedThreadDelegationRequest } from "./thread-store.js";
 export type { RunnerControlInput } from "./command-store.js";
-export type { ClaimedCommand } from "./command-store.js";
+export type { BlockedCommandClaim, ClaimedCommand } from "./command-store.js";
 export type { RecoveredRunTarget } from "./execution-recovery.js";
 export type { BackgroundDeadlineStop } from "./execution-recovery.js";
 export type { AnnouncedExecution } from "./execution-recovery.js";

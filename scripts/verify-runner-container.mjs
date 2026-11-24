@@ -6,7 +6,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { bundleRunnerSmokeHarness } from "./bundle-runner-smoke-harness.mjs";
 
 const execute = promisify(execFile);
 const image = process.argv[2];
@@ -19,9 +18,8 @@ const repositoryRoot = resolve(import.meta.dirname, "..");
 const temporaryDirectory = await mkdtemp(join(tmpdir(), "opensteer-runner-smoke-"));
 const profile = join(temporaryDirectory, "runner.json");
 const smoke = resolve(repositoryRoot, "deploy/container/runner-runtime-smoke.mjs");
-// The smoke proves the Runner-owned sandbox with the module that ships, not a
-// copy of its arguments: the source is bundled here and mounted into the image.
-const harnessSandbox = join(temporaryDirectory, "harness-sandbox.mjs");
+// The smoke proves Stop with the Runner's own containment module, bundled here.
+const containment = join(temporaryDirectory, "execution-containment.mjs");
 const container = `opensteer-runner-smoke-${randomUUID()}`;
 
 try {
@@ -37,16 +35,27 @@ try {
     ],
     { timeout: 10_000 },
   );
-  await bundleRunnerSmokeHarness({
-    esbuild: resolve(repositoryRoot, "node_modules/.bin/esbuild"),
-    output: harnessSandbox,
-    source: resolve(repositoryRoot, "apps/runner/src/sandbox/harness-sandbox.ts"),
-  });
+  await execute(
+    resolve(repositoryRoot, "node_modules/.bin/esbuild"),
+    [
+      resolve(repositoryRoot, "apps/runner/src/runtime/execution-containment.ts"),
+      "--bundle",
+      "--platform=node",
+      "--format=esm",
+      "--target=node24",
+      // `yaml` is CommonJS inside: its guarded requires need a module-local one.
+      '--banner:js=import { createRequire as __opensteerCreateRequire } from "node:module"; const require = __opensteerCreateRequire(import.meta.url);',
+      `--outfile=${containment}`,
+    ],
+    { timeout: 60_000 },
+  );
   await execute("docker", ["pull", image], { timeout: 300_000 });
   const result = await execute(
     "docker",
     [
       "run",
+      // The Runner image starts under tini, which reaps what a stopped Run leaves.
+      "--init",
       "--name",
       container,
       "--platform",
@@ -73,7 +82,7 @@ try {
       "--mount",
       `type=bind,source=${smoke},target=/tmp/runner-runtime-smoke.mjs,readonly`,
       "--mount",
-      `type=bind,source=${harnessSandbox},target=/tmp/harness-sandbox.mjs,readonly`,
+      `type=bind,source=${containment},target=/tmp/execution-containment.mjs,readonly`,
       "--entrypoint",
       "node",
       image,

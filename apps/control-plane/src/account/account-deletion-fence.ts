@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import type { ControlPlaneAccountId } from "@opensteer/control-plane-protocol";
 import type { Kysely } from "kysely";
 import type { ControlPlaneDatabaseSchema } from "../database/schema.js";
-import { requireOrganizationAccountDeletionAllowed } from "../organizations/identity.js";
 import { ControlPlaneError } from "../server/errors.js";
 
 type Database = Kysely<ControlPlaneDatabaseSchema>;
@@ -34,7 +33,6 @@ export async function beginAccountDeletion(
       throw new ControlPlaneError("conflict", "Account deletion already in progress.", {
         reason: "account-deletion-in-progress",
       });
-    await requireOrganizationAccountDeletionAllowed(transaction, accountId);
     await transaction
       .updateTable("users")
       .set({ deletionAttemptId: attemptId, deletionFencedUntil: fenceUntil() })

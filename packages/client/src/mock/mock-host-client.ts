@@ -1925,8 +1925,6 @@ export interface MockHostClientOptions {
    * refused for the change, and the request reads like this from then on.
    */
   connectionConsentChange?: import("@opensteer/protocol").AgentConnectionConsent;
-  /** The work policy `personal.shell.get` reports; none on a personal Home. */
-  workPolicy?: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy;
   /** Which paired Chromes can share tabs with a connected agent, as `browser.sources.get` says. */
   chromeTabs?: import("../host/connected-agent-options.js").ChromeTabGrantCatalog;
   /** Whether the connection reads report grants support. Defaults to true. */
@@ -2199,9 +2197,9 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "needsYou.get": async (input) =>
       rpcSuccess(mockNeedsYou(client.getSnapshot(), input.before, input.limit)),
     "connections.activity": async (input) =>
-      rpcSuccess(client.agentActivity({ connectionId: input.connectionId })),
+      rpcSuccess({ ...client.agentActivity({ connectionId: input.connectionId }), commands: [] }),
     "threads.activity": async (input) =>
-      rpcSuccess(client.agentActivity({ threadId: input.threadId })),
+      rpcSuccess({ ...client.agentActivity({ threadId: input.threadId }), commands: [] }),
     "connections.list": async (input) => {
       if (client.unreadable) throw new Error("The preview Home can't be reached.");
       const connections = client.listConnections(input.includeRevoked === true);
@@ -2663,10 +2661,6 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       } catch (error) {
         return mockRefusal(error);
       }
-    },
-    "integration.computer.session.stop": async (input) => {
-      await client.stopComputerUseSession(input.sessionId);
-      return rpcSuccess({});
     },
     "integration.computer.apps.installed": async (input) => {
       try {
@@ -3246,6 +3240,11 @@ async function executeMockCommand(
         asOfSequence: SequenceSchema.parse(String(client.getSnapshot().revision)),
         type: command.type,
       });
+    case "thread.stop.recheck":
+      return rpcSuccess({
+        proven: true,
+        type: command.type,
+      });
     case "thread.input.steer":
       client.assertThreadOriginLive(command.threadId);
       return rpcSuccess({
@@ -3529,6 +3528,9 @@ async function executeMockCommand(
     case "integration.computer.setup.cancel":
       client.cancelComputerAppSetup(command.requestId);
       return rpcSuccess({ type: command.type });
+    case "integration.computer.session.stop":
+      await client.stopComputerUseSession(command.sessionId);
+      return rpcSuccess({ type: command.type });
     case "integration.computer.setup.set":
       if ("deviceId" in command.input) return client.executeCommandOnce(command);
       return rpcSuccess({
@@ -3709,6 +3711,9 @@ async function executeMockCommand(
     case "browser.session.close":
       await client.closeBrowser(command.sessionId);
       return unsupportedMockRpc();
+    case "browser.session.dismiss":
+      await client.dismissBrowserSession(command.sessionId);
+      return rpcSuccess(hostApi["commands.dispatch"].success.parse({ type: command.type }));
     case "trigger.create":
       return rpcSuccess(
         hostApi["commands.dispatch"].success.parse({
@@ -4509,6 +4514,11 @@ export class MockHostClient implements HostClient {
   readonly restartPooledBrowser = (_computerId: string): Promise<void> =>
     Promise.reject(new BrowserRestartUnavailable());
 
+  /** W15: removes an unconfirmed-closing session from the preview snapshot. */
+  readonly dismissBrowserSession = async (sessionId: string): Promise<void> => {
+    await this.#state.dismissBrowserSession(sessionId);
+  };
+
   /** A navigation can stay loading after the restored page has painted. */
   setBrowserLoading(tabId: string, loading: boolean): void {
     const snapshot = this.#state.getSnapshot();
@@ -5129,13 +5139,6 @@ export class MockHostClient implements HostClient {
     this.#state.mockDeviceStates();
   }
 
-  /** The organization applies a new policy version, as the synced shell would bring it. */
-  applyWorkPolicy(
-    policy: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy | null,
-  ): void {
-    this.#state.applyWorkPolicy(policy);
-  }
-
   /** Connected agents working tasks themselves, in each state, with a tab each uses. */
   mockAgentWork(
     options: {
@@ -5239,6 +5242,18 @@ export class MockHostClient implements HostClient {
       threadId,
       type: "thread.inputQueue.resume",
     });
+  }
+
+  async recheckThreadStop(threadId: string): Promise<{ readonly proven: boolean }> {
+    const result = await this.dispatch({
+      idempotencyKey: `mock-stop-recheck:${crypto.randomUUID()}`,
+      threadId,
+      type: "thread.stop.recheck",
+    });
+    if (result.type !== "thread.stop.recheck") {
+      throw new Error(`Unexpected thread.stop.recheck response: ${result.type}`);
+    }
+    return { proven: result.proven };
   }
 
   async steerThreadInput(threadId: string, messageId: string): Promise<void> {
@@ -6063,7 +6078,6 @@ class MockHostState {
   readonly #channelTokens = new Map<string, Readonly<Record<string, string>>>();
   private pendingConnectionConsent: import("@opensteer/protocol").AgentConnectionConsent | null;
   readonly chromeTabs: import("../host/connected-agent-options.js").ChromeTabGrantCatalog;
-  workPolicy: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy | null;
   private connectionDecision: { requestId: string; fingerprint: string } | null = null;
   connectionConsent(requestId: string) {
     const consent = this.pendingConnectionConsent;
@@ -6216,11 +6230,15 @@ class MockHostState {
       return { ...ended, bridge: { ...bridge, endedBy } };
     });
     if (endedOrigin === null) return;
-    const affected = new Set(
-      [...this.#threadOriginConnection.entries()]
+    // A chat's tasks, and a connected agent's own tasks (those it works itself).
+    const affected = new Set([
+      ...[...this.#threadOriginConnection.entries()]
         .filter(([, connId]) => connId === id)
         .map(([threadId]) => threadId),
-    );
+      ...this.snapshot.threads
+        .filter((thread) => thread.externalWork?.connection.id === id)
+        .map((thread) => thread.id),
+    ]);
     if (affected.size === 0) return;
     this.update({
       ...this.snapshot,
@@ -7100,7 +7118,6 @@ class MockHostState {
     // The Home cleans a client's name where it registers; the preview's consent is that answer.
     this.pendingConnectionConsent = mockConsent(options.connectionConsent);
     this.chromeTabs = options.chromeTabs ?? {};
-    this.workPolicy = options.workPolicy ?? null;
     this.#consentChange = mockConsent(options.connectionConsentChange);
     for (const p of options.agentPlugins ?? []) {
       const id = crypto.randomUUID();
@@ -7173,10 +7190,7 @@ class MockHostState {
           : {}),
       };
     const firstRun = options.world === "first-run";
-    this.snapshot = {
-      ...(firstRun ? firstRunWorld(initial) : initial),
-      effectiveWorkPolicy: this.workPolicy,
-    };
+    this.snapshot = firstRun ? firstRunWorld(initial) : initial;
     this.applyAutomaticEligibility();
     for (const thread of this.snapshot.threads) {
       if (thread.icon === null && thread.purpose === "task") this.#provisionalIcons.add(thread.id);
@@ -7214,10 +7228,9 @@ class MockHostState {
         const created = this.createTrigger({
           anchorThreadId: ThreadIdSchema.parse(worker.id),
           name: worker.title,
-          program: {
-            language: "typescript",
-            toolContractVersion: 5,
-            source: "export default async () => null",
+          script: {
+            interpreter: null,
+            text: "console.log('memory-pass')",
           },
           source: {
             kind: "schedule",
@@ -7832,13 +7845,6 @@ class MockHostState {
       requests: { ...this.snapshot.requests, ...seed.requests } as typeof this.snapshot.requests,
       browserSessions,
     });
-  }
-
-  applyWorkPolicy(
-    policy: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy | null,
-  ): void {
-    this.workPolicy = policy;
-    this.update({ ...this.snapshot, effectiveWorkPolicy: policy });
   }
 
   mockDeviceStates(): void {
@@ -9323,14 +9329,13 @@ class MockHostState {
       createdByThreadId: null,
       id: createId("triggerRevision"),
       ordinal: 1,
-      program: input.program,
+      script: input.script,
       source: input.source,
       triggerId,
     });
     const webhookRouteKey = input.source.kind === "webhook" ? `mock-webhook-${triggerId}` : null;
     const trigger = TriggerSchema.parse({
       anchorThreadId: thread.id,
-      consecutiveFailures: 0,
       createdAt: now.toISOString(),
       createdBy: mockUserId,
       createdByThreadId: null,
@@ -9363,8 +9368,8 @@ class MockHostState {
       ...(webhookRouteKey
         ? {
             webhook: {
-              secret: `mock-secret-${triggerId}`,
-              url: `${mockWebhookOrigin}/v1/trigger-webhooks/${webhookRouteKey}`,
+              scope: "public" as const,
+              url: `${mockWebhookOrigin}/hooks/v1/${webhookRouteKey}`,
             },
           }
         : {}),
@@ -9376,7 +9381,7 @@ class MockHostState {
     if (
       record.trigger.systemRole &&
       (input.name !== undefined ||
-        input.program !== undefined ||
+        input.script !== undefined ||
         (input.source !== undefined &&
           (input.source.kind !== "schedule" ||
             input.source.schedule.kind !== "cron" ||
@@ -9400,7 +9405,7 @@ class MockHostState {
       createdByThreadId: null,
       id: createId("triggerRevision"),
       ordinal: record.revision.ordinal + 1,
-      program: input.program ?? record.revision.program,
+      script: input.script ?? record.revision.script,
       source,
       triggerId,
     });
@@ -9408,9 +9413,6 @@ class MockHostState {
     // one-time instant stays elapsed.
     const trigger = TriggerSchema.parse({
       ...record.trigger,
-      ...(input.program === undefined && input.source === undefined
-        ? {}
-        : { consecutiveFailures: 0 }),
       currentRevisionId: revision.id,
       name:
         input.name === undefined
@@ -9448,7 +9450,6 @@ class MockHostState {
     const now = this.now();
     const trigger = TriggerSchema.parse({
       ...record.trigger,
-      ...(status === "active" ? { consecutiveFailures: 0 } : {}),
       nextFireAt: status === "active" ? resumedFireAt(record.revision.source, now) : null,
       pauseReason: null,
       status,
@@ -11788,6 +11789,20 @@ class MockHostState {
             }
           : session,
       ),
+    });
+  }
+
+  async dismissBrowserSession(sessionId: string): Promise<void> {
+    const browserPools = this.snapshot.browserPools?.map((pool) => {
+      if (!pool.unconfirmedClosings?.some((entry) => entry.sessionId === sessionId)) return pool;
+      const remaining = pool.unconfirmedClosings.filter((entry) => entry.sessionId !== sessionId);
+      const { unconfirmedClosings: _dropped, ...rest } = pool;
+      return remaining.length ? { ...rest, unconfirmedClosings: remaining } : rest;
+    });
+    this.update({
+      ...this.snapshot,
+      browserSessions: this.snapshot.browserSessions.filter((session) => session.id !== sessionId),
+      ...(browserPools ? { browserPools } : {}),
     });
   }
 
@@ -14790,7 +14805,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
         id: "env_00000000-0000-4000-8000-000000000001",
         kind: "main",
         name: "Home Mac",
-        providerStateModes: ["ambient", "isolated"],
         // The hosting Runner for this personal Deployment.
         runnerId: "rnr_11111111-1111-4111-8111-111111111111",
         status: "connected",
@@ -14821,7 +14835,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
         id: mockAwaySiteEnvironmentId,
         kind: "main",
         name: "Studio iMac",
-        providerStateModes: ["ambient", "isolated"],
         runnerId: "rnr_44444444-4444-4444-8444-444444444444",
         status: "connected",
       },

@@ -112,12 +112,12 @@ const allowed: Readonly<Record<string, { readonly count: number; readonly reason
   "apps/mobile/src/screens/settings-ai-accounts.tsx": { count: 2, reason: reasons.presenter },
   "apps/mobile/src/screens/thread-settings.tsx": { count: 2, reason: reasons.presenter },
   "apps/mobile/src/thread/computer-use-line.tsx": { count: 1, reason: reasons.presenter },
-  "apps/mobile/src/thread/transcript.tsx": { count: 1, reason: reasons.run },
   "apps/mobile/src/thread/use-request-response.ts": { count: 1, reason: reasons.answer },
+  "apps/mobile/src/ui/client-feedback.ts": { count: 1, reason: reasons.signin },
   "apps/web/src/attachments-visual.tsx": { count: 1, reason: reasons.dev },
   "apps/web/src/components/agent-activity.tsx": {
-    count: 2,
-    reason: `${reasons.run} And a computer-use Stop, in the feedback layer's words (computerUseStops).`,
+    count: 1,
+    reason: "A computer-use Stop, in the feedback layer's words (computerUseStops).",
   },
   "apps/web/src/components/apps/apps-page.tsx": { count: 1, reason: reasons.oneFunction },
   "apps/web/src/components/computer-apps/computer-use-section.tsx": {

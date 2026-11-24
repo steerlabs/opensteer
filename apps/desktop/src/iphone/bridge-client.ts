@@ -15,6 +15,7 @@ import { z } from "zod";
 import { IphoneServiceError } from "./iphone-store.js";
 
 export interface IphoneNativeTransport {
+  readonly displayDemandActive?: boolean;
   request<T>(
     method: string,
     params: unknown,
@@ -46,7 +47,11 @@ export class IphoneBridgeClient implements IphoneNativeTransport {
   #closed = false;
   #closing: Promise<void> | undefined;
   #bootId: string | undefined;
+  #displayDemandActive = false;
   #sequence = 0;
+  get displayDemandActive(): boolean {
+    return this.#displayDemandActive;
+  }
   constructor(process: SupervisedProcess, log: (line: string) => void = () => undefined) {
     this.#process = process;
     process.child.stdin.on("error", () => this.#fail());
@@ -91,6 +96,7 @@ export class IphoneBridgeClient implements IphoneNativeTransport {
     try {
       const hello = await client.request("hello", {}, iphoneNativeHelloSchema);
       client.#bootId = hello.bootId;
+      client.#displayDemandActive = hello.displayDemandActive === true;
       const { images } = await client.request(
         "init",
         { privateRoot: options.privateRoot, imageRoots: options.imageRoots },
@@ -164,7 +170,11 @@ export class IphoneBridgeClient implements IphoneNativeTransport {
               reject(new IphoneServiceError(failure.data.error.code, failure.data.error.effect));
             else {
               const parsed = result.parse(value);
-              if (method === "hello") this.#bootId = iphoneNativeHelloSchema.parse(parsed).bootId;
+              if (method === "hello") {
+                const hello = iphoneNativeHelloSchema.parse(parsed);
+                this.#bootId = hello.bootId;
+                this.#displayDemandActive = hello.displayDemandActive === true;
+              }
               resolve(parsed);
             }
           } catch {

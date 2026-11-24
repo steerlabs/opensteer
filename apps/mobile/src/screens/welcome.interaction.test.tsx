@@ -3,6 +3,7 @@ import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 import { Welcome } from "./welcome.js";
+import { addressWords } from "../ui/address-words.js";
 
 const share = vi.hoisted(() => vi.fn().mockResolvedValue({ action: "sharedAction" }));
 vi.mock("react-native", () => ({
@@ -28,6 +29,7 @@ vi.mock("react-native", () => ({
 }));
 vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 0 }));
 vi.mock("../ui/primitives.js", () => ({
+  DisplayTitle: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   Notice: ({ detail }: { detail: string }) => <span>{detail}</span>,
   PrimaryButton: ({
@@ -168,7 +170,7 @@ describe("first-run welcome", () => {
         ),
       );
       expect(container.textContent).toContain("Where should your Opensteer live?");
-      expect(container.textContent).toContain("alex@example.com");
+      expect(container.textContent).toContain(addressWords("alex@example.com"));
       expect(button("Sign in")).toBeUndefined();
       expect(container.textContent).toContain("On your Mac");
       expect(container.textContent).toContain("Free. Works while your Mac is awake.");
@@ -177,7 +179,9 @@ describe("first-run welcome", () => {
         "Always on. Set it up on the Opensteer website, then come back here.",
       );
       // The website's address is text to copy, never a link or a purchase, and no price shows.
-      expect(container.textContent).toContain("https://portal.example.com/cloud-computer/checkout");
+      expect(container.textContent).toContain(
+        addressWords("https://portal.example.com/cloud-computer/checkout"),
+      );
       expect(container.querySelector("a")).toBeNull();
       expect(container.textContent).not.toContain("$20.00");
       expect(container.textContent).not.toMatch(/buy|price|subscribe|continue to checkout/iu);

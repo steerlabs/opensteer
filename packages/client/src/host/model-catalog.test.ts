@@ -632,7 +632,6 @@ function serverPlacements(
     id: "environment-main",
     kind: "main",
     name: "Main",
-    providerStateModes: ["isolated"],
     runnerId: "runner-main",
     status: "connected",
   };

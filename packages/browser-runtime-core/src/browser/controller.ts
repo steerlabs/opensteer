@@ -862,8 +862,17 @@ export class BrowserController {
   }
 
   private closeReason: "retired" | "pooled" | undefined;
-  close(reason?: "retired" | "pooled"): Promise<void> {
-    if (!this.closePromise) this.closeReason = reason;
+  private beforeClosed: (() => Promise<void>) | undefined;
+  /**
+   * `beforeClosed`: run after the session stops and before it says `closed` (a pooled runtime
+   * closes its pages there, so `closed` is said only once they are gone); when it fails,
+   * `closed` is not said.
+   */
+  close(reason?: "retired" | "pooled", beforeClosed?: () => Promise<void>): Promise<void> {
+    if (!this.closePromise) {
+      this.closeReason = reason;
+      this.beforeClosed = beforeClosed;
+    }
     for (const surfaceId of this.personOffers.keys()) this.withdrawPersonOffer(surfaceId);
     for (const [surfaceId, offer] of this.saveOffers) this.endPersonSave(surfaceId, offer, "ended");
     for (const entry of this.cursorHints.values()) {
@@ -927,6 +936,7 @@ export class BrowserController {
     }
     this.terminated = true;
     if (this.closeReason === "pooled") return;
+    await this.beforeClosed?.();
     await this.send({
       state: "closed",
       type: "browser.status",
@@ -1109,15 +1119,15 @@ export class BrowserController {
       // write or a click included; an answer never waits behind what it frees.
       return this.run(message);
     }
+    // Closing a tab never waits behind a size write, input or navigation on
+    // its lane: a tab that cannot answer them would otherwise refuse to close.
     if (
       message.type === "cdp.command" &&
       message.command.method === "Target.closeTarget" &&
-      this.pageOf(message) &&
-      this.ledger.dialogOpen(this.pageOf(message)!)
+      this.pageOf(message)
     )
       return this.run(message, this.pageOf(message));
-    if (message.type === "surface.close" && this.ledger.dialogOpen(message.surfaceId))
-      return this.run(message, message.surfaceId);
+    if (message.type === "surface.close") return this.run(message, message.surfaceId);
     if (
       message.type === "navigation.stop" ||
       (message.type === "cdp.command" && message.command.method === "Page.stopLoading")
@@ -1457,6 +1467,10 @@ export class BrowserController {
       const lifecycle =
         message.type === "surface.close" ||
         (message.type === "cdp.command" && message.command.method === "Target.closeTarget");
+      // V7: a viewer subscribing while a tab wakes waits for its wake before claiming the lease
+      // (both before page creation and mid-wake while it navigates from about:blank).
+      if (target && message.type === "stream.subscribe")
+        await this.ledger.waking(target)?.catch(() => {});
       // Z2: a cancel that came while the command waited for its tab ends it before it is sent.
       if (target && !lifecycle)
         await this.ledger.use(target, () => {
@@ -1466,7 +1480,7 @@ export class BrowserController {
       else await this.dispatch(message, surfaceId);
     } catch (error) {
       await this.refuseClipboard(message);
-      const normalized = normalizeControllerError(error);
+      const normalized = normalizeControllerError(error, isCdpRequest(message));
       if (isCdpRequest(message) && message.replyBudget && normalized.code === "internal")
         console.error("browser.script.runtime.failed", error);
       const reservation = surfaceId ? this.reservation(message, surfaceId) : null;
@@ -1848,8 +1862,6 @@ export class BrowserController {
           await target?.cast.close();
           return;
         }
-        // V7: a viewer of a tab that is waking is bound to the tab it wakes into, not refused.
-        if (!this.ledger.binding(surfaceId)) await this.ledger.waking(surfaceId)?.catch(() => {});
         if (!this.ledger.binding(surfaceId))
           throw new BrowserRuntimeError("not_found", "The browser surface does not exist.");
         const subscription = message.frames === false ? "control" : "frames";
@@ -1940,7 +1952,6 @@ export class BrowserController {
       if (this.ledger.snapshot().length <= 1) {
         throw new BrowserRuntimeError("conflict", "The final browser surface cannot be closed.");
       }
-      if (!this.ledger.dialogOpen(message.surfaceId)) await this.prepareResize(message.surfaceId);
       this.closingSurfaces.add(message.surfaceId);
       try {
         await this.ledger.closeSurface(message.surfaceId, "person-closed");
@@ -3783,7 +3794,7 @@ export class BrowserController {
         .withGeometry(surfaceId, (cdp, geometry) => {
           ended.throwIfAborted();
           this.cdpRouter.admitPageCommand(this.claims.sessionId, admitted);
-          return this.lookAt(page, cdp, geometry, request, command.replyBudget);
+          return this.lookAt(page, cdp, geometry, request, command.replyBudget, ended);
         })
         .finally(() => page.offClose(closed));
     return bounded(
@@ -3791,7 +3802,7 @@ export class BrowserController {
         ended.throwIfAborted();
         // Access may have changed while this waited, as `send` would recheck.
         this.cdpRouter.admitPageCommand(this.claims.sessionId, admitted);
-        return bounded(this.lookAt(page, cdp, geometry, request, command.replyBudget));
+        return bounded(this.lookAt(page, cdp, geometry, request, command.replyBudget, ended));
       }),
     ).finally(() => page.offClose(closed));
   }
@@ -3802,9 +3813,11 @@ export class BrowserController {
     geometry: PageGeometry | null,
     { clip, format, quality }: z.infer<typeof screenshotParameters>,
     budget?: CdpCommand["replyBudget"],
+    signal?: AbortSignal,
   ): Promise<ViewportCapture> {
     if (!geometry)
       throw new BrowserRuntimeError("conflict", "The page has no size yet.", { retryable: true });
+    signal?.throwIfAborted();
     const viewport = async () => {
       const { cssVisualViewport } = visualViewportMetricsSchema.parse(
         await cdp.send("Page.getLayoutMetrics"),
@@ -3812,15 +3825,20 @@ export class BrowserController {
       return { ...cssVisualViewport, pageScale: cssVisualViewport.scale * cssVisualViewport.zoom };
     };
     const { pageScale, pageX, pageY } = await viewport();
-    const capture = await page.captureViewport({
-      format,
-      layout: pageViewport(geometry),
-      pageScale,
-      ...(budget?.maxImageBytes === undefined ? {} : { maxImageBytes: budget.maxImageBytes }),
-      ...(quality === undefined ? {} : { quality }),
-      // CDP's clip is in document coordinates.
-      ...(clip ? { clip: { ...clip, x: clip.x - pageX, y: clip.y - pageY } } : {}),
-    });
+    signal?.throwIfAborted();
+    const capture = await page.captureViewport(
+      {
+        format,
+        layout: pageViewport(geometry),
+        pageScale,
+        ...(budget?.maxImageBytes === undefined ? {} : { maxImageBytes: budget.maxImageBytes }),
+        ...(quality === undefined ? {} : { quality }),
+        // CDP's clip is in document coordinates.
+        ...(clip ? { clip: { ...clip, x: clip.x - pageX, y: clip.y - pageY } } : {}),
+      },
+      signal,
+    );
+    signal?.throwIfAborted();
     // Pixels from a document with another scale would put every click in the wrong place.
     if ((await viewport()).pageScale !== pageScale)
       throw new BrowserRuntimeError("conflict", "The page changed during the screenshot.", {
@@ -4417,7 +4435,28 @@ function isDialogAnswer(message: BrowserClientMessage): boolean {
   return message.type === "cdp.command" && message.command.method === "Page.handleJavaScriptDialog";
 }
 
-function normalizeControllerError(error: unknown): BrowserRuntimeError {
+function isChromiumCdpProtocolError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    /^(?:cdpSession\.send:\s*)?Protocol error \([^)]+\):/u.test(error.message) ||
+    /Cannot find context with specified id|Cannot find execution context with given id|Execution context was destroyed|Could not find node with given id|No node with given id found|Node with given id does not belong to the document|Cannot find default execution context|Inspected target navigated or closed/u.test(
+      error.message,
+    )
+  );
+}
+
+function normalizeControllerError(error: unknown, cdpRequest = false): BrowserRuntimeError {
+  if (
+    cdpRequest &&
+    !(error instanceof SessionCdpRouterError) &&
+    !(error instanceof BrowserRuntimeError) &&
+    isChromiumCdpProtocolError(error)
+  ) {
+    return new BrowserRuntimeError("conflict", "The browser rejected the CDP command.", {
+      cause: error,
+      reason: "browser-cdp-protocol-error",
+    });
+  }
   if (!(error instanceof SessionCdpRouterError)) return toBrowserRuntimeError(error);
   const code =
     error.code === "bad_command" || error.code === "too_large"
@@ -4517,7 +4556,6 @@ function isOrderedAgentMutation(
       "Page.reload",
       "Page.navigateToHistoryEntry",
       "Page.setDocumentContent",
-      "Target.closeTarget",
     ].includes(message.command.method)
   );
 }

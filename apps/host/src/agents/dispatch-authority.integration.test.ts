@@ -112,6 +112,7 @@ function dispatcher(
         options?: {
           readonly beforeAck?: () => Promise<void>;
           readonly beforeSend?: () => Promise<void>;
+          readonly beforeWireSend?: () => Promise<void>;
           readonly onNotAdmitted?: () => Promise<void>;
         },
       ) => {
@@ -124,6 +125,7 @@ function dispatcher(
           throw error;
         }
         await hooks.afterFence?.();
+        await options?.beforeWireSend?.();
         sent.push(command);
         if (options?.beforeAck) hooks.holdAck?.(options.beforeAck);
         return { type: "runner.command-accepted" };
@@ -226,7 +228,7 @@ describeStore("a connected agent's authority at the send", (it) => {
     const f = await storeFixture.startRunFixture("trigger-retry-ack");
     await database
       .updateTable("runners")
-      .set({ capabilities: sql`'["trigger-program-v5"]'::jsonb` })
+      .set({ capabilities: sql`'["automation-script-v1"]'::jsonb` })
       .where("id", "=", f.runnerId)
       .execute();
     const agent = await connection(store, await serveMcp(storeFixture), {
@@ -242,10 +244,9 @@ describeStore("a connected agent's authority at the send", (it) => {
       createdBy: f.userId,
       idempotencyKey: "trigger-retry-ack",
       name: "Retry ACK",
-      program: {
-        language: "javascript",
-        source: "export default async () => null",
-        toolContractVersion: 5,
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -275,7 +276,16 @@ describeStore("a connected agent's authority at the send", (it) => {
       await queue.dispatch(claimed.command, new AbortController().signal);
     };
     await dispatch();
-    await store.retryCommand(occurrence.commandId, new Error("Retried before ACK"));
+    // Once the dispatch frame may have left the Home (frame_sent_at stamped), retryCommand
+    // refuses to reset the firing to pending and send a second generation (T12 / Rule 4).
+    await expect(
+      store.retryCommand(occurrence.commandId, new Error("Retried before ACK")),
+    ).rejects.toThrow(/dispatch frame was sent/iu);
+    expect(sent).toHaveLength(1);
+    // Only an explicit pre-execution Runner refusal (provenNotStarted: true) allows retry.
+    await store.retryCommand(occurrence.commandId, new Error("Runner draining"), {
+      provenNotStarted: true,
+    });
     await dispatch();
     const [first, current] = sent;
     if (first?.type !== "trigger.execute" || current?.type !== "trigger.execute")
@@ -735,7 +745,7 @@ describeStore("a connected agent's authority at the send", (it) => {
     // The Runner runs automation programs.
     await database
       .updateTable("runners")
-      .set({ capabilities: sql`capabilities || '["trigger-program-v5"]'::jsonb` })
+      .set({ capabilities: sql`capabilities || '["automation-script-v1"]'::jsonb` })
       .where("id", "=", f.fixture.runnerId as never)
       .execute();
     return { ...f, chat, thread };
@@ -749,7 +759,7 @@ describeStore("a connected agent's authority at the send", (it) => {
         .executeTakeFirstOrThrow()
     ).originConnectionId;
   const everyMinute = {
-    program: { toolContractVersion: 5, language: "javascript", source: "export default () => {}" },
+    script: { interpreter: null, text: "console.log('tick')" },
     source: {
       kind: "schedule",
       schedule: { expression: "* * * * *", kind: "cron", timezone: "UTC" },
@@ -776,16 +786,13 @@ describeStore("a connected agent's authority at the send", (it) => {
         ...input,
       });
     // Its program would run as the person, in their Agent home.
-    await expect(
-      make({ actorConnectionId: anyone.chat.id, actorAccessMode: "full-access" }),
-    ).rejects.toMatchObject(refusal);
+    await expect(make({ actorConnectionId: anyone.chat.id })).rejects.toMatchObject(refusal);
     await expect(make({})).rejects.toMatchObject(refusal);
     // One of an owner chat whose lineage is then the anyone chat's can't be given a program.
     const owner = await chatWithTask(storeFixture, "auto-owner");
     const { trigger, revision } = await triggers.create({
       actorThreadId: null,
       actorConnectionId: owner.chat.id,
-      actorAccessMode: "full-access",
       anchorThreadId: owner.thread.id,
       createdBy: owner.fixture.userId,
       idempotencyKey: "auto-owner",
@@ -803,7 +810,7 @@ describeStore("a connected agent's authority at the send", (it) => {
         ownerId: owner.fixture.userId,
         triggerId: trigger.id,
         expectedRevisionId: revision.id,
-        program: everyMinute.program,
+        script: everyMinute.script,
       }),
     ).rejects.toMatchObject(refusal);
   });
@@ -963,7 +970,6 @@ describeStore("a connected agent's authority at the send", (it) => {
     const { trigger } = await triggers.create({
       actorThreadId: null,
       actorConnectionId: owner.chat.id,
-      actorAccessMode: "full-access",
       anchorThreadId: owner.thread.id,
       createdBy: owner.fixture.userId,
       idempotencyKey: "change-anyone",
@@ -1024,7 +1030,6 @@ describeStore("a connected agent's authority at the send", (it) => {
     const { trigger } = await triggers.create({
       actorThreadId: null,
       actorConnectionId: owner.chat.id,
-      actorAccessMode: "full-access",
       anchorThreadId: owner.thread.id,
       createdBy: owner.fixture.userId,
       idempotencyKey: "existing-anyone",
@@ -1082,9 +1087,7 @@ describeStore("a connected agent's authority at the send", (it) => {
       const triggers = new TriggerStore(database);
       const { trigger } = await triggers.create({
         actorThreadId: null,
-        ...(who === "made by the chat's own agent"
-          ? { actorConnectionId: chat.id, actorAccessMode: "full-access" as const }
-          : {}),
+        ...(who === "made by the chat's own agent" ? { actorConnectionId: chat.id } : {}),
         anchorThreadId: thread.id,
         createdBy: fixture.userId,
         idempotencyKey: `auto-${who}`,
@@ -1172,7 +1175,6 @@ describeStore("a connected agent's authority at the send", (it) => {
     const { trigger } = await triggers.create({
       actorThreadId: null,
       actorConnectionId: chat.id,
-      actorAccessMode: "full-access",
       anchorThreadId: thread.id,
       createdBy: fixture.userId,
       idempotencyKey: "auto-race",
@@ -1199,7 +1201,12 @@ describeStore("a connected agent's authority at the send", (it) => {
       },
     });
     // Held: nothing created, nothing moved, and nothing changed for the list to read again.
-    expect(claimed).toEqual({ occurrences: [], failures: [], changed: false });
+    expect(claimed).toEqual({
+      occurrences: [],
+      failures: [],
+      runningFirings: [],
+      changed: false,
+    });
     expect(
       await database
         .selectFrom("triggers")
@@ -1216,7 +1223,6 @@ describeStore("a connected agent's authority at the send", (it) => {
     const { trigger } = await triggers.create({
       actorThreadId: null,
       actorConnectionId: chat.chat.id,
-      actorAccessMode: "full-access",
       anchorThreadId: chat.thread.id,
       createdBy: chat.fixture.userId,
       idempotencyKey: suffix,
@@ -1268,7 +1274,12 @@ describeStore("a connected agent's authority at the send", (it) => {
       trigger: { status: "active", pauseReason: null, nextFireAt: at },
       occurrences: 0,
     });
-    expect(claimed).toEqual({ occurrences: [], failures: [], changed: false });
+    expect(claimed).toEqual({
+      occurrences: [],
+      failures: [],
+      runningFirings: [],
+      changed: false,
+    });
   });
 
   it("holds, never reports a failure, when its chat starts waiting just before the occurrence is recorded", async ({
@@ -1278,7 +1289,12 @@ describeStore("a connected agent's authority at the send", (it) => {
     const claimed = await triggers.claimDueSchedules(new Date(), 64, {
       beforeEnqueue: () => health("needs-attention"),
     });
-    expect(claimed).toEqual({ occurrences: [], failures: [], changed: false });
+    expect(claimed).toEqual({
+      occurrences: [],
+      failures: [],
+      runningFirings: [],
+      changed: false,
+    });
     expect(await standing()).toEqual({
       trigger: { status: "active", pauseReason: null, nextFireAt: at },
       occurrences: 0,
@@ -1292,7 +1308,6 @@ describeStore("a connected agent's authority at the send", (it) => {
     const { trigger } = await triggers.create({
       actorThreadId: null,
       actorConnectionId: chat.chat.id,
-      actorAccessMode: "full-access",
       anchorThreadId: chat.thread.id,
       createdBy: chat.fixture.userId,
       idempotencyKey: suffix,
@@ -1515,7 +1530,6 @@ describeStore("a connected agent's authority at the send", (it) => {
     const { trigger } = await triggers.create({
       actorThreadId: null,
       actorConnectionId: chat.id,
-      actorAccessMode: "full-access",
       anchorThreadId: thread.id,
       createdBy: fixture.userId,
       idempotencyKey: "auto-uncertain",
@@ -1605,7 +1619,7 @@ describeStore("a connected agent's authority at the send", (it) => {
       );
     expect(failure).toMatchObject({
       disposition: "failed",
-      message: "Update this computer to run automation programs with tool contract version 5.",
+      message: "Update this computer to run script automations.",
     });
     // Disconnecting the chat changes nothing of it.
     await new AgentConnectionStore(database).revoke(fixture.userId, bridgeId!);

@@ -61,6 +61,7 @@ import type {
   AcpSessionSnapshot,
   AcpToolCall,
 } from "./types.js";
+import { acpToolIdentity, isTerminalAcpToolCall, parseAcpToolCall } from "./tool-calls.js";
 
 interface AcpHarnessDependencies {
   readonly createClient?: typeof createAcpProtocolClient;
@@ -88,7 +89,10 @@ interface ActiveTurn {
   readonly reasoning: Map<string, string>;
   readonly requestedBy: HarnessRunInput["requestedBy"];
   readonly runId: HarnessRunInput["runId"];
+  /** Calls this turn announced and has not finished, keyed by node scope and call id. */
   readonly tools: Map<string, AcpToolCall>;
+  /** Calls this turn finished. A finished call absorbs every later frame for it. */
+  readonly finishedTools: Set<string>;
   assistantHoldActive: boolean;
   heldAssistantCharacters: number;
   interruptRequested: boolean;
@@ -164,6 +168,8 @@ class AcpHarnessSession implements HarnessSession {
   readonly #process: SupervisedProcess;
   readonly #publisher: TurnPublisher;
   readonly #pending = new Map<RequestId, PendingInteraction>();
+  /** Calls earlier turns announced, so a frame an engine sends late cannot reopen them. */
+  readonly #endedTools = new Set<string>();
   readonly #stderrSecrets: readonly string[];
   readonly #networkSecrets: readonly string[];
   #stderr = "";
@@ -302,6 +308,7 @@ class AcpHarnessSession implements HarnessSession {
       terminal: false,
       stderrStart: this.#stderrPosition(),
       tools: new Map(),
+      finishedTools: new Set(),
     };
     this.#active = active;
     const abort = () => {
@@ -378,6 +385,9 @@ class AcpHarnessSession implements HarnessSession {
     } finally {
       run.signal.removeEventListener("abort", abort);
       if (this.#active === active) this.#active = undefined;
+      // A call belongs to the Run that announced it; the Host settles any it left open.
+      for (const key of [...active.tools.keys(), ...active.finishedTools])
+        this.#endedTools.add(key);
     }
   }
 
@@ -729,22 +739,38 @@ class AcpHarnessSession implements HarnessSession {
     }
   }
 
+  /**
+   * Turns an engine's tool frames into exactly one `tool.started` and at most
+   * one `tool.completed` per call. Engines resend frames for calls they
+   * already closed: Antigravity fails every open call on an unrelated step
+   * error and then announces those calls again, and carries background
+   * commands into later turns. So the first frame of a call starts it, a
+   * terminal frame finishes it, and a finished call, or one an earlier Run
+   * announced, takes nothing more.
+   */
   #applyTool(active: ActiveTurn, call: AcpToolCall, nodeKey?: string): void {
     const nodeId = nodeKey ? active.nodes.nodeId(nodeKey) : undefined;
     if (nodeKey && !nodeId) return;
     const toolKey = JSON.stringify([nodeKey ?? null, call.id]);
+    if (active.finishedTools.has(toolKey) || this.#endedTools.has(toolKey)) return;
     const earlier = active.tools.get(toolKey);
     const merged = { ...earlier, ...call };
-    active.tools.set(toolKey, merged);
-    const terminal = ["completed", "failed", "cancelled"].includes(merged.status ?? "");
+    const terminal = isTerminalAcpToolCall(merged);
+    if (terminal) {
+      active.tools.delete(toolKey);
+      active.finishedTools.add(toolKey);
+    } else {
+      active.tools.set(toolKey, merged);
+    }
     if (!earlier) {
-      if (nodeKey) active.nodes.progress(nodeKey, merged.title ?? merged.name ?? "Running tool");
+      if (nodeKey) active.nodes.progress(nodeKey, merged.title ?? "Running tool");
       this.#publish({
         data: {
           ...(nodeId ? { nodeId } : {}),
           arguments: merged.rawInput,
           callId: merged.id,
-          tool: { name: merged.name ?? merged.title ?? "tool", namespace: "acp" },
+          tool:
+            this.#options.hooks.toolIdentity?.(merged, this.#context) ?? acpToolIdentity(merged),
         },
         type: "tool.started",
       });
@@ -763,7 +789,6 @@ class AcpHarnessSession implements HarnessSession {
         },
         type: "tool.completed",
       });
-      active.tools.delete(toolKey);
     }
     for (const update of this.#options.hooks.toolUpdates?.(merged) ?? [])
       this.#applyUpdate(
@@ -1199,8 +1224,10 @@ export function normalizeAcpUpdate(update: unknown): readonly AcpNormalizedUpdat
         ? [{ kind: "thought", text: content.text }]
         : [];
     case "tool_call":
-    case "tool_call_update":
-      return [{ kind: "tool", toolCall: acpToolCall(update) }];
+    case "tool_call_update": {
+      const toolCall = parseAcpToolCall(update);
+      return toolCall ? [{ kind: "tool", toolCall }] : [];
+    }
     case "usage_update": {
       const usage = isRecord(update.usage) ? update.usage : update;
       const inputTokens = numberValue(usage.inputTokens);
@@ -1226,19 +1253,6 @@ export function normalizeAcpUpdate(update: unknown): readonly AcpNormalizedUpdat
     default:
       return [];
   }
-}
-
-function acpToolCall(update: Record<string, unknown>): AcpToolCall {
-  return {
-    id: typeof update.toolCallId === "string" ? update.toolCallId : "unknown-tool-call",
-    ...(Array.isArray(update.content) ? { content: update.content } : {}),
-    ...(typeof update.kind === "string" ? { kind: update.kind } : {}),
-    ...(typeof update.name === "string" ? { name: update.name } : {}),
-    ...(update.rawInput !== undefined ? { rawInput: update.rawInput } : {}),
-    ...(update.rawOutput !== undefined ? { rawOutput: update.rawOutput } : {}),
-    ...(typeof update.status === "string" ? { status: update.status } : {}),
-    ...(typeof update.title === "string" ? { title: update.title } : {}),
-  };
 }
 
 function mcpServers(context: HarnessSessionContext): readonly AcpMcpServer[] {

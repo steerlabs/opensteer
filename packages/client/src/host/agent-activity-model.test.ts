@@ -807,6 +807,36 @@ describe("a task's turn", () => {
     const failed = turns([run({ status: "failed" }), note, command("ls")])[0]!;
     expect(turnWords(failed)).toEqual([note]);
 
+    const unproven = activityFeedPresentation(
+      run({
+        error: {
+          code: "execution_termination_unproven",
+          message: "The Runner could not verify that all Run processes stopped.",
+          retryable: false,
+        },
+        status: "failed",
+      }),
+    );
+    expect(unproven.label).toBe("Couldn’t confirm this stopped");
+    expect(unproven.detail).toContain("may still be running on that device");
+
+    const retired = activityFeedPresentation(
+      run({
+        interruptedCause: "engine-retired",
+        status: "interrupted",
+      }),
+    );
+    expect(retired.label).toBe("Run cut short");
+    expect(retired.detail).toContain(
+      "end its shared engine to make sure another task had stopped; it will start again when work next needs it",
+    );
+    expect(retired.marker).toBe("stopped");
+
+    const stopped = activityFeedPresentation(run({ status: "interrupted" }));
+    expect(stopped.label).toBe("Run stopped.");
+    expect(stopped.detail).toBe("");
+    expect(stopped.marker).toBe("stopped");
+
     const joined = groupTranscriptEntries([
       run({ status: "running" }),
       command("ls"),
@@ -2803,4 +2833,22 @@ it("keeps one maintenance summary for completed, failed and interrupted Runs", (
       }).map(({ group }) => group.kind === "turn" && group.turn.run?.compaction),
     ).toEqual([entry.compaction]);
   }
+});
+
+describe("ACP engine steps", () => {
+  const present = (namespace: string, name: string, args: Record<string, unknown>) =>
+    toolPresentation(tool({ arguments: args, tool: { name, namespace } }));
+
+  it("reads Antigravity's native tools and the ACP kinds like every other engine's", () => {
+    expect(present("antigravity", "run_command", { command_line: "git status" })).toMatchObject({
+      command: "git status",
+      kind: "command",
+    });
+    expect(present("antigravity", "view_file", { absolute_path: "/a/notes.md" })).toMatchObject({
+      kind: "read",
+      paths: ["/a/notes.md"],
+    });
+    expect(present("acp", "execute", { command: "pwd" })).toMatchObject({ kind: "command" });
+    expect(present("acp", "edit", { path: "/a/b.ts" })).toMatchObject({ kind: "edit" });
+  });
 });

@@ -7,7 +7,6 @@ import {
   mockCloudComputerAddress,
   mockCloudComputerDeploymentId,
   mockCloudComputerId,
-  mockWorkAddress,
   type MockCloudComputerScene,
 } from "@opensteer/client/mock";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -88,7 +87,6 @@ afterEach(() => {
 });
 
 const cloudDeployment = mockCloudComputerDeploymentId;
-const workDeployment = "dep_00000000-0000-4000-8000-0000000000dd";
 
 async function open(
   scene: MockCloudComputerScene,
@@ -98,7 +96,7 @@ async function open(
     readonly account?: MockCloudComputerAccount;
   } = {},
 ) {
-  const account = options.account ?? new MockCloudComputerAccount(scene, workDeployment);
+  const account = options.account ?? new MockCloudComputerAccount(scene);
   const read = vi.spyOn(account, "read");
   const actSpy = vi.spyOn(account, "act");
   state.client = {
@@ -108,10 +106,7 @@ async function open(
     openDeployment: vi.fn(async () => undefined),
   };
   if (options.listed !== false)
-    state.rows = [
-      { deploymentId: cloudDeployment, origin: mockCloudComputerAddress },
-      { deploymentId: workDeployment, origin: mockWorkAddress },
-    ];
+    state.rows = [{ deploymentId: cloudDeployment, origin: mockCloudComputerAddress }];
   root = createRoot(document.body.appendChild(document.createElement("div")));
   await act(async () => root!.render(<CloudComputerScreen />));
   await vi.waitFor(() => expect(section("loading")).toBeUndefined());
@@ -154,6 +149,7 @@ describe("Opensteer Cloud Computer on the phone", () => {
     expect(row("website-checkout", "address")).toMatchObject({
       kind: "status",
       detail: "https://app.opensteer.example/cloud-computer/checkout",
+      addressIn: "detail",
     });
     expect(section("website-checkout")?.footer?.text).toContain(
       "Set up your Cloud Computer on the Opensteer website",
@@ -231,9 +227,13 @@ describe("Opensteer Cloud Computer on the phone", () => {
       label: "Running",
       tone: "good",
       detail: mockCloudComputerAddress,
+      addressIn: "detail",
     });
     expect(row("status", "ip").label).toBe("Browser IP · Assigned");
-    expect(row("status", "browser-address")).toMatchObject({ detail: "203.0.113.24" });
+    expect(row("status", "browser-address")).toMatchObject({
+      detail: "203.0.113.24",
+      addressIn: "detail",
+    });
     expect(row("status", "region")).toMatchObject({ detail: "Ashburn, Virginia" });
     // The plan by its name, never its price.
     expect(row("plan", "plan")).toMatchObject({
@@ -242,6 +242,7 @@ describe("Opensteer Cloud Computer on the phone", () => {
     });
     expect(row("website-billing", "address")).toMatchObject({
       detail: "https://app.opensteer.example/cloud-computer/billing",
+      addressIn: "detail",
     });
   });
 
@@ -333,48 +334,5 @@ describe("Opensteer Cloud Computer on the phone", () => {
   it("names no website it doesn't have", async () => {
     await open("none", { portalOrigin: null });
     expect(section("website-checkout")?.rows).toEqual([]);
-  });
-});
-
-describe("work Homes on the phone", () => {
-  const labels = (key: string) => section(key)?.rows.map((candidate) => candidate.label) ?? [];
-  const workKey = "work-was_00000000-0000-4000-8000-0000000000a1";
-  it("shows a work Home as its own card, with no billing, suspend or delete", async () => {
-    await open("work");
-    expect(section(workKey)?.title).toBe("Acme Robotics · Work Home");
-    expect(row(workKey, "status")).toMatchObject({ label: "Running", detail: mockWorkAddress });
-    expect(section(workKey)?.footer?.text).toBe(
-      "Managed by Acme Robotics: they pay for it and can suspend or delete it.",
-    );
-    expect(labels("work-policy-was_00000000-0000-4000-8000-0000000000a1")).toContain(
-      "Most a connected agent may do on its own: Supervised",
-    );
-    for (const key of [workKey, "work-policy-was_00000000-0000-4000-8000-0000000000a1"])
-      for (const word of ["Manage billing", "Suspend", "Delete Cloud Computer"])
-        expect(labels(key)).not.toContain(word);
-    // No personal one: the offer still shows, after the work Home, with no price.
-    expect(section("website-checkout")).toBeDefined();
-    expect(section("price")).toBeUndefined();
-  });
-
-  it("opens a work Home by the Home the Account pinned, and goes to what its organization can see", async () => {
-    await open("work");
-    await press(row(workKey, "open"));
-    const client = state.client as { openDeployment: ReturnType<typeof vi.fn> };
-    expect(client.openDeployment).toHaveBeenCalledWith(workDeployment);
-    await press(row("work-policy-was_00000000-0000-4000-8000-0000000000a1", "see"));
-    // The one page, read from inside the work Home, as Settings there opens it.
-    expect(state.navigate).toHaveBeenCalledWith("WorkHomePolicy", {
-      deploymentId: workDeployment,
-    });
-  });
-
-  it("shows both, or only the personal one when there is no work Home", async () => {
-    await open("both");
-    expect(section(workKey)).toBeDefined();
-    expect(row("plan", "plan").label).toBe("Opensteer Cloud Computer");
-    act(() => root?.unmount());
-    await open("ready");
-    expect(section(workKey)).toBeUndefined();
   });
 });

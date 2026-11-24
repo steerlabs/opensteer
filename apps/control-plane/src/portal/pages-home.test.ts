@@ -1,4 +1,4 @@
-import { cloudWords, orgWords } from "@opensteer/control-plane-protocol";
+import { cloudWords } from "@opensteer/control-plane-protocol";
 import { escapeHtml } from "@opensteer/shared/browserPage";
 import { describe, expect, it } from "vitest";
 import { accountDeletedBody, deleteAccountBody, placeRow, portalHomeBody } from "./pages.js";
@@ -11,23 +11,15 @@ const base = {
 };
 
 describe("the Account portal's home", () => {
-  it("offers a Cloud Computer and organizations to someone with no Opensteer yet, and with one", () => {
-    const empty = portalHomeBody({
-      ...base,
-      rows: [],
-      cloudComputerHref: "/cloud-computer",
-      organizationsHref: "/organizations",
-    });
+  it("offers a Cloud Computer to someone with no Opensteer yet, and with one", () => {
+    const empty = portalHomeBody({ ...base, rows: [], cloudComputerHref: "/cloud-computer" });
     expect(empty).toContain(`href="/cloud-computer">On an Opensteer Cloud Computer</a>`);
-    expect(empty).toContain(`href="/organizations">${escapeHtml(orgWords("org.title"))}</a>`);
     const listed = portalHomeBody({
       ...base,
       rows: ['<li class="place">Studio</li>'],
       cloudComputerHref: "/cloud-computer",
-      organizationsHref: "/organizations",
     });
     expect(listed).toContain(`href="/cloud-computer">${escapeHtml(cloudWords("cloud.title"))}</a>`);
-    expect(listed).toContain(`href="/organizations">${escapeHtml(orgWords("org.title"))}</a>`);
   });
 
   it("asks where an account's first Opensteer should live, with the price checkout sells", () => {
@@ -62,10 +54,9 @@ describe("the Account portal's home", () => {
     expect(body).not.toContain("location.");
   });
 
-  it("offers neither where this Account service has neither", () => {
+  it("offers no Cloud Computer where this Account service has none", () => {
     const body = portalHomeBody({ ...base, rows: [] });
     expect(body).not.toContain('href="/cloud-computer"');
-    expect(body).not.toContain('href="/organizations"');
   });
 });
 
@@ -98,15 +89,6 @@ describe("the page that deletes an Account", () => {
     expect(body).not.toContain("nothing more is charged");
     expect(body).not.toContain("refunds it in full");
     expect(body).not.toContain("then Opensteer");
-  });
-
-  it("keeps an Account whose work Home its organization hasn't offboarded, with no Delete", () => {
-    const body = deleteAccountBody({ ...base, workHomes: ["Acme"] });
-    expect(body).toContain(
-      escapeHtml("Ask your organization admin to offboard your work Cloud Computer first"),
-    );
-    expect(body).toContain("Acme");
-    expect(body).not.toContain("<form");
   });
 
   it("says once the Account is deleted that its Cloud Computer's deletion is being finished", () => {

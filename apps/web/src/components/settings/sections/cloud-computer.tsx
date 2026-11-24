@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import {
+  cloudComputerDeployments,
   cloudComputerEntryDetail,
   cloudComputerDeleteInput,
   cloudComputerWebsite,
   cloudWords,
   type CloudComputerDetail,
+  type CloudComputerStepView,
   type CloudComputerTone,
 } from "@opensteer/client/computers";
 import type { CloudComputerAccount } from "@opensteer/client/connections";
@@ -16,7 +18,6 @@ import { CopyBlock } from "../../copy-block.js";
 import { Dialog } from "../../dialog.js";
 import { Icon } from "../../icon.js";
 import { SectionHeader, SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
-import { SetupSteps, WorkHomeCards, WorkHomeRow, useWorkHomeBadge } from "./work-home.js";
 import { useHomeKind } from "../../devices/home-facts.js";
 
 export const cloudComputerPath = "/settings/account/cloud-computer";
@@ -146,7 +147,6 @@ export function CloudComputerPage() {
       {back}
       <SectionHeader title={cloudWords("cloud.title")} lead={cloudWords("cloud.lead")} />
       {screen.kind === "loading" ? <p role="status">{cloudWords("cloud.loading")}</p> : null}
-      <WorkHomeCards cards={cloud.work} />
       {screen.kind === "failed" ? (
         <AccountFailure
           kind={screen.failure.kind}
@@ -604,8 +604,6 @@ function ReadyActions({
  */
 export function HomeCloudComputerRow() {
   const { desktopDeployment, snapshot } = useShell();
-  const work = useWorkHomeBadge(desktopDeployment?.id);
-  if (work) return <WorkHomeRow card={work} />;
   const exposure = snapshot.identityConfig?.exposure;
   if (exposure !== "networked")
     return (
@@ -634,5 +632,34 @@ function NetworkedHomeCloudRow({ deploymentId }: { readonly deploymentId: string
         }
       />
     </SettingsGroup>
+  );
+}
+
+/**
+ * The listed Homes the Account says are Opensteer Cloud Computers, for a list of places; null
+ * while the Account's read hasn't answered (or failed, or there is no Account here).
+ */
+export function usePlaceCloudComputers(
+  bridge: OpensteerDesktopBridge | null | undefined,
+): ReadonlySet<string> | null {
+  const account = useMemo(() => cloudComputerAccountFor(bridge), [bridge]);
+  const views = useCloudComputer(account).views;
+  // Null until the Account answered: no list then says which Homes are not Cloud Computers.
+  return useMemo(() => (views === null ? null : cloudComputerDeployments(views)), [views]);
+}
+
+export function SetupSteps({ steps }: { readonly steps: readonly CloudComputerStepView[] }) {
+  return (
+    <ol className="connected-agent__steps">
+      {steps.map((step) => (
+        <li data-state={step.state} key={step.id}>
+          <span aria-hidden />
+          {step.label}
+          {step.state === "failed" ? (
+            <span className="visually-hidden"> — {cloudWords("cloud.step.failed")}</span>
+          ) : null}
+        </li>
+      ))}
+    </ol>
   );
 }

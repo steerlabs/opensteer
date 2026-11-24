@@ -3,7 +3,7 @@ import { opencodeLightModelFamilies } from "@opensteer/core";
 import { resolveLightModel, type HarnessLog } from "@opensteer/harness";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { isRecord } from "@opensteer/shared/isRecord";
-import { redactUrlCredentials } from "@opensteer/shared/safeMessage";
+import { engineDiagnosticSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import { pathToFileURL } from "node:url";
 import {
   attachmentMaxBytes,
@@ -141,19 +141,11 @@ import {
   opencodeZenSourceId,
 } from "./sources.js";
 
-/**
- * OpenCode has no command sandbox of its own: its `bash` tool runs commands
- * straight through the user's shell, inheriting the server's whole environment
- * — both verified live (opencode-facts §11, and a Run asked to print its own
- * environment). Nothing the Runner puts in the harness process tree is
- * therefore private from the model, and the Runner's outer sandbox binds the
- * account's provider home and the Thread's state directory into that tree, so
- * on an isolated-service Runner one tenant's Run could read another account's
- * `auth.json` and this Run's tool tokens. The engine is offered only where the
- * Runner belongs to the one person whose credentials those are.
- */
-const opencodeNativeUserOnlyDetail =
-  "OpenCode has no command sandbox of its own, so it runs only on a computer where Opensteer runs as you.";
+// OpenCode has no command sandbox of its own: its `bash` tool runs commands
+// straight through the user's shell, inheriting the server's whole environment
+// (opencode-facts §11). Nothing in the harness process tree is private from the
+// model; the access mode's `permission` table is what stands between the model
+// and a command.
 
 const opencodeIsolatedProfileDetail =
   "An OpenCode account keeps its own private credential store, so it needs a private profile.";
@@ -210,7 +202,6 @@ export interface OpencodeHarnessDependencies {
 
 export class OpencodeHarnessDriver implements HarnessDriver {
   readonly kind = HarnessIdSchema.parse("opencode");
-  readonly isolatedServiceRefusal = opencodeNativeUserOnlyDetail;
   readonly sources = opencodeSources;
   /**
    * Three modes, each an explicit `permission` table. `auto` is not declared:
@@ -317,9 +308,6 @@ export class OpencodeHarnessDriver implements HarnessDriver {
         detail: `OpenCode does not offer the source ${context.sourceId}`,
         status: "unavailable",
       };
-    }
-    if (context.runtimeBoundary.kind !== "native-user") {
-      return { detail: opencodeNativeUserOnlyDetail, status: "unavailable" };
     }
     if (context.providerState.kind !== "isolated") {
       return { detail: opencodeIsolatedProfileDetail, status: "unavailable" };
@@ -586,8 +574,6 @@ class OpencodeHarnessAdapter implements HarnessAdapter {
     prompt,
     signal,
   }: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult> {
-    if (context.runtimeBoundary.kind !== "native-user")
-      return { ok: false, failure: "unavailable" };
     return backgroundTextResult(signal, async () => {
       const launch = this.#dependencies;
       if (!launch) throw new Error("OpenCode title launch is unavailable");
@@ -942,6 +928,7 @@ class OpencodeHarnessSession implements HarnessSession {
       requestedBy: run.requestedBy,
       retry: new ProviderRetryTracker({
         publish: (event) => this.#publish(event),
+        secrets: engineDiagnosticSecrets(this.#context.environment),
         onBudgetExceeded: (record) => {
           if (active.terminal || active.interruptRequested) return;
           active.interruptRequested = true;
@@ -988,6 +975,7 @@ class OpencodeHarnessSession implements HarnessSession {
     this.#activeTurn = active;
     const abort = () => {
       active.interruptRequested = true;
+      active.retry.dispose();
       this.#cancelImageGenerations(active);
       void this.#interruptActive(active);
     };
@@ -1073,6 +1061,7 @@ class OpencodeHarnessSession implements HarnessSession {
     const active = this.#activeTurn;
     if (!active || active.terminal) return;
     active.interruptRequested = true;
+    active.retry.dispose();
     this.#cancelImageGenerations(active);
     await this.#interruptActive(active);
   }
@@ -1175,9 +1164,6 @@ class OpencodeHarnessSession implements HarnessSession {
     mode: OpencodeSessionMode,
   ): Promise<void> {
     const context = this.#context;
-    if (context.runtimeBoundary.kind !== "native-user") {
-      throw new OpensteerError({ code: "forbidden", message: opencodeNativeUserOnlyDetail });
-    }
     if (context.providerState.kind !== "isolated") {
       throw new OpensteerError({ code: "forbidden", message: opencodeIsolatedProfileDetail });
     }
@@ -2322,7 +2308,11 @@ class OpencodeHarnessSession implements HarnessSession {
         runFailedEvent({
           code: opencodeFailureCode(error),
           message:
-            this.#server?.redactDiagnostic(error.message) ?? redactUrlCredentials(error.message),
+            this.#server?.redactDiagnostic(error.message) ??
+            redactNetworkCredentials(
+              error.message,
+              engineDiagnosticSecrets(this.#context.environment),
+            ),
           retryable: error.retryable,
         }),
       );
@@ -2376,6 +2366,7 @@ class OpencodeHarnessSession implements HarnessSession {
     const active = this.#activeTurn;
     if (active && !active.terminal) {
       active.interruptRequested = true;
+      active.retry.dispose();
       this.#cancelImageGenerations(active);
       await this.#interruptActive(active).catch(() => undefined);
     }

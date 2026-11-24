@@ -97,7 +97,6 @@ function mainDescriptor(environmentId: string) {
         environmentIds: [environmentId],
         harnessDrivers: [],
         maxConcurrentRuns: 1,
-        providerStateModes: ["isolated"],
       },
     },
     name: "Hosting computer",

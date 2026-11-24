@@ -21,6 +21,8 @@ import {
   overlaps,
   reachable,
   textElement,
+  readingColumn,
+  textFaults,
 } from "../../test-support/yoga-frames.js";
 import { createThreadMutationGate } from "./thread-mutation-gate.js";
 
@@ -33,6 +35,20 @@ import { createThreadMutationGate } from "./thread-mutation-gate.js";
  */
 
 const geometry = vi.hoisted(() => ({ insets: { bottom: 0, left: 0, right: 0, top: 0 } }));
+/** What the last response came to, when a case says it failed: the sheet's own outcome line. */
+const responded = vi.hoisted(() => ({ failure: null as null | { key: string; text: string } }));
+vi.mock("./use-request-response.js", async (actual) => {
+  const real = await actual<typeof import("./use-request-response.js")>();
+  return {
+    ...real,
+    useRequestResponse: (input: Parameters<typeof real.useRequestResponse>[0]) => {
+      const responder = real.useRequestResponse(input);
+      if (responded.failure === null) return responder;
+      const failure = { ...responded.failure, tone: "danger" as const };
+      return { ...responder, session: { ...responder.session, failure } };
+    },
+  };
+});
 
 vi.mock(
   "react-native",
@@ -114,6 +130,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) act(() => root.unmount());
   document.body.replaceChildren();
   layoutWindow.fontScale = 1;
+  responded.failure = null;
 });
 
 const card = mockCardUseRequest({ index: 4, site: "https://shop.example.com" });
@@ -204,6 +221,10 @@ async function draw(phone: LayoutPhone, fontScale: number, request: Request, rea
   const frames = await layout(container, phone.window);
   // A layout that never comes to rest is a measure loop: the phone's main thread stays busy.
   expect(frames.settled, "the layout never comes to rest").toBe(true);
+  expect(
+    textFaults(frames, { column: readingColumn(phone) }),
+    "a text a person reads is broken or cut",
+  ).toEqual([]);
   return { container, frames };
 }
 
@@ -274,4 +295,28 @@ describe("the saved login and card sheets", () => {
             true,
           );
         });
+});
+
+describe("a response that didn't go through, on the sheet", () => {
+  const sentence = "Couldn't use the saved card. Check that this phone is online, then try again.";
+  for (const phone of layoutPhones)
+    for (const fontScale of layoutTextSizes)
+      it(`says so whole on ${phone.name} at text size ${fontScale}`, async () => {
+        responded.failure = { key: "use-failed", text: sentence };
+        const { container, frames } = await draw(phone, fontScale, card, reads.card);
+        const text = textElement(container, sentence);
+        expect(frames.cut(text), "the failure is cut").toBe(false);
+        expect(frames.shown(text), "the failure is cut").toBe(sentence);
+        if (phone.insets.right > 0)
+          expect(
+            overlaps(frames.frame(text), {
+              height: phone.window.height,
+              width: phone.insets.right,
+              x: phone.window.width - phone.insets.right,
+              y: 0,
+            }),
+            "the vertical bar covers the failure",
+          ).toBe(false);
+        expect(reachable(frames, text, phone.window), "the failure can't be reached").toBe(true);
+      });
 });

@@ -57,23 +57,23 @@ type MockIdentity = {
   readonly identityAtConsent: AgentConnectionIdentityAtConsent;
   readonly identity: AgentConnectionIdentityPresentation;
 };
-function verifiedPlatform(id: string, name: string, origin: string): MockIdentity {
+function verifiedOrigin(id: string, name: string, origin: string): MockIdentity {
   return {
     identityAtConsent: {
-      kind: "platform",
-      platformOrigin: origin,
-      platformDirectoryId: id,
-      platformName: name,
+      kind: "verified",
+      origin,
+      directoryId: id,
+      displayName: name,
       directoryRevision: 3,
       recordedAt,
     },
     identity: {
-      evidenceKind: "platform",
+      evidenceKind: "verified",
       verified: true,
       selfAsserted: false,
       heading: name,
       detail: origin,
-      origins: [{ role: "platform", label: name, origin }],
+      origins: [{ role: "verified", label: name, origin }],
       warning,
     },
   };
@@ -106,32 +106,11 @@ function selfNamed(
     },
   };
 }
-const errandViaAgentPay: MockIdentity = {
-  identityAtConsent: {
-    kind: "platform-and-embedder",
-    platformOrigin: "https://agentpay.example",
-    platformDirectoryId: "agentpay",
-    platformName: "AgentPay",
-    embedderOrigin: "https://errand.example",
-    embedderDirectoryId: "errand",
-    embedderName: "Errand",
-    keyThumbprint: "a".repeat(43),
-    directoryRevision: 3,
-    recordedAt,
-  },
-  identity: {
-    evidenceKind: "platform-and-embedder",
-    verified: true,
-    selfAsserted: false,
-    heading: "Errand via AgentPay",
-    detail: "Errand asked for this. AgentPay will hold the access.",
-    origins: [
-      { role: "embedder", label: "Errand", origin: "https://errand.example" },
-      { role: "platform", label: "AgentPay", origin: "https://agentpay.example" },
-    ],
-    warning,
-  },
-};
+const verifiedAgentPay: MockIdentity = verifiedOrigin(
+  "agentpay",
+  "AgentPay",
+  "https://agentpay.example",
+);
 
 function agent(input: {
   readonly n: number;
@@ -175,7 +154,7 @@ function agent(input: {
 }
 
 /** Who a mock agent is, as a Home records and presents it, for fixtures elsewhere. */
-export const mockAgentIdentity = { verifiedPlatform, selfNamed } as const;
+export const mockAgentIdentity = { verifiedOrigin, selfNamed } as const;
 
 const slackAccount = "cha_00000000-0000-4000-8000-0000000000c1";
 const slackChannel = "con_00000000-0000-4000-8000-0000000000c1";
@@ -444,7 +423,7 @@ export function mockConnectedAgents(
       n: 2,
       label: "Claude",
       origin: "https://claude.ai",
-      who: verifiedPlatform("claude", "Claude", "https://claude.ai"),
+      who: verifiedOrigin("claude", "Claude", "https://claude.ai"),
       accessMode: "full-access",
       grant: { scope: "everything" },
       lastUsedMinutes: 3 * 24 * 60,
@@ -483,7 +462,7 @@ export function mockConnectedAgents(
       n: 6,
       label: "Errand",
       origin: "https://agentpay.example",
-      who: errandViaAgentPay,
+      who: verifiedAgentPay,
       accessMode: "approval-required",
       grant: { scope: "selected", tasks: false, resources: [] },
       lastUsedMinutes: 90,
@@ -503,7 +482,7 @@ export function mockConnectedAgents(
       n: 8,
       label: "ChatGPT",
       origin: "https://chatgpt.com",
-      who: verifiedPlatform("chatgpt", "ChatGPT", "https://chatgpt.com"),
+      who: verifiedOrigin("chatgpt", "ChatGPT", "https://chatgpt.com"),
       accessMode: "approval-required",
       grant: { scope: "selected", tasks: false, resources: [] },
       lastUsedMinutes: 5 * 24 * 60,
@@ -556,13 +535,13 @@ export function mockConnectedAgents(
       ? {
           clientName: "Claude",
           redirect: "https://claude.ai/api/mcp/auth_callback",
-          ...verifiedPlatform("claude", "Claude", "https://claude.ai"),
+          ...verifiedOrigin("claude", "Claude", "https://claude.ai"),
         }
       : scene === "pair"
         ? {
             clientName: "Errand",
             redirect: "https://agentpay.example/oauth/callback",
-            ...errandViaAgentPay,
+            ...verifiedAgentPay,
           }
         : scene === "local"
           ? {

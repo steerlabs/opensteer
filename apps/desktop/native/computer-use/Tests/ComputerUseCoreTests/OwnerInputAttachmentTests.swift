@@ -25,7 +25,7 @@ final class OwnerInputAttachmentTests: XCTestCase {
       XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
       let connection = IPCConnection(id: 42, fileDescriptor: pair[0], onFrame: { _, _ in }, onClose: { _ in })
       defer { connection.close(); Darwin.close(pair[1]) }
-      var params: [String: Any] = ["protocolVersion": 10, "ownerViewVersion": 3]
+      var params: [String: Any] = ["protocolVersion": 11, "ownerViewVersion": 3]
       if let offer { params["ownerInputVersion"] = offer; params["videoProfile"] = offer }
       let frame = try JSONSerialization.data(withJSONObject: ["id": 0, "method": "hello", "params": params])
       await runtime.handle(connection: connection, frame: frame)
@@ -53,7 +53,7 @@ final class OwnerInputAttachmentTests: XCTestCase {
     var pair: [Int32] = [0, 0]
     XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
     let connection = IPCConnection(id: 77, fileDescriptor: pair[0], onFrame: { _, _ in }, onClose: { _ in })
-    connection.markGreeted(protocolVersion: 10, ownerInputVersion: 2)
+    connection.markGreeted(protocolVersion: 11, ownerInputVersion: 2)
     defer { connection.close(); Darwin.close(pair[1]) }
     let binding = await Task { @WorkActor in
       MacVideoBinding(OwnerViewWindow.Binding(target: CaptureTarget(observationId: "fixture",

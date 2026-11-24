@@ -137,7 +137,7 @@ export function automationRow(
 /** What a watch is doing now, as the web says it: only a running watch reads as active. */
 function watchTrailing(watch: ScheduleItem["watch"]): AutomationRowTrailing {
   if (watch === null) return null;
-  const state = watchState(watch.observed);
+  const state = watchState(watch.observed, watch.contactLostAt);
   return {
     kind: "state",
     text: state.text,

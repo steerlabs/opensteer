@@ -8,6 +8,7 @@ import type { z } from "zod";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { RunnerAuxiliaryFrameFence, DeviceScreenDriverAssignment } from "@opensteer/protocol";
 import {
+  displayFirstFrameTimeoutMs,
   DisplayStreamIdSchema,
   encodeDisplayMediaFrame,
   IphoneScreenObservationResultSchema,
@@ -1007,7 +1008,8 @@ it("relays binary frames and ACKs, forwards owner input and power, and closes bo
     ] as const) {
       f.bridge.replies.set(method, async (params) => {
         methods.push([method, params]);
-        if (method === "iphone.display.start") return { attachmentToken: "synthetic-token" };
+        if (method === "iphone.display.start")
+          return { attachmentToken: "synthetic-token", demandActive: true };
         if (method === "iphone.display.input" || method === "iphone.display.power")
           return { outcome: "dispatched" };
         return {};
@@ -1127,7 +1129,7 @@ it("relays binary frames and ACKs, forwards owner input and power, and closes bo
     await vi.waitFor(() =>
       expect(methods).toEqual([
         ["iphone.display.start", { ...ref, maxFps: 30, maxLongSide: 1280 }],
-        ["iphone.display.demand", { ...ref, maxLongSide: 960 }],
+        ["iphone.display.demand", { ...ref, maxLongSide: 960, active: true }],
         ["iphone.display.refresh", ref],
         ["iphone.display.input", { ...ref, geometry: 2, sequence: 0, events }],
         ["iphone.display.inputReset", ref],
@@ -1325,6 +1327,7 @@ it("does not fail a live display stream when a best-effort display.refresh reque
     let demandCalls = 0;
     f.bridge.replies.set("iphone.display.start", async () => ({
       attachmentToken: "synthetic-token",
+      demandActive: true,
     }));
     f.bridge.replies.set("iphone.display.refresh", async () => {
       refreshCalls++;
@@ -1374,6 +1377,308 @@ it("does not fail a live display stream when a best-effort display.refresh reque
       ),
     ).toEqual([]);
   } finally {
+    await f.driver.shutdown();
+    await Promise.all(
+      [host.server, desktop.server].map((server) => {
+        for (const client of server.clients) client.terminate();
+        return new Promise<void>((resolve) => server.close(() => resolve()));
+      }),
+    );
+  }
+});
+
+it("forwards active viewer demand and preserves agent observations across demand pause/resume", async () => {
+  const host = await listenForDisplay();
+  const desktop = await listenForDisplay();
+  const f = fixture({ hostOrigin: new URL(host.origin), mode: "development" });
+  f.bridge.capabilities = fullCapabilities;
+  try {
+    const ref = {
+      deviceId: f.a.deviceId,
+      driverGeneration: 1,
+      streamId: DisplayStreamIdSchema.parse(`dsp_${randomUUID()}`),
+    };
+    const source = {
+      kind: "owner-view" as const,
+      viewId: ComputerViewIdSchema.parse(`cvw_${randomUUID()}`),
+      generation: 1,
+    };
+    const demands: unknown[] = [];
+    f.bridge.replies.set("iphone.display.start", async () => ({
+      attachmentToken: "synthetic-token",
+      demandActive: true,
+    }));
+    f.bridge.replies.set("iphone.display.demand", async (params) => {
+      demands.push(params);
+      return {};
+    });
+    f.bridge.replies.set("iphone.display.stop", async () => ({}));
+    f.bridge.openVideoAttachment.mockImplementation(() => new WebSocket(desktop.origin));
+    const hostConnected = once(host.server, "connection");
+    const desktopConnected = once(desktop.server, "connection");
+    f.connection.display({
+      ...ref,
+      type: "host.integrations.display.start",
+      display: "main",
+      revision: 1,
+      sources: [source],
+      inputSources: [source],
+      phoneOwnerControl: 1,
+      dataTicket: "synthetic.data.ticket",
+      maxFps: 30,
+      maxLongSide: 1280,
+    });
+    await Promise.all([hostConnected, desktopConnected]);
+
+    // Agent holds a valid observation on the phone while the stream is live at 200x400 rot 0.
+    const emitDisplayState = (
+      params: Extract<
+        Parameters<typeof f.bridge.events extends Set<infer L> ? L : never>[0],
+        { event: "iphone.displayState" }
+      >["params"],
+    ) => {
+      for (const listener of f.bridge.events)
+        listener({ kind: "event", event: "iphone.displayState", params });
+    };
+    emitDisplayState({
+      ...ref,
+      state: "live",
+      generation: 1,
+      width: 200,
+      height: 400,
+      rotation: 0,
+    });
+    const context = f.context();
+    const { observation } = await f.observe(context, observeParams);
+
+    // Zero viewers pauses demand (active: false); paused/resume with identical geometry keeps agent observation valid.
+    f.connection.display({
+      ...ref,
+      display: "main",
+      type: "host.integrations.display.demand",
+      revision: 2,
+      sources: [],
+      inputSources: [],
+    });
+    emitDisplayState({
+      ...ref,
+      state: "protected",
+      reason: "paused",
+      generation: 2,
+      width: 0,
+      height: 0,
+      rotation: 0,
+    });
+    f.connection.display({
+      ...ref,
+      display: "main",
+      type: "host.integrations.display.demand",
+      revision: 3,
+      sources: [source],
+      inputSources: [source],
+    });
+    emitDisplayState({
+      ...ref,
+      state: "starting",
+      generation: 3,
+      width: 0,
+      height: 0,
+      rotation: 0,
+    });
+    emitDisplayState({
+      ...ref,
+      state: "live",
+      generation: 3,
+      width: 200,
+      height: 400,
+      rotation: 0,
+    });
+    await vi.waitFor(() => expect(demands).toHaveLength(2));
+    expect(demands).toEqual([
+      { ...ref, active: false },
+      { ...ref, active: true },
+    ]);
+
+    // Agent can still act on its prior observation after viewer demand pause/resume with unchanged geometry.
+    const acted = await f.connection.act(context, {
+      observationId: observation.observationId,
+      includeScreenshot: false,
+      actions: [{ type: "tap", count: 1, target: { x: 10, y: 10 } }],
+    });
+    expect(acted.error).toBeNull();
+
+    // A same-rotation dimension resize during pause MUST invalidate the cached observation on live.
+    emitDisplayState({
+      ...ref,
+      state: "protected",
+      reason: "paused",
+      generation: 4,
+      width: 0,
+      height: 0,
+      rotation: 0,
+    });
+    emitDisplayState({
+      ...ref,
+      state: "starting",
+      generation: 5,
+      width: 0,
+      height: 0,
+      rotation: 0,
+    });
+    emitDisplayState({
+      ...ref,
+      state: "live",
+      generation: 5,
+      width: 300,
+      height: 600,
+      rotation: 0,
+    });
+    const resizedStale = await f.connection.act(context, {
+      observationId: acted.observation!.observationId,
+      includeScreenshot: false,
+      actions: [{ type: "tap", count: 1, target: { x: 10, y: 10 } }],
+    });
+    expect(resizedStale.error?.code).toBe("stale-observation");
+
+    // Re-observe, then verify a real privacy lock MUST still invalidate the agent's cached observation.
+    const { observation: obs2 } = await f.observe(context, observeParams);
+    emitDisplayState({
+      ...ref,
+      state: "protected",
+      reason: "locked-screen",
+      generation: 6,
+      width: 0,
+      height: 0,
+      rotation: 0,
+    });
+    const stale = await f.connection.act(context, {
+      observationId: obs2.observationId,
+      includeScreenshot: false,
+      actions: [{ type: "tap", count: 1, target: { x: 10, y: 10 } }],
+    });
+    expect(stale.error?.code).toBe("stale-observation");
+  } finally {
+    await f.driver.shutdown();
+    await Promise.all(
+      [host.server, desktop.server].map((server) => {
+        for (const client of server.clients) client.terminate();
+        return new Promise<void>((resolve) => server.close(() => resolve()));
+      }),
+    );
+  }
+});
+
+it("omits active demand for legacy Desktop and rearms first-frame timeout after pause before first frame", async () => {
+  vi.useFakeTimers();
+  const host = await listenForDisplay();
+  const desktop = await listenForDisplay();
+  const f = fixture({ hostOrigin: new URL(host.origin), mode: "development" });
+  try {
+    const ref = {
+      deviceId: f.a.deviceId,
+      driverGeneration: 1,
+      streamId: DisplayStreamIdSchema.parse(`dsp_${randomUUID()}`),
+    };
+    const source = {
+      kind: "owner-view" as const,
+      viewId: ComputerViewIdSchema.parse(`cvw_${randomUUID()}`),
+      generation: 1,
+    };
+    const demands: unknown[] = [];
+    // Legacy Desktop reply: omits demandActive.
+    f.bridge.replies.set("iphone.display.start", async () => ({
+      attachmentToken: "synthetic-token",
+    }));
+    f.bridge.replies.set("iphone.display.demand", async (params) => {
+      demands.push(params);
+      return {};
+    });
+    f.bridge.replies.set("iphone.display.stop", async () => ({}));
+    f.bridge.openVideoAttachment.mockImplementation(() => new WebSocket(desktop.origin));
+    const hostConnected = once(host.server, "connection");
+    const desktopConnected = once(desktop.server, "connection");
+    f.connection.display({
+      ...ref,
+      type: "host.integrations.display.start",
+      display: "main",
+      revision: 1,
+      sources: [source],
+      inputSources: [source],
+      phoneOwnerControl: 1,
+      dataTicket: "synthetic.data.ticket",
+      maxFps: 30,
+      maxLongSide: 1280,
+    });
+    await Promise.all([hostConnected, desktopConnected]);
+
+    // Pause before any media frame arrives: no active field sent to legacy Desktop, timer suspended.
+    f.connection.display({
+      ...ref,
+      display: "main",
+      type: "host.integrations.display.demand",
+      revision: 2,
+      sources: [],
+      inputSources: [],
+    });
+    for (const listener of f.bridge.events)
+      listener({
+        kind: "event",
+        event: "iphone.displayState",
+        params: {
+          ...ref,
+          state: "protected",
+          reason: "paused",
+          generation: 2,
+          width: 0,
+          height: 0,
+          rotation: 0,
+        },
+      });
+    await vi.advanceTimersByTimeAsync(displayFirstFrameTimeoutMs + 100);
+    expect(
+      f.events.some(
+        (event) => event.type === "runner.integrations.display.state" && event.state === "failed",
+      ),
+    ).toBe(false);
+
+    // Resume demand with maxLongSide: legacy Desktop receives maxLongSide WITHOUT active, and timer rearms.
+    f.connection.display({
+      ...ref,
+      display: "main",
+      type: "host.integrations.display.demand",
+      revision: 3,
+      sources: [source],
+      inputSources: [source],
+      maxLongSide: 960,
+    });
+    for (const listener of f.bridge.events)
+      listener({
+        kind: "event",
+        event: "iphone.displayState",
+        params: {
+          ...ref,
+          state: "starting",
+          generation: 3,
+          width: 0,
+          height: 0,
+          rotation: 0,
+        },
+      });
+    await vi.waitFor(() => expect(demands).toHaveLength(1));
+    expect(demands).toEqual([{ ...ref, maxLongSide: 960 }]);
+
+    // If no frame arrives after resuming into starting, capture-timeout fires.
+    await vi.advanceTimersByTimeAsync(displayFirstFrameTimeoutMs + 100);
+    expect(
+      f.events.some(
+        (event) =>
+          event.type === "runner.integrations.display.state" &&
+          event.state === "failed" &&
+          event.reason === "capture-timeout",
+      ),
+    ).toBe(true);
+  } finally {
+    vi.useRealTimers();
     await f.driver.shutdown();
     await Promise.all(
       [host.server, desktop.server].map((server) => {

@@ -267,6 +267,11 @@ export const PooledBrowserAttachTicketClaimsSchema = BrowserAttachTicketClaimsSc
     instance: z.uuid(),
     epoch: z.number().int().positive(),
     attachment: z.number().int().positive().optional(),
+    /**
+     * Only ends this session (the Home's end request, never an attach): the runtime tears it
+     * down without reviving it, and refuses the ticket on every attach.
+     */
+    end: z.literal(true).optional(),
   }),
 });
 type PooledBrowserAttachTicketClaims = z.infer<typeof PooledBrowserAttachTicketClaimsSchema>;
@@ -1459,6 +1464,11 @@ export const HostedBrowserSessionSchema = z.object({
   profileId: BrowserProfileIdSchema.nullable(),
   runtimeId: z.string().min(1).max(255),
   state: HostedBrowserSessionStateSchema,
+  /**
+   * W15: Stop never got its replaced browser's confirmation; kept closing honestly until the
+   * person removes it from their list.
+   */
+  closeUnconfirmed: z.literal(true).optional(),
   attachedRunIds: z.array(RunIdSchema).max(browserSessionMaxAttachedRuns).optional(),
   /**
    * An agent is acting in this browser now: it sent a command within the last
@@ -1482,6 +1492,7 @@ export const AgentBrowserSessionSummarySchema = HostedBrowserSessionSchema.omit(
   navigationVersion: true,
   tabRestoreVersion: true,
   acting: true,
+  closeUnconfirmed: true,
   opener: true,
   attachedRunIds: true,
   page: true,
@@ -1535,6 +1546,26 @@ export const BrowserPoolReportSchema = z.object({
       }),
     )
     .max(500)
+    .optional(),
+  /**
+   * Why the browser cannot be used now, while it cannot: `setting-up` (no browser placed yet, or
+   * a new place awaited), `egress-required`, `profile-disk-missing`, `unreachable` (nothing has
+   * answered for long), or a reason this client does not know. Optional; a released client
+   * ignores it.
+   */
+  notReady: z.object({ reason: z.string().min(1).max(64) }).optional(),
+  /**
+   * W15: sessions of a replaced browser whose Stop never confirmed, with their open tabs, until
+   * the person removes them from their list.
+   */
+  unconfirmedClosings: z
+    .array(
+      z.object({
+        sessionId: BrowserSessionIdSchema,
+        surfaceIds: z.array(z.string().min(1).max(200)).max(128),
+      }),
+    )
+    .max(128)
     .optional(),
 });
 export type BrowserPoolReportView = z.infer<typeof BrowserPoolReportSchema>;

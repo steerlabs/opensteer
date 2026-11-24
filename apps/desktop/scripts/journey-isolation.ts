@@ -32,7 +32,10 @@ export const JOURNEY_NAMES = [
   "passkeys",
   "electron",
   "live-swift",
+  "first-run",
 ] as const;
+/** Journeys that run only when named: each one's case is not part of every run. */
+export const NAMED_ONLY_JOURNEYS: readonly string[] = ["first-run"];
 export const JOURNEY_TMP_PREFIX = "/tmp/oj-";
 const RUN_ID_PATTERN = /^\d{8}T\d{6}Z-([a-f0-9]{8})$/;
 export function journeyTemporaryDirectory(runId: string, journey: string): string {

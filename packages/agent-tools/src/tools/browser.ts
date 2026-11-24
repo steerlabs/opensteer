@@ -27,59 +27,6 @@ export const browser_profile_list = defineAgentTool({
   callers: ["run", "program", "connection"] as const,
 });
 
-export const browser_profile_update = defineAgentTool({
-  name: "browser_profile_update",
-  title: "Rename a browser profile",
-  description: "Rename one of the person's browser profiles.",
-  input: z.strictObject({
-    profileId: BrowserProfileIdSchema,
-    name: z.string().trim().min(1).max(120),
-  }),
-  output: z.object({
-    ok: z.literal(true),
-    profile: z.object({ id: BrowserProfileIdSchema, name: z.string() }).optional(),
-  }),
-  access: "settings",
-  callers: ["run", "connection"] as const,
-});
-
-export const browser_profile_remove = defineAgentTool({
-  name: "browser_profile_remove",
-  title: "Remove browser data",
-  description:
-    "Delete a browser profile, clear its history, remove one history URL, or forget a remembered site so its cookies are no longer copied. New profiles, sign-in and pairing need the person.",
-  input: z
-    .strictObject({
-      target: z.enum(["profile", "history", "history_url", "site"]),
-      profileId: BrowserProfileIdSchema.optional().describe(
-        "profile, history and history_url: the profile.",
-      ),
-      url: z.string().min(1).max(2048).optional().describe("history_url: the exact URL."),
-      site: z.string().min(1).max(2048).optional().describe("site: the remembered site."),
-    })
-    .superRefine((input, context) => {
-      const needs = {
-        profileId: input.target !== "site",
-        url: input.target === "history_url",
-        site: input.target === "site",
-      };
-      for (const [field, needed] of Object.entries(needs))
-        if (needed !== (input[field as keyof typeof needs] !== undefined))
-          context.addIssue({
-            code: "custom",
-            message: needed ? `${field} is required for this target` : `${field} is not used`,
-            path: [field],
-          });
-    }),
-  output: z.object({
-    ok: z.literal(true),
-    deletion: z.object({ profileId: BrowserProfileIdSchema, state: z.string() }).optional(),
-  }),
-  access: "settings",
-  callers: ["run", "connection"] as const,
-  destructive: true,
-});
-
 export const card_request = defineAgentTool({
   name: "card_request",
   opensRequest: true,
@@ -168,7 +115,7 @@ export const browser_profile_request = defineAgentTool({
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: RequestCreationOutputSchema,
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
 });
 
 /** Where a connected agent's browser work happens: a tab it can see, or a profile shared with it. */
@@ -224,8 +171,6 @@ export const browserTools = [
   browser_use,
   browser_connect,
   browser_profile_list,
-  browser_profile_update,
-  browser_profile_remove,
   browser_profile_request,
   saved_login_request,
   chrome_cookies_request,

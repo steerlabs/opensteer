@@ -54,6 +54,32 @@ export interface PageCapturePort {
   subscribe(listener: () => void): () => void;
 }
 
+/**
+ * A page's navigations as its browser side sees them. Chromium reports a commit to the page's own
+ * session (Page.frameNavigated) before its browser side takes commands for that document ("Not
+ * attached to an active page"), and a tab opened with an address takes none until its first
+ * document commits there.
+ */
+export interface PageNavigationPort {
+  read(): {
+    /** Navigations it finished since the page opened: after each, its document takes commands. */
+    readonly finished: number;
+    /** A main-frame navigation to another document started and has not ended. */
+    readonly pending: boolean;
+    /** The document it last finished is the blank one a page opens with, or there is none yet. */
+    readonly blankDocument: boolean;
+  };
+  /** Called after each change. */
+  subscribe(listener: () => void): () => void;
+}
+
+/**
+ * The event an engine sends on a page session when it ended that session's casts itself (a
+ * renderer gone, a debugger detached), which Chromium does not report: the follow view then knows
+ * nothing runs there.
+ */
+export const screencastEndedEvent = "Opensteer.screencastEnded";
+
 export type KeepAwakeReason =
   | "upload"
   | "post"
@@ -97,6 +123,8 @@ export interface BrowserPage {
   hasOpenerAccess?(): boolean | Promise<boolean>;
   readonly cursor?: import("./cursor-hints.js").NativePageCursor;
   readonly capture?: PageCapturePort;
+  /** An engine without it is taken to accept commands for a document once it commits. */
+  readonly navigations?: PageNavigationPort;
   /**
    * Observes compositing after geometry acknowledgement, outside its lock.
    * Electron cannot identify the metrics revision of those pixels: an already
@@ -117,7 +145,7 @@ export interface BrowserPage {
    * `Page.captureScreenshot` with a clip, or on a channel holding emulation:
    * Chromium then resizes the view for the capture and a person watches it shrink.
    */
-  captureViewport(request: ViewportCaptureRequest): Promise<ViewportCapture>;
+  captureViewport(request: ViewportCaptureRequest, signal?: AbortSignal): Promise<ViewportCapture>;
   /** Native bounds share the ledger's serialization and held-input release barrier. */
   bindGeometry?(
     serialize: (operation: () => Promise<void>) => Promise<void>,

@@ -62,6 +62,9 @@ import type {
   TabServicePort,
 } from "./ports.js";
 
+/** A last admission, run in the transaction that makes the change (an approved proposal's). */
+type TabReadmit = (transaction: TabDatabase) => Promise<void>;
+
 export interface PageTabsPort {
   open(
     actor: TabActor,
@@ -881,6 +884,14 @@ export class TabService implements TabServicePort {
           : null,
     };
   }
+  /** An authorization that also runs an approved proposal's last admission, in the same transaction. */
+  #readmitting(authorize: TabAuthorization, readmit: TabReadmit | undefined): TabAuthorization {
+    if (!readmit) return authorize;
+    return async (tx, rows, layout, replayed) => {
+      await authorize(tx, rows, layout, replayed);
+      await readmit(tx);
+    };
+  }
   #authorize(
     actor: TabActor,
     ids: readonly TabId[],
@@ -1209,15 +1220,15 @@ export class TabService implements TabServicePort {
     actor: TabActor,
     groupId: TabGroupId,
     key: string,
+    readmit?: TabReadmit,
   ): Promise<TabCloseResult & { groupClosed: boolean; layout: TabLayout }> {
-    const failed: TabCloseResult["failed"] = [],
-      permitted = new Set<TabId>(),
+    const permitted = new Set<TabId>(),
       cleanup: { row: TabRecord; closePage: boolean }[] = [];
     const result = await this.options.store.closeGroup(
       owner(actor),
       groupId,
       operationKey(actor, key),
-      async (tx, rows, layout) => {
+      this.#readmitting(async (tx, rows, layout) => {
         const item = layout.items.find(
           (item) => item.kind === "group" && item.group.groupId === groupId,
         );
@@ -1226,17 +1237,7 @@ export class TabService implements TabServicePort {
         const denied = (await this.options.deniedRows?.(actor, rows, tx)) ?? new Set<TabId>();
         for (const tabId of item.group.tabIds) {
           const row = rows.find((row) => row.id === tabId);
-          if (!row || row.ownerId !== owner(actor) || denied.has(row.id)) {
-            failed.push({
-              tabId,
-              error: normalizeToolError({
-                code: "not_found",
-                message: "This tab is no longer in the list.",
-                next: null,
-              }),
-            });
-            continue;
-          }
+          if (!row || row.ownerId !== owner(actor) || denied.has(row.id)) continue;
           const task =
             row.pageBinding && row.openedBy && row.openedBy !== "person"
               ? await tx
@@ -1252,8 +1253,23 @@ export class TabService implements TabServicePort {
             closePage: Boolean(task?.originConnectionId && task.worker === "external"),
           });
         }
-      },
+      }, readmit),
       (row) => permitted.has(row.id),
+    );
+    // The members this close left in its group are the ones that could not close: read from the
+    // mutation's own layout, a replay answers exactly what the first call answered.
+    const left = result.layout.items.find(
+      (item) => item.kind === "group" && item.group.groupId === groupId,
+    );
+    const failed: TabCloseResult["failed"] = (left?.kind === "group" ? left.group.tabIds : []).map(
+      (tabId) => ({
+        tabId,
+        error: normalizeToolError({
+          code: "not_found",
+          message: "This tab is no longer in the list.",
+          next: null,
+        }),
+      }),
     );
     // As a close of each member finishes: viewers end and the catalog moves, once.
     const meta = tabMutationMeta(result);
@@ -1274,9 +1290,7 @@ export class TabService implements TabServicePort {
       // The store's answer, a replay's included: exactly the members this close took.
       closed: result.tabIds,
       failed,
-      groupClosed: !result.layout.items.some(
-        (item) => item.kind === "group" && item.group.groupId === groupId,
-      ),
+      groupClosed: left === undefined,
       layout: meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout,
     };
   }
@@ -1500,6 +1514,7 @@ export class TabService implements TabServicePort {
     actor: TabActor,
     input: TabGroupUpdateInput,
     key: string,
+    readmit?: TabReadmit,
   ): Promise<{ group: TabGroup; layout: TabLayout }> {
     TabGroupUpdateInputSchema.parse(input);
     const ownerId = owner(actor);
@@ -1508,7 +1523,7 @@ export class TabService implements TabServicePort {
       ownerId,
       input,
       operationKey(actor, key),
-      this.#authorize(actor, [], [input.groupId]),
+      this.#readmitting(this.#authorize(actor, [], [input.groupId]), readmit),
     );
     const meta = tabMutationMeta(result);
     if (!meta.replayed) {
@@ -1522,12 +1537,12 @@ export class TabService implements TabServicePort {
     if (item?.kind !== "group") notFound();
     return { group: item.group, layout: visibleLayout };
   }
-  async deleteGroup(ownerId: UserId, groupId: TabGroupId, key: string) {
+  async deleteGroup(ownerId: UserId, groupId: TabGroupId, key: string, readmit?: TabReadmit) {
     const result = await this.options.store.deleteGroup(
       ownerId,
       groupId,
       operationKey({ kind: "person", ownerId }, key),
-      this.#authorize({ kind: "person", ownerId }, [], [groupId]),
+      this.#readmitting(this.#authorize({ kind: "person", ownerId }, [], [groupId]), readmit),
     );
     const meta = tabMutationMeta(result);
     if (!meta.replayed) {
@@ -1537,7 +1552,12 @@ export class TabService implements TabServicePort {
       layout: meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout,
     };
   }
-  async executeCommand(ownerId: UserId, command: TabCommand): Promise<TabCommandResult> {
+  /** `readmit`: an approved proposal's last admission, run where a group's change is made. */
+  async executeCommand(
+    ownerId: UserId,
+    command: TabCommand,
+    readmit?: TabReadmit,
+  ): Promise<TabCommandResult> {
     const actor = { kind: "person", ownerId } as const;
     switch (command.type) {
       case "tab.open":
@@ -1575,18 +1595,18 @@ export class TabService implements TabServicePort {
         const { type, idempotencyKey, ...input } = command;
         return {
           type,
-          ...(await this.#updateGroup(actor, input, idempotencyKey)),
+          ...(await this.#updateGroup(actor, input, idempotencyKey, readmit)),
         };
       }
       case "tab.group.delete":
         return {
           type: command.type,
-          ...(await this.deleteGroup(ownerId, command.groupId, command.idempotencyKey)),
+          ...(await this.deleteGroup(ownerId, command.groupId, command.idempotencyKey, readmit)),
         };
       case "tab.group.close":
         return {
           type: command.type,
-          ...(await this.closeGroup(actor, command.groupId, command.idempotencyKey)),
+          ...(await this.closeGroup(actor, command.groupId, command.idempotencyKey, readmit)),
         };
     }
   }

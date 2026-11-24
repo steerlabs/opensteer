@@ -1,4 +1,6 @@
+import type { HostedBrowserSessionState } from "@opensteer/protocol";
 import {
+  intersectResourceAccess,
   OpensteerError,
   type BrowserSessionId,
   type BrowserSurfaceId,
@@ -7,8 +9,16 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely, type Selectable } from "kysely";
 import { randomUUID } from "node:crypto";
-import { transitionBrowserSession } from "./browser-session-store.js";
+import { ownedBrowserSession, transitionBrowserSession } from "./browser-session-store.js";
+import { databaseOperationOptions } from "./operation-budget.js";
 import { activePersonalMutation, commitPersonalMutation } from "./personal-mutation.js";
+import {
+  admitExecution,
+  authorizeTarget,
+  executionAccess,
+  selectedGrantOf,
+  type AuthoritySubject,
+} from "./resource-access.js";
 import type { DatabaseSchema } from "./schema.js";
 
 /** The fence of one pooled browser: issued by its physical controller, never read from it. */
@@ -66,7 +76,7 @@ export async function requireBrowserPoolAdmission(
   tx: Kysely<DatabaseSchema>,
   runnerId: RunnerId,
   target?: BrowserPoolTargetIdentity,
-): Promise<void> {
+): Promise<BrowserPoolSlot> {
   if (
     !tx.isTransaction ||
     !activePersonalMutation(tx as Parameters<typeof activePersonalMutation>[0])
@@ -75,6 +85,47 @@ export async function requireBrowserPoolAdmission(
   const row = await readBrowserPoolSlot(tx, runnerId);
   if (!row || row.phase !== "running" || (target && !sameRuntime(row, target)))
     throw new BrowserPoolAdmissionClosed("The pooled browser is between states. Try again.");
+  return row;
+}
+
+/** The target a pooled session belongs to (W1): the slot and term it was admitted under. */
+export interface BrowserPoolSessionTarget {
+  readonly slotId: string;
+  readonly term: number;
+}
+
+/** A pool read or write of sessions of `runnerId`'s runtime, scoped to one target's own. */
+export interface BrowserPoolTargetSessions extends BrowserPoolSessionTarget {
+  readonly runnerId: RunnerId;
+  readonly runtimeId: string;
+}
+
+/** Binds a pooled session to its target, in the transaction that creates it (W1). */
+export async function bindBrowserPoolSession(
+  tx: Kysely<DatabaseSchema>,
+  input: BrowserPoolSessionTarget & {
+    readonly sessionId: BrowserSessionId;
+    readonly runnerId: RunnerId;
+  },
+): Promise<void> {
+  await tx
+    .insertInto("browserPoolSessions")
+    .values({
+      sessionId: input.sessionId,
+      runnerId: input.runnerId,
+      slotId: input.slotId,
+      term: input.term,
+    })
+    .execute(databaseOperationOptions());
+}
+
+/** Whether the session row in scope (`browser_sessions`) belongs to this target. */
+function ownedBy(target: BrowserPoolSessionTarget, alias = "browser_sessions") {
+  return sql<boolean>`exists (
+    select 1 from browser_pool_sessions own
+    where own.session_id = ${sql.ref(`${alias}.id`)}
+      and own.slot_id = ${target.slotId} and own.term = ${target.term}
+  )`;
 }
 
 export function readBrowserPoolSlot(database: Kysely<DatabaseSchema>, runnerId: RunnerId) {
@@ -82,7 +133,7 @@ export function readBrowserPoolSlot(database: Kysely<DatabaseSchema>, runnerId: 
     .selectFrom("browserPoolSlots")
     .selectAll()
     .where("runnerId", "=", runnerId)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
 }
 
 export function browserPoolSlotIdentity(slot: BrowserPoolSlot): BrowserPoolTargetIdentity {
@@ -113,7 +164,7 @@ export async function installBrowserPoolSlot(
         .selectAll()
         .where("runnerId", "=", target.runnerId)
         .forNoKeyUpdate()
-        .executeTakeFirst();
+        .executeTakeFirst(databaseOperationOptions());
       if (current) {
         if (!sameRuntime(current, target)) throw new BrowserPoolAdmissionClosed();
         return current;
@@ -131,10 +182,10 @@ export async function installBrowserPoolSlot(
           outcome: null,
         })
         .returningAll()
-        .executeTakeFirstOrThrow();
+        .executeTakeFirstOrThrow(databaseOperationOptions());
     },
     undefined,
-    "non-retrying",
+    "once-bounded",
   );
 }
 
@@ -153,7 +204,7 @@ export async function beginBrowserPoolPark(
         .selectAll()
         .where("runnerId", "=", target.runnerId)
         .forNoKeyUpdate()
-        .executeTakeFirst();
+        .executeTakeFirst(databaseOperationOptions());
       if (!current || !sameRuntime(current, target)) throw new BrowserPoolAdmissionClosed();
       if (current.intentId === intentId) return current;
       if (current.phase !== "running") throw new BrowserPoolAdmissionClosed();
@@ -162,6 +213,8 @@ export async function beginBrowserPoolPark(
       select exists (
         select 1 from browser_sessions session
         where session.runner_id = ${runnerId} and session.runtime_id = ${runtimeId}
+          -- Only this target's own sessions (W1): an earlier target's are not this guest's.
+          and ${ownedBy(target, "session")}
           and (
             session.state in ('starting', 'closing')
             -- Adoption does not rebuild a Trigger or Watch program's session yet.
@@ -211,10 +264,10 @@ export async function beginBrowserPoolPark(
         })
         .where("runnerId", "=", runnerId)
         .returningAll()
-        .executeTakeFirstOrThrow();
+        .executeTakeFirstOrThrow(databaseOperationOptions());
     },
     undefined,
-    "non-retrying",
+    "once-bounded",
   );
 }
 
@@ -241,19 +294,26 @@ export async function advanceBrowserPoolSlot(
   database: Kysely<DatabaseSchema>,
   slot: BrowserPoolSlot,
   next: BrowserPoolSlotChange,
-  losses: readonly BrowserPoolSessionLoss[] = [],
+  /**
+   * Sessions that end with this write, each with its notes. `closing`: the evidence that a
+   * closing row among them ended in its guest (V1); null leaves such rows closing, for the end
+   * step to finish with the runtime's answer.
+   */
+  ending: {
+    readonly losses: readonly BrowserPoolSessionLoss[];
+    readonly closing: BrowserPoolCloseEvidence | null;
+  } = { losses: [], closing: null },
 ): Promise<BrowserPoolSlot> {
+  const losses = ending.losses;
   return commitPersonalMutation(
     database,
     async (tx, mutation) => {
-      // Clients read a pooled browser's phase with its placement.
-      mutation.bumpResource("browser-placement");
       const current = await tx
         .selectFrom("browserPoolSlots")
         .selectAll()
         .where("runnerId", "=", slot.runnerId)
         .forNoKeyUpdate()
-        .executeTakeFirst();
+        .executeTakeFirst(databaseOperationOptions());
       if (
         !current ||
         !sameRuntime(current, slot) ||
@@ -288,31 +348,121 @@ export async function advanceBrowserPoolSlot(
         })
         .where("runnerId", "=", slot.runnerId)
         .returningAll()
-        .executeTakeFirstOrThrow();
-      await recordBrowserPoolLosses(tx, slot, losses);
+        .executeTakeFirstOrThrow(databaseOperationOptions());
+      const noted = await recordBrowserPoolLosses(tx, slot, losses, ending.closing);
+      // Clients read a pooled browser's phase with its placement: they are told only when
+      // something a person sees changed (P20). Sessions ended tell them on their own.
+      if (
+        noted ||
+        advanced.phase !== current.phase ||
+        advanced.failedStarts !== current.failedStarts ||
+        JSON.stringify(advanced.lastStart) !== JSON.stringify(current.lastStart)
+      )
+        mutation.bumpResource("browser-placement");
+      // Parked, the guest is paused and its next adoption leaves out every session not ready: a
+      // Stop that landed while the park was under way has the same evidence as one on a parked
+      // guest. Under the slot's lock, so no Stop falls between this and its own write.
+      if (next.phase === "parked" && current.phase !== "parked") {
+        const stopped = await tx
+          .selectFrom("browserSessions")
+          .select("id")
+          .where("runnerId", "=", slot.runnerId)
+          .where("runtimeId", "=", slot.runtimeId)
+          .where("state", "=", "closing")
+          .where(ownedBy(slot))
+          .orderBy("id")
+          .execute(databaseOperationOptions());
+        await endBrowserPoolSessions(
+          tx,
+          stopped.map(({ id }) => ({
+            id,
+            from: ["closing"],
+            end: { state: "closed", evidence: { kind: "guest-paused" }, target: slot },
+          })),
+        );
+      }
       return advanced;
     },
     undefined,
-    "non-retrying",
+    "once-bounded",
   );
 }
 
-/** Notes per tab, and the end of each lost session, inside the caller's transaction. */
+/**
+ * A browser Stop of a pooled session with no channel here, under the slot's lock: on a parked
+ * guest it is closed (the next adoption leaves it out), otherwise it is closing until its
+ * runtime answers. Returns the state written, or undefined for a row already ended.
+ */
+export async function stopBrowserPoolSession(
+  database: Kysely<DatabaseSchema>,
+  input: { readonly sessionId: BrowserSessionId; readonly runnerId: RunnerId },
+): Promise<"closing" | "closed" | undefined> {
+  return commitPersonalMutation(
+    database,
+    async (tx) => {
+      // Lock order: the slot first, then the session.
+      const slot = await tx
+        .selectFrom("browserPoolSlots")
+        .select(["phase", "slotId", "term"])
+        .where("runnerId", "=", input.runnerId)
+        .forShare()
+        .executeTakeFirst(databaseOperationOptions());
+      const row = await tx
+        .selectFrom("browserSessions")
+        .select(["state", ownedBy(slot ?? { slotId: "", term: 1 }).as("own")])
+        .where("id", "=", input.sessionId)
+        .executeTakeFirst(databaseOperationOptions());
+      // Closed on a parked guest only when the session is that guest's (W1); a session of an
+      // earlier target, or one with no slot here, is closing until its own evidence.
+      const state =
+        slot?.phase === "parked" && row?.own ? ("closed" as const) : ("closing" as const);
+      if (!row || row.state === "closed" || row.state === "failed") return undefined;
+      if (row.state === state) return state;
+      // On a parked guest the Stop is answered by the pause itself: the next wake ends the
+      // session in the guest before it serves anyone (V2).
+      if (state === "closed")
+        await endBrowserPoolSessions(tx, [
+          {
+            id: input.sessionId,
+            from: ["starting", "ready", "closing"],
+            end: { state: "closed", evidence: { kind: "guest-paused" }, target: slot! },
+          },
+        ]);
+      else
+        await transitionBrowserSession(tx, {
+          from: ["starting", "ready", "closing"],
+          sessionId: input.sessionId,
+          state,
+        });
+      return state;
+    },
+    undefined,
+    "once-bounded",
+  );
+}
+
+/**
+ * Notes per tab, and the end of each lost session, inside the caller's transaction; whether a
+ * note was written.
+ */
 async function recordBrowserPoolLosses(
   tx: Kysely<DatabaseSchema>,
   slot: BrowserPoolSlot,
   losses: readonly BrowserPoolSessionLoss[],
-): Promise<void> {
+  /** The evidence that a closing row ended in its guest; null leaves closing rows closing. */
+  closing: BrowserPoolCloseEvidence | null,
+): Promise<boolean> {
+  let noted = false;
   if (losses.length) {
     const ownerId = await readBrowserPoolOwner(tx);
     const sessions = await tx
       .selectFrom("browserSessions")
-      .select("id")
+      .select(["id", "state"])
       .where("id", "in", [...new Set(losses.map(({ sessionId }) => sessionId))])
       .where("runnerId", "=", slot.runnerId)
       .where("runtimeId", "=", slot.runtimeId)
       .orderBy("id")
-      .execute();
+      .execute(databaseOperationOptions());
     const known = new Set(sessions.map(({ id }) => id));
     // Every loss has its own notice id: a later loss on the same tab is a new notice.
     const noteId = randomUUID();
@@ -330,23 +480,148 @@ async function recordBrowserPoolLosses(
           }))
         : [];
     });
-    if (notes.length)
+    if (notes.length) {
       await tx
         .insertInto("browserPoolDocumentLosses")
         .values(notes)
         .onConflict((conflict) => conflict.columns(["intentId", "surfaceId"]).doNothing())
-        .execute();
+        .execute(databaseOperationOptions());
+      noted = true;
+    }
     // A ready row with no browser behind it is a defect: the lost session ends here.
     const ended = new Set(
       losses.filter((loss) => loss.endSession !== false).map(({ sessionId }) => sessionId),
     );
-    for (const { id } of sessions.filter(({ id }) => ended.has(id)))
-      await transitionBrowserSession(tx, {
-        from: ["starting", "ready", "closing"],
-        sessionId: id,
-        state: "failed",
-      });
+    // One a Stop left closing is answered by this end only with its evidence: it closed, as
+    // the person asked. Without it it stays closing, for the end step or the removal's finish.
+    await endBrowserPoolSessions(
+      tx,
+      sessions
+        .filter(({ id, state }) => ended.has(id) && (closing !== null || state !== "closing"))
+        .map(({ id, state }) => ({
+          id,
+          from: ["starting", "ready", "closing"],
+          end:
+            state === "closing" && closing
+              ? { state: "closed", evidence: closing, target: slot }
+              : { state: "failed" },
+        })),
+    );
   }
+  return noted;
+}
+
+/**
+ * What a pooled session's row may be closed on, and nothing else (V1):
+ * - `runtime-ended`: the running guest runtime under the current fence answered that it ended
+ *   the session (its answer to the end request, its `closed` status, or its adoption's outcome);
+ * - `guest-gone`: the host signed that this guest no longer exists (stopped, replaced, the slot
+ *   deleted, the term fenced);
+ * - `guest-paused`: the guest is paused under the current fence; its next wake ends the session
+ *   before the guest serves anyone (V2).
+ * A caller with none of these writes nothing: the row stays closing.
+ */
+export type BrowserPoolCloseEvidence =
+  | { readonly kind: "runtime-ended" }
+  | {
+      readonly kind: "guest-gone";
+      readonly by: "stopped" | "replaced" | "slot-deleted" | "fenced";
+    }
+  | { readonly kind: "guest-paused" };
+
+/**
+ * The one writer of `closed` for pooled rows outside the slot's own writes: its evidence first,
+ * and the target that evidence is about. Only that target's own sessions are closed (W1).
+ */
+export async function closeBrowserPoolSessions(
+  database: Kysely<DatabaseSchema>,
+  target: BrowserPoolSessionTarget,
+  sessionIds: readonly BrowserSessionId[],
+  evidence: BrowserPoolCloseEvidence,
+): Promise<void> {
+  if (!sessionIds.length) return;
+  await commitPersonalMutation(
+    database,
+    (tx) =>
+      endBrowserPoolSessions(
+        tx,
+        sessionIds.map((id) => ({
+          id,
+          from: ["starting", "ready", "closing"],
+          end: { state: "closed", evidence, target },
+        })),
+      ),
+    undefined,
+    "once-bounded",
+  );
+}
+
+/**
+ * Ends several sessions in one transaction in the declared lock order (P19): every session row
+ * first, in id order, then all their attachments, in key order; as transitionBrowserSession does
+ * for one.
+ */
+async function endBrowserPoolSessions(
+  tx: Kysely<DatabaseSchema>,
+  ends: readonly {
+    readonly id: BrowserSessionId;
+    readonly from: readonly HostedBrowserSessionState[];
+    /** A failed row needs nothing; a closed one, its evidence and the target it is about. */
+    readonly end:
+      | { readonly state: "failed" }
+      | {
+          readonly state: "closed";
+          readonly evidence: BrowserPoolCloseEvidence;
+          readonly target: BrowserPoolSessionTarget;
+        };
+  }[],
+): Promise<void> {
+  if (!ends.length) return;
+  const ordered = [...ends].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  await commitPersonalMutation(tx, async (transaction, mutation) => {
+    await transaction
+      .selectFrom("browserSessions")
+      .select("id")
+      .where(
+        "id",
+        "in",
+        ordered.map(({ id }) => id),
+      )
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute(databaseOperationOptions());
+    const now = new Date();
+    const ended: BrowserSessionId[] = [];
+    for (const end of ordered) {
+      let update = transaction
+        .updateTable("browserSessions")
+        .set({ closedAt: now, state: end.end.state, updatedAt: now })
+        .where("id", "=", end.id)
+        .where("state", "not in", ["closed", "failed"])
+        .where("state", "in", [...end.from]);
+      // Closed only by evidence about the session's own target (W1).
+      if (end.end.state === "closed") update = update.where(ownedBy(end.end.target));
+      const row = await update.returning("id").executeTakeFirst(databaseOperationOptions());
+      if (row) ended.push(row.id);
+    }
+    if (!ended.length) return;
+    await transaction
+      .selectFrom("browserSessionAttachments")
+      .select(["agentBindingId", "sessionId"])
+      .where("sessionId", "in", ended)
+      .orderBy("agentBindingId", "asc")
+      .orderBy("sessionId", "asc")
+      // FOR UPDATE: these attachments are deleted below; their keys are locked in order.
+      .forUpdate()
+      .execute(databaseOperationOptions());
+    await transaction
+      .deleteFrom("browserSessionAttachments")
+      .where("sessionId", "in", ended)
+      .execute(databaseOperationOptions());
+    mutation.bumpResource("browser-placement");
+    mutation.bumpResource("browser-availability");
+    mutation.bumpResource("tab");
+  });
 }
 
 /** Tells clients a pooled browser's shown phase changed, with nothing else written. */
@@ -367,7 +642,7 @@ export async function recordBrowserPoolStartFailure(
       .updateTable("browserPoolSlots")
       .set({ failedStarts: sql`failed_starts + 1` })
       .where("runnerId", "=", runnerId)
-      .execute();
+      .execute(databaseOperationOptions());
   });
 }
 
@@ -390,12 +665,13 @@ export async function beginBrowserPoolRelease(
         .set({ phase: "releasing", phaseSince: new Date() })
         .where("runnerId", "=", slot.runnerId)
         .returningAll()
-        .executeTakeFirst();
-      await recordBrowserPoolLosses(tx, slot, losses);
+        .executeTakeFirst(databaseOperationOptions());
+      // The guest's end is not known yet: closing rows stay closing until the finish.
+      await recordBrowserPoolLosses(tx, slot, losses, null);
       return released;
     },
     undefined,
-    "non-retrying",
+    "once-bounded",
   );
 }
 
@@ -408,11 +684,12 @@ export async function finishBrowserPoolRelease(
     database,
     async (tx, mutation) => {
       mutation.bumpResource("browser-placement");
-      await tx
+      const released = await tx
         .deleteFrom("browserPoolSlots")
         .where("runnerId", "=", runnerId)
         .where("phase", "=", "releasing")
-        .execute();
+        .returning(["slotId", "term"])
+        .executeTakeFirst(databaseOperationOptions());
       // Rows are locked in key order before they go, as every multi-row write here.
       const calls = await tx
         .selectFrom("browserPoolControllerCalls")
@@ -421,7 +698,7 @@ export async function finishBrowserPoolRelease(
         .orderBy("id")
         // FOR UPDATE: these rows are deleted with the slot.
         .forUpdate()
-        .execute();
+        .execute(databaseOperationOptions());
       if (calls.length)
         await tx
           .deleteFrom("browserPoolControllerCalls")
@@ -430,7 +707,7 @@ export async function finishBrowserPoolRelease(
             "in",
             calls.map(({ id }) => id),
           )
-          .execute();
+          .execute(databaseOperationOptions());
       const relays = await tx
         .selectFrom("browserPoolRelays")
         .select("id")
@@ -438,7 +715,7 @@ export async function finishBrowserPoolRelease(
         .orderBy("id")
         // FOR UPDATE: these rows are deleted with the slot.
         .forUpdate()
-        .execute();
+        .execute(databaseOperationOptions());
       if (relays.length)
         await tx
           .deleteFrom("browserPoolRelays")
@@ -447,10 +724,35 @@ export async function finishBrowserPoolRelease(
             "in",
             relays.map(({ id }) => id),
           )
-          .execute();
+          .execute(databaseOperationOptions());
+
+      // The guest is known stopped: a session of its own that a Stop left closing has its end
+      // now (an earlier target's is not this guest's).
+      if (!released) return;
+      const closing = await tx
+        .selectFrom("browserSessions")
+        .select("id")
+        .where("runnerId", "=", runnerId)
+        .where("state", "=", "closing")
+        .where(ownedBy(released))
+        .orderBy("id")
+        .execute(databaseOperationOptions());
+      // Only after the guest is known stopped, or its host said signed that it is gone.
+      await endBrowserPoolSessions(
+        tx,
+        closing.map(({ id }) => ({
+          id,
+          from: ["closing"],
+          end: {
+            state: "closed",
+            evidence: { kind: "guest-gone", by: "stopped" },
+            target: released,
+          },
+        })),
+      );
     },
     undefined,
-    "non-retrying",
+    "once-bounded",
   );
 }
 
@@ -469,15 +771,25 @@ export async function recordBrowserPoolControllerCall(
     readonly intentId: string | null;
     readonly kind: string;
     readonly request: Readonly<Record<string, unknown>>;
+    /** A restart's Start: the keys it answers, durable with the call before it is sent. */
+    readonly restartKeys?: readonly string[];
   },
   closeOpen?: Readonly<Record<string, unknown>>,
 ): Promise<void> {
+  const { restartKeys, ...row } = call;
   const insert = (executor: Kysely<DatabaseSchema>) =>
     executor
       .insertInto("browserPoolControllerCalls")
-      .values({ ...call, result: null, settledAt: null })
+      .values({
+        ...row,
+        result: null,
+        settledAt: null,
+        restartKeys: restartKeys?.length
+          ? sql<readonly string[]>`${JSON.stringify(restartKeys)}::jsonb`
+          : null,
+      })
       .onConflict((conflict) => conflict.column("id").doNothing())
-      .execute();
+      .execute(databaseOperationOptions());
   if (!closeOpen) {
     await insert(database);
     return;
@@ -490,11 +802,14 @@ export async function recordBrowserPoolControllerCall(
         .selectFrom("browserPoolControllerCalls")
         .select("id")
         .where("runnerId", "=", call.runnerId)
+        .where("slotId", "=", call.slotId)
+        .where("term", "=", call.term)
         .where("settledAt", "is", null)
         .orderBy("id")
         .forNoKeyUpdate()
-        .execute();
+        .execute(databaseOperationOptions());
       // The guest is replaced: whether an open call applied is not known, and never claimed.
+      // Open Starts are never among them: the caller settled each by its id first.
       for (const { id } of open)
         await tx
           .updateTable("browserPoolControllerCalls")
@@ -503,11 +818,11 @@ export async function recordBrowserPoolControllerCall(
             settledAt: new Date(),
           })
           .where("id", "=", id)
-          .execute();
+          .execute(databaseOperationOptions());
       await insert(tx);
     },
     undefined,
-    "non-retrying",
+    "once-bounded",
   );
 }
 
@@ -521,21 +836,53 @@ export async function settleBrowserPoolControllerCall(
     .set({ result, settledAt: new Date() })
     .where("id", "=", id)
     .where("settledAt", "is", null)
-    .execute();
+    .execute(databaseOperationOptions());
 }
 
 export function listOpenBrowserPoolControllerCalls(
   database: Kysely<DatabaseSchema>,
   runnerId: RunnerId,
+  target?: { readonly slotId: string; readonly term: number },
 ) {
+  let query = database
+    .selectFrom("browserPoolControllerCalls")
+    .selectAll()
+    .where("runnerId", "=", runnerId)
+    .where("settledAt", "is", null);
+  if (target) query = query.where("slotId", "=", target.slotId).where("term", "=", target.term);
+  return query.orderBy("createdAt").orderBy("id").execute(databaseOperationOptions());
+}
+
+/**
+ * The newest Starts the controller applied for this Runner and no slot has held yet, newest
+ * first: one whose guest is the one running now is installed, never replaced again.
+ */
+export function listAppliedBrowserPoolStarts(database: Kysely<DatabaseSchema>, runnerId: RunnerId) {
   return database
     .selectFrom("browserPoolControllerCalls")
     .selectAll()
     .where("runnerId", "=", runnerId)
-    .where("settledAt", "is", null)
-    .orderBy("createdAt")
-    .orderBy("id")
-    .execute();
+    .where("kind", "=", "start")
+    .where("settledAt", "is not", null)
+    .where("installedAt", "is", null)
+    .where(sql<boolean>`result->>'applied' = 'true'`)
+    .orderBy("createdAt", "desc")
+    .orderBy("id", "desc")
+    .limit(4)
+    .execute(databaseOperationOptions());
+}
+
+/** The slot holds this Start's guest now: it is no replacement still to be installed. */
+export async function markBrowserPoolStartInstalled(
+  database: Kysely<DatabaseSchema>,
+  id: string,
+): Promise<void> {
+  await database
+    .updateTable("browserPoolControllerCalls")
+    .set({ installedAt: new Date() })
+    .where("id", "=", id)
+    .where("installedAt", "is", null)
+    .execute(databaseOperationOptions());
 }
 
 /** The settled result of an intent's call of one kind, if the controller applied it. */
@@ -553,7 +900,7 @@ export async function readAppliedBrowserPoolControllerCall(
     .where("kind", "=", kind)
     .where(sql<boolean>`result->>'applied' = 'true'`)
     .orderBy("createdAt", "desc")
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
 }
 
 /** The persistent tab lineage of a session: person use is keyed by it, not by the session. */
@@ -565,7 +912,7 @@ export async function readBrowserPoolSessionLineage(
     .selectFrom("browserSessions")
     .select("tabGroupId")
     .where("id", "=", sessionId)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   return row?.tabGroupId;
 }
 
@@ -573,7 +920,10 @@ export async function readBrowserPoolSessionLineage(
 export async function readBrowserPoolOwner(
   database: Kysely<DatabaseSchema>,
 ): Promise<UserId | undefined> {
-  const row = await database.selectFrom("personalSettings").select("ownerId").executeTakeFirst();
+  const row = await database
+    .selectFrom("personalSettings")
+    .select("ownerId")
+    .executeTakeFirst(databaseOperationOptions());
   return (row?.ownerId ?? undefined) as UserId | undefined;
 }
 
@@ -590,25 +940,79 @@ export async function listBrowserPoolSessionTabs(
     .where(sql<string>`page_binding->>'sessionId'`, "in", [...sessionIds])
     .where("closedAt", "is", null)
     .orderBy("id")
-    .execute();
+    .execute(databaseOperationOptions());
   for (const { id, sessionId } of rows) tabs.set(sessionId, [...(tabs.get(sessionId) ?? []), id]);
   return tabs;
+}
+
+/** A replaced target whose Stops wait for its word (W8): the Home goes on asking it. */
+export type BrowserPoolRetiredTarget = Selectable<DatabaseSchema["browserPoolRetiredTargets"]>;
+
+export function listBrowserPoolRetiredTargets(
+  database: Kysely<DatabaseSchema>,
+  runnerId: RunnerId,
+): Promise<readonly BrowserPoolRetiredTarget[]> {
+  return database
+    .selectFrom("browserPoolRetiredTargets")
+    .selectAll()
+    .where("runnerId", "=", runnerId)
+    .orderBy("retiredAt")
+    .execute(databaseOperationOptions());
+}
+
+/** A replaced target none of whose Stops waits any more: the Home stops asking it. */
+export async function forgetBrowserPoolRetiredTarget(
+  database: Kysely<DatabaseSchema>,
+  target: BrowserPoolSessionTarget & { readonly runnerId?: RunnerId },
+): Promise<void> {
+  // Any open stop call of this retired target whose host answered slot-deleted/fenced or whose
+  // sessions ended another way is closed as unknown before the target is forgotten, so no open
+  // journal row outlives the drain coordinator.
+  await commitPersonalMutation(
+    database,
+    async (tx) => {
+      let query = tx
+        .selectFrom("browserPoolControllerCalls")
+        .select("id")
+        .where("slotId", "=", target.slotId)
+        .where("term", "=", target.term)
+        .where("settledAt", "is", null);
+      if (target.runnerId) query = query.where("runnerId", "=", target.runnerId);
+      const open = await query.orderBy("id").forNoKeyUpdate().execute(databaseOperationOptions());
+      for (const { id } of open)
+        await tx
+          .updateTable("browserPoolControllerCalls")
+          .set({
+            result: { id, outcome: "unknown", reason: "target-retired" },
+            settledAt: new Date(),
+          })
+          .where("id", "=", id)
+          .execute(databaseOperationOptions());
+    },
+    undefined,
+    "once-bounded",
+  );
+  await database
+    .deleteFrom("browserPoolRetiredTargets")
+    .where("slotId", "=", target.slotId)
+    .where("term", "=", target.term)
+    .execute(databaseOperationOptions());
 }
 
 /** Every session of a pooled runtime that is not yet terminal. */
 export async function listBrowserPoolRuntimeSessions(
   database: Kysely<DatabaseSchema>,
-  runnerId: RunnerId,
-  runtimeId: string,
+  target: BrowserPoolTargetSessions,
 ): Promise<readonly BrowserSessionId[]> {
   const rows = await database
     .selectFrom("browserSessions")
     .select("id")
-    .where("runnerId", "=", runnerId)
-    .where("runtimeId", "=", runtimeId)
+    .where("runnerId", "=", target.runnerId)
+    .where("runtimeId", "=", target.runtimeId)
+    .where(ownedBy(target))
     .where("state", "in", ["starting", "ready", "closing"])
     .orderBy("id")
-    .execute();
+    .execute(databaseOperationOptions());
   return rows.map(({ id }) => id);
 }
 
@@ -624,7 +1028,7 @@ export async function readBrowserPoolRevocation(
     .selectFrom("runners")
     .select("revokedAt")
     .where("id", "=", runnerId)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   if (!runner?.revokedAt) return undefined;
   const ended = await database
     .selectFrom("browserSessions")
@@ -632,25 +1036,196 @@ export async function readBrowserPoolRevocation(
     .where("runnerId", "=", runnerId)
     .where("closedAt", "=", runner.revokedAt)
     .orderBy("id")
-    .execute();
+    .execute(databaseOperationOptions());
   return ended.map(({ id }) => id);
 }
 
 /** The ready sessions of this runtime: the ones a channel can be missing from. */
 export async function listBrowserPoolReadySessions(
   database: Kysely<DatabaseSchema>,
-  runnerId: RunnerId,
-  runtimeId: string,
+  target: BrowserPoolTargetSessions,
 ): Promise<readonly BrowserSessionId[]> {
   const rows = await database
     .selectFrom("browserSessions")
     .select("id")
-    .where("runnerId", "=", runnerId)
-    .where("runtimeId", "=", runtimeId)
+    .where("runnerId", "=", target.runnerId)
+    .where("runtimeId", "=", target.runtimeId)
+    .where(ownedBy(target))
     .where("state", "=", "ready")
     .orderBy("id")
-    .execute();
+    .execute(databaseOperationOptions());
   return rows.map(({ id }) => id);
+}
+
+/**
+ * The sessions of this runtime a Stop is ending: closing until the runtime answers that each is
+ * gone, whatever the Home's clock says.
+ */
+export async function listBrowserPoolClosingSessions(
+  database: Kysely<DatabaseSchema>,
+  target: BrowserPoolTargetSessions,
+): Promise<readonly BrowserSessionId[]> {
+  const rows = await database
+    .selectFrom("browserSessions")
+    .select("id")
+    .where("runnerId", "=", target.runnerId)
+    .where("runtimeId", "=", target.runtimeId)
+    .where(ownedBy(target))
+    .where("state", "=", "closing")
+    .orderBy("id")
+    .execute(databaseOperationOptions());
+  return rows.map(({ id }) => id);
+}
+
+/**
+ * W15: sessions of a replaced pooled browser whose Stop never got the host's confirmation and that
+ * the person has not yet removed from their list, paired with their open tabs.
+ */
+export async function listBrowserPoolUnconfirmedClosings(
+  database: Kysely<DatabaseSchema>,
+  runnerId: RunnerId,
+): Promise<
+  readonly { readonly sessionId: BrowserSessionId; readonly surfaceIds: readonly string[] }[]
+> {
+  const rows = await database
+    .selectFrom("browserPoolSessions")
+    .innerJoin("browserSessions", "browserSessions.id", "browserPoolSessions.sessionId")
+    .select("browserPoolSessions.sessionId")
+    .where("browserPoolSessions.runnerId", "=", runnerId)
+    .where("browserPoolSessions.dismissedAt", "is", null)
+    .where("browserSessions.state", "=", "closing")
+    .where(
+      sql<boolean>`not exists (
+        select 1 from browser_pool_slots slot
+        where slot.runner_id = browser_pool_sessions.runner_id
+          and slot.slot_id = browser_pool_sessions.slot_id
+          and slot.term = browser_pool_sessions.term
+      )`,
+    )
+    .orderBy("browserSessions.createdAt", "desc")
+    .limit(128)
+    .execute(databaseOperationOptions());
+  if (!rows.length) return [];
+  const sessionIds = rows.map(({ sessionId }) => sessionId);
+  const tabs = await listBrowserPoolSessionTabs(database, sessionIds);
+  return sessionIds.map((sessionId) => ({
+    sessionId,
+    surfaceIds: [...(tabs.get(sessionId) ?? [])],
+  }));
+}
+
+/**
+ * W15: removes an unconfirmed-closing replaced-browser session from the person's list. Records
+ * dismissal on `browser_pool_sessions.dismissed_at` only — never writes `browser_sessions.state`
+ * (Rule 4: an unconfirmed Stop stays `closing` in the database). Authority is decided solely
+ * through `resource-access.ts` (Rule 1) and outside a connected agent's grant reads identically to
+ * non-existent (Rule 5).
+ */
+export async function dismissBrowserPoolUnconfirmedSession(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly ownerId: UserId;
+    readonly sessionId: BrowserSessionId;
+    readonly subject?: AuthoritySubject;
+  },
+): Promise<void> {
+  const notFound = () =>
+    new OpensteerError({ code: "not_found", message: "Browser session not found." });
+  await commitPersonalMutation(database, async (tx, mutation) => {
+    const execution = await admitExecution(tx, {
+      ownerUserId: input.ownerId,
+      subject: input.subject ?? { kind: "person" },
+    });
+    const row = await tx
+      .selectFrom("browserSessions")
+      .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+      .leftJoin("browserPoolSessions", "browserPoolSessions.sessionId", "browserSessions.id")
+      .select([
+        "browserSessions.id",
+        "browserSessions.profileId",
+        "browserSessions.state",
+        "browserPoolSessions.sessionId as poolSessionId",
+        "browserPoolSessions.runnerId as poolRunnerId",
+        "browserPoolSessions.slotId as poolSlotId",
+        "browserPoolSessions.term as poolTerm",
+        "browserPoolSessions.dismissedAt",
+      ])
+      .where("browserSessions.id", "=", input.sessionId)
+      .where((expression) => ownedBrowserSession(expression, input.ownerId))
+      .executeTakeFirst(databaseOperationOptions());
+    if (!row) throw notFound();
+
+    if (execution.agentConnection) {
+      if (row.profileId === null) {
+        if (selectedGrantOf(execution)) throw notFound();
+        if (executionAccess(execution) !== "read-write") {
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "This connected agent may only view this browser.",
+          });
+        }
+      } else {
+        const grantAccess = authorizeTarget(execution, {
+          kind: "browser-profile",
+          profileId: row.profileId,
+        });
+        if (grantAccess === null) throw notFound();
+        if (intersectResourceAccess(grantAccess, executionAccess(execution)) !== "read-write") {
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "This connected agent may only view this browser.",
+          });
+        }
+      }
+    } else if (executionAccess(execution) !== "read-write") {
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "This task may only view this browser.",
+      });
+    }
+
+    if (
+      !row.poolSessionId ||
+      !row.poolRunnerId ||
+      !row.poolSlotId ||
+      row.poolTerm === null ||
+      row.state !== "closing"
+    ) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This browser session is not an unconfirmed closing session.",
+      });
+    }
+
+    const onCurrentTarget = await tx
+      .selectFrom("browserPoolSlots")
+      .select("runnerId")
+      .where("runnerId", "=", row.poolRunnerId)
+      .where("slotId", "=", row.poolSlotId)
+      .where("term", "=", row.poolTerm)
+      .executeTakeFirst(databaseOperationOptions());
+    if (onCurrentTarget) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This browser session belongs to the current browser.",
+      });
+    }
+
+    const locked = await tx
+      .selectFrom("browserPoolSessions")
+      .select(["sessionId", "dismissedAt"])
+      .where("sessionId", "=", input.sessionId)
+      .forNoKeyUpdate()
+      .executeTakeFirst(databaseOperationOptions());
+    if (!locked || locked.dismissedAt !== null) return;
+    await tx
+      .updateTable("browserPoolSessions")
+      .set({ dismissedAt: new Date() })
+      .where("sessionId", "=", input.sessionId)
+      .where("dismissedAt", "is", null)
+      .execute(databaseOperationOptions());
+    mutation.bumpResource("browser-placement");
+  });
 }
 
 export function listBrowserPoolDocumentLosses(
@@ -664,7 +1239,7 @@ export function listBrowserPoolDocumentLosses(
     .where("ownerId", "=", ownerId)
     .where("surfaceId", "=", surfaceId)
     .orderBy("lostAt", "desc")
-    .execute();
+    .execute(databaseOperationOptions());
 }
 
 /**
@@ -698,7 +1273,7 @@ export async function seeBrowserPoolDocumentLoss(
       )
       .orderBy("intentId")
       .forNoKeyUpdate()
-      .execute();
+      .execute(databaseOperationOptions());
     if (!rows.length) return;
     mutation.bumpResource("browser-placement");
     await tx
@@ -711,7 +1286,7 @@ export async function seeBrowserPoolDocumentLoss(
         "in",
         rows.map(({ intentId }) => intentId),
       )
-      .execute();
+      .execute(databaseOperationOptions());
   });
 }
 
@@ -737,7 +1312,7 @@ export async function listBrowserPoolReportedNotices(
     .selectAll()
     .orderBy("lostAt", "desc")
     .limit(browserPoolReportedNotices)
-    .execute();
+    .execute(databaseOperationOptions());
 }
 
 /**
@@ -758,7 +1333,7 @@ export async function pruneBrowserPoolBookkeeping(
   // age out like the rest.
   if (slot.intentId && slot.phase !== "running")
     calls = calls.where("intentId", "is distinct from", slot.intentId);
-  await calls.execute();
+  await calls.execute(databaseOperationOptions());
   await database
     .deleteFrom("browserPoolRelays")
     .where("runnerId", "=", slot.runnerId)
@@ -770,7 +1345,7 @@ export async function pruneBrowserPoolBookkeeping(
         eb(sql<Date>`created_at`, "<", new Date(Date.now() - browserPoolRelayDeadlineMs)),
       ]),
     )
-    .execute();
+    .execute(databaseOperationOptions());
   // A seen note ages out from when it was seen; one never seen, from when it was written.
   await database
     .deleteFrom("browserPoolDocumentLosses")
@@ -781,7 +1356,7 @@ export async function pruneBrowserPoolBookkeeping(
         eb.and([eb("noticedAt", "is", null), eb(sql<Date>`lost_at`, "<", before)]),
       ]),
     )
-    .execute();
+    .execute(databaseOperationOptions());
 }
 
 export async function openBrowserPoolRelay(
@@ -794,10 +1369,199 @@ export async function openBrowserPoolRelay(
     await tx
       .insertInto("browserPoolRelays")
       .values({ id, ...target })
-      .execute();
+      .execute(databaseOperationOptions());
   });
 }
 
 export async function settleBrowserPoolRelay(database: Kysely<DatabaseSchema>, id: string) {
-  await database.deleteFrom("browserPoolRelays").where("id", "=", id).execute();
+  await database
+    .deleteFrom("browserPoolRelays")
+    .where("id", "=", id)
+    .execute(databaseOperationOptions());
+}
+
+// ---- A pooled Cloud Computer's target --------------------------------------------------------
+
+export type BrowserPoolTargetRow = Selectable<DatabaseSchema["browserPoolTargets"]>;
+
+/** What the Home last recorded of its registration and target; undefined before the first. */
+export async function readBrowserPoolTarget(
+  database: Kysely<DatabaseSchema>,
+  cloudComputerId: string,
+): Promise<BrowserPoolTargetRow | undefined> {
+  return database
+    .selectFrom("browserPoolTargets")
+    .selectAll()
+    .where("cloudComputerId", "=", cloudComputerId)
+    .executeTakeFirst(databaseOperationOptions());
+}
+
+/** Written before a registration leaves the Home: until its answer is read, it is open. */
+export async function recordBrowserPoolRegistrationAttempt(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly cloudComputerId: string;
+    readonly keys: Readonly<Record<string, unknown>>;
+    readonly issuedAt: Date;
+  },
+): Promise<void> {
+  const keys = input.keys;
+  await database
+    .insertInto("browserPoolTargets")
+    .values({
+      cloudComputerId: input.cloudComputerId,
+      attemptKeys: keys,
+      attemptIssuedAt: input.issuedAt,
+      status: "unregistered",
+    })
+    .onConflict((conflict) =>
+      conflict
+        .column("cloudComputerId")
+        .doUpdateSet({ attemptKeys: keys, attemptIssuedAt: input.issuedAt, updatedAt: new Date() }),
+    )
+    .execute(databaseOperationOptions());
+}
+
+/**
+ * What the account answered: a registration's (its keys are then the registered ones, and the
+ * attempt is closed) or a read of the target (an open attempt stays open: only its own answer, or
+ * a read that shows it was not received, settles it).
+ */
+export async function recordBrowserPoolTargetAnswer(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly cloudComputerId: string;
+    readonly status: BrowserPoolTargetRow["status"];
+    readonly target: Readonly<Record<string, unknown>> | null;
+    /** The registration this answers: its keys are registered now. */
+    readonly registered?: Readonly<Record<string, unknown>>;
+    /** A read that shows nothing registered: an open attempt was not received. */
+    readonly attemptUnreceived?: boolean;
+  },
+): Promise<void> {
+  const settle = input.registered !== undefined || input.attemptUnreceived === true;
+  const row = await readBrowserPoolTarget(database, input.cloudComputerId);
+  // Objects are sent as JSON by the driver (only arrays need the cast).
+  const values = {
+    cloudComputerId: input.cloudComputerId,
+    status: input.status,
+    target: input.target,
+    registeredKeys: input.registered ?? row?.registeredKeys ?? null,
+    attemptKeys: settle ? null : (row?.attemptKeys ?? null),
+    attemptIssuedAt: settle ? null : (row?.attemptIssuedAt ?? null),
+    updatedAt: new Date(),
+  };
+  await database
+    .insertInto("browserPoolTargets")
+    .values(values)
+    .onConflict((conflict) =>
+      conflict.column("cloudComputerId").doUpdateSet({
+        status: values.status,
+        target: values.target,
+        registeredKeys: values.registeredKeys,
+        attemptKeys: values.attemptKeys,
+        attemptIssuedAt: values.attemptIssuedAt,
+        updatedAt: values.updatedAt,
+      }),
+    )
+    .execute(databaseOperationOptions());
+}
+
+/**
+ * A pooled target replaced by a different one (a new term, a replaced host): its slot row goes,
+ * its open calls are closed as unknown (never sent to the new target), and its relays go. The
+ * sessions already ended with their notes (`BrowserPoolCoordinator.retire`).
+ */
+export async function retireBrowserPoolTarget(
+  database: Kysely<DatabaseSchema>,
+  runnerId: RunnerId,
+  /**
+   * The target as the Home's account gave it (W8): kept, with the slot's fence, while a Stop it
+   * held waits for its word, so a Home (this one, or one after a restart) goes on asking it.
+   */
+  retired?: { readonly target: Readonly<Record<string, unknown>> },
+): Promise<void> {
+  await commitPersonalMutation(
+    database,
+    async (tx, mutation) => {
+      mutation.bumpResource("browser-placement");
+      // Retired targets already draining before this retirement keep their own open calls
+      // (their drain coordinators settle them by id; PH3). Every other open call for this
+      // runner belonged to the retiring target — including one that never installed a slot row —
+      // and is closed as unknown so it is never sent to or orphaned past the new target.
+      const draining = await tx
+        .selectFrom("browserPoolRetiredTargets")
+        .select(["slotId", "term"])
+        .where("runnerId", "=", runnerId)
+        .execute(databaseOperationOptions());
+      const drainingKeys = new Set(draining.map((row) => `${row.slotId}\0${row.term}`));
+      const slot = await tx
+        .deleteFrom("browserPoolSlots")
+        .where("runnerId", "=", runnerId)
+        .returningAll()
+        .executeTakeFirst(databaseOperationOptions());
+      if (slot && retired) {
+        const waiting = await tx
+          .selectFrom("browserSessions")
+          .select("id")
+          .where("runnerId", "=", runnerId)
+          .where("state", "=", "closing")
+          .where(ownedBy(slot))
+          .limit(1)
+          .executeTakeFirst(databaseOperationOptions());
+        if (waiting)
+          await tx
+            .insertInto("browserPoolRetiredTargets")
+            .values({
+              slotId: slot.slotId,
+              term: slot.term,
+              runnerId,
+              runtimeId: slot.runtimeId,
+              instanceId: slot.instanceId,
+              epoch: slot.epoch,
+              target: retired.target,
+            })
+            .onConflict((conflict) => conflict.columns(["slotId", "term"]).doNothing())
+            .execute(databaseOperationOptions());
+      }
+      const open = await tx
+        .selectFrom("browserPoolControllerCalls")
+        .select(["id", "slotId", "term"])
+        .where("runnerId", "=", runnerId)
+        .where("settledAt", "is", null)
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute(databaseOperationOptions());
+      for (const row of open) {
+        if (drainingKeys.has(`${row.slotId}\0${row.term}`)) continue;
+        await tx
+          .updateTable("browserPoolControllerCalls")
+          .set({
+            result: { id: row.id, outcome: "unknown", reason: "target-replaced" },
+            settledAt: new Date(),
+          })
+          .where("id", "=", row.id)
+          .execute(databaseOperationOptions());
+      }
+      const relays = await tx
+        .selectFrom("browserPoolRelays")
+        .select("id")
+        .where("runnerId", "=", runnerId)
+        .orderBy("id")
+        // FOR UPDATE: these relays are deleted below; their keys are locked in order.
+        .forUpdate()
+        .execute(databaseOperationOptions());
+      if (relays.length)
+        await tx
+          .deleteFrom("browserPoolRelays")
+          .where(
+            "id",
+            "in",
+            relays.map(({ id }) => id),
+          )
+          .execute(databaseOperationOptions());
+    },
+    undefined,
+    "once-bounded",
+  );
 }

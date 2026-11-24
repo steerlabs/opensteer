@@ -5,7 +5,7 @@ import {
   serverHomeFacts,
   type HomeKindFact,
 } from "@opensteer/client/computers";
-import { useCloudComputer, useWorkPolicy } from "@opensteer/client/react";
+import { useCloudComputer } from "@opensteer/client/react";
 import type { MachineSummary } from "@opensteer/protocol";
 import { useShell } from "../app-shell.js";
 import { SettingsGroup, SettingsRow } from "../settings/primitives.js";
@@ -17,16 +17,14 @@ import { useCloudComputerAccount } from "../settings/sections/cloud-computer.js"
  * window runs on the Home itself.
  */
 export function useHomeKind(): HomeKindFact {
-  const { desktopDeployment, hostClient, snapshot } = useShell();
+  const { desktopDeployment, snapshot } = useShell();
   const cloud = useCloudComputer(useCloudComputerAccount());
-  const work = useWorkPolicy(hostClient);
   return homeKind({
     exposure: snapshot.identityConfig?.exposure,
     homeKind: snapshot.identityConfig?.homeKind,
     deploymentId: snapshot.deploymentId,
     hostedHere: desktopDeployment?.onThisComputer === true,
     account: cloud.views,
-    workOrganization: work?.organizationName ?? null,
   });
 }
 

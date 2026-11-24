@@ -359,7 +359,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     snapshot?.account.status === "signed-in" ? cloudComputerAccountFor(placesBridge) : null,
   );
   const cloudHomeId = cloud.views
-    ? (currentCloudComputer(cloud.views.computers, cloud.views.work)?.deploymentId ?? null)
+    ? (currentCloudComputer(cloud.views.computers)?.deploymentId ?? null)
     : null;
   const awaitedId =
     cloud.checkoutFollowed &&

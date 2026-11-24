@@ -150,6 +150,7 @@ describe("Product tool handlers", () => {
     });
     expect(agentPage).toHaveBeenCalledWith({
       ownerId,
+      reader: { kind: "work", threadId: claims.threadId },
       scope: { kind: "personal" },
       scopeId: claims.threadId,
       status: "all",
@@ -212,6 +213,7 @@ describe("Product tool handlers", () => {
     });
     expect(agentPage).toHaveBeenCalledWith({
       ownerId,
+      reader: { kind: "work", threadId: claims.threadId },
       scope: { kind: "personal" },
       scopeId: claims.threadId,
       status: "all",
@@ -856,10 +858,9 @@ describe("Product tool handlers", () => {
         idempotencyKey: requestId,
         name: "Nightly report",
         operation: "create",
-        program: {
-          toolContractVersion: 5,
-          language: "javascript",
-          source: "export default () => {}",
+        script: {
+          interpreter: null,
+          text: "console.log('ok')",
         },
         source: {
           kind: "webhook",
@@ -914,9 +915,7 @@ describe("Product tool handlers", () => {
         operation: "list",
       },
       current.id,
-      {
-        accessMode: current.accessMode,
-      },
+      undefined,
     );
   });
 });

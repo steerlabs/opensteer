@@ -42,6 +42,7 @@ export interface ProviderRetryTrackerOptions {
   readonly now?: (() => number) | undefined;
   readonly log?: HarnessLog | undefined;
   readonly logContext?: Readonly<Record<string, unknown>> | undefined;
+  readonly secrets?: readonly string[] | undefined;
 }
 
 export function formatRetryBudgetMessage(
@@ -88,6 +89,7 @@ export class ProviderRetryTracker {
   readonly #now: () => number;
   readonly #log: HarnessLog | undefined;
   readonly #logContext: Readonly<Record<string, unknown>> | undefined;
+  readonly #secrets: readonly string[] | undefined;
   readonly #episodes = new Map<string, ActiveRetryEpisode>();
   #disposed = false;
 
@@ -101,6 +103,7 @@ export class ProviderRetryTracker {
     this.#now = options.now ?? Date.now;
     this.#log = options.log;
     this.#logContext = options.logContext;
+    this.#secrets = options.secrets;
   }
 
   /** Most recently updated active retry episode across all sources, or null. */
@@ -139,9 +142,10 @@ export class ProviderRetryTracker {
         : null;
     const rawCode = input.code?.trim();
     const code = rawCode ? utf8Prefix(rawCode, 128) : null;
+    const secrets = this.#secrets ?? networkCredentialSecrets(process.env);
     const message =
       utf8Prefix(
-        redactNetworkCredentials(input.message.trim(), networkCredentialSecrets(process.env)),
+        redactNetworkCredentials(input.message.trim(), secrets),
         runRetryMessageMaxLength,
       ) || "Provider is retrying";
     const record: ProviderRetryRecord = {
@@ -181,7 +185,10 @@ export class ProviderRetryTracker {
         } catch (error) {
           this.#log?.("warn", "Provider retry budget handler failed", {
             ...this.#logContext,
-            error: error instanceof Error ? error.message : String(error),
+            error: redactNetworkCredentials(
+              error instanceof Error ? error.message : String(error),
+              this.#secrets ?? networkCredentialSecrets(process.env),
+            ),
           });
         }
       }, remainingMs);

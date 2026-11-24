@@ -17,7 +17,6 @@ import {
   inDatabaseOperationTransaction,
 } from "./operation-budget.js";
 import type { DatabaseSchema } from "./schema.js";
-import { inheritWorkHomeDatabase } from "./work-home-context.js";
 import { applyDatabaseOperationBudget } from "./operation-budget-executor.js";
 
 interface DatabaseConnectionOptions {
@@ -276,27 +275,39 @@ export function withDatabaseTransaction<Schema, Result>(
   isolationLevel?: IsolationLevel,
   retryAdditional?: (error: unknown) => boolean,
 ): Promise<Result> {
-  return retryDatabaseTransaction(async () => {
-    const operation = databaseOperation();
-    const options = databaseOperationOptions();
-    const run = (connection: Kysely<Schema>) => {
-      const builder = connection.transaction();
-      return (isolationLevel ? builder.setIsolationLevel(isolationLevel) : builder).execute(
-        (transaction) =>
-          inDatabaseOperationTransaction(async () => {
-            operation?.signal.throwIfAborted();
-            inheritWorkHomeDatabase(database, transaction);
-            const result = await action(transaction);
-            operation?.signal.throwIfAborted();
-            return result;
-          }),
-      );
-    };
-    try {
-      return await (operation ? database.connection().execute(run, options) : run(database));
-    } catch (error) {
-      if (operation?.signal.aborted) throw operation.signal.reason;
-      throw error;
-    }
-  }, retryAdditional);
+  return retryDatabaseTransaction(
+    () => runDatabaseTransactionOnce(database, action, isolationLevel),
+    retryAdditional,
+  );
+}
+
+/**
+ * One attempt of a transaction under the operation's budget (each statement's timeout and its
+ * cancel on the signal), never retried: what `withDatabaseTransaction` runs for each attempt.
+ */
+export async function runDatabaseTransactionOnce<Schema, Result>(
+  database: Kysely<Schema>,
+  action: (transaction: Transaction<Schema>) => Promise<Result>,
+  isolationLevel?: IsolationLevel,
+): Promise<Result> {
+  const operation = databaseOperation();
+  const options = databaseOperationOptions();
+  const run = (connection: Kysely<Schema>) => {
+    const builder = connection.transaction();
+    return (isolationLevel ? builder.setIsolationLevel(isolationLevel) : builder).execute(
+      (transaction) =>
+        inDatabaseOperationTransaction(async () => {
+          operation?.signal.throwIfAborted();
+          const result = await action(transaction);
+          operation?.signal.throwIfAborted();
+          return result;
+        }),
+    );
+  };
+  try {
+    return await (operation ? database.connection().execute(run, options) : run(database));
+  } catch (error) {
+    if (operation?.signal.aborted) throw operation.signal.reason;
+    throw error;
+  }
 }

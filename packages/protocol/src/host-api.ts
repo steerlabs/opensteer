@@ -25,6 +25,7 @@ import {
 import { ChannelConnectionInspectionViewSchema } from "@opensteer/channel-core";
 import {
   AgentGrantSchema,
+  AgentCommandActivitySchema,
   AgentOperationViewSchema,
   AgentSessionIdSchema,
   DeviceIdSchema,
@@ -133,6 +134,7 @@ import {
   RequestIdSchema,
   RequestResponseSchema,
   RequestViewSchema,
+  commandRequestOutcomeSchema,
   RunAttemptViewSchema,
   RunIdSchema,
   RunViewSchema,
@@ -191,6 +193,7 @@ import {
   TriggerSummaryViewSchema,
   TriggerViewSchema,
   TriggerWatchActivationViewSchema,
+  TriggerWebhookAddressViewSchema,
   UpdateTriggerHttpBodySchema,
 } from "@opensteer/triggers/models";
 import { z } from "zod";
@@ -460,6 +463,8 @@ export type DeviceMachineSessionBindCommand = z.infer<typeof DeviceMachineSessio
 const AgentOperationPageSchema = z.object({
   operations: z.array(AgentOperationViewSchema).max(100),
   nextBefore: z.string().max(200).nullable(),
+  /** The commands sent through the door in the same span as this page's operations, newest first. */
+  commands: z.array(AgentCommandActivitySchema).max(100),
 });
 const otherCommandInputSchema = z.discriminatedUnion("type", [
   IphoneScreenAttachCommandSchema,
@@ -604,6 +609,11 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("thread.inputQueue.resume"),
   }),
   z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    threadId: ThreadIdSchema,
+    type: z.literal("thread.stop.recheck"),
+  }),
+  z.strictObject({
     type: z.literal("thread.visit"),
     idempotencyKey: idempotencyKeySchema,
     threadId: ThreadIdSchema,
@@ -705,6 +715,18 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     response: RequestResponseSchema,
     expectedRevision: PersonalRevisionSchema.optional(),
     type: z.literal("request.respond"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    requestId: RequestIdSchema,
+    /** The revision of the Request the person reviewed. */
+    expectedRevision: PersonalRevisionSchema,
+    /**
+     * The command as the person approves it: as proposed, or changed on its screen, with the values
+     * only the person types. Its type and what it changes must be what was asked.
+     */
+    command: z.record(z.string().max(200), z.unknown()),
+    type: z.literal("request.command.approve"),
   }),
   z.strictObject({
     /** Source fields the person filled in (a base URL, a region); the driver validates them. */
@@ -841,9 +863,14 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("personal.accountLink.resume"),
   }),
-  /** Ends this Home's Account link here and at the Account, with no Remote access involved. */
+  /**
+   * Ends this Home's Account link here and at the Account, with no Remote access involved. The
+   * Mac app sends it as two steps with its Account work between them: `revoke-sessions` ends the
+   * Home's Remote access sessions, `remove-link` forgets the link. Without `step`, both.
+   */
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
+    step: z.enum(["revoke-sessions", "remove-link"]).optional(),
     type: z.literal("personal.accountLink.unlink"),
   }),
   z.strictObject({
@@ -962,6 +989,12 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     requestId: z.uuid(),
     type: z.literal("integration.computer.setup.cancel"),
+  }),
+  /** The person ends one computer-use session from its live view: it narrows, and runs now. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    sessionId: ComputerUseSessionIdSchema,
+    type: z.literal("integration.computer.session.stop"),
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -1149,6 +1182,11 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
+    sessionId: z.string().min(1),
+    type: z.literal("browser.session.dismiss"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
     surfaceId: z.string().min(1).max(200),
     noticeId: z.string().min(1).max(200),
     type: z.literal("browser.pool.notice.seen"),
@@ -1239,6 +1277,10 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     thread: ThreadViewSchema,
     type: z.literal("thread.inputQueue.resume"),
   }),
+  z.object({
+    proven: z.boolean(),
+    type: z.literal("thread.stop.recheck"),
+  }),
   z.object({ input: ThreadInputViewSchema, type: z.literal("thread.input.cancel") }),
   z.object({ type: z.literal("thread.input.move") }),
   z.object({
@@ -1312,6 +1354,10 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run.interrupt"), wasDuplicate: z.boolean() }),
   z.object({ type: z.literal("node.stop"), wasDuplicate: z.boolean() }),
   z.object({ type: z.literal("request.respond") }),
+  z.object({
+    type: z.literal("request.command.approve"),
+    outcome: commandRequestOutcomeSchema,
+  }),
   z.object({ harness: harnessRecordSchema, type: z.literal("harness.create") }),
   z.object({ installation: HarnessInstallationSchema, type: z.literal("harness.update") }),
   z.object({ harness: harnessRecordSchema, type: z.literal("harness.rename") }),
@@ -1400,6 +1446,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     type: z.literal("integration.computer.setup.request"),
   }),
   z.object({ type: z.literal("integration.computer.setup.cancel") }),
+  z.object({ type: z.literal("integration.computer.session.stop") }),
   z.object({
     type: z.literal("integration.computer.setup.respond"),
   }),
@@ -1464,6 +1511,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     deletion: BrowserProfileDeletionSchema.optional().catch(undefined),
   }),
   z.object({ type: z.literal("browser.session.close") }),
+  z.object({ type: z.literal("browser.session.dismiss") }),
   z.object({ type: z.literal("browser.pool.restart") }),
   z.object({ type: z.literal("browser.pool.notice.seen") }),
   z.object({ type: z.literal("browser.history.remove") }),
@@ -1473,7 +1521,12 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     trigger: TriggerViewSchema,
     type: z.literal("trigger.create"),
     wasDuplicate: z.boolean(),
-    webhook: z.object({ secret: z.string().min(1), url: z.url() }).optional(),
+    webhook: z
+      .object({
+        scope: z.enum(["public", "local"]),
+        url: z.url(),
+      })
+      .optional(),
   }),
   z.object({
     revision: TriggerRevisionViewSchema,
@@ -1893,11 +1946,6 @@ const hostApiGroup3 = defineRpc({
    * Stop a live session from any client, which is the person saying so from
    * somewhere other than the Mac's own pill. Only that Mac's owner may.
    */
-  "integration.computer.session.stop": declaration(
-    "POST",
-    z.strictObject({ sessionId: ComputerUseSessionIdSchema }),
-    emptyOutputSchema,
-  ),
 } as const);
 
 const hostApiGroup4 = defineRpc({
@@ -2119,6 +2167,7 @@ const hostApiGroup4 = defineRpc({
       occurrences: z.array(TriggerOccurrenceViewSchema).max(100),
       revision: TriggerRevisionViewSchema,
       trigger: TriggerViewSchema,
+      webhook: TriggerWebhookAddressViewSchema.nullable().optional(),
     }),
   ),
   "triggers.list": declaration(

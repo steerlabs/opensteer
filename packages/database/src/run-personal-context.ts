@@ -64,11 +64,11 @@ async function queryContextLineage(
   threadId: ThreadId,
   runConnectionId: string | null,
 ): Promise<ThreadContextLineage> {
-  // Reused workers retain every assigning conversation's context restriction, a task linked
-  // under another (an automation's own task) retains its parent's, and work an automation's
-  // program sends anywhere retains its anchor's. Chats are connections in `agent_connections`
-  // with `bridge_senders` set ('me' keeps personal context, 'anyone' drops it; both are chats
-  // and neither is the person's own lineage).
+  // Reused workers retain every assigning task's context restriction, a task linked under another
+  // (an automation's own task) retains its parent's, and work an automation's program sends
+  // anywhere retains its anchor's. Chats are connections in `agent_connections` with
+  // `bridge_senders` set ('me' keeps personal context, 'anyone' drops it; both are chats and
+  // neither is the person's own lineage).
   const result = await sql<{
     total: number;
     chatCount: number;
@@ -82,7 +82,13 @@ async function queryContextLineage(
         select source_run.thread_id as id
         from thread_inputs input
         join runs source_run on source_run.id = input.authority_source->>'runId'
-        where input.thread_id = current.id and input.state <> 'cancelled'
+        where input.thread_id = current.id
+          and (
+            input.state <> 'cancelled'
+            or input.run_id is not null
+            or input.steer_command_id is not null
+            or input.delivered_at is not null
+          )
           and input.authority_source->>'kind' = 'thread-agent'
         union
         select trigger.anchor_thread_id as id
@@ -90,13 +96,25 @@ async function queryContextLineage(
         join trigger_occurrences occurrence
           on occurrence.id = input.authority_source->>'occurrenceId'
         join triggers trigger on trigger.id = occurrence.trigger_id
-        where input.thread_id = current.id and input.state <> 'cancelled'
+        where input.thread_id = current.id
+          and (
+            input.state <> 'cancelled'
+            or input.run_id is not null
+            or input.steer_command_id is not null
+            or input.delivered_at is not null
+          )
           and input.authority_source->>'kind' = 'trigger-occurrence'
         union
         select trigger.anchor_thread_id as id
         from thread_inputs input
         join triggers trigger on trigger.id = input.authority_source->>'triggerId'
-        where input.thread_id = current.id and input.state <> 'cancelled'
+        where input.thread_id = current.id
+          and (
+            input.state <> 'cancelled'
+            or input.run_id is not null
+            or input.steer_command_id is not null
+            or input.delivered_at is not null
+          )
           and input.authority_source->>'kind' = 'watch-observation'
         union
         select parent_thread_id as id from delegations where child_thread_id = current.id
@@ -114,7 +132,13 @@ async function queryContextLineage(
       select written.connection_id
       from context_threads
       join thread_inputs written on written.thread_id = context_threads.id
-      where written.state <> 'cancelled' and written.connection_id is not null
+      where (
+          written.state <> 'cancelled'
+          or written.run_id is not null
+          or written.steer_command_id is not null
+          or written.delivered_at is not null
+        )
+        and written.connection_id is not null
       union
       select ${runConnectionId}::text
       where ${runConnectionId}::text is not null

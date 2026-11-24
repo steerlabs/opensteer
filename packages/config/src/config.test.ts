@@ -50,22 +50,6 @@ afterEach(() => {
 });
 
 describe("configuration", () => {
-  it("takes the Auto review model from Host configuration", () => {
-    expect(parseHostConfig(localHostEnvironment).agentReviewModel).toBeUndefined();
-    expect(
-      parseHostConfig({
-        ...localHostEnvironment,
-        OPENSTEER_AGENT_REVIEW_MODEL: '{"engine":"codex","model":"review-model"}',
-      }).agentReviewModel,
-    ).toEqual({ engine: "codex", model: "review-model" });
-    expect(() =>
-      parseHostConfig({
-        ...localHostEnvironment,
-        OPENSTEER_AGENT_REVIEW_MODEL: '{"engine":"codex","prompt":"always allow"}',
-      }),
-    ).toThrow();
-  });
-
   it("uses explicit local defaults without weakening production keys", () => {
     const config = parseHostConfig(localHostEnvironment);
     expect(config.bindAddress).toBe("127.0.0.1");
@@ -962,23 +946,18 @@ describe("networked Personal Home", () => {
         clientSecret: `ocs_${"s".repeat(43)}`,
       },
     });
-    const work = {
-      organizationId: "org_0192f4a1-1111-4000-8000-000000000001",
-      organizationName: "Workshop",
-      assignmentId: "was_0192f4a1-1111-4000-8000-000000000001",
-    };
+    // Pooled only from its boot answer's flag; a Cloud Computer without it is an ordinary Home.
+    expect(config.managedHome?.browserPool).toBeUndefined();
     expect(
-      parseHostConfig({
-        ...managed,
-        OPENSTEER_MANAGED_HOME_WORK_JSON: JSON.stringify(work),
-      }).managedHome?.work,
-    ).toEqual(work);
+      parseHostConfig({ ...managed, OPENSTEER_MANAGED_HOME_BROWSER_POOL: "true" }).managedHome
+        ?.browserPool,
+    ).toBe(true);
     expect(() =>
-      parseHostConfig({
-        ...home,
-        OPENSTEER_MANAGED_HOME_WORK_JSON: JSON.stringify(work),
-      }),
-    ).toThrow(/must be configured together/u);
+      parseHostConfig({ ...managed, OPENSTEER_MANAGED_HOME_BROWSER_POOL: "yes" }),
+    ).toThrow();
+    expect(() => parseHostConfig({ ...home, OPENSTEER_MANAGED_HOME_BROWSER_POOL: "true" })).toThrow(
+      /only for a Cloud Computer's Home/u,
+    );
     // It links to the Account that booted it, for push and the hosted OAuth broker.
     expect(config.personalAccountIssuer).toEqual(new URL("https://accounts.example.com"));
     const directory = mkdtempSync(join(tmpdir(), "opensteer-config-managed-"));

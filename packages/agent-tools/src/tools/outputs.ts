@@ -36,12 +36,13 @@ import {
   ThreadAccessModeSchema,
 } from "@opensteer/core";
 import {
-  TriggerProgramEventSchema,
+  TriggerScriptEventSchema,
   TriggerViewSchema,
   TriggerRevisionViewSchema,
   TriggerOccurrenceViewSchema,
   TriggerSummaryViewSchema,
   TriggerWatchActivationViewSchema,
+  TriggerWebhookAddressViewSchema,
 } from "@opensteer/triggers";
 import { AgentLinkSchema } from "./agent-links.js";
 export { AgentLinkSchema } from "./agent-links.js";
@@ -204,8 +205,9 @@ export const TaskSchema = z.object({
 export const ThreadMessageOutputSchema = z.object({
   link: AgentLinkSchema.optional(),
   delegationId: AssignmentIdSchema.nullable(),
-  disposition: z.enum(["cancelled", "pending", "steering", "run-queued"]),
-  messageId: MessageIdSchema,
+  disposition: z.enum(["cancelled", "pending", "steering", "run-queued", "skipped"]),
+  messageId: MessageIdSchema.nullable(),
+  reason: z.string().optional(),
   runId: RunSchema.shape.id.nullable(),
 });
 export const ThreadInterruptOutputSchema = z.object({
@@ -398,9 +400,9 @@ const AutomationOccurrenceSchema = TriggerOccurrenceViewSchema.omit({
   environmentId: true,
   event: true,
 }).extend({
-  event: z.object(TriggerProgramEventSchema.omit({ trigger: true }).shape).extend({
+  event: z.object(TriggerScriptEventSchema.omit({ trigger: true }).shape).extend({
     automation: z
-      .object(TriggerProgramEventSchema.shape.trigger.omit({ anchorThreadId: true }).shape)
+      .object(TriggerScriptEventSchema.shape.trigger.omit({ anchorThreadId: true }).shape)
       .extend({ taskId: ThreadIdSchema }),
   }),
   automationId: TriggerViewSchema.shape.id,
@@ -462,11 +464,20 @@ export const TriggerOutputSchema = z.object({
     .optional(),
   downstreamRunsTruncated: z.boolean().optional(),
   replayed: z.boolean().optional(),
+  webhook: TriggerWebhookAddressViewSchema.nullable().optional(),
 });
 
-export const TriggerWriteOutputSchema = TriggerOutputSchema.extend({
-  webhook: z.object({ url: z.url(), secret: z.string().min(1) }).optional(),
-});
+export const TriggerWriteOutputSchema = z.union([
+  z.object({
+    status: z.enum(["pending", "declined", "withdrawn", "closed", "answered"]),
+    requestId: RequestIdSchema,
+    next: z.string().optional(),
+    outcome: z.unknown().optional(),
+  }),
+  TriggerOutputSchema.extend({
+    webhook: z.object({ scope: z.enum(["public", "local"]), url: z.url() }).optional(),
+  }),
+]);
 
 export { AgentMediaContentSchema, ComputerUseOutputSchema } from "./computer-outputs.js";
 

@@ -9,11 +9,7 @@ import {
   requestOptionDeclines,
   type ThreadAccessMode,
 } from "@opensteer/core";
-import {
-  nativeUserHarnessRuntimeBoundary,
-  type HarnessEvent,
-  type HarnessSessionContext,
-} from "@opensteer/harness";
+import { type HarnessEvent, type HarnessSessionContext } from "@opensteer/harness";
 import { afterEach, expect, it } from "vitest";
 import { CodexHarnessDriver, codexOthersHomeDirectory, packagedCodexExecutable } from "./index.js";
 
@@ -137,6 +133,8 @@ async function codexRun(input: {
   readonly accessMode: ThreadAccessMode;
   readonly authFile?: false;
   readonly credentialStore?: "auto" | "file" | "keyring";
+  readonly extraLaunchArgs?: readonly string[];
+  readonly isolated?: true;
   readonly own: boolean;
   readonly rules?: false;
 }) {
@@ -223,8 +221,19 @@ async function codexRun(input: {
     },
   });
   const instanceId = createId("harnessInstance");
-  const adapter = await driver.create({ config: {}, instanceId, sourceId: "openai" });
+  const adapter = await driver.create(
+    input.isolated
+      ? { config: { baseUrl: api.url }, instanceId, sourceId: "openai-compatible" }
+      : { config: {}, instanceId, sourceId: "openai" },
+  );
   cleanups.push(() => adapter.close());
+  const isolatedHome = join(state, "isolated-codex");
+  if (input.isolated) {
+    await mkdir(isolatedHome, { recursive: true });
+    await writeFile(join(isolatedHome, ".opensteer-source-api-key"), "local-stub", {
+      mode: 0o600,
+    });
+  }
   const context: HarnessSessionContext = {
     accessMode: input.accessMode,
     agentTools: {
@@ -243,8 +252,6 @@ async function codexRun(input: {
     historyWindow: { byteCount: 2, hasEarlier: false, itemCount: 0 },
     instructions: undefined,
     machineAccessNotice: "No other computers are reachable.",
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     modelSelection: ModelSelectionSchema.parse({
       modelId: "gpt-5.4",
       options: {},
@@ -253,20 +260,40 @@ async function codexRun(input: {
     personalContext: true,
     personLineage: input.own,
     platformGuide: "",
-    providerState: {
-      continuationKey: root,
-      kind: "ambient",
-      privateStateRoot: state,
-      providerHomeDirectory: undefined,
-      store: { directory: codexHome, id: "own-configuration" },
-    },
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
+    providerState: input.isolated
+      ? {
+          continuationKey: join(root, "isolated"),
+          kind: "isolated",
+          privateStateRoot: state,
+          providerHomeDirectory: isolatedHome,
+          store: { directory: isolatedHome, id: "own-configuration-isolated" },
+        }
+      : {
+          continuationKey: root,
+          kind: "ambient",
+          privateStateRoot: state,
+          providerHomeDirectory: undefined,
+          store: { directory: codexHome, id: "own-configuration" },
+        },
     signal: AbortSignal.timeout(180_000),
     skills: { skills: [] },
     threadId: createId("thread"),
     threadStateDirectory,
     workspacePath: project,
-    wrapProcessLaunch: (launch) => launch,
+    wrapProcessLaunch: (launch) => {
+      if (!input.extraLaunchArgs) return launch;
+      const appServerIndex = launch.args.indexOf("app-server");
+      return appServerIndex === -1
+        ? { ...launch, args: [...launch.args, ...input.extraLaunchArgs] }
+        : {
+            ...launch,
+            args: [
+              ...launch.args.slice(0, appServerIndex),
+              ...input.extraLaunchArgs,
+              ...launch.args.slice(appServerIndex),
+            ],
+          };
+    },
     writableRoots: [project],
   };
   const events: HarnessEvent[] = [];
@@ -344,6 +371,7 @@ it("runs the person's own Supervised task with their own Codex configuration", a
   expect(run.events.filter((event) => event.type === "request.opened")).toHaveLength(0);
   expect(run.commandRan).toBe(true);
   // Their notify command ran; their instructions, agent and the project's reached the model.
+  // (Codex 0.162.0 requires per-hook trust hashes in hooks.state before executing hooks.json.)
   expect(run.notifyRan).toBe(true);
   const sent = run.requests.join("\n");
   for (const marker of [
@@ -397,10 +425,11 @@ it("refuses others' tasks before starting Codex when the login is in the keyring
     own: false,
   });
   expect(keyring.startFailure).toBeInstanceOf(OpensteerError);
-  expect((keyring.startFailure as OpensteerError).code).toBe("forbidden");
-  expect((keyring.startFailure as OpensteerError).message).toContain(
-    'cli_auth_credentials_store = "file"',
-  );
+  expect(keyring.startFailure).toMatchObject({
+    code: "forbidden",
+    message: "This engine is not available for this task.",
+    ownerMessage: expect.stringContaining('cli_auth_credentials_store = "file"'),
+  });
   expect(keyring.requests).toHaveLength(0);
 
   const missingAuth = await codexRun({
@@ -409,8 +438,11 @@ it("refuses others' tasks before starting Codex when the login is in the keyring
     own: false,
   });
   expect(missingAuth.startFailure).toBeInstanceOf(OpensteerError);
-  expect((missingAuth.startFailure as OpensteerError).code).toBe("forbidden");
-  expect((missingAuth.startFailure as OpensteerError).message).toContain("auth.json");
+  expect(missingAuth.startFailure).toMatchObject({
+    code: "forbidden",
+    message: "This engine is not available for this task.",
+    ownerMessage: expect.stringContaining("auth.json"),
+  });
   expect(missingAuth.requests).toHaveLength(0);
 }, 120_000);
 
@@ -472,7 +504,6 @@ it("runs Codex background text from the Opensteer-owned home without notify or p
         providerHomeDirectory: undefined,
         store: { directory: codexHome, id: "own-configuration" },
       },
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       scratchDirectory: state,
       wrapProcessLaunch: (launch) => launch,
     },
@@ -513,7 +544,6 @@ it("runs Codex background text from the Opensteer-owned home without notify or p
         providerHomeDirectory: undefined,
         store: { directory: codexHome, id: "own-configuration" },
       },
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       scratchDirectory: state,
       wrapProcessLaunch: (launch) => launch,
     },
@@ -527,4 +557,79 @@ it("runs Codex background text from the Opensteer-owned home without notify or p
   });
   expect(refused).toEqual({ ok: false, failure: "unavailable" });
   expect(api.requests).toHaveLength(beforeCount);
+}, 180_000);
+
+it("refuses system or managed notify, provider auth, provider aws, and Bedrock settings surfaced by real Codex config/read (G6)", async () => {
+  const cases = [
+    {
+      name: "notify",
+      extraLaunchArgs: ["-c", 'notify=["true"]'],
+      ownerPattern: /notify/iu,
+    },
+    {
+      name: "built-in amazon-bedrock",
+      extraLaunchArgs: ["-c", 'model_provider="amazon-bedrock"'],
+      ownerPattern: /AWS|credential/iu,
+    },
+    {
+      name: "provider auth command",
+      extraLaunchArgs: [
+        "-c",
+        'model_provider="managed_auth"',
+        "-c",
+        'model_providers.managed_auth.name="Managed Auth"',
+        "-c",
+        'model_providers.managed_auth.base_url="http://127.0.0.1:9/v1"',
+        "-c",
+        'model_providers.managed_auth.auth.command="true"',
+      ],
+      ownerPattern: /command/iu,
+    },
+    {
+      name: "provider aws profile",
+      extraLaunchArgs: [
+        "-c",
+        'model_provider="amazon-bedrock-runtime"',
+        "-c",
+        'model_providers.amazon-bedrock-runtime.aws.region="us-east-1"',
+        "-c",
+        'model_providers.amazon-bedrock-runtime.aws.profile="corp-sso"',
+      ],
+      ownerPattern: /AWS|credential/iu,
+    },
+  ] as const;
+
+  for (const testCase of cases) {
+    const run = await codexRun({
+      accessMode: "approval-required",
+      extraLaunchArgs: testCase.extraLaunchArgs,
+      own: false,
+    });
+    expect(run.startFailure, testCase.name).toMatchObject({
+      code: "forbidden",
+      message: "This engine is not available for this task.",
+      ownerMessage: expect.stringMatching(testCase.ownerPattern),
+    });
+    expect(run.requests, testCase.name).toHaveLength(0);
+    expect(run.notifyRan, testCase.name).toBe(false);
+  }
+}, 180_000);
+
+it("keeps an isolated Codex profile isolated from the person's configuration on others' tasks", async () => {
+  const run = await codexRun({ accessMode: "approval-required", isolated: true, own: false });
+  expect(run.startFailure).toBeUndefined();
+  expect(run.events.find((event) => event.type === "run.failed")).toBeUndefined();
+  expect(run.events.filter((event) => event.type === "request.opened")).toHaveLength(1);
+  expect(run.commandRan).toBe(false);
+  expect(run.notifyRan).toBe(false);
+  expect(run.hookRan).toBe(false);
+  const sent = run.requests.join("\n");
+  for (const marker of [
+    "PERSON-DEVELOPER-MARKER",
+    "PERSON-AGENT-MARKER",
+    "PERSON-GLOBAL-AGENTS-MARKER",
+    "PROJECT-AGENTS-MARKER",
+    "PROJECT-DEVELOPER-MARKER",
+  ])
+    expect(sent).not.toContain(marker);
 }, 180_000);

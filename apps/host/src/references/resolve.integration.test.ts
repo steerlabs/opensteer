@@ -90,10 +90,9 @@ describeStore("personal reference handlers", (it) => {
       createdBy: run.userId,
       idempotencyKey: randomUUID(),
       name: "Daily report",
-      program: {
-        language: "javascript",
-        source: "export default async () => null",
-        toolContractVersion: 5,
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",

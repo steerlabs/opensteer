@@ -350,10 +350,8 @@ it("preserves production action validation before consuming mocks", async () => 
         taskId: "thr_00000000-0000-4000-8000-000000000011",
         name: "Light memory pass",
         source: { kind: "schedule", cron: "*/30 8-22 * * *", timezone: "America/New_York" },
-        program: {
-          language: "javascript",
-          toolContractVersion: 5,
-          source: "export default async function () {}",
+        script: {
+          text: "console.log('ok');",
         },
       },
     });
@@ -440,10 +438,8 @@ it("reads back successful automation changes and the requested one-shot time", a
       arguments: {
         name: "Reminder: finish deleting memory",
         source: { kind: "schedule", at: "2027-01-01T09:05:00-05:00" },
-        program: {
-          language: "typescript",
-          toolContractVersion: 5,
-          source: "export default async function () {}",
+        script: {
+          text: "console.log('ok');",
         },
       },
     });
@@ -576,6 +572,65 @@ it("discovers changed tasks from message times and reads own handoffs", async ()
       items: [{ text: "Boundary" }, { text: "Old" }],
       hasMore: false,
     });
+  } finally {
+    await client.close();
+    await host.close();
+  }
+});
+
+it("answers a read with what an accepted command changed ($after)", async () => {
+  const testCase = parseCases(
+    JSON.stringify({
+      id: "mock-after",
+      area: "transport",
+      kind: "guard",
+      profile: "task",
+      source: { commit: "a".repeat(40), note: "A Home that changed answers with the change" },
+      turns: ["Use the other engine"],
+      mocks: {
+        opensteer_state: {
+          $byArgs: [
+            {
+              args: { area: "engines" },
+              result: {
+                $after: {
+                  call: {
+                    tool: "opensteer_command",
+                    args: { command: { type: "harness.default.set" } },
+                  },
+                  before: { area: "engines", view: { default: "Codex" } },
+                  changed: { area: "engines", view: { default: "Claude Code" } },
+                },
+              },
+            },
+          ],
+        },
+        opensteer_command: { status: "done", result: { type: "harness.default.set" } },
+      },
+      expect: {},
+    }),
+  )[0]!;
+  const host = await startFakeHost(testCase);
+  const client = new Client({ name: "eval-after", version: "1" });
+  try {
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL("/agent", host.url), {
+        requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
+      }) as unknown as Transport,
+    );
+    const read = () => client.callTool({ name: "opensteer_state", arguments: { area: "engines" } });
+    expect(JSON.stringify(await read())).toContain("Codex");
+    await client.callTool({
+      name: "opensteer_command",
+      arguments: {
+        command: {
+          type: "harness.default.set",
+          environmentId: "env_00000000-0000-4000-8000-000000000501",
+          harnessInstanceId: "hin_00000000-0000-4000-8000-000000000602",
+        },
+      },
+    });
+    expect(JSON.stringify(await read())).toContain("Claude Code");
   } finally {
     await client.close();
     await host.close();

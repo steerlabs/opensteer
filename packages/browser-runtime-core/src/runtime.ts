@@ -52,6 +52,7 @@ import {
   BrowserPoolRuntimeControl,
   type BrowserPoolControl,
   type BrowserPoolDocument,
+  type BrowserPoolEndAnswer,
   type BrowserPoolPageLoss,
   type BrowserPoolRuntimeHooks,
   type BrowserPoolRuntimeOptions,
@@ -128,6 +129,11 @@ export interface BrowserRuntimeHealth {
   state: BrowserRuntimeState;
 }
 
+/** How many ended session ids a pooled runtime keeps refusing; ids are never reused. */
+const poolEndedLimit = 10_000;
+/** How long an end waits for a session's last pages to be confirmed closed. */
+const poolEndConfirmMs = 2_000;
+
 interface ActiveSession {
   claims: BrowserAttachTicketClaims;
   controller: BrowserController;
@@ -195,8 +201,13 @@ function browserHostKey(claims: BrowserAttachTicketClaims): BrowserPartitionKey 
     : `profile:${claims.identity.binding.profileId}`;
 }
 
-/** How long a pooled session whose Runner channel was lost waits for its Home to come back. */
-export const pooledChannelDeadlineMs = 20_000;
+/**
+ * How long a pooled session without a channel keeps its pages: the runtime keeps them detached
+ * for this long, and the Home tries to reattach them for this long before it ends the session
+ * with its note. Long enough for a Home restarted by an update to come back. An ordinary
+ * runtime has no such window: its session ends with its channel.
+ */
+export const pooledSessionWithoutChannelMs = 10 * 60_000;
 
 export class BrowserAttachment {
   readonly initialPage?: InitialPageReady;
@@ -281,6 +292,10 @@ export class BrowserRuntime implements NativePresentationSource {
   private readonly onHostCleanupFailure: NonNullable<BrowserRuntimeOptions["onHostCleanupFailure"]>;
   private readonly onStartFailure: NonNullable<BrowserRuntimeOptions["onStartFailure"]>;
   private readonly sessions = new Map<string, ActiveSession>();
+  /** Pooled only: sessions the Home asked to end. None of them is ever attached again. */
+  private readonly poolEnded = new Set<string>();
+  /** Pooled only: attaches still opening, by session; the Home's end request waits for them. */
+  private readonly poolOpening = new Map<string, number>();
   private readonly sleeper: TabSleeper;
   /** Every native page this runtime holds, across sessions and hosts. */
   readonly pages: PageOwnership;
@@ -323,7 +338,7 @@ export class BrowserRuntime implements NativePresentationSource {
     }
     this.launcher = options.launcher;
     const pool = options.pool;
-    this.poolChannelDeadlineMs = pool?.channelDeadlineMs ?? pooledChannelDeadlineMs;
+    this.poolChannelDeadlineMs = pool?.channelDeadlineMs ?? pooledSessionWithoutChannelMs;
     if (pool) {
       this.pool = new BrowserPoolRuntimeControl(
         pool.controllerKey,
@@ -449,7 +464,63 @@ export class BrowserRuntime implements NativePresentationSource {
     return this.pool.apply(control, signature);
   }
 
+  /**
+   * The Home's request to end one pooled session (P15), under a single-use ticket it signed for
+   * that session and this fence. A session it holds is torn down in its own lane, as its
+   * window's end does: nothing is revived, no hold is extended. The answer is read from what the
+   * page ledger holds of the session then, not from any bookkeeping (V3): `ended` only when it
+   * holds no page and no page creation of it; a page whose close cannot be confirmed is
+   * `unknown`; one still closing elsewhere, a creation, or an attach still opening is `not-yet`.
+   */
+  async endPoolSession(ticket: string): Promise<BrowserPoolEndAnswer> {
+    const pool = this.pool;
+    if (!pool || this.shuttingDown)
+      throw new BrowserRuntimeError("not_found", "Browser pool control is unavailable.");
+    const claims = await this.ticketVerifier.verify(ticket, { runtimeId: this.runtimeId });
+    if (!claims.pool?.end)
+      throw new BrowserRuntimeError("forbidden", "This ticket does not end a browser session.");
+    pool.checkFence(claims.pool);
+    const sessionId = claims.sessionId;
+    // Whatever the answer, no attach of this session is admitted from here on.
+    this.poolEnded.add(sessionId);
+    if (this.poolEnded.size > poolEndedLimit)
+      this.poolEnded.delete(this.poolEnded.values().next().value!);
+    const answer = (outcome: BrowserPoolEndAnswer["outcome"]): BrowserPoolEndAnswer => ({
+      outcome,
+      state: pool.state(),
+    });
+    // Only a runtime that serves traffic under this fence says a session is ended.
+    if (!pool.acceptsTraffic) return answer("not-yet");
+    const held = this.sessions.get(sessionId);
+    let tore = false;
+    if (held)
+      await this.lanes.run(held.host.identity.key, async () => {
+        const session = this.sessions.get(sessionId);
+        if (!session || !pool.acceptsTraffic) return;
+        pool.checkFence(claims.pool);
+        endPresentations(session);
+        tore = true;
+        await this.endActiveSession(session, true).catch(() => undefined);
+      });
+    pool.checkFence(claims.pool);
+    if (!pool.acceptsTraffic || this.sessions.has(sessionId) || this.poolOpening.has(sessionId))
+      return answer("not-yet");
+    let holds = this.pages.holdingsOf(sessionId);
+    // Closing in another hand (a teardown or rollback under way): not yet.
+    if (!tore && holds.closing) return answer("not-yet");
+    if (holds.pages || holds.creations) {
+      // Whatever is left of it is closed now, and confirmed.
+      await this.pages.endOtherPages(sessionId, new Set(), poolEndConfirmMs, "session-ended");
+      holds = this.pages.holdingsOf(sessionId);
+    }
+    if (holds.creations) return answer("not-yet");
+    if (holds.pages) return answer("unknown");
+    return answer("ended");
+  }
+
   private requirePoolTraffic(claims?: BrowserAttachTicketClaims, adoptionAttach = false): void {
+    if (claims?.pool?.end)
+      throw new BrowserRuntimeError("forbidden", "This ticket only ends a browser session.");
     if (this.pool) {
       if (
         !this.pool.acceptsTraffic &&
@@ -659,14 +730,27 @@ export class BrowserRuntime implements NativePresentationSource {
         continue;
       }
       // Ending one lost session is that session's alone: a failure cannot touch the adopted.
-      const ended = session
-        ? await this.endPooledSession(session).then(
-            () => true,
-            () => false,
-          )
-        : true;
-      lost.push({ sessionId, reason: ended ? reason : `${reason}; end-unconfirmed` });
+      if (session) await this.endPooledSession(session).catch(() => undefined);
+      lost.push({ sessionId, reason });
     }
+    // Nothing of a session the Home ended survives into a guest that serves (V2): every page
+    // the ledger still holds of one is asked to close again, and confirmed; if one is not, the
+    // adoption fails and the runtime does not serve. The Home's recovery replaces the guest.
+    const unconfirmed: BrowserSessionId[] = [];
+    for (const { sessionId } of lost) {
+      let holds = this.pages.holdingsOf(sessionId);
+      if (holds.pages || holds.creations) {
+        await this.pages.endOtherPages(sessionId, new Set(), poolEndConfirmMs, "session-ended");
+        holds = this.pages.holdingsOf(sessionId);
+      }
+      if (holds.pages || holds.creations) unconfirmed.push(sessionId);
+    }
+    if (unconfirmed.length)
+      throw new BrowserRuntimeError(
+        "conflict",
+        "A stopped browser session's pages did not close; this browser cannot serve.",
+        { reason: "end-unconfirmed" },
+      );
     // A page that did not thaw is that page's loss; its session and the others are kept.
     const pagesLost = (await this.thawPoolPages()).flatMap(({ surfaceId, sessionId }) =>
       sessionId && adopted.includes(sessionId)
@@ -991,6 +1075,8 @@ export class BrowserRuntime implements NativePresentationSource {
         this.shuttingDown ||
         !active ||
         active.poolDetached ||
+        // The Home asked to end it: no channel of any kind is admitted to it again.
+        this.poolEnded.has(claims.sessionId) ||
         !active.host.acceptingSessions ||
         active.host.identity.key !== hostKey ||
         active.claims.subject !== claims.subject ||
@@ -1143,290 +1229,317 @@ export class BrowserRuntime implements NativePresentationSource {
     signal = AbortSignal.any([parentSignal, AbortSignal.timeout(remaining)]);
     const hostKey = browserHostKey(claims);
     const queued = performance.now();
-    return this.lanes.run(hostKey, async () => {
-      timing("lane-wait", queued);
-      signal.throwIfAborted();
-      this.requirePoolTraffic(claims, true);
-      if (this.shuttingDown || this.state === "closed") {
-        throw new BrowserRuntimeError("conflict", "The Browser Runtime is shutting down.");
-      }
-      if (!/^[A-Za-z0-9_-]{1,128}$/u.test(claims.sessionId))
-        throw new BrowserRuntimeError("bad_message", "The Browser Session ID is invalid.");
-      const operationKey = claims.initialNavigation
-        ? `${claims.subject}:${claims.initialNavigation.operationKey}`
-        : undefined;
-      const fingerprint = JSON.stringify({
-        sessionId: claims.sessionId,
-        identity: claims.identity.kind === "profile-local" ? claims.identity.binding : "fresh",
-        navigation: claims.initialNavigation,
-      });
-      const previous = operationKey ? this.initialOperations.get(operationKey) : undefined;
-      const active = previous && this.sessions.get(previous.sessionId);
-      if (this.pool) {
-        const attachment = claims.pool?.attachment;
-        const held = this.sessions.get(claims.sessionId);
-        if (!attachment || (held?.poolAttachment && attachment <= held.poolAttachment))
-          throw new BrowserRuntimeError("forbidden", "The pooled browser attachment is stale.");
-        if (held && (this.pool.canAdopt(claims.sessionId) || held.channelLostUntil !== undefined))
-          return wait(this.reattachAfterPool(held, claims, sink, attachment));
-        if (!this.pool.acceptsTraffic || held?.poolDetached)
-          throw new BrowserRuntimeError("not_found", "The retained Browser Session has ended.");
-        if (held) held.poolAttachment = attachment;
-      }
-      if (claims.reattach && active?.sessionId !== claims.sessionId)
-        throw new BrowserRuntimeError("not_found", "The browser session has ended.");
-      if (
-        claims.identity.kind !== "fresh" &&
-        this.deletedProfiles.has(hostKey.slice("profile:".length))
-      )
-        throw new BrowserRuntimeError("conflict", "This browser profile has been deleted.");
-      if (previous) {
-        if (previous.fingerprint !== fingerprint || !active || !previous.result)
-          throw new BrowserRuntimeError(
-            "conflict",
-            "The initial browser operation already has an outcome; it cannot start another browser.",
-          );
-        this.sleeper.resetSessionState(active.sessionId);
-        if (active.reattachUntil) {
-          if (claims.actor !== "person" || active.claims.actor !== "person")
-            throw new BrowserRuntimeError(
-              "forbidden",
-              "This browser is reconnecting for the person.",
-            );
-          const [root, ...others] = active.ledger.resumeAfterRelayRestart();
-          if (!root) throw new BrowserRuntimeError("not_found", "The browser page closed.");
-          const router = active.host.router;
-          try {
-            router.registerSession(
-              active.sessionId,
-              root,
-              active.ledger.resolveTarget.bind(active.ledger),
-              active.files.root,
-            );
-            for (const target of others) router.claimTarget(active.sessionId, target);
-            const controller = this.createController(
-              active.host,
-              claims,
-              active.files,
-              active.ledger,
-              sink,
-            );
-            active.controller = controller;
-            await wait(controller.start());
-          } catch (error) {
-            await router.unregisterSession(active.sessionId);
-            throw error;
-          }
-          clearTimeout(active.reattachUntil);
-          delete active.reattachUntil;
-        } else {
-          await wait(active.controller.reattach(sink));
+    // Pooled: the Home's end request for this session waits while this attach is opening.
+    let opening = false;
+    const opened = () => {
+      if (!opening) return;
+      opening = false;
+      const count = (this.poolOpening.get(claims.sessionId) ?? 1) - 1;
+      if (count) this.poolOpening.set(claims.sessionId, count);
+      else this.poolOpening.delete(claims.sessionId);
+    };
+    return this.lanes
+      .run(hostKey, async () => {
+        timing("lane-wait", queued);
+        signal.throwIfAborted();
+        this.requirePoolTraffic(claims, true);
+        if (this.shuttingDown || this.state === "closed") {
+          throw new BrowserRuntimeError("conflict", "The Browser Runtime is shutting down.");
         }
-        active.generation = ++this.generation;
-        const generation = active.generation;
-        return new BrowserAttachment(
-          active.sessionId,
-          active.controller,
-          (confirmPages, restarting, channelLost) =>
-            this.detach(active.sessionId, generation, confirmPages, restarting, false, channelLost),
-          previous.result,
-          this.poolTrafficFor(active, generation),
-        );
-      }
-      if (this.sessions.has(claims.sessionId) || this.pendingSessions.has(claims.sessionId))
-        throw new BrowserRuntimeError("conflict", "The Browser Session is already attached.");
-      this.pendingSessions.add(claims.sessionId);
-      if (operationKey)
-        this.initialOperations.set(operationKey, { fingerprint, sessionId: claims.sessionId });
-      try {
-        try {
-          await wait(this.prepare());
-        } catch (error) {
-          throw this.startFailure(claims.sessionId, "runtime-preparation", error);
+        if (!/^[A-Za-z0-9_-]{1,128}$/u.test(claims.sessionId))
+          throw new BrowserRuntimeError("bad_message", "The Browser Session ID is invalid.");
+        const operationKey = claims.initialNavigation
+          ? `${claims.subject}:${claims.initialNavigation.operationKey}`
+          : undefined;
+        const fingerprint = JSON.stringify({
+          sessionId: claims.sessionId,
+          identity: claims.identity.kind === "profile-local" ? claims.identity.binding : "fresh",
+          navigation: claims.initialNavigation,
+        });
+        const previous = operationKey ? this.initialOperations.get(operationKey) : undefined;
+        const active = previous && this.sessions.get(previous.sessionId);
+        if (this.pool) {
+          if (this.poolEnded.has(claims.sessionId))
+            throw new BrowserRuntimeError("not_found", "The browser session has ended.");
+          opening = true;
+          this.poolOpening.set(claims.sessionId, (this.poolOpening.get(claims.sessionId) ?? 0) + 1);
+          const attachment = claims.pool?.attachment;
+          const held = this.sessions.get(claims.sessionId);
+          if (!attachment || (held?.poolAttachment && attachment <= held.poolAttachment))
+            throw new BrowserRuntimeError("forbidden", "The pooled browser attachment is stale.");
+          if (held && (this.pool.canAdopt(claims.sessionId) || held.channelLostUntil !== undefined))
+            return wait(this.reattachAfterPool(held, claims, sink, attachment));
+          if (!this.pool.acceptsTraffic || held?.poolDetached)
+            throw new BrowserRuntimeError("not_found", "The retained Browser Session has ended.");
+          if (held) held.poolAttachment = attachment;
         }
-        if (claims.identity.kind === "profile-local" && !this.localStore)
-          throw new BrowserRuntimeError(
-            "conflict",
-            "Native browser profile storage is unavailable.",
-          );
-        const files = new SessionFiles(path.join(this.sessionFilesRoot, claims.sessionId));
-        this.state = "starting";
-
-        const acquiring = performance.now();
-        let pageStarting = acquiring;
-        let host = this.hosts.get(hostKey);
-        let createdHost = false;
-        let ledger: SurfaceLedger | null = null;
-        let controller: BrowserController | null = null;
-        let rootPage = null as Awaited<ReturnType<LaunchedBrowser["context"]["createPage"]>> | null;
-        const sessionGeneration = ++this.generation;
-        let stage = "profile-state";
-        try {
-          const acquired = await this.acquireHost(claims, hostKey, signal);
-          if (!acquired.host) throw new Error("Browser acquisition returned no host.");
-          host = acquired.host;
-          createdHost = acquired.createdHost;
-          signal.throwIfAborted();
-          const acquisition = acquired.acquisition;
-          timing("profile-acquire", acquiring, acquisition);
-          pageStarting = performance.now();
-          stage = "profile-admission";
-          await wait(Promise.resolve(host.browser.profile?.admit(signal)));
-          if (
-            signal.aborted ||
-            this.shuttingDown ||
-            (claims.identity.kind !== "fresh" &&
-              this.deletedProfiles.has(hostKey.slice("profile:".length)))
-          )
+        if (claims.reattach && active?.sessionId !== claims.sessionId)
+          throw new BrowserRuntimeError("not_found", "The browser session has ended.");
+        if (
+          claims.identity.kind !== "fresh" &&
+          this.deletedProfiles.has(hostKey.slice("profile:".length))
+        )
+          throw new BrowserRuntimeError("conflict", "This browser profile has been deleted.");
+        if (previous) {
+          if (previous.fingerprint !== fingerprint || !active || !previous.result)
             throw new BrowserRuntimeError(
               "conflict",
-              "This browser profile has been deleted or stopped.",
+              "The initial browser operation already has an outcome; it cannot start another browser.",
             );
-          if (host.router.hasExclusiveContextClient)
-            throw new BrowserRuntimeError(
-              "conflict",
-              "This browser profile has a whole-context CDP attachment.",
-            );
-          stage = "page-create";
-          // A new host's launch page is this session's root unless another already owns it.
-          const launchPage = createdHost ? host.browser.context.pages()[0] : undefined;
-          if (launchPage && this.pages.claim(launchPage, claims.sessionId)) rootPage = launchPage;
-          else {
-            // Owned by this session from its handle on; rollback ends it.
-            const context = host.browser.context;
-            const creation = this.pages.create(
-              claims.sessionId,
-              null,
-              "open-failed",
-              (own, signal) => context.createPage({ own, signal }),
-            );
-            rootPage = await wait(creation.page);
+          this.sleeper.resetSessionState(active.sessionId);
+          if (active.reattachUntil) {
+            if (claims.actor !== "person" || active.claims.actor !== "person")
+              throw new BrowserRuntimeError(
+                "forbidden",
+                "This browser is reconnecting for the person.",
+              );
+            const [root, ...others] = active.ledger.resumeAfterRelayRestart();
+            if (!root) throw new BrowserRuntimeError("not_found", "The browser page closed.");
+            const router = active.host.router;
+            try {
+              router.registerSession(
+                active.sessionId,
+                root,
+                active.ledger.resolveTarget.bind(active.ledger),
+                active.files.root,
+              );
+              for (const target of others) router.claimTarget(active.sessionId, target);
+              const controller = this.createController(
+                active.host,
+                claims,
+                active.files,
+                active.ledger,
+                sink,
+              );
+              active.controller = controller;
+              await wait(controller.start());
+            } catch (error) {
+              await router.unregisterSession(active.sessionId);
+              throw error;
+            }
+            clearTimeout(active.reattachUntil);
+            delete active.reattachUntil;
+          } else {
+            await wait(active.controller.reattach(sink));
           }
-
-          signal.throwIfAborted();
-          stage = "session-initialize";
-          const sessionRouter = host.router;
-          ledger = new SurfaceLedger(host.browser.context, {
-            pages: this.pages,
-            sessionId: claims.sessionId,
-            creationOrigin: claims.creationOrigin,
-            navigationVersion: claims.navigationVersion,
-            beforeResize: async (surfaceId) =>
-              (this.sessions.get(claims.sessionId)?.controller ?? controller)?.prepareResize(
-                surfaceId,
-              ),
-            // Every page the session holds, a tab the person opened included, is
-            // one its agents can list and attach to.
-            claimTarget: (targetId, openerId, woke) =>
-              sessionRouter.claimTarget(claims.sessionId, targetId, openerId, woke),
-            releaseTarget: (targetId, asleep) =>
-              sessionRouter.releaseTarget(claims.sessionId, targetId, asleep),
-            // A person who started the browser from a view gets its first page
-            // at that view's size, before anything loads there.
-            initialViewport: claims.viewport
-              ? { devicePixelRatio: 1, ...claims.viewport }
-              : this.initialViewport,
-            rootPages: [rootPage],
-            ...(claims.tabRestoreVersion === 1 && claims.initialSurfaceId
-              ? { initialSurfaceId: claims.initialSurfaceId }
-              : {}),
-          });
-          sessionRouter.registerSession(
-            claims.sessionId,
-            await wait(rootPage.targetId()),
-            ledger.resolveTarget.bind(ledger),
-            files.root,
-          );
-          await wait(ledger.start());
-          controller = this.createController(host, claims, files, ledger, sink);
-          const active: ActiveSession = {
-            claims,
-            controller,
-            files,
-            generation: sessionGeneration,
-            host,
-            ledger,
-            sessionId: claims.sessionId,
-            presentations: new Set(),
-            ...(claims.pool?.attachment ? { poolAttachment: claims.pool.attachment } : {}),
-          };
-          host.sessions.set(claims.sessionId, active);
-          this.sessions.set(claims.sessionId, active);
-          const sleepContext = host.browser.context;
-          this.sleeper.add(claims.sessionId, {
-            ledger,
-            restoreVersion: claims.tabRestoreVersion,
-            sleepReady: () => sleepContext.sleepReady?.() ?? null,
-            blocked: (id) =>
-              [...this.nativePresentations].some(
-                (p) => p.sessionId === claims.sessionId && p.surfaceId === id,
-              )
-                ? "native"
-                : active.controller.sleepProtection(id),
-          });
-          stage = "session-snapshot";
-          await wait(controller.start());
-          timing("root-page-ready", pageStarting);
-          let initialPage: InitialPageReady | undefined;
-          if (claims.initialNavigation) {
-            const navigating = performance.now();
-            initialPage = controller.startInitialNavigation(rootPage, claims.initialNavigation);
-            timing("navigation-submitted", navigating);
-            this.initialOperations.set(operationKey!, {
-              fingerprint,
-              sessionId: claims.sessionId,
-              result: initialPage,
-            });
-          }
-          host.lastUsed = ++this.usage;
-          this.state = "ready";
+          active.generation = ++this.generation;
+          const generation = active.generation;
           return new BrowserAttachment(
-            claims.sessionId,
-            controller,
+            active.sessionId,
+            active.controller,
             (confirmPages, restarting, channelLost) =>
               this.detach(
-                claims.sessionId,
-                sessionGeneration,
+                active.sessionId,
+                generation,
                 confirmPages,
                 restarting,
                 false,
                 channelLost,
               ),
-            initialPage,
-            this.poolTrafficFor(active, sessionGeneration),
+            previous.result,
+            this.poolTrafficFor(active, generation),
           );
-        } catch (error) {
-          if (host) {
-            host.sessions.delete(claims.sessionId);
-            await boundedCleanup(host.router.unregisterSession(claims.sessionId)).catch(
-              () => undefined,
-            );
-          }
-          this.sleeper.remove(claims.sessionId);
-          this.sessions.delete(claims.sessionId);
-          await boundedCleanup(
-            settleCleanup([
-              async () => controller?.close(),
-              async () => ledger?.closeOwnedPages("open-failed"),
-              async () => ledger?.close(),
-              () => files.dispose(),
-              async () => {
-                // Pages still being created or registered for this session end too.
-                void this.pages.endSession(claims.sessionId, "open-failed");
-                if (createdHost && host) await this.cleanupHost(host, "open-failed");
-              },
-            ]),
-          ).catch((cleanupError: unknown) => {
-            if (host)
-              this.reportHostCleanupFailure(host.identity.kind, "session-rollback", cleanupError);
-          });
-          this.updateState();
-          throw this.startFailure(correlationId, stage, error);
         }
-      } finally {
-        this.pendingSessions.delete(claims.sessionId);
-      }
-    });
+        if (this.sessions.has(claims.sessionId) || this.pendingSessions.has(claims.sessionId))
+          throw new BrowserRuntimeError("conflict", "The Browser Session is already attached.");
+        this.pendingSessions.add(claims.sessionId);
+        if (operationKey)
+          this.initialOperations.set(operationKey, { fingerprint, sessionId: claims.sessionId });
+        try {
+          try {
+            await wait(this.prepare());
+          } catch (error) {
+            throw this.startFailure(claims.sessionId, "runtime-preparation", error);
+          }
+          if (claims.identity.kind === "profile-local" && !this.localStore)
+            throw new BrowserRuntimeError(
+              "conflict",
+              "Native browser profile storage is unavailable.",
+            );
+          const files = new SessionFiles(path.join(this.sessionFilesRoot, claims.sessionId));
+          this.state = "starting";
+
+          const acquiring = performance.now();
+          let pageStarting = acquiring;
+          let host = this.hosts.get(hostKey);
+          let createdHost = false;
+          let ledger: SurfaceLedger | null = null;
+          let controller: BrowserController | null = null;
+          let rootPage = null as Awaited<
+            ReturnType<LaunchedBrowser["context"]["createPage"]>
+          > | null;
+          const sessionGeneration = ++this.generation;
+          let stage = "profile-state";
+          try {
+            const acquired = await this.acquireHost(claims, hostKey, signal);
+            if (!acquired.host) throw new Error("Browser acquisition returned no host.");
+            host = acquired.host;
+            createdHost = acquired.createdHost;
+            signal.throwIfAborted();
+            const acquisition = acquired.acquisition;
+            timing("profile-acquire", acquiring, acquisition);
+            pageStarting = performance.now();
+            stage = "profile-admission";
+            await wait(Promise.resolve(host.browser.profile?.admit(signal)));
+            if (
+              signal.aborted ||
+              this.shuttingDown ||
+              (claims.identity.kind !== "fresh" &&
+                this.deletedProfiles.has(hostKey.slice("profile:".length)))
+            )
+              throw new BrowserRuntimeError(
+                "conflict",
+                "This browser profile has been deleted or stopped.",
+              );
+            if (host.router.hasExclusiveContextClient)
+              throw new BrowserRuntimeError(
+                "conflict",
+                "This browser profile has a whole-context CDP attachment.",
+              );
+            stage = "page-create";
+            // A new host's launch page is this session's root unless another already owns it.
+            const launchPage = createdHost ? host.browser.context.pages()[0] : undefined;
+            if (launchPage && this.pages.claim(launchPage, claims.sessionId)) rootPage = launchPage;
+            else {
+              // Owned by this session from its handle on; rollback ends it.
+              const context = host.browser.context;
+              const creation = this.pages.create(
+                claims.sessionId,
+                null,
+                "open-failed",
+                (own, signal) => context.createPage({ own, signal }),
+              );
+              rootPage = await wait(creation.page);
+            }
+
+            signal.throwIfAborted();
+            stage = "session-initialize";
+            const sessionRouter = host.router;
+            ledger = new SurfaceLedger(host.browser.context, {
+              pages: this.pages,
+              sessionId: claims.sessionId,
+              creationOrigin: claims.creationOrigin,
+              navigationVersion: claims.navigationVersion,
+              beforeResize: async (surfaceId) =>
+                (this.sessions.get(claims.sessionId)?.controller ?? controller)?.prepareResize(
+                  surfaceId,
+                ),
+              // Every page the session holds, a tab the person opened included, is
+              // one its agents can list and attach to.
+              claimTarget: (targetId, openerId, woke) =>
+                sessionRouter.claimTarget(claims.sessionId, targetId, openerId, woke),
+              releaseTarget: (targetId, asleep) =>
+                sessionRouter.releaseTarget(claims.sessionId, targetId, asleep),
+              // A person who started the browser from a view gets its first page
+              // at that view's size, before anything loads there.
+              initialViewport: claims.viewport
+                ? { devicePixelRatio: 1, ...claims.viewport }
+                : this.initialViewport,
+              rootPages: [rootPage],
+              ...(claims.tabRestoreVersion === 1 && claims.initialSurfaceId
+                ? { initialSurfaceId: claims.initialSurfaceId }
+                : {}),
+            });
+            sessionRouter.registerSession(
+              claims.sessionId,
+              await wait(rootPage.targetId()),
+              ledger.resolveTarget.bind(ledger),
+              files.root,
+            );
+            await wait(ledger.start());
+            controller = this.createController(host, claims, files, ledger, sink);
+            const active: ActiveSession = {
+              claims,
+              controller,
+              files,
+              generation: sessionGeneration,
+              host,
+              ledger,
+              sessionId: claims.sessionId,
+              presentations: new Set(),
+              ...(claims.pool?.attachment ? { poolAttachment: claims.pool.attachment } : {}),
+            };
+            // The Home asked to end this session while it opened: it is not kept.
+            if (this.poolEnded.has(claims.sessionId))
+              throw new BrowserRuntimeError("not_found", "The browser session has ended.");
+            host.sessions.set(claims.sessionId, active);
+            this.sessions.set(claims.sessionId, active);
+            const sleepContext = host.browser.context;
+            this.sleeper.add(claims.sessionId, {
+              ledger,
+              restoreVersion: claims.tabRestoreVersion,
+              sleepReady: () => sleepContext.sleepReady?.() ?? null,
+              blocked: (id) =>
+                [...this.nativePresentations].some(
+                  (p) => p.sessionId === claims.sessionId && p.surfaceId === id,
+                )
+                  ? "native"
+                  : active.controller.sleepProtection(id),
+            });
+            stage = "session-snapshot";
+            await wait(controller.start());
+            timing("root-page-ready", pageStarting);
+            let initialPage: InitialPageReady | undefined;
+            if (claims.initialNavigation) {
+              const navigating = performance.now();
+              initialPage = controller.startInitialNavigation(rootPage, claims.initialNavigation);
+              timing("navigation-submitted", navigating);
+              this.initialOperations.set(operationKey!, {
+                fingerprint,
+                sessionId: claims.sessionId,
+                result: initialPage,
+              });
+            }
+            host.lastUsed = ++this.usage;
+            this.state = "ready";
+            return new BrowserAttachment(
+              claims.sessionId,
+              controller,
+              (confirmPages, restarting, channelLost) =>
+                this.detach(
+                  claims.sessionId,
+                  sessionGeneration,
+                  confirmPages,
+                  restarting,
+                  false,
+                  channelLost,
+                ),
+              initialPage,
+              this.poolTrafficFor(active, sessionGeneration),
+            );
+          } catch (error) {
+            if (host) {
+              host.sessions.delete(claims.sessionId);
+              await boundedCleanup(host.router.unregisterSession(claims.sessionId)).catch(
+                () => undefined,
+              );
+            }
+            this.sleeper.remove(claims.sessionId);
+            this.sessions.delete(claims.sessionId);
+            await boundedCleanup(
+              settleCleanup([
+                async () => controller?.close(),
+                async () => ledger?.closeOwnedPages("open-failed"),
+                async () => ledger?.close(),
+                () => files.dispose(),
+                async () => {
+                  // Pages still being created or registered for this session end too.
+                  void this.pages.endSession(claims.sessionId, "open-failed");
+                  if (createdHost && host) await this.cleanupHost(host, "open-failed");
+                },
+              ]),
+            ).catch((cleanupError: unknown) => {
+              if (host)
+                this.reportHostCleanupFailure(host.identity.kind, "session-rollback", cleanupError);
+            });
+            this.updateState();
+            throw this.startFailure(correlationId, stage, error);
+          }
+        } finally {
+          this.pendingSessions.delete(claims.sessionId);
+        }
+      })
+      .finally(opened);
   }
   private async reattachAfterPool(
     session: ActiveSession,
@@ -1475,15 +1588,18 @@ export class BrowserRuntime implements NativePresentationSource {
       await controller.start();
     } catch (error) {
       const started = controller;
-      await settleCleanup([
-        ...(started ? [() => started.detachForPool()] : []),
-        ...(registered ? [() => router.unregisterSession(session.sessionId)] : []),
-      ]);
-      session.ledger.suspendForPool(() => this.poolDrops++);
-      // A reattach after a lost channel that did not take leaves the session detached until the
-      // same deadline, for the Home's next attempt; an adoption keeps it for its window.
-      if (channelLostDeadline !== undefined)
-        this.armChannelDeadline(session, session.generation, channelLostDeadline);
+      try {
+        await settleCleanup([
+          ...(started ? [() => started.detachForPool()] : []),
+          ...(registered ? [() => router.unregisterSession(session.sessionId)] : []),
+        ]);
+      } finally {
+        session.ledger.suspendForPool(() => this.poolDrops++);
+        // A reattach after a lost channel that did not take leaves the session detached until
+        // the same deadline, for the Home's next attempt; an adoption keeps it for its window.
+        if (channelLostDeadline !== undefined)
+          this.armChannelDeadline(session, session.generation, channelLostDeadline);
+      }
       throw error;
     }
     session.controller = controller;
@@ -1884,11 +2000,15 @@ export class BrowserRuntime implements NativePresentationSource {
         // them at once; it is never sent again.
         active.poolDetached = true;
         active.ledger.suspendForPool(() => this.poolDrops++);
-        await settleCleanup([
-          () => active.controller.detachForPool(),
-          () => active.host.router.unregisterSession(sessionId, false, true),
-        ]);
-        this.armChannelDeadline(active, generation, Date.now() + this.poolChannelDeadlineMs);
+        // The window is armed whatever the detach met: a detached session always has its end.
+        try {
+          await settleCleanup([
+            () => active.controller.detachForPool(),
+            () => active.host.router.unregisterSession(sessionId, false, true),
+          ]);
+        } finally {
+          this.armChannelDeadline(active, generation, Date.now() + this.poolChannelDeadlineMs);
+        }
         return;
       }
       if (!forcePoolDetach && this.pool?.canAdopt(active.sessionId as BrowserSessionId)) {
@@ -1927,35 +2047,45 @@ export class BrowserRuntime implements NativePresentationSource {
         active.reattachUntil.unref();
         return;
       }
-      clearTimeout(active.reattachUntil);
-      clearTimeout(active.channelLostUntil);
-      this.sleeper.remove(sessionId);
-      this.sessions.delete(sessionId);
-      const host = active.host;
-      host.sessions.delete(sessionId);
-      host.signIns.sessionDetached(sessionId);
-      const closeHost = host.sessions.size === 0;
-      try {
-        await settleCleanup([
-          () =>
-            withTimeout(
-              settleCleanup(closeSession(active, "session-ended", confirmPages)),
-              sessionTeardownMs,
-              {
-                timeoutError: () => new Error("Browser session teardown did not finish."),
-              },
-            ),
-          () => active.files.dispose(),
-          ...((closeHost && (host.identity.kind === "fresh" || this.launcher.hostCost === "process")
-            ? [() => this.cleanupHost(host)]
-            : []) satisfies (() => Promise<void>)[]),
-        ]);
-      } finally {
-        if (closeHost) host.lastUsed = ++this.usage;
-        this.updateState();
-      }
+      await this.endActiveSession(active, confirmPages);
     });
   }
+
+  /** Ends a held session, in its lane: its routing, controller, pages, files and idle host. */
+  private async endActiveSession(active: ActiveSession, confirmPages: boolean): Promise<void> {
+    const sessionId = active.sessionId;
+    clearTimeout(active.reattachUntil);
+    clearTimeout(active.channelLostUntil);
+    this.sleeper.remove(sessionId);
+    this.sessions.delete(sessionId);
+    const host = active.host;
+    host.sessions.delete(sessionId);
+    host.signIns.sessionDetached(sessionId);
+    const closeHost = host.sessions.size === 0;
+    try {
+      await settleCleanup([
+        () =>
+          withTimeout(
+            // Pooled: its pages are closed, and confirmed, before it says closed.
+            this.pool
+              ? settleCleanup(closeSession(active, "session-ended", true, true))
+              : settleCleanup(closeSession(active, "session-ended", confirmPages)),
+            sessionTeardownMs,
+            {
+              timeoutError: () => new Error("Browser session teardown did not finish."),
+            },
+          ),
+        () => active.files.dispose(),
+        ...((closeHost && (host.identity.kind === "fresh" || this.launcher.hostCost === "process")
+          ? [() => this.cleanupHost(host)]
+          : []) satisfies (() => Promise<void>)[]),
+      ]);
+    } finally {
+      if (closeHost) host.lastUsed = ++this.usage;
+      this.updateState();
+    }
+  }
+
   private closeHost(key: BrowserPartitionKey, generation: number): Promise<void> {
     return this.lanes.run(key, async () => {
       const host = this.hosts.get(key);
@@ -2042,7 +2172,8 @@ export class BrowserRuntime implements NativePresentationSource {
     for (const session of sessions) endPresentations(session);
     await settleCleanup(
       sessions.flatMap((session) => [
-        ...closeSession(session, reason),
+        // A pooled host confirms its pages gone before a session there says closed (W3).
+        ...closeSession(session, reason, this.pool !== undefined, this.pool !== undefined),
         () => session.files.dispose(),
       ]),
     );
@@ -2073,10 +2204,12 @@ function endPresentations(session: ActiveSession): void {
   for (const close of session.presentations) close();
 }
 
+/** `pagesFirst` (pooled): the pages are closed before the session says `closed`. */
 function closeSession(
   session: ActiveSession,
   reason: PageEndReason,
   confirmPages = false,
+  pagesFirst = false,
 ): Array<() => Promise<void>> {
   let routing: Promise<void> | undefined;
   return [
@@ -2084,7 +2217,13 @@ function closeSession(
       routing = session.host.router.unregisterSession(session.sessionId, confirmPages);
       void routing.catch(() => undefined);
     },
-    () => session.controller.close(),
+    () =>
+      pagesFirst
+        ? session.controller.close(undefined, () =>
+            session.ledger.closeOwnedPages(reason, confirmPages),
+          )
+        : session.controller.close(),
+    // Also when the controller had closed before (a channel lost): its pages are still owned.
     () => session.ledger.closeOwnedPages(reason, confirmPages),
     () => session.ledger.close(),
     async () => {

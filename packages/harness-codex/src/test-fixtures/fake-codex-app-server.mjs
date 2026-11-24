@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import readline from "node:readline";
 
 /**
@@ -133,6 +133,28 @@ const exitAfterTurnStart = (() => {
 const emitUnscoped = process.argv.includes("--emit-unscoped");
 // Opt-in: unsubscribing leaves the thread loaded, and it never closes.
 const neverClose = process.argv.includes("--never-close");
+// Opt-in: hold thread/closed until this file appears.
+const holdCloseFile = process.argv
+  .find((argument) => argument.startsWith("--hold-close-file="))
+  ?.slice("--hold-close-file=".length);
+// Opt-in: hold mcpServerStatus/list on a resumed thread until this file appears.
+const holdMcpStatusFile = process.argv
+  .find((argument) => argument.startsWith("--hold-mcp-status-file="))
+  ?.slice("--hold-mcp-status-file=".length);
+// Opt-in: hold non-ephemeral turn/start reply until this file appears.
+const holdTurnStartFile = process.argv
+  .find((argument) => argument.startsWith("--hold-turn-start-file="))
+  ?.slice("--hold-turn-start-file=".length);
+// Opt-in: hold follow-up (2nd+) turn/start reply until this file appears.
+const holdFollowupTurnStartFile = process.argv
+  .find((argument) => argument.startsWith("--hold-followup-turn-start-file="))
+  ?.slice("--hold-followup-turn-start-file=".length);
+// Opt-in: delay child thread/unsubscribe replies so root unload times out first.
+const delayChildUnsubscribeMs = Number(
+  process.argv
+    .find((argument) => argument.startsWith("--delay-child-unsubscribe-ms="))
+    ?.split("=")[1] ?? 0,
+);
 // Opt-in: the first resume after an unsubscribe meets the thread still closing.
 const closingOnce = process.argv.includes("--closing-once");
 let closingOnceUsed = false;
@@ -171,6 +193,7 @@ const modelListDelayMs = Number(
     ?.slice("--model-list-delay-ms=".length) ?? 0,
 );
 const delayedModelLists = new WeakSet();
+const delayedTurnStarts = new WeakSet();
 // Codex's own default is a login shell; only the flag Opensteer passes turns it off.
 const allowLoginShell = !process.argv.includes("allow_login_shell=false");
 const shellEnvironmentPolicy = {
@@ -352,6 +375,30 @@ function handleClientMethod(message) {
               update_plan: { enabled: scenario === "managed-planning-tool" },
             },
             web_search: "disabled",
+            ...(scenario === "managed-notify" ? { notify: ["touch", "/tmp/managed-notify"] } : {}),
+            ...(scenario === "managed-bedrock" ? { model_provider: "amazon-bedrock" } : {}),
+            ...(scenario === "managed-provider-auth"
+              ? {
+                  model_provider: "corp",
+                  model_providers: {
+                    corp: {
+                      base_url: "https://corp.invalid/v1",
+                      auth: { command: "corp-token" },
+                    },
+                  },
+                }
+              : {}),
+            ...(scenario === "managed-provider-aws"
+              ? {
+                  model_provider: "corp",
+                  model_providers: {
+                    corp: {
+                      base_url: "https://corp.invalid/v1",
+                      aws: { profile: "corp-sso", region: "us-east-1" },
+                    },
+                  },
+                }
+              : {}),
           },
           layers: [
             {
@@ -701,64 +748,93 @@ function handleClientMethod(message) {
         send({ id: message.id, result: { status: "notSubscribed" } });
         break;
       }
-      thread.subscribed = false;
-      send({ id: message.id, result: { status: "unsubscribed" } });
-      if (neverClose) break;
-      if (closingOnce && !closingOnceUsed) thread.closing = "held";
-      else thread.closing = setTimeout(() => closeThread(thread), 0);
+      const finishUnsubscribe = () => {
+        thread.subscribed = false;
+        send({ id: message.id, result: { status: "unsubscribed" } });
+        // Real Codex 0.162.0 does not close a thread whose turn is in flight
+        // unless that turn was asked to interrupt.
+        if (neverClose || (thread.inFlightTurn && !thread.turnInterrupted)) return;
+        if (holdCloseFile && !existsSync(holdCloseFile)) {
+          capture({ fakeCloseHeld: thread.id });
+          thread.closing = setInterval(() => {
+            if (!existsSync(holdCloseFile)) return;
+            closeThread(thread);
+          }, 10);
+        } else if (closingOnce && !closingOnceUsed) thread.closing = "held";
+        else thread.closing = setTimeout(() => closeThread(thread), 0);
+      };
+      if (thread.parent && delayChildUnsubscribeMs > 0) {
+        setTimeout(() => threadScope.run(thread, finishUnsubscribe), delayChildUnsubscribeMs);
+      } else {
+        finishUnsubscribe();
+      }
       break;
     }
-    case "mcpServerStatus/list":
+    case "mcpServerStatus/list": {
       requireInitialized(message);
-      const ambientNames = scenario === "ambient-extensions" ? ["company.docs", "github"] : [];
-      const managedNames = ["opensteer", "opensteer-direct"].filter(
-        (name) => configValue(current().config, `mcp_servers.${name}.enabled`) === true,
-      );
-      send({
-        id: message.id,
-        result: {
-          data: [
-            ...managedNames.map((name) => ({
-              name,
-              resourceTemplates: [],
-              resources: [],
-              serverInfo: { name, version: "1.0.0" },
-              tools: Object.fromEntries(
-                [
-                  ...(
-                    configValue(current().config, `mcp_servers.${name}.enabled_tools`) ?? []
-                  ).filter(
-                    (tool) =>
-                      (name !== "opensteer" ||
-                        ((scenario !== "previous-host" || tool !== "computer_use") &&
-                          (scenario !== "mcp-missing-required-tool" ||
-                            tool !== "plugin_search"))) &&
-                      (scenario !== "mcp-direct-missing-required-tool" ||
-                        name !== "opensteer-direct" ||
-                        tool !== "saved_login_request"),
-                  ),
-                  ...((scenario === "mcp-extra-tool" && name === "opensteer") ||
-                  (scenario === "mcp-direct-extra-tool" && name === "opensteer-direct")
-                    ? ["unexpected_tool"]
-                    : []),
-                ].map((tool) => [tool, { inputSchema: { type: "object" }, name: tool }]),
-              ),
-            })),
-            ...[...ambientNames, ...(scenario === "mcp-boundary-leak" ? ["ambient"] : [])].map(
-              (name) => ({
+      const replyMcpStatus = () => {
+        const ambientNames = scenario === "ambient-extensions" ? ["company.docs", "github"] : [];
+        const managedNames = ["opensteer", "opensteer-direct"].filter(
+          (name) => configValue(current().config, `mcp_servers.${name}.enabled`) === true,
+        );
+        send({
+          id: message.id,
+          result: {
+            data: [
+              ...managedNames.map((name) => ({
                 name,
                 resourceTemplates: [],
                 resources: [],
-                serverInfo:
-                  scenario === "mcp-boundary-leak" && name === "ambient" ? { name } : null,
-                tools: {},
-              }),
-            ),
-          ],
-          nextCursor: null,
-        },
-      });
+                serverInfo: { name, version: "1.0.0" },
+                tools: Object.fromEntries(
+                  [
+                    ...(
+                      configValue(current().config, `mcp_servers.${name}.enabled_tools`) ?? []
+                    ).filter(
+                      (tool) =>
+                        (name !== "opensteer" ||
+                          ((scenario !== "previous-host" || tool !== "computer_use") &&
+                            (scenario !== "mcp-missing-required-tool" ||
+                              tool !== "plugin_search"))) &&
+                        (scenario !== "mcp-direct-missing-required-tool" ||
+                          name !== "opensteer-direct" ||
+                          tool !== "saved_login_request"),
+                    ),
+                    ...((scenario === "mcp-extra-tool" && name === "opensteer") ||
+                    (scenario === "mcp-direct-extra-tool" && name === "opensteer-direct")
+                      ? ["unexpected_tool"]
+                      : []),
+                  ].map((tool) => [tool, { inputSchema: { type: "object" }, name: tool }]),
+                ),
+              })),
+              ...[...ambientNames, ...(scenario === "mcp-boundary-leak" ? ["ambient"] : [])].map(
+                (name) => ({
+                  name,
+                  resourceTemplates: [],
+                  resources: [],
+                  serverInfo:
+                    scenario === "mcp-boundary-leak" && name === "ambient" ? { name } : null,
+                  tools: {},
+                }),
+              ),
+            ],
+            nextCursor: null,
+          },
+        });
+      };
+      if (holdMcpStatusFile && current().resumed && !existsSync(holdMcpStatusFile)) {
+        const heldThread = current();
+        capture({ fakeMcpStatusHeld: heldThread.id });
+        const timer = setInterval(() => {
+          if (!existsSync(holdMcpStatusFile)) return;
+          clearInterval(timer);
+          threadScope.run(heldThread, replyMcpStatus);
+        }, 10);
+      } else {
+        replyMcpStatus();
+      }
       break;
+    }
     case "turn/start":
       if (!current().loaded) {
         send({
@@ -770,6 +846,26 @@ function handleClientMethod(message) {
       if (ephemeralThreads.has(message.params.threadId)) {
         handleTitleTurn(message);
         break;
+      }
+      if (!delayedTurnStarts.has(message)) {
+        current().turnsStarted = (current().turnsStarted ?? 0) + 1;
+        current().inFlightTurn = true;
+        current().turnInterrupted = false;
+        const holdFile =
+          holdFollowupTurnStartFile && current().turnsStarted > 1
+            ? holdFollowupTurnStartFile
+            : holdTurnStartFile;
+        if (holdFile && !existsSync(holdFile)) {
+          delayedTurnStarts.add(message);
+          const heldThread = current();
+          capture({ fakeTurnStartHeld: heldThread.id });
+          const timer = setInterval(() => {
+            if (!existsSync(holdFile)) return;
+            clearInterval(timer);
+            threadScope.run(heldThread, () => handleClientMethod(message));
+          }, 10);
+          break;
+        }
       }
       // Opt-in: a command the model started that left the engine's process
       // group, as a daemonizing tool does; its Runner must still end it.
@@ -827,6 +923,11 @@ function handleClientMethod(message) {
           });
         if (scenario === "image-stop") {
           sendTurnCompleted("completed");
+          break;
+        }
+        if (scenario === "image-stop-before-completed") {
+          // Hold the crossing turn/completed("completed") until turn/interrupt arrives,
+          // forcing the order where Stop cancels imageGeneration before turn/completed lands.
           break;
         }
         const completed = {
@@ -993,12 +1094,77 @@ function handleClientMethod(message) {
       else answer();
       break;
     }
-    case "turn/interrupt":
+    case "turn/interrupt": {
+      const target = threads.get(message.params.threadId);
+      if (process.argv.includes("--reject-interrupt")) {
+        if (target) target.turnInterrupted = true;
+        send({
+          id: message.id,
+          error: { code: -32600, message: "Fake turn/interrupt rejected" },
+        });
+        break;
+      }
+      if (process.argv.includes("--hang-interrupt")) {
+        if (target) target.turnInterrupted = true;
+        break;
+      }
+      if (
+        target &&
+        target.inFlightTurn &&
+        target.activeTurnId &&
+        message.params.turnId &&
+        message.params.turnId !== target.activeTurnId
+      ) {
+        send({
+          id: message.id,
+          error: {
+            code: -32600,
+            message: `expected active turn id ${message.params.turnId} but found ${target.activeTurnId}`,
+          },
+        });
+        break;
+      }
+      if (target) {
+        target.turnInterrupted = true;
+        if (!target.subscribed && !neverClose && !target.closing) {
+          target.closing = setTimeout(() => closeThread(target), 0);
+        }
+      }
       send({ id: message.id, result: {} });
       // A child agent's thread is interrupted on its own, as Codex requires.
       if (message.params.threadId !== threadId) {
         capture({ childInterrupted: message.params.threadId });
-        sendChildTurnCompleted(message.params.threadId, message.params.turnId, "interrupted");
+        if (scenario === "subagents-late-sibling" && !current().lateSiblingSent) {
+          current().lateSiblingSent = true;
+          const siblingId = `codex-child-thread-${++childThreads}`;
+          const sibling = newThread(siblingId, current());
+          sibling.inFlightTurn = true;
+          sibling.activeTurnId = "sibling-turn-1";
+          threads.set(siblingId, sibling);
+          send({
+            method: "item/started",
+            params: {
+              item: {
+                id: "collab-late-sibling",
+                newThreadId: siblingId,
+                receiverThreadIds: [siblingId],
+                type: "collabAgentToolCall",
+              },
+              threadId,
+              turnId,
+            },
+          });
+          send({
+            method: "turn/started",
+            params: {
+              threadId: siblingId,
+              turn: childTurn("sibling-turn-1", "inProgress"),
+            },
+          });
+        }
+        if (!process.argv.includes("--ignore-interrupt")) {
+          sendChildTurnCompleted(message.params.threadId, message.params.turnId, "interrupted");
+        }
         const starting = current().followUpStart;
         current().followUpStart = undefined;
         if (starting) setTimeout(starting, 50);
@@ -1011,10 +1177,13 @@ function handleClientMethod(message) {
         });
       capture({ rootInterrupted: message.params.turnId ?? null });
       // Opt-in: an engine that acknowledges an interrupt and keeps going.
-      if (!process.argv.includes("--ignore-interrupt")) {
+      if (scenario === "image-stop-before-completed") {
+        sendTurnCompleted("completed", undefined, message.params.turnId ?? turnId);
+      } else if (!process.argv.includes("--ignore-interrupt")) {
         sendTurnCompleted("interrupted", undefined, message.params.turnId ?? turnId);
       }
       break;
+    }
     default:
       send({
         id: message.id,
@@ -1040,6 +1209,7 @@ function loadThread(threadId, message) {
   }
   thread.loaded = true;
   thread.subscribed = true;
+  thread.resumed = message.method === "thread/resume";
   lastThread = thread;
   if (!message.params.ephemeral) reusedThreadId = threadId;
   captureRunId = threadId;
@@ -1076,6 +1246,7 @@ function closeThread(thread) {
   thread.sessionTools = undefined;
   for (const terminal of thread.terminals) terminal.kill("SIGTERM");
   thread.terminals.clear();
+  capture({ fakeThreadClosed: thread.id });
   send({ method: "thread/closed", params: { threadId: thread.id } });
 }
 
@@ -1136,6 +1307,8 @@ function newThread(id, parent) {
     settings: {},
     loaded: true,
     subscribed: true,
+    inFlightTurn: false,
+    turnInterrupted: false,
     /** A pending unload: its timer, or "held" under `--closing-once`. */
     closing: undefined,
     terminals: new Set(),
@@ -2314,6 +2487,11 @@ function handleTurnStart(message) {
     send({ id: "unknown-rpc", method: "fake/unsupported", params: { threadId, turnId } });
     return;
   }
+  if (scenario === "subagents-late-root-followup" && thread.turnsStarted > 1) {
+    thread.activeTurnId = turnId;
+    thread.inFlightTurn = true;
+    return;
+  }
   if (scenario.startsWith("subagents")) {
     sendResponseUsage("response", threadId, turnId, responseUsage.rootDelegates);
     // A subagent asking before the Runner has heard of it.
@@ -2341,6 +2519,16 @@ function handleTurnStart(message) {
     });
     sendResponseUsage("response", childThreadOf(), "child-turn-1", responseUsage.childRuns);
     if (scenario === "subagents") sendChildApproval();
+    if (scenario === "subagents-late-sibling" || scenario === "subagents-late-root-followup") {
+      // Root finishes its turn while child 1 keeps running (root idle).
+      const child = threads.get(childThreadOf());
+      if (child) {
+        child.inFlightTurn = true;
+        child.activeTurnId = "child-turn-1";
+      }
+      sendTurnCompleted("completed");
+      return;
+    }
     // `subagents-hold` leaves the child working until it is interrupted.
     return;
   }
@@ -3103,7 +3291,7 @@ async function longStreamTurn(held, input) {
             },
           );
         }
-        await waitForRelease();
+        await waitForRelease(releasePath, threadId);
       }
     }
     send({
@@ -3189,9 +3377,12 @@ async function durableStreamUntilReleased() {
   sendTurnCompleted("completed");
 }
 
-async function waitForRelease(path = releasePath) {
+async function waitForRelease(path = releasePath, threadId) {
   if (!path) return;
-  while (!existsSync(path)) await new Promise((resolve) => setTimeout(resolve, 25));
+  const scopedPath = threadId ? `${path}.${threadId}` : undefined;
+  while (!existsSync(path) && !(scopedPath && existsSync(scopedPath))) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
 }
 
 /**
@@ -3885,9 +4076,16 @@ function send(message) {
     thread.serverRequestIds.set(message.id, wireId);
     message = { ...message, id: wireId };
   } else if (message.method !== undefined) {
+    const target = threads.get(message.params?.threadId);
+    if (target && message.method === "turn/started") {
+      target.inFlightTurn = true;
+      target.turnInterrupted = false;
+    } else if (target && message.method === "turn/completed") {
+      target.inFlightTurn = false;
+      target.turnInterrupted = false;
+    }
     if (optedOutNotifications.has(message.method)) return;
     // Codex sends nothing more about a thread this connection unsubscribed from.
-    const target = threads.get(message.params?.threadId);
     if (target && !target.subscribed && message.method !== "thread/closed") return;
     if (message.method === "serverRequest/resolved") {
       const wireId = thread.serverRequestIds.get(message.params.requestId);
@@ -4160,17 +4358,20 @@ function sendSeveralResponsesUsage() {
 
 /** Durable side effects and real child processes for restart-recovery acceptance. */
 function recoveryHeldTurn(message) {
-  const { id: threadId, turnId } = current();
+  const thread = current();
+  const { id: threadId, turnId } = thread;
+  const turnCwd = message.params.cwd ?? thread.settings.cwd ?? process.cwd();
   const input = JSON.stringify(message.params.input);
   const recovery = input.includes("Your conversation is intact.");
   const effect = process.argv.find((value) => value.startsWith("--effect-file="))?.slice(14);
   if (effect && !recovery) appendFileSync(effect, "effect\n");
   if (input.includes("[effect]") && !recovery)
-    appendFileSync(join(process.cwd(), "recovery-effect"), "effect\n");
+    appendFileSync(join(turnCwd, "recovery-effect"), "effect\n");
   const watchPids = process.argv.find((value) => value.startsWith("--watch-pids-file="))?.slice(18);
+  const watchPidsFile = watchPids ? resolve(turnCwd, watchPids) : undefined;
   const priorPidsAlive =
-    watchPids && existsSync(watchPids)
-      ? JSON.parse(readFileSync(watchPids, "utf8")).map((pid) => {
+    watchPidsFile && existsSync(watchPidsFile)
+      ? JSON.parse(readFileSync(watchPidsFile, "utf8")).map((pid) => {
           try {
             process.kill(pid, 0);
             return true;
@@ -4216,7 +4417,7 @@ function recoveryHeldTurn(message) {
           id: "recovery-command",
           type: "commandExecution",
           command: "sleep 600 # recovery acceptance",
-          cwd: process.cwd(),
+          cwd: turnCwd,
           status: "inProgress",
         },
       },

@@ -20,7 +20,7 @@ import {
   type HostNotificationPublication,
 } from "@opensteer/control-plane-protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { HostToClientMessageSchema } from "@opensteer/protocol";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -188,7 +188,6 @@ integration("Notifications", () => {
         );
         return registry;
       },
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       runTimeoutMs: 60_000,
     });
     await stack.host.store.database
@@ -329,7 +328,7 @@ integration("Notifications", () => {
     const trigger = await createTrigger(stack, {
       anchorThreadId: rootTask,
       name: "Inbox note",
-      program: programSending("report", rootTask, "Three new emails, none urgent."),
+      script: scriptSending("report", rootTask, "Three new emails, none urgent."),
       source: {
         kind: "webhook",
       },
@@ -370,9 +369,8 @@ integration("Notifications", () => {
         toolCall("opensteer_automation_create", {
           taskId: rootTask,
           name: "Reminder: buy groceries",
-          program: {
-            language: "javascript",
-            source: programSending(
+          script: {
+            text: scriptSending(
               "queue",
               rootTask,
               "Reminder: buy groceries " +
@@ -381,7 +379,6 @@ integration("Notifications", () => {
                 }) +
                 " [[reply Reminder: buy groceries]]",
             ),
-            toolContractVersion: 5,
           },
           source: {
             at,
@@ -458,7 +455,7 @@ integration("Notifications", () => {
     await createTrigger(stack, {
       anchorThreadId: rootTask,
       name: "Calendar check",
-      program: 'export default async function () { throw new Error("Calendar unavailable"); }',
+      script: 'throw new Error("Calendar unavailable");',
       source: {
         kind: "schedule",
         schedule: {
@@ -516,18 +513,18 @@ integration("Notifications", () => {
     const trigger = await createTrigger(stack, {
       anchorThreadId: rootTask,
       name: "Morning summary",
-      program: `export default async function ({ opensteer }) {
-        await opensteer.callTool("opensteer_task_delegate", {
-          message: ${JSON.stringify(
-            "Summarize the inbox. " +
+      script: `import { execFileSync } from "node:child_process";
+        execFileSync("opensteer", ["tool", "opensteer_task_delegate", ${JSON.stringify(
+          JSON.stringify({
+            message:
+              "Summarize the inbox. " +
               toolCall("send_to_person", {
                 message: "Inbox milestone ready.",
               }) +
               " [[reply Inbox summary ready.]]",
-          )},
-          title: "Inbox summary",
-        });
-      }`,
+            title: "Inbox summary",
+          }),
+        )}], { encoding: "utf8" });`,
       source: {
         kind: "webhook",
       },
@@ -732,14 +729,15 @@ function openSocket(stack: VerticalStack): Promise<WebSocket> {
 function toolCall(name: string, input: unknown): string {
   return `[[call ${name} ${Buffer.from(JSON.stringify(input), "utf8").toString("base64url")}]]`;
 }
-function programSending(delivery: "queue" | "report", threadId: string, message: string): string {
-  return `export default async function ({ opensteer }) {
-    await opensteer.callTool("opensteer_task_send", ${JSON.stringify({
+function scriptSending(delivery: "queue" | "report", threadId: string, message: string): string {
+  return `import { execFileSync } from "node:child_process";
+  execFileSync("opensteer", ["tool", "opensteer_task_send", ${JSON.stringify(
+    JSON.stringify({
       delivery,
       message,
       taskId: threadId,
-    })});
-  }`;
+    }),
+  )}], { encoding: "utf8" });`;
 }
 function inSeconds(seconds: number): string {
   return new Date(Date.now() + seconds * 1_000).toISOString();
@@ -749,7 +747,7 @@ async function createTrigger(
   input: {
     readonly anchorThreadId: ThreadId;
     readonly name: string;
-    readonly program: string;
+    readonly script: string;
     readonly source:
       | {
           readonly kind: "webhook";
@@ -768,10 +766,9 @@ async function createTrigger(
     input: {
       anchorThreadId: input.anchorThreadId,
       name: input.name,
-      program: {
-        language: "javascript",
-        source: input.program,
-        toolContractVersion: 5,
+      script: {
+        interpreter: null,
+        text: input.script,
       },
       source: input.source,
     },

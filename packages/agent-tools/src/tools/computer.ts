@@ -57,48 +57,6 @@ export const computer_list = defineAgentTool({
   callers: ["run", "program", "connection"] as const,
 });
 
-export const computer_update = defineAgentTool({
-  name: "computer_update",
-  title: "Rename a computer",
-  description:
-    "Rename one of the person's computers. Enrollment, pairing and access switches need the person.",
-  input: z.strictObject({
-    computerId: DeviceIdSchema,
-    name: z.string().trim().min(1).max(120),
-  }),
-  output: z.object({ ok: z.literal(true) }),
-  access: "settings",
-  callers: ["run", "connection"] as const,
-});
-
-export const computer_remove = defineAgentTool({
-  name: "computer_remove",
-  title: "Remove a computer or session",
-  description:
-    "Remove a computer or phone from Opensteer, or end one of its access sessions. Removing a computer revokes it, ending its sessions and deleting its browser profiles; iPhones it drives stay listed as not connected. Removing a Mac-driven iPhone removes only that iPhone and its approvals; its Mac stays. Adding either back needs the person.",
-  input: z
-    .strictObject({
-      target: z.enum(["computer", "session"]),
-      computerId: DeviceIdSchema.optional().describe("computer: the computer or phone to remove."),
-      sessionId: z
-        .string()
-        .min(1)
-        .max(256)
-        .optional()
-        .describe("session: a session ID from computer_list."),
-    })
-    .superRefine((input, context) => {
-      if ((input.target === "computer") !== (input.computerId !== undefined))
-        context.addIssue({ code: "custom", message: "computerId is for target computer" });
-      if ((input.target === "session") !== (input.sessionId !== undefined))
-        context.addIssue({ code: "custom", message: "sessionId is for target session" });
-    }),
-  output: z.object({ ok: z.literal(true), ended: z.boolean().optional() }),
-  access: "settings",
-  callers: ["run", "connection"] as const,
-  destructive: true,
-});
-
 export const computer_use = defineAgentTool({
   name: "computer_use",
   title: "Operate Mac apps and phones",
@@ -125,7 +83,7 @@ export const computer_use = defineAgentTool({
   output: ComputerUseOutputSchema,
   capability: "computerUse",
   access: "write",
-  callers: ["run", "connection"] as const,
+  callers: ["run", "program", "connection"] as const,
   openWorld: true,
   destructive: true,
 });
@@ -144,7 +102,7 @@ export const computer_access_request = defineAgentTool({
   }),
   output: RequestCreationOutputSchema,
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
 });
 
 export const ComputerAppsInputSchema = z.strictObject({
@@ -237,8 +195,6 @@ export const app_access_request = defineAgentTool({
 
 export const computerTools = [
   computer_list,
-  computer_update,
-  computer_remove,
   computer_use,
   computer_apps,
   computer_access_request,

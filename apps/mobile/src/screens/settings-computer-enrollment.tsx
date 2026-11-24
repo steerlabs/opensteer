@@ -11,9 +11,11 @@ import {
   type HostSnapshot,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
-import { Text, View } from "react-native";
-import { NativeSettingsPage } from "./native-settings-page.js";
-import { notDone, settingsFooter, useScreenAction } from "../ui/client-feedback.js";
+import { StyleSheet, TextInput, View } from "react-native";
+import { color, material, radius, space, touchTarget, type } from "../theme.js";
+import { ActionLine } from "../ui/action-line.js";
+import { notDone, useScreenAction } from "../ui/client-feedback.js";
+import { AppText, SecondaryButton, SectionLabel } from "../ui/primitives.js";
 
 const selectDeploymentShape = (snapshot: HostSnapshot) => snapshot.deploymentShape;
 const selectIdentityConfig = (snapshot: HostSnapshot) => snapshot.identityConfig;
@@ -70,56 +72,70 @@ export function SettingsComputerEnrollment({ host }: { readonly host: HostClient
     await creation.run(name.trim());
   }
   return (
-    <View style={{ minHeight: 260 }}>
-      <NativeSettingsPage
-        sections={[
-          {
-            key: "computer",
-            title: "Computer",
-            rows: issued
-              ? [
-                  {
-                    key: "expiry",
-                    kind: "text" as const,
-                    label: `Command expires ${issued.expiresAt}`,
-                  },
-                ]
-              : [
-                  {
-                    key: "name",
-                    kind: "input" as const,
-                    label: "Computer name",
-                    value: name,
-                    onChange: setName,
-                  },
-                  {
-                    key: "create",
-                    kind: "button" as const,
-                    label: "Create connection command",
-                    disabled: creation.running || !name.trim(),
-                    onPress: () => void create(),
-                  },
-                ],
-            ...(creation.line ? { footer: settingsFooter(creation.line)! } : {}),
-          },
-        ]}
-      />
+    // Drawn in the sheet's own scroll view, as the guide under it is, so the name and the
+    // button read whole and wrap at every text size: the native list cut "New computer" and
+    // "Create connection command" to one line and clipped them in a fixed box.
+    <View style={styles.section}>
+      <SectionLabel>Computer</SectionLabel>
+      {issued ? (
+        <AppText role="secondary" tone="muted">
+          {`Command expires ${issued.expiresAt}`}
+        </AppText>
+      ) : (
+        <>
+          <AppText role="caption" tone="muted">
+            Computer name
+          </AppText>
+          <TextInput
+            accessibilityLabel="Computer name"
+            multiline
+            onChangeText={setName}
+            placeholderTextColor={color.muted}
+            returnKeyType="done"
+            selectionColor={color.ember}
+            style={[type.body, styles.input]}
+            submitBehavior="blurAndSubmit"
+            value={name}
+          />
+          <SecondaryButton
+            disabled={creation.running || !name.trim()}
+            label="Create connection command"
+            onPress={() => void create()}
+          />
+        </>
+      )}
+      {creation.line ? <ActionLine line={creation.line} /> : null}
       {commands ? (
-        <View style={{ padding: 16, gap: 12 }}>
-          <Text>Run on the computer you’re adding</Text>
+        <View style={styles.commands}>
+          <AppText role="secondary">Run on the computer you’re adding</AppText>
           {commands.bareHost ? (
-            <Text selectable accessibilityLabel="Computer enrollment command">
+            <AppText accessibilityLabel="Computer enrollment command" role="caption" selectable>
               {commands.bareHost}
-            </Text>
+            </AppText>
           ) : (
-            <Text>No Runner download is published for this build. Use Docker on the computer.</Text>
+            <AppText role="secondary" tone="muted">
+              No Runner download is published for this build. Use Docker on the computer.
+            </AppText>
           )}
-          <Text>Docker</Text>
-          <Text selectable accessibilityLabel="Docker enrollment command">
+          <AppText role="secondary">Docker</AppText>
+          <AppText accessibilityLabel="Docker enrollment command" role="caption" selectable>
             {commands.container}
-          </Text>
+          </AppText>
         </View>
       ) : null}
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  commands: { gap: space[12] },
+  input: {
+    ...material.control,
+    borderRadius: radius.md,
+    color: color.text,
+    minHeight: touchTarget,
+    paddingHorizontal: space[12],
+    paddingVertical: space[10],
+  },
+  section: { gap: space[8] },
+});

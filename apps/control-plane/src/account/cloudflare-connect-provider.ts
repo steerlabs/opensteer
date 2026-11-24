@@ -132,7 +132,7 @@ export class CloudflareConnectProvider implements ConnectResourceProvider {
     const deploymentId = DeploymentIdSchema.parse(input.deploymentId);
     const hostname = managedHostname(input.hostname);
     const localOrigin = loopbackOrigin(input.localOrigin);
-    const tunnelName = `opensteer-${deploymentId.slice("dep_".length)}`;
+    const tunnelName = connectTunnelName(deploymentId);
     const dnsComment = dnsOwnershipComment(deploymentId);
     let tunnelId: string | undefined;
     let dnsRecordId: string | undefined;
@@ -219,7 +219,7 @@ export class CloudflareConnectProvider implements ConnectResourceProvider {
   async delete(input: DeleteCloudflareConnectInput): Promise<void> {
     const deploymentId = DeploymentIdSchema.parse(input.deploymentId);
     const hostname = managedHostname(input.hostname);
-    const tunnelName = `opensteer-${deploymentId.slice("dep_".length)}`;
+    const tunnelName = connectTunnelName(deploymentId);
     const dnsComment = dnsOwnershipComment(deploymentId);
     let tunnelId: string | undefined;
     let dnsRecordId: string | undefined;
@@ -523,14 +523,23 @@ export class CloudflareConnectProvider implements ConnectResourceProvider {
   }
 }
 
+/** What every provider says of a Connect resource it was asked for by id and no longer has. */
+export const connectResourceNotFoundMessage = "Cloudflare resource was not found";
+
 class CloudflareResourceNotFoundError extends Error {
   constructor() {
-    super("Cloudflare resource was not found");
+    super(connectResourceNotFoundMessage);
     this.name = "CloudflareResourceNotFoundError";
   }
 }
 
-function managedHostname(value: string): string {
+/** The one tunnel a Deployment's Connect route runs through, named for the Deployment. */
+export function connectTunnelName(deploymentId: string): string {
+  return `opensteer-${DeploymentIdSchema.parse(deploymentId).slice("dep_".length)}`;
+}
+
+/** A Connect hostname as the provider accepts it: lower case, bare, no port or path. */
+export function managedHostname(value: string): string {
   const url = new URL(`https://${value}`);
   if (
     value !== value.toLowerCase() ||
@@ -545,7 +554,8 @@ function managedHostname(value: string): string {
   return value;
 }
 
-function loopbackOrigin(value: string): string {
+/** Where the connector on the Home's computer sends a route's traffic: bare HTTP loopback. */
+export function loopbackOrigin(value: string): string {
   const url = new URL(value);
   const loopback = ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname);
   if (
@@ -563,7 +573,7 @@ function loopbackOrigin(value: string): string {
   return url.origin;
 }
 
-function dnsOwnershipComment(deploymentId: string): string {
+export function dnsOwnershipComment(deploymentId: string): string {
   return `Opensteer Connect:${deploymentId}`;
 }
 

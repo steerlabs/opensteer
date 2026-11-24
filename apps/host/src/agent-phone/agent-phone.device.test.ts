@@ -1799,8 +1799,12 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       const stoppedAt = Date.now();
       await testRpcData(
         host.origin,
-        "integration.computer.session.stop",
-        { sessionId: held.sessionId },
+        "commands.dispatch",
+        {
+          type: "integration.computer.session.stop",
+          idempotencyKey: randomUUID(),
+          sessionId: held.sessionId,
+        } as never,
         owner(),
       );
       expect(await phoneSessions(runnerId)).toEqual([]);
@@ -1844,8 +1848,12 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       if (!held) throw new Error("The dragging task has no phone session to stop.");
       await testRpcData(
         host.origin,
-        "integration.computer.session.stop",
-        { sessionId: held.sessionId },
+        "commands.dispatch",
+        {
+          type: "integration.computer.session.stop",
+          idempotencyKey: randomUUID(),
+          sessionId: held.sessionId,
+        } as never,
         owner(),
       );
       expect(refusalOf(await acting)).toBe(

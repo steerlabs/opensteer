@@ -1,16 +1,6 @@
-import {
-  CloudComputerIdSchema,
-  OrganizationIdSchema,
-  WorkAssignmentIdSchema,
-  defaultWorkPolicy,
-  type CloudComputerView,
-} from "@opensteer/control-plane-protocol";
+import { CloudComputerIdSchema, type CloudComputerView } from "@opensteer/control-plane-protocol";
 import { DeploymentIdSchema } from "@opensteer/core";
-import {
-  MachineSummarySchema,
-  type DesktopWorkHome,
-  type MachineSummary,
-} from "@opensteer/protocol";
+import { MachineSummarySchema, type MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import { mockDeviceMachine } from "../mock/mock-device-machine.js";
 import { mockIphoneScreenDevice } from "../mock/mock-screen-devices.js";
@@ -71,31 +61,6 @@ const cloudView = (patch: Partial<CloudComputerView> = {}): CloudComputerView =>
     deploymentId,
     ...patch,
   }) as CloudComputerView;
-const workHome = (organizationName: string): DesktopWorkHome => ({
-  home: {
-    assignment: {
-      organizationId: OrganizationIdSchema.parse("org_00000000-0000-4000-8000-000000000003"),
-      organizationName,
-      assignmentId: WorkAssignmentIdSchema.parse("was_00000000-0000-4000-8000-000000000004"),
-      computerId: CloudComputerIdSchema.parse("cc_00000000-0000-4000-8000-000000000005"),
-      state: "active",
-      homeStatus: "ready",
-      reason: null,
-      address: "https://acme.home.opensteer.com",
-      policyRevision: 1,
-      appliedRevision: 1,
-      policyStatus: "Applied",
-      signInCut: false,
-      suspended: false,
-      deleted: false,
-      retainUntil: null,
-    },
-    policy: defaultWorkPolicy,
-  },
-  computer: cloudView({
-    id: CloudComputerIdSchema.parse("cc_00000000-0000-4000-8000-000000000005"),
-  }),
-});
 const kindOf = (input: Partial<Parameters<typeof homeKind>[0]>): HomeKindFact =>
   homeKind({ exposure: "loopback", deploymentId, hostedHere: false, account: null, ...input });
 
@@ -104,32 +69,27 @@ describe("what kind of Home this is", () => {
     expect(kindOf({ hostedHere: true })).toEqual({
       kind: "this-mac",
       from: "this-device",
-      organization: null,
     });
-    expect(kindOf({})).toEqual({ kind: "mac", from: "exposure", organization: null });
+    expect(kindOf({})).toEqual({ kind: "mac", from: "exposure" });
   });
 
   it("is a server for a networked Home the Account doesn't list", () => {
     expect(kindOf({ exposure: "networked" })).toEqual({
       kind: "server",
       from: "exposure",
-      organization: null,
     });
     expect(
       kindOf({
         exposure: "networked",
-        account: { computers: [cloudView({ deploymentId: undefined })], work: [] },
+        account: { computers: [cloudView({ deploymentId: undefined })] },
       }),
     ).toMatchObject({ kind: "server" });
   });
 
   it("is a Cloud Computer when the Account's view for this deployment says so", () => {
-    expect(
-      kindOf({ exposure: "networked", account: { computers: [cloudView()], work: [] } }),
-    ).toEqual({
+    expect(kindOf({ exposure: "networked", account: { computers: [cloudView()] } })).toEqual({
       kind: "cloud",
       from: "account",
-      organization: null,
     });
   });
 
@@ -137,7 +97,6 @@ describe("what kind of Home this is", () => {
     expect(kindOf({ exposure: "networked", homeKind: "cloud-computer" })).toEqual({
       kind: "cloud",
       from: "home",
-      organization: null,
     });
     expect(kindOf({ exposure: "networked", homeKind: "server" })).toMatchObject({
       kind: "server",
@@ -147,36 +106,6 @@ describe("what kind of Home this is", () => {
     expect(kindOf({ homeKind: "mac", hostedHere: true })).toMatchObject({
       kind: "this-mac",
       from: "home",
-    });
-    // A work Home is still the Account's to say.
-    expect(
-      kindOf({
-        exposure: "networked",
-        homeKind: "cloud-computer",
-        account: { computers: [], work: [{ ...workHome("Acme"), computer: cloudView() }] },
-      }),
-    ).toMatchObject({ kind: "work", from: "account", organization: "Acme" });
-  });
-
-  it("is a work Home from the organization's assignment or the view's work marker", () => {
-    expect(
-      kindOf({
-        exposure: "networked",
-        account: { computers: [], work: [{ ...workHome("Acme"), computer: cloudView() }] },
-      }),
-    ).toEqual({ kind: "work", from: "account", organization: "Acme" });
-    const marked = cloudView({
-      work: {
-        organizationId: OrganizationIdSchema.parse("org_00000000-0000-4000-8000-000000000003"),
-        organizationName: "Globex",
-        assignmentId: WorkAssignmentIdSchema.parse("was_00000000-0000-4000-8000-000000000004"),
-      },
-    });
-    expect(
-      kindOf({ exposure: "networked", account: { computers: [marked], work: [] } }),
-    ).toMatchObject({
-      kind: "work",
-      organization: "Globex",
     });
   });
 });
@@ -194,7 +123,7 @@ describe("the Devices screen", () => {
     });
 
   it("says where Opensteer lives and what kind of Home it is", () => {
-    const thisMac = screen({ kind: "this-mac", from: "this-device", organization: null });
+    const thisMac = screen({ kind: "this-mac", from: "this-device" });
     expect(thisMac.lead).toBe(
       "Your Opensteer lives on Studio Mac. Agents reach your other devices through it.",
     );
@@ -203,35 +132,22 @@ describe("the Devices screen", () => {
       detail: "This Mac · Home · Running",
       symbol: "laptop",
     });
-    expect(screen({ kind: "mac", from: "exposure", organization: null }).home.detail).toBe(
-      "Home · Online",
-    );
-    expect(screen({ kind: "server", from: "exposure", organization: null }).home).toMatchObject({
+    expect(screen({ kind: "mac", from: "exposure" }).home.detail).toBe("Home · Online");
+    expect(screen({ kind: "server", from: "exposure" }).home).toMatchObject({
       detail: "Home · Server · Online",
       symbol: "server",
     });
-    const cloud = screen({ kind: "cloud", from: "account", organization: null });
+    const cloud = screen({ kind: "cloud", from: "account" });
     expect(cloud.home).toMatchObject({
       title: "Cloud Computer",
       detail: "Home · Always on",
       symbol: "cloud",
-      badge: null,
     });
     expect(cloud.lead).toContain("lives on your Cloud Computer.");
-    const work = screen({ kind: "work", from: "account", organization: "Acme" });
-    expect(work.home).toMatchObject({
-      title: "Work Home",
-      badge: "Work · Acme",
-      symbol: "cloud",
-    });
-    expect(work.lead).toContain("lives on your Acme work Home.");
   });
 
   it("lists every other Device, not the Home, in the Devices section", () => {
-    const view = screen({ kind: "mac", from: "exposure", organization: null }, [
-      home,
-      machine("MacBook Air"),
-    ]);
+    const view = screen({ kind: "mac", from: "exposure" }, [home, machine("MacBook Air")]);
     expect(view.devices.map(({ title }) => title)).toEqual(["MacBook Air"]);
   });
 });
@@ -320,12 +236,12 @@ describe("the asleep moment", () => {
   const day = 86_400_000;
   const at = now.getTime();
 
-  it("appears only for a Mac Home: never a Cloud Computer, a server or a work Home", () => {
+  it("appears only for a Mac Home: never a Cloud Computer or a server", () => {
     for (const kind of ["mac", "this-mac"] as const)
       expect(
         cloudSuggestionVisible({ homeKind: kind, memory: null, moment: "gate:1", now: at }),
       ).toBe(true);
-    for (const kind of ["cloud", "server", "work", null] as const)
+    for (const kind of ["cloud", "server", null] as const)
       expect(
         cloudSuggestionVisible({ homeKind: kind, memory: null, moment: "gate:1", now: at }),
       ).toBe(false);
@@ -334,7 +250,6 @@ describe("the asleep moment", () => {
     );
     expect(asleepGateLine({ macName: "Studio Mac", homeKind: "cloud" })).toBeNull();
     expect(asleepGateLine({ macName: "Studio Mac", homeKind: "server" })).toBeNull();
-    expect(asleepGateLine({ macName: "Studio Mac", homeKind: "work" })).toBeNull();
   });
 
   it("shows at most once in 14 days, staying with the moment it first showed in", () => {
@@ -490,7 +405,6 @@ describe("why the Home's own device can't be removed", () => {
     expect(homeKeptWords("cloud")).toBe(
       "Your Opensteer lives on this Cloud Computer, so it can’t be removed.",
     );
-    expect(homeKeptWords("work")).toBe(homeKeptWords("cloud"));
     expect(homeKeptWords("server")).toBe(
       "Your Opensteer lives on this server, so it can’t be removed.",
     );
@@ -498,21 +412,19 @@ describe("why the Home's own device can't be removed", () => {
 });
 
 describe("which listed Homes are Cloud Computers", () => {
-  it("takes the Account's own Cloud Computers and work Homes, and nothing before it answers", () => {
+  it("takes the Account's own Cloud Computers, and nothing before it answers", () => {
     expect([...cloudComputerDeployments(null)]).toEqual([]);
     expect([
       ...cloudComputerDeployments({
         computers: [{ deploymentId: "dep_mine" }, { deploymentId: undefined }] as never,
-        work: [{ computer: { deploymentId: "dep_work" } }, { computer: null }] as never,
       }),
-    ]).toEqual(["dep_mine", "dep_work"]);
+    ]).toEqual(["dep_mine"]);
   });
 });
 
 describe("the Cloud Computer row in Settings", () => {
   it("offers to keep agents working while a Mac sleeps only on a Mac", () => {
     expect(cloudComputerEntryDetail("cloud")).toBe("Its status and address");
-    expect(cloudComputerEntryDetail("work")).toBe("Its status and address");
     for (const kind of ["this-mac", "mac"] as const)
       expect(cloudComputerEntryDetail(kind)).toBe("Keep agents working while your Mac sleeps");
     // A server doesn't sleep as a Mac does.

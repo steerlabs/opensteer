@@ -7,7 +7,6 @@ import type { AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { HarnessIdSchema, ModelSelectionSchema, type Attachment } from "@opensteer/core";
-import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import { createHarnessRegistry, parseAgentExecutionConfig } from "@opensteer/runner";
 import sharp from "sharp";
 import { z } from "zod";
@@ -726,7 +725,6 @@ qualification("local endpoint qualification", () => {
               runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
             },
           ),
-          harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
           runTimeoutMs: 30_000,
         });
         expect(stack.initialCatalog.status).toBe("ready");
@@ -896,7 +894,6 @@ qualification("local endpoint qualification", () => {
             stateKind: "isolated",
           },
           harnesses,
-          harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
           runTimeoutMs: 180_000,
         });
         const configured = await stack.configureModel("local-vision:1", {
@@ -1009,7 +1006,6 @@ qualification("local endpoint qualification", () => {
                 runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
               },
             ),
-            harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
             runTimeoutMs: 180_000,
           });
           const active = stack;
@@ -1107,7 +1103,6 @@ qualification("local endpoint qualification", () => {
                 runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
               },
             ),
-            harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
             runTimeoutMs: 180_000,
           });
           const active = stack;
@@ -1244,7 +1239,6 @@ qualification("local endpoint qualification", () => {
                 runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
               },
             ),
-            harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
             runTimeoutMs: 120_000,
           });
           const configured = await stack.configureModel("local-vision:1", {
@@ -1325,7 +1319,6 @@ qualification("local endpoint qualification", () => {
               runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
             },
           ),
-          harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
           runTimeoutMs: 30_000,
         });
         const refused = stack.initialCatalog;
@@ -1473,7 +1466,6 @@ qualification("local endpoint qualification", () => {
               runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
             },
           ),
-          harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
           modelServerHome: home,
           runTimeoutMs: 30_000,
         });
@@ -1695,7 +1687,6 @@ qualification("local endpoint qualification", () => {
                 runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
               },
             ),
-            harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
             runTimeoutMs: 300_000,
           });
           evidence.initialStatus = stack.initialCatalog.status;

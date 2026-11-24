@@ -12,9 +12,7 @@ import {
   type HarnessInstanceId,
 } from "@opensteer/core";
 import {
-  isolatedServiceHarnessRuntimeBoundary,
   meetsMinimumVersion,
-  nativeUserHarnessRuntimeBoundary,
   threadTitlePrompt,
   type HarnessAdapter,
   type HarnessEvent,
@@ -60,27 +58,6 @@ afterEach(async () => {
   );
 });
 
-describe("Cursor runtime boundary", () => {
-  it.each(["start", "resume"] as const)(
-    "refuses an isolated-service Runner on %s",
-    async (mode) => {
-      const fixture = await setup({ runtimeBoundary: isolatedServiceHarnessRuntimeBoundary });
-      if (mode === "resume") await seedTranscript(fixture);
-      const open =
-        mode === "start"
-          ? fixture.adapter.startSession(fixture.context)
-          : fixture.adapter.resumeSession(fixture.reference, fixture.context);
-      await expect(open).rejects.toThrow(
-        "Cursor keeps its sign-in in the computer's own account, so it runs only on a computer where Opensteer runs as you.",
-      );
-      await expect(open).rejects.toMatchObject({ code: "forbidden" });
-      // Nothing was launched and nothing was written for a Run that cannot run.
-      expect(await fixture.invocations()).toEqual([]);
-      await fixture.adapter.close();
-    },
-  );
-});
-
 describe("Cursor and whose task it is", () => {
   it.each(["start", "resume"] as const)(
     "refuses a task a connected agent or a chat started on %s",
@@ -91,17 +68,18 @@ describe("Cursor and whose task it is", () => {
         mode === "start"
           ? fixture.adapter.startSession(fixture.context)
           : fixture.adapter.resumeSession(fixture.reference, fixture.context);
-      await expect(open).rejects.toThrow(
-        "Cursor starts with your own Cursor settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
-      );
-      await expect(open).rejects.toMatchObject({ code: "forbidden" });
+      await expect(open).rejects.toMatchObject({
+        code: "forbidden",
+        message: "This engine is not available for this task.",
+        ownerMessage:
+          "Cursor starts with your own Cursor settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
+      });
       // Nothing was launched: Cursor never read the person's configuration.
       expect(await fixture.invocations()).toEqual([]);
       await fixture.adapter.close();
     },
   );
 });
-
 describe("Cursor access-mode hooks", () => {
   it.each([
     ["approval-required", "Write", "file-change"],
@@ -256,15 +234,6 @@ describe("Cursor inspection", () => {
     expect(result?.detail).toContain("2026.09.10");
   });
 
-  it("refuses the isolated-service boundary outright", async () => {
-    const result = await inspect({ runtimeBoundary: isolatedServiceHarnessRuntimeBoundary });
-    expect(result).toEqual({
-      detail:
-        "Cursor keeps its sign-in in the computer's own account, so it runs only on a computer where Opensteer runs as you.",
-      status: "unavailable",
-    });
-  });
-
   it("is unavailable rather than empty when the CLI lists no models", async () => {
     const result = await inspect({ scenario: "no-models" });
     expect(result).toMatchObject({ status: "unavailable" });
@@ -281,7 +250,6 @@ describe("Cursor inspection", () => {
       config: {},
       environment: { FAKE_CURSOR_CAPTURE_PATH: capturePath, PATH: process.env.PATH ?? "" },
       providerState: testProviderState(directory),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "cursor",
       workingDirectory: directory,
@@ -1261,7 +1229,6 @@ interface SetupOptions {
   /** The person's own task unless a test says otherwise: the only kind Cursor runs. */
   readonly personLineage?: boolean;
   readonly config?: Record<string, unknown>;
-  readonly runtimeBoundary?: HarnessSessionContext["runtimeBoundary"];
   readonly machineAccessNotice?: string;
   readonly modelSelection?: Record<string, unknown>;
   readonly scenario?: string;
@@ -1340,14 +1307,11 @@ async function setup(options: SetupOptions): Promise<Fixture> {
     personalContext: true,
     personLineage: options.personLineage ?? true,
     machineAccessNotice: options.machineAccessNotice ?? noComputersNotice,
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     modelSelection: ModelSelectionSchema.parse(
       options.modelSelection ?? { modelId: "composer-2.5", options: {}, providerId: "cursor" },
     ),
     platformGuide: "Opensteer platform guide.",
     providerState: testProviderState(directory),
-    runtimeBoundary: options.runtimeBoundary ?? nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     skills: skills.length > 0 ? { skills } : undefined,
     threadId: createId("thread"),
@@ -1398,7 +1362,6 @@ async function seedTranscript(fixture: Fixture): Promise<void> {
 
 async function inspect(options: {
   readonly executable?: string;
-  readonly runtimeBoundary?: HarnessSessionContext["runtimeBoundary"];
   readonly scenario?: string;
   readonly version?: string;
 }): Promise<HarnessInspectionResult | undefined> {
@@ -1415,7 +1378,6 @@ async function inspect(options: {
       ...(options.version ? { FAKE_CURSOR_VERSION: options.version } : {}),
     },
     providerState: testProviderState(directory),
-    runtimeBoundary: options.runtimeBoundary ?? nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     sourceId: "cursor",
     workingDirectory: directory,

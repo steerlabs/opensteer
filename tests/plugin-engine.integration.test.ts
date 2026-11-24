@@ -537,6 +537,10 @@ test.for(fixtureFlows)(
         );
       const active = async () => (await run(engine.apps.get({ app, owner }))).activeVersion;
       const versions = async () => (await run(engine.apps.versions({ app, owner }))).length;
+      // Installing a plugin that declares a schedule switches none on: only the person's
+      // configure saves one (agent control, `plugins.install` stays widen-self).
+      const schedules = () => run(engine.schedules.list({ app, owner }));
+      expect(await schedules()).toEqual([]);
 
       // Saved on the first version: a queued run, a reviewed call and a schedule's approval.
       holding = true;
@@ -569,6 +573,10 @@ test.for(fixtureFlows)(
         engine.apps.deploy({ owner, app, files: files(pinnedSource(2), true, extra) }),
       );
       holding = false;
+      // A new version keeps the schedule as the person set it: not switched, its approval kept.
+      expect(await schedules()).toEqual([
+        expect.objectContaining({ name: "reviewed", enabled: true, approvalMode: "browser" }),
+      ]);
       expect(await finished(queued.id)).toMatchObject({ status: "errored", error: "stale" });
       expect(await stored(queued.id)).toMatchObject({
         failure: "stale",

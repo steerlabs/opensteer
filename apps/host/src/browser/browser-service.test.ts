@@ -6073,8 +6073,8 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
         id: createId("request"),
         kind: input.kind,
         mode: input.mode,
-        originatingOccurrenceId: null,
-        originatingRunId: input.originatingRunId,
+        originatingOccurrenceId: input.originatingOccurrenceId ?? null,
+        originatingRunId: input.originatingRunId ?? null,
         originatingThreadId: input.originatingThreadId,
 
         payload: input.payload,
@@ -6425,6 +6425,13 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
 
   session(sessionId: BrowserSessionId): BrowserSessionRecord | undefined {
     return this.#sessions.get(sessionId);
+  }
+
+  async closeUnpooledBrowserSession(input: {
+    readonly from?: readonly HostedBrowserSessionState[];
+    readonly sessionId: BrowserSessionId;
+  }) {
+    return this.transitionBrowserSession({ ...input, state: "closed" });
   }
 
   async transitionBrowserSession(input: {
@@ -7535,6 +7542,53 @@ it("keeps workspace descriptors after a runtime retires and closes viewers grace
   expect(peer.closed?.code).toBe(1000);
 });
 
+it("writes an untitled page again when its load ends, so the tab's last title does not stay for good", async () => {
+  const keys = generateKeyPairSync("ed25519"),
+    runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
+    ownerId = createId("user"),
+    repository = new MemoryBrowserRepository(ownerId),
+    memory = memoryTabs(),
+    service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      tabRestoreVersion: true,
+    });
+  const initial = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "initial",
+  );
+  await memory.add(initial);
+  vi.spyOn(repository, "listBrowserSessionViewers").mockResolvedValue({ userIds: [ownerId] });
+  await service.pageTabs.admitted!(initial);
+  const writes = vi.spyOn(memory.store, "updatePage");
+  const address = "https://example.com/untitled";
+  const written = () =>
+    writes.mock.calls.map(([, , , , descriptor]) => ({
+      title: descriptor.title,
+      loading: descriptor.loading ?? false,
+    }));
+  runtime.publishTabs({
+    surfaces: [{ id: initial.id, active: true, title: "", url: address, loading: true }],
+  });
+  await vi.waitFor(async () => {
+    await service.flushPendingTabDescriptors();
+    expect(written()).toEqual([{ title: "", loading: true }]);
+  });
+  runtime.publishTabs({
+    surfaces: [{ id: initial.id, active: true, title: "", url: address, loading: false }],
+  });
+  await vi.waitFor(async () => {
+    await service.flushPendingTabDescriptors();
+    expect(written(), "the finished load of an untitled page was never written").toEqual([
+      { title: "", loading: true },
+      { title: "", loading: false },
+    ]);
+  });
+});
+
 it.each(["generation admission", "a concurrent durable open"])(
   "retains descriptors received before %s",
   async (race) => {
@@ -7742,7 +7796,7 @@ it("batches additive person-use marks once per runtime connection and replays on
       sharedControl: true,
       connectTimeoutMs: 1000,
       passkeys: false,
-      onState: async () => ({}),
+      onState: async (state: string) => ({ state }),
       onTerminal: () => undefined,
       onTabsChanged: () => undefined,
       onRecordsChanged: () => undefined,
@@ -8977,60 +9031,67 @@ it.each([
   },
 );
 
-it("a tab closed while activation reopens it in a new session leaves no page running", async () => {
-  const keys = generateKeyPairSync("ed25519"),
-    runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
-    ownerId = createId("user"),
-    repository = new MemoryBrowserRepository(ownerId),
-    memory = memoryTabs(),
-    service = freshService({
-      keys,
-      runtime,
-      repository,
-      tabs: memory.store,
-      surfaceState: true,
-      tabRestoreVersion: true,
+it.each([
+  ["confirmed", { outcome: "tab-closed" }, { code: "not_found" }],
+  ["not confirmed", { outcome: "unexpected" }, { code: "conflict", reason: "outcome-unknown" }],
+] as const)(
+  "a tab closed while activation reopens it closes its new page once, and says so only when %s",
+  async (_case, answer, refusal) => {
+    const keys = generateKeyPairSync("ed25519"),
+      runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
+      ownerId = createId("user"),
+      repository = new MemoryBrowserRepository(ownerId),
+      memory = memoryTabs(),
+      service = freshService({
+        keys,
+        runtime,
+        repository,
+        tabs: memory.store,
+        surfaceState: true,
+        tabRestoreVersion: true,
+        onError: () => {},
+      });
+    const descriptor = await service.pageTabs.open(
+      { kind: "person", ownerId },
+      { kind: "page", guest: true, url: "about:blank" },
+      "sleep",
+    );
+    await memory.add(descriptor);
+    const row = memory.rows.get(descriptor.id)!;
+    // Its browser ended while it slept: activation starts a session of its own for it.
+    row.pageBinding = { ...row.pageBinding!, sessionId: createBrowserSessionId() };
+    row.url = "https://example.test/f1";
+    // The person closes the tab once the restore has read it, while its page is starting.
+    const get = memory.store.get.bind(memory.store);
+    let reads = 0;
+    (memory.store as { get: typeof get }).get = async (owner, id, closed) => {
+      const current = await get(owner, id, closed);
+      if (id === row.id && ++reads === 1) row.closedAt = new Date();
+      return current;
+    };
+    const activation = service.pageTabs.activate!(ownerId, row, "activate");
+    void activation.catch(() => undefined);
+    const sent = (method: string) =>
+      runtime.receivedCommands().filter((message) => {
+        const command = message.command as
+          { method?: string; parameters?: { surfaceId?: string } } | undefined;
+        return (
+          message.type === "cdp.command" &&
+          command?.method === method &&
+          command.parameters?.surfaceId === row.id
+        );
+      });
+    // The page that started for it is closed, in one attempt the refusal waits for.
+    await vi.waitFor(() => expect(sent(browserHostMethods.closeTab)).toHaveLength(1));
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: sent(browserHostMethods.closeTab)[0]!.requestId,
+      result: answer,
     });
-  const descriptor = await service.pageTabs.open(
-    { kind: "person", ownerId },
-    { kind: "page", guest: true, url: "about:blank" },
-    "sleep",
-  );
-  await memory.add(descriptor);
-  const row = memory.rows.get(descriptor.id)!;
-  // Its browser ended while it slept: activation starts a session of its own for it.
-  row.pageBinding = { ...row.pageBinding!, sessionId: createBrowserSessionId() };
-  row.url = "https://example.test/f1";
-  // The person closes the tab once the restore has read it, while its page is starting.
-  const get = memory.store.get.bind(memory.store);
-  let reads = 0;
-  (memory.store as { get: typeof get }).get = async (owner, id, closed) => {
-    const current = await get(owner, id, closed);
-    if (id === row.id && ++reads === 1) row.closedAt = new Date();
-    return current;
-  };
-  await expect(service.pageTabs.activate!(ownerId, row, "activate")).rejects.toMatchObject({
-    code: "not_found",
-  });
-  // The page that started for it is fenced and closed, as any closed tab's page is.
-  const sent = (method: string) =>
-    runtime.receivedCommands().find((message) => {
-      const command = message.command as
-        { method?: string; parameters?: { surfaceId?: string } } | undefined;
-      return (
-        message.type === "cdp.command" &&
-        command?.method === method &&
-        command.parameters?.surfaceId === row.id
-      );
-    });
-  await vi.waitFor(() => expect(sent(browserHostMethods.fenceTab)).toBeDefined());
-  runtime.sendServer({
-    type: "cdp.result",
-    requestId: sent(browserHostMethods.fenceTab)!.requestId,
-    result: {},
-  });
-  await vi.waitFor(() => expect(sent(browserHostMethods.closeTab)).toBeDefined());
-});
+    await expect(activation).rejects.toMatchObject(refusal);
+    expect(sent(browserHostMethods.closeTab)).toHaveLength(1);
+  },
+);
 
 it("a reopening whose last read fails for another reason keeps the open tab and its new page", async () => {
   const keys = generateKeyPairSync("ed25519"),
@@ -10468,5 +10529,190 @@ describe("work under a connection's authority never uses the clipboard or change
       second.session.id,
     ]);
     cdpFirst.close();
+  });
+
+  it("never deadlocks when attachCdpForAgent or agent start races #holdForAgent on the same profile (PH1)", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Shared Profile" });
+
+    let pauseNextAccess = false;
+    let enteredAccess = Promise.withResolvers<void>();
+    let releaseAccess = Promise.withResolvers<void>();
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      requireAgentAccess: async () => {
+        if (pauseNextAccess) {
+          pauseNextAccess = false;
+          enteredAccess.resolve();
+          await releaseAccess.promise;
+        }
+      },
+    });
+    const person = await service.start({ ownerId, profileId: profile.id });
+
+    // Sequence 1: attachCdpForAgent (Call A) pauses inside admission while openAgentSession (Call B)
+    // reaches #holdForAgent on the same profile P. Both must acquire profile lane before runner lane.
+    pauseNextAccess = true;
+    const callA = service.attachCdpForAgent(
+      { ownerId, sessionId: person.session.id, agentBindingId: "ph1-binding-a" },
+      () => undefined,
+    );
+    await withTimeout(enteredAccess.promise, 1000, {
+      timeoutError: () => new Error("Call A never reached admission"),
+    });
+    const callB = service.openAgentSession({
+      ownerId,
+      sessionId: person.session.id,
+      agentBindingId: "ph1-binding-b",
+    });
+    // Let Call B advance through its pre-hold checks and contend on the lanes.
+    for (let i = 0; i < 5; i++) await new Promise<void>((r) => setImmediate(r));
+    releaseAccess.resolve();
+    const [attachmentA, sessionB] = await withTimeout(Promise.all([callA, callB]), 1500, {
+      timeoutError: () =>
+        new Error("PH1 deadlock: attachCdpForAgent and #holdForAgent inverted lanes"),
+    });
+    expect(sessionB.session.id).toBe(person.session.id);
+    attachmentA.close();
+
+    // Sequence 2: an agent browser start on profile P pauses inside admission while #holdForAgent
+    // runs for an existing session on profile P. Both must complete without deadlock.
+    enteredAccess = Promise.withResolvers<void>();
+    releaseAccess = Promise.withResolvers<void>();
+    pauseNextAccess = true;
+    const startingC = service.openAgentSession({
+      ownerId,
+      profileId: profile.id,
+      agentBindingId: "ph1-binding-c",
+    });
+    await withTimeout(enteredAccess.promise, 1000, {
+      timeoutError: () => new Error("Agent start never reached admission"),
+    });
+    const holdingD = service.openAgentSession({
+      ownerId,
+      sessionId: person.session.id,
+      agentBindingId: "ph1-binding-d",
+    });
+    for (let i = 0; i < 5; i++) await new Promise<void>((r) => setImmediate(r));
+    releaseAccess.resolve();
+    const [resC, resD] = await withTimeout(
+      Promise.all([startingC.catch((e: unknown) => e), holdingD]),
+      1500,
+      {
+        timeoutError: () => new Error("PH1 deadlock: agent start and #holdForAgent inverted lanes"),
+      },
+    );
+    expect(resD.session.id).toBe(person.session.id);
+    expect(resC).toBeDefined();
+
+    // Dynamic lock-order check: acquiring a profile lane from inside withRunnerAdmission throws immediately.
+    const personRecord = (await repository.getBrowserSessionForOwner(person.session.id, ownerId))!;
+    await expect(
+      service.withRunnerAdmission(personRecord.runnerId, () =>
+        service.openAgentSession({
+          ownerId,
+          sessionId: person.session.id,
+          agentBindingId: "ph1-binding-nested",
+        }),
+      ),
+    ).rejects.toThrow("BrowserService lock-order violation");
+  });
+
+  it("refuses to treat an undefined or stateless onState result as confirmed ready (PH5)", async () => {
+    const sent: Array<{ type: string }> = [];
+    const socket = Object.assign(new EventEmitter(), {
+      readyState: 1,
+      send: (data: string, _options: unknown, callback: (error?: Error) => void) => {
+        sent.push(JSON.parse(data));
+        callback();
+      },
+      close: () => socket.emit("close", 1000, Buffer.from("closed")),
+    });
+    const sessionId = createBrowserSessionId();
+    let onStateCalled = 0;
+    const broker = new HostedBrowserBroker({
+      socket,
+      sessionId,
+      groupId: sessionId,
+      readSessionState: async () => ({ runs: 0, pinned: [] }),
+      personUse: { tabs: new Set(), persist: async () => undefined },
+      savedTabIds: [],
+      profileId: null,
+      surfaceState: 1,
+      sharedControl: true,
+      connectTimeoutMs: 1000,
+      passkeys: false,
+      onState: async () => {
+        onStateCalled++;
+        return {};
+      },
+      onTerminal: () => undefined,
+      onTabsChanged: () => undefined,
+      onRecordsChanged: () => undefined,
+      onPageChanged: () => undefined,
+    } as unknown as ConstructorParameters<typeof HostedBrowserBroker>[0]);
+    cleanups.push(async () => {
+      socket.emit("close", 1000, Buffer.from("closed"));
+    });
+    const emit = (message: unknown) =>
+      socket.emit("message", Buffer.from(JSON.stringify(message)), false);
+    const tabId = BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
+    emit({
+      type: "browser.snapshot",
+      sessionId,
+      access: "read-write",
+      state: "ready",
+      dialog: null,
+      surfaceState: 1,
+      targetedStreamingVersion: 1,
+    });
+    const rows = new Map([
+      [
+        tabId,
+        BrowserTabRecordSchema.parse({
+          id: tabId,
+          order: 0,
+          title: "Tab",
+          url: "about:blank",
+          state: "live",
+          icon: null,
+          openerId: null,
+          documentId: "doc",
+          geometryRevision: 1,
+          loading: false,
+          navigationFailed: false,
+          canGoBack: false,
+          canGoForward: false,
+          sizedByAgent: false,
+        }),
+      ],
+    ]);
+    const publisher = new KeyedStreamPublisher({
+      ids: () => rows.keys(),
+      read: (id) => rows.get(BrowserSurfaceIdSchema.parse(id)),
+      meta: () => ({ activeId: tabId, inventoryRevision: 1 }),
+      targetBytes: 64 * 1024,
+      envelopeBytes: 256,
+    });
+    for (let stream = publisher.next(); stream; stream = publisher.next()) {
+      emit({ type: "browser.tabs", stream });
+      publisher.settled(stream, true);
+    }
+    let resolved = false;
+    void broker.ready().then(
+      () => {
+        resolved = true;
+      },
+      () => undefined,
+    );
+    await vi.waitFor(() => expect(onStateCalled).toBe(1), { timeout: 1000 });
+    for (let i = 0; i < 5; i++) await new Promise<void>((r) => setImmediate(r));
+    expect(resolved).toBe(false);
+    expect(sent.filter((message) => message.type === "session.state")).toEqual([]);
   });
 });

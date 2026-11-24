@@ -103,7 +103,16 @@ function AccountAction({
           .filter((line) => line.key === "sites" || line.key === "credential")
           .map((line) => (
             <li className="plugin-consent__line" key={line.key}>
-              <span>{line.text}</span>
+              <span>
+                {line.text}
+                {/* Each site the credential may reach, apart from the plugin's names. */}
+                {line.sites.map((site) => (
+                  <span className="plugin-consent__site" key={site}>
+                    {" "}
+                    {site}
+                  </span>
+                ))}
+              </span>
             </li>
           ))}
       </ul>

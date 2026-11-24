@@ -487,6 +487,28 @@ export class PageOwnership {
     return Promise.all(ending.map((entry) => entry.settled.promise)).then(() => undefined);
   }
 
+  /**
+   * What this ledger holds of a session now: its pages (each until the engine confirms it gone)
+   * and its page creations under way. A session holds nothing only when both are zero.
+   */
+  holdingsOf(session: string): {
+    readonly pages: number;
+    readonly creations: number;
+    /** Of its pages, those whose close is being asked of the engine right now. */
+    readonly closing: number;
+  } {
+    let pages = 0;
+    let closing = 0;
+    for (const entry of this.held)
+      if (entry.session === session) {
+        pages++;
+        if (entry.state === "closing" && entry.attempt) closing++;
+      }
+    let creations = 0;
+    for (const creation of this.creations) if (creation.session === session) creations++;
+    return { pages, creations, closing };
+  }
+
   /** For a planned relay restart, keep only the person's live page incarnations. */
   endOtherPages(
     session: string,

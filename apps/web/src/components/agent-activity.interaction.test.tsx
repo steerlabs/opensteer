@@ -1222,7 +1222,7 @@ describe("a message still on this device", () => {
 });
 
 describe("a long transcript's bodies", () => {
-  it("keep older rows' words as plain text until they near view, and parse the newest at once", async () => {
+  it("defers older bodies on short transcripts and virtualizes long transcripts to a bounded window", async () => {
     const observed: { element: Element; notify: () => void }[] = [];
     vi.stubGlobal(
       "IntersectionObserver",
@@ -1244,33 +1244,56 @@ describe("a long transcript's bodies", () => {
         disconnect() {}
       },
     );
-    const entries: MessageEntry[] = Array.from({ length: 100 }, (_, index) => ({
-      ...note,
-      runId: null,
-      body: `Update **${index}**`,
-      createdAt: new Date(Date.UTC(2026, 7, 16, 10, index)).toISOString(),
-      id: `message-${index}`,
-    }));
-    const scroller = document.createElement("div");
-    document.body.append(scroller);
-    const root = createRoot(scroller);
-    roots.push(root);
+    const makeEntries = (count: number): MessageEntry[] =>
+      Array.from({ length: count }, (_, index) => ({
+        ...note,
+        runId: null,
+        body: `Update **${index}**`,
+        createdAt: new Date(Date.UTC(2026, 7, 16, 10, index)).toISOString(),
+        id: `message-${index}`,
+      }));
+
+    // 1) Short transcript (<= 48 rows, non-virtualized): older rows stay deferred until intersecting.
+    const shortScroller = document.createElement("div");
+    document.body.append(shortScroller);
+    const shortRoot = createRoot(shortScroller);
+    roots.push(shortRoot);
     await act(async () => {
-      root.render(
+      shortRoot.render(
         <MemoryRouter initialEntries={["/tasks/thread-1"]}>
-          <AgentTranscript entries={entries} scroller={() => scroller} />
+          <AgentTranscript entries={makeEntries(45)} scroller={() => shortScroller} />
         </MemoryRouter>,
       );
       await import("./markdown.js");
     });
-    const body = (index: number) => scroller.querySelector(`[data-message-id="message-${index}"]`)!;
-    // The newest rows are parsed; an older one holds its words, plain, for Find and reading.
-    await vi.waitFor(() => expect(body(99).querySelector("strong")?.textContent).toBe("99"));
-    expect(body(3).querySelector("strong")).toBeNull();
-    expect(body(3).textContent).toContain("Update **3**");
-    const near = observed.find(({ element }) => body(3).contains(element))!;
+    const shortBody = (index: number) =>
+      shortScroller.querySelector(`[data-message-id="message-${index}"]`)!;
+    await vi.waitFor(() => expect(shortBody(44).querySelector("strong")?.textContent).toBe("44"));
+    expect(shortBody(2).querySelector("strong")).toBeNull();
+    expect(shortBody(2).textContent).toContain("Update **2**");
+    const near = observed.find(({ element }) => shortBody(2).contains(element))!;
     await act(async () => near.notify());
-    await vi.waitFor(() => expect(body(3).querySelector("strong")?.textContent).toBe("3"));
+    await vi.waitFor(() => expect(shortBody(2).querySelector("strong")?.textContent).toBe("2"));
+
+    // 2) Long transcript (> 48 rows, virtualized): mounts a bounded DOM window + spacers, parsing tail at once.
+    const longScroller = document.createElement("div");
+    document.body.append(longScroller);
+    const longRoot = createRoot(longScroller);
+    roots.push(longRoot);
+    await act(async () => {
+      longRoot.render(
+        <MemoryRouter initialEntries={["/tasks/thread-2"]}>
+          <AgentTranscript entries={makeEntries(100)} scroller={() => longScroller} />
+        </MemoryRouter>,
+      );
+      await import("./markdown.js");
+    });
+    const longBody = (index: number) =>
+      longScroller.querySelector(`[data-message-id="message-${index}"]`);
+    await vi.waitFor(() => expect(longBody(99)?.querySelector("strong")?.textContent).toBe("99"));
+    expect(longScroller.querySelectorAll("[data-transcript-row]").length).toBeLessThan(60);
+    expect(longScroller.querySelectorAll(".transcript__spacer").length).toBeGreaterThan(0);
+    expect(longBody(50)).toBeNull();
     vi.unstubAllGlobals();
   });
 
@@ -1299,6 +1322,82 @@ describe("a long transcript's bodies", () => {
       await vi.waitFor(() => expect(container.textContent).toContain("FINAL_WORD"));
       expect(container.textContent).not.toContain("Read full reply");
       expect(container.textContent).not.toContain("Show full message");
+    }
+  });
+
+  it("pins tail scrollTop across height resizes while following, and yields immediately when the user scrolls up", async () => {
+    const callbacks: ResizeObserverCallback[] = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(cb: ResizeObserverCallback) {
+          callbacks.push(cb);
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    const entries: MessageEntry[] = Array.from({ length: 100 }, (_, index) => ({
+      ...note,
+      runId: null,
+      body: `Message ${index}`,
+      createdAt: new Date(Date.UTC(2026, 7, 16, 10, index)).toISOString(),
+      id: `message-${index}`,
+    }));
+    const scroller = document.createElement("div");
+    let scrollHeight = 10_000;
+    const clientHeight = 800;
+    let scrollTop = 0;
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, get: () => clientHeight },
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = Math.max(0, Math.min(scrollHeight - clientHeight, value));
+        },
+      },
+    });
+    document.body.append(scroller);
+    const root = createRoot(scroller);
+    roots.push(root);
+    try {
+      await act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={["/tasks/thread-tail"]}>
+            <AgentTranscript entries={entries} followTail scroller={() => scroller} />
+          </MemoryRouter>,
+        );
+        await import("./markdown.js");
+      });
+      expect(scroller.dataset.virtualized).toBe("true");
+      expect(scrollTop).toBe(scrollHeight - clientHeight);
+
+      // Simulate height shrink followed by height growth while following tail.
+      scrollHeight = 9_400;
+      scrollTop = Math.min(scrollTop, scrollHeight - clientHeight);
+      await act(async () => {
+        for (const cb of callbacks) cb([], {} as ResizeObserver);
+      });
+      expect(scrollTop).toBe(scrollHeight - clientHeight);
+
+      scrollHeight = 10_600;
+      await act(async () => {
+        for (const cb of callbacks) cb([], {} as ResizeObserver);
+      });
+      expect(scrollTop).toBe(scrollHeight - clientHeight);
+
+      // User scrolls up while scrollHeight and clientHeight are unchanged: must not snap back.
+      scrollTop = 8_500;
+      scroller.dispatchEvent(new Event("scroll"));
+      await act(async () => {
+        for (const cb of callbacks) cb([], {} as ResizeObserver);
+      });
+      expect(scrollTop).toBe(8_500);
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 });

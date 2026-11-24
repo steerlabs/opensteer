@@ -9,6 +9,9 @@ import {
   layoutWindow,
   overlaps,
   textElement,
+  readingColumn,
+  textFaults,
+  type Frames,
 } from "../../test-support/yoga-frames.js";
 
 /*
@@ -137,12 +140,14 @@ vi.mock("../ui/notifications-context.js", () => ({
 }));
 vi.mock("../ui/keyboard.js", () => ({ useKeyboardVisible: () => false }));
 vi.mock("../ui/cellular.js", () => ({ useCellular: () => false }));
+/** What the person has typed, when a case has typed something. */
+const typed = vi.hoisted(() => ({ text: null as string | null }));
 vi.mock("../ui/mobile-client-context.js", async (actual) => ({
   ...(await actual<typeof import("../ui/mobile-client-context.js")>()),
   useMobileClient: () => ({
     drafts: {
       getVersion: () => 0,
-      readDraft: () => null,
+      readDraft: () => (typed.text === null ? null : { text: typed.text }),
       readDraftUnsaved: () => false,
       subscribe: () => () => undefined,
       writeDraft: async () => undefined,
@@ -187,6 +192,10 @@ describe("the Tasks screen's heading and its composer", () => {
         );
         const frames = await layout(container, phone.window);
         expect(frames.settled, "the layout never comes to rest").toBe(true);
+        expect(
+          textFaults(frames, { column: readingColumn(phone) }),
+          "a text a person reads is broken or cut",
+        ).toEqual([]);
         const heading = textElement(container, "What should your agent do?");
         const dock = container.querySelector('[data-testid="composer-dock-stack"]');
         if (!dock) throw new Error("No composer");
@@ -201,5 +210,128 @@ describe("the Tasks screen's heading and its composer", () => {
           coveringOf(container, frames, heading).filter((element) => !element.contains(dock)),
           "something covers the heading",
         ).toEqual([]);
+      });
+});
+
+/**
+ * Whether a person can read an element to its last line above the composer: scrolled as far as
+ * its scroll view goes (or as it stands, when nothing scrolls it), its bottom is above the dock.
+ */
+function readableAboveDock(frames: Frames, element: Element, dock: Element): boolean {
+  const frame = frames.frame(element);
+  const dockTop = frames.frame(dock).y;
+  const content = element.closest('[data-rn="ScrollContent"]');
+  if (!content?.parentElement) return frame.y + frame.height <= dockTop + 0.5;
+  const box = frames.frame(content);
+  const view = frames.frame(content.parentElement);
+  const furthest = Math.max(0, box.y + box.height - (view.y + view.height));
+  return frame.y + frame.height - furthest <= dockTop + 0.5;
+}
+
+describe("the Tasks screen's empty state", () => {
+  for (const phone of layoutPhones)
+    for (const fontScale of layoutTextSizes)
+      it(`can be read to its end above the composer on ${phone.name} at text size ${fontScale}`, async () => {
+        geometry.header = phone.header;
+        geometry.insets = phone.insets;
+        Object.assign(layoutWindow, phone.window, { fontScale });
+        const container = document.createElement("div");
+        document.body.append(container);
+        const root = createRoot(container);
+        roots.push(root);
+        await act(async () =>
+          root.render(
+            <View style={{ height: phone.window.height, width: phone.window.width }}>
+              <HeldNewTaskPane
+                connection={null}
+                deploymentId="dep_mock"
+                name="Studio Mac"
+                underHeader
+                userId={"usr_mock" as never}
+              />
+            </View>,
+          ),
+        );
+        const frames = await layout(container, phone.window);
+        expect(frames.settled, "the layout never comes to rest").toBe(true);
+        expect(
+          textFaults(frames, { column: readingColumn(phone) }),
+          "a text a person reads is broken or cut",
+        ).toEqual([]);
+        const dock = container.querySelector('[data-testid="composer-dock-stack"]');
+        if (!dock) throw new Error("No composer");
+        const paragraph = textElement(container, "Your agent works on this computer.");
+        expect(frames.cut(paragraph), "the paragraph is cut").toBe(false);
+        expect(
+          readableAboveDock(frames, paragraph, dock),
+          "the paragraph can't be brought out from behind the composer",
+        ).toBe(true);
+        // The last way to begin, too: the whole empty state is there to be read.
+        const last = textElement(container, "Plan before changing anything");
+        expect(
+          readableAboveDock(frames, last, dock),
+          "the last way to begin can't be brought out from behind the composer",
+        ).toBe(true);
+        // And every other text the page holds: scrolled to its end, none stays under the composer.
+        const content = paragraph.closest('[data-rn="ScrollContent"]');
+        const under = frames
+          .texts()
+          .filter(({ element }) => content?.contains(element) && !dock.contains(element))
+          .filter(({ element }) => !readableAboveDock(frames, element, dock))
+          .map(({ words }) => words);
+        expect(under, "text stays under the composer when scrolled to its end").toEqual([]);
+      });
+});
+
+describe("a message that couldn't start a task", () => {
+  for (const phone of layoutPhones)
+    for (const fontScale of layoutTextSizes)
+      it(`says why whole, above the composer, on ${phone.name} at text size ${fontScale}`, async () => {
+        geometry.header = phone.header;
+        geometry.insets = phone.insets;
+        Object.assign(layoutWindow, phone.window, { fontScale });
+        typed.text = "Find flights to Lisbon for next weekend";
+        const container = document.createElement("div");
+        document.body.append(container);
+        const root = createRoot(container);
+        roots.push(root);
+        try {
+          await act(async () =>
+            root.render(
+              <View style={{ height: phone.window.height, width: phone.window.width }}>
+                <HeldNewTaskPane
+                  connection={null}
+                  deploymentId="dep_mock"
+                  name="Studio Mac"
+                  underHeader
+                  userId={"usr_mock" as never}
+                />
+              </View>,
+            ),
+          );
+          const send = container.querySelector('[aria-label="Send message"]');
+          if (!send) throw new Error(`No Send: ${container.textContent ?? ""}`);
+          await act(async () => (send as HTMLElement).click());
+          const frames = await layout(container, phone.window);
+          expect(frames.settled, "the layout never comes to rest").toBe(true);
+          expect(
+            textFaults(frames, { column: readingColumn(phone) }),
+            "a text a person reads is broken or cut",
+          ).toEqual([]);
+          const dock = container.querySelector('[data-testid="composer-dock-stack"]');
+          if (!dock) throw new Error("No composer");
+          const line = [...container.querySelectorAll('[data-rn="Text"]')].find((text) =>
+            /^Not started\b|^Couldn/u.test(text.textContent ?? ""),
+          );
+          if (!line) throw new Error(`No failure line: ${container.textContent ?? ""}`);
+          const words = line.textContent!;
+          expect(frames.shown(line), "the failure is cut").toBe(words);
+          expect(
+            readableAboveDock(frames, line, dock),
+            "the failure can't be brought out from behind the composer",
+          ).toBe(true);
+        } finally {
+          typed.text = null;
+        }
       });
 });

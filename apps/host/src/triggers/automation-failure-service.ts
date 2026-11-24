@@ -96,9 +96,24 @@ function noticeText(notice: PendingAutomationFailure): string {
     notice.destinationThreadId === notice.anchorThreadId
       ? `The automation "${notice.triggerName}"`
       : `The automation "${notice.triggerName}", which runs in its own task ${JSON.stringify(notice.anchorThreadTitle)} (${notice.anchorThreadId}),`;
-  if (notice.reason === "final-occurrence-interrupted") {
-    // Opensteer cannot know whether the program's effects happened, and running
+  if (notice.reason === "outcome-unknown") {
+    // Opensteer cannot know whether the script's effects happened, and running
     // it again is the agent's decision, not something to do silently.
+    const headline = /\bexited with code\b/iu.test(notice.detail)
+      ? `${automation} ended without saying whether its effect happened during its only scheduled run, so its outcome is unknown. It was not run again.`
+      : `${automation} lost contact with its computer during its only scheduled run, so its outcome is unknown. It may not have finished, and it will not run again on its own.`;
+    return [
+      headline,
+      "",
+      `Check what it already did, then run it again with opensteer_automation_control action "run_now" (automationId ${notice.triggerId}) if it still needs to happen.`,
+      "",
+      `Detail: ${JSON.stringify(notice.detail)}`,
+    ].join("\n");
+  }
+  if (notice.reason === "started-unknown") {
+    return `${automation} ended without saying whether its effect happened, so its outcome is unknown. It was not run again, and the automation is still active.\n\nDetail: ${JSON.stringify(notice.detail)}`;
+  }
+  if (notice.reason === "final-occurrence-interrupted") {
     return [
       `${automation} was interrupted on its only scheduled run when Opensteer restarted or its computer disconnected. It may not have finished, and it will not run again on its own.`,
       "",
@@ -106,6 +121,18 @@ function noticeText(notice: PendingAutomationFailure): string {
       "",
       `Detail: ${JSON.stringify(notice.detail)}`,
     ].join("\n");
+  }
+  if (notice.reason === "started-failing") {
+    return `${automation} started failing. It is still active.\n\nIts latest error, as reported: ${JSON.stringify(notice.detail)}`;
+  }
+  if (notice.reason === "overran-schedule") {
+    return `${automation} was still running when its next scheduled run came due, so one waiting run was queued and further overlapping ticks collapse into it. It is still active.\n\nDetail: ${JSON.stringify(notice.detail)}`;
+  }
+  if (notice.reason === "watch-halted") {
+    return `${automation} stopped and will not restart on its own because Opensteer could not verify that every process from its previous run ended. Check its computer for any leftover processes, then pause and resume the automation to start a fresh run.\n\nDetail: ${JSON.stringify(notice.detail)}`;
+  }
+  if (notice.reason === "watch-crash-loop") {
+    return `${automation} keeps stopping and restarting. It is still active and retrying with backoff.\n\nLatest exit and error: ${JSON.stringify(notice.detail)}`;
   }
   const ended =
     notice.reason === "final-occurrence-failed"

@@ -5,6 +5,7 @@ import { expect, test, vi } from "vitest";
 import { createDatabase } from "./connection.js";
 import { ensureDeployment } from "./deployment-store.js";
 import {
+  commandRequestsMigrationName,
   migrateToLatest,
   migrationProvider,
   personalCurrentStateMigrationName,
@@ -22,8 +23,15 @@ import {
 import { agentGrantsMigrationName } from "./agent-grants-migration.js";
 import { agentSessionsMigrationName } from "./agent-sessions-migration.js";
 import { agentDirectoryMigrationName } from "./agent-directory-migration.js";
-import { workHomeMigrationName } from "./work-home-migration.js";
-import { browserPoolMigrationName } from "./browser-pool-migration.js";
+import {
+  removeOrganizationsMigrationName,
+  workHomeMigrationName,
+} from "./one-person-home-migration.js";
+import { removePlatformVerificationMigrationName } from "./platform-verification-removal-migration.js";
+import {
+  browserPoolMigrationName,
+  browserPoolSessionsMigrationName,
+} from "./browser-pool-migration.js";
 import { bridgeConnectionsMigrationName } from "./bridge-connections-migration.js";
 import { chatRoutesEndMigrationName } from "./chat-routes-end-migration.js";
 import { preparePersonalConversion } from "./personal-state.test-support.js";
@@ -110,8 +118,14 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         "0107_needs_you_counts_requests",
         bridgeConnectionsMigrationName,
         chatRoutesEndMigrationName,
+        removeOrganizationsMigrationName,
+        removePlatformVerificationMigrationName,
+        commandRequestsMigrationName,
+        "0113_automations_contract",
         "0114_thread_inputs_written_by_connection",
         "0115_provider_session_person_lineage",
+        browserPoolSessionsMigrationName,
+        "0117_stop_truth_and_recovery",
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const indexes = await sql<{ name: string }>`

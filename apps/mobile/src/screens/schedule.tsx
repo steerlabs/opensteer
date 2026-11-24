@@ -282,7 +282,7 @@ function ScheduleBody(props: {
   const now = Date.now();
   const watch =
     item.kind === "watch" && definition.activation !== null
-      ? watchState(definition.activation.observed)
+      ? watchState(definition.activation.observed, definition.activation.contactLostAt, now)
       : null;
   const status = [
     item.statusWord,
@@ -413,7 +413,6 @@ function ScheduleBody(props: {
           {props.line === null ? null : (
             <ActionLine
               line={props.line}
-              numberOfLines={2}
               onDismiss={props.line.tone === "danger" ? props.onDismissLine : undefined}
             />
           )}
@@ -437,11 +436,14 @@ function ScheduleBody(props: {
         </View>
       ) : null}
       {recovery.line === null ? null : (
-        <ActionLine line={recovery.line} numberOfLines={2} onDismiss={recovery.dismiss} />
+        <ActionLine line={recovery.line} onDismiss={recovery.dismiss} />
       )}
       {managed ? (
         <View style={styles.plate}>
-          <Fact label="Source" value={definition.revision.program.source} />
+          <Fact
+            label="Source"
+            value={definition.revision.script?.text ?? definition.revision.legacySource ?? ""}
+          />
         </View>
       ) : null}
       <View style={styles.runs}>
@@ -565,6 +567,7 @@ const runGlyph: Record<
   pending: { name: "clock", tint: color.muted },
   running: { name: "circle.dotted", tint: color.ember },
   succeeded: { name: "checkmark", tint: color.green },
+  unknown: { name: "questionmark.circle", tint: color.amber },
 };
 
 const RunRow = memo(function RunRow(props: {
@@ -576,7 +579,8 @@ const RunRow = memo(function RunRow(props: {
   readonly reachable: string;
   readonly run: ScheduleDetail["occurrences"][number];
 }): ReactNode {
-  const { occurrence, outcome, error, replies } = props.run;
+  const { occurrence, outcome, error, output, replies } = props.run;
+  const outputNotice = occurrence.outputPrunedAt ? output : null;
   const reply = replies[0];
   const openable = reply !== undefined && props.reachable.split("\n").includes(reply.run.threadId);
   const when = formatMoment(occurrence.createdAt, props.now);
@@ -584,7 +588,9 @@ const RunRow = memo(function RunRow(props: {
   return (
     <Pressable
       accessibilityHint={openable ? "Opens the reply" : undefined}
-      accessibilityLabel={[when, outcome, error].filter((part) => part !== null).join(". ")}
+      accessibilityLabel={[when, outcome, error, outputNotice]
+        .filter((part) => part !== null)
+        .join(". ")}
       accessibilityRole={openable ? "button" : "text"}
       accessibilityState={{ disabled: !openable }}
       disabled={!openable}
@@ -609,6 +615,11 @@ const RunRow = memo(function RunRow(props: {
         {error === null ? null : (
           <AppText numberOfLines={3} role="caption" tone="muted">
             {error}
+          </AppText>
+        )}
+        {outputNotice === null ? null : (
+          <AppText numberOfLines={3} role="caption" tone="muted">
+            {outputNotice}
           </AppText>
         )}
       </View>

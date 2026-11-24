@@ -27,8 +27,6 @@ import {
   type Message,
 } from "@opensteer/core";
 import {
-  isolatedServiceHarnessRuntimeBoundary,
-  nativeUserHarnessRuntimeBoundary,
   threadTitlePrompt,
   spawnSupervised,
   type HarnessAdapter,
@@ -210,16 +208,6 @@ describe("Pi model catalog", () => {
 });
 
 describe("Pi inspection", () => {
-  it("refuses an isolated-service Runner outright", async () => {
-    const result = await inspectSource("openai", {
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-    });
-    expect(result).toEqual({
-      detail: expect.stringContaining("no command sandbox"),
-      status: "unavailable",
-    });
-  });
-
   it("reports an unsupported Pi version as unavailable", async () => {
     const result = await inspectSource("openai", { environment: { FAKE_PI_VERSION: "0.84.0" } });
     expect(result).toEqual({
@@ -278,7 +266,6 @@ describe("Pi inspection", () => {
       config: { baseUrl: "https://openrouter.ai/api/v1" },
       environment: stringEnvironment(process.env),
       providerState,
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: piCompatibleSourceId,
       workingDirectory: directory,
@@ -341,7 +328,6 @@ describe("Pi inspection", () => {
       config: { baseUrl: "https://endpoint.test/v1" },
       environment: stringEnvironment(process.env),
       providerState,
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: piCompatibleSourceId,
       workingDirectory: directory,
@@ -717,11 +703,15 @@ describe("Pi sessions", () => {
       join(root, "others-1"),
     );
     const linkedAuth = join(othersDir, "auth.json");
-    const linkedModels = join(othersDir, "models.json");
+    const copiedModels = join(othersDir, "models.json");
     expect((await lstat(linkedAuth)).isSymbolicLink()).toBe(true);
     expect(await readlink(linkedAuth)).toBe(personAuth);
-    expect((await lstat(linkedModels)).isSymbolicLink()).toBe(true);
-    expect(await readlink(linkedModels)).toBe(personModels);
+    expect((await lstat(copiedModels)).isSymbolicLink()).toBe(false);
+    expect((await lstat(copiedModels)).isFile()).toBe(true);
+    expect(await readFile(copiedModels, "utf8")).toBe(JSON.stringify({ providers: {} }));
+    // Editing the person's models.json after materialization never changes the checked copy.
+    await writeFile(personModels, JSON.stringify({ providers: { x: { apiKey: "!echo pwn" } } }));
+    expect(await readFile(copiedModels, "utf8")).toBe(JSON.stringify({ providers: {} }));
 
     const beforeLink = await lstat(linkedAuth);
     const beforeTarget = await lstat(personAuth);
@@ -1502,14 +1492,6 @@ describe("Pi sessions", () => {
     await fixture.adapter.close();
   });
 
-  it("refuses to run on an isolated-service Runner", async () => {
-    const fixture = await setup({ runtimeBoundary: isolatedServiceHarnessRuntimeBoundary });
-    await expect(fixture.adapter.startSession(fixture.context)).rejects.toThrow(
-      /no command sandbox/,
-    );
-    await fixture.adapter.close();
-  });
-
   it("refuses to replay durable history as a fresh provider session", async () => {
     const fixture = await setup({ history: [historyMessage("user", "earlier")] });
     await expect(fixture.adapter.startSession(fixture.context)).rejects.toThrow(
@@ -1661,23 +1643,6 @@ describe("Pi resume", () => {
     await fixture.adapter.close();
   });
 
-  it("refuses to resume on an isolated-service Runner", async () => {
-    const fixture = await setup();
-    const started = await fixture.adapter.startSession(fixture.context);
-    await started.execute(fixture.turn("First"));
-    const reference = started.providerSessionReference;
-    await started.stop();
-    // The same refusal `startSession` gives: Pi has no command sandbox, so a
-    // resumed conversation is no safer than a new one on a shared Runner.
-    await expect(
-      fixture.adapter.resumeSession(reference, {
-        ...fixture.context,
-        runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-      }),
-    ).rejects.toThrow(/no command sandbox/u);
-    await fixture.adapter.close();
-  });
-
   it("refuses a reference that is not a Pi session file", async () => {
     const fixture = await setup();
     await expect(fixture.adapter.resumeSession("not-a-session", fixture.context)).rejects.toThrow(
@@ -1816,7 +1781,6 @@ interface SetupOptions {
     readonly options: Record<string, string>;
     readonly providerId: string;
   };
-  readonly runtimeBoundary?: HarnessSessionContext["runtimeBoundary"];
   readonly scenario?: string;
   readonly shutdownGraceMs?: number;
   readonly skills?: readonly { readonly description: string; readonly name: string }[];
@@ -1951,8 +1915,6 @@ async function setup(options: SetupOptions = {}): Promise<Fixture> {
     personalContext: false,
     personLineage: false,
     machineAccessNotice: noComputersNotice,
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     modelSelection: ModelSelectionSchema.parse(
       options.modelSelection ?? {
         modelId: "claude-opus-4-8",
@@ -1962,7 +1924,6 @@ async function setup(options: SetupOptions = {}): Promise<Fixture> {
     ),
     platformGuide: "Opensteer platform guide.",
     providerState: testProviderState(directory, "isolated"),
-    runtimeBoundary: options.runtimeBoundary ?? nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     skills: skills.length > 0 ? { skills } : undefined,
     threadId: createId("thread"),
@@ -2005,7 +1966,6 @@ async function inspectSource(
     readonly environment?: Record<string, string>;
     readonly executable?: string;
     readonly providerStateKind?: "ambient" | "isolated";
-    readonly runtimeBoundary?: HarnessSessionContext["runtimeBoundary"];
   } = {},
 ): Promise<HarnessInspectionResult | undefined> {
   const directory = await temporaryDirectory();
@@ -2014,7 +1974,6 @@ async function inspectSource(
     config: {},
     environment: stringEnvironment({ ...process.env, ...options.environment }),
     providerState: testProviderState(directory, options.providerStateKind ?? "isolated"),
-    runtimeBoundary: options.runtimeBoundary ?? nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     sourceId,
     workingDirectory: directory,
@@ -2030,7 +1989,6 @@ function authenticationContext(
     config: {},
     environment: stringEnvironment(process.env),
     providerState,
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     sourceId,
     workingDirectory: directory,
@@ -2404,12 +2362,16 @@ describe("pi Thread naming", () => {
     try {
       await expect(
         piAgentDirectoryForOthersTasks({ HOME: ambientHome }, join(ambientHome, "others-dir")),
-      ).rejects.toThrow(
-        'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.',
-      );
+      ).rejects.toMatchObject({
+        code: "forbidden",
+        message: "This engine is not available for this task.",
+        ownerMessage:
+          'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.',
+      });
       await expect(fixture.adapter.startSession(ambientContext)).rejects.toMatchObject({
         code: "forbidden",
-        message:
+        message: "This engine is not available for this task.",
+        ownerMessage:
           'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.',
       });
       expect(
@@ -2427,6 +2389,73 @@ describe("pi Thread naming", () => {
     } finally {
       await fixture.adapter.close();
     }
+  });
+
+  it("re-checks auth.json before each turn on an others' task and refuses without prompting Pi if a ! command appears", async () => {
+    const fixture = await setup({});
+    const ambientHome = await temporaryDirectory();
+    const ambientAgentDir = join(ambientHome, ".pi", "agent");
+    await mkdir(ambientAgentDir, { recursive: true });
+    await writeFile(
+      join(ambientAgentDir, "auth.json"),
+      JSON.stringify({ openai: { key: "sk-clean", type: "api_key" } }),
+    );
+    await writeFile(join(ambientAgentDir, "models.json"), JSON.stringify({ providers: {} }));
+    const ambientContext: HarnessSessionContext = {
+      ...fixture.context,
+      environment: { ...fixture.context.environment, HOME: ambientHome },
+      personalContext: true,
+      personLineage: false,
+      providerState: {
+        ...fixture.context.providerState,
+        kind: "ambient",
+        providerHomeDirectory: undefined,
+      },
+    };
+    const session = await fixture.adapter.startSession(ambientContext);
+    const observer = observe(session.events);
+    try {
+      // Turn 1 succeeds while auth.json is clean.
+      await session.execute(fixture.turn("First turn"));
+      await observer.waitFor("run.completed");
+      const commandsAfterTurn1 = (await fixture.capture()).filter(
+        (c) => c.type === "prompt",
+      ).length;
+      expect(commandsAfterTurn1).toBe(1);
+
+      // Between turns, the person adds a ! command to auth.json (TOCTOU).
+      await writeFile(
+        join(ambientAgentDir, "auth.json"),
+        JSON.stringify({ openai: { key: "!echo leaked", type: "api_key" } }),
+      );
+      await session.execute(fixture.turn("Second turn"));
+      const failed = await observer.waitFor("run.failed");
+      expect(failed.data).toMatchObject({
+        code: "forbidden",
+        message: "This engine is not available for this task.",
+        ownerMessage:
+          'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.',
+        retryable: false,
+      });
+      // Pi never received the second prompt and the session cannot be reused.
+      const commandsAfterTurn2 = (await fixture.capture()).filter(
+        (c) => c.type === "prompt",
+      ).length;
+      expect(commandsAfterTurn2).toBe(1);
+      expect(await session.releaseForReuse?.()).toBe(false);
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("refuses others' tasks when both HOME and PI_CODING_AGENT_DIR are absent instead of falling back to os.homedir()", async () => {
+    const targetDir = join(await temporaryDirectory(), "others-no-home");
+    await expect(piAgentDirectoryForOthersTasks({}, targetDir)).rejects.toMatchObject({
+      code: "forbidden",
+      message: "This engine is not available for this task.",
+      ownerMessage: expect.stringMatching(/HOME|PI_CODING_AGENT_DIR/u),
+    });
   });
 });
 

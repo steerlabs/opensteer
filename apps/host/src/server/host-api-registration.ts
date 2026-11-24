@@ -112,7 +112,6 @@ export const hostApiScopes = {
   "integration.computer.setup.review": "mutation",
   "integration.computer.setup.list": "session",
   "integration.server.secrets.list": "session",
-  "integration.computer.session.stop": "mutation",
   "computer.app.windows": "mutation",
   "integration.computer.apps.approved": "session",
   "integration.computer.apps.installed": "mutation",
@@ -373,7 +372,8 @@ async function authenticateScope(
   return null;
 }
 
-function createContext(
+/** A Host API call's context: the same for a route that sends the person's command to the door. */
+export function createContext(
   authenticated: AuthenticatedHostSession | null,
   request: FastifyRequest,
   reply: FastifyReply,
