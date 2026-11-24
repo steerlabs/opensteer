@@ -380,6 +380,9 @@ export class ScreencastController {
   private apply(bound: Bound, event: CastEvent): void {
     const before = bound.state;
     bound.state = after(before, event, this.readFacts());
+    // Clearing a stale paint wait (resize, capture change, pause) starts the next backoff afresh.
+    if (before.paint !== null && bound.state.paint === null && event.kind !== "paint-backoff-ended")
+      bound.paintDelay = paintRetryInitialMs;
     this.reconcile(bound, before, bound.cdp);
   }
 
@@ -514,12 +517,18 @@ export class ScreencastController {
     }
   }
 
-  private readFacts(): CastFacts {
+  /** The live binding for the tab in view, never one still mid-wake (`surface.state === "suspended"`). */
+  private liveBinding(): SurfaceBinding | null {
     const binding = this.closed
       ? null
       : this.surfaceId
         ? this.ledger.binding(this.surfaceId)
         : this.ledger.active();
+    return binding?.surface.state === "suspended" ? null : binding;
+  }
+
+  private readFacts(): CastFacts {
+    const binding = this.liveBinding();
     const page = binding?.page;
     let session = binding ? this.sessions.get(binding.cdp) : undefined;
     if (binding && session === undefined) {
@@ -624,7 +633,7 @@ export class ScreencastController {
       this.reconcile(null, null);
       return;
     }
-    const binding = this.surfaceId ? this.ledger.binding(this.surfaceId) : this.ledger.active();
+    const binding = this.liveBinding();
     if (!binding) {
       this.reconcile(null, null);
       return;
