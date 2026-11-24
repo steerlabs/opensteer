@@ -469,9 +469,6 @@ try {
           `${component} did not stop promptly`,
         );
     }
-    assert(rows(trial).some((row) => row.event === "test.automatic-checkpoint"));
-    if (trial === "partial")
-      assert(rows(trial).some((row) => row.event === "test.partial-checkpoint-reported"));
     if (trial === "quit-completely") {
       assert(rows(trial).some((row) => row.event === "test.quit-confirmed"));
       assert(

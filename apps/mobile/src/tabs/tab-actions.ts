@@ -1,5 +1,5 @@
 import type { HostClient } from "@opensteer/client/host";
-import type { TabId } from "@opensteer/core";
+import type { TabGroupId, TabId } from "@opensteer/core";
 import { refusal, type ScreenActionSpec } from "../ui/client-feedback.js";
 
 type Work = () => Promise<unknown>;
@@ -35,6 +35,13 @@ export function tabActionKey(kind: TabActionKind, id: string): string {
 /** Closes tabs, saying a refusal the answer carried as the refusal it is. */
 export async function closeTabs(client: HostClient, tabIds: readonly TabId[]): Promise<void> {
   const result = await client.closeTabs([...tabIds]);
+  const failed = result.failed[0];
+  if (failed !== undefined) throw refusal(failed.error.code, failed.error.message);
+}
+
+/** Closes a group on the Home, its tabs as they are then and the group with them. */
+export async function closeTabGroup(client: HostClient, groupId: TabGroupId): Promise<void> {
+  const result = await client.closeTabGroup(groupId);
   const failed = result.failed[0];
   if (failed !== undefined) throw refusal(failed.error.code, failed.error.message);
 }

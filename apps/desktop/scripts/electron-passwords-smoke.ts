@@ -1235,12 +1235,19 @@ async function run(): Promise<void> {
     async () => {
       const h = await harness();
       await h.navigate("/parent");
-      await waitFor("iframe ready", () => h.contents.mainFrame.frames.length > 0);
+      // As case 4: a click before the child holds its cross-site document lands in the frame's
+      // first, same-site blank document, which the cross-site one then replaces.
+      await waitFor("cross-site frame", () =>
+        h.contents.mainFrame.frames.some((f) => f.url.startsWith(fixture.origin("other.test"))),
+      );
       const point = coordinate.parse(
         await h.evaluate(
           "(()=>{const r=document.querySelector('#child').getBoundingClientRect();return{x:r.left+100,y:r.top+35}})()",
         ),
       );
+      record("child-frame-at-click", {
+        urls: h.contents.mainFrame.frames.map((f) => f.url),
+      });
       await h.clickAt(point.x, point.y);
       await waitFor(
         "child initially focused",
