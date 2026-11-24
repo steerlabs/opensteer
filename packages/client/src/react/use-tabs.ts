@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { App, AppId, Tab, TabId, TabLayout } from "@opensteer/core";
 import { AppsList, type AppsListState } from "../host/apps.js";
-import type { HostClient } from "../host/client.js";
+import type { HostClient, HostSnapshot } from "../host/client.js";
 import {
   requestPageTab,
   threadAgentPlace,
@@ -9,7 +9,9 @@ import {
   type ThreadAgentPlace,
 } from "../host/browser-agent-follow.js";
 import { hostSnapshotStore } from "../host/host-snapshot-store.js";
+import type { PlaceListSource } from "../host/places.js";
 import type { TabStrip } from "../host/tab-strip.js";
+import { useHostSelector } from "./use-host-snapshot.js";
 
 /** The one layout order every surface draws; changes only with structure, never a title. */
 export function useTabStrip(hostClient: HostClient): TabStrip {
@@ -93,6 +95,40 @@ export function useRequestPageTab(
     if (next?.tabId !== held.current?.tabId) held.current = next;
     return held.current;
   }, [held, request, tabs]);
+  return useSyncExternalStore(subscribe, get, get);
+}
+
+const selectBrowserProfiles = (snapshot: HostSnapshot) => snapshot.browserProfiles;
+
+/**
+ * The tab list and the profiles its pages browse as: a new source only when the profiles change.
+ * Each view reads the tabs it draws from it with `useTabRead`.
+ */
+export function useTabSource(hostClient: HostClient): PlaceListSource {
+  const tabs = hostClient.getSnapshot().tabs;
+  const browserProfiles = useHostSelector(hostClient, selectBrowserProfiles);
+  return useMemo(() => ({ tabs, browserProfiles }), [tabs, browserProfiles]);
+}
+
+/**
+ * What a view draws of the tab list, read again on each tab change and kept while `isEqual` finds
+ * it the same: the view redraws when a tab it draws changes, whichever tabs those are, and never
+ * for another.
+ */
+export function useTabRead<Value>(
+  source: PlaceListSource,
+  read: (source: PlaceListSource) => Value,
+  isEqual: (previous: Value, next: Value) => boolean,
+): Value {
+  const held = useRef<{ readonly value: Value } | null>(null);
+  const { tabs } = source;
+  const subscribe = useCallback((listener: () => void) => tabs.subscribe(listener), [tabs]);
+  const get = useCallback(() => {
+    const next = read(source);
+    if (held.current && isEqual(held.current.value, next)) return held.current.value;
+    held.current = { value: next };
+    return next;
+  }, [isEqual, read, source]);
   return useSyncExternalStore(subscribe, get, get);
 }
 

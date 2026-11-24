@@ -47,6 +47,7 @@ const pointAway = (element: Element) =>
 async function links() {
   const module = await import("./app-links.js");
   module.watchAppInput();
+  module.watchFrameFocus();
   const open = vi.fn();
   const ask = vi.fn();
   return { ...module, open, ask, places: { open, ask } };
@@ -214,20 +215,15 @@ it("goes to the person's own browser without a workspace, and names pages briefl
   expect(appLinkLabel(`https://${site}/x/y`)).toBe(site + "…");
 });
 
-it("stops polling focus and listening when the last watcher cleans up", async () => {
-  const { watchAppInput } = await import("./app-links.js");
-  const activeElement = vi.spyOn(document, "activeElement", "get").mockReturnValue(document.body);
-  const stopFirst = watchAppInput();
-  const stopSecond = watchAppInput();
-  vi.advanceTimersByTime(200);
-  expect(activeElement).toHaveBeenCalledTimes(1);
-  // While another watcher remains mounted, focus polling continues.
-  stopFirst();
-  stopFirst();
-  vi.advanceTimersByTime(200);
-  expect(activeElement).toHaveBeenCalledTimes(2);
-  // Once the last watcher unmounts, the interval is cleared so teardown cannot hit a missing document.
-  stopSecond();
-  vi.advanceTimersByTime(1_000);
-  expect(activeElement).toHaveBeenCalledTimes(2);
+it("polls which frame holds focus only while an app frame is on screen", async () => {
+  const { watchFrameFocus } = await import("./app-links.js");
+  expect(vi.getTimerCount()).toBe(0);
+  const first = watchFrameFocus();
+  const second = watchFrameFocus();
+  expect(vi.getTimerCount()).toBe(1);
+  first();
+  first();
+  expect(vi.getTimerCount()).toBe(1);
+  second();
+  expect(vi.getTimerCount()).toBe(0);
 });

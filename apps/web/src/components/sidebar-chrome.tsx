@@ -1,6 +1,6 @@
 import { createContext, useContext, type ReactNode } from "react";
 import { Icon } from "./icon.js";
-import { useOptionalWorkspace } from "./workspace/workspace-context.js";
+import { useWorkspaceAttention } from "./workspace/workspace-context.js";
 
 interface SidebarChromeState {
   readonly onRestore: () => void;
@@ -29,7 +29,7 @@ export function SidebarChromeProvider({
  */
 export function SidebarRestoreButton() {
   const state = useContext(SidebarChromeContext);
-  const count = useOptionalWorkspace()?.attention ?? 0;
+  const count = useWorkspaceAttention();
   if (!state?.restoreVisible) return null;
 
   // The sidebar is gone while put away, so what needs the reader travels here.

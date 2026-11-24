@@ -28,6 +28,7 @@ import { composerDraftKeyFor, composerDrafts } from "./composer-drafts.js";
 import { composerField, rewrite, textareaView } from "./composer-editor.test-support.js";
 
 const noPlaces = vi.hoisted(() => ({
+  activeTasks: [],
   browserSessions: [],
   connection: "connected",
   machines: [],
@@ -37,6 +38,8 @@ const noPlaces = vi.hoisted(() => ({
   sessionId: "test-login",
   network: "online",
   threads: [],
+  // The questions waiting on the reader, which the dock reads live from the client.
+  waitingRequests: [] as WaitingRequestView[],
 }));
 const shell = vi.hoisted(() => ({
   desktopBridge: null,
@@ -87,7 +90,6 @@ const shell = vi.hoisted(() => ({
     activeTasks: [],
     threads: [{ id: "thread" }],
     user: { id: "viewer" },
-    waitingRequests: [] as WaitingRequestView[],
   },
   reportActionError: vi.fn(),
   localExecutionStatus: null,
@@ -123,7 +125,7 @@ afterEach(async () => {
   disposeMessageOutbox(shell.hostClient as unknown as HostClient);
   document.body.replaceChildren();
   shell.hostClient.dispatch.mockClear();
-  shell.snapshot.waitingRequests = [];
+  noPlaces.waitingRequests = [];
 });
 
 it("keeps a reply tapped before sign-in changed in the draft", async () => {
@@ -765,9 +767,7 @@ it.each(["live", "durable"] as const)(
       },
       request: pending,
     });
-    shell.snapshot.waitingRequests = [
-      { ...waiting, request: { ...waiting.request, reviewedRevision } },
-    ];
+    noPlaces.waitingRequests = [{ ...waiting, request: { ...waiting.request, reviewedRevision } }];
     await act(async () =>
       root.render(
         <MemoryRouter>

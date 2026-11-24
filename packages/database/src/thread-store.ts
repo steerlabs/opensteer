@@ -768,37 +768,50 @@ export async function listThreadAssignmentsForOwner(
         .where("threads.id", "=", input.threadId)
         .executeTakeFirst();
       if (!thread) return null;
-      let base = transaction
-        .selectFrom("delegations")
-        .innerJoin("threads as workerThread", "workerThread.id", "delegations.childThreadId")
-        .innerJoin("threads as parentThread", "parentThread.id", "delegations.parentThreadId")
-        .where((expressions) =>
-          expressions.or([
-            expressions("delegations.childThreadId", "=", input.threadId),
-            expressions("delegations.parentThreadId", "=", input.threadId),
-          ]),
-        );
-      if (input.open) base = base.where("delegations.status", "=", "open");
-      let query = base.selectAll("delegations");
-      if (anchor) {
-        query = query.where((expressions) =>
-          expressions.or([
-            expressions("delegations.createdAt", "<", anchor.timestamp),
-            expressions.and([
-              expressions("delegations.createdAt", "=", anchor.timestamp),
-              expressions("delegations.id", "<", AssignmentIdSchema.parse(anchor.id)),
-            ]),
-          ]),
-        );
-      }
-      const [rows, countRow] = await Promise.all([
-        query
+      const anchorId = anchor ? AssignmentIdSchema.parse(anchor.id) : null;
+      const selectBranch = (
+        qb: Pick<typeof transaction, "selectFrom">,
+        side: "parent" | "child",
+      ) => {
+        let query = qb
+          .selectFrom("delegations")
+          .selectAll("delegations")
+          .where(
+            side === "parent" ? "delegations.parentThreadId" : "delegations.childThreadId",
+            "=",
+            input.threadId,
+          );
+        if (side === "child") {
+          query = query.where("delegations.parentThreadId", "<>", input.threadId);
+        }
+        if (input.open) {
+          query = query.where("delegations.status", "=", "open");
+        }
+        if (anchor && anchorId) {
+          query = query.where(
+            sql<boolean>`(delegations.created_at, delegations.id) < (${anchor.timestamp}, ${anchorId})`,
+          );
+        }
+        return query
           .orderBy("delegations.createdAt", "desc")
           .orderBy("delegations.id", "desc")
-          .limit(maxItems + 1)
-          .execute(),
-        base.select(({ fn }) => fn.countAll<string>().as("count")).executeTakeFirstOrThrow(),
-      ]);
+          .limit(maxItems + 1);
+      };
+      const rows = await transaction
+        .with("parentRows", (qb) => selectBranch(qb, "parent"))
+        .with("childRows", (qb) => selectBranch(qb, "child"))
+        .selectFrom((eb) =>
+          eb
+            .selectFrom("parentRows")
+            .selectAll()
+            .unionAll(eb.selectFrom("childRows").selectAll())
+            .as("combined"),
+        )
+        .selectAll()
+        .orderBy("combined.createdAt", "desc")
+        .orderBy("combined.id", "desc")
+        .limit(maxItems + 1)
+        .execute();
       const candidates = await assignmentSummariesInTransaction(
         transaction,
         rows.slice(0, maxItems),
@@ -812,6 +825,31 @@ export async function listThreadAssignmentsForOwner(
       }
       const hasMore = rows.length > window.items.length;
       const oldest = window.items.at(-1);
+      let totalItems = window.items.length;
+      if (anchor || hasMore) {
+        const countBranch = (side: "parent" | "child") => {
+          let query = transaction
+            .selectFrom("delegations")
+            .select(({ fn }) => fn.countAll<string>().as("count"))
+            .where(
+              side === "parent" ? "delegations.parentThreadId" : "delegations.childThreadId",
+              "=",
+              input.threadId,
+            );
+          if (side === "child") {
+            query = query.where("delegations.parentThreadId", "<>", input.threadId);
+          }
+          if (input.open) {
+            query = query.where("delegations.status", "=", "open");
+          }
+          return query.executeTakeFirstOrThrow();
+        };
+        const [parentCount, childCount] = await Promise.all([
+          countBranch("parent"),
+          countBranch("child"),
+        ]);
+        totalItems = safeCount(parentCount.count) + safeCount(childCount.count);
+      }
       return {
         assignments: window.items,
         window: {
@@ -822,7 +860,7 @@ export async function listThreadAssignmentsForOwner(
             hasMore && oldest
               ? encodeWindowCursor("assignment", input.threadId, oldest.createdAt, oldest.id)
               : null,
-          totalItems: safeCount(countRow.count),
+          totalItems,
         },
       };
     },

@@ -223,10 +223,14 @@ export async function acknowledgeBrowserProfileDeletion(
   });
 }
 
+/**
+ * Reconciles one profile the computer reports holding. `archived` says whether this claim archived
+ * the profile now; a tombstone the Host already held (a runner re-sending its inventory) did not.
+ */
 export async function reconcileBrowserProfileInventory(
   database: Kysely<DatabaseSchema>,
   claim: HeldLocalProfile,
-) {
+): Promise<{ readonly archived: boolean }> {
   return commitPersonalMutation(database, async (transaction, mutation) => {
     await lockBrowserProfile(transaction, claim.binding.profileId);
     const row = await transaction
@@ -272,14 +276,14 @@ export async function reconcileBrowserProfileInventory(
           .execute(databaseOperationOptions());
         mutation.bumpResource("browser-profile");
       }
-      return;
+      return { archived: row.archivedAt === null };
     }
     if (row.archivedAt) {
       await recordBrowserProfileDeletion(transaction, claim.binding);
       mutation.bumpResource("browser-profile");
-      return;
+      return { archived: false };
     }
-    if (row.initialized) return;
+    if (row.initialized) return { archived: false };
     await transaction
       .updateTable("browserProfiles")
       .set({ initialized: true })
@@ -287,6 +291,7 @@ export async function reconcileBrowserProfileInventory(
       .execute(databaseOperationOptions());
     mutation.bumpResource("browser-profile");
     mutation.bumpResource("browser-availability");
+    return { archived: false };
   });
 }
 

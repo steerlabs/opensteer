@@ -15,6 +15,8 @@ export function sameStableHostSnapshot(previous: HostSnapshot, next: HostSnapsho
       previous.browserProfiles === next.browserProfiles &&
       previous.browserProfileHomes === next.browserProfileHomes &&
       previous.connection === next.connection &&
+      // Drafts, positions and sign-ins are keyed by it under every route.
+      previous.deploymentId === next.deploymentId &&
       previous.network === next.network &&
       previous.deploymentShape === next.deploymentShape &&
       previous.environments === next.environments &&

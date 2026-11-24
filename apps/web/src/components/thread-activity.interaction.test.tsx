@@ -35,6 +35,7 @@ async function renderScenario(scenario: ThreadActivityScenario): Promise<HTMLEle
     "ResizeObserver",
     class {
       observe() {}
+      unobserve() {}
       disconnect() {}
     },
   );
@@ -134,6 +135,7 @@ describe("a cold message link on the web", () => {
       "ResizeObserver",
       class {
         observe() {}
+        unobserve() {}
         disconnect() {}
       },
     );

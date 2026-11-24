@@ -1,11 +1,14 @@
-import { createId, type RunnerId, type UserId } from "@opensteer/core";
+import { createId, type RunnerId, type ThreadId, type UserId } from "@opensteer/core";
 import {
   describeStore,
   enrollTestRunner,
   pendingEvent,
   testContinuationIdentity,
+  testModelSelection,
   type StoreFixture,
 } from "@opensteer/database/test-support/store";
+import { RealtimeHub } from "@opensteer/orchestration";
+import { createBrowserSessionId, type HostToClientMessage } from "@opensteer/protocol";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
 import { expect } from "vitest";
@@ -496,6 +499,125 @@ describeStore("Host browser homes", (it) => {
         }),
       ]);
     } finally {
+      await browser.close();
+    }
+  });
+
+  it("deleting a profile has every socket reread the browser usage of its open tasks, which no longer list the profile's sessions", async ({
+    storeFixture: fixture,
+  }) => {
+    const run = await setup(fixture);
+    const realtime = new RealtimeHub();
+    const browser = new BrowserService({
+      deploymentId: createId("deployment"),
+      hostOrigin: new URL("https://host.test"),
+      repository: fixture.store,
+      signer: {} as never,
+      personal: true,
+      localProfiles: new BrowserLocalProfiles({
+        deploymentId: createId("deployment"),
+        baseUrl: new URL("https://host.test"),
+        repository: fixture.store,
+      }),
+      onSessionsChanged: () => undefined,
+      onProfileArchived: () => realtime.refreshObservedBrowserUsage(),
+      targetResolver: { placements: () => [], resolve: () => undefined },
+    });
+    const makeThread = async (title: string) =>
+      (
+        await fixture.store.createThread({
+          createdBy: run.userId,
+          environmentId: run.environmentId,
+          harnessInstanceId: run.harnessInstance.id,
+          idempotencyKey: `archive-notice-${title}-${randomUUID()}`,
+          modelSelection: testModelSelection,
+          title,
+        })
+      ).thread.id;
+    const archivedOnly = await makeThread("Archived only");
+    const mixed = await makeThread("Archived and kept");
+    const keptOnly = await makeThread("Kept only");
+    const observe = (threadIds: readonly ThreadId[]) => {
+      const messages: HostToClientMessage[] = [];
+      const unregister = realtime.registerConnection({
+        userId: run.userId,
+        sessionId: createId("authSession"),
+        sync: { wake: () => undefined, observedThreadIds: () => threadIds } as never,
+        sink: {
+          id: randomUUID(),
+          send: async (message) => {
+            messages.push(message);
+          },
+          close: () => undefined,
+        },
+      });
+      return { messages, unregister };
+    };
+    const affectedViewer = observe([archivedOnly, mixed]);
+    const keptViewer = observe([keptOnly]);
+    const idle = observe([]);
+    const usage = async (threadId: ThreadId) =>
+      (await fixture.store.getThreadBrowserUsage({ ownerId: run.userId, threadId, runIds: [] }))
+        .map((use) => use.sessionId)
+        .sort();
+    try {
+      const archivedProfile = await fixture.store.createBrowserProfile({
+        ownerId: run.userId,
+        name: "Work",
+        homeRunnerId: run.runnerId,
+        idempotencyKey: "archive-notice-work",
+      });
+      const keptProfile = await fixture.store.createBrowserProfile({
+        ownerId: run.userId,
+        name: "Personal",
+        homeRunnerId: run.runnerId,
+        idempotencyKey: "archive-notice-personal",
+      });
+      const insertSession = async (
+        profileId: typeof archivedProfile.id,
+        state: "ready" | "closed",
+      ) => {
+        const sessionId = createBrowserSessionId();
+        await sql`insert into browser_sessions(id,tab_group_id,origin,profile_id,placement_key,runner_id,runtime_id,state)
+          values(${sessionId},${sessionId},'person',${profileId},'personal',${run.runnerId},'browser',${state})`.execute(
+          fixture.database,
+        );
+        return sessionId;
+      };
+      const archivedClosed = await insertSession(archivedProfile.id, "closed");
+      const archivedReady = await insertSession(archivedProfile.id, "ready");
+      const kept = await insertSession(keptProfile.id, "ready");
+      for (const [sessionId, threadId] of [
+        [archivedClosed, archivedOnly],
+        [archivedReady, mixed],
+        [kept, mixed],
+        [kept, keptOnly],
+      ] as const)
+        await fixture.store.recordBrowserSessionUse({
+          ownerId: run.userId,
+          sessionId,
+          threadId,
+          page: { site: "https://example.com", title: "Example" },
+        });
+      expect(await usage(archivedOnly)).toEqual([archivedClosed]);
+      expect(await usage(mixed)).toEqual([archivedReady, kept].sort());
+
+      await browser.deleteProfile({ ownerId: run.userId, profileId: archivedProfile.id });
+
+      expect(affectedViewer.messages).toEqual([
+        { type: "host.browser-usage-changed", threadIds: [archivedOnly, mixed] },
+      ]);
+      expect(keptViewer.messages).toEqual([
+        { type: "host.browser-usage-changed", threadIds: [keptOnly] },
+      ]);
+      expect(idle.messages).toEqual([]);
+      expect(await usage(archivedOnly)).toEqual([]);
+      expect(await usage(mixed)).toEqual([kept]);
+      expect(await usage(keptOnly)).toEqual([kept]);
+    } finally {
+      affectedViewer.unregister();
+      keptViewer.unregister();
+      idle.unregister();
       await browser.close();
     }
   });

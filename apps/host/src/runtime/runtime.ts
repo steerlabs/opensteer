@@ -1210,6 +1210,7 @@ export async function createHostRuntime(
       onReconciled: async (profileId) => {
         await browser.fenceLocalProfile(profileId);
       },
+      onProfileArchived: () => realtime.refreshObservedBrowserUsage(),
     });
     const runnerBrowsers = new RunnerBrowserRuntimeRouter({
       registry: browserRelay,
@@ -1301,6 +1302,7 @@ export async function createHostRuntime(
       onSessionsChanged: () =>
         announceResources("browser-placement", "browser-availability", "tab"),
       onUsageChanged: (credits) => announceBrowserUsage(realtime, credits),
+      onProfileArchived: () => realtime.refreshObservedBrowserUsage(),
       onError: (error) => reportBrowserUsageError(error),
 
       repository: store,

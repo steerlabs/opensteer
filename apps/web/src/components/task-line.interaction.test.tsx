@@ -342,6 +342,7 @@ function stubLayoutApis(): void {
     "ResizeObserver",
     class {
       observe() {}
+      unobserve() {}
       disconnect() {}
     },
   );

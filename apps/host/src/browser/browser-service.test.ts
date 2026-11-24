@@ -5321,6 +5321,40 @@ describe("BrowserService", () => {
     });
   });
 
+  it("refreshes open tasks' browser usage as soon as a profile delete commits", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const profile = repository.addHostedProfile("Work");
+    const order: string[] = [];
+    const deleteBrowserProfile = repository.deleteBrowserProfile.bind(repository);
+    vi.spyOn(repository, "deleteBrowserProfile").mockImplementation(async (input) => {
+      const result = await deleteBrowserProfile(input);
+      order.push("committed");
+      return result;
+    });
+    const service = new BrowserService({
+      ...nativeProfileOptions(),
+      ...profileStateOptions,
+      onProfileArchived: () => order.push("refreshed"),
+      onProfilesChanged: () => order.push("profiles changed"),
+      repository,
+      signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
+      targetResolver: runnerTarget({ url: runtime.url }),
+    });
+    cleanups.push(async () => service.close());
+
+    await service.deleteProfile({ ownerId, profileId: profile.id });
+    expect(order).toEqual(["committed", "refreshed", "profiles changed"]);
+
+    // A refused delete commits nothing, so nothing rereads.
+    await expect(
+      service.deleteProfile({ ownerId: createId("user"), profileId: profile.id }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(order).toEqual(["committed", "refreshed", "profiles changed"]);
+  });
+
   it("opens a fresh agent session with no profile, no grant, and no lease", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {

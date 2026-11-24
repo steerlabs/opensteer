@@ -826,6 +826,8 @@ interface BrowserServiceOptions {
    * agent is acting in it. These change often, so they never reread a list.
    */
   readonly onUsageChanged?: (credits: readonly BrowserUsageCredit[]) => void;
+  /** A committed profile archive dropped that profile's sessions from every task's browser usage. */
+  readonly onProfileArchived?: () => void;
   /** A best-effort write that failed after the agent was already answered. */
   readonly onError?: (error: unknown) => void;
   /** Drives activity expiry and place coalescing; browser commands and connection deadlines use real time. */
@@ -981,6 +983,7 @@ export class BrowserService {
   readonly #connectTimeoutMs: number;
   readonly #onSessionsChanged: (sessionIds: readonly BrowserSessionId[]) => void;
   readonly #onUsageChanged: NonNullable<BrowserServiceOptions["onUsageChanged"]>;
+  readonly #onProfileArchived: NonNullable<BrowserServiceOptions["onProfileArchived"]>;
   readonly #onError: NonNullable<BrowserServiceOptions["onError"]>;
   readonly #activityClock: Clock;
   readonly #actingWindowMs: number;
@@ -1145,6 +1148,7 @@ export class BrowserService {
       options.onProfilesChanged?.(ownerId);
     };
     this.#onUsageChanged = options.onUsageChanged ?? (() => undefined);
+    this.#onProfileArchived = options.onProfileArchived ?? (() => undefined);
     this.#onError = options.onError ?? (() => undefined);
     this.#activityClock = options.activityClock ?? systemClock;
     this.#actingWindowMs = options.actingWindowMs ?? browserActingWindowMs;
@@ -1788,6 +1792,7 @@ export class BrowserService {
       `profile-admission:${input.profileId}`,
       () => this.#repository.deleteBrowserProfile(input),
     );
+    this.#onProfileArchived();
     for (const [id, group] of this.#personUseGroups)
       if (group.profileId === input.profileId) this.#endPersonUse(id);
     this.invalidatePlaceAuthority();

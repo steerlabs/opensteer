@@ -1038,7 +1038,8 @@ describe("a conversation's foot", () => {
     ) {
       const index = rows().indexOf(this);
       const top = index < 0 ? 0 : geometry.above + index * 100 - scroller.scrollTop;
-      return { top, bottom: index < 0 ? 400 : top + 100, height: index < 0 ? 400 : 100 } as DOMRect;
+      const height = index < 0 ? 400 : 100;
+      return DOMRect.fromRect({ x: 0, y: top, width: 640, height });
     });
     const frame = () =>
       act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
@@ -1114,7 +1115,8 @@ describe("a conversation's foot", () => {
     ) {
       const index = rows().indexOf(this);
       const top = index < 0 ? 0 : geometry.above + index * 100 - scroller.scrollTop;
-      return { top, bottom: index < 0 ? 400 : top + 100, height: index < 0 ? 400 : 100 } as DOMRect;
+      const height = index < 0 ? 400 : 100;
+      return DOMRect.fromRect({ x: 0, y: top, width: 640, height });
     });
     const frame = () =>
       act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));

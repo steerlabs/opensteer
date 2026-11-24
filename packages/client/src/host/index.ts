@@ -19,6 +19,7 @@ export * from "./host-api-client.js";
 export * from "./host-connection.js";
 export * from "./host-session-client.js";
 export * from "./host-snapshot-selectors.js";
+export * from "./thread-scope.js";
 export * from "./host-snapshot-store.js";
 export * from "./lifecycle.js";
 export * from "./macos-permissions.js";

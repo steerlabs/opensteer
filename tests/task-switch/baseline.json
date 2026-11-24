@@ -1,0 +1,2244 @@
+{
+  "version": 1,
+  "referenceOnly": true,
+  "productSha": "6e4687d2d48345f57f9ba6f13b6789e5382e9c50",
+  "capturedAt": "2026-11-24T01:41:49.454Z",
+  "elapsedMs": 56432,
+  "machine": {
+    "cpu": "Apple M5 Max",
+    "logicalCpus": 18,
+    "memoryBytes": 137438953472,
+    "platform": "darwin",
+    "release": "27.0.0",
+    "arch": "arm64",
+    "node": "v24.15.0",
+    "chromium": "151.0.7922.34",
+    "postgres": "17.11 (Homebrew)",
+    "loadAverageBefore": [8.26171875, 16.638671875, 19.984375],
+    "loadAverageAfter": [13.35888671875, 16.83154296875, 19.85693359375]
+  },
+  "settings": {
+    "viewport": {
+      "width": 1440,
+      "height": 1000
+    },
+    "settleMs": 250,
+    "reportBytes": [24859, 65733, 114969],
+    "researchWindow": {
+      "entries": 50,
+      "toolEntries": 46,
+      "hasReports": true
+    }
+  },
+  "scenarios": {
+    "warm": {
+      "summary": {
+        "firstPaintMs": {
+          "count": 10,
+          "p50": 22.3,
+          "p95": 23,
+          "max": 23
+        },
+        "latestPaintMs": {
+          "count": 10,
+          "p50": 22.3,
+          "p95": 23,
+          "max": 23
+        },
+        "synchronizedMs": {
+          "count": 10,
+          "p50": 16,
+          "p95": 21,
+          "max": 21
+        },
+        "transcriptNotificationsThroughSync": {
+          "count": 10,
+          "p50": 1,
+          "p95": 1,
+          "max": 1
+        },
+        "transcriptNotifications": {
+          "count": 10,
+          "p50": 1,
+          "p95": 1,
+          "max": 1
+        },
+        "hostNotifications": {
+          "count": 10,
+          "p50": 5,
+          "p95": 5,
+          "max": 5
+        },
+        "reactMarkdownParses": {
+          "count": 10,
+          "p50": 2,
+          "p95": 2,
+          "max": 2
+        },
+        "detailChangeFramesThroughFirstSync": {
+          "count": 10,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "detailChangeFrames": {
+          "count": 10,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "detailSnapshotFrames": {
+          "count": 10,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "detailPayloadBytes": {
+          "count": 10,
+          "p50": 175,
+          "p95": 175,
+          "max": 175
+        },
+        "longTasks": {
+          "count": 10,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "longTaskMs": {
+          "count": 10,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "rpcRequests": {
+          "count": 10,
+          "p50": 3,
+          "p95": 3,
+          "max": 3
+        },
+        "rpcResponseBodyBytes": {
+          "count": 10,
+          "p50": 297,
+          "p95": 297,
+          "max": 297
+        }
+      },
+      "samples": [
+        {
+          "target": "A",
+          "activityCommits": 0,
+          "toolCalls": 0,
+          "firstPaintMs": 19.700000002980232,
+          "latestPaintMs": 19.700000002980232,
+          "synchronizedMs": 21,
+          "transcriptNotifications": 1,
+          "transcriptNotificationsThroughSync": 1,
+          "hostNotifications": 5,
+          "reactMarkdownParses": 2,
+          "longTasks": [],
+          "observedMs": 282.60009765625,
+          "websocket": {
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 72
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 402
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 174
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        },
+        {
+          "target": "B",
+          "activityCommits": 0,
+          "toolCalls": 0,
+          "firstPaintMs": 21.799999997019768,
+          "latestPaintMs": 21.799999997019768,
+          "synchronizedMs": 17.900000005960464,
+          "transcriptNotifications": 1,
+          "transcriptNotificationsThroughSync": 1,
+          "hostNotifications": 5,
+          "reactMarkdownParses": 2,
+          "longTasks": [],
+          "observedMs": 276.5,
+          "websocket": {
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 72
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 403
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 175
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        },
+        {
+          "target": "A",
+          "activityCommits": 0,
+          "toolCalls": 0,
+          "firstPaintMs": 20.899999991059303,
+          "latestPaintMs": 20.899999991059303,
+          "synchronizedMs": 17.19999998807907,
+          "transcriptNotifications": 1,
+          "transcriptNotificationsThroughSync": 1,
+          "hostNotifications": 5,
+          "reactMarkdownParses": 2,
+          "longTasks": [],
+          "observedMs": 276.39990234375,
+          "websocket": {
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 403
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 175
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        },
+        {
+          "target": "B",
+          "activityCommits": 0,
+          "toolCalls": 0,
+          "firstPaintMs": 22.700000002980232,
+          "latestPaintMs": 22.700000002980232,
+          "synchronizedMs": 16,
+          "transcriptNotifications": 1,
+          "transcriptNotificationsThroughSync": 1,
+          "hostNotifications": 5,
+          "reactMarkdownParses": 2,
+          "longTasks": [],
+          "observedMs": 275.5,
+          "websocket": {
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 403
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 175
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        },
+        {
+          "target": "A",
+          "activityCommits": 0,
+          "toolCalls": 0,
+          "firstPaintMs": 22.799999997019768,
+          "latestPaintMs": 22.799999997019768,
+          "synchronizedMs": 16,
+          "transcriptNotifications": 1,
+          "transcriptNotificationsThroughSync": 1,
+          "hostNotifications": 5,
+          "reactMarkdownParses": 2,
+          "longTasks": [],
+          "observedMs": 275.7001953125,
+          "websocket": {
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 403
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 175
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        },
+        {
+          "target": "B",
+          "activityCommits": 0,
+          "toolCalls": 0,
+          "firstPaintMs": 22.30000001192093,
+          "latestPaintMs": 22.30000001192093,
+          "synchronizedMs": 15.100000008940697,
+          "transcriptNotifications": 1,
+          "transcriptNotificationsThroughSync": 1,
+          "hostNotifications": 5,
+          "reactMarkdownParses": 2,
+          "longTasks": [],
+          "observedMs": 274.199951171875,
+          "websocket": {
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 403
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 175
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        },
+        {
+          "target": "A",
+          "activityCommits": 0,
+          "toolCalls": 0,
+          "firstPaintMs": 22.299999997019768,
+          "latestPaintMs": 22.299999997019768,
+          "synchronizedMs": 14.199999988079071,
+          "transcriptNotifications": 1,
+          "transcriptNotificationsThroughSync": 1,
+          "hostNotifications": 5,
+          "reactMarkdownParses": 2,
+          "longTasks": [],
+          "observedMs": 274.300048828125,
+          "websocket": {
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 403
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 175
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        },
+        {
+          "target": "B",
+          "activityCommits": 0,
+          "toolCalls": 0,
+          "firstPaintMs": 23,
+          "latestPaintMs": 23,
+          "synchronizedMs": 14.599999994039536,
+          "transcriptNotifications": 1,
+          "transcriptNotificationsThroughSync": 1,
+          "hostNotifications": 5,
+          "reactMarkdownParses": 2,
+          "longTasks": [],
+          "observedMs": 276.099853515625,
+          "websocket": {
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 403
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 175
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        },
+        {
+          "target": "A",
+          "activityCommits": 0,
+          "toolCalls": 0,
+          "firstPaintMs": 22.80000001192093,
+          "latestPaintMs": 22.80000001192093,
+          "synchronizedMs": 14.400000005960464,
+          "transcriptNotifications": 1,
+          "transcriptNotificationsThroughSync": 1,
+          "hostNotifications": 5,
+          "reactMarkdownParses": 2,
+          "longTasks": [],
+          "observedMs": 275.10009765625,
+          "websocket": {
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 403
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 175
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        },
+        {
+          "target": "B",
+          "activityCommits": 0,
+          "toolCalls": 0,
+          "firstPaintMs": 22.299999997019768,
+          "latestPaintMs": 22.299999997019768,
+          "synchronizedMs": 17.700000002980232,
+          "transcriptNotifications": 1,
+          "transcriptNotificationsThroughSync": 1,
+          "hostNotifications": 5,
+          "reactMarkdownParses": 2,
+          "longTasks": [],
+          "observedMs": 275.099853515625,
+          "websocket": {
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 403
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 175
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        }
+      ]
+    },
+    "inactive100": {
+      "summary": {
+        "firstPaintMs": {
+          "count": 3,
+          "p50": 22.7,
+          "p95": 64.5,
+          "max": 64.5
+        },
+        "latestPaintMs": {
+          "count": 0,
+          "p50": null,
+          "p95": null,
+          "max": null
+        },
+        "synchronizedMs": {
+          "count": 3,
+          "p50": 399.7,
+          "p95": 436.3,
+          "max": 436.3
+        },
+        "transcriptNotificationsThroughSync": {
+          "count": 3,
+          "p50": 103,
+          "p95": 103,
+          "max": 103
+        },
+        "transcriptNotifications": {
+          "count": 3,
+          "p50": 103,
+          "p95": 103,
+          "max": 103
+        },
+        "hostNotifications": {
+          "count": 3,
+          "p50": 12,
+          "p95": 12,
+          "max": 12
+        },
+        "reactMarkdownParses": {
+          "count": 3,
+          "p50": 5,
+          "p95": 5,
+          "max": 5
+        },
+        "detailChangeFramesThroughFirstSync": {
+          "count": 3,
+          "p50": 100,
+          "p95": 100,
+          "max": 100
+        },
+        "detailChangeFrames": {
+          "count": 3,
+          "p50": 146,
+          "p95": 146,
+          "max": 146
+        },
+        "detailSnapshotFrames": {
+          "count": 3,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "detailPayloadBytes": {
+          "count": 3,
+          "p50": 136222,
+          "p95": 136222,
+          "max": 136222
+        },
+        "longTasks": {
+          "count": 3,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "longTaskMs": {
+          "count": 3,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "rpcRequests": {
+          "count": 3,
+          "p50": 6,
+          "p95": 6,
+          "max": 6
+        },
+        "rpcResponseBodyBytes": {
+          "count": 3,
+          "p50": 544,
+          "p95": 544,
+          "max": 544
+        }
+      },
+      "samples": [
+        {
+          "target": "B",
+          "activityCommits": 100,
+          "toolCalls": 49,
+          "firstPaintMs": 21.599999994039536,
+          "latestPaintMs": null,
+          "synchronizedMs": 436.29999999701977,
+          "transcriptNotifications": 103,
+          "transcriptNotificationsThroughSync": 103,
+          "hostNotifications": 12,
+          "reactMarkdownParses": 4,
+          "longTasks": [],
+          "observedMs": 696.699951171875,
+          "websocket": {
+            "received shell host.changes": {
+              "count": 1,
+              "payloadBytes": 899
+            },
+            "sent control client.ack": {
+              "count": 100,
+              "payloadBytes": 8816
+            },
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 403
+            },
+            "received selected host.changes": {
+              "count": 146,
+              "payloadBytes": 135292
+            },
+            "received selected host.synchronized": {
+              "count": 2,
+              "payloadBytes": 352
+            },
+            "sent control client.attach": {
+              "count": 1,
+              "payloadBytes": 1249
+            },
+            "received shell host.synchronized": {
+              "count": 1,
+              "payloadBytes": 239
+            },
+            "received control host.resource": {
+              "count": 1,
+              "payloadBytes": 93
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 100,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 2,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 280,
+              "responseBodyBytes": 358,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 2,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 162,
+              "responseBodyBytes": 68,
+              "unfinished": 0
+            },
+            "integration.computer.setup.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 12,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        },
+        {
+          "target": "B",
+          "activityCommits": 100,
+          "toolCalls": 49,
+          "firstPaintMs": 22.700000002980232,
+          "latestPaintMs": null,
+          "synchronizedMs": 399.70000000298023,
+          "transcriptNotifications": 103,
+          "transcriptNotificationsThroughSync": 103,
+          "hostNotifications": 12,
+          "reactMarkdownParses": 5,
+          "longTasks": [],
+          "observedMs": 658.5,
+          "websocket": {
+            "received shell host.changes": {
+              "count": 1,
+              "payloadBytes": 900
+            },
+            "sent control client.ack": {
+              "count": 100,
+              "payloadBytes": 8897
+            },
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 404
+            },
+            "received selected host.changes": {
+              "count": 146,
+              "payloadBytes": 135870
+            },
+            "received selected host.synchronized": {
+              "count": 2,
+              "payloadBytes": 352
+            },
+            "sent control client.attach": {
+              "count": 1,
+              "payloadBytes": 1308
+            },
+            "received shell host.synchronized": {
+              "count": 1,
+              "payloadBytes": 239
+            },
+            "received control host.resource": {
+              "count": 1,
+              "payloadBytes": 93
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 100,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 2,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 280,
+              "responseBodyBytes": 358,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 2,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 162,
+              "responseBodyBytes": 68,
+              "unfinished": 0
+            },
+            "integration.computer.setup.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 12,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        },
+        {
+          "target": "B",
+          "activityCommits": 100,
+          "toolCalls": 49,
+          "firstPaintMs": 64.5,
+          "latestPaintMs": null,
+          "synchronizedMs": 383.8999999910593,
+          "transcriptNotifications": 103,
+          "transcriptNotificationsThroughSync": 103,
+          "hostNotifications": 12,
+          "reactMarkdownParses": 5,
+          "longTasks": [],
+          "observedMs": 640.099853515625,
+          "websocket": {
+            "received shell host.changes": {
+              "count": 1,
+              "payloadBytes": 900
+            },
+            "sent control client.ack": {
+              "count": 100,
+              "payloadBytes": 8897
+            },
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 462
+            },
+            "received selected host.changes": {
+              "count": 146,
+              "payloadBytes": 135870
+            },
+            "received selected host.synchronized": {
+              "count": 2,
+              "payloadBytes": 352
+            },
+            "sent control client.attach": {
+              "count": 1,
+              "payloadBytes": 1308
+            },
+            "received shell host.synchronized": {
+              "count": 1,
+              "payloadBytes": 239
+            },
+            "received control host.resource": {
+              "count": 1,
+              "payloadBytes": 93
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": true
+            }
+          ],
+          "detailChangesThroughFirstSync": 100,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 2,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 280,
+              "responseBodyBytes": 358,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 2,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 162,
+              "responseBodyBytes": 68,
+              "unfinished": 0
+            },
+            "integration.computer.setup.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 12,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        }
+      ]
+    },
+    "inactive1000": {
+      "summary": {
+        "firstPaintMs": {
+          "count": 3,
+          "p50": 22.3,
+          "p95": 26.3,
+          "max": 26.3
+        },
+        "latestPaintMs": {
+          "count": 3,
+          "p50": 38.7,
+          "p95": 45.9,
+          "max": 45.9
+        },
+        "synchronizedMs": {
+          "count": 3,
+          "p50": 27.9,
+          "p95": 34,
+          "max": 34
+        },
+        "transcriptNotificationsThroughSync": {
+          "count": 3,
+          "p50": 2,
+          "p95": 2,
+          "max": 2
+        },
+        "transcriptNotifications": {
+          "count": 3,
+          "p50": 2,
+          "p95": 2,
+          "max": 2
+        },
+        "hostNotifications": {
+          "count": 3,
+          "p50": 6,
+          "p95": 6,
+          "max": 6
+        },
+        "reactMarkdownParses": {
+          "count": 3,
+          "p50": 2,
+          "p95": 2,
+          "max": 2
+        },
+        "detailChangeFramesThroughFirstSync": {
+          "count": 3,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "detailChangeFrames": {
+          "count": 3,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "detailSnapshotFrames": {
+          "count": 3,
+          "p50": 1,
+          "p95": 1,
+          "max": 1
+        },
+        "detailPayloadBytes": {
+          "count": 3,
+          "p50": 29457,
+          "p95": 29457,
+          "max": 29457
+        },
+        "longTasks": {
+          "count": 3,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "longTaskMs": {
+          "count": 3,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "rpcRequests": {
+          "count": 3,
+          "p50": 3,
+          "p95": 3,
+          "max": 3
+        },
+        "rpcResponseBodyBytes": {
+          "count": 3,
+          "p50": 297,
+          "p95": 297,
+          "max": 297
+        }
+      },
+      "samples": [
+        {
+          "target": "B",
+          "activityCommits": 1000,
+          "toolCalls": 499,
+          "firstPaintMs": 26.299999997019768,
+          "latestPaintMs": 31.5,
+          "synchronizedMs": 24.799999997019768,
+          "transcriptNotifications": 2,
+          "transcriptNotificationsThroughSync": 2,
+          "hostNotifications": 6,
+          "reactMarkdownParses": 2,
+          "longTasks": [],
+          "observedMs": 278.599853515625,
+          "websocket": {
+            "received shell host.changes": {
+              "count": 1,
+              "payloadBytes": 905
+            },
+            "sent control client.ack": {
+              "count": 2,
+              "payloadBytes": 177
+            },
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 404
+            },
+            "received selected host.snapshot": {
+              "count": 1,
+              "payloadBytes": 29280
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 177
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        },
+        {
+          "target": "B",
+          "activityCommits": 1000,
+          "toolCalls": 499,
+          "firstPaintMs": 22.299999997019768,
+          "latestPaintMs": 38.70000000298023,
+          "synchronizedMs": 27.900000005960464,
+          "transcriptNotifications": 2,
+          "transcriptNotificationsThroughSync": 2,
+          "hostNotifications": 6,
+          "reactMarkdownParses": 2,
+          "longTasks": [],
+          "observedMs": 283.89990234375,
+          "websocket": {
+            "received shell host.changes": {
+              "count": 1,
+              "payloadBytes": 905
+            },
+            "sent control client.ack": {
+              "count": 2,
+              "payloadBytes": 177
+            },
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 405
+            },
+            "received selected host.snapshot": {
+              "count": 1,
+              "payloadBytes": 29280
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 177
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        },
+        {
+          "target": "B",
+          "activityCommits": 1000,
+          "toolCalls": 499,
+          "firstPaintMs": 21,
+          "latestPaintMs": 45.900000005960464,
+          "synchronizedMs": 34,
+          "transcriptNotifications": 2,
+          "transcriptNotificationsThroughSync": 2,
+          "hostNotifications": 6,
+          "reactMarkdownParses": 2,
+          "longTasks": [],
+          "observedMs": 291.900146484375,
+          "websocket": {
+            "received shell host.changes": {
+              "count": 1,
+              "payloadBytes": 905
+            },
+            "sent control client.ack": {
+              "count": 2,
+              "payloadBytes": 177
+            },
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 405
+            },
+            "received selected host.snapshot": {
+              "count": 1,
+              "payloadBytes": 29280
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 177
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        }
+      ]
+    },
+    "inactive1000WithReports": {
+      "summary": {
+        "firstPaintMs": {
+          "count": 3,
+          "p50": 261.6,
+          "p95": 390.8,
+          "max": 390.8
+        },
+        "latestPaintMs": {
+          "count": 3,
+          "p50": 707.2,
+          "p95": 822.1,
+          "max": 822.1
+        },
+        "synchronizedMs": {
+          "count": 3,
+          "p50": 700,
+          "p95": 816,
+          "max": 816
+        },
+        "transcriptNotificationsThroughSync": {
+          "count": 3,
+          "p50": 2,
+          "p95": 2,
+          "max": 2
+        },
+        "transcriptNotifications": {
+          "count": 3,
+          "p50": 2,
+          "p95": 2,
+          "max": 2
+        },
+        "hostNotifications": {
+          "count": 3,
+          "p50": 6,
+          "p95": 6,
+          "max": 6
+        },
+        "reactMarkdownParses": {
+          "count": 3,
+          "p50": 1786,
+          "p95": 1786,
+          "max": 1786
+        },
+        "detailChangeFramesThroughFirstSync": {
+          "count": 3,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "detailChangeFrames": {
+          "count": 3,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "detailSnapshotFrames": {
+          "count": 3,
+          "p50": 1,
+          "p95": 1,
+          "max": 1
+        },
+        "detailPayloadBytes": {
+          "count": 3,
+          "p50": 250326,
+          "p95": 250326,
+          "max": 250326
+        },
+        "longTasks": {
+          "count": 3,
+          "p50": 6,
+          "p95": 7,
+          "max": 7
+        },
+        "longTaskMs": {
+          "count": 3,
+          "p50": 766,
+          "p95": 897,
+          "max": 897
+        },
+        "rpcRequests": {
+          "count": 3,
+          "p50": 3,
+          "p95": 3,
+          "max": 3
+        },
+        "rpcResponseBodyBytes": {
+          "count": 3,
+          "p50": 297,
+          "p95": 297,
+          "max": 297
+        }
+      },
+      "samples": [
+        {
+          "target": "B",
+          "activityCommits": 1000,
+          "toolCalls": 498,
+          "firstPaintMs": 21.100000008940697,
+          "latestPaintMs": 409,
+          "synchronizedMs": 402,
+          "transcriptNotifications": 2,
+          "transcriptNotificationsThroughSync": 2,
+          "hostNotifications": 6,
+          "reactMarkdownParses": 894,
+          "longTasks": [
+            {
+              "startMs": 43,
+              "durationMs": 203
+            },
+            {
+              "startMs": 248,
+              "durationMs": 153
+            },
+            {
+              "startMs": 408,
+              "durationMs": 103
+            }
+          ],
+          "observedMs": 763.5,
+          "websocket": {
+            "received shell host.changes": {
+              "count": 1,
+              "payloadBytes": 1157
+            },
+            "sent control client.ack": {
+              "count": 2,
+              "payloadBytes": 177
+            },
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 405
+            },
+            "received selected host.snapshot": {
+              "count": 1,
+              "payloadBytes": 250149
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 177
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        },
+        {
+          "target": "B",
+          "activityCommits": 1000,
+          "toolCalls": 498,
+          "firstPaintMs": 261.59999999403954,
+          "latestPaintMs": 707.2000000029802,
+          "synchronizedMs": 700,
+          "transcriptNotifications": 2,
+          "transcriptNotificationsThroughSync": 2,
+          "hostNotifications": 6,
+          "reactMarkdownParses": 1786,
+          "longTasks": [
+            {
+              "startMs": 6.200000002980232,
+              "durationMs": 137
+            },
+            {
+              "startMs": 143.59999999403954,
+              "durationMs": 116
+            },
+            {
+              "startMs": 260.70000000298023,
+              "durationMs": 74
+            },
+            {
+              "startMs": 339.70000000298023,
+              "durationMs": 79
+            },
+            {
+              "startMs": 419.70000000298023,
+              "durationMs": 148
+            },
+            {
+              "startMs": 569.5999999940395,
+              "durationMs": 130
+            },
+            {
+              "startMs": 706.5999999940395,
+              "durationMs": 82
+            }
+          ],
+          "observedMs": 1041.5,
+          "websocket": {
+            "received shell host.changes": {
+              "count": 1,
+              "payloadBytes": 1157
+            },
+            "sent control client.ack": {
+              "count": 2,
+              "payloadBytes": 177
+            },
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 405
+            },
+            "received selected host.snapshot": {
+              "count": 1,
+              "payloadBytes": 250149
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 177
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        },
+        {
+          "target": "B",
+          "activityCommits": 1000,
+          "toolCalls": 498,
+          "firstPaintMs": 390.79999999701977,
+          "latestPaintMs": 822.0999999940395,
+          "synchronizedMs": 816,
+          "transcriptNotifications": 2,
+          "transcriptNotificationsThroughSync": 2,
+          "hostNotifications": 6,
+          "reactMarkdownParses": 1786,
+          "longTasks": [
+            {
+              "startMs": 4.200000002980232,
+              "durationMs": 221
+            },
+            {
+              "startMs": 225.79999999701977,
+              "durationMs": 158
+            },
+            {
+              "startMs": 389.90000000596046,
+              "durationMs": 93
+            },
+            {
+              "startMs": 483.40000000596046,
+              "durationMs": 183
+            },
+            {
+              "startMs": 668.7000000029802,
+              "durationMs": 146
+            },
+            {
+              "startMs": 821.0999999940395,
+              "durationMs": 96
+            }
+          ],
+          "observedMs": 1169.89990234375,
+          "websocket": {
+            "received shell host.changes": {
+              "count": 1,
+              "payloadBytes": 1157
+            },
+            "sent control client.ack": {
+              "count": 2,
+              "payloadBytes": 177
+            },
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 405
+            },
+            "received selected host.snapshot": {
+              "count": 1,
+              "payloadBytes": 250149
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 177
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        }
+      ]
+    },
+    "warmWithReports": {
+      "summary": {
+        "firstPaintMs": {
+          "count": 5,
+          "p50": 309.8,
+          "p95": 319.7,
+          "max": 319.7
+        },
+        "latestPaintMs": {
+          "count": 5,
+          "p50": 309.8,
+          "p95": 319.7,
+          "max": 319.7
+        },
+        "synchronizedMs": {
+          "count": 5,
+          "p50": 305.7,
+          "p95": 315.6,
+          "max": 315.6
+        },
+        "transcriptNotificationsThroughSync": {
+          "count": 5,
+          "p50": 1,
+          "p95": 1,
+          "max": 1
+        },
+        "transcriptNotifications": {
+          "count": 5,
+          "p50": 1,
+          "p95": 1,
+          "max": 1
+        },
+        "hostNotifications": {
+          "count": 5,
+          "p50": 5,
+          "p95": 5,
+          "max": 5
+        },
+        "reactMarkdownParses": {
+          "count": 5,
+          "p50": 893,
+          "p95": 893,
+          "max": 893
+        },
+        "detailChangeFramesThroughFirstSync": {
+          "count": 5,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "detailChangeFrames": {
+          "count": 5,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "detailSnapshotFrames": {
+          "count": 5,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "detailPayloadBytes": {
+          "count": 5,
+          "p50": 177,
+          "p95": 177,
+          "max": 177
+        },
+        "longTasks": {
+          "count": 5,
+          "p50": 5,
+          "p95": 5,
+          "max": 5
+        },
+        "longTaskMs": {
+          "count": 5,
+          "p50": 573,
+          "p95": 589,
+          "max": 589
+        },
+        "rpcRequests": {
+          "count": 5,
+          "p50": 3,
+          "p95": 3,
+          "max": 3
+        },
+        "rpcResponseBodyBytes": {
+          "count": 5,
+          "p50": 297,
+          "p95": 297,
+          "max": 297
+        }
+      },
+      "samples": [
+        {
+          "target": "B",
+          "activityCommits": 0,
+          "toolCalls": 0,
+          "firstPaintMs": 309.79999999701977,
+          "latestPaintMs": 309.79999999701977,
+          "synchronizedMs": 305.70000000298023,
+          "transcriptNotifications": 1,
+          "transcriptNotificationsThroughSync": 1,
+          "hostNotifications": 5,
+          "reactMarkdownParses": 893,
+          "longTasks": [
+            {
+              "startMs": 6,
+              "durationMs": 153
+            },
+            {
+              "startMs": 159.5,
+              "durationMs": 146
+            },
+            {
+              "startMs": 309.20000000298023,
+              "durationMs": 92
+            },
+            {
+              "startMs": 404.29999999701977,
+              "durationMs": 90
+            },
+            {
+              "startMs": 497.29999999701977,
+              "durationMs": 92
+            }
+          ],
+          "observedMs": 656.300048828125,
+          "websocket": {
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 405
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 177
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        },
+        {
+          "target": "B",
+          "activityCommits": 0,
+          "toolCalls": 0,
+          "firstPaintMs": 316,
+          "latestPaintMs": 316,
+          "synchronizedMs": 311.70000000298023,
+          "transcriptNotifications": 1,
+          "transcriptNotificationsThroughSync": 1,
+          "hostNotifications": 5,
+          "reactMarkdownParses": 893,
+          "longTasks": [
+            {
+              "startMs": 4.700000002980232,
+              "durationMs": 156
+            },
+            {
+              "startMs": 161.29999999701977,
+              "durationMs": 150
+            },
+            {
+              "startMs": 315.29999999701977,
+              "durationMs": 94
+            },
+            {
+              "startMs": 412.5,
+              "durationMs": 94
+            },
+            {
+              "startMs": 509.20000000298023,
+              "durationMs": 95
+            }
+          ],
+          "observedMs": 664.5,
+          "websocket": {
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 405
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 177
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        },
+        {
+          "target": "B",
+          "activityCommits": 0,
+          "toolCalls": 0,
+          "firstPaintMs": 319.70000000298023,
+          "latestPaintMs": 319.70000000298023,
+          "synchronizedMs": 315.6000000089407,
+          "transcriptNotifications": 1,
+          "transcriptNotificationsThroughSync": 1,
+          "hostNotifications": 5,
+          "reactMarkdownParses": 893,
+          "longTasks": [
+            {
+              "startMs": 5.600000008940697,
+              "durationMs": 168
+            },
+            {
+              "startMs": 174.5,
+              "durationMs": 140
+            },
+            {
+              "startMs": 319.1000000089407,
+              "durationMs": 90
+            },
+            {
+              "startMs": 411.70000000298023,
+              "durationMs": 88
+            },
+            {
+              "startMs": 502.79999999701977,
+              "durationMs": 89
+            }
+          ],
+          "observedMs": 664.400146484375,
+          "websocket": {
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 405
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 177
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        },
+        {
+          "target": "B",
+          "activityCommits": 0,
+          "toolCalls": 0,
+          "firstPaintMs": 307.30000001192093,
+          "latestPaintMs": 307.30000001192093,
+          "synchronizedMs": 303.20000000298023,
+          "transcriptNotifications": 1,
+          "transcriptNotificationsThroughSync": 1,
+          "hostNotifications": 5,
+          "reactMarkdownParses": 893,
+          "longTasks": [
+            {
+              "startMs": 5.600000008940697,
+              "durationMs": 149
+            },
+            {
+              "startMs": 155.20000000298023,
+              "durationMs": 147
+            },
+            {
+              "startMs": 306.70000000298023,
+              "durationMs": 94
+            },
+            {
+              "startMs": 404.1000000089407,
+              "durationMs": 90
+            },
+            {
+              "startMs": 497.80000001192093,
+              "durationMs": 91
+            }
+          ],
+          "observedMs": 656.60009765625,
+          "websocket": {
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 405
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 177
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        },
+        {
+          "target": "B",
+          "activityCommits": 0,
+          "toolCalls": 0,
+          "firstPaintMs": 272.29999999701977,
+          "latestPaintMs": 272.29999999701977,
+          "synchronizedMs": 268.1000000089407,
+          "transcriptNotifications": 1,
+          "transcriptNotificationsThroughSync": 1,
+          "hostNotifications": 5,
+          "reactMarkdownParses": 893,
+          "longTasks": [
+            {
+              "startMs": 5.799999997019768,
+              "durationMs": 131
+            },
+            {
+              "startMs": 137.6000000089407,
+              "durationMs": 130
+            },
+            {
+              "startMs": 271.6000000089407,
+              "durationMs": 87
+            },
+            {
+              "startMs": 361.70000000298023,
+              "durationMs": 91
+            },
+            {
+              "startMs": 456.20000000298023,
+              "durationMs": 92
+            }
+          ],
+          "observedMs": 614.10009765625,
+          "websocket": {
+            "sent control client.unsubscribe": {
+              "count": 1,
+              "payloadBytes": 73
+            },
+            "sent selected client.subscribe": {
+              "count": 1,
+              "payloadBytes": 405
+            },
+            "received selected host.synchronized": {
+              "count": 1,
+              "payloadBytes": 177
+            }
+          },
+          "selectedSubscriptions": [
+            {
+              "hadResumeCursor": true,
+              "hadAnchor": false
+            }
+          ],
+          "detailChangesThroughFirstSync": 0,
+          "rpc": {
+            "thread.assignments.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 140,
+              "responseBodyBytes": 179,
+              "unfinished": 0
+            },
+            "triggers.list": {
+              "requests": 1,
+              "requestBodyBytes": 0,
+              "requestQueryBytes": 81,
+              "responseBodyBytes": 34,
+              "unfinished": 0
+            },
+            "thread.browserUsage.get": {
+              "requests": 1,
+              "requestBodyBytes": 109,
+              "requestQueryBytes": 0,
+              "responseBodyBytes": 84,
+              "unfinished": 0
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -5,12 +5,22 @@ import { presentClientIssue } from "@opensteer/client/feedback";
 import { browserNoticeDismissals } from "./usage-notice.js";
 import { isPluginRequest } from "@opensteer/client/plugins";
 import { ThreadPluginAction } from "./plugins/plugin-request-action.js";
-import { useCompactionOffer, useRequestAsker, useRequestPageTab } from "@opensteer/client/react";
+import {
+  useCompactionOffer,
+  useHostSelector,
+  useRequestAsker,
+  useRequestPageTab,
+} from "@opensteer/client/react";
 import { workWords } from "@opensteer/client/host";
 import { cardUseTitle } from "@opensteer/client/host";
-import { threadMark, type TaskMark as ResolvedTaskMark } from "@opensteer/client/host";
+import {
+  sameFields,
+  sameTaskMark,
+  threadMark,
+  type TaskMark as ResolvedTaskMark,
+} from "@opensteer/client/host";
 import { assignmentTitle } from "@opensteer/client/host";
-import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { RequestDetail } from "./request-detail.js";
 import { useScrollEdges } from "./workspace/scroll-edges.js";
 import { type Request, type RequestResponse } from "@opensteer/core";
@@ -56,7 +66,10 @@ import {
   requestsWaitingOn,
   waitingRequestSource,
   waitingRequestPresentationSource,
+  type HostClient,
+  type HostSnapshot,
   type SurfaceModel,
+  type WaitingRequestView,
 } from "@opensteer/client/host";
 import { AnswerField, QuestionBody, untitledQuestion } from "./question-answer.js";
 import { useAnswersInComposer, useQuestionSessionKey } from "./question-session.js";
@@ -146,8 +159,19 @@ export function InputSurface({
   const attachmentTarget =
     deploymentId && draftKey ? { client: hostClient, scope: draftKey, deploymentId } : null;
 
+  // The stable shell leaves out a row's return hint and the Host's quiet-task capability: these
+  // are read live, and only these, so the task's own activity does not redraw the composer.
+  const selectRow = useCallback(
+    (snapshot: HostSnapshot) => {
+      const thread = snapshot.threads.find(({ id }) => id === threadId);
+      return { done: thread?.doneAt != null, returnHint: thread?.returnHint };
+    },
+    [threadId],
+  );
+  const { done, returnHint } = useHostSelector(hostClient, selectRow, sameFields);
+  const quietTasksAvailable = useHostSelector(hostClient, selectQuietTasksAvailable);
   const compactionOffer = useCompactionOffer(
-    snapshot.threads.find((t) => t.id === threadId)?.returnHint,
+    returnHint,
     `${deploymentId}/${userId}/${threadId}`,
     browserNoticeDismissals("opensteer.usage-notices.dismissed"),
   );
@@ -191,16 +215,15 @@ export function InputSurface({
     return { replyCleared: cleared };
   };
 
-  const dock = useRequestDock(threadId, requests ?? noRequests);
+  const dock = useRequestDock(hostClient, threadId, requests ?? noRequests);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const docked = requests !== undefined;
   const asked = docked ? dock.question : question;
   const questionKey = useQuestionSessionKey(asked?.surface.request ?? null);
   const answering = useAnswersInComposer(threadId, questionKey);
   const messageHidden = composerHidden || (docked && dock.composerHidden) || answering;
-  const done = snapshot.threads.find((thread) => thread.id === threadId)?.doneAt != null;
   // A Host that reopens a Done task for its writer keeps the composer; an older one asks first.
-  if (done && !snapshot.quietTasksAvailable) {
+  if (done && !quietTasksAvailable) {
     return (
       <div className="input-surface">
         <p>
@@ -306,12 +329,17 @@ export interface DockedRequest {
  * the same whether it is first or not.
  */
 export function useDockedRequests(
+  hostClient: HostClient,
   threadId: string,
   requests: readonly Request[],
   held: boolean,
 ): readonly DockedRequest[] {
-  const { snapshot } = useShell();
-  const { user, waitingRequests } = snapshot;
+  const user = useHostSelector(hostClient, selectUser);
+  const selectFromWork = useCallback(
+    (snapshot: HostSnapshot) => waitingFromWork(snapshot, threadId),
+    [threadId],
+  );
+  const fromWork = useHostSelector(hostClient, selectFromWork, sameWaitingFromWork);
   return useMemo(() => {
     if (held) return [];
     const own = requests
@@ -327,34 +355,72 @@ export function useDockedRequests(
       const surface = deriveSurface([request], user);
       if (surface) docked.push({ source: null, surface });
     }
-    for (const entry of requestsWaitingOn(waitingRequests, threadId)) {
-      if (entry.request.originatingThreadId === threadId) continue;
+    for (const { entry, source } of fromWork) {
       const surface = deriveSurface([entry.request], user);
-      if (!surface) continue;
-      const task = waitingRequestSource(entry, threadId);
-      const worker = waitingRequestPresentationSource(entry, threadId);
-      docked.push({
-        source: worker
-          ? { threadId: worker.id, title: worker.title, mark: threadMark(worker.id, snapshot) }
-          : task
-            ? {
-                threadId: task.workerThread.id,
-                title: assignmentTitle(task, snapshot),
-                mark: threadMark(task.workerThread.id, snapshot),
-              }
-            : null,
-        surface,
-      });
+      if (surface) docked.push({ source, surface });
     }
     return docked;
-  }, [held, requests, threadId, user, waitingRequests, snapshot.threads]);
+  }, [fromWork, held, requests, user]);
+}
+
+const selectUser = (snapshot: HostSnapshot) => snapshot.user;
+const selectQuietTasksAvailable = (snapshot: HostSnapshot) => snapshot.quietTasksAvailable === true;
+
+/** A question from work a Thread handed out, with the task it arrived through. */
+interface WaitingFromWork {
+  readonly entry: WaitingRequestView;
+  readonly source: DockedRequest["source"];
+}
+
+function waitingFromWork(snapshot: HostSnapshot, threadId: string): readonly WaitingFromWork[] {
+  return requestsWaitingOn(snapshot.waitingRequests, threadId).flatMap((entry) => {
+    if (entry.request.originatingThreadId === threadId) return [];
+    const task = waitingRequestSource(entry, threadId);
+    const worker = waitingRequestPresentationSource(entry, threadId);
+    const source = worker
+      ? { threadId: worker.id, title: worker.title, mark: threadMark(worker.id, snapshot) }
+      : task
+        ? {
+            threadId: task.workerThread.id,
+            title: assignmentTitle(task, snapshot),
+            mark: threadMark(task.workerThread.id, snapshot),
+          }
+        : null;
+    return [{ entry, source }];
+  });
+}
+
+function sameWaitingFromWork(
+  left: readonly WaitingFromWork[],
+  right: readonly WaitingFromWork[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(({ entry, source }, index) => {
+      const other = right[index]!;
+      return (
+        entry === other.entry &&
+        (source === other.source ||
+          (source !== null &&
+            other.source !== null &&
+            source.threadId === other.source.threadId &&
+            source.title === other.source.title &&
+            sameTaskMark(source.mark, other.source.mark)))
+      );
+    })
+  );
 }
 
 const noRequests: readonly Request[] = [];
 
 /** Which docked request is open: the reader's choice while it stands, else the first. */
-export function useRequestDock(threadId: string, requests: readonly Request[], held = false) {
-  const items = useDockedRequests(threadId, requests, held);
+export function useRequestDock(
+  hostClient: HostClient,
+  threadId: string,
+  requests: readonly Request[],
+  held = false,
+) {
+  const items = useDockedRequests(hostClient, threadId, requests, held);
   const [chosen, setOpenId] = useState<string | null>(null);
   const open = items.find((item) => item.surface.request.id === chosen) ?? items[0] ?? null;
   return {

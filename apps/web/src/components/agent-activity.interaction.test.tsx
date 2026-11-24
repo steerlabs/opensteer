@@ -23,7 +23,16 @@ import {
   mockComputerUseToolRefs,
   mockComputerUseTurn,
 } from "@opensteer/client/mock";
-import { TabIdSchema, createId, defaultTaskSymbol, ThreadIdSchema } from "@opensteer/core";
+import {
+  BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
+  TabIdSchema,
+  createId,
+  defaultTaskSymbol,
+  ThreadIdSchema,
+  type BrowserPageContentPart,
+  type Tab,
+} from "@opensteer/core";
 import { computerUseStops } from "@opensteer/client/integrations";
 import {
   createMessageOutboxStorage,
@@ -1202,6 +1211,111 @@ it("keeps an edited message's history a click away after a Run took it", async (
   expect(document.body.textContent).toContain("Check the shard");
 });
 
+describe("a message's pages", () => {
+  // Failure mode: the screen works out which tabs a transcript names from the rows it was given,
+  // so a page only the opened message names, past those its preview carries, keeps the title and
+  // the link it had when the message was opened.
+  it("follow their tabs, the pages an opened message adds to its preview too", async () => {
+    const mock = new MockHostClient({ latencyMs: 0 });
+    try {
+      await mock.load();
+      const threadId = "thr_00000000-0000-4000-8000-000000000005";
+      mock.activateThread(threadId);
+      const viewer = createId("user");
+      const pages = [
+        "mock-tab-0-0",
+        "mock-tab-4-0",
+        "mock-tab-8-0",
+        "mock-tab-11-0",
+        "mock-tab-3-0",
+      ].map((tabId, index): BrowserPageContentPart => ({
+        type: "browser-page",
+        sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000802"),
+        tabId: BrowserSurfaceIdSchema.parse(tabId),
+        title: `Page ${index}`,
+        url: `https://pages.example/${index}`,
+      }));
+      const author = {
+        displayName: "Me",
+        kind: "human",
+        principalId: viewer,
+        userId: viewer,
+      } as const;
+      // The row carries the preview: its words and the first page alone.
+      const preview: MessageEntry = {
+        ...note,
+        author,
+        body: "Everything I read about it",
+        id: "message-pages",
+        itemId: "message-pages",
+        messageKind: "input",
+        pages: pages.slice(0, 1),
+        previewTruncated: true,
+        runId: null,
+      };
+      const read = vi.spyOn(mock, "readTranscriptItem").mockResolvedValue({
+        body: {
+          kind: "message",
+          message: {
+            author,
+            content: [{ type: "text", text: preview.body }, ...pages],
+            createdAt: preview.createdAt,
+            id: preview.id,
+            kind: "input",
+            runId: null,
+            sequence: "1",
+            threadId,
+          },
+        },
+      } as unknown as Awaited<ReturnType<MockHostClient["readTranscriptItem"]>>);
+      const { tabs, browserProfiles } = mock.getSnapshot();
+      const container = document.createElement("div");
+      document.body.append(container);
+      const root = createRoot(container);
+      roots.push(root);
+      await act(async () =>
+        root.render(
+          <MemoryRouter>
+            <TestWorkspace>
+              <AgentTranscript
+                attachmentReader={mock}
+                browserSessions={{ tabs, browserProfiles }}
+                entries={[preview]}
+                threadId={threadId}
+                viewerUserId={viewer}
+              />
+            </TestWorkspace>
+          </MemoryRouter>,
+        ),
+      );
+      const chips = () => [...container.querySelectorAll(".msg--user__pages .surface-chip")];
+      const titles = () =>
+        chips().map((chip) => chip.querySelector(".surface-chip__title")?.textContent);
+      expect(titles()).toEqual(["Your reading list"]);
+      await act(async () =>
+        container.querySelector<HTMLButtonElement>(".message-fold__toggle")!.click(),
+      );
+      await vi.waitFor(() => expect(titles()).toHaveLength(5));
+      expect(read).toHaveBeenCalledWith(threadId, preview.id, undefined);
+      expect(titles()[4]).toBe("Launch brief");
+      const retitle = (change: (rows: Tab[]) => Tab[]) =>
+        act(() => tabs.replaceRows(change([...tabs.rows.values()]), tabs.complete));
+      retitle((rows) =>
+        rows.map((tab) =>
+          tab.tabId === "mock-tab-3-0" ? { ...tab, title: "Launch brief v2" } : tab,
+        ),
+      );
+      expect(titles()[4]).toBe("Launch brief v2");
+      // Closed, it is named as it was sent and opens nothing.
+      retitle((rows) => rows.filter((tab) => tab.tabId !== "mock-tab-3-0"));
+      expect(titles()[4]).toBe("Page 4");
+      expect(chips()[4]?.classList.contains("surface-chip--ended")).toBe(true);
+    } finally {
+      mock.dispose();
+    }
+  });
+});
+
 describe("a message still on this device", () => {
   it("offers Edit and Don't send for files alone, and Edit takes it back", async () => {
     const mock = new MockHostClient({ latencyMs: 0 });
@@ -1261,80 +1375,290 @@ describe("a message still on this device", () => {
   });
 });
 
-describe("a long transcript's bodies", () => {
-  it("defers older bodies on short transcripts and virtualizes long transcripts to a bounded window", async () => {
-    const observed: { element: Element; notify: () => void }[] = [];
-    vi.stubGlobal(
-      "IntersectionObserver",
-      class {
-        readonly #callback: IntersectionObserverCallback;
-        constructor(callback: IntersectionObserverCallback) {
-          this.#callback = callback;
-        }
-        observe(element: Element) {
-          observed.push({
-            element,
-            notify: () =>
-              this.#callback(
-                [{ isIntersecting: true, target: element } as IntersectionObserverEntry],
-                this as unknown as IntersectionObserver,
-              ),
-          });
-        }
-        disconnect() {}
+describe("arrival motion", () => {
+  // Failure mode: every turn rises in whenever it mounts, so opening or returning to a task with a
+  // long report composites the whole turn (hundreds of ms), as does each row scrolled into view.
+  it("moves only a row live work appends, never rows there when shown, history, a repair or a new cut", async () => {
+    const message = (index: number): MessageEntry => ({
+      ...note,
+      runId: null,
+      body: `Update ${index}`,
+      createdAt: new Date(Date.UTC(2026, 7, 16, 10, index)).toISOString(),
+      id: `arrival-${index}`,
+    });
+    const range = (from: number, to: number) =>
+      Array.from({ length: to - from }, (_, index) => message(from + index));
+    const scroller = document.createElement("div");
+    document.body.append(scroller);
+    const root = createRoot(scroller);
+    roots.push(root);
+    // The live conversation's newest rows, of the cut given; null for a window of history.
+    const show = async (entries: MessageEntry[], liveCut: string | null = "1:1") =>
+      act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={["/tasks/arrival"]}>
+            <AgentTranscript entries={entries} liveCut={liveCut} scroller={() => scroller} />
+          </MemoryRouter>,
+        );
+      });
+    const settle = () => {
+      for (const slot of scroller.querySelectorAll(".transcript__virtual-slot--arrived"))
+        act(() => {
+          slot.dispatchEvent(new Event("animationend"));
+        });
+    };
+    const moving = () =>
+      [...scroller.querySelectorAll(".transcript__virtual-slot--arrived")].map((slot) =>
+        slot.querySelector("[data-message-id]")?.getAttribute("data-message-id"),
+      );
+    await show(range(10, 20));
+    expect(moving()).toEqual([]);
+    // A page of history lands above: nothing arrives.
+    await show(range(0, 20));
+    expect(moving()).toEqual([]);
+    // Live work appends one row: it rises in, once.
+    await show(range(0, 21));
+    expect(moving()).toEqual(["arrival-20"]);
+    act(() => {
+      scroller
+        .querySelector(".transcript__virtual-slot--arrived")!
+        .dispatchEvent(new Event("animationend"));
+    });
+    await show(range(0, 21));
+    expect(moving()).toEqual([]);
+    // Two at once rise in too; more than that is a catch-up, not live work.
+    await show(range(0, 23));
+    expect(moving()).toEqual(["arrival-21", "arrival-22"]);
+    for (const slot of scroller.querySelectorAll(".transcript__virtual-slot--arrived"))
+      act(() => {
+        slot.dispatchEvent(new Event("animationend"));
+      });
+    await show(range(0, 26));
+    expect(moving()).toEqual([]);
+    // A jump or a new cut replaces the window: none of its rows arrive.
+    await show(range(40, 50));
+    expect(moving()).toEqual([]);
+    // Nor when the new window overlaps the old and ends in a row never shown: rows left the front.
+    await show(range(42, 51));
+    expect(moving()).toEqual([]);
+    // Nor when it moves back over rows shown before and ends past them.
+    await show(range(30, 52));
+    expect(moving()).toEqual([]);
+    await show(range(30, 53));
+    expect(moving()).toEqual(["arrival-52"]);
+    settle();
+    // A repair installs a new cut that keeps every row and adds one: it was read, not appended.
+    await show(range(30, 54), "1:2");
+    expect(moving()).toEqual([]);
+    await show(range(30, 55), "1:2");
+    expect(moving()).toEqual(["arrival-54"]);
+    settle();
+    // In a window of history, Load newer appends a page; landing on the newest rows, it still
+    // moves nothing, and only live work after it does.
+    await show(range(30, 55), null);
+    await show(range(30, 56), null);
+    expect(moving()).toEqual([]);
+    await show(range(30, 57), "1:2");
+    expect(moving()).toEqual([]);
+    await show(range(30, 58), "1:2");
+    expect(moving()).toEqual(["arrival-57"]);
+    settle();
+    // A reconnect resumes from its cursor without a new snapshot: while it catches up there is no
+    // live cut, and the row its replay appends was missed, not arriving.
+    await show(range(30, 58), null);
+    await show(range(30, 59), "2:2");
+    expect(moving()).toEqual([]);
+    await show(range(30, 60), "2:2");
+    expect(moving()).toEqual(["arrival-59"]);
+  });
+});
+
+describe("a message the reader opened", () => {
+  // Failure mode: every transcript is virtualized, so a message opened with Show more folds again
+  // once focus has moved on and its row scrolls out of view and back.
+  it("stays open when its row scrolls out of view and is drawn again", async () => {
+    const at = (minute: number) => new Date(Date.UTC(2026, 7, 16, 10, minute)).toISOString();
+    const words = "Check every shard, then the flaky ones again. ".repeat(40);
+    const viewer = createId("user");
+    const sam = createId("user");
+    const opened: MessageEntry[] = [
+      {
+        ...note,
+        author: { displayName: "Me", kind: "human", principalId: viewer, userId: viewer },
+        body: words,
+        createdAt: at(0),
+        id: "opened-own",
+        messageKind: "input",
+        previewTruncated: true,
+        runId: null,
       },
-    );
-    const makeEntries = (count: number): MessageEntry[] =>
+      {
+        ...note,
+        author: { displayName: "Sam", kind: "human", principalId: sam, userId: sam },
+        body: words,
+        createdAt: at(1),
+        id: "opened-input",
+        messageKind: "input",
+        previewTruncated: true,
+        runId: null,
+      },
+      {
+        ...note,
+        author: { cause: "run-recovery", kind: "platform" },
+        body: words,
+        createdAt: at(2),
+        id: "opened-recovery",
+        messageKind: "input",
+        runId: null,
+      },
+    ];
+    const after = Array.from({ length: 120 }, (_, index): MessageEntry => ({
+      ...note,
+      body: `Update ${index}`,
+      createdAt: at(3 + index),
+      id: `opened-after-${index}`,
+      runId: null,
+    }));
+    const scroller = document.createElement("div");
+    let scrollTop = 0;
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, value: 800 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      },
+    });
+    const elsewhere = document.createElement("button");
+    document.body.append(scroller, elsewhere);
+    const root = createRoot(scroller);
+    roots.push(root);
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/tasks/opened"]}>
+          <AgentTranscript
+            entries={[...opened, ...after]}
+            scroller={() => scroller}
+            viewerUserId={viewer}
+          />
+        </MemoryRouter>,
+      );
+      await import("./markdown.js");
+    });
+    const row = (id: string) => scroller.querySelector<HTMLElement>(`[data-message-id="${id}"]`);
+    const toggle = (id: string) =>
+      row(id)?.querySelector<HTMLButtonElement>(".message-fold__toggle, .update-line__toggle");
+    const scrollTo = (top: number) =>
+      act(async () => {
+        scrollTop = top;
+        scroller.dispatchEvent(new Event("scroll"));
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      });
+    for (const { id } of opened) {
+      expect(toggle(id)?.getAttribute("aria-expanded"), id).toBe("false");
+      act(() => {
+        toggle(id)!.focus();
+        toggle(id)!.click();
+      });
+      expect(toggle(id)?.getAttribute("aria-expanded"), id).toBe("true");
+    }
+    act(() => elsewhere.focus());
+    await scrollTo(6000);
+    for (const { id } of opened) expect(row(id), id).toBeNull();
+    await scrollTo(0);
+    for (const { id } of opened) expect(toggle(id)?.getAttribute("aria-expanded"), id).toBe("true");
+  });
+});
+
+describe("a long transcript's bodies", () => {
+  it("draws only the rows in and near view of any transcript it scrolls, each parsed at once", async () => {
+    const makeEntries = (count: number, thread: string): MessageEntry[] =>
       Array.from({ length: count }, (_, index) => ({
         ...note,
         runId: null,
         body: `Update **${index}**`,
         createdAt: new Date(Date.UTC(2026, 7, 16, 10, index)).toISOString(),
-        id: `message-${index}`,
+        id: `${thread}-message-${index}`,
       }));
-
-    // 1) Short transcript (<= 48 rows, non-virtualized): older rows stay deferred until intersecting.
-    const shortScroller = document.createElement("div");
-    document.body.append(shortScroller);
-    const shortRoot = createRoot(shortScroller);
-    roots.push(shortRoot);
-    await act(async () => {
-      shortRoot.render(
-        <MemoryRouter initialEntries={["/tasks/thread-1"]}>
-          <AgentTranscript entries={makeEntries(45)} scroller={() => shortScroller} />
-        </MemoryRouter>,
+    for (const [thread, count] of [
+      ["short", 45],
+      ["long", 100],
+    ] as const) {
+      const scroller = document.createElement("div");
+      document.body.append(scroller);
+      const root = createRoot(scroller);
+      roots.push(root);
+      await act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={[`/tasks/${thread}`]}>
+            <AgentTranscript entries={makeEntries(count, thread)} scroller={() => scroller} />
+          </MemoryRouter>,
+        );
+        await import("./markdown.js");
+      });
+      const body = (index: number) =>
+        scroller.querySelector(`[data-message-id="${thread}-message-${index}"]`);
+      // Without layout the window stands at the top, and the newest rows stay held at the tail.
+      await vi.waitFor(() =>
+        expect(body(count - 1)?.querySelector("strong")?.textContent).toBe(`${count - 1}`),
       );
-      await import("./markdown.js");
-    });
-    const shortBody = (index: number) =>
-      shortScroller.querySelector(`[data-message-id="message-${index}"]`)!;
-    await vi.waitFor(() => expect(shortBody(44).querySelector("strong")?.textContent).toBe("44"));
-    expect(shortBody(2).querySelector("strong")).toBeNull();
-    expect(shortBody(2).textContent).toContain("Update **2**");
-    const near = observed.find(({ element }) => shortBody(2).contains(element))!;
-    await act(async () => near.notify());
-    await vi.waitFor(() => expect(shortBody(2).querySelector("strong")?.textContent).toBe("2"));
-
-    // 2) Long transcript (> 48 rows, virtualized): mounts a bounded DOM window + spacers, parsing tail at once.
-    const longScroller = document.createElement("div");
-    document.body.append(longScroller);
-    const longRoot = createRoot(longScroller);
-    roots.push(longRoot);
-    await act(async () => {
-      longRoot.render(
-        <MemoryRouter initialEntries={["/tasks/thread-2"]}>
-          <AgentTranscript entries={makeEntries(100)} scroller={() => longScroller} />
-        </MemoryRouter>,
+      expect(body(2)?.querySelector("strong")?.textContent).toBe("2");
+      expect(scroller.dataset.virtualized).toBe("true");
+      expect(scroller.querySelectorAll("[data-transcript-row]").length).toBeLessThan(
+        Math.min(count, 60),
       );
-      await import("./markdown.js");
-    });
-    const longBody = (index: number) =>
-      longScroller.querySelector(`[data-message-id="message-${index}"]`);
-    await vi.waitFor(() => expect(longBody(99)?.querySelector("strong")?.textContent).toBe("99"));
-    expect(longScroller.querySelectorAll("[data-transcript-row]").length).toBeLessThan(60);
-    expect(longScroller.querySelectorAll(".transcript__spacer").length).toBeGreaterThan(0);
-    expect(longBody(50)).toBeNull();
-    vi.unstubAllGlobals();
+      expect(scroller.querySelectorAll(".transcript__spacer").length).toBeGreaterThan(0);
+      expect(body(count - 12)).toBeNull();
+    }
+  });
+
+  it("draws a task switched back to from its finished replies, without parsing them again", async () => {
+    const { drawnBlocks } = await import("./markdown.js");
+    const report = (turn: number) =>
+      Array.from(
+        { length: 6 },
+        (_, section) =>
+          `## Finding ${turn}.${section}\n\nThe **source** says [more](https://example.com/${turn}/${section}).\n\n` +
+          "```ts\nconst value = " +
+          `${turn * 10 + section}` +
+          ";\n```",
+      ).join("\n\n");
+    const entries: MessageEntry[] = Array.from({ length: 10 }, (_, turn) => ({
+      ...note,
+      runId: null,
+      body: report(turn),
+      createdAt: new Date(Date.UTC(2026, 7, 16, 10, turn)).toISOString(),
+      id: `switch-report-${turn}`,
+    }));
+    const open = async () => {
+      const scroller = document.createElement("div");
+      document.body.append(scroller);
+      const root = createRoot(scroller);
+      await act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={["/tasks/switch"]}>
+            <AgentTranscript entries={entries} scroller={() => scroller} />
+          </MemoryRouter>,
+        );
+        await import("./markdown.js");
+      });
+      await vi.waitFor(() =>
+        expect(scroller.querySelector('[data-message-id="switch-report-9"] h2')).not.toBeNull(),
+      );
+      const drawn = scroller.querySelector(".transcript")?.innerHTML ?? scroller.innerHTML;
+      act(() => root.unmount());
+      scroller.remove();
+      return drawn;
+    };
+    const parsed = vi.spyOn(drawnBlocks, "set");
+    const first = await open();
+    const firstParses = parsed.mock.calls.length;
+    expect(firstParses).toBeGreaterThan(0);
+    const again = await open();
+    expect(parsed.mock.calls.length).toBe(firstParses);
+    expect(again).toBe(first);
   });
 
   it("renders full assistant replies without an expand button in Task and Chat modes", async () => {

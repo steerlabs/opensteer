@@ -32,23 +32,34 @@ export async function finishDeviceRemoval(
   removed: Awaited<ReturnType<OpensteerStore["revokeRunner"]>>,
   afterResponse?: (effect: () => void) => void,
 ) {
-  for (const deviceId of removed.removedDeviceIds)
-    dependencies.computerApps.forgetDevice(deviceId, true);
-  for (const binding of removed.detachedDeviceBindings)
-    dependencies.computerApps.forgetDevice(binding.deviceId);
-  if (runnerId) {
-    await dependencies.shellControl.endMachineSessions(runnerId, "machine-revoked");
-    await dependencies.runners.revoke(runnerId);
-    dependencies.channels.relay.forget(runnerId);
-    dependencies.computerApps.detachRunner(runnerId, "revoked");
+  try {
+    for (const deviceId of removed.removedDeviceIds)
+      dependencies.computerApps.forgetDevice(deviceId, true);
+    for (const binding of removed.detachedDeviceBindings)
+      dependencies.computerApps.forgetDevice(binding.deviceId);
+    if (runnerId) {
+      await dependencies.shellControl.endMachineSessions(runnerId, "machine-revoked");
+      await dependencies.runners.revoke(runnerId);
+      dependencies.channels.relay.forget(runnerId);
+      dependencies.computerApps.detachRunner(runnerId, "revoked");
+    }
+    await dependencies.computerApps.refreshDeviceDrivers();
+    for (const sessionId of removed.closedBrowserSessions)
+      dependencies.browser.abandonSession(sessionId);
+    if (runnerId)
+      await dependencies.browser.poolDeviceRemoved?.(runnerId, removed.closedBrowserSessions);
+    await dependencies.browser.profilesRemoved(removed.deletedBrowserProfiles);
+  } finally {
+    // The removal committed even if a step above failed. Its logins end first, closing their
+    // sockets; only then does every surviving socket reread the browser usage of its open tasks,
+    // which no longer lists the archived profiles' sessions.
+    const endLogins = () => {
+      dependencies.authenticator.identity.announceSessionsEnded(removed.endedSessionIds);
+      dependencies.realtime.refreshObservedBrowserUsage();
+    };
+    if (afterResponse) afterResponse(endLogins);
+    else endLogins();
   }
-  await dependencies.computerApps.refreshDeviceDrivers();
-  for (const sessionId of removed.closedBrowserSessions)
-    dependencies.browser.abandonSession(sessionId);
-  if (runnerId)
-    await dependencies.browser.poolDeviceRemoved?.(runnerId, removed.closedBrowserSessions);
-  await dependencies.browser.profilesRemoved(removed.deletedBrowserProfiles);
-  dependencies.authenticator.identity.announceSessionsEnded(removed.endedSessionIds, afterResponse);
   await commitPersonalMutation(dependencies.store.database, async (_tx, mutation) => {
     for (const kind of [
       "machine",
