@@ -2781,7 +2781,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       if (context.stopRequested) {
         const deferred = context.stopDeferred;
         context.stopRequested = false;
-        context.stopDeferred = undefined;
+        delete context.stopDeferred;
         const request = this.#interruptTurnOnce(this.#requireClient(), childThreadId, turnId);
         if (request) {
           void request.then(
