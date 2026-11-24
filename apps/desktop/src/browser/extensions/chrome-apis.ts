@@ -63,6 +63,7 @@ export interface ManagedTab {
   readonly open: (url: string, active: boolean) => WebContents;
   readonly close: () => void;
   readonly presentedWindow: () => BaseWindow | null;
+  readonly activate?: () => void;
 }
 
 export interface ChromeApisHost {
@@ -112,6 +113,16 @@ interface ActionDetails {
   badgeText?: string;
   badgeColor?: string | null;
   icon?: ActionIconSpec;
+  enabled?: boolean;
+}
+
+interface StoredNotification {
+  notification: Notification;
+  title: string;
+  message: string;
+  silent: boolean;
+  icon?: string | NativeImage;
+  replaced: boolean;
 }
 
 interface ExtensionActionState extends ActionDetails {
@@ -541,7 +552,7 @@ export class ChromeExtensionApis {
   readonly #actions = new Map<string, ExtensionActionState>();
   readonly #iconDataCache = new Map<string, string | null>();
   readonly #menus = new Map<string, Map<string, ContextMenuProps>>();
-  readonly #notifications = new Map<string, Notification>();
+  readonly #notifications = new Map<string, StoredNotification>();
   /** `activeTab` grants: extensionId -> Map<tabId, grantedOrigin>, cleared on navigation/close. */
   readonly #activeTabGrants = new Map<string, Map<number, string>>();
   readonly #tabCleanups = new WeakMap<WebContents, () => void>();
@@ -578,9 +589,10 @@ export class ChromeExtensionApis {
         this.#popup.destroy();
         this.#popup = null;
       }
-      for (const [key, notif] of this.#notifications) {
+      for (const [key, stored] of this.#notifications) {
         if (key.startsWith(`${extension.id}:`)) {
-          notif.close();
+          stored.replaced = true;
+          stored.notification.close();
           this.#notifications.delete(key);
         }
       }
@@ -619,7 +631,10 @@ export class ChromeExtensionApis {
     this.#host.session.extensions.off("extension-loaded", this.#onExtensionLoaded);
     this.#host.session.extensions.off("extension-unloaded", this.#onExtensionUnloaded);
     this.#host.session.cookies.off("changed", this.#onCookieChanged);
-    for (const notif of this.#notifications.values()) notif.close();
+    for (const stored of this.#notifications.values()) {
+      stored.replaced = true;
+      stored.notification.close();
+    }
     this.#notifications.clear();
     for (const [contents] of this.#tabs) {
       this.#tabCleanups.get(contents)?.();
@@ -891,6 +906,7 @@ export class ChromeExtensionApis {
     const manifest = isRecord(extension.manifest) ? extension.manifest : {};
     const state = this.#actions.get(extension.id);
     if (!state && !isRecord(manifest.action)) return null;
+    if (!this.#isActionEnabled(extension.id, tabContents?.id)) return null;
     const tabOverride = tabContents ? state?.tabs.get(tabContents.id) : undefined;
     const title = clampString(
       tabOverride?.title ?? state?.title ?? extension.name,
@@ -937,6 +953,8 @@ export class ChromeExtensionApis {
       return;
     }
 
+    if (!this.#isActionEnabled(extension.id, options.tabContents.id)) return;
+
     // Trusted user gesture: grant activeTab ONLY if declared in manifest, bound to tab + origin.
     this.#grantActiveTab(extension, options.tabContents);
 
@@ -970,6 +988,9 @@ export class ChromeExtensionApis {
     const target = tabContents ?? this.#getActiveTabOfCurrentWindow();
     if (!target || target.isDestroyed()) {
       throw new Error("No active tab in this profile to trigger the extension action on.");
+    }
+    if (!this.#isActionEnabled(extension.id, target.id)) {
+      throw new Error(`Extension ${extensionId} action is disabled on this tab.`);
     }
     const entry = this.#tabs.get(target);
     const presented = entry?.tab.presentedWindow();
@@ -1040,6 +1061,9 @@ export class ChromeExtensionApis {
   #openPopupFromExtension(extension: Extension): void {
     const target = this.#getActiveTabOfCurrentWindow();
     if (!target || target.isDestroyed()) return;
+    if (!this.#isActionEnabled(extension.id, target.id)) {
+      throw new Error("Extension action is disabled on the active tab.");
+    }
     const popupUrl = this.#popupUrlForTab(extension.id, target.id);
     if (!popupUrl) {
       throw new Error("Extension declares no popup for the active tab.");
@@ -1059,6 +1083,15 @@ export class ChromeExtensionApis {
       width: 32,
       height: 32,
     });
+  }
+
+  #isActionEnabled(extensionId: string, tabId?: number): boolean {
+    const state = this.#actions.get(extensionId);
+    if (tabId !== undefined) {
+      const tabOverride = state?.tabs.get(tabId);
+      if (tabOverride?.enabled !== undefined) return tabOverride.enabled;
+    }
+    return state?.enabled !== false;
   }
 
   #popupUrlForTab(extensionId: string, tabId: number): string | null {
@@ -1591,6 +1624,15 @@ export class ChromeExtensionApis {
       setActionProp(ctx, details, "icon", spec);
     });
     router.handle("action.getUserSettings", () => ({ isOnToolbar: true }));
+    router.handle("action.enable", (ctx, tabId) => {
+      setActionProp(ctx, typeof tabId === "number" ? { tabId } : undefined, "enabled", true);
+    });
+    router.handle("action.disable", (ctx, tabId) => {
+      setActionProp(ctx, typeof tabId === "number" ? { tabId } : undefined, "enabled", false);
+    });
+    router.handle("action.isEnabled", (ctx, tabId) =>
+      this.#isActionEnabled(ctx.extension.id, typeof tabId === "number" ? tabId : undefined),
+    );
     // Extension-initiated popup open: strictly separate from trusted click — NEVER grants activeTab.
     router.handle("action.openPopup", (ctx) => {
       this.#openPopupFromExtension(ctx.extension);
@@ -1685,7 +1727,13 @@ export class ChromeExtensionApis {
         await wc.loadURL(safeUrl);
       }
       if (typeof props.muted === "boolean") wc.setAudioMuted(props.muted);
-      if (props.active === true) this.#setActiveTab(wc);
+      if (props.active === true && this.#getActiveTabInWindow(entry.window) !== wc) {
+        if (!entry.tab.activate) {
+          throw new Error("Switching active browser tabs from an extension is not supported.");
+        }
+        entry.tab.activate();
+        this.#setActiveTab(wc);
+      }
       return this.#sanitizeTabForExtension(ctx.extension, this.#rawTabSnapshot(wc, entry));
     });
     router.handle("tabs.remove", (_ctx, idOrIds) => {
@@ -2002,33 +2050,52 @@ export class ChromeExtensionApis {
           throw new Error("Extension exceeded maximum active notifications.");
         }
       }
-      this.#notifications.get(key)?.close();
-      let icon: string | NativeImage | undefined;
-      if (typeof opts.iconUrl === "string" && opts.iconUrl) {
-        if (opts.iconUrl.startsWith("data:image/")) {
-          if (opts.iconUrl.length > MAX_ICON_DATA_URL_LEN) {
+      const prevStored = this.#notifications.get(key);
+      if (prevStored) {
+        prevStored.replaced = true;
+        prevStored.notification.close();
+      }
+      const parseNotificationIcon = (
+        iconUrl: unknown,
+        extensionPath: string,
+      ): string | NativeImage | undefined => {
+        if (typeof iconUrl !== "string" || !iconUrl) return undefined;
+        if (iconUrl.startsWith("data:image/")) {
+          if (iconUrl.length > MAX_ICON_DATA_URL_LEN) {
             throw new Error("Notification icon exceeds size limit.");
           }
-          const parsed = nativeImage.createFromDataURL(opts.iconUrl);
-          if (!parsed.isEmpty()) icon = parsed;
-        } else {
-          const resolved = resolveExtensionFile(ctx.extension.path, opts.iconUrl);
-          if (!resolved) throw new Error("Invalid notification iconUrl.");
-          icon = resolved;
+          const parsed = nativeImage.createFromDataURL(iconUrl);
+          return parsed.isEmpty() ? undefined : parsed;
         }
-      }
+        const resolved = resolveExtensionFile(extensionPath, iconUrl);
+        if (!resolved) throw new Error("Invalid notification iconUrl.");
+        return resolved;
+      };
+      const icon = parseNotificationIcon(opts.iconUrl, ctx.extension.path);
+      const title = clampString(opts.title, 256);
+      const message = clampString(opts.message, 1_024);
+      const silent = opts.silent === true;
       const notification = new Notification({
-        title: clampString(opts.title, 256),
-        body: clampString(opts.message, 1_024),
-        silent: opts.silent === true,
+        title,
+        body: message,
+        silent,
         ...(icon ? { icon } : {}),
       });
-      this.#notifications.set(key, notification);
+      const stored: StoredNotification = {
+        notification,
+        title,
+        message,
+        silent,
+        ...(icon ? { icon } : {}),
+        replaced: false,
+      };
+      this.#notifications.set(key, stored);
       notification.on("click", () => {
         this.#host.router.sendToExtension(ctx.extension.id, "notifications.onClicked", id);
       });
       notification.once("close", () => {
-        this.#notifications.delete(key);
+        if (stored.replaced) return;
+        if (this.#notifications.get(key) === stored) this.#notifications.delete(key);
         this.#host.router.sendToExtension(ctx.extension.id, "notifications.onClosed", id, true);
       });
       notification.show();
@@ -2040,7 +2107,8 @@ export class ChromeExtensionApis {
       const key = `${ctx.extension.id}:${id}`;
       const existing = this.#notifications.get(key);
       if (!existing) return false;
-      existing.close();
+      existing.replaced = true;
+      existing.notification.close();
       this.#notifications.delete(key);
       return true;
     });
@@ -2057,9 +2125,61 @@ export class ChromeExtensionApis {
       requirePermission(ctx, "notifications");
       return Notification.isSupported() ? "granted" : "denied";
     });
-    router.handle("notifications.update", (ctx, id) => {
+    router.handle("notifications.update", (ctx, id, rawOptions) => {
       requirePermission(ctx, "notifications");
-      return typeof id === "string" && this.#notifications.has(`${ctx.extension.id}:${id}`);
+      if (typeof id !== "string" || !isRecord(rawOptions)) return false;
+      const key = `${ctx.extension.id}:${id}`;
+      const existing = this.#notifications.get(key);
+      if (!existing) return false;
+      let icon = existing.icon;
+      if (typeof rawOptions.iconUrl === "string" && rawOptions.iconUrl) {
+        if (rawOptions.iconUrl.startsWith("data:image/")) {
+          if (rawOptions.iconUrl.length > MAX_ICON_DATA_URL_LEN) {
+            throw new Error("Notification icon exceeds size limit.");
+          }
+          const parsed = nativeImage.createFromDataURL(rawOptions.iconUrl);
+          if (!parsed.isEmpty()) icon = parsed;
+        } else {
+          const resolved = resolveExtensionFile(ctx.extension.path, rawOptions.iconUrl);
+          if (!resolved) throw new Error("Invalid notification iconUrl.");
+          icon = resolved;
+        }
+      }
+      const title =
+        typeof rawOptions.title === "string" ? clampString(rawOptions.title, 256) : existing.title;
+      const message =
+        typeof rawOptions.message === "string"
+          ? clampString(rawOptions.message, 1_024)
+          : existing.message;
+      const silent = typeof rawOptions.silent === "boolean" ? rawOptions.silent : existing.silent;
+
+      existing.replaced = true;
+      existing.notification.close();
+      const notification = new Notification({
+        title,
+        body: message,
+        silent,
+        ...(icon ? { icon } : {}),
+      });
+      const updated: StoredNotification = {
+        notification,
+        title,
+        message,
+        silent,
+        ...(icon ? { icon } : {}),
+        replaced: false,
+      };
+      this.#notifications.set(key, updated);
+      notification.on("click", () => {
+        this.#host.router.sendToExtension(ctx.extension.id, "notifications.onClicked", id);
+      });
+      notification.once("close", () => {
+        if (updated.replaced) return;
+        if (this.#notifications.get(key) === updated) this.#notifications.delete(key);
+        this.#host.router.sendToExtension(ctx.extension.id, "notifications.onClosed", id, true);
+      });
+      notification.show();
+      return true;
     });
 
     // --- permissions (strict validation, no silent escalation) ---

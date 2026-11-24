@@ -336,7 +336,7 @@ export class ProfileExtensions {
     const staged = await stageCrx3FromUrl(
       crxDownloadUrl(extensionId),
       extensionId,
-      expectedManifest,
+      expectedManifest ? { expectedManifest } : {},
     );
     return this.#commitStagedInstall(staged);
   }
@@ -473,12 +473,10 @@ export class ProfileExtensions {
       router,
       sharedWindow,
       openTab: (url, active, targetWindow) => this.#openTab(url, active, targetWindow),
-      createExtensionWindow: (urls, focused) => {
-        const created = new BaseWindow({ show: false, width: 1_280, height: 800 });
-        this.#extensionWindows.add(created);
-        apis.addWindow(created);
-        for (const url of urls) this.#openTab(url, focused, created);
-        return created;
+      createExtensionWindow: () => {
+        throw new Error(
+          "Creating separate browser windows is not supported; use chrome.tabs.create() to open a tab.",
+        );
       },
       closeExtensionWindow: (closing) => {
         if (closing === sharedWindow) return false;
@@ -518,22 +516,23 @@ export class ProfileExtensions {
     if (this.#closed) return;
     this.#unpacked = unpackedFolders;
 
-    const loadedLedger: StoreLedger = {};
+    // Preserve every discovered Store entry in the ledger so a transient load failure never
+    // permanently erases an installed extension; explicit uninstall() is what removes entries.
+    const nextLedger: StoreLedger = {};
+    for (const candidate of storeCandidates) {
+      nextLedger[candidate.id] = {
+        version: candidate.version,
+        dirName: path.basename(candidate.path),
+      };
+    }
     const storeLoads = storeCandidates.map(async (candidate) => {
       if (this.#closed) return;
-      const existing = this.#session.extensions.getExtension(candidate.id);
-      if (existing) {
-        loadedLedger[candidate.id] = {
-          version: candidate.version,
-          dirName: path.basename(candidate.path),
-        };
-        return;
-      }
+      if (this.#session.extensions.getExtension(candidate.id)) return;
       try {
         await ensureStoreManifestWebStoreExclusion(candidate.path);
         const loaded = await this.#session.extensions.loadExtension(candidate.path);
         if (!this.#closed) {
-          loadedLedger[loaded.id] = {
+          nextLedger[loaded.id] = {
             version: candidate.version,
             dirName: path.basename(candidate.path),
           };
@@ -543,16 +542,13 @@ export class ProfileExtensions {
       }
     });
 
-    const survivingUnpacked: (string | null)[] = Array.from(
-      { length: unpackedFolders.length },
-      () => null,
-    );
-    const unpackedLoads = unpackedFolders.map(async (folder, index) => {
+    const unpackedLoads = unpackedFolders.map(async (folder) => {
       if (this.#closed) return;
       try {
         await this.#session.extensions.loadExtension(folder);
-        survivingUnpacked[index] = folder;
       } catch (error) {
+        // Keep the saved unpacked path intact so transient errors (e.g., an unmounted drive)
+        // recover automatically on the next startup; only explicit uninstall removes it.
         reportFailure(folder, error);
       }
     });
@@ -560,18 +556,11 @@ export class ProfileExtensions {
     await Promise.all([...storeLoads, ...unpackedLoads]);
     if (this.#closed) return;
 
-    this.#storeLedger = loadedLedger;
+    this.#storeLedger = nextLedger;
     // Always persist the ledger (even when empty) so future startups never fall back to legacy scanning.
-    await this.#saveStoreLedger(loadedLedger).catch((error: unknown) =>
+    await this.#saveStoreLedger(nextLedger).catch((error: unknown) =>
       reportFailure(this.#directory, error),
     );
-
-    const kept = survivingUnpacked.filter((item): item is string => item !== null);
-    if (kept.length !== this.#unpacked.length) {
-      await this.#saveUnpacked(kept).catch((error: unknown) =>
-        reportFailure(this.#directory, error),
-      );
-    }
 
     const scheduleUpdateCheck = () => {
       if (this.#closed) return;

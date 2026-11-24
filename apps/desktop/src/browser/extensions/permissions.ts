@@ -1,4 +1,7 @@
+import { isRecord } from "@opensteer/shared/isRecord";
 import path from "node:path";
+
+export { isRecord };
 
 const extensionIdPattern = /^[a-p]{32}$/u;
 const extensionVersionPattern = /^\d{1,9}(?:\.\d{1,9}){0,3}$/u;
@@ -10,10 +13,6 @@ export interface ParsedMatchPattern {
   readonly scheme: string;
   readonly host: string;
   readonly pathPattern: string;
-}
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function isExtensionId(value: unknown): value is string {

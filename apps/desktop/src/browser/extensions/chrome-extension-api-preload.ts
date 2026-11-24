@@ -239,8 +239,9 @@ function installExtensionApis(): void {
         setBadgeBackgroundColor: callApi("action.setBadgeBackgroundColor"),
         getBadgeBackgroundColor: callApi("action.getBadgeBackgroundColor"),
         getUserSettings: callApi("action.getUserSettings"),
-        enable: callApi("action.enable", { noop: true }),
-        disable: callApi("action.disable", { noop: true }),
+        enable: callApi("action.enable"),
+        disable: callApi("action.disable"),
+        isEnabled: callApi("action.isEnabled"),
         openPopup: callApi("action.openPopup"),
         onClicked: new ExtensionEvent("action.onClicked"),
       });

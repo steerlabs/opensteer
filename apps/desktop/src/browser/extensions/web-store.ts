@@ -2,6 +2,7 @@ import {
   readPrivateFileText,
   replacePrivateFileAtomically,
 } from "@opensteer/shared/atomicPrivateFile";
+import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import {
   BrowserWindow,
   app,
@@ -166,29 +167,12 @@ export async function fetchBoundedHttpsBuffer(url: string, maxBytes: number): Pr
     if (!response.ok) {
       throw new Error(`HTTP ${response.status} downloading from ${current.hostname}`);
     }
-    const declaredLength = Number(response.headers.get("content-length") ?? "0");
-    if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-      throw new Error("Download exceeds maximum allowed size.");
-    }
-    if (!response.body) {
-      const bytes = Buffer.from(await response.arrayBuffer());
-      if (bytes.length > maxBytes) throw new Error("Download exceeds maximum allowed size.");
-      return bytes;
-    }
-    const reader = response.body.getReader();
-    const chunks: Buffer[] = [];
-    let total = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        controller.abort();
-        throw new Error("Download exceeds maximum allowed size.");
-      }
-      chunks.push(Buffer.from(value));
-    }
-    return Buffer.concat(chunks, total);
+    const bytes = await readBoundedResponse(response, {
+      maximumBytes: maxBytes,
+      signal: controller.signal,
+      sizeError: () => new Error("Download exceeds maximum allowed size."),
+    });
+    return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   } catch (error) {
     controller.abort();
     throw error;
