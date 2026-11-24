@@ -3,13 +3,13 @@ import { createId, type TriggerId, type UserId } from "@opensteer/core";
 import {
   createDatabase,
   migrateToLatest,
-  migrationProvider,
   OpensteerStore,
   personTaskReader,
   TriggerStore,
 } from "@opensteer/database";
 import { cloneTestDatabase, type TestDatabase } from "@opensteer/database/test-support/database";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
+import { loadReleasedHome } from "@opensteer/database/test-support/released-home";
 import Fastify from "fastify";
 import { sql } from "kysely";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -25,12 +25,8 @@ const model = '{"providerId":"openai","modelId":"fixture","options":{}}';
 beforeEach(async () => {
   clone = await cloneTestDatabase("host");
   database = createDatabase({ connectionString: clone.url });
-  await sql`drop schema public cascade; create schema public`.execute(database);
-  const all = await migrationProvider().getMigrations();
-  const main = Object.fromEntries(
-    Object.entries(all).filter(([name]) => name <= "0046_run_provider_retry"),
-  );
-  await migrateToLatest(database, { getMigrations: async () => main });
+  // Main's last migration, as main's own code made it.
+  await loadReleasedHome(clone.url);
 });
 
 afterEach(async () => {

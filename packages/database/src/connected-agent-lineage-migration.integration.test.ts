@@ -9,12 +9,13 @@ import {
   openCleanups,
   outstandingAttempts,
 } from "./connection-disconnect.js";
-import { migrateToLatest, migrationProvider } from "./migrations.js";
+import { migrateToLatest } from "./migrations.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
 import { runContextLineage, threadContextLineage } from "./run-personal-context.js";
 import { testReadyHarnessCatalog } from "./store.integration.test-support.js";
 import { OpensteerStore } from "./store.js";
+import { loadReleasedHome } from "./released-home.test-support.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
 
 /**
@@ -29,21 +30,11 @@ let clone: TestDatabase;
 let database: ReturnType<typeof createDatabase>;
 const model = '{"providerId":"openai","modelId":"fixture","options":{}}';
 
-// One database at main's last migration, built once with the real migrator and a provider cut at
-// that name; each case starts from its own copy of it.
+// One database at main's last migration, as main's own code made it; each case starts from its
+// own copy of it.
 beforeAll(async () => {
   atMain = await cloneTestDatabase("host");
-  const setup = createDatabase({ connectionString: atMain.url });
-  try {
-    await sql`drop schema public cascade; create schema public`.execute(setup);
-    const all = await migrationProvider().getMigrations();
-    const main = Object.fromEntries(
-      Object.entries(all).filter(([name]) => name <= "0046_run_provider_retry"),
-    );
-    await migrateToLatest(setup, { getMigrations: async () => main });
-  } finally {
-    await setup.destroy();
-  }
+  await loadReleasedHome(atMain.url);
 });
 
 afterAll(async () => {
