@@ -849,22 +849,31 @@ async function releaseRace(
   const held = z.object({ id: z.number() }).parse(h.broker.received("signin.release").at(-1));
   if (action) {
     // A frame's executeJavaScript issued while its document is replaced can stay pending
-    // forever, so a reload is evaluated only once the reloaded document has finished loading.
-    const reloaded =
-      action === "reload"
+    // forever, so a reload or navigation is evaluated only once the replacement document
+    // has finished loading.
+    const loaded =
+      action === "reload" || action === "navigate"
         ? new Promise<void>((resolve, reject) => {
-            const timer = setTimeout(
-              () => reject(new Error("Timed out: the reloaded document finished loading")),
-              12_000,
-            );
-            h.contents.once("did-finish-load", () => {
+            const onFinish = () => {
+              if (action === "navigate" && !h.contents.mainFrame.url.includes("/replacement"))
+                return;
               clearTimeout(timer);
+              h.contents.off("did-finish-load", onFinish);
               resolve();
-            });
+            };
+            const timer = setTimeout(() => {
+              h.contents.off("did-finish-load", onFinish);
+              reject(
+                new Error(
+                  `Timed out: the ${action === "reload" ? "reloaded" : "replacement"} document finished loading`,
+                ),
+              );
+            }, 12_000);
+            h.contents.on("did-finish-load", onFinish);
           })
         : undefined;
     fixture.signal(id);
-    await reloaded;
+    await loaded;
     await waitFor("race happened before release answer", async () => {
       try {
         return (
