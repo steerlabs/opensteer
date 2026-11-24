@@ -535,3 +535,37 @@ it.each(["initial", "offline", "error"])(
     }
   },
 );
+it("projects pruned firing output with an explicit notice instead of empty output", async () => {
+  const f = fixture();
+  const summaries = unwrapRpcResult(await f.mock.rpc["triggers.list"]({})).triggers;
+  const summary = summaries.find((s) => s.name === "Morning email summary")!;
+  const wire = unwrapRpcResult(await f.mock.rpc["triggers.get"]({ triggerId: summary.id }));
+  const baseOccurrence = wire.occurrences[0]!;
+  const detail = scheduleDetail(
+    {
+      ...wire,
+      occurrences: [
+        {
+          ...baseOccurrence,
+          outputPrunedAt: "2026-11-23T00:00:00.000Z",
+          result: null,
+          status: "succeeded",
+          stderr: "",
+          stdout: "",
+        },
+        {
+          ...baseOccurrence,
+          id: createId("triggerOccurrence"),
+          outputPrunedAt: null,
+          result: null,
+          status: "succeeded",
+          stderr: "",
+          stdout: "",
+        },
+      ],
+    },
+    f.snapshot(),
+  );
+  expect(detail.occurrences[0]?.output).toBe("Opensteer no longer keeps this firing's output.");
+  expect(detail.occurrences[1]?.output).toBeNull();
+});
