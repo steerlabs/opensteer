@@ -150,6 +150,7 @@ import {
   MockPlugins,
   type MockPluginScenario,
   mockPluginAccountConsent,
+  mockPluginPagePath,
   mockPluginRequests,
 } from "./mock-plugins.js";
 import { MockSettingsFixtures } from "./settings-fixtures.js";
@@ -4584,7 +4585,11 @@ export class MockHostClient implements HostClient {
   async viewPluginPage(pluginId: string, theme: "light" | "dark", signal?: AbortSignal) {
     signal?.throwIfAborted();
     const view = unwrapRpcResult(await this.rpc["plugins.page.view"]({ pluginId, theme }));
-    return { title: pluginId, url: view.entryUrl ?? view.path };
+    const url =
+      view.path === mockPluginPagePath
+        ? this.enginePlugins.pageUrl(pluginId, theme)
+        : (view.entryUrl ?? view.path);
+    return { title: pluginId, url };
   }
   async viewApp(
     _appId: string,

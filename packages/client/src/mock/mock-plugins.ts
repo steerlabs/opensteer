@@ -771,6 +771,9 @@ function refusal(code: "not_found" | "conflict" | "bad_request", message: string
   });
 }
 
+/** Where `plugins.page.view` says the mock plugin page is; `MockPlugins.pageUrl` draws it. */
+export const mockPluginPagePath = "/mock-plugin-page";
+
 export class MockPlugins {
   readonly #removingWebhooks = new Set<string>();
   readonly catalog = buildCatalog();
@@ -916,6 +919,15 @@ export class MockPlugins {
       this.#setEngine({ status: "ready" });
     })();
     await this.#started;
+  }
+  /** The page `plugins.page.view` opened for `pluginId`, as a `data:` URL. */
+  pageUrl(pluginId: string, theme: "light" | "dark"): string {
+    const plugin = this.#plugin(pluginId);
+    const document = prepareAppHtml(
+      `<!doctype html><html style="font:16px system-ui;padding:24px"><head><title>Plugin page</title></head><body><h1>${plugin.name}</h1><p>Your plugin's page opens here.</p><label>Find an issue <input placeholder="Search issues"></label><p>Connected to your work account</p></body></html>`,
+      theme,
+    );
+    return `data:text/html,${encodeURIComponent(document)}`;
   }
   #plugin(id: string) {
     const plugin = this.plugins.find((entry) => entry.id === id);
@@ -1354,19 +1366,14 @@ export class MockPlugins {
 
   reads(): Pick<HostApiHandlers, keyof typeof pluginReads> {
     return {
-      "plugins.page.view": async ({ pluginId, theme }) => {
+      "plugins.page.view": async ({ pluginId }) => {
         await this.#ready();
         const plugin = this.#plugin(pluginId);
         if (!plugin.hasPage || plugin.access === "off")
           throw refusal("not_found", "Plugin page is unavailable");
-        const document = prepareAppHtml(
-          `<!doctype html><html style="font:16px system-ui;padding:24px"><head><title>Plugin page</title></head><body><h1>${plugin.name}</h1><p>Your plugin's page opens here.</p><label>Find an issue <input placeholder="Search issues"></label><p>Connected to your work account</p></body></html>`,
-          theme,
-        );
-        return rpcSuccess({
-          path: "/mock-plugin-page",
-          entryUrl: `data:text/html,${encodeURIComponent(document)}`,
-        });
+        // The page itself is a `data:` URL the client builds (`pageUrl`): with the app frame's
+        // script in it, it is longer than any entry URL the Host may send.
+        return rpcSuccess({ path: mockPluginPagePath });
       },
       "plugins.installed.list": async () => {
         const local = this.scenario === "empty" ? [] : this.localSummaries();

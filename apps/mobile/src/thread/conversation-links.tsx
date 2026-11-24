@@ -35,13 +35,19 @@ export function isInternalHref(href: string): boolean {
 /** This phone, as its menu names it beside the computers. */
 const hereName = Platform.OS === "ios" ? (Platform.isPad ? "iPad" : "iPhone") : "this phone";
 
+/**
+ * How links open in a conversation, and in what stands outside one (an app's
+ * tab, a plugin's page): the same places, without a conversation's computer.
+ */
 export function ConversationLinksProvider(props: {
   readonly children: ReactNode;
   readonly deploymentId: string;
   readonly hostClient: HostClient;
-  readonly threadId: string;
+  readonly threadId?: string | undefined;
+  /** Before a link opens anywhere, for what stands over the screen a tab would open on. */
+  readonly onOpen?: (() => void) | undefined;
 }): ReactNode {
-  const { deploymentId, hostClient, threadId } = props;
+  const { deploymentId, hostClient, onOpen, threadId } = props;
   const navigation = useNavigation();
   const hereId = useHereDeviceId(deploymentId);
   const references = useReferenceNavigation();
@@ -49,7 +55,8 @@ export function ConversationLinksProvider(props: {
     const places = (url: string) => {
       const snapshot = hostClient.getSnapshot();
       return linkPlaces(snapshot, {
-        conversationRunnerId: conversationComputerId(snapshot, threadId),
+        conversationRunnerId:
+          threadId === undefined ? null : conversationComputerId(snapshot, threadId),
         hereId,
         url,
       });
@@ -59,6 +66,7 @@ export function ConversationLinksProvider(props: {
      * the system's browser instead.
      */
     const openOn = (url: string, place: LinkPlace): void => {
+      onOpen?.();
       // Only an address a tab can open goes to one; anything else is the system browser's.
       if (!PageOpenUrlSchema.safeParse(url).success) {
         openOutside(url);
@@ -68,7 +76,7 @@ export function ConversationLinksProvider(props: {
         navigation,
         hostClient,
         deploymentId,
-        threadId,
+        ...(threadId === undefined ? {} : { threadId }),
         target: pageOpenTarget(place.target, url, hostClient.getSnapshot().machines),
         address: url,
         failed: () => openOutside(url),
@@ -82,8 +90,11 @@ export function ConversationLinksProvider(props: {
           return;
         }
         const tap = places(url).tap;
-        if (tap === null) openOutside(url);
-        else openOn(url, tap);
+        if (tap !== null) openOn(url, tap);
+        else {
+          onOpen?.();
+          openOutside(url);
+        }
       },
       menu: ({ href: url }) => {
         if (isInternalHref(url))
@@ -126,7 +137,7 @@ export function ConversationLinksProvider(props: {
         }
       },
     };
-  }, [deploymentId, hereId, hostClient, navigation, references, threadId]);
+  }, [deploymentId, hereId, hostClient, navigation, onOpen, references, threadId]);
   return (
     <ConversationLinksContext.Provider value={links}>
       {props.children}
