@@ -234,8 +234,10 @@ it("refuses Debugger.setBreakpointByUrl with a non-empty condition outside expli
     ).toThrow();
   }
 
-  // S2: without a non-empty condition, your own agents keep urlRegex, scriptHash, and file:/blob:/data: URLs.
+  // S2: without a non-empty condition, your own agents keep urlRegex, scriptHash, relative sourceURLs
+  // (such as electron-browser-smoke's `smoke-break.js`), and file:/blob:/data: URLs.
   for (const params of [
+    { url: "smoke-break.js", lineNumber: 1 },
     { urlRegex: ".*", lineNumber: 0 },
     { urlRegex: ".*", lineNumber: 0, condition: "" },
     { scriptHash: "deadbeef", lineNumber: 0 },

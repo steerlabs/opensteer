@@ -433,11 +433,12 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   }
 
   #protection(contents: WebContents) {
-    this.#methods.set(contents.id, "GET");
+    const contentsId = contents.id;
+    this.#methods.set(contentsId, "GET");
     contents.once("destroyed", () => {
-      this.#methods.delete(contents.id);
+      this.#methods.delete(contentsId);
       for (const [requestId, id] of this.#uploads)
-        if (id === contents.id) this.#uploads.delete(requestId);
+        if (id === contentsId) this.#uploads.delete(requestId);
     });
     return {
       method: () => this.#methods.get(contents.id) ?? "GET",
@@ -968,7 +969,8 @@ class ElectronBrowserContext implements BrowserContext {
       this.#events.removeAllListeners();
     }
     for (const view of this.#storageViews) {
-      if (!view.webContents.isDestroyed()) view.webContents.close({ waitForBeforeUnload: false });
+      const contents = view.webContents;
+      if (contents && !contents.isDestroyed()) contents.close({ waitForBeforeUnload: false });
     }
     for (const page of this.#pages) page.endWithContext();
     const results = await Promise.allSettled([...this.#pages].map((page) => page.close()));
@@ -1448,8 +1450,9 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     this.#onConnectionWebContents = onConnectionWebContents;
     this.#protection = protection(view.webContents);
     if (opener?.isConnectionControlled()) this.setConnectionControlled(true);
+    const webContentsId = view.webContents.id;
     view.webContents.once("destroyed", () => {
-      this.#onConnectionWebContents?.(view.webContents.id, false);
+      this.#onConnectionWebContents?.(webContentsId, false);
     });
     // Electron installs a native message-box listener even with Page enabled.
     // The debugger and ledger own these dialogs for the page's entire lifetime.
@@ -4776,8 +4779,14 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
             throw new Error("Extensions.triggerAction targetId must be a non-empty string.");
           }
           const targetPage = await this.#context.pageByTargetId(parameters.targetId);
-          if (!targetPage) throw new Error("CDP target does not exist in this Profile Host.");
-          targetContents = targetPage.view.webContents;
+          if (!targetPage || targetPage.isClosed()) {
+            throw new Error("CDP target does not exist in this Profile Host.");
+          }
+          const contents = targetPage.view.webContents;
+          if (!contents || contents.isDestroyed()) {
+            throw new Error("CDP target does not exist in this Profile Host.");
+          }
+          targetContents = contents;
         }
         await extensions.triggerAction(parameters.id, targetContents);
         return {};

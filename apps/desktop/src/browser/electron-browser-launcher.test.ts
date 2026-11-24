@@ -19,6 +19,38 @@ import { describe, expect, it, vi } from "vitest";
 
 type Bounds = { x: number; y: number; width: number; height: number };
 
+type MockViewWebContents = {
+  backgroundThrottling: boolean;
+  close: ReturnType<typeof vi.fn>;
+  destroy: ReturnType<typeof vi.fn>;
+  forcefullyCrashRenderer: ReturnType<typeof vi.fn>;
+  loadURL: ReturnType<typeof vi.fn>;
+  getURL: ReturnType<typeof vi.fn<() => string>>;
+  isDestroyed: ReturnType<typeof vi.fn<() => boolean>>;
+  beginFrameSubscription: ReturnType<typeof vi.fn>;
+  endFrameSubscription: ReturnType<typeof vi.fn>;
+  focus: ReturnType<typeof vi.fn>;
+  setWindowOpenHandler: ReturnType<typeof vi.fn>;
+  on: ReturnType<typeof vi.fn>;
+  off: ReturnType<typeof vi.fn>;
+  once: ReturnType<typeof vi.fn>;
+  debugger: {
+    attach: ReturnType<typeof vi.fn>;
+    detach: ReturnType<typeof vi.fn>;
+    isAttached: ReturnType<typeof vi.fn<() => boolean>>;
+    on: ReturnType<typeof vi.fn>;
+    sendCommand: ReturnType<
+      typeof vi.fn<
+        (
+          method: string,
+          parameters?: Record<string, unknown>,
+          sessionId?: string,
+        ) => Promise<unknown>
+      >
+    >;
+  };
+};
+
 const electron = vi.hoisted(() => ({
   restore: undefined as undefined | (() => Promise<void>),
   storage: undefined as undefined | (() => Promise<unknown>),
@@ -48,37 +80,8 @@ const electron = vi.hoisted(() => ({
   }>,
   views: [] as Array<{
     options: { webPreferences?: { focusOnNavigation?: boolean } };
-    webContents: {
-      backgroundThrottling: boolean;
-      close: ReturnType<typeof vi.fn>;
-      destroy: ReturnType<typeof vi.fn>;
-      forcefullyCrashRenderer: ReturnType<typeof vi.fn>;
-      loadURL: ReturnType<typeof vi.fn>;
-      getURL: ReturnType<typeof vi.fn<() => string>>;
-      isDestroyed: ReturnType<typeof vi.fn<() => boolean>>;
-      beginFrameSubscription: ReturnType<typeof vi.fn>;
-      endFrameSubscription: ReturnType<typeof vi.fn>;
-      focus: ReturnType<typeof vi.fn>;
-      setWindowOpenHandler: ReturnType<typeof vi.fn>;
-      on: ReturnType<typeof vi.fn>;
-      off: ReturnType<typeof vi.fn>;
-      once: ReturnType<typeof vi.fn>;
-      debugger: {
-        attach: ReturnType<typeof vi.fn>;
-        detach: ReturnType<typeof vi.fn>;
-        isAttached: ReturnType<typeof vi.fn<() => boolean>>;
-        on: ReturnType<typeof vi.fn>;
-        sendCommand: ReturnType<
-          typeof vi.fn<
-            (
-              method: string,
-              parameters?: Record<string, unknown>,
-              sessionId?: string,
-            ) => Promise<unknown>
-          >
-        >;
-      };
-    };
+    initialWebContents: MockViewWebContents;
+    webContents: MockViewWebContents;
     getBounds: ReturnType<typeof vi.fn<() => Bounds>>;
     setBounds: ReturnType<typeof vi.fn<(bounds: Bounds) => void>>;
   }>,
@@ -150,9 +153,21 @@ vi.mock("electron", () => {
         setImmediate(() => callback({ getSize: () => ({ width: 800, height: 600 }) })),
     );
     readonly endFrameSubscription = vi.fn();
-    readonly close = vi.fn(() => {
+    #onDestroying: (() => void) | undefined;
+    #destroyed = false;
+    attachView(onDestroying: () => void): void {
+      this.#onDestroying = onDestroying;
+    }
+    #markDestroyed(): void {
+      if (this.#destroyed) return;
+      this.#destroyed = true;
       this.isDestroyed.mockReturnValue(true);
+      // Match real Electron: WebContentsView.webContents becomes undefined before `destroyed` fires.
+      this.#onDestroying?.();
       for (const [event, listener] of this.once.mock.calls) if (event === "destroyed") listener();
+    }
+    readonly close = vi.fn(() => {
+      this.#markDestroyed();
     });
     readonly destroy = vi.fn();
     readonly stopFindInPage = vi.fn();
@@ -172,7 +187,11 @@ vi.mock("electron", () => {
   }
 
   class MockWebContentsView {
-    readonly webContents = new MockWebContents();
+    readonly initialWebContents = new MockWebContents();
+    #webContents: MockWebContents | undefined = this.initialWebContents;
+    get webContents(): MockWebContents {
+      return this.#webContents as MockWebContents;
+    }
     bounds = { height: 600, width: 800, x: 0, y: 0 };
     readonly getBounds = vi.fn(() => ({ ...this.bounds }));
     readonly options: { webPreferences?: { focusOnNavigation?: boolean } };
@@ -185,6 +204,9 @@ vi.mock("electron", () => {
 
     constructor(options: { webPreferences?: { focusOnNavigation?: boolean } } = {}) {
       this.options = options;
+      this.initialWebContents.attachView(() => {
+        this.#webContents = undefined;
+      });
       electron.views.push(this);
     }
   }
@@ -756,8 +778,8 @@ it("rejects a refused restore before announcing and closes its unloaded view", a
       }),
     ).rejects.toThrow("History refused");
     expect(announced).not.toHaveBeenCalled();
-    expect(electron.views.at(-1)!.webContents.loadURL).not.toHaveBeenCalled();
-    expect(electron.views.at(-1)!.webContents.close).toHaveBeenCalled();
+    expect(electron.views.at(-1)!.initialWebContents.loadURL).not.toHaveBeenCalled();
+    expect(electron.views.at(-1)!.initialWebContents.close).toHaveBeenCalled();
   } finally {
     electron.restore = undefined;
     await browser.close();
@@ -4502,8 +4524,8 @@ describe("Electron geometry lifecycle", () => {
       }
       const writes = view.setBounds.mock.calls.length;
       const hostWrites = host.setContentSize.mock.calls.length;
-      const commands = view.webContents.debugger.sendCommand.mock.calls.length;
-      const subscriptions = view.webContents.beginFrameSubscription.mock.calls.length;
+      const commands = view.initialWebContents.debugger.sendCommand.mock.calls.length;
+      const subscriptions = view.initialWebContents.beginFrameSubscription.mock.calls.length;
       const placements = placed.mock.calls.length;
       if (outcome === "resolve") barrier.resolve();
       else barrier.reject(new Error("Release barrier failed"));
@@ -4511,8 +4533,8 @@ describe("Electron geometry lifecycle", () => {
       await native.invalidateSurface().catch(() => undefined);
       expect(view.setBounds.mock.calls).toHaveLength(writes);
       expect(host.setContentSize.mock.calls).toHaveLength(hostWrites);
-      expect(view.webContents.debugger.sendCommand.mock.calls).toHaveLength(commands);
-      expect(view.webContents.beginFrameSubscription.mock.calls).toHaveLength(subscriptions);
+      expect(view.initialWebContents.debugger.sendCommand.mock.calls).toHaveLength(commands);
+      expect(view.initialWebContents.beginFrameSubscription.mock.calls).toHaveLength(subscriptions);
       expect(placed.mock.calls).toHaveLength(placements);
       await expect(native.waitForPaint()).rejects.toThrow(/canceled|closed|aborted|crashed/);
       expect(reads).toBeLessThan(20);
@@ -5397,6 +5419,10 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       });
 
       await channel.close();
+      // Closing a connection-controlled page clears its webContents ID cleanly even though real
+      // Electron sets `view.webContents` to undefined before emitting `destroyed`.
+      await expect(page.close()).resolves.toBeUndefined();
+      expect(view.webContents).toBeUndefined();
     } finally {
       await browser.close();
     }
@@ -6197,7 +6223,7 @@ describe("native Electron profiles", () => {
         const flush = vi
           .spyOn(owner.session.cookies, "flushStore")
           .mockImplementationOnce(async () => {
-            pageClosedFirst = page.webContents.close.mock.calls.length > 0;
+            pageClosedFirst = page.initialWebContents.close.mock.calls.length > 0;
             entered.resolve();
             if (mode === "hung") await new Promise(() => {});
             throw new Error("secret final save failure");
@@ -6223,7 +6249,7 @@ describe("native Electron profiles", () => {
         );
         expect(await closed).toMatchObject({ reason: "browser-profile-persistence-failed" });
         expect(browser.context.isConnected?.()).toBe(false);
-        expect(page.webContents.close).toHaveBeenCalled();
+        expect(page.initialWebContents.close).toHaveBeenCalled();
         await expect(browser.cdp.send("Target.getTargets")).rejects.toThrow(/closed/);
         expect(() => owner.assertReady()).not.toThrow();
         flush.mockRestore();
@@ -6285,12 +6311,12 @@ describe("native Electron profiles", () => {
       ).not.toHaveBeenCalled();
       expect(() => owner.assertAdmitted()).not.toThrow();
       const captures = electron.views
-        .flatMap((v) => v.webContents.debugger.sendCommand.mock.calls)
+        .flatMap((v) => v.initialWebContents.debugger.sendCommand.mock.calls)
         .filter(([method]) => method === "Network.getAllCookies").length;
       await vi.advanceTimersByTimeAsync(1_000);
       expect(
         electron.views
-          .flatMap((v) => v.webContents.debugger.sendCommand.mock.calls)
+          .flatMap((v) => v.initialWebContents.debugger.sendCommand.mock.calls)
           .filter(([method]) => method === "Network.getAllCookies"),
       ).toHaveLength(captures + 1);
       expect(capture).toHaveBeenCalledOnce();
@@ -6522,8 +6548,8 @@ describe("native Electron profiles", () => {
       const helpersBefore = electron.views.length;
       await browser.replaceSiteCookies("https://example.test", [], new AbortController().signal);
       for (const helper of electron.views.slice(helpersBefore)) {
-        expect(helper.webContents.loadURL).not.toHaveBeenCalled();
-        expect(helper.webContents.debugger.sendCommand).not.toHaveBeenCalledWith(
+        expect(helper.initialWebContents.loadURL).not.toHaveBeenCalled();
+        expect(helper.initialWebContents.debugger.sendCommand).not.toHaveBeenCalledWith(
           "Fetch.enable",
           expect.anything(),
         );
@@ -6766,9 +6792,9 @@ describe("native Electron profiles", () => {
         } else {
           await vi.waitFor(() => expect(capturing).toHaveBeenCalled(), { timeout: 1000 });
           const target = electron.views.at(-1)!;
-          expect(target.webContents.close).not.toHaveBeenCalled();
+          expect(target.initialWebContents.close).not.toHaveBeenCalled();
           cancellation.abort();
-          expect(target.webContents.close).toHaveBeenCalled();
+          expect(target.initialWebContents.close).toHaveBeenCalled();
           held.resolve({ cookies: [] });
           await expect(launching).rejects.toThrow();
         }
@@ -6813,13 +6839,13 @@ describe("native Electron profiles", () => {
       const first = electron.views
         .slice(start)
         .filter((view) =>
-          view.webContents.debugger.sendCommand.mock.calls.some(
+          view.initialWebContents.debugger.sendCommand.mock.calls.some(
             ([method]) => method === "Network.getAllCookies",
           ),
         )
         .at(-1)!;
-      expect(first.webContents.close).toHaveBeenCalled();
-      expect(first.webContents.loadURL).not.toHaveBeenCalled();
+      expect(first.initialWebContents.close).toHaveBeenCalled();
+      expect(first.initialWebContents.loadURL).not.toHaveBeenCalled();
       const browser = await f.launch();
       const page = browser.context.pages()[0]!;
       const view = electron.views.at(-1)!;
@@ -6837,7 +6863,7 @@ describe("native Electron profiles", () => {
       });
       await owner.mirror.flush();
       const captured = electron.views.at(-1)!;
-      await vi.waitFor(() => expect(captured.webContents.close).toHaveBeenCalled(), {
+      await vi.waitFor(() => expect(captured.initialWebContents.close).toHaveBeenCalled(), {
         timeout: 1000,
       });
       const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
@@ -6852,7 +6878,7 @@ describe("native Electron profiles", () => {
       const retried = await f.launch();
       await retried.close();
       expect(electron.views.length).toBeGreaterThan(beforeRecovery);
-      expect(electron.views.at(-1)!.webContents.close).toHaveBeenCalled();
+      expect(electron.views.at(-1)!.initialWebContents.close).toHaveBeenCalled();
       expect(profile.clearStorageData).not.toHaveBeenCalled();
     } finally {
       await f.launcher.localProfiles.release(f.directory);
@@ -6974,7 +7000,7 @@ describe("native Electron profiles through the shared runtime", () => {
       await vi.waitFor(
         () =>
           expect(
-            pages.every((view) => view.webContents.close.mock.calls.length > 0),
+            pages.every((view) => view.initialWebContents.close.mock.calls.length > 0),
             "Network Service loss never closed the retired owner's views",
           ).toBe(true),
         { timeout: 2_000 },

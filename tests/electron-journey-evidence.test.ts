@@ -55,6 +55,65 @@ it("rejects early success without result evidence and records smoke failures", (
     ).toBe(0);
     const quitRows = readFileSync(path.join(out, "results.jsonl"), "utf8").trim().split("\n");
     expect(JSON.parse(quitRows.at(-1)!).exitCode).toBe(0);
+
+    // extensions validation requires extensions.json (passed, boundaryPassed, lifecyclePassed) AND
+    // every per-section result file (5 connected-agent boundary sections + extension-lifecycle).
+    const extDir = path.join(out, "extensions");
+    mkdirSync(extDir, { recursive: true });
+    writeFileSync(path.join(out, "extensions.log"), "");
+    const extSections = [
+      "connected-agent-isolation",
+      "connected-agent-breakpoints",
+      "connected-agent-compromise",
+      "connected-agent-probes",
+      "connected-agent-dialog",
+      "extension-lifecycle",
+    ];
+    const writeExtArtifacts = (overrides: {
+      report?: Record<string, unknown>;
+      failingSection?: string;
+      omitSection?: string;
+    }) => {
+      rmSync(extDir, { recursive: true, force: true });
+      mkdirSync(extDir, { recursive: true });
+      writeFileSync(
+        path.join(extDir, "extensions.json"),
+        JSON.stringify({
+          passed: true,
+          boundaryPassed: true,
+          lifecyclePassed: true,
+          ...overrides.report,
+        }),
+      );
+      for (const section of extSections) {
+        if (section === overrides.omitSection) continue;
+        writeFileSync(
+          path.join(extDir, `section-${section}.json`),
+          JSON.stringify({ section, passed: section !== overrides.failingSection, checks: [] }),
+        );
+      }
+    };
+    for (const [code, overrides, expected] of [
+      [0, {}, 0],
+      [0, { failingSection: "connected-agent-dialog" }, 1],
+      [0, { omitSection: "connected-agent-compromise" }, 1],
+      [0, { report: { boundaryPassed: false } }, 1],
+      [0, { report: { lifecyclePassed: false } }, 1],
+      [1, {}, 1],
+    ] as const) {
+      writeExtArtifacts(overrides);
+      expect(
+        spawnSync(process.execPath, [
+          "apps/desktop/scripts/test-support/validate-electron-journey.mjs",
+          out,
+          "extensions",
+          String(code),
+          "4",
+        ]).status,
+      ).toBe(0);
+      const extRows = readFileSync(path.join(out, "results.jsonl"), "utf8").trim().split("\n");
+      expect(JSON.parse(extRows.at(-1)!).exitCode).toBe(expected);
+    }
   } finally {
     rmSync(out, { recursive: true, force: true });
   }

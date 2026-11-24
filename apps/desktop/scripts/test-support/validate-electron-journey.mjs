@@ -31,9 +31,29 @@ try {
     case "cdp-boundary":
       assert.equal(local("electron.json").passed, true);
       break;
-    case "extensions":
-      assert.equal(local("extensions.json").passed, true);
+    case "extensions": {
+      const report = local("extensions.json");
+      assert.equal(report.passed, true);
+      assert.equal(report.boundaryPassed, true);
+      assert.equal(report.lifecyclePassed, true);
+      for (const section of [
+        "connected-agent-isolation",
+        "connected-agent-breakpoints",
+        "connected-agent-compromise",
+        "connected-agent-probes",
+        "connected-agent-dialog",
+        "extension-lifecycle",
+      ]) {
+        const entry = local(`section-${section}.json`);
+        assert.equal(entry.section, section);
+        assert.equal(
+          entry.passed,
+          true,
+          `extensions section ${section} failed: ${entry.error ?? ""}`,
+        );
+      }
       break;
+    }
     case "passwords":
       assert.equal(local("manifest.json").passed, true);
       assert.equal(local("leak-scan.json").executed, true);
