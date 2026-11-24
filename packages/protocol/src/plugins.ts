@@ -549,6 +549,17 @@ const pluginInstallSourceSchema = z.discriminatedUnion("kind", [
     url: z.url({ protocol: /^https?$/u }).max(2_048),
     name: z.string().trim().min(1).max(120),
   }),
+  /**
+   * Plugin source in a folder inside Agent home, read as today's tool reads it; with `pluginId`,
+   * a new version of that plugin. Only your own agents have a folder: a connection's schema and
+   * listing leave this kind out, and sent anyway it reads like any kind the schema does not know.
+   */
+  z.strictObject({
+    kind: z.literal("folder"),
+    directory: z.string().min(1).max(4_096),
+    name: name.optional(),
+    pluginId: PluginIdSchema.optional(),
+  }),
 ]);
 const accountFieldValue = z.union([z.string().max(16_384), z.number(), z.boolean()]);
 

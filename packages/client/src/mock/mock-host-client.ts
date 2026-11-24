@@ -2197,9 +2197,9 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "needsYou.get": async (input) =>
       rpcSuccess(mockNeedsYou(client.getSnapshot(), input.before, input.limit)),
     "connections.activity": async (input) =>
-      rpcSuccess(client.agentActivity({ connectionId: input.connectionId })),
+      rpcSuccess({ ...client.agentActivity({ connectionId: input.connectionId }), commands: [] }),
     "threads.activity": async (input) =>
-      rpcSuccess(client.agentActivity({ threadId: input.threadId })),
+      rpcSuccess({ ...client.agentActivity({ threadId: input.threadId }), commands: [] }),
     "connections.list": async (input) => {
       if (client.unreadable) throw new Error("The preview Home can't be reached.");
       const connections = client.listConnections(input.includeRevoked === true);
@@ -2661,10 +2661,6 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       } catch (error) {
         return mockRefusal(error);
       }
-    },
-    "integration.computer.session.stop": async (input) => {
-      await client.stopComputerUseSession(input.sessionId);
-      return rpcSuccess({});
     },
     "integration.computer.apps.installed": async (input) => {
       try {
@@ -3244,6 +3240,11 @@ async function executeMockCommand(
         asOfSequence: SequenceSchema.parse(String(client.getSnapshot().revision)),
         type: command.type,
       });
+    case "thread.stop.recheck":
+      return rpcSuccess({
+        proven: true,
+        type: command.type,
+      });
     case "thread.input.steer":
       client.assertThreadOriginLive(command.threadId);
       return rpcSuccess({
@@ -3526,6 +3527,9 @@ async function executeMockCommand(
       });
     case "integration.computer.setup.cancel":
       client.cancelComputerAppSetup(command.requestId);
+      return rpcSuccess({ type: command.type });
+    case "integration.computer.session.stop":
+      await client.stopComputerUseSession(command.sessionId);
       return rpcSuccess({ type: command.type });
     case "integration.computer.setup.set":
       if ("deviceId" in command.input) return client.executeCommandOnce(command);
@@ -5232,6 +5236,18 @@ export class MockHostClient implements HostClient {
     });
   }
 
+  async recheckThreadStop(threadId: string): Promise<{ readonly proven: boolean }> {
+    const result = await this.dispatch({
+      idempotencyKey: `mock-stop-recheck:${crypto.randomUUID()}`,
+      threadId,
+      type: "thread.stop.recheck",
+    });
+    if (result.type !== "thread.stop.recheck") {
+      throw new Error(`Unexpected thread.stop.recheck response: ${result.type}`);
+    }
+    return { proven: result.proven };
+  }
+
   async steerThreadInput(threadId: string, messageId: string): Promise<void> {
     const expectedRunId = this.#state.loadThreadInputQueue(threadId).steerRunId;
     if (expectedRunId === null) throw new Error("This message cannot be steered right now.");
@@ -6206,11 +6222,15 @@ class MockHostState {
       return { ...ended, bridge: { ...bridge, endedBy } };
     });
     if (endedOrigin === null) return;
-    const affected = new Set(
-      [...this.#threadOriginConnection.entries()]
+    // A chat's tasks, and a connected agent's own tasks (those it works itself).
+    const affected = new Set([
+      ...[...this.#threadOriginConnection.entries()]
         .filter(([, connId]) => connId === id)
         .map(([threadId]) => threadId),
-    );
+      ...this.snapshot.threads
+        .filter((thread) => thread.externalWork?.connection.id === id)
+        .map((thread) => thread.id),
+    ]);
     if (affected.size === 0) return;
     this.update({
       ...this.snapshot,
@@ -7200,10 +7220,9 @@ class MockHostState {
         const created = this.createTrigger({
           anchorThreadId: ThreadIdSchema.parse(worker.id),
           name: worker.title,
-          program: {
-            language: "typescript",
-            toolContractVersion: 5,
-            source: "export default async () => null",
+          script: {
+            interpreter: null,
+            text: "console.log('memory-pass')",
           },
           source: {
             kind: "schedule",
@@ -9302,14 +9321,13 @@ class MockHostState {
       createdByThreadId: null,
       id: createId("triggerRevision"),
       ordinal: 1,
-      program: input.program,
+      script: input.script,
       source: input.source,
       triggerId,
     });
     const webhookRouteKey = input.source.kind === "webhook" ? `mock-webhook-${triggerId}` : null;
     const trigger = TriggerSchema.parse({
       anchorThreadId: thread.id,
-      consecutiveFailures: 0,
       createdAt: now.toISOString(),
       createdBy: mockUserId,
       createdByThreadId: null,
@@ -9342,8 +9360,8 @@ class MockHostState {
       ...(webhookRouteKey
         ? {
             webhook: {
-              secret: `mock-secret-${triggerId}`,
-              url: `${mockWebhookOrigin}/v1/trigger-webhooks/${webhookRouteKey}`,
+              scope: "public" as const,
+              url: `${mockWebhookOrigin}/hooks/v1/${webhookRouteKey}`,
             },
           }
         : {}),
@@ -9355,7 +9373,7 @@ class MockHostState {
     if (
       record.trigger.systemRole &&
       (input.name !== undefined ||
-        input.program !== undefined ||
+        input.script !== undefined ||
         (input.source !== undefined &&
           (input.source.kind !== "schedule" ||
             input.source.schedule.kind !== "cron" ||
@@ -9379,7 +9397,7 @@ class MockHostState {
       createdByThreadId: null,
       id: createId("triggerRevision"),
       ordinal: record.revision.ordinal + 1,
-      program: input.program ?? record.revision.program,
+      script: input.script ?? record.revision.script,
       source,
       triggerId,
     });
@@ -9387,9 +9405,6 @@ class MockHostState {
     // one-time instant stays elapsed.
     const trigger = TriggerSchema.parse({
       ...record.trigger,
-      ...(input.program === undefined && input.source === undefined
-        ? {}
-        : { consecutiveFailures: 0 }),
       currentRevisionId: revision.id,
       name:
         input.name === undefined
@@ -9427,7 +9442,6 @@ class MockHostState {
     const now = this.now();
     const trigger = TriggerSchema.parse({
       ...record.trigger,
-      ...(status === "active" ? { consecutiveFailures: 0 } : {}),
       nextFireAt: status === "active" ? resumedFireAt(record.revision.source, now) : null,
       pauseReason: null,
       status,
@@ -14769,7 +14783,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
         id: "env_00000000-0000-4000-8000-000000000001",
         kind: "main",
         name: "Home Mac",
-        providerStateModes: ["ambient", "isolated"],
         // The hosting Runner for this personal Deployment.
         runnerId: "rnr_11111111-1111-4111-8111-111111111111",
         status: "connected",
@@ -14800,7 +14813,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
         id: mockAwaySiteEnvironmentId,
         kind: "main",
         name: "Studio iMac",
-        providerStateModes: ["ambient", "isolated"],
         runnerId: "rnr_44444444-4444-4444-8444-444444444444",
         status: "connected",
       },

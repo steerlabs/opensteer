@@ -98,9 +98,9 @@ export class PiRpcClient {
       environment: options.environment,
       executable: options.launch.nodeExecutable,
     };
-    // The wrapper runs last so the Runner's sandbox sees the complete command:
-    // every provider flag, the working directory, and the environment it must
-    // carry into the sandbox are already in place.
+    // The wrapper runs last so the Runner's launch seam sees the complete
+    // command: every provider flag, the working directory, and the environment
+    // are already in place.
     const wrapped = options.wrapProcessLaunch ? options.wrapProcessLaunch(launch) : launch;
     this.#networkSecrets = networkCredentialSecrets(wrapped.environment);
     this.#process = spawnSupervised({

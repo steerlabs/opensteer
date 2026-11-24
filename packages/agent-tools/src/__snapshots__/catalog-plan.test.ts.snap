@@ -12,10 +12,11 @@ Unknown means it may have happened. Check the current state before acting again.
 stopped_by_person: stop that task and ask before starting again. declined_by_person: do not retry that action.
 The person's agents use a different taskId. Use each ID only with its own kind of tool.
 For a page, use saved_login_request or card_request. Opensteer fills secrets into the page without returning them.
-Use ask_person for help or a decision. Never ask for secrets in chat.",
+Use ask_person for help or a decision. Never ask for secrets in chat.
+To change Opensteer itself, use opensteer_commands.",
   "ordinary": "Complete the person's request within their authorization. Use available context, instructions and relevant skills. Make routine choices and repair failures you can. Preserve the objective through follow-ups. Verify effects before claiming success; promise future work only after confirming a durable mechanism.
 
-Opensteer is one person, their one agent, and their tasks. A task holds private history; a Run is one turn. Tasks run on the hosting computer; other enrolled computers remain tool targets. Use file tools for files and Opensteer tools for product state.
+Opensteer is one person, their one agent, and their tasks. A task holds private history; a Run is one turn. Tasks run on the hosting computer; other enrolled computers remain tool targets. Use file tools for files and Opensteer tools for product state. You are one of the person's own agents, working in their Opensteer. Apps the person connected, such as ChatGPT or Claude, are connected agents, separate from you even when they share your model's name; what each may use is in \`opensteer_state\`.
 
 Authority:
 - Your access mode is a ceiling. Delegated work cannot raise it. Act directly within authorization, including administration and reducing access.
@@ -88,6 +89,109 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
+    "description": "List what you can change in Opensteer. No input: the families. family: its commands, each now or asks the person. type: one command's input. A command not listed is unavailable. What is set up now is in opensteer_state.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "maxLength": 40,
+          "minLength": 1,
+          "type": "string",
+        },
+        "type": {
+          "maxLength": 100,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "opensteer_commands",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "description": "Send one command from opensteer_commands. One that asks the person returns pending with a Request; they may change it before approving. Leave secret fields out. withdraw: take back your own pending Request.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "additionalProperties": {},
+          "properties": {
+            "type": {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string",
+            },
+          },
+          "required": [
+            "type",
+          ],
+          "type": "object",
+        },
+        "reason": {
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string",
+        },
+        "taskId": {
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "withdraw": {
+          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "opensteer_command",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "description": "See what is set up in Opensteer now, as the person's apps show it, cut to what you may see. connections: connected agents (the other AI apps the person connected) and what each may use. devices: the person's devices and what each allows. chats: chat accounts and their chats. engines: AI engine accounts. requests: what waits for the person. activity: what agents did. settings. Read here what another agent, a device or a chat can use. An area you cannot see is unavailable.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "area": {
+          "enum": [
+            "settings",
+            "connections",
+            "devices",
+            "chats",
+            "engines",
+            "requests",
+            "activity",
+          ],
+          "type": "string",
+        },
+      },
+      "required": [
+        "area",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_state",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
     "description": "List the AI accounts that can run tasks, with their models and options, your access ceiling, budgets and the default for delegated tasks. Copy aiAccountId and model values exactly; an unavailable choice never means a substitute. Pass aiAccountId to page through one account's models.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -115,191 +219,10 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "name": "opensteer_ai_account_list",
   },
   {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Rename, enable or disable an AI account, make it the default for its engine, or set a model's context and output limits. Signing in, adding accounts and credentials need the person.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "action": {
-          "enum": [
-            "rename",
-            "enable",
-            "disable",
-            "set_default",
-            "set_model_limits",
-          ],
-          "type": "string",
-        },
-        "aiAccountId": {
-          "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "modelLimits": {
-          "additionalProperties": false,
-          "description": "set_model_limits: the model and its limits.",
-          "properties": {
-            "limits": {
-              "anyOf": [
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "contextWindow": {
-                      "exclusiveMinimum": 0,
-                      "maximum": 10000000,
-                      "type": "integer",
-                    },
-                    "maxOutputTokens": {
-                      "exclusiveMinimum": 0,
-                      "maximum": 10000000,
-                      "type": "integer",
-                    },
-                  },
-                  "required": [
-                    "contextWindow",
-                  ],
-                  "type": "object",
-                },
-                {
-                  "type": "null",
-                },
-              ],
-              "description": "New limits, or null to clear them.",
-            },
-            "modelId": {
-              "description": "Model ID from opensteer_ai_account_list.",
-              "maxLength": 255,
-              "minLength": 1,
-              "type": "string",
-            },
-          },
-          "required": [
-            "modelId",
-            "limits",
-          ],
-          "type": "object",
-        },
-        "name": {
-          "description": "rename: the new name.",
-          "maxLength": 120,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "aiAccountId",
-        "action",
-      ],
-      "type": "object",
-    },
-    "name": "opensteer_ai_account_update",
-  },
-  {
     "access": "read",
     "callers": [
       "run",
-      "connection",
-    ],
-    "description": "Read the person's name and what a new task starts with: its AI account, model and access mode.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {},
-      "type": "object",
-    },
-    "name": "opensteer_defaults_read",
-  },
-  {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Change what a new task starts with and return what changed. The access mode cannot exceed your own ceiling, and nothing here changes an existing task.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "accessMode": {
-          "enum": [
-            "approval-required",
-            "auto-accept-edits",
-            "auto",
-            "full-access",
-          ],
-          "type": "string",
-        },
-        "selection": {
-          "additionalProperties": false,
-          "description": "AI account and model from opensteer_ai_account_list.",
-          "properties": {
-            "aiAccountId": {
-              "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string",
-            },
-            "model": {
-              "additionalProperties": false,
-              "properties": {
-                "modelId": {
-                  "maxLength": 255,
-                  "minLength": 1,
-                  "type": "string",
-                },
-                "options": {
-                  "additionalProperties": {
-                    "anyOf": [
-                      {
-                        "maxLength": 255,
-                        "type": "string",
-                      },
-                      {
-                        "type": "number",
-                      },
-                      {
-                        "type": "boolean",
-                      },
-                    ],
-                  },
-                  "default": {},
-                  "propertyNames": {
-                    "maxLength": 100,
-                    "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
-                    "type": "string",
-                  },
-                  "type": "object",
-                },
-                "providerId": {
-                  "maxLength": 100,
-                  "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
-                  "type": "string",
-                },
-              },
-              "required": [
-                "modelId",
-                "providerId",
-              ],
-              "type": "object",
-            },
-          },
-          "required": [
-            "aiAccountId",
-            "model",
-          ],
-          "type": "object",
-        },
-      },
-      "type": "object",
-    },
-    "name": "opensteer_defaults_update",
-  },
-  {
-    "access": "read",
-    "callers": [
-      "run",
+      "program",
       "connection",
     ],
     "description": "Find the person's page, window, phone and app tabs, including asleep and unavailable tabs. Query matches title, URL, group, profile, app or computer name. Results follow workspace order, 50 per page; keep query and kind when using nextCursor. Groups organize tabs and grant no access. Use tab_open to open a target, Browser Harness openPage(tabId) for pages, or computer_use tab(tabId) for windows and phones.",
@@ -358,6 +281,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Open a website, exact desktop window, Agent Phone or iPhone screen, or published app in the person's shared tab list. A profile stays on its home computer; Guest defaults to the hosting computer. windowId comes from computer_use app.windows(); bundleId opens or launches that approved app and binds its chosen window. Phone and app targets reuse their one tab. Publishing an app alone does not open it. The returned tabId works with tab tools and show_to_person; opening does not move the person's selection.",
     "input": {
@@ -617,6 +541,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Remove these entries from the person's tab list. This does not quit a desktop app, stop a phone, stop agent work or stop an app server. Each ID is independent; closed lists successes and failed gives per-tab errors. Use app_stop to stop an app server.",
     "input": {
@@ -668,6 +593,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Move tabs into an existing group, a new named group, or no group (null). All kinds can mix. tabIds gives their order. beforeTabId inserts before a destination tab; omit it to append. To move a whole group, pass all of its tabIds with its groupId; beforeTabId then places the group before that tab. Get IDs from tab_list. A stale destination fails without moving anything.",
     "input": {
@@ -754,6 +680,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Rename, recolor, collapse or expand a tab group from tab_list. Supply at least one changed field. Collapsing changes the shared list; it does not close tabs or stop work.",
     "input": {
@@ -799,6 +726,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Publish a UTF-8 HTML file or a server folder in Agent home. name labels its cards and Apps entry. Supply appId from app_list or an earlier publication to update it. With start, a full-access Run starts and verifies the server before publishing; the server listens on 127.0.0.1 at PORT. Its port stays fixed. Publishing HTML there stops its server. Publication adds a chat card, not a tab; tab_open with kind app opens one.",
     "input": {
@@ -862,6 +790,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Start the server app from app_list on its saved computer and fixed port. It keeps running after this Run and restarts when that computer reconnects. Requires a full-access Run. Opening or viewing a stopped app does not start it.",
     "input": {
@@ -885,6 +814,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Stop the server app from app_list and keep it stopped across reconnects. Its folder and tabs remain. An offline computer records the stopped intent; it cannot start the app on reconnect. Use app_start to run it again.",
     "input": {
@@ -908,6 +838,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Stop this app's server, close its tabs, revoke its viewing access and remove its publications. Its folder and data stay on disk. Get appId from app_list or app_publish. Deleting the origin chat does not delete an app.",
     "input": {
@@ -951,91 +882,10 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "name": "computer_list",
   },
   {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Rename one of the person's computers. Enrollment, pairing and access switches need the person.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "computerId": {
-          "anyOf": [
-            {
-              "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string",
-            },
-            {
-              "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string",
-            },
-          ],
-        },
-        "name": {
-          "maxLength": 120,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "computerId",
-        "name",
-      ],
-      "type": "object",
-    },
-    "name": "computer_update",
-  },
-  {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Remove a computer or phone from Opensteer, or end one of its access sessions. Removing a computer revokes it, ending its sessions and deleting its browser profiles; iPhones it drives stay listed as not connected. Removing a Mac-driven iPhone removes only that iPhone and its approvals; its Mac stays. Adding either back needs the person.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "computerId": {
-          "anyOf": [
-            {
-              "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string",
-            },
-            {
-              "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string",
-            },
-          ],
-          "description": "computer: the computer or phone to remove.",
-        },
-        "sessionId": {
-          "description": "session: a session ID from computer_list.",
-          "maxLength": 256,
-          "minLength": 1,
-          "type": "string",
-        },
-        "target": {
-          "enum": [
-            "computer",
-            "session",
-          ],
-          "type": "string",
-        },
-      },
-      "required": [
-        "target",
-      ],
-      "type": "object",
-    },
-    "name": "computer_remove",
-  },
-  {
     "access": "write",
     "callers": [
       "run",
+      "program",
       "connection",
     ],
     "description": "Run JavaScript to operate approved Mac windows and phone screens (Android Agent Phones and Mac-driven iPhones); variables and handles last for this Run attempt. tab(tabId), using an ID from tab_list or tab_open, binds that exact window or phone. apps() and phones() list visible targets with either access (read/read-write) or blocked {code,message,next}; app(query) and phone(query) match name, id or computerId and throw that blocked error when access is missing. An approved iPhone can have a lastKnown status; observe it for a live result. Bound handles report tabId. Observe before using screenshot coordinates or element indices. Await calls and print() results; execution has a 100 second deadline. Read opensteer:computer-use for the window and phone API. After an outcome-unknown action, observe before repeating it. Connected agents: name one app or phone screen shared with you by computerId and app (omit app for a phone screen); the script reaches only that one, and tab() is not available. Use at most 20,000 characters. Set readOnly: true to observe without approval.",
@@ -1152,6 +1002,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Ask the person to turn on access to one of their computers: browser, apps or files when a refusal or computer_list shows that switch off, or macOS Full Disk Access when authorized SSH work needs protected files and the other-computers note says it is off. Never ask for an offline computer, and never ask again after Not now in this task. Access granted later resumes in a new Run; app, profile and system permissions still apply.",
     "input": {
@@ -1392,83 +1243,10 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "name": "browser_profile_list",
   },
   {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Rename one of the person's browser profiles.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "name": {
-          "maxLength": 120,
-          "minLength": 1,
-          "type": "string",
-        },
-        "profileId": {
-          "pattern": "^bpr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-      },
-      "required": [
-        "profileId",
-        "name",
-      ],
-      "type": "object",
-    },
-    "name": "browser_profile_update",
-  },
-  {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Delete a browser profile, clear its history, remove one history URL, or forget a remembered site so its cookies are no longer copied. New profiles, sign-in and pairing need the person.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "profileId": {
-          "description": "profile, history and history_url: the profile.",
-          "pattern": "^bpr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "site": {
-          "description": "site: the remembered site.",
-          "maxLength": 2048,
-          "minLength": 1,
-          "type": "string",
-        },
-        "target": {
-          "enum": [
-            "profile",
-            "history",
-            "history_url",
-            "site",
-          ],
-          "type": "string",
-        },
-        "url": {
-          "description": "history_url: the exact URL.",
-          "maxLength": 2048,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "target",
-      ],
-      "type": "object",
-    },
-    "name": "browser_profile_remove",
-  },
-  {
     "access": "write",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Ask the person for a browser profile when none in browser_profile_list fits: they want a new one, or the work needs a separate identity. Never for an already available profile (open it), and not merely because work is signed-out: a profile still browses signed-out sites with a normal, aged identity, while a Guest tab is a brand-new browser that sites challenge more. Only the person creates or grants profiles. Suggest an existing profileId, or a new name of one or two plain words such as Brex, Work or Finance; the person may choose differently. When the Request is fulfilled, open the profile it names; pending gives no profile.",
     "input": {
@@ -1741,6 +1519,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "read",
     "callers": [
       "run",
+      "program",
       "connection",
     ],
     "description": "Find plugins available to install by service name or purpose. Returns catalog ids, names, one-line descriptions and required account methods. Pass cursor to continue; null ends paging. Use the returned id with opensteer_plugin_install; installation never links an account.",
@@ -1813,6 +1592,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "read",
     "callers": [
       "run",
+      "program",
       "connection",
     ],
     "description": "Read a plugin's schedules and runs, workflow declarations and runs (newest first, even if current declarations fail), or webhook subscriptions. The first page carries schedule/workflow definitions with names and input schemas for configuration and starting; null means current definitions could not be evaluated, while durable runs remain readable. Pass the returned next cursor for older runs. Run outputs are shown only to your own tasks while the plugin is on; otherwise a run shows what ran, when and how it ended. These reads do not start work or reveal webhook setup secrets. Scheduled approval answers and manual webhook setup/cleanup confirmation belong to the person in Plugins.",
@@ -1850,6 +1630,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "settings",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Configure a declared schedule, run it now, start or stop a workflow, or remove a webhook subscription. Read plugin_resources first for current identities; cursor paging keeps every live workflow reachable. Starting a workflow needs a unique key: reusing that key recovers the same start. Manual provider cleanup and its confirmation, scheduled approval settings and answers, webhook secret setup and account links remain person-only.",
     "input": {
@@ -2275,6 +2056,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "read",
     "callers": [
       "run",
+      "program",
       "connection",
     ],
     "description": "List installed plugins, newest versions, connected account links, agent access and status, and local tools (device data apps and local servers) sharing the tools.<slug> namespace, with tool counts; a server awaiting launch approval appears only here. One list: pass cursor to continue; null ends it. Pass pluginId for that plugin with every kept version. Use plugin_search for callable tools.",
@@ -2301,6 +2083,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "settings",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Install without approval from a catalog id, a URL (MCP, OpenAPI or GraphQL), or a folder inside Agent home. A folder contains sandboxed TypeScript plugin source, not the old Agent Plugins folder format. Pass pluginId with a folder to deploy a new version. Build errors return as data. OpenAPI warnings explain which operations were left out. The deployed version is the truth. Installation never links an account; that always needs the person. Read opensteer:plugins before writing a plugin.",
     "input": {
@@ -2353,6 +2136,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "settings",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Write a deployed plugin version's source into a new folder inside Agent home. Edit that draft and install the folder with pluginId to deploy a new version. Existing folders are refused.",
     "input": {
@@ -2387,6 +2171,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "settings",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Make an installed earlier version the running plugin version. Rollback changes code, not plugin data; widened credential destinations require the person to consent again.",
     "input": {
@@ -2416,6 +2201,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "settings",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Remove an installed plugin. This does not authorize account linking or change another plugin's access.",
     "input": {
@@ -2439,6 +2225,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "read",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Ask the person in Needs you to connect or link an account to a plugin requirement. Installation needs no approval; account linking always does, including reusing an existing saved account. Never enter, collect or link credentials yourself. Pending is waiting on the person, not permission; continue other work and do not repeat the request.",
     "input": {
@@ -2482,6 +2269,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "settings",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Register, or update by the same name, an MCP server that runs on one of the person's computers: a program to launch, or a loopback URL that computer serves. The person reviews the exact launch and computer and enters declared secrets; its tools then appear in plugin_search under its name. folder is a package inside Agent home whose snapshot that computer runs: start its program with ./path, and use \${PLUGIN_ROOT} and \${PLUGIN_DATA} in args, env or cwd. Declare secrets by name only, never values. device marks a TV, speaker or light it controls. A changed launch on the same computer keeps approval unless it adds secrets.",
     "input": {
@@ -2650,6 +2438,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "settings",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Remove a local server and its data, such as a device pairing, on the Host and on every computer that ran it. A computer that is offline removes it when it reconnects.",
     "input": {
@@ -2744,6 +2533,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Answer an ordinary question with its response shape and the expectedRevision you read; this needs write access to the task that asked. It never approves a permission Request; approvals are the person's.",
     "input": {
@@ -2885,6 +2675,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Withdraw a pending Request this task originated and no longer needs. Finished Requests and Requests from other tasks are refused.",
     "input": {
@@ -2976,12 +2767,6 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
             "providerId",
           ],
           "type": "object",
-        },
-        "observationId": {
-          "description": "Watch observation identity; reuse for the same observation.",
-          "maxLength": 255,
-          "minLength": 1,
-          "type": "string",
         },
         "operationKey": {
           "description": "Retry key for identical input; usually omit.",
@@ -3352,12 +3137,6 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
           ],
           "type": "object",
         },
-        "observationId": {
-          "description": "Watch observation identity; reuse for the same observation.",
-          "maxLength": 255,
-          "minLength": 1,
-          "type": "string",
-        },
         "operationKey": {
           "description": "Retry key for identical input; usually omit.",
           "maxLength": 128,
@@ -3575,6 +3354,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Stop a delegation for good: its task's Runs, its Requests and the tasks it delegated. A finished task keeps its result and can be continued later. Confirm the returned status before saying it stopped. To stop work and resume it later, use opensteer_task_interrupt.",
     "input": {
@@ -3597,6 +3377,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "program",
       "connection",
     ],
     "description": "Ask the person for a decision or answer only they can give. It reaches Needs you and their devices. Prepare the work first and put it in detail, such as the exact draft or plan, so one answer settles it. The person can always type their own answer instead of an option. While they watch, the call waits for the answer; otherwise it returns pending and their answer later continues this task, even days later. A dismissed question means no: do not ask it again unless something changed. Never ask for passwords, codes or access: Request tools cover those. Refused on a delegation: ask the delegating task. In a connected session, pass taskId and ask one question with choices. Use the page for passwords or codes.",
@@ -3695,6 +3476,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "access": "write",
     "callers": [
       "run",
+      "program",
     ],
     "description": "Send this Run’s requester a message in this task now, while work continues; it may notify their devices. It expects no answer: to get one, use ask_person. Refused on a delegation: ask the delegating task to tell the person. On a background wake, use it only for news worth interrupting the person for; send finds a task asked for to that task with opensteer_task_send queue, and otherwise just say briefly what happened in your final reply. Put the completed answer in your final reply without a duplicate message.",
     "input": {
@@ -3792,12 +3574,6 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
         },
         "message": {
           "maxLength": 262144,
-          "minLength": 1,
-          "type": "string",
-        },
-        "observationId": {
-          "description": "Watch observation identity; reuse for the same observation.",
-          "maxLength": 255,
           "minLength": 1,
           "type": "string",
         },
@@ -4088,7 +3864,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "Change an automation's name, program or source with the expectedRevisionId you read; program changes require full access. Opensteer's memory passes refuse name and program changes and sources other than cron.",
+    "description": "Change an automation's name, script or source with the expectedRevisionId you read; to change a script, edit your file, test it, and register its updated text. Script changes require full access. Opensteer's memory passes refuse name and script changes and sources other than cron.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -4106,30 +3882,27 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
           "minLength": 1,
           "type": "string",
         },
-        "program": {
+        "script": {
           "additionalProperties": false,
           "properties": {
-            "language": {
-              "enum": [
-                "javascript",
-                "typescript",
-              ],
-              "type": "string",
+            "interpreter": {
+              "items": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "type": "string",
+              },
+              "maxItems": 16,
+              "minItems": 1,
+              "type": "array",
             },
-            "source": {
-              "maxLength": 524288,
+            "text": {
+              "maxLength": 262144,
               "minLength": 1,
               "type": "string",
             },
-            "toolContractVersion": {
-              "const": 5,
-              "type": "number",
-            },
           },
           "required": [
-            "language",
-            "source",
-            "toolContractVersion",
+            "text",
           ],
           "type": "object",
         },
@@ -4183,7 +3956,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "Pause, resume, archive, reschedule, run now or cancel pending occurrences. These timing controls need the automation's task access mode to be no higher than yours; run_now and archive also require full access. reschedule moves the next unclaimed cron run to a future nextFireAt, then the cadence resumes. run_now works on a non-archived schedule or webhook and has real effects. cancel_pending without occurrenceId cancels every pending occurrence. Started work keeps running. Opensteer's memory passes refuse archive and run_now.",
+    "description": "Pause, resume, archive, reschedule, run now or cancel pending occurrences. These timing controls need the automation's task access mode to be no higher than yours; run_now and archive also require full access. reschedule moves the next unclaimed cron run to a future nextFireAt, then the cadence resumes. run_now works on a non-archived schedule or webhook and has real effects. cancel_pending without occurrenceId cancels every pending occurrence. pause and archive stop any running firing and cancel pending occurrences. Opensteer's memory passes refuse archive.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -4259,7 +4032,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "Create a schedule, reminder, cron, webhook or watch on a task; this requires full access and a program with tool contract version 5. Connections must name taskId. ownTask: true runs it in a new task linked under that task and kept off the task list: it keeps running after that task is Done, its failures and Requests reach that task, and nothing returns automatically.",
+    "description": "Write a normal script file in Agent home, test it in your shell, then register its text and when it runs (schedule, reminder, cron, webhook, or watch). Omit interpreter for Node, or pass argv such as ["python3"] or ["bash"]. Requires full access. Connections must name taskId. ownTask: true runs it in a new task linked under that task and kept off the task list: it keeps running after that task is Done, its failures and Requests reach that task, and nothing returns automatically.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -4279,30 +4052,27 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
           "const": true,
           "type": "boolean",
         },
-        "program": {
+        "script": {
           "additionalProperties": false,
           "properties": {
-            "language": {
-              "enum": [
-                "javascript",
-                "typescript",
-              ],
-              "type": "string",
+            "interpreter": {
+              "items": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "type": "string",
+              },
+              "maxItems": 16,
+              "minItems": 1,
+              "type": "array",
             },
-            "source": {
-              "maxLength": 524288,
+            "text": {
+              "maxLength": 262144,
               "minLength": 1,
               "type": "string",
             },
-            "toolContractVersion": {
-              "const": 5,
-              "type": "number",
-            },
           },
           "required": [
-            "language",
-            "source",
-            "toolContractVersion",
+            "text",
           ],
           "type": "object",
         },
@@ -4347,7 +4117,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
       },
       "required": [
         "name",
-        "program",
+        "script",
         "source",
       ],
       "type": "object",

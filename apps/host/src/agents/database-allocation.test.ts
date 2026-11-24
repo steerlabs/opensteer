@@ -1,6 +1,6 @@
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HarnessRegistry, nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { createHostRuntime } from "../runtime/runtime.js";
 import { startVerticalStack } from "./vertical-stack.test-support.js";
@@ -73,7 +73,6 @@ describe("database allocation failure", () => {
         catalogTimeoutMs: 100,
         runTimeoutMs: 100,
         harnesses: new HarnessRegistry(),
-        harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
         harnessInstance: {
           config: {},
           driverKind: "codex",

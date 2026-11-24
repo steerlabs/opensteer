@@ -29,7 +29,13 @@ Stop or Disconnect.
    `readConnectionStanding`, in one statement.
 2. **Direct tools of a connected agent go through `AgentSessionService.run()`**
    (`apps/host/src/agent-sessions/agent-session-service.ts`): one recorded operation, the witness
-   re-checked before each command, the person asked when the mode says so.
+   re-checked before each command, the person asked when the mode says so. **A change to the Home
+   is one command through one door**, `dispatchCommand` (`apps/host/src/commands/dispatch.ts`),
+   admitted by `admitCommand` in rule 1's file, whoever sends it: the person's app, a Run, an
+   automation or a connected agent. A route that changes the Home calls the door, or is a step of
+   a command the door admitted and is refused without that operation unless it can only take
+   authority away (`apps/host/src/commands/command-tools.integration.test.ts`). A connected
+   agent's `opensteer_command` is that connection at the door, never a `run()` operation.
 3. **Nothing leaves the Home before it is in the Disconnect set**
    (`packages/database/src/connection-disconnect.ts`). Write the attempt row before the frame,
    the IPC call or the ticket. Disconnect shows an end only with evidence.

@@ -1,0 +1,3840 @@
+{
+  "source": "briefs/agent-control-table rows.json (overhaul 82c279dc7) with rows.messaging.json applied (generate.py --messaging): 136 rows. The expected answer per type, face and caller; command-table.ts is checked against it. Rows changed after the foundation review (G2) say so in their note.",
+  "callers": {
+    "a": "your own agent, Full access",
+    "b": "your own agent below Full access",
+    "c": "a connection with everything, Full access ceiling",
+    "d": "a connection with a selected grant covering the resource"
+  },
+  "rows": [
+    {
+      "type": "thread.create",
+      "family": "tasks",
+      "governs": "new task; parent = caller's task (lineage) ← `input`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`tsvc:74`",
+      "effect": {
+        "where": "database",
+        "why": "server.ts:1809 → thread-service.ts:141 → command-service.ts:83: one store write; what follows from it leaves after the commit, from the committed rows",
+        "ongoing": true,
+        "lineageWhy": "a task a connection creates is its own lineage's (thread-inbox.ts:1494)"
+      }
+    },
+    {
+      "type": "thread.rename",
+      "family": "tasks",
+      "governs": "task ← `threadId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "agent path `tsvc:470` (`write`); D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "database",
+        "why": "server.ts:1887 → command-service.ts:92: one store write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "thread.icon.set",
+      "family": "tasks",
+      "governs": "task ← `threadId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "`commands.setThreadIcon` takes no authority (`server.ts:1893`)",
+      "effect": {
+        "where": "database",
+        "why": "server.ts:1900 → command-service.ts:104: one store write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "thread.sendMessage",
+      "family": "tasks",
+      "governs": "task ← `threadId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`connection` with selected grant: own lineage only",
+      "effect": {
+        "where": "outside",
+        "why": "thread-service.ts:262 and server.ts:1829 run after the commit and may fail",
+        "ongoing": true,
+        "lineageWhy": "the Run it starts takes the sender's connection (thread-inbox.ts:1494-1496)"
+      }
+    },
+    {
+      "type": "thread.inputQueue.resume",
+      "family": "tasks",
+      "governs": "task queue ← `threadId` (+ who paused it, stored)",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "step C splits by who paused (brief C7); X11: the inputs it releases run in the task's lineage, so a connection asks unless that lineage is its own; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "database",
+        "why": "thread-service.ts:412 → command-service.ts:229: one store write; what follows from it leaves after the commit, from the committed rows; the wake is in memory",
+        "ongoing": true
+      }
+    },
+    {
+      "type": "thread.input.steer",
+      "family": "tasks",
+      "governs": "waiting input ← `threadId`,`messageId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "; X11: the input steers the running Run, in that Run's lineage, so a connection asks unless that lineage is its own; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "database",
+        "why": "thread-service.ts:432 → command-service.ts:178: one store write; what follows from it leaves after the commit, from the committed rows",
+        "ongoing": true
+      }
+    },
+    {
+      "type": "thread.input.cancel",
+      "family": "tasks",
+      "governs": "waiting input ← `messageId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "database",
+        "why": "thread-service.ts:452 → command-service.ts:187: one store write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "thread.input.move",
+      "family": "tasks",
+      "governs": "waiting input ← `messageId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "database",
+        "why": "thread-service.ts:468 → command-service.ts:194: one store write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "thread.stop.recheck",
+      "family": "tasks",
+      "governs": "the task's unconfirmed stop hold ← `threadId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "person-only recheck button on an unconfirmed stop (`server.ts:1877-1885`)",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:1877 → thread-service.ts:443: asks the Runner to confirm containment and clears the start hold on proof",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "thread.input.lease.take",
+      "family": "tasks",
+      "governs": "the person's editor lease ← `messageId` + session",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "a lease belongs to one signed-in editor (`server.ts:1836-1846`)",
+      "effect": {
+        "where": "database",
+        "why": "server.ts:1842 → command-service.ts:153: one store write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "thread.input.lease.renew",
+      "family": "tasks",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "",
+      "effect": {
+        "where": "database",
+        "why": "server.ts:1842 → command-service.ts:159: one store write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "thread.input.lease.release",
+      "family": "tasks",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "",
+      "effect": {
+        "where": "database",
+        "why": "server.ts:1842 → command-service.ts:164: one store write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "thread.input.edit",
+      "family": "tasks",
+      "governs": "waiting input ← `messageId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "refused today: \"Only the owner can edit waiting inputs.\" (`tsvc:344-347`); needs a lease-less edit",
+      "effect": {
+        "where": "database",
+        "why": "thread-service.ts:359 → command-service.ts:171: one store write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "thread.visit",
+      "family": "tasks",
+      "governs": "the person's read marker ← `threadId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "an agent marking a task read would hide it from the person",
+      "effect": {
+        "where": "database",
+        "why": "server.ts:1757 → notification-state.ts:70: one personal mutation",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "thread.done.set",
+      "family": "tasks",
+      "governs": "task ← `threadId`; `done:true` narrow / `done:false` widen-self",
+      "faces": [
+        {
+          "when": "done: true",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "done: false",
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "database",
+        "why": "server.ts:1765 → command-service.ts:305: one store write; a round that grew writes nothing",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "thread.execution.update",
+      "family": "tasks",
+      "governs": "task's engine account, model ← `threadId`,`harnessInstanceId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`tsvc:263`; X11: the task's later Runs use it, in the task's lineage, so a connection asks unless that lineage is its own; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "database",
+        "why": "thread-service.ts:306 → command-service.ts:134: one store write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "thread.access.update",
+      "family": "tasks",
+      "governs": "task's mode ← `threadId`,`accessMode` vs stored; lower narrow / higher approve",
+      "faces": [
+        {
+          "when": "accessMode lower than stored",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "accessMode higher than stored",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "`server.ts:1906` owner-only",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:1927: lowers live browser sessions and agent operations after the commit",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "run.interrupt",
+      "family": "tasks",
+      "governs": "Run ← `threadId`,`runId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`tsvc:507`",
+      "effect": {
+        "where": "database",
+        "why": "thread-service.ts:519 → command-service.ts:333: a control row the dispatcher sends after the commit",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "node.stop",
+      "family": "tasks",
+      "governs": "subagent ← `threadId`,`nodeId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`h/product.ts:908` passes `authority`; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "database",
+        "why": "server.ts:1936 → command-service.ts:322: a stop row the dispatcher sends after the commit",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "assignment.cancel",
+      "family": "tasks",
+      "governs": "delegation ← `assignmentId` → worker task",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`h/product.ts:927` passes `admission`; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "database",
+        "why": "server.ts:1812 → command-service.ts:269: one store write; a round that grew writes nothing",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "request.respond",
+      "family": "tasks",
+      "governs": "Request ← `requestId` (its kind, origin task); answer to `harness.input` widen-self / allow a permission kind approve / decline narrow",
+      "faces": [
+        {
+          "when": "answers a harness.input Request",
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          },
+          "step": "A"
+        },
+        {
+          "when": "allows a permission Request (points at that Request)",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          },
+          "step": "—"
+        },
+        {
+          "when": "declines",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          },
+          "step": "B"
+        }
+      ],
+      "step": "A",
+      "note": "answer face exists (`h/product.ts:964`); allow face \"asks\" = points at the same Request (no new one); decline face B; X11: the Run that asked goes on, in its lineage, so a connection asks unless that lineage is its own; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:1970: a durable answer runs its kind's continuation (browser access, a plugin approval, a device setup)",
+        "ongoing": true
+      }
+    },
+    {
+      "type": "request.command.approve",
+      "family": "tasks",
+      "governs": "a command Request ← `requestId`; the person approves the command, as proposed or changed",
+      "faces": [
+        {
+          "when": null,
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "A4: the person's answer to a command Request; an agent's ask about it points at that Request",
+      "effect": {
+        "where": "outside",
+        "why": "registry.ts:118: runs another command",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "agent.session.stop",
+      "family": "tasks",
+      "governs": "a connected agent's direct session ← `threadId`,`agentSessionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "(c)(d): its own session only; another connection's → nf",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:1950: stops a live session",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "attachment.upload.create",
+      "family": "tasks",
+      "governs": "an upload slot for the person's client ← name, size",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "bytes arrive on the session-bound binary route; agents pass files by path",
+      "effect": {
+        "where": "database",
+        "why": "server.ts:1796 → attachment-service.ts:80: one store write, before any bytes",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "attachment.upload.discard",
+      "family": "tasks",
+      "governs": "same ← `attachmentId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "attachment-service.ts:197: removes the file",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "execution.preferences.remember",
+      "family": "settings",
+      "governs": "new-task defaults ← `selection`,`accessMode` (mode above the caller's own is approve)",
+      "faces": [
+        {
+          "when": "no accessMode, or approval-required",
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        },
+        {
+          "when": "accessMode above the stored default (the store reports it)",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          },
+          "step": "—"
+        }
+      ],
+      "step": "A",
+      "note": "`admin-svc:369`; review G2: raising the mode new tasks start in lifts a gate (`packages/database/src/harness-store.ts:1098-1131`); D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "database",
+        "why": "administration-service.ts:383: one store write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "viewer.timeZone.update",
+      "family": "settings",
+      "governs": "the person's time zone",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "echoes only, stores nothing (`admin-svc:366-367`)",
+      "effect": {
+        "where": "database",
+        "why": "administration-service.ts:358: writes nothing",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "viewer.quietTasks.update",
+      "family": "settings",
+      "governs": "quiet-task days",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`admin-svc:342`",
+      "effect": {
+        "where": "database",
+        "why": "administration-service.ts:335 → notification-state.ts:88: one personal mutation",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "viewer.name.update",
+      "family": "settings",
+      "governs": "the owner's display name",
+      "faces": [
+        {
+          "when": null,
+          "class": "identity",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "refused today (`admin-svc:135-137`)",
+      "effect": {
+        "where": "outside",
+        "why": "administration-service.ts:349: not shown to be one transaction",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "settings.idleCompaction.set",
+      "family": "settings",
+      "governs": "Claude idle compaction policy",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "refused today (`admin-svc:130-134`) and its store write takes no identity (`admin-svc:334-340`)",
+      "effect": {
+        "where": "outside",
+        "why": "administration-service.ts:330: reconciles after the write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "notification.preview.register",
+      "family": "settings",
+      "governs": "this client's notification key ← `installationId`,`keyId` + session",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "device key of the person's own client",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:1786: not shown to be one transaction",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "harness.create",
+      "family": "engines",
+      "governs": "engine account ← `environmentId`, source",
+      "faces": [
+        {
+          "when": "no endpoint, the engine's own, or this device's loopback",
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        },
+        {
+          "when": "config.baseUrl not loopback, or config.gcpProject",
+          "class": "widen-other",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          },
+          "step": "—"
+        }
+      ],
+      "step": "B",
+      "note": "`server.ts:2085`; sign-in that follows is its own secret command; lead decision 2: an endpoint elsewhere sends what tasks say to that server (`packages/harness/src/compatible-endpoint.ts:20-35`, `packages/harness-antigravity/src/config.ts:6-9`)",
+      "effect": {
+        "where": "database",
+        "why": "server.ts:2145: one store write; server.ts:2154 schedules the inspection in memory",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "harness.update",
+      "family": "engines",
+      "governs": "engine account ← `harnessInstanceId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "`server.ts:2146`",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2157: installs on the work location's Runner",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "harness.delete",
+      "family": "engines",
+      "governs": "engine account ← `harnessInstanceId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "ambient CLI: only its Mac's owner (`server.ts:1001-1014`) — stays ask",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2251: removes on the Runner after the write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "harness.model.configure",
+      "family": "engines",
+      "governs": "model limits ← `harnessInstanceId`,`nativeModelId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`admin-svc:413`; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "database",
+        "why": "administration-service.ts:455: one store write, then an in-memory schedule",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "harness.rename",
+      "family": "engines",
+      "governs": "engine account ← `harnessInstanceId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "database",
+        "why": "administration-service.ts:480: one store write, then an in-memory schedule",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "harness.enabled.set",
+      "family": "engines",
+      "governs": "engine account; `false` narrow / `true` widen-self",
+      "faces": [
+        {
+          "when": "enabled: false",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        },
+        {
+          "when": "enabled: true",
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "database",
+        "why": "administration-service.ts:480: one store write, then an in-memory schedule",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "harness.default.set",
+      "family": "engines",
+      "governs": "default account per engine",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "database",
+        "why": "administration-service.ts:513: one store write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "harness.authentication.begin",
+      "family": "engines",
+      "governs": "engine sign-in ← `harnessInstanceId`,`methodId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "collected on the person's screen",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2261: the engine's sign-in on the Runner",
+        "ongoing": true,
+        "lineageWhy": "a sign-in only the person completes (step none)"
+      }
+    },
+    {
+      "type": "harness.authentication.submit",
+      "family": "engines",
+      "governs": "the typed sign-in value",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2279: the engine's sign-in on the Runner",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "harness.authentication.cancel",
+      "family": "engines",
+      "governs": "a pending sign-in",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2293: the engine's sign-in on the Runner",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "harness.authentication.browse",
+      "family": "engines",
+      "governs": "sign-in opened as a tab",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "redirect",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2303: the engine's sign-in on the Runner",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "harness.authentication.logout",
+      "family": "engines",
+      "governs": "engine sign-in",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "ambient CLI rule stays (`server.ts:2313`)",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2319: the engine's sign-in on the Runner",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "machine.access.update",
+      "family": "devices",
+      "governs": "device switches ← `deviceId`|`runnerId`, `policy` vs stored; all down/equal narrow / any up approve",
+      "faces": [
+        {
+          "when": "no switch goes up against the stored policy",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        },
+        {
+          "when": "any switch goes up",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "`server.ts:2339`; store already computes `changed` (`packages/database/src/machine-store.ts:396-400`)",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2350: not shown to be one transaction; the policy reaches the device",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "machine.rename",
+      "family": "devices",
+      "governs": "device ← `machineId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`admin-svc:545`; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "database",
+        "why": "administration-service.ts:537: one store write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "machine.revoke",
+      "family": "devices",
+      "governs": "device ← `machineId` (deletes its profiles)",
+      "faces": [
+        {
+          "when": null,
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`admin-svc:532`; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "outside",
+        "why": "administration-service.ts:525: ends the device's connections",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "machine.access.session.stop",
+      "family": "devices",
+      "governs": "a device shell session ← `sessionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`admin-svc:577`; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "outside",
+        "why": "administration-service.ts:589: closes the session's sockets",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "machine.session.bind",
+      "family": "devices",
+      "governs": "binds this client's session to its device ← signed `proof`",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "device-bound proof (`server.ts:2329`)",
+      "effect": {
+        "where": "database",
+        "why": "server.ts:2342: one store write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "iphone.screen.attach",
+      "family": "devices",
+      "governs": "an iPhone screen driver ← `machineId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "needs the owner's signed-in session (`admin-svc:558-562`); ask until that is understood",
+      "effect": {
+        "where": "outside",
+        "why": "administration-service.ts:559: the device's driver",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "iphone.screen.detach",
+      "family": "devices",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "same refusal today; detach should not need the session",
+      "effect": {
+        "where": "outside",
+        "why": "administration-service.ts:559: the device's driver",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "computer.view.close",
+      "family": "devices",
+      "governs": "the person's live view",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "registry.ts:132: a live owner view",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "computer.view.renew",
+      "family": "devices",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "registry.ts:132: a live owner view",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "runner.enrollment.createLocal",
+      "family": "devices",
+      "governs": "a new device; returns a one-use token",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-other + secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "token is never returned to an agent",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2467: not shown to be one transaction",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "runner.enrollment.createPhone",
+      "family": "devices",
+      "governs": "a new phone; returns token and pairing",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-other + secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2489: not shown to be one transaction",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "runner.enrollment.retire",
+      "family": "devices",
+      "governs": "a pending enrollment ← `enrollmentId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "`server.ts:2495`",
+      "effect": {
+        "where": "database",
+        "why": "server.ts:2509: one store write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "integration.computer.setup.request",
+      "family": "device-apps",
+      "governs": "an app approval to set up ← `input.runnerId`, app",
+      "faces": [
+        {
+          "when": null,
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "today's `app_access_request` is this ask (`h/devices.ts:180`)",
+      "effect": {
+        "where": "outside",
+        "why": "device-routes.ts:246: the device's app approvals",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "integration.computer.setup.respond",
+      "family": "device-apps",
+      "governs": "a setup Request ← `setupRequestId`; allow approve (+secrets) / decline narrow",
+      "faces": [
+        {
+          "when": "decision: allow (points at that Request; may carry secrets)",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          },
+          "step": "—"
+        },
+        {
+          "when": "decision: decline",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "allow face points at the same Request; re-authenticates the session (`dev-routes:274-283`)",
+      "effect": {
+        "where": "outside",
+        "why": "device-routes.ts:266: the device's app approvals",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "integration.computer.setup.set",
+      "family": "device-apps",
+      "governs": "an approval's settings ← `input.connectionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "device-routes.ts:294: the device's app approvals",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "integration.computer.setup.cancel",
+      "family": "device-apps",
+      "governs": "a pending setup ← `requestId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "device-routes.ts:259: the device's app approvals",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "integration.computer.session.stop",
+      "family": "device-apps",
+      "governs": "a computer-use session ← `sessionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "the person's app ends a session from its live view (AD10: was the RPC `integration.computer.session.stop`); `computerUse.stop` unchanged",
+      "effect": {
+        "where": "outside",
+        "why": "device-routes.ts:253: computerUse.stop ends the session on its computer",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "integration.computer.policy.set",
+      "family": "device-apps",
+      "governs": "a device's computer-use approval policy (`appApproval:\"ask\"` only)",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "device-routes.ts:231: the device's app approvals",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "integration.computer.app.block",
+      "family": "device-apps",
+      "governs": "a Mac app approval ← `connectionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "store takes an identity already",
+      "effect": {
+        "where": "outside",
+        "why": "device-routes.ts:239: the device's app approvals",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "integration.grant.create",
+      "family": "device-apps",
+      "governs": "which installation may use a device-data account ← `input.connectionId`,`installationId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "today's `app_access_request {dataApp}`",
+      "effect": {
+        "where": "outside",
+        "why": "device-routes.ts:312: a device grant",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "integration.grant.revoke",
+      "family": "device-apps",
+      "governs": "same ← `grantId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`dev-admin:42` takes an identity; only the tool whitelist (`h/administration.ts:43-53`) blocks it",
+      "stepFor": {
+        "d": "B"
+      },
+      "effect": {
+        "where": "outside",
+        "why": "device-administration.ts:43: a device grant",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "integration.disconnect",
+      "family": "device-apps",
+      "governs": "a device-app connection ← `connectionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`dev-admin:50`",
+      "stepFor": {
+        "d": "B"
+      },
+      "effect": {
+        "where": "outside",
+        "why": "device-administration.ts:60: the device's connection",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "plugin.remove",
+      "family": "device-apps",
+      "governs": "a local server ← `pluginId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`dev-admin:39`; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "outside",
+        "why": "device-administration.ts:40: a local server's files and process",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "integration.server.secrets.set",
+      "family": "device-apps",
+      "governs": "a local server's secrets ← `serverId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "device-routes.ts:287: a local server's secrets",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "settings.plugin.enabled.set",
+      "family": "device-apps",
+      "governs": "a plugin target ← `target`; `false` narrow / `true` approve",
+      "faces": [
+        {
+          "when": "enabled: false",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "enabled: true",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "store takes an identity; handler does not pass it (`server.ts:1746`)",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:1750: not shown to be one transaction",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "personal.remoteAccess.request",
+      "family": "home",
+      "governs": "Remote access ← `intent`; on widen-other / off narrow",
+      "faces": [
+        {
+          "when": "intent: on",
+          "class": "widen-other",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          },
+          "step": "—"
+        },
+        {
+          "when": "intent: off",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "session-bound service (`server.ts:2393`)",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2404: Remote access, through the Opensteer account",
+        "ongoing": true,
+        "lineageWhy": "Remote access, the person's to turn on (widen-other, step none for connections)"
+      }
+    },
+    {
+      "type": "personal.remoteAccess.pairing.create",
+      "family": "home",
+      "governs": "a pairing code for another client",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-other + secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "code never returned to an agent",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2426: Remote access pairing",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "personal.accountLink.approve",
+      "family": "home",
+      "governs": "the Home's link to the Opensteer account",
+      "faces": [
+        {
+          "when": null,
+          "class": "identity",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2439: the Opensteer account service",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "personal.accountLink.complete",
+      "family": "home",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "identity",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2440: the Opensteer account service",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "personal.accountLink.resume",
+      "family": "home",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "identity",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2441: the Opensteer account service",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "personal.accountLink.unlink",
+      "family": "home",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "identity",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2435: the Opensteer account service",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "session.revoke",
+      "family": "home",
+      "governs": "another signed-in client ← `sessionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "`server.ts:2452`",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2464: signs out and closes the session's connections",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "connection.authorize",
+      "family": "connections",
+      "governs": "a pending consent ← its request id",
+      "faces": [
+        {
+          "when": "decision approve",
+          "class": "widen-other",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        },
+        {
+          "when": "decision deny",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "the ask points at the consent screen itself; review G2: denying a consent ends the ask (`apps/host/src/mcp/connections/connection-oauth.ts:374-408`)",
+      "effect": {
+        "where": "outside",
+        "why": "connection-routes.ts:404: not shown to be one transaction",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "connection.update",
+      "family": "connections",
+      "governs": "a connection, a chat included ← `connectionId`; grant ⊆ and mode ≤ narrow / otherwise widen-other",
+      "faces": [
+        {
+          "when": "grant ⊆ stored and mode ≤ stored (store's `narrowed`)",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "anything else",
+          "class": "widen-other",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          },
+          "step": "—"
+        }
+      ],
+      "step": "B",
+      "note": "on the branch a chat's grant and mode are edited here (`channel-handlers.ts:64-65` comment); (c)(d): own connection only — a chat is another principal, not_found",
+      "effect": {
+        "where": "outside",
+        "why": "connection-routes.ts:394: stops the lineage after a narrowing commits",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "connection.revoke",
+      "family": "connections",
+      "governs": "a connection, a chat included ← `connectionId` (a chat's Disconnect)",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "(c)(d): own connection only; a chat is another principal, not_found",
+      "effect": {
+        "where": "outside",
+        "why": "connection-routes.ts:384: stops the lineage after the commit",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "connection.remove",
+      "family": "connections",
+      "governs": "a revoked or expired entry in the list, a chat included",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "",
+      "effect": {
+        "where": "database",
+        "why": "connection-routes.ts:398: one store write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "connection.uncertain.acknowledge",
+      "family": "connections",
+      "governs": "\"Check its last action\"",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "the person's acknowledgement of evidence; an agent must not clear it",
+      "effect": {
+        "where": "database",
+        "why": "connection-routes.ts:401: one store write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "plugins.install",
+      "family": "plugins",
+      "governs": "a plugin ← `source`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`pauth:390`; (d): a new plugin is outside the grant, ask for more; X11: its code runs wherever the plugin is used, so a connection asks unless that lineage is its own; D0a: differs from the tool at f4d789f84: a grant holding nothing has no tool server today; a new plugin is outside the grant and the door asks for more (the table's (d))",
+      "effect": {
+        "where": "outside",
+        "why": "plugin-owner-api.ts:1046: the plugin engine's own work",
+        "ongoing": true
+      }
+    },
+    {
+      "type": "plugins.version.activate",
+      "family": "plugins",
+      "governs": "a plugin version ← `pluginId`,`versionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "(d): a new version is a changed target (architecture: \"A granted thing that changed is not granted\"); X11: what the plugin's schedules and workflows run from now on, so a connection asks unless that lineage is its own; G2: it names a plugin that exists, so a selected grant holding it reaches it as admission does (no longer a new thing)",
+      "effect": {
+        "where": "outside",
+        "why": "plugin-owner-api.ts:1079: the plugin engine's own work",
+        "ongoing": true
+      }
+    },
+    {
+      "type": "plugins.remove",
+      "family": "plugins",
+      "governs": "a plugin ← `pluginId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "outside",
+        "why": "plugin-owner-api.ts:1085: the plugin engine's own work",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "plugins.access.set",
+      "family": "plugins",
+      "governs": "agents' access to a plugin ← `pluginId`,`access`; lower narrow / higher approve",
+      "faces": [
+        {
+          "when": "access lower than stored",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "access higher than stored",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          },
+          "step": "—"
+        }
+      ],
+      "step": "B",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "plugin-owner-api.ts:1091: the plugin engine's own work",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "plugins.account.create",
+      "family": "plugins",
+      "governs": "an API-key account ← `pluginId`, fields",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "today's `plugin_account_request`",
+      "effect": {
+        "where": "outside",
+        "why": "plugin-owner-api.ts:1096: the plugin engine's own work",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "plugins.account.remove",
+      "family": "plugins",
+      "governs": "a plugin account",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "plugin-owner-api.ts:1121: the plugin engine's own work",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "plugins.account.link",
+      "family": "plugins",
+      "governs": "link an account to a plugin",
+      "faces": [
+        {
+          "when": null,
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "today's `plugin_account_request`",
+      "effect": {
+        "where": "outside",
+        "why": "plugin-owner-api.ts:1131: the plugin engine's own work",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "plugins.account.unlink",
+      "family": "plugins",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "plugin-owner-api.ts:1135: the plugin engine's own work",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "plugins.schedule.configure",
+      "family": "plugins",
+      "governs": "a plugin schedule ← `pluginId`,`scheduleId`; enable widen-self / disable narrow",
+      "faces": [
+        {
+          "when": "enabled: true with approvalMode browser",
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "enabled: false",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "approvalMode automatic, or enabled with approvalMode left out",
+          "class": "approve",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "runs only; a connection lineage is refused today (`pauth:331`) → B for (c)(d); review G2: automatic approval lifts the browser approval (`apps/host/src/plugins/plugin-owner-api.ts:1150-1159`); review D5: left out, the store's default may be automatic; the lead's ruling on D0a: your own agent at Full access makes it now, with today's default, and below Full access and every connection ask",
+      "stepFor": {
+        "c": "B",
+        "d": "B"
+      },
+      "effect": {
+        "where": "outside",
+        "why": "plugin-owner-api.ts:1150: the plugin engine's own work",
+        "ongoing": true
+      }
+    },
+    {
+      "type": "plugins.schedule.answer",
+      "family": "plugins",
+      "governs": "a scheduled approval",
+      "faces": [
+        {
+          "when": "action accept",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        },
+        {
+          "when": "action decline",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "the ask points at the approval itself; review G2: declining a scheduled run narrows (`packages/protocol/src/plugins.ts:607-612`)",
+      "effect": {
+        "where": "outside",
+        "why": "plugin-owner-api.ts:1160: the plugin engine's own work",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "plugins.workflow.start",
+      "family": "plugins",
+      "governs": "a plugin workflow run",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "(d): read-write grant; lineage B (`pauth:331`); X11: the workflow run goes on in the plugin engine as the person's, so a connection asks unless that lineage is its own",
+      "stepFor": {
+        "c": "B",
+        "d": "B"
+      },
+      "effect": {
+        "where": "outside",
+        "why": "plugin-owner-api.ts:1164: the plugin engine's own work",
+        "ongoing": true
+      }
+    },
+    {
+      "type": "plugins.workflow.stop",
+      "family": "plugins",
+      "governs": "same ← `runId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "lineage B",
+      "stepFor": {
+        "c": "B",
+        "d": "B"
+      },
+      "effect": {
+        "where": "outside",
+        "why": "plugin-owner-api.ts:1176: the plugin engine's own work",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "plugins.webhook.remove",
+      "family": "plugins",
+      "governs": "a webhook",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "lineage B",
+      "stepFor": {
+        "c": "B",
+        "d": "B"
+      },
+      "effect": {
+        "where": "outside",
+        "why": "plugin-owner-api.ts:1180: the plugin engine's own work",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "plugins.webhook.removal.confirm",
+      "family": "plugins",
+      "governs": "confirms manual cleanup at the provider",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "plugin-owner-api.ts:1181: the plugin engine's own work",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "plugins.webhook.setup.complete",
+      "family": "plugins",
+      "governs": "confirms manual setup at the provider",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "plugin-owner-api.ts:1188: the plugin engine's own work",
+        "ongoing": true
+      }
+    },
+    {
+      "type": "plugin.authorization.prepare",
+      "family": "plugins",
+      "governs": "plugin OAuth sign-in ← connection, method",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "redirect on the person's device",
+      "effect": {
+        "where": "outside",
+        "why": "plugin-oauth-routes.ts:57: the provider's sign-in",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "plugin.authorization.begin",
+      "family": "plugins",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "plugin-oauth-routes.ts:66: the provider's sign-in",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "plugin.authorization.return",
+      "family": "plugins",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "plugin-oauth-routes.ts:76: the provider's sign-in",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "plugin.authorization.cancel",
+      "family": "plugins",
+      "governs": "a pending sign-in",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "plugin-oauth-routes.ts:81: the provider's sign-in",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "plugin.oauthApp.save",
+      "family": "plugins",
+      "governs": "a custom OAuth client",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "plugin-oauth-routes.ts:83: the provider's app registration",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "plugin.oauthApp.remove",
+      "family": "plugins",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "plugin-oauth-routes.ts:94: the provider's app registration",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "channel.connection.create",
+      "family": "chats",
+      "governs": "a chat bridge (bot credentials)",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-other + secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "; X13: a chat account and its chats are other connections, so not found for every connected agent",
+      "effect": {
+        "where": "outside",
+        "why": "channel-handlers.ts:40: the messaging provider",
+        "ongoing": true,
+        "lineageWhy": "another connection, never a connected agent's (X13)"
+      }
+    },
+    {
+      "type": "channel.connection.credentials.replace",
+      "family": "chats",
+      "governs": "bridge credentials ← `connectionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "; X13: a chat account and its chats are other connections, so not found for every connected agent",
+      "effect": {
+        "where": "outside",
+        "why": "channel-handlers.ts:58: the messaging provider",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "channel.connection.computer.create",
+      "family": "chats",
+      "governs": "iMessage on a Mac ← `runnerId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-other",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "; X13: a chat account and its chats are other connections, so not found for every connected agent",
+      "effect": {
+        "where": "outside",
+        "why": "channel-handlers.ts:50: the messaging provider",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "channel.connection.status.set",
+      "family": "chats",
+      "governs": "a chat account ← `connectionId`; its chats wait while it is paused; `paused`/`revoked` narrow / `connected` widen-other",
+      "faces": [
+        {
+          "when": "status: paused or revoked",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "not_found",
+            "d": "not_found"
+          },
+          "step": "A"
+        },
+        {
+          "when": "status: connected",
+          "class": "widen-other",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "not_found",
+            "d": "not_found"
+          },
+          "step": "—"
+        }
+      ],
+      "step": "A",
+      "note": "branch `channel-handlers.ts:84-86`; agent path `administration-service.ts:314` still passes the identity; no tool builds it on the branch; chat states `packages/database/src/connection-liveness.ts:15-16,92-93`; X13: a chat account and its chats are other connections, so not found for every connected agent",
+      "effect": {
+        "where": "outside",
+        "why": "administration-service.ts:315: the messaging provider",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "channel.chat.create",
+      "family": "chats",
+      "governs": "a new chat connection (an AgentConnection) on a chat account ← `accountId`, `conversation` (null = its direct messages), `senders` (fixed for life), `accessMode`, `grant`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-other",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "branch `host-api.ts:1026-1044`, `channel-handlers.ts:66-77`; \"anyone\" senders only for a named channel, holding tasks and plugins only; X13: a chat account and its chats are other connections, so not found for every connected agent",
+      "effect": {
+        "where": "outside",
+        "why": "channel-handlers.ts:68: the messaging provider",
+        "ongoing": true,
+        "lineageWhy": "another connection, never a connected agent's (X13)"
+      }
+    },
+    {
+      "type": "channel.me.link",
+      "family": "chats",
+      "governs": "the person's own identity on a chat account ← `accountId`; returns a code the person sends from that account",
+      "faces": [
+        {
+          "when": null,
+          "class": "identity",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "branch `host-api.ts:1046-1054`, `channel-handlers.ts:80-83`; the code is never returned to an agent; X13: a chat account and its chats are other connections, so not found for every connected agent",
+      "effect": {
+        "where": "outside",
+        "why": "channel-handlers.ts:81: the messaging provider",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "browser.session.start",
+      "family": "browser",
+      "governs": "a page in a profile ← `input.profileId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "owner-only `browser.start` (`server.ts:2504`); `tab_open` is the actor path; X11: the session goes on for the task it was started for, so a connection asks unless that lineage is its own",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2535: the browser runtime",
+        "ongoing": true
+      }
+    },
+    {
+      "type": "browser.session.close",
+      "family": "browser",
+      "governs": "a browser session ← `sessionId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2628: the browser runtime",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "browser.profile.create",
+      "family": "browser",
+      "governs": "a new profile ← `input.name`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "browser-service.ts:1517: tells the Runners after the write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "browser.profile.rename",
+      "family": "browser",
+      "governs": "a profile ← `profileId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`admin-svc:613`; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "stepFor": {
+        "d": "B"
+      },
+      "effect": {
+        "where": "outside",
+        "why": "browser-service.ts:1528: tells the Runners after the write",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "browser.profile.delete",
+      "family": "browser",
+      "governs": "a profile and its sign-ins ← `profileId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "outside",
+        "why": "browser-service.ts:1550: stops the profile's sessions",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "browser.history.remove",
+      "family": "browser",
+      "governs": "one history entry ← `profileId`,`url`",
+      "faces": [
+        {
+          "when": null,
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2); destroy, as decided: it cannot be put back, so a connection removes it only at Full access and a selected grant asks",
+      "stepFor": {
+        "d": "B"
+      },
+      "effect": {
+        "where": "outside",
+        "why": "browser-service.ts:2019: the profile's browser",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "browser.history.clear",
+      "family": "browser",
+      "governs": "a profile's history ← `profileId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "outside",
+        "why": "browser-service.ts:2019: the profile's browser",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "browser.site.remove",
+      "family": "browser",
+      "governs": "a site's copied Chrome sign-in ← `site` (every profile)",
+      "faces": [
+        {
+          "when": null,
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "Home-wide, not a grant-nameable resource; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2); destroy, as decided: it cannot be put back, so a connection removes it only at Full access and a selected grant asks",
+      "effect": {
+        "where": "outside",
+        "why": "browser-source-registration.ts:113: the paired Chrome's copies",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "browser.source.pair",
+      "family": "browser",
+      "governs": "pairing the tab-sharing extension",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-other + secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "browser-source-registration.ts:101: pairs a Chrome",
+        "ongoing": true,
+        "lineageWhy": "a pairing only the person completes (step none)"
+      }
+    },
+    {
+      "type": "browser.source.rename",
+      "family": "browser",
+      "governs": "a paired Chrome ← `sourceId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "browser-source-registration.ts:103: not shown to be one transaction",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "browser.source.revoke",
+      "family": "browser",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "browser-source-registration.ts:110: ends the paired Chrome's connection",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "browser.session.sign-in",
+      "family": "browser",
+      "governs": "copy a site's Chrome sign-in into a session ← `sessionId`,`sourceId`,`url`",
+      "faces": [
+        {
+          "when": null,
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "today's `chrome_cookies_request`",
+      "effect": {
+        "where": "outside",
+        "why": "browser-source-registration.ts:119: a sign-in in the person's browser",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "browser.sign-in.respond",
+      "family": "browser",
+      "governs": "a sign-in Request ← `requestId`; allow approve / decline narrow",
+      "faces": [
+        {
+          "when": "decision: allow (points at that Request)",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          },
+          "step": "—"
+        },
+        {
+          "when": "decision: decline",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          },
+          "step": "B"
+        }
+      ],
+      "step": "B",
+      "note": "allow face points at the same Request",
+      "effect": {
+        "where": "outside",
+        "why": "browser-source-registration.ts:131: a sign-in in the person's browser",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "browser.password-sign-in.respond",
+      "family": "browser",
+      "governs": "decline a saved-password sign-in ← `requestId`",
+      "faces": [
+        {
+          "when": "decision approve or approve-card",
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          },
+          "step": "—"
+        },
+        {
+          "when": "decision decline",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "needs `context.session` (`bsr:150-154`); review G2: approve and approve-card release a saved login or a card (`apps/host/src/browser/password-sign-in-service.ts:815-927`); the allow face points at the same Request",
+      "effect": {
+        "where": "outside",
+        "why": "browser-source-registration.ts:149: a sign-in in the person's browser",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "browser.pool.restart",
+      "family": "browser",
+      "governs": "a Cloud Computer's pooled browser ← `runnerId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2638: the pooled browser",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "browser.pool.notice.seen",
+      "family": "browser",
+      "governs": "a notice shown to the person",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2631: not shown to be one transaction",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "tab.open",
+      "family": "tabs-apps",
+      "governs": "the shared tab list ← `target`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now",
+            "b:auto": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`TabActor` (`apps/host/src/tabs/ports.ts:45-49`); X12: today's tab_open refuses below the read-write ceiling (Full access or Auto), recorded in D0a, so the door asks there; approved C2 line: a connection opens tabs from Auto up and asks below it",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:596: the browser runtime",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "tab.close",
+      "family": "tabs-apps",
+      "governs": "tabs ← `tabIds`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "; approved C2 line: a connection closes tabs from Auto up and asks below it; your own agents as today's tab_close (D0a)",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:584: the browser runtime",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "tab.reopen",
+      "family": "tabs-apps",
+      "governs": "a closed tab ← `tabId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "takes `TabActor` but its agent admission is unverified (`tab-service.ts:792-800`)",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2572: the browser runtime",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "tab.activate",
+      "family": "tabs-apps",
+      "governs": "the person's selection",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "the agent equivalent is `show_to_person`",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2591: the browser runtime",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "tab.organize",
+      "family": "tabs-apps",
+      "governs": "tab order and groups",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2597: the browser runtime",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "tab.group.update",
+      "family": "tabs-apps",
+      "governs": "a tab group ← `groupId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2609: the browser runtime",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "tab.group.delete",
+      "family": "tabs-apps",
+      "governs": "a tab group ← `groupId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "`deleteGroup(ownerId, …)` (`tab-service.ts:913`)",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2620: the browser runtime",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "tab.group.close",
+      "family": "tabs-apps",
+      "governs": "a tab group ← `groupId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "`closeGroup(actor, …)` (`tab-service.ts:1208`): closes the tabs the group has, so it answers as `tab.close` of them (added with the Electron smokes branch's command)",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:2606: the browser runtime",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "app.rename",
+      "family": "tabs-apps",
+      "governs": "a published app ← `appId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "preference",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "B",
+      "note": "`rename(ownerId, …)` (`app-service.ts:401`)",
+      "effect": {
+        "where": "outside",
+        "why": "app-routes.ts:59: not shown to be one transaction",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "app.start",
+      "family": "tabs-apps",
+      "governs": "an app server ← `appId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`AppActor` (`app-service.ts:51-53`); X11: an app server runs on, in no connection's Disconnect set, so a connection asks unless that lineage is its own",
+      "effect": {
+        "where": "outside",
+        "why": "app-routes.ts:61: the app's process",
+        "ongoing": true
+      }
+    },
+    {
+      "type": "app.stop",
+      "family": "tabs-apps",
+      "governs": "same",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "outside",
+        "why": "app-routes.ts:63: the app's process",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "app.delete",
+      "family": "tabs-apps",
+      "governs": "an app ← `appId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "effect": {
+        "where": "outside",
+        "why": "app-routes.ts:65: the app's process and files",
+        "ongoing": false
+      }
+    },
+    {
+      "type": "trigger.create",
+      "family": "automations",
+      "governs": "an automation anchored to a task ← `input`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "`TriggerService.manage` (`trigger-service.ts:272`); review D1: Full access, as today's tool (`packages/agent-tools/src/tools/triggers.ts:47`); D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2); X11: the automation takes its anchor task's lineage (trigger-store.ts:2437), so a connection asks unless that lineage is its own",
+      "effect": {
+        "where": "database",
+        "why": "trigger-service.ts:77: one store write; the notices after it are in memory",
+        "ongoing": true
+      }
+    },
+    {
+      "type": "trigger.update",
+      "family": "automations",
+      "governs": "an automation ← `triggerId`",
+      "faces": [
+        {
+          "when": "a name only",
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "`program` or `source` given",
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "another lineage's program stays nf/refused (`h/triggers.ts:58-61`); a new program needs Full access, as today's tool (`packages/agent-tools/src/tools/triggers.ts:65`); D0a: today's tool refuses any change below Full access, a name included (opensteer_automation_update for a Supervised Run: access_denied); X11: a new program or source runs on in the automation's lineage, so a connection outside that lineage asks",
+      "effect": {
+        "where": "database",
+        "why": "trigger-service.ts:165: one store write; the notices after it are in memory",
+        "ongoing": true
+      }
+    },
+    {
+      "type": "trigger.status.set",
+      "family": "automations",
+      "governs": "an automation ← `triggerId`,`status`; pause/archive narrow / resume widen-self",
+      "faces": [
+        {
+          "when": "status: paused",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "status: archived",
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "status: active",
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "T2: pause, stopping a running firing and remove (archive) narrow: now below Full access for anyone with authority over the task; X11: resuming starts the automation again in its own lineage, so a connection asks unless that lineage is its own",
+      "effect": {
+        "where": "database",
+        "why": "trigger-service.ts:183: one store write; the notices after it are in memory",
+        "ongoing": true
+      }
+    },
+    {
+      "type": "trigger.run",
+      "family": "automations",
+      "governs": "run now ← `triggerId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "full access today; X11: the occurrence is the automation's lineage's (`trigger-store.ts:1879`), so a connection outside that lineage asks",
+      "effect": {
+        "where": "database",
+        "why": "trigger-service.ts:220: an occurrence row, run from the committed row",
+        "ongoing": true
+      }
+    },
+    {
+      "type": "trigger.cancel",
+      "family": "automations",
+      "governs": "pending occurrences ← `triggerId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "narrow",
+          "answers": {
+            "a": "now",
+            "b": "now",
+            "c": "now",
+            "d": "now"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "",
+      "effect": {
+        "where": "database",
+        "why": "trigger-service.ts:267: one store write",
+        "ongoing": false
+      }
+    }
+  ],
+  "inputs": {
+    "machine.access.update policy.browser": "stored face: narrow when no switch rises against the stored policy, else approve (store computes `changed`, packages/database/src/machine-store.ts:399-403); omitted: keeps the stored value (machine-store.ts:360-363)",
+    "machine.access.update policy.apps": "stored face: narrow when no switch rises against the stored policy, else approve (store computes `changed`, packages/database/src/machine-store.ts:399-403); omitted: keeps the stored value (machine-store.ts:360-363)",
+    "machine.access.update policy.reach": "stored face: narrow when no switch rises against the stored policy, else approve (store computes `changed`, packages/database/src/machine-store.ts:399-403)",
+    "machine.access.update policy.commands": "stored face: narrow when no switch rises against the stored policy, else approve (store computes `changed`, packages/database/src/machine-store.ts:399-403)",
+    "machine.access.update policy.forwarding": "stored face: narrow when no switch rises against the stored policy, else approve (store computes `changed`, packages/database/src/machine-store.ts:399-403)",
+    "machine.access.update policy.shares.[].mode": "stored face: narrow when no switch rises against the stored policy, else approve (store computes `changed`, packages/database/src/machine-store.ts:399-403)",
+    "machine.access.update requestReview": "same class; omitted: no device Request is settled with it (machine-store.ts:364-380)",
+    "tab.open target.kind": "same class (widen-self): which surface opens; what it governs follows the target (command-table.ts tab.open)",
+    "tab.open target.viewport": "same class; omitted: the browser's default size",
+    "tab.open target.guest": "same class: a Guest page has no profile, outside any selected grant (resource-access.ts commandReach browser-profile/tabs)",
+    "tab.open target.computerId": "same class; omitted: the hosting computer (core tabs.ts DeviceTabTargetSchema)",
+    "tab.open typed": "same class; omitted: not marked as typed by the person (schema only)",
+    "tab.reopen tabId": "same class; omitted: the most recently closed tab (tab-service.ts reopen)",
+    "tab.organize group.color": "same class",
+    "tab.organize beforeTabId": "same class; omitted: moved to the end (schema only)",
+    "tab.group.update name": "same class; omitted: unchanged (schema only)",
+    "tab.group.update color": "same class; omitted: unchanged (schema only)",
+    "tab.group.update collapsed": "same class; omitted: unchanged (schema only)",
+    "settings.plugin.enabled.set target.kind": "same class: which kind of thing is turned on or off",
+    "settings.plugin.enabled.set enabled": "face: false narrow, true approve",
+    "plugins.install source.kind": "same class (widen-self): a new plugin, catalog or by address; lead decision D10; folder: a folder inside Agent home, your own agents only, as today's tool reads it (the lead's ruling); under a connection's grant the kind is not in the schema",
+    "plugins.install source.url": "same class (widen-self): the plugin's server receives only what an agent sends it in a call (lead decision D10)",
+    "plugins.access.set access": "face: off narrow; otherwise the store decides against the stored access",
+    "plugins.account.create label": "same class (secret); omitted: the provider's name (schema only)",
+    "plugins.account.create link": "same class (secret); omitted: the account is created unlinked (plugin-owner-api.ts account create)",
+    "plugins.account.create link.scope": "same class (secret); omitted: the account is created unlinked (plugin-owner-api.ts account create)",
+    "plugins.account.create link.consent.credential": "same class (secret); omitted: the account is created unlinked (plugin-owner-api.ts account create)",
+    "plugins.account.link scope": "same class",
+    "plugins.account.link consent.credential": "same class",
+    "plugins.account.unlink scope": "same class",
+    "plugins.schedule.configure enabled": "face: true widen-self (only with approvalMode browser), false narrow",
+    "plugins.schedule.configure approvalMode": "face: automatic approve; omitted while enabled: approve, since the store's default on the person's path is automatic (apps/host/src/plugins/engine-runtime.ts:480-484, plugin-owner-api.ts:1150-1159)",
+    "plugins.schedule.answer action": "face: accept approve (points at the approval), decline narrow",
+    "plugins.workflow.start input": "same class",
+    "plugins.webhook.setup.complete state": "same class",
+    "plugins.webhook.setup.complete secret": "secret path, the person's to type; omitted: same class, the engine's saved signing secret is used (packages/plugin-engine/sdk/src/implementation/webhooks.ts:1273)",
+    "iphone.screen.attach target.kind": "same class (asks: needs the person's session)",
+    "thread.create accessMode": "ownWork: a mode above the caller's asks; omitted: the parent's or the caller's mode (apps/host/src/threads/thread-service.ts:94-120)",
+    "thread.create modelSelection.nativeModelId": "same class; omitted: the engine's default model (schema only)",
+    "thread.create parentThreadId": "same class; omitted: a new top-level task (thread-service.ts create)",
+    "thread.create generateTitle": "same class; omitted: the title as given (schema only)",
+    "thread.icon.set icon": "same class",
+    "thread.sendMessage content.[].auto": "same class; omitted: as the content says (schema only)",
+    "thread.sendMessage content.[].documentId": "same class; omitted: as the content says (schema only)",
+    "thread.sendMessage content.[].sizeBytes": "same class; omitted: as the content says (schema only)",
+    "thread.sendMessage delivery": "same class: steer or queue its own task's input; omitted: queue (host-api.ts thread.sendMessage default)",
+    "thread.sendMessage compaction": "same class; omitted: the engine's default (schema only)",
+    "thread.sendMessage freshContext": "same class; omitted: the task's context is kept (schema only)",
+    "thread.sendMessage origin": "same class; omitted: no client origin recorded (server.ts thread.sendMessage)",
+    "thread.sendMessage origin.app": "same class; omitted: no client origin recorded (server.ts thread.sendMessage)",
+    "thread.sendMessage origin.device": "same class; omitted: no client origin recorded (server.ts thread.sendMessage)",
+    "thread.sendMessage origin.timeZone": "same class; omitted: no client origin recorded (server.ts thread.sendMessage)",
+    "thread.sendMessage quotedMessageId": "same class; omitted: nothing quoted",
+    "thread.input.lease.take takeOver": "person-view: not an agent's",
+    "thread.input.lease.release leaseId": "person-view: not an agent's",
+    "thread.input.edit content.[].auto": "same class; omitted: as the content says (schema only)",
+    "thread.input.edit content.[].documentId": "same class; omitted: as the content says (schema only)",
+    "thread.input.edit content.[].sizeBytes": "same class; omitted: as the content says (schema only)",
+    "thread.input.edit leaseId": "same class; omitted: the edit without a lease, refused to agents today (thread-service.ts:339-347)",
+    "thread.done.set done": "face: true narrow, false widen-self",
+    "settings.idleCompaction.set policy.mode": "same class",
+    "viewer.quietTasks.update quietTaskDays": "same class",
+    "thread.execution.update continuation": "same class; omitted: no continuation change (schema only)",
+    "thread.execution.update modelSelection.nativeModelId": "same class; omitted: the engine's default model",
+    "thread.access.update accessMode": "stored face: at or below the stored mode narrow, above approve",
+    "execution.preferences.remember accessMode": "face: omitted or approval-required preference; any other mode the store decides: above the stored default approve (packages/database/src/harness-store.ts:1119-1127)",
+    "execution.preferences.remember selection": "same class; omitted: the default engine unchanged (administration-service.ts:360-403)",
+    "execution.preferences.remember selection.modelSelection.nativeModelId": "same class; omitted: the default engine unchanged (administration-service.ts:360-403)",
+    "request.respond response.kind": "stored face: read from the Request (resource-access.ts answerFace): harness.input widen-self, a decline narrow, otherwise approve",
+    "request.respond response.text": "same class; omitted: no free text",
+    "request.respond response.value": "same class; omitted: a decline-only external answer (server.ts request.respond)",
+    "request.respond expectedRevision": "same class; omitted: refused as 'Review the current Request' (server.ts:1957-1963)",
+    "harness.create config": "face: a baseUrl not on this device's loopback, or a gcpProject, widen-other; omitted: the engine's own endpoint, widen-self (lead decision 2)",
+    "harness.create stateKind": "same class",
+    "harness.model.configure settings.maxOutputTokens": "same class; omitted: the model's own limit",
+    "harness.enabled.set enabled": "face: false narrow, true widen-self",
+    "harness.authentication.begin connectionSlot": "same class (secret); omitted: the account's own slot",
+    "harness.authentication.logout connectionSlot": "same class; omitted: the account's own slot",
+    "personal.remoteAccess.request intent.mode": "face: configure with off narrows, any other mode widen-other",
+    "personal.remoteAccess.request intent.privateOrigin": "same class as its mode (widen-other unless off)",
+    "personal.remoteAccess.request intent.action": "face: unlink narrow; configure by mode; rotate and recover widen-other",
+    "personal.accountLink.approve challenge.completionFormat": "same class (identity): the person's own link",
+    "personal.accountLink.approve challenge.account.issuer": "same class (identity): the person's own link",
+    "personal.accountLink.approve challenge.authorityEnvelope.document.canonicalOrigin": "same class (identity): the person's own link",
+    "personal.accountLink.approve challenge.authorityEnvelope.document.hostKey.algorithm": "same class (identity): the person's own link",
+    "personal.accountLink.approve challenge.authorityEnvelope.document.deploymentShape.kind": "same class (identity): the person's own link",
+    "personal.accountLink.approve challenge.authorityEnvelope.publicKey.algorithm": "same class (identity): the person's own link",
+    "personal.accountLink.complete completion.sealedCompletion.version": "same class (identity)",
+    "personal.accountLink.complete completion.schemaVersion": "same class (identity)",
+    "connection.authorize decision.kind": "face: approve widen-other (points at the consent), deny narrow",
+    "connection.authorize decision.accessMode": "same class as the approve face (widen-other); the person's screen",
+    "connection.authorize decision.verificationSnapshot": "same class as the approve face (widen-other); the person's screen; omitted: no verification shown (schema only)",
+    "connection.authorize decision.grant": "same class as the approve face (widen-other); the person's screen; omitted: the grant the agent asked for (connection-oauth.ts:374-408)",
+    "connection.authorize decision.grant.scope": "same class as the approve face (widen-other); the person's screen",
+    "connection.authorize decision.grant.tasks": "same class as the approve face (widen-other); the person's screen",
+    "connection.authorize decision.grant.resources.[].kind": "same class as the approve face (widen-other); the person's screen",
+    "connection.authorize decision.grant.resources.[].app.kind": "same class as the approve face (widen-other); the person's screen",
+    "connection.authorize decision.grant.resources.[].app.definitionId": "same class as the approve face (widen-other); the person's screen",
+    "connection.authorize decision.grant.resources.[].target.kind": "same class as the approve face (widen-other); the person's screen",
+    "connection.authorize decision.grant.resources.[].access": "same class as the approve face (widen-other); the person's screen",
+    "connection.update label": "stored face; omitted: unchanged",
+    "connection.update accessMode": "stored face: at or below the stored mode with a grant no larger narrow, else widen-other; omitted: unchanged",
+    "connection.update grant": "stored face: a grant inside the stored one narrow, else widen-other (store's `narrowed`, connection-routes.ts:382-389); omitted: unchanged",
+    "connection.update grant.scope": "stored face: a grant inside the stored one narrow, else widen-other (store's `narrowed`, connection-routes.ts:382-389)",
+    "connection.update grant.tasks": "stored face: a grant inside the stored one narrow, else widen-other (store's `narrowed`, connection-routes.ts:382-389)",
+    "connection.update grant.resources.[].kind": "stored face: a grant inside the stored one narrow, else widen-other (store's `narrowed`, connection-routes.ts:382-389)",
+    "connection.update grant.resources.[].app.kind": "stored face: a grant inside the stored one narrow, else widen-other (store's `narrowed`, connection-routes.ts:382-389)",
+    "connection.update grant.resources.[].app.definitionId": "stored face: a grant inside the stored one narrow, else widen-other (store's `narrowed`, connection-routes.ts:382-389)",
+    "connection.update grant.resources.[].target.kind": "stored face: a grant inside the stored one narrow, else widen-other (store's `narrowed`, connection-routes.ts:382-389)",
+    "connection.update grant.resources.[].access": "stored face: a grant inside the stored one narrow, else widen-other (store's `narrowed`, connection-routes.ts:382-389)",
+    "runner.enrollment.createLocal allowedModules.[]": "same class (widen-other + secret)",
+    "runner.enrollment.createLocal access": "same class (widen-other + secret): a new device asks whatever it may reach; omitted: the device's defaults",
+    "runner.enrollment.createLocal access.browser": "same class (widen-other + secret): a new device asks whatever it may reach",
+    "runner.enrollment.createLocal access.apps": "same class (widen-other + secret): a new device asks whatever it may reach",
+    "runner.enrollment.createLocal access.files": "same class (widen-other + secret): a new device asks whatever it may reach",
+    "runner.enrollment.createLocal preparedIdentity": "same class (widen-other + secret): a new device asks whatever it may reach; omitted: the device makes its own identity",
+    "runner.enrollment.createPhone profile": "same class; omitted: an Android phone",
+    "runner.enrollment.createPhone access": "same class (widen-other + secret): a new device asks whatever it may reach; omitted: the device's defaults",
+    "runner.enrollment.createPhone access.browser": "same class (widen-other + secret): a new device asks whatever it may reach",
+    "runner.enrollment.createPhone access.apps": "same class (widen-other + secret): a new device asks whatever it may reach",
+    "runner.enrollment.createPhone access.files": "same class (widen-other + secret): a new device asks whatever it may reach",
+    "runner.enrollment.createPhone preparedIdentity": "same class (widen-other + secret): a new device asks whatever it may reach; omitted: the device makes its own identity",
+    "plugin.authorization.prepare input.scope": "same class",
+    "plugin.authorization.begin input.consent.credential": "same class (secret): the person's sign-in on their device",
+    "plugin.authorization.begin input.client": "same class (secret): the person's sign-in on their device",
+    "plugin.authorization.begin input.client.automatic": "same class (secret): the person's sign-in on their device",
+    "plugin.authorization.begin input.client.clientSecret": "same class (secret): the person's sign-in on their device",
+    "plugin.authorization.begin input.client.save": "same class (secret): the person's sign-in on their device",
+    "plugin.authorization.begin input.surface": "same class (secret): the person's sign-in on their device",
+    "plugin.authorization.begin input.finish": "same class (secret): the person's sign-in on their device",
+    "plugin.authorization.begin input.appReturnPort": "same class (secret): the person's sign-in on their device",
+    "plugin.oauthApp.save input.issuer": "same class (secret)",
+    "plugin.oauthApp.save input.clientSecret": "secret path, the person's to type; omitted: a public client",
+    "integration.computer.setup.set input.kind": "same class",
+    "integration.computer.setup.set input.access": "same class",
+    "integration.computer.setup.request input.kind": "same class (approve)",
+    "integration.computer.setup.request input.access": "same class (approve)",
+    "integration.computer.setup.request input.appApproval": "same class (approve): automatic app approval is asked of the person like any setup",
+    "integration.computer.policy.set input.appApproval": "same class (narrow): only `ask` can be set",
+    "integration.computer.setup.respond decision": "face: allow approve (points at the setup), deny narrow",
+    "integration.computer.setup.respond secrets": "secret path, the person's to type; omitted: the server needs none",
+    "integration.grant.create input.access": "same class (approve)",
+    "integration.grant.create input.isDefault": "same class (approve); omitted: not the default",
+    "channel.connection.create routingMode": "same class (widen-other + secret)",
+    "channel.chat.create senders": "same class (widen-other): who may speak is fixed when the chat is made",
+    "channel.chat.create accessMode": "same class (widen-other): what the chat's work may reach",
+    "channel.chat.create grant.scope": "same class (widen-other): what the chat's work may reach",
+    "channel.chat.create grant.tasks": "same class (widen-other): what the chat's work may reach",
+    "channel.chat.create grant.resources.[].kind": "same class (widen-other): what the chat's work may reach",
+    "channel.chat.create grant.resources.[].app.kind": "same class (widen-other): what the chat's work may reach",
+    "channel.chat.create grant.resources.[].app.definitionId": "same class (widen-other): what the chat's work may reach",
+    "channel.chat.create grant.resources.[].target.kind": "same class (widen-other): what the chat's work may reach",
+    "channel.chat.create grant.resources.[].access": "same class (widen-other): what the chat's work may reach",
+    "channel.connection.status.set status": "face: paused or revoked narrow, connected widen-other",
+    "browser.session.start input.threadId": "same class; omitted: not for a task, not the caller's own work (resource-access.ts browser-profile)",
+    "browser.session.start input.initialUrl": "same class; omitted: a blank page",
+    "browser.session.start input.placement": "same class; omitted: the Home places it (schema only)",
+    "browser.session.start input.placement.kind": "same class; omitted: the Home places it (schema only)",
+    "browser.session.start input.reuseExisting": "same class; omitted: a new session",
+    "browser.session.start input.viewport": "same class; omitted: the default size",
+    "browser.session.start input.fresh": "same class: a fresh session has no profile, outside any selected grant",
+    "browser.profile.create input.homeRunnerId": "same class; omitted: the hosting computer (store.ts createBrowserProfile)",
+    "browser.session.sign-in surfaceId": "same class (approve); omitted: the session's own surface",
+    "browser.sign-in.respond decision.decision": "face: allow approve (points at the Request), decline narrow",
+    "browser.sign-in.respond expectedRevision": "same class; omitted: refused as 'Review the current Request' (browser-source-registration.ts:132-137)",
+    "browser.password-sign-in.respond expectedRevision": "same class; omitted: refused as 'Review the current Request' (browser-source-registration.ts)",
+    "browser.password-sign-in.respond decision.kind": "face: approve and approve-card approve (point at the Request), decline narrow",
+    "browser.password-sign-in.respond decision.remember": "same class as approve: remembering is the person's choice on the approve face",
+    "browser.password-sign-in.respond decision.permissionVersion": "same class",
+    "browser.history.remove url": "same class",
+    "trigger.create input.script.interpreter": "same class; omitted: default Node.js interpreter",
+    "trigger.create input.source.kind": "same class (widen-self, Full access): a webhook's address and secret go to the agent that made it, as today (lead decision D1)",
+    "trigger.create input.source.schedule.kind": "same class",
+    "trigger.create input.source.schedule.payload": "same class; omitted: no payload",
+    "trigger.update input.name": "same class (Full access for any change, D0a); omitted: unchanged",
+    "trigger.update input.script": "face 1: present, a connection outside the automation's lineage asks (X11); same class (Full access for any change, D0a); omitted: unchanged",
+    "trigger.update input.script.interpreter": "face 1: present, a connection outside the automation's lineage asks (X11); face: present needs Full access (agent-tools triggers.ts:65); omitted: unchanged",
+    "trigger.update input.source": "face 1: present, a connection outside the automation's lineage asks (X11); same class; omitted: unchanged (the store refuses a change of source kind, trigger-store.ts:595)",
+    "trigger.update input.source.kind": "face 1: present, a connection outside the automation's lineage asks (X11); same class; omitted: unchanged (the store refuses a change of source kind, trigger-store.ts:595)",
+    "trigger.update input.source.schedule.kind": "face 1: present, a connection outside the automation's lineage asks (X11); same class; omitted: unchanged (the store refuses a change of source kind, trigger-store.ts:595)",
+    "trigger.update input.source.schedule.payload": "face 1: present, a connection outside the automation's lineage asks (X11); same class; omitted: unchanged (the store refuses a change of source kind, trigger-store.ts:595)",
+    "trigger.status.set status": "face: paused narrow, archived narrow with Full access, active widen-self",
+    "trigger.run payload": "same class; omitted: no payload",
+    "trigger.cancel occurrenceId": "same class; omitted: every pending occurrence (agent-tools triggers.ts:86)",
+    "personal.accountLink.unlink step": "same class: identity whatever the step, the Mac app's two unlink steps (lead's AD10 ruling)",
+    "plugins.install source.name": "same class; omitted: the folder's own plugin name",
+    "plugins.install source.pluginId": "same class (widen-self): a new version of that plugin from your own agent's folder, as today's tool deploys one"
+  }
+}

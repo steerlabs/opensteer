@@ -3,6 +3,7 @@ import { pageSiteLabel } from "./surfaces.js";
 import {
   imageGenerationToolName,
   isIntegrationGatewayTool,
+  runTerminationUnprovenCode,
   type AnsweredQuestion,
   type AssignmentSummary,
   type WaitingRequest,
@@ -173,6 +174,17 @@ function isAnsweredQuestion(entry: TranscriptEntry): entry is AnsweredQuestionEn
   return entry.kind === "request" && entry.question !== undefined;
 }
 
+const emptyGroupingAssignments: Readonly<Record<string, AssignmentSummary>> = {};
+
+interface CachedGrouping {
+  readonly inputQueuePaused: boolean;
+  readonly startHold: string | null;
+  readonly assignments: Readonly<Record<string, AssignmentSummary>>;
+  readonly groups: TranscriptGroup[];
+}
+
+const groupedTranscriptCache = new WeakMap<readonly TranscriptEntry[], CachedGrouping[]>();
+
 /**
  * The transcript in reading order. Entries keep their first-arrival order; a
  * turn gathers only what is adjacent and belongs to the same Run, so nothing
@@ -183,12 +195,56 @@ export function groupTranscriptEntries(
   {
     inputQueuePaused = false,
     startHold = null,
-    assignments = {},
+    assignments = emptyGroupingAssignments,
   }: {
     readonly inputQueuePaused?: boolean;
     readonly startHold?: string | null;
     readonly assignments?: Readonly<Record<string, AssignmentSummary>>;
   } = {},
+): TranscriptGroup[] {
+  const cachedList = groupedTranscriptCache.get(entries);
+  if (cachedList) {
+    for (const cached of cachedList) {
+      if (
+        cached.inputQueuePaused === inputQueuePaused &&
+        cached.startHold === startHold &&
+        cached.assignments === assignments
+      ) {
+        return cached.groups;
+      }
+    }
+  }
+  const result = computeGroupTranscriptEntries(entries, {
+    inputQueuePaused,
+    startHold,
+    assignments,
+  });
+  const record: CachedGrouping = {
+    inputQueuePaused,
+    startHold,
+    assignments,
+    groups: result,
+  };
+  if (cachedList) {
+    if (cachedList.length >= 4) cachedList.shift();
+    cachedList.push(record);
+  } else {
+    groupedTranscriptCache.set(entries, [record]);
+  }
+  return result;
+}
+
+function computeGroupTranscriptEntries(
+  entries: readonly TranscriptEntry[],
+  {
+    inputQueuePaused,
+    startHold,
+    assignments,
+  }: {
+    readonly inputQueuePaused: boolean;
+    readonly startHold: string | null;
+    readonly assignments: Readonly<Record<string, AssignmentSummary>>;
+  },
 ): TranscriptGroup[] {
   type Slot =
     | { readonly group: TranscriptGroup; readonly kind: "group" }
@@ -2161,6 +2217,12 @@ const opensteerSteps = new Map<string, OpensteerStep>([
 
   ["opensteer_ai_account_list", said(["Looking up AI accounts", "Looked up AI accounts"], "list")],
   [
+    "opensteer_commands",
+    said(["Looking up what it can change", "Looked up what it can change"], "list"),
+  ],
+  ["opensteer_command", said(["Changing Opensteer", "Changed Opensteer"], "pencil")],
+  ["opensteer_state", said(["Reading Opensteer's settings", "Read Opensteer's settings"], "list")],
+  [
     "opensteer_ai_account_update",
     saidByAction(
       {
@@ -2390,10 +2452,32 @@ const toolKinds = new Map<string, StepKind>(
           "pi/bash",
           "pi/powershell",
           "opencode/bash",
+          "antigravity/run_command",
+          "acp/execute",
         ],
       ],
-      ["read", ["claude/Read", "cursor/read", "pi/read", "opencode/read"]],
-      ["search", ["claude/Grep", "cursor/grep", "pi/grep", "opencode/grep"]],
+      [
+        "read",
+        [
+          "claude/Read",
+          "cursor/read",
+          "pi/read",
+          "opencode/read",
+          "antigravity/view_file",
+          "acp/read",
+        ],
+      ],
+      [
+        "search",
+        [
+          "claude/Grep",
+          "cursor/grep",
+          "pi/grep",
+          "opencode/grep",
+          "antigravity/grep_search",
+          "acp/search",
+        ],
+      ],
       [
         "list",
         [
@@ -2405,6 +2489,8 @@ const toolKinds = new Map<string, StepKind>(
           "pi/ls",
           "opencode/glob",
           "opencode/list",
+          "antigravity/list_dir",
+          "antigravity/find_by_name",
         ],
       ],
       [
@@ -2423,13 +2509,26 @@ const toolKinds = new Map<string, StepKind>(
           "opencode/write",
           "opencode/patch",
           "opencode/multiedit",
+          "antigravity/write_to_file",
+          "antigravity/replace_file_content",
+          "antigravity/multi_replace_file_content",
+          "acp/edit",
         ],
       ],
       [
         "web-search",
-        ["codex/web_search", "claude/WebSearch", "cursor/web_search", "opencode/websearch"],
+        [
+          "codex/web_search",
+          "claude/WebSearch",
+          "cursor/web_search",
+          "opencode/websearch",
+          "antigravity/search_web",
+        ],
       ],
-      ["web-page", ["claude/WebFetch", "opencode/webfetch"]],
+      [
+        "web-page",
+        ["claude/WebFetch", "opencode/webfetch", "antigravity/read_url_content", "acp/fetch"],
+      ],
       ["plan", ["codex.dynamic/update_plan", "claude/TodoWrite", "opencode/todowrite"]],
       ["delegate", ["claude/Task", "opencode/task"]],
     ] as const
@@ -2798,6 +2897,11 @@ function computerUseHeadline(tool: ToolEntry): string | null {
     : readComputerUseResultHeadline(tool.output.text);
 }
 
+const parsedToolArgumentsCache = new WeakMap<
+  ToolEntry,
+  { readonly streamText: string; readonly value: unknown }
+>();
+
 /** Claude streams arguments as partial JSON; recover them once complete. */
 export function effectiveArguments(tool: ToolEntry): unknown {
   const args = tool.arguments;
@@ -2808,16 +2912,21 @@ export function effectiveArguments(tool: ToolEntry): unknown {
     Object.keys(args as Record<string, unknown>).length === 0;
   if (args !== undefined && args !== null && !isEmptyObject) return args;
   if (tool.state === "running" || !tool.streamText) return args;
+  const cached = parsedToolArgumentsCache.get(tool);
+  if (cached && cached.streamText === tool.streamText) return cached.value;
+  let value: unknown = args;
   try {
-    return JSON.parse(tool.streamText);
+    value = JSON.parse(tool.streamText);
   } catch {
-    return args;
+    value = args;
   }
+  parsedToolArgumentsCache.set(tool, { streamText: tool.streamText, value });
+  return value;
 }
 
 function commandFrom(args: unknown): string | null {
   if (!isRecord(args)) return null;
-  const command = args.command ?? args.cmd;
+  const command = args.command ?? args.cmd ?? args.command_line;
   if (typeof command === "string" && command.trim()) return displayCommand(command);
   if (Array.isArray(command) && command.length > 0) {
     const parts = command.map(String);
@@ -2877,7 +2986,14 @@ function withoutWorkingDirectory(command: string): string {
 
 function pathsFrom(args: unknown): string[] {
   if (!isRecord(args)) return [];
-  for (const key of ["file_path", "path", "filePath", "notebook_path", "target_file"]) {
+  for (const key of [
+    "file_path",
+    "path",
+    "filePath",
+    "notebook_path",
+    "target_file",
+    "absolute_path",
+  ]) {
     const value = args[key];
     if (typeof value === "string" && value) return [value];
   }
@@ -3097,6 +3213,50 @@ function clipText(value: string): string {
   return value.length <= max ? value : `…${value.slice(value.length - max)}`;
 }
 
+export { runTerminationUnprovenCode };
+
+export function isRunTerminationUnproven(run: Pick<RunEntry, "error" | "status">): boolean {
+  return run.status === "failed" && run.error?.code === runTerminationUnprovenCode;
+}
+
+export function isRunEngineRetired(run: Pick<RunEntry, "interruptedCause" | "status">): boolean {
+  return run.status === "interrupted" && run.interruptedCause === "engine-retired";
+}
+
+export function runInterruptedTitle(
+  run: Pick<RunEntry, "interruptedCause" | "status">,
+  options?: { readonly conversation?: boolean | undefined; readonly mobile?: boolean | undefined },
+): string {
+  if (isRunEngineRetired(run)) return "Run cut short";
+  if (options?.conversation === true) return "Stopped.";
+  return options?.mobile === true ? "This run stopped." : "Run stopped.";
+}
+
+export function runInterruptedMessage(
+  run: Pick<RunEntry, "interruptedCause" | "status">,
+): string | null {
+  if (isRunEngineRetired(run)) {
+    return "This Run was cut short: Opensteer had to end its shared engine to make sure another task had stopped; it will start again when work next needs it. What it was doing at that moment may not have finished; send a message to continue.";
+  }
+  return null;
+}
+
+export function runOutcomeTitle(
+  run: Pick<RunEntry, "error" | "status">,
+  options?: { readonly conversation?: boolean | undefined; readonly mobile?: boolean | undefined },
+): string {
+  if (isRunTerminationUnproven(run)) return "Couldn’t confirm this stopped";
+  if (options?.conversation === true) return "Opensteer couldn’t finish";
+  return options?.mobile === true ? "This run failed" : "Run failed";
+}
+
+export function runOutcomeMessage(run: Pick<RunEntry, "error" | "status">): string | null {
+  if (isRunTerminationUnproven(run)) {
+    return "Stopping could not be confirmed. Something from this Run may still be running on that device.";
+  }
+  return run.error?.ownerMessage ?? run.error?.message ?? null;
+}
+
 interface ActivityFeedPresentation {
   detail: string;
   detailKind: "code" | "prose";
@@ -3107,11 +3267,20 @@ interface ActivityFeedPresentation {
 
 export function activityFeedPresentation(entry: ActivityFeedEntry): ActivityFeedPresentation {
   if (entry.kind === "run") {
+    if (entry.status === "interrupted") {
+      return {
+        detail: runInterruptedMessage(entry) ?? "",
+        detailKind: "prose",
+        icon: isRunEngineRetired(entry) ? "alert-circle" : "stop",
+        label: runInterruptedTitle(entry),
+        marker: "stopped",
+      };
+    }
     return {
-      detail: entry.error?.message ?? "",
+      detail: runOutcomeMessage(entry) ?? "",
       detailKind: "prose",
       icon: "alert-circle",
-      label: "Run failed",
+      label: runOutcomeTitle(entry),
       marker: "failed",
     };
   }

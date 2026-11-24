@@ -147,7 +147,7 @@ final class CancellationTests: XCTestCase {
       dataPlane: DataPlane(contracts: [:], grants: [:], providers: [:], grantReader: reader)
     )
     defer { runtime.stop() }
-    runtime.receive(connection: pair.connection, frame: Self.hello(1, protocolVersion: 10))
+    runtime.receive(connection: pair.connection, frame: Self.hello(1, protocolVersion: 11))
     _ = try await Self.readFrameAsync(pair.client)
 
     runtime.receive(
@@ -201,7 +201,7 @@ final class CancellationTests: XCTestCase {
     await lane.waitUntilHeld()
     defer { Task { await lane.open() } }
 
-    runtime.receive(connection: pair.connection, frame: Self.hello(1, protocolVersion: 10))
+    runtime.receive(connection: pair.connection, frame: Self.hello(1, protocolVersion: 11))
     _ = try await Self.readFrameAsync(pair.client)
 
     func invoke(_ id: Int, _ app: String) -> Data {
@@ -440,7 +440,7 @@ final class CancellationTests: XCTestCase {
     return Pair(connection: connection, client: descriptors[1])
   }
 
-  private static func hello(_ id: Int, protocolVersion: Int = 10) -> Data {
+  private static func hello(_ id: Int, protocolVersion: Int = 11) -> Data {
     Data(
       #"{"id":\#(id),"method":"hello","params":{"clientVersion":"test","protocolVersion":\#(protocolVersion)}}"#
         .utf8)

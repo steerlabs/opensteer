@@ -200,10 +200,10 @@ describeStore("person-asked Thread listing", (it) => {
               createdBy: f.userId,
               idempotencyKey: "watch",
               name: "Watch",
-              program: {
-                toolContractVersion: 5,
-                language: "javascript",
-                source: "export default async () => null",
+              script: {
+                interpreter: null,
+
+                text: "console.log('ok')",
               },
               source: {
                 kind: "watch",

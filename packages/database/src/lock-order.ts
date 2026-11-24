@@ -210,6 +210,8 @@ export const databaseLockOrder = [
   // Assignment projections precede Commands, Inputs, Messages and their derived state.
   "delegations",
   "commands",
+  // Written after the admission holds its connection, before the command acts (G4).
+  "command_attempts",
   "trigger_occurrence_attempts",
   "thread_inputs",
   "messages",
@@ -253,7 +255,6 @@ export const databaseLockOrder = [
   "account_directory_projections",
   "personal_remote_pairing_codes",
   "personal_remote_session_grant_uses",
-  "watch_control_requests",
   // Only paths already holding the Run write its nodes, attempts and grants, last.
   "execution_nodes",
   "run_attempts",

@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { lstat, readdir, readFile, stat } from "node:fs/promises";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { homeServicePackages, nodeTrustEnvironment } from "./opensteer-node-trust.mjs";
 
 export const immutableReleaseRecordPath = "/usr/local/share/opensteer/release.json";
 export const immutablePackageManifestPath = "/app/package.json";
@@ -11,13 +12,25 @@ export async function main() {
   const environment = { ...process.env };
 
   rejectRuntimeInjectionEnvironment(environment);
-  await verifyReleaseIdentity(environment);
+  const service = await verifyReleaseIdentity(environment);
   await expandSecretFiles(environment);
   await configureBrowserRuntime(environment);
 
   const [command, ...arguments_] = process.argv.slice(2);
   if (!command) fail("Opensteer container entrypoint requires a command.");
-  await runChild(command, arguments_, environment);
+  await runChild(command, arguments_, serviceEnvironment(service, environment));
+}
+
+/**
+ * A Home service trusts Node's certificate authorities and its container's
+ * (`opensteer-node-trust.mjs`); what its operator names, such as
+ * `NODE_EXTRA_CA_CERTS` in a Compose layer, still adds to them. Every other
+ * image starts with the trust it had.
+ */
+export function serviceEnvironment(service, environment) {
+  return homeServicePackages.includes(service)
+    ? nodeTrustEnvironment(environment, { environmentInputs: "keep", settings: environment })
+    : environment;
 }
 
 export function rejectRuntimeInjectionEnvironment(target) {
@@ -93,6 +106,7 @@ export async function verifyReleaseIdentity(
     target[name] = value;
   }
   target.OPENSTEER_RELEASE_RECORD = immutableReleaseRecordPath;
+  return typeof packageManifest.name === "string" ? packageManifest.name : null;
 }
 
 async function readRegularText(filePath) {

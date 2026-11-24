@@ -54,6 +54,7 @@ export class FakeIphoneNative implements IphoneNativeTransport {
   };
   probeReady = true;
   control = false;
+  displayDemandActive = true;
   foreground: { appId: string; label: string } | null = { appId: "example.app", label: "Example" };
   readonly listeners = new Set<(event: Extract<IphoneNativeMessage, { kind: "event" }>) => void>();
   readonly lost = new Set<() => void>();

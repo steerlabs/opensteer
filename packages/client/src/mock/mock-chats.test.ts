@@ -1,7 +1,9 @@
+import { agentEndedForPersonMessage } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { mutationIdempotencyKey } from "../host/index.js";
 import { defaultThreadPlacement } from "../host/thread-placement.js";
 import { MockHostClient } from "./mock-host-client.js";
+import { mockAgentWorkThreads } from "./mock-agent-work.js";
 import { mockConnectedAgents } from "./mock-connected-agents.js";
 
 /** The chats preview agrees with itself and follows the Home's rules for chats. */
@@ -231,6 +233,38 @@ describe("the chats preview", () => {
     }
   });
 
+  it("marks a disconnected connected agent's own task as endedOrigin: 'agent' and refuses new messages with the Home's sentence", async () => {
+    const client = new MockHostClient({
+      latencyMs: 0,
+      connections: mockConnectedAgents("seeded").connections,
+    });
+    try {
+      client.mockAgentWork();
+      const taskId = mockAgentWorkThreads.working;
+      const task = client.getSnapshot().threads.find(({ id }) => id === taskId);
+      expect(task?.endedOrigin ?? null).toBeNull();
+      await client.dispatch({
+        type: "connection.revoke",
+        connectionId: task!.externalWork!.connection.id,
+        idempotencyKey: mutationIdempotencyKey("revoke-agent"),
+      });
+      expect(client.getSnapshot().threads.find(({ id }) => id === taskId)?.endedOrigin).toBe(
+        "agent",
+      );
+      await expect(
+        client.dispatch({
+          type: "thread.sendMessage",
+          threadId: taskId,
+          content: [{ type: "text", text: "Should be refused" }],
+          delivery: "queue",
+          idempotencyKey: mutationIdempotencyKey("send-ended-agent"),
+        }),
+      ).rejects.toMatchObject({ code: "forbidden", message: agentEndedForPersonMessage });
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("cleans outside names at every MockHostClient entrance matching the Home", async () => {
     const dirty = "Work\u202E\n👩\u200D💻 می\u200Cخواهم";
     const cleaned = "Work 👩\u200D💻 می\u200Cخواهم";
@@ -335,10 +369,9 @@ describe("the chats preview", () => {
         input: {
           anchorThreadId: created.id,
           name: dirty,
-          program: {
-            language: "javascript",
-            source: "export default async () => null",
-            toolContractVersion: 5,
+          script: {
+            interpreter: null,
+            text: "console.log('ok')",
           },
           source: {
             kind: "schedule",

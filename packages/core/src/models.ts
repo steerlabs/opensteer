@@ -164,6 +164,8 @@ export const RunnerCapabilitySchema = z.enum([
   "environment-list-v1",
   // Can parse and execute v3 Trigger and Watch programs; independent of tool discovery.
   "trigger-program-v5",
+  // Runs wrapperless automation scripts with the shipped opensteer CLI and raw webhook body files.
+  "automation-script-v1",
   "native-place-input-v1",
   "execution-plane-v2",
   "filesystem",
@@ -819,6 +821,14 @@ export const ActiveRunStatusSchema = z.enum(nonTerminalRunStatuses);
 export const runTerminationUnprovenCode = "execution_termination_unproven";
 export const harnessUsageLimitFailureCode = "harness_usage_limit";
 
+/** Why a Run was interrupted without a person asking to stop it. */
+export const RunInterruptedCauseSchema = z.enum(["lease-lost", "engine-retired"]);
+export type RunInterruptedCause = z.infer<typeof RunInterruptedCauseSchema>;
+
+/** Why a queued Run is being held back from starting on its device. */
+export const RunStartHoldReasonSchema = z.enum(["previous-stop-unconfirmed"]);
+export type RunStartHoldReason = z.infer<typeof RunStartHoldReasonSchema>;
+
 /** The longest a Run's failure message may be, in UTF-16 units. */
 export const runFailureMessageMaxLength = 20_000;
 
@@ -893,6 +903,7 @@ const runShape = {
   failure: RunFailureSchema.nullable(),
   harnessInstanceId: HarnessInstanceIdSchema,
   id: RunIdSchema,
+  interruptedCause: RunInterruptedCauseSchema.nullable().optional(),
   modelSelection: ModelSelectionSchema,
   replyTarget: ReplyTargetSchema.nullable(),
   providerSessionId: ProviderSessionIdSchema.nullable(),
@@ -901,6 +912,7 @@ const runShape = {
   runOrdinal: z.number().int().nonnegative(),
   startedAt: IsoDateTimeSchema.nullable(),
   status: RunStatusSchema,
+  stopConfirmedAt: IsoDateTimeSchema.nullable().optional(),
   threadId: ThreadIdSchema,
   seedInputId: MessageIdSchema,
   usage: RunUsageSchema.optional(),

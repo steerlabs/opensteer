@@ -1,7 +1,6 @@
 import { hostExposurePolicy, normalizePersonName } from "@opensteer/core";
 import {
   allowsPlaintextRunnerTransport,
-  BackgroundModelChoiceSchema,
   DeploymentIdSchema,
   DeploymentKindSchema,
   DeploymentShapeSchema,
@@ -12,7 +11,6 @@ import {
   opensteerHostNativeOAuthClients,
   RunnerIdSchema,
   RuntimeModeSchema,
-  type BackgroundModelChoice,
   type DeploymentId,
   type DeploymentShape,
   type EnvironmentId,
@@ -173,7 +171,6 @@ const configuredSecret = (maximumLength: number) =>
 const bindAddress = z.union([z.ipv4(), z.ipv6(), z.literal("localhost")]);
 const HostEnvironmentSchema = z.object({
   OPENSTEER_AUTH_SECRET: configuredSecret(8_192),
-  OPENSTEER_AGENT_REVIEW_MODEL: optionalPath,
   OPENSTEER_BIND_ADDRESS: bindAddress.default("127.0.0.1"),
   OPENSTEER_BROWSER_ATTACH_KEY_ID: z
     .string()
@@ -261,7 +258,6 @@ export interface HostConfig {
     readonly browserExtensionDirectory?: string;
   };
   readonly authSecret: string;
-  readonly agentReviewModel?: BackgroundModelChoice;
   readonly bindAddress: string;
   readonly canonicalOrigin: URL;
   /**
@@ -609,13 +605,6 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
           : join(homedir(), "Opensteer")),
     },
     authSecret: parsed.OPENSTEER_AUTH_SECRET,
-    ...(parsed.OPENSTEER_AGENT_REVIEW_MODEL
-      ? {
-          agentReviewModel: BackgroundModelChoiceSchema.parse(
-            JSON.parse(parsed.OPENSTEER_AGENT_REVIEW_MODEL),
-          ),
-        }
-      : {}),
     bindAddress: parsed.OPENSTEER_BIND_ADDRESS,
     canonicalOrigin,
     browserRuntime,

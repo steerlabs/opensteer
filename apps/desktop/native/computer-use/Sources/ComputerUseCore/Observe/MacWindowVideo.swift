@@ -1613,6 +1613,11 @@ final class MacWindowVideoRegistry {
     attachments[connection.id]?.producer.refresh()
   }
 
+  /// Media sockets attached to streams owned by `control`.
+  func attachedMediaConnectionIDs(for control: IPCConnection) -> [Int] {
+    attachments.compactMap { id, entry in entry.control === control ? id : nil }
+  }
+
   private func require(_ id: String, _ connection: IPCConnection) throws -> Entry {
     guard let entry = streams[id], entry.control === connection, !entry.producer.ended else {
       throw HelperError(.noSession, "That video producer has ended.")

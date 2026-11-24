@@ -8,6 +8,7 @@ import {
 import { createStoreFixture } from "@opensteer/database/test-support/store";
 import { describe, expect, it } from "vitest";
 import type { ConnectionCaller } from "../mcp/agent-caller.js";
+import { agentToolFailure } from "../mcp/agent-tool-failure.js";
 import { lastService, serveMcp } from "../mcp/connection-caller.test-support.js";
 import { resolveBridgeCaller } from "./bridge-caller.js";
 
@@ -176,15 +177,22 @@ describe("a bridge asks your own agents to work through the task tools' own entr
       ).rejects.toMatchObject(refused);
       // Neither left a task behind.
       expect(await bridgeTasks()).toEqual([]);
-      // A selected bridge cannot send into the person's own task: it reads as not there.
-      await expect(
-        f.call(
+      // A selected bridge cannot send into the person's own task: it reads as not there, as the
+      // tools' one refusal under a grant says it (AD11).
+      const outside = await f
+        .call(
           owner,
           "opensteer_task_send",
           { taskId: f.fixture.thread.id, message: "Hi", delivery: "queue" },
           "k3",
-        ),
-      ).rejects.toMatchObject({ code: "not_found" });
+        )
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+      expect(agentToolFailure(outside, "write", undefined, true)).toMatchObject({
+        code: "not_found",
+      });
     } finally {
       await f.storeFixture.close();
     }

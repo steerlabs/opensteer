@@ -521,6 +521,32 @@ describe("PersonalDeploymentSupervisor", () => {
     await existing.supervisor.stop();
   });
 
+  it("starts the Host, its Runner and messaging trusting this computer's certificates and none the app's environment names", async () => {
+    const fixture = supervisorFixture(null, {
+      resolve: async () => ({ HOME: "/Users/test", PATH: "/usr/bin", ...untrustedTrustInputs }),
+    });
+    await fixture.supervisor.start();
+
+    for (const component of ["host", "runner", "messaging"] as const) {
+      const spec = fixture.processes.specs.findLast(
+        (candidate) => candidate.component === component,
+      )!;
+      expect(spec.environment.NODE_USE_SYSTEM_CA, component).toBe("1");
+      for (const name of Object.keys(untrustedTrustInputs).filter(
+        (name) => name !== "NODE_USE_SYSTEM_CA",
+      )) {
+        expect(spec.environment, component).not.toHaveProperty(name);
+        expect(spec.secretEnvironment ?? {}, component).not.toHaveProperty(name);
+      }
+    }
+    // PostgreSQL is not Node; it is started as before.
+    for (const spec of fixture.processes.specs.filter(
+      ({ component }) => component === "postgresql",
+    ))
+      expect(spec.environment).not.toHaveProperty("NODE_USE_SYSTEM_CA");
+    await fixture.supervisor.stop();
+  });
+
   it("starts native dependencies in order, keeps one owner Environment, and selects only when ready", async () => {
     const fixture = supervisorFixture(null);
     await expect(fixture.supervisor.start()).resolves.toMatchObject({
@@ -2032,6 +2058,16 @@ type SupervisorFixture = ReturnType<typeof supervisorFixture>;
 function childrenOf(fixture: SupervisorFixture, component: PersonalProcessSpec["component"]) {
   return fixture.processes.children.filter((child) => child.component === component);
 }
+
+/** Every environment name that would change what a Home service trusts. */
+const untrustedTrustInputs = {
+  NODE_EXTRA_CA_CERTS: "/tmp/inspection-root.pem",
+  NODE_OPTIONS: "--use-openssl-ca",
+  NODE_USE_SYSTEM_CA: "0",
+  OPENSSL_CONF: "/tmp/openssl.cnf",
+  SSL_CERT_DIR: "/tmp/certs",
+  SSL_CERT_FILE: "/tmp/cert.pem",
+} as const;
 
 function specsOf(fixture: SupervisorFixture, component: "host" | "runner") {
   return fixture.processes.specs.filter((spec) => spec.component === component);

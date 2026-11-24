@@ -199,6 +199,12 @@ describe("desktop-lifetime Passwords authority", () => {
     }
   });
 
+  it("does not emit login.needs(null) on an immediate remembered authorization", async () => {
+    const f = fixture();
+    await f.authorize();
+    expect(f.events.filter((event) => event.type === "login.needs")).toEqual([]);
+  });
+
   it("authorizes without a browser or helper and seals only to the final receiver", async () => {
     const f = fixture();
     await f.authorize();

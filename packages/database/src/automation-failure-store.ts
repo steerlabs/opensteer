@@ -6,14 +6,22 @@ import type {
   TriggerWatchActivationId,
   UserId,
 } from "@opensteer/core";
-import { TriggerProgramEventSchema, TriggerSourceSchema } from "@opensteer/triggers";
+import { TriggerScriptEventSchema, TriggerSourceSchema } from "@opensteer/triggers";
 import { sql, type Kysely, type Transaction } from "kysely";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import type { DatabaseSchema } from "./schema.js";
 import { nearestListedThread } from "./thread-lineage.js";
 
 export type AutomationFailureReason =
-  "final-occurrence-failed" | "final-occurrence-interrupted" | "paused";
+  | "final-occurrence-failed"
+  | "final-occurrence-interrupted"
+  | "paused"
+  | "started-failing"
+  | "started-unknown"
+  | "overran-schedule"
+  | "watch-crash-loop"
+  | "watch-halted"
+  | "outcome-unknown";
 
 /**
  * Records, in the transaction that ended it, that an automation stopped
@@ -58,7 +66,7 @@ export function isFinalScheduledOccurrence(input: {
   readonly revisionSource: unknown;
 }): boolean {
   const source = TriggerSourceSchema.safeParse(input.revisionSource);
-  const event = TriggerProgramEventSchema.safeParse(input.event);
+  const event = TriggerScriptEventSchema.safeParse(input.event);
   return (
     source.success &&
     source.data.kind === "schedule" &&

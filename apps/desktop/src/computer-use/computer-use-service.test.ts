@@ -37,7 +37,10 @@ import { createMacosAppProvider } from "../../../runner/src/computer-apps/macos-
 import { createHelperAppProvider } from "../../../runner/src/computer-apps/helper-app-provider.js";
 import { ComputerAppModuleHandler } from "../../../runner/src/computer-apps/module-handler.js";
 
-import { ComputerUseService } from "./computer-use-service.js";
+import { EventEmitter } from "node:events";
+import type { App, PowerMonitor } from "electron";
+import { DesktopShutdown } from "../app/desktop-shutdown.js";
+import { ComputerUseService, computerUseShutdownStep } from "./computer-use-service.js";
 import { computerUseFrameReader, encodeComputerUseFrame } from "./helper-frames.js";
 import type { ComputerUseHelperProcess } from "./helper-install.js";
 import {
@@ -653,6 +656,108 @@ describe.skipIf(!onMac)("the helper connection's lifetime", () => {
   });
 });
 
+describe.skipIf(!onMac)("quitting this app", () => {
+  it("asks the helper it used to exit, after the bridges close, and then closes", async () => {
+    const harness = await lifetimeHarness({});
+    await harness.observe();
+
+    await harness.computerUse.stop();
+
+    expect(harness.helper.methods.at(-1)).toBe("helper.exit");
+    expect(harness.exitOutcomes()).toEqual(["exiting"]);
+    expect(harness.helper.connections()).toBe(0);
+    expect(harness.helper.commands).not.toContain("/usr/bin/open");
+  });
+
+  it("reconnects to ask a helper whose idle connection it let go, never launching one", async () => {
+    const harness = await lifetimeHarness({ idleDisconnectMs: 30 });
+    await harness.probe();
+    await vi.waitFor(() => expect(harness.helper.connections()).toBe(0), { timeout: 2_000 });
+    const hellos = harness.helper.methods.filter((method) => method === "hello").length;
+
+    await harness.computerUse.stop();
+
+    expect(harness.helper.methods.filter((method) => method === "hello")).toHaveLength(hellos + 1);
+    expect(harness.helper.methods.at(-1)).toBe("helper.exit");
+    expect(harness.exitOutcomes()).toEqual(["exiting"]);
+    expect(harness.helper.commands).not.toContain("/usr/bin/open");
+  });
+
+  it("launches nothing to stop a helper that already quit on its own", async () => {
+    const harness = await lifetimeHarness({ idleDisconnectMs: 30 });
+    await harness.probe();
+    await vi.waitFor(() => expect(harness.helper.connections()).toBe(0), { timeout: 2_000 });
+    await harness.helper.offline();
+    const methods = harness.helper.methods.length;
+
+    await harness.computerUse.stop();
+
+    expect(harness.helper.methods).toHaveLength(methods);
+    expect(harness.helper.commands).not.toContain("/usr/bin/open");
+    expect(harness.exitOutcomes()).toEqual(["not-running"]);
+  });
+
+  it("says when the helper stays because another Opensteer app still uses it", async () => {
+    const harness = await lifetimeHarness({});
+    await harness.probe();
+    harness.helper.state.exit = "stays";
+
+    await harness.computerUse.stop();
+
+    expect(harness.exitOutcomes()).toEqual(["staying"]);
+  });
+
+  it("never waits on a helper that does not answer past its limit", async () => {
+    const harness = await lifetimeHarness({ exitTimeoutMs: 100 });
+    await harness.observe();
+    harness.helper.state.exit = "never answers";
+
+    const started = performance.now();
+    await harness.computerUse.stop();
+    const elapsed = performance.now() - started;
+
+    // Its own frame wait would be the deadline plus 1.5 s of grace.
+    expect(elapsed).toBeLessThan(1_000);
+    expect(harness.exitOutcomes()).toHaveLength(1);
+    expect(["unanswered", "failed"]).toContain(harness.exitOutcomes()[0]);
+    expect(harness.helper.connections()).toBe(0);
+  });
+
+  it.each(["quit-completely", "restart-to-update"] as const)(
+    "is asked by the desktop's shutdown on %s",
+    async (reason) => {
+      const harness = await lifetimeHarness({});
+      await harness.observe();
+      const application = Object.assign(new EventEmitter(), { exit: vi.fn() });
+      const signals = new Map(
+        (["SIGINT", "SIGTERM"] as const).map((name) => [name, process.listeners(name)]),
+      );
+      cleanups.push(async () => {
+        for (const [name, existing] of signals)
+          for (const listener of process.listeners(name))
+            if (!existing.includes(listener)) process.removeListener(name, listener);
+      });
+      const shutdown = new DesktopShutdown({
+        application: application as unknown as Pick<App, "on" | "exit">,
+        power: new EventEmitter() as unknown as Pick<PowerMonitor, "on">,
+        log: () => undefined,
+      });
+      shutdown.add(computerUseShutdownStep(harness.computerUse));
+      const install = vi.fn();
+
+      if (reason === "quit-completely") shutdown.request(reason);
+      else void shutdown.requestUpdate(install).catch(() => undefined);
+
+      await vi.waitFor(
+        () => expect(reason === "quit-completely" ? application.exit : install).toHaveBeenCalled(),
+        { timeout: 5_000 },
+      );
+      expect(harness.helper.methods).toContain("helper.exit");
+      expect(harness.exitOutcomes()).toEqual(["exiting"]);
+    },
+  );
+});
+
 describe.skipIf(!onMac)("one deadline from the bridge frame to the helper frame", () => {
   it("forwards only what is left after a slow installation", async () => {
     const harness = await lifetimeHarness({ running: false });
@@ -719,6 +824,7 @@ function gate(): { readonly release: () => void; readonly waiting: Promise<void>
  * socket, for what the helper connection does between requests.
  */
 async function lifetimeHarness(options: {
+  readonly exitTimeoutMs?: number;
   readonly idleDisconnectMs?: number;
   readonly ownerViewVersion?: number;
   readonly installed?: boolean;
@@ -738,14 +844,17 @@ async function lifetimeHarness(options: {
   // Desktop main's clock, still unless a test moves it, so every deadline and
   // every `timeoutMs` a helper frame carries is exact.
   const clock = { at: 1_000 };
+  const log = vi.fn((_event: string, _fields?: Readonly<Record<string, string>>) => undefined);
   const computerUse = new ComputerUseService({
     appBundleId: "com.opensteer.desktop",
     appVersion: "0.0.0",
     bundledHelperPath: () => helper.bundledAppPath,
     homeDirectory: home,
+    ...(options.exitTimeoutMs === undefined ? {} : { exitTimeoutMs: options.exitTimeoutMs }),
     ...(options.idleDisconnectMs === undefined
       ? {}
       : { idleDisconnectMs: options.idleDisconnectMs }),
+    log,
     now: () => clock.at,
     platform: "darwin",
     run: helper.run,
@@ -795,6 +904,11 @@ async function lifetimeHarness(options: {
     events,
     close: async () => await call("session.close", { sessionId }),
     helper,
+    /** What the helper's exit request came to, as desktop main logged it. */
+    exitOutcomes: () =>
+      log.mock.calls
+        .filter(([event]) => event === "desktop.computer-use.helper-exit")
+        .map(([, fields]) => fields?.outcome),
     sessionId,
     observe: async () => {
       await call("session.open", { sessionId, threadTitle: null });
@@ -891,6 +1005,11 @@ async function fakeHelper(
     openGate: null as Promise<void> | null,
     /** The helper refuses `session.close`. */
     closeFails: false,
+    /**
+     * How the helper takes `helper.exit`: it answers and quits, it stays for
+     * another app, or it never answers.
+     */
+    exit: "exits" as "exits" | "stays" | "never answers",
     installFails: false,
     /** While set, reading a bundle's version — the start of installing — waits for it. */
     installGate: null as Promise<void> | null,
@@ -943,7 +1062,7 @@ async function fakeHelper(
           ...(options.ownerViewVersion === undefined
             ? {}
             : { ownerViewVersion: options.ownerViewVersion }),
-          minProtocolVersion: 10,
+          minProtocolVersion: 11,
           routes: { windowLocation: true, windowGroups: true },
           permissions: state.permissions,
           protocolVersion: computerUseHelperProtocolVersion,
@@ -1022,6 +1141,12 @@ async function fakeHelper(
             socket,
             "error" in outcome ? { error: outcome.error, id } : { id, result: outcome },
           );
+          continue;
+        }
+        if (method === "helper.exit") {
+          if (state.exit === "never answers") continue;
+          writeToClient(socket, { id, result: { exiting: state.exit === "exits" } });
+          if (state.exit === "exits") void stop();
           continue;
         }
         if (method === "session.close" && state.closeFails) {

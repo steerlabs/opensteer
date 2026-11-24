@@ -17,7 +17,6 @@ import {
   type ComputerUseObservation,
   type WindowInfo,
 } from "../packages/protocol/src/index.js";
-import { nativeUserHarnessRuntimeBoundary } from "../packages/harness/src/index.js";
 import { parseAgentExecutionConfig } from "../apps/runner/src/app-config.js";
 import { createHarnessRegistry } from "../apps/runner/src/harness/harness-registry.js";
 import { prepareIntegrationsModule } from "../apps/runner/src/computer-apps/prepare.js";
@@ -99,7 +98,6 @@ describe("real-engine computer use", () => {
             runtimeCacheDirectory: path.join(tmpdir(), "opensteer-test-runtime-cache"),
           },
         ),
-        harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
         integrations: () => prepared,
       });
       evidence.catalog = stack.catalog;

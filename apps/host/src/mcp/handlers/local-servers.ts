@@ -1,5 +1,5 @@
 import { agentGrantAccess } from "@opensteer/core";
-import { callerLineage } from "../agent-caller.js";
+import { callerLineage, callerThread } from "../agent-caller.js";
 import type { LocalServerRegistry } from "../../local-servers/local-server-registry.js";
 import { requireRun, operationId } from "../operations.js";
 import type { AgentToolHandlers } from "./types.js";
@@ -7,10 +7,10 @@ import type { AgentToolHandlers } from "./types.js";
 export function localServerToolHandlers(registry: LocalServerRegistry): Partial<AgentToolHandlers> {
   return {
     local_server_add: async (c) => {
-      const run = requireRun(c.caller);
+      if (c.caller.kind === "connection") requireRun(c.caller);
       const { operationKey: _operationKey, ...registration } = c.input;
       return registry.add(
-        { userId: run.userId, threadId: run.thread.id },
+        { userId: c.caller.userId, threadId: callerThread(c.caller).id },
         registration,
         operationId(c.caller, c.operationKey, "local_server_add"),
         c.checkLive,
@@ -31,9 +31,9 @@ export function localServerToolHandlers(registry: LocalServerRegistry): Partial<
       };
     },
     local_server_remove: async (c) => {
-      const run = requireRun(c.caller);
+      if (c.caller.kind === "connection") requireRun(c.caller);
       return registry.remove(
-        { userId: run.userId },
+        { userId: c.caller.userId },
         c.input.name,
         operationId(c.caller, c.operationKey, "local_server_remove"),
         c.checkLive,

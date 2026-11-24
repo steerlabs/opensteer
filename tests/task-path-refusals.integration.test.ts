@@ -286,10 +286,9 @@ integration("the task path's refusals on a real Home", () => {
       async ({ name, args }) => {
         const { outside, absent } = await outsideAndMissing(run, name, args);
         expect(outside).toBe(JSON.stringify(absent));
-        // A Run is told access_denied where the connected agent itself is told not_found. Not a
-        // leak (outside and missing are the same bytes, above); the code is made one for every
-        // caller under a connection's grant on the agent-control branch.
-        expect(absent).toEqual(unavailable("access_denied"));
+        // A Run under a connection's grant is told exactly what the connected agent is told
+        // (AD11): one refusal, from agentToolFailure.
+        expect(absent).toEqual(unavailable("not_found"));
       },
     );
   });

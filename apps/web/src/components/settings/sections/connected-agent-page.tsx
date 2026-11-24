@@ -23,6 +23,7 @@ import {
 } from "@opensteer/client/host";
 import {
   useChromeTabGrantCatalog,
+  useConnectedAgentActivity,
   useConnectedAgentLive,
   useConnectedAgents,
   useLiveTasks,
@@ -62,6 +63,7 @@ export function ConnectedAgentPage({
   // What this page sends is what the chat parity script covers.
   const chatHost = chatScreenHost(client);
   const live = useConnectedAgentLive(client, connectionId);
+  const activity = useConnectedAgentActivity(client, connectionId, live?.threadId ?? null);
   const liveTasks = useLiveTasks(client);
   const chromeTabs = useChromeTabGrantCatalog(client, true);
   const { snapshot } = shell;
@@ -122,6 +124,7 @@ export function ConnectedAgentPage({
     revoked: agents.revoked,
     grantsAvailable: agents.grantsAvailable,
     live,
+    ...(activity ? { activity } : {}),
   });
   const who = detail.row.identity.who;
   // A withdrawn verification offers Disconnect once, in its own notice.

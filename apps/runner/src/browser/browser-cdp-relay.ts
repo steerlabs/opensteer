@@ -48,7 +48,7 @@ export class BrowserCdpRelay {
   readonly #negotiations = new Set<AbortController>();
   readonly #http: HttpServer;
   readonly #path: string;
-  readonly #upstreamToken: () => string;
+  readonly #upstreamToken: () => string | Promise<string>;
   readonly #upstreamUrl: URL;
   readonly #websockets = new WebSocketServer({
     maxPayload: maximumFrameBytes,
@@ -65,7 +65,7 @@ export class BrowserCdpRelay {
   constructor(options: {
     readonly url: string;
     /** The Host token current when each connection opens. */
-    readonly token: () => string;
+    readonly token: () => string | Promise<string>;
     readonly transport: Pick<RunnerConfig, "mode">;
   }) {
     this.#path = `/devtools/browser/${randomBytes(24).toString("base64url")}`;
@@ -242,7 +242,11 @@ export class BrowserCdpRelay {
     this.#negotiations.add(controller);
     response.once("close", () => controller.abort());
     try {
-      const token = this.#upstreamToken();
+      const token = await this.#upstreamToken();
+      if (fenced()) {
+        response.writeHead(403).end();
+        return;
+      }
       const body = await new Promise<Buffer>((resolve, reject) => {
         const chunks: Buffer[] = [];
         let size = 0;
@@ -384,30 +388,45 @@ export class BrowserCdpRelay {
     if (!capabilities.includes("browser-backend-v1"))
       return Response.json({ sessionId, backend: "cdp", version: 1 });
     return fetch(url, {
-      headers: { authorization: `Bearer ${this.#upstreamToken()}` },
+      headers: { authorization: `Bearer ${await this.#upstreamToken()}` },
       redirect: "error",
       signal,
     });
   }
 
   #attach(downstream: WebSocket, sessionId: string, kind: "actions" | "cdp"): void {
-    if (this.#closed) {
-      downstream.close(1001, "Run ended");
-      downstream.terminate();
-      return;
-    }
-    const upstreamUrl = this.#endpoint(kind, sessionId);
-    const connection = new RelayedConnection(
-      downstream,
-      new WebSocket(upstreamUrl, {
-        followRedirects: false,
-        headers: { authorization: `Bearer ${this.#upstreamToken()}` },
-        maxPayload: maximumFrameBytes,
-        perMessageDeflate: false,
-      }),
-      () => this.#connections.delete(connection),
-    );
-    this.#connections.add(connection);
+    const generation = this.#generation;
+    void Promise.resolve(this.#upstreamToken())
+      .then((token) => {
+        if (
+          this.#closed ||
+          this.#suspended ||
+          generation !== this.#generation ||
+          downstream.readyState !== WebSocket.OPEN
+        ) {
+          downstream.close(1001, "Run ended");
+          downstream.terminate();
+          return;
+        }
+        const upstreamUrl = this.#endpoint(kind, sessionId);
+        const connection = new RelayedConnection(
+          downstream,
+          new WebSocket(upstreamUrl, {
+            followRedirects: false,
+            headers: { authorization: `Bearer ${token}` },
+            maxPayload: maximumFrameBytes,
+            perMessageDeflate: false,
+          }),
+          () => this.#connections.delete(connection),
+        );
+        this.#connections.add(connection);
+      })
+      .catch(() => {
+        if (downstream.readyState === WebSocket.OPEN) {
+          downstream.close(1011, "Browser token could not be resolved");
+        }
+        downstream.terminate();
+      });
   }
 }
 

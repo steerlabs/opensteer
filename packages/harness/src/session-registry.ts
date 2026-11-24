@@ -1,4 +1,5 @@
 import { OpensteerError } from "@opensteer/core";
+import { HarnessStopUnprovenError, markOpenStopProven } from "./types.js";
 
 /** What the registry needs of a driver's session: its identity and a way to end it. */
 export interface RegisteredHarnessSession {
@@ -44,10 +45,12 @@ export class HarnessSessionRegistry<S extends RegisteredHarnessSession> {
 
   assertOpen(): void {
     if (this.#closed) {
-      throw new OpensteerError({
-        code: "harness_error",
-        message: `${this.#engineLabel} harness adapter is closed`,
-      });
+      throw markOpenStopProven(
+        new OpensteerError({
+          code: "harness_error",
+          message: `${this.#engineLabel} harness adapter is closed`,
+        }),
+      );
     }
   }
 
@@ -56,21 +59,38 @@ export class HarnessSessionRegistry<S extends RegisteredHarnessSession> {
    * asked — a resume, or a start whose reference the driver mints itself.
    */
   async open(reference: string, start: () => Promise<S>): Promise<S> {
-    if (this.holds(reference)) throw this.#conflict(reference);
+    if (this.holds(reference)) throw markOpenStopProven(this.#conflict(reference));
     const opening = start();
     this.#keyedOpens.set(reference, opening);
     try {
       const session = await opening;
       this.assertOpen();
       if (this.#sessions.has(reference)) {
-        await session.stop();
-        throw this.#conflict(reference);
+        try {
+          await session.stop();
+        } catch (stopError) {
+          throw new HarnessStopUnprovenError(
+            `${this.#engineLabel} session could not be proven stopped after open conflict`,
+            { cause: stopError },
+          );
+        }
+        throw markOpenStopProven(this.#conflict(reference));
       }
       this.#sessions.set(reference, session);
       return session;
     } catch (error) {
       const session = await opening.catch(() => undefined);
-      if (session) await session.stop();
+      if (session) {
+        try {
+          await session.stop();
+        } catch (stopError) {
+          throw new HarnessStopUnprovenError(
+            `${this.#engineLabel} session could not be proven stopped after open failed`,
+            { cause: stopError },
+          );
+        }
+        throw markOpenStopProven(error);
+      }
       throw error;
     } finally {
       this.#keyedOpens.delete(reference);
@@ -90,15 +110,32 @@ export class HarnessSessionRegistry<S extends RegisteredHarnessSession> {
       this.assertOpen();
     } catch (error) {
       const opened = await opening.catch(() => undefined);
-      if (opened) await opened.stop();
+      if (opened) {
+        try {
+          await opened.stop();
+        } catch (stopError) {
+          throw new HarnessStopUnprovenError(
+            `${this.#engineLabel} session could not be proven stopped after open failed`,
+            { cause: stopError },
+          );
+        }
+        throw markOpenStopProven(error);
+      }
       throw error;
     } finally {
       this.#anonymousOpens.delete(opening);
     }
     const reference = session.providerSessionReference;
     if (this.#sessions.has(reference)) {
-      await session.stop();
-      throw this.#conflict(reference);
+      try {
+        await session.stop();
+      } catch (stopError) {
+        throw new HarnessStopUnprovenError(
+          `${this.#engineLabel} session could not be proven stopped after open conflict`,
+          { cause: stopError },
+        );
+      }
+      throw markOpenStopProven(this.#conflict(reference));
     }
     this.#sessions.set(reference, session);
     return session;

@@ -59,6 +59,12 @@ export const agentWorkCopy = {
     "Opensteer lost contact before it heard back, so it can’t say whether this happened. Check before trying again.",
   "op.state.pending": "Waiting for you",
   "op.state.running": "Running…",
+  "cmd.asked": "Waiting for you",
+  "cmd.approved": "You approved it",
+  "cmd.approvedThen": "You approved it · {outcome}",
+  "cmd.declined": "You declined it",
+  "cmd.withdrawn": "The agent took it back",
+  "cmd.closed": "Closed",
   "op.calls": "What it ran",
 
   "tab.chromeTitle": "Chrome · {title}",

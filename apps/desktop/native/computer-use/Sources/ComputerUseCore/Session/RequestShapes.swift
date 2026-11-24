@@ -181,6 +181,12 @@ enum Wire {
     let sessionId: String
   }
 
+  /// `helper.exit`: whether this process is going. False when another
+  /// Opensteer app on this Mac still holds a connection to it.
+  struct HelperExitResult: Encodable {
+    let exiting: Bool
+  }
+
   struct SessionParams: Decodable {
     let sessionId: String
   }

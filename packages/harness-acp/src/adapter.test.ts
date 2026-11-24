@@ -9,7 +9,6 @@ import {
 } from "@opensteer/core";
 import {
   Deferred,
-  nativeUserHarnessRuntimeBoundary,
   spawnSupervised,
   type HarnessEvent,
   type HarnessRunInput,
@@ -764,8 +763,6 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
     personalContext: false,
     personLineage: false,
     machineAccessNotice: "No other computers are reachable.",
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     modelSelection: ModelSelectionSchema.parse({
       modelId: "model",
       options: {},
@@ -779,7 +776,6 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
       privateStateRoot: directory,
       store: { directory, id: "test-store" },
     },
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     skills: undefined,
     threadId: createId("thread"),
@@ -1216,4 +1212,112 @@ it("retains ACP tool-result image content", async () => {
     await session.stop();
     await f.adapter.close();
   }
+});
+
+it("starts and finishes each ACP tool call once, whatever the engine resends", async () => {
+  const f = await setup("replay");
+  const session = await f.adapter.startSession(f.context);
+  const observed = observe(session.events);
+  const command = `ls -la ${"/a/very/long/path ".repeat(30)}`;
+  f.duringPrompt = () => {
+    f.update("new-session", {
+      sessionUpdate: "tool_call",
+      toolCallId: "s:1",
+      kind: "execute",
+      title: command,
+      rawInput: { command_line: command },
+      status: "in_progress",
+    });
+    f.update("new-session", {
+      sessionUpdate: "tool_call",
+      toolCallId: "call_1",
+      kind: "read",
+      title: "Running view_file",
+      rawInput: { absolute_path: "/a/b.md" },
+      status: "in_progress",
+    });
+    f.update("new-session", {
+      sessionUpdate: "tool_call",
+      toolCallId: "s:2",
+      kind: "other",
+      title: "opensteer_opensteer_task_read",
+      _meta: { mcp: { server: "opensteer", tool: "opensteer_task_read" }, is_mcp_tool_call: true },
+      status: "in_progress",
+    });
+    f.update("new-session", {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "s:1",
+      status: "completed",
+      rawOutput: "ok",
+    });
+    // Antigravity fails every open call on an unrelated step error, then announces them again.
+    for (const id of ["call_1", "s:2"])
+      f.update("new-session", {
+        sessionUpdate: "tool_call_update",
+        toolCallId: id,
+        status: "failed",
+      });
+    for (const id of ["s:1", "call_1", "s:2"]) {
+      f.update("new-session", {
+        sessionUpdate: "tool_call",
+        toolCallId: id,
+        title: "Running view_file",
+        status: "in_progress",
+      });
+      f.update("new-session", {
+        sessionUpdate: "tool_call_update",
+        toolCallId: id,
+        status: "completed",
+      });
+    }
+    f.update("new-session", { sessionUpdate: "tool_call_update", status: "completed" });
+    f.update("new-session", {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "s:3",
+      status: "completed",
+      rawOutput: "done",
+    });
+  };
+  await session.execute(f.turn("first"));
+  f.duringPrompt = () => {
+    // A call an earlier Run announced stays that Run's.
+    f.update("new-session", {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "s:1",
+      status: "completed",
+    });
+    f.update("new-session", {
+      sessionUpdate: "tool_call",
+      toolCallId: "s:4",
+      kind: "edit",
+      title: "Running write_to_file",
+      status: "in_progress",
+    });
+  };
+  await session.execute(f.turn("second"));
+  await session.stop();
+  await observed.done;
+  const lifecycle = observed.events.flatMap((event) =>
+    event.type === "tool.started"
+      ? [["started", event.data.callId, `${event.data.tool.namespace}/${event.data.tool.name}`]]
+      : event.type === "tool.completed"
+        ? [["completed", event.data.callId, event.data.isError]]
+        : event.type === "run.completed"
+          ? [["run"]]
+          : [],
+  );
+  expect(lifecycle).toEqual([
+    ["started", "s:1", "acp/execute"],
+    ["started", "call_1", "acp/read"],
+    ["started", "s:2", "opensteer/opensteer_task_read"],
+    ["completed", "s:1", false],
+    ["completed", "call_1", true],
+    ["completed", "s:2", true],
+    ["started", "s:3", "acp/other"],
+    ["completed", "s:3", false],
+    ["run"],
+    ["started", "s:4", "acp/edit"],
+    ["run"],
+  ]);
+  await f.adapter.close();
 });

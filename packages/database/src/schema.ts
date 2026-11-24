@@ -69,6 +69,8 @@ import type {
   RunAttemptId,
   RunFailure,
   RunId,
+  RunInterruptedCause,
+  RunStartHoldReason,
   RunnerId,
   SecurityAuditId,
   ThreadAccessMode,
@@ -117,7 +119,12 @@ import type {
   ShellCloseReason,
   ShellSessionId,
 } from "@opensteer/protocol";
-import type { StoredTriggerProgram, TriggerProgramEvent, TriggerSource } from "@opensteer/triggers";
+import type {
+  AutomationPausedBy,
+  AutomationScript,
+  TriggerScriptEvent,
+  TriggerSource,
+} from "@opensteer/triggers";
 import type { ColumnType, Generated, Selectable } from "kysely";
 import type {
   ClientChangesTable,
@@ -557,6 +564,8 @@ interface RunnerTable {
   moduleDescriptors: JsonColumn<RunnerModules>;
   /** What the computer says it is, from its last signed hello; null until it says. */
   device: JsonColumn<RunnerDevice | null>;
+  /** Stable OS boot identity from the Runner's last signed hello; null until reported. */
+  machineBootId: Generated<string | null>;
   connectionGeneration: ColumnType<string, number | string, number | string>;
   /** Null for a Runner with no agents module, which executes nothing. */
   maxConcurrentRuns: number | null;
@@ -710,7 +719,11 @@ export interface ThreadTable {
   inputQueueRevision: Generated<string>;
   lastReplyMessageId: Generated<MessageId | null>;
   lastReplyPreview: Generated<string | null>;
+  failureCode: Generated<string | null>;
   failurePreview: Generated<string | null>;
+  runStartHoldReason: Generated<RunStartHoldReason | null>;
+  /** Unresolved unproven-stop Run whose boot containment has not yet been confirmed. */
+  unconfirmedStopRunId: Generated<RunId | null>;
   latestRunCompletedAt: Generated<Date | null>;
   latestPlace: Generated<PlaceView | null>;
   removedAt: Generated<Date | null>;
@@ -916,6 +929,9 @@ export interface RunTable {
   /** The reply its channel was sent when a turn ended in the background. */
   turnReplyMessageId: Generated<MessageId | null>;
   status: "queued" | "starting" | "running" | "waiting" | "completed" | "failed" | "interrupted";
+  interruptedCause: Generated<RunInterruptedCause | null>;
+  startHoldReason: Generated<RunStartHoldReason | null>;
+  stopConfirmedAt: Generated<Date | null>;
   createdAt: Timestamp;
   startedAt: NullableTimestamp;
   completedAt: NullableTimestamp;
@@ -956,6 +972,7 @@ export interface RunAttemptTable {
   bindingGeneration: number | null;
   runnerId: RunnerId | null;
   runnerBootId: string | null;
+  machineBootId: Generated<string | null>;
   /** The selection the attempt was dispatched with. */
   modelSelection: JsonColumn<ModelSelection | null>;
   dispatchedAt: NullableTimestamp;
@@ -1062,15 +1079,19 @@ export interface DelegationTable {
   updatedAt: Timestamp;
 }
 
-export interface WatchControlRequestTable {
-  activationId: TriggerWatchActivationId;
-  action: "thread.delegate" | "thread.message";
-  observationId: string;
-  requestFingerprint: string;
-  requestId: string;
-  createdAt: Timestamp;
+/** A command with an effect outside the database: recorded before it acts, settled after (G4). */
+export interface CommandAttemptTable {
+  id: string;
+  requestedBy: UserId;
+  callerKey: string;
+  /** The connection whose Disconnect waits on it, when a connection (or its lineage) asked. */
+  connectionId: string | null;
+  type: string;
+  idempotencyKey: string;
+  state: Generated<"running" | "done" | "failed" | "unknown">;
+  startedAt: Generated<Date>;
+  settledAt: Date | null;
 }
-
 export interface RequestTable {
   revision: Generated<string>;
   id: RequestId;
@@ -1089,6 +1110,8 @@ export interface RequestTable {
   originatingAgentSessionId: Generated<AgentSessionId | null>;
   /** The direct operation this Request decides, in its parts (`Request.agentOperation`). */
   agentOperation: Generated<Readonly<Record<string, unknown>> | null>;
+  /** The Home command an agent proposed, in its parts (`Request.command`). */
+  command: Generated<Readonly<Record<string, unknown>> | null>;
   /** The subagent of the originating Run that asked, if not its own agent. */
   originatingNodeId: Generated<ExecutionNodeId | null>;
   callId: string;
@@ -1148,11 +1171,19 @@ interface TriggerTable {
   status: "active" | "paused" | "archived";
   currentRevisionId: TriggerRevisionId;
   nextFireAt: NullableTimestamp;
-  consecutiveFailures: number;
   pauseReason: string | null;
+  pausedBy: Generated<AutomationPausedBy | null>;
+  pausedByConnectionId: Generated<string | null>;
+  pausedByThreadId: Generated<ThreadId | null>;
+  pausedAt: Generated<Date | null>;
+  failingSince: Generated<Date | null>;
+  failureNotifiedAt: Generated<Date | null>;
+  overrunNotifiedAt: Generated<Date | null>;
+  watchCrashNotifiedAt: Generated<Date | null>;
+  encryptedSecrets: Generated<Buffer | null>;
+  secretsKeyVersion: Generated<number | null>;
   waitingReason: Generated<string | null>;
   webhookRouteKey: string | null;
-  webhookSecretHash: string | null;
   /** The connected agent whose lineage created it; occurrences and Watches derive from it. */
   originConnectionId: Generated<string | null>;
   createdAt: Timestamp;
@@ -1164,7 +1195,8 @@ interface TriggerRevisionTable {
   triggerId: TriggerId;
   ordinal: number;
   source: JsonColumn<TriggerSource>;
-  program: JsonColumn<StoredTriggerProgram>;
+  script: JsonColumn<AutomationScript> | null;
+  legacySource: Generated<string | null>;
   createdBy: UserId;
   createdByThreadId: ThreadId | null;
   createdAt: Timestamp;
@@ -1184,7 +1216,7 @@ export interface TriggerWatchActivationTable {
   anchorThreadId: ThreadId;
   createdBy: UserId;
   desired: "active" | "stopped";
-  observed: "starting" | "running" | "backoff" | "expired" | "stopped";
+  observed: "starting" | "running" | "backoff" | "halted" | "expired" | "stopped";
   executionGeneration: ColumnType<string, number | string, number | string>;
   runnerId: RunnerId | null;
   runnerBootId: string | null;
@@ -1218,8 +1250,13 @@ export interface TriggerOccurrenceTable {
   commandId: CommandId;
   environmentId: EnvironmentId;
   sourceKey: string;
-  event: JsonColumn<TriggerProgramEvent>;
-  status: "pending" | "running" | "succeeded" | "failed" | "canceled";
+  event: JsonColumn<TriggerScriptEvent>;
+  status: "pending" | "running" | "succeeded" | "failed" | "canceled" | "unknown";
+  frameSentAt: Generated<Date | null>;
+  runnerReportedAt: Generated<Date | null>;
+  provenNotStartedAt: Generated<Date | null>;
+  outputPrunedAt: Generated<Date | null>;
+  webhookBody: Generated<Buffer | null>;
   executionGeneration: Generated<number>;
   runnerId: RunnerId | null;
   runnerBootId: string | null;
@@ -1283,6 +1320,7 @@ export interface CommandTable {
   encryptedRequestResponse: Generated<Buffer | null>;
   requestResponseKeyVersion: Generated<number | null>;
   status: CommandStatus;
+  frameSentAt: Generated<Date | null>;
   attempts: Generated<number>;
   dispatcherId: string | null;
   lastError: JsonColumn<unknown> | null;
@@ -1373,7 +1411,16 @@ export interface AutomationFailureNoticeTable {
   triggerId: TriggerId;
   occurrenceId: TriggerOccurrenceId | null;
   activationId: TriggerWatchActivationId | null;
-  reason: "final-occurrence-failed" | "final-occurrence-interrupted" | "paused";
+  reason:
+    | "final-occurrence-failed"
+    | "final-occurrence-interrupted"
+    | "paused"
+    | "started-failing"
+    | "started-unknown"
+    | "overran-schedule"
+    | "watch-crash-loop"
+    | "watch-halted"
+    | "outcome-unknown";
   detail: string;
   attempts: Generated<number>;
   nextAttemptAt: Generated<Date>;
@@ -2182,6 +2229,7 @@ export interface DatabaseSchema {
   grants: GrantTable;
   delegations: DelegationTable;
   requests: RequestTable;
+  commandAttempts: CommandAttemptTable;
   taskQuestionNotices: {
     requestId: RequestId;
     messageId: MessageId | null;
@@ -2192,7 +2240,6 @@ export interface DatabaseSchema {
   triggers: TriggerTable;
   triggerRevisions: TriggerRevisionTable;
   triggerWatchActivations: TriggerWatchActivationTable;
-  watchControlRequests: WatchControlRequestTable;
   triggerOccurrences: TriggerOccurrenceTable;
   triggerOccurrenceAttempts: TriggerOccurrenceAttemptTable;
   providerSessions: ProviderSessionTable;
@@ -2349,7 +2396,7 @@ export type DeploymentRow = Selectable<DeploymentTable>;
 export type ThreadRow = Selectable<ThreadTable>;
 export type RunRow = Selectable<RunTable>;
 export type RequestRow = Selectable<RequestTable>;
-export type CommandRow = Selectable<CommandTable>;
+export type CommandRow = Omit<Selectable<CommandTable>, "frameSentAt">;
 /** A command awaiting dispatch, with the AI account of the Run it names. */
 export type PendingCommandRow = CommandRow & {
   readonly runHarnessInstanceId: HarnessInstanceId | null;

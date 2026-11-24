@@ -1,0 +1,20 @@
+# Running automation scripts
+
+Write a normal script file in Agent home, run it in your shell to test it, and register its text and schedule, webhook, or watch source with `opensteer_automation_create`. To change it, edit the file, test it, and register the updated text with `opensteer_automation_update`.
+
+When an automation fires, Opensteer writes the registered text (up to 256 KiB) to a private file and runs it with Agent home as the working directory:
+
+- **Interpreter**: omit `script.interpreter` to run with Node (`.mjs`), or pass an argv array starting with a bare command on `PATH` or an absolute executable path, such as `["python3"]`, `["bash"]`, or `["node", "--experimental-strip-types"]`. Relative interpreter paths are refused.
+- **Calling Opensteer**: run `opensteer tool <name> '<json>'` (or `opensteer tools --names` to list tools; the `opensteer` launcher is prepended to `PATH` and its script path is also in `OPENSTEER_CLI`) or call MCP directly at `OPENSTEER_MCP_URL` with `Authorization: Bearer $OPENSTEER_MCP_TOKEN`. `opensteer` exits `0` when done, `1` on local/usage error, `2` when refused by Opensteer (provably nothing happened), and `3` when the outcome is unknown (do not blindly retry side effects on `3`).
+- **Browser CDP**: when the task has browser access, `OPENSTEER_CDP_URL` and `OPENSTEER_CDP_TOKEN` point to the Runner's local proxy.
+- **Event file (`OPENSTEER_EVENT`)**: path to a UTF-8 JSON file written for each firing:
+  - Always present: `{ "automationId": "<triggerId>", "firingId": "<occurrenceId>", "taskId": "<anchorThreadId>", "firedAt": "<iso8601>", "kind": "schedule" | "webhook" | "manual" | "watch" }`.
+  - Optional `payload`: the schedule or `run_now` JSON payload when set.
+  - When `kind === "schedule"`: `scheduledFor` (`<iso8601>`).
+  - When `kind === "webhook"`: `request: { method, path, query, headers, bodyBytes, bodyPath? }`, where `bodyPath` points to the exact raw request bytes on disk.
+  - `OPENSTEER_AUTOMATION_ID` and `OPENSTEER_FIRING_ID` are also in the environment.
+- **Secrets**: sealed secrets set by the person arrive only in the script's environment as `OPENSTEER_SECRET_<NAME>`.
+- **Exit and output**: exit `0` succeeds, exit `3` records `unknown` (an effect may have happened; Opensteer never runs it again on its own), and every other non-zero exit (including `1` for local failure and `2` for a refusal where provably nothing happened) records `failed`. Stdout and stderr keep the latest 64 KiB tail for the last 100 completed firings. Watches keep the latest 16 KiB tail of stdout and stderr.
+- **Concurrency and failures**: one firing of an automation runs at a time. A schedule tick arriving while one runs collapses into one waiting firing; webhook requests queue up to 100 waiting firings before returning HTTP 429 (max 256 KiB raw body). Failures and watch crash loops tell the task once without auto-pausing; Opensteer never retries a firing after sending it. A watch script runs continuously until stopped; unexpected exits restart with exponential backoff and tell the task once after three stops in the window.
+
+Choose the destination before registering the script: reminders stay in the asking task; ongoing monitors use `opensteer_automation_create` with `ownTask: true`; a script calls `opensteer_task_create` for a new listed task per run. Check in code first and persist state under `automations/<automation-id>/` in Agent home. A model check queues the monitor's task with `freshContext: true` and carries its criteria, report destination and state path each time. Start child checks from that monitor task. Send real finds to the asking task with `opensteer_task_send` delivery `queue` (a `report` never notifies) or email through a connected integration. Each background wake briefly says what happened.

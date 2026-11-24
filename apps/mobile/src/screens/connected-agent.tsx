@@ -33,6 +33,7 @@ import {
   useAgentAppOptions,
   useAgentPluginOptions,
   useChromeTabGrantCatalog,
+  useConnectedAgentActivity,
   useConnectedAgentLive,
   useConnectedAgents,
   useLiveTasks,
@@ -84,6 +85,7 @@ export function ConnectedAgentController(props: {
   // What this screen sends is what the chat parity script covers.
   const chatHost = chatScreenHost(host);
   const live = useConnectedAgentLive(host, connectionId);
+  const activity = useConnectedAgentActivity(host, connectionId, live?.threadId ?? null);
   const liveTasks = useLiveTasks(host);
   const chromeTabs = useChromeTabGrantCatalog(host, true);
   const [sheet, setSheet] = useState<{
@@ -113,6 +115,7 @@ export function ConnectedAgentController(props: {
           revoked: agents.revoked,
           grantsAvailable: agents.grantsAvailable,
           live,
+          ...(activity ? { activity } : {}),
         });
   const agent = detail?.row.identity.label ?? null;
   useEffect(() => {

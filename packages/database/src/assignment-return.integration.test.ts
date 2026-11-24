@@ -216,10 +216,10 @@ describeStore("Assignment result delivery", (it) => {
               source: {
                 kind: "watch",
               },
-              program: {
-                toolContractVersion: 5,
-                language: "javascript",
-                source: "export default async () => null",
+              script: {
+                interpreter: null,
+
+                text: "console.log('ok')",
               },
             })
           : null;

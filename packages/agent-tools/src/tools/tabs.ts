@@ -66,7 +66,7 @@ export const tab_list = defineAgentTool({
     tabs: z.array(AgentTabSchema).max(50).optional(),
   }),
   access: "read",
-  callers: ["run", "connection"] as const,
+  callers: ["run", "program", "connection"] as const,
   capability: "tabs",
 });
 export const tab_open = defineAgentTool({
@@ -77,7 +77,7 @@ export const tab_open = defineAgentTool({
   input: TabOpenInputSchema.extend(directInput),
   output: TabOpenResultSchema.partial().extend({ ...directOutput, tab: AgentTabSchema.optional() }),
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
   capability: "tabs",
 });
 export const tab_close = defineAgentTool({
@@ -88,7 +88,7 @@ export const tab_close = defineAgentTool({
   input: TabCloseInputSchema.extend(directInput),
   output: TabCloseResultSchema.partial().extend(directOutput),
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
   capability: "tabs",
 });
 export const tab_organize = defineAgentTool({
@@ -99,7 +99,7 @@ export const tab_organize = defineAgentTool({
   input: TabOrganizeInputSchema,
   output: TabOrganizeResultSchema,
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
   capability: "tabs",
 });
 export const tab_group_update = defineAgentTool({
@@ -110,7 +110,7 @@ export const tab_group_update = defineAgentTool({
   input: TabGroupUpdateInputSchema,
   output: TabGroupUpdateResultSchema,
   access: "write",
-  callers: ["run"] as const,
+  callers: ["run", "program"] as const,
   capability: "tabs",
 });
 export const tabTools = [tab_list, tab_open, tab_close, tab_organize, tab_group_update] as const;

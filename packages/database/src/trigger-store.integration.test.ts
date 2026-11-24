@@ -18,20 +18,16 @@ import {
   type TriggerId,
 } from "@opensteer/core";
 import type { RunnerDescriptor } from "@opensteer/protocol";
-import {
-  MAX_ACTIVE_WATCHES_PER_ENVIRONMENT,
-  TRIGGER_AUTO_PAUSE_REASON,
-  WATCH_AUTO_PAUSE_REASON,
-  WATCH_OBSERVATIONS_PER_HOUR,
-  type TriggerOccurrence,
-} from "@opensteer/triggers";
+import type { TriggerOccurrence } from "@opensteer/triggers";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { sql } from "kysely";
-import { describe, expect, it as baseIt } from "vitest";
+import { describe, expect, it as baseIt, vi } from "vitest";
 import {
   AgentConnectionStore,
   OpensteerStore,
   TriggerStore,
   admitWatchControlRequest,
+  commandAdmission,
   createDatabase,
 } from "./index.js";
 import "./connection.js";
@@ -211,7 +207,6 @@ integration.sequential("Trigger failure auto-pause", () => {
             ],
 
             maxConcurrentRuns: 4,
-            providerStateModes: ["isolated"],
           },
         },
         name: "Trigger test Runner",
@@ -238,10 +233,10 @@ integration.sequential("Trigger failure auto-pause", () => {
         createdBy: fixture.userId,
         idempotencyKey: `schedule-${suffix}`,
         name: `Schedule ${suffix}`,
-        program: {
-          toolContractVersion: 5,
-          language: "javascript",
-          source: "export default async () => null",
+        script: {
+          interpreter: null,
+
+          text: "console.log('ok')",
         },
         source: {
           kind: "schedule",
@@ -263,10 +258,9 @@ integration.sequential("Trigger failure auto-pause", () => {
         createdBy: fixture.userId,
         idempotencyKey: `watch-${suffix}`,
         name: `Watch ${suffix}`,
-        program: {
-          toolContractVersion: 5,
-          language: "javascript",
-          source: "export default async () => new Promise(() => setInterval(() => {}, 1000))",
+        script: {
+          interpreter: null,
+          text: "setInterval(() => {}, 1000);",
         },
         source: {
           kind: "watch",
@@ -383,10 +377,10 @@ integration.sequential("Trigger failure auto-pause", () => {
       idempotencyKey: "own-task-monitor",
       name: "Price monitor",
       ownTask: true,
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -449,17 +443,39 @@ integration.sequential("Trigger failure auto-pause", () => {
       modelSelection,
       title: "Lower caller",
     });
+    const { run: lowerRun } = await store.enqueueThreadInput({
+      content: [{ type: "text", text: "Lower caller work" }],
+      idempotencyKey: "own-task-lower-run",
+      policy: "queue",
+      requestedBy: f.userId,
+      source: { kind: "human" },
+      threadId: lower.id,
+    });
     const input = {
       actorThreadId: lower.id,
       anchorThreadId: f.threadId,
+      commandIdentity: commandAdmission({
+        ownerUserId: f.userId,
+        callerKey: `run:${lowerRun!.id}`,
+        command: {
+          type: "trigger.create",
+          idempotencyKey: "own-task-refused",
+          input: {
+            anchorThreadId: f.threadId,
+            name: "Refused monitor",
+            script: { interpreter: null, text: "console.log('ok')" },
+            source: { kind: "watch" },
+          },
+        },
+      }),
       createdBy: f.userId,
       idempotencyKey: "own-task-refused",
       name: "Refused monitor",
       ownTask: true,
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: { kind: "watch" },
     } as const;
@@ -475,8 +491,13 @@ integration.sequential("Trigger failure auto-pause", () => {
       .set({ doneAt: new Date() })
       .where("id", "=", f.threadId)
       .execute();
+    const { commandIdentity: _commandIdentity, ...personInput } = input;
     await expect(
-      triggers.create({ ...input, actorThreadId: null, idempotencyKey: "own-task-done" }),
+      triggers.create({
+        ...personInput,
+        actorThreadId: null,
+        idempotencyKey: "own-task-done",
+      }),
     ).rejects.toMatchObject({ code: "bad_request" });
     expect(await counts()).toEqual(before);
   });
@@ -485,11 +506,7 @@ integration.sequential("Trigger failure auto-pause", () => {
   }) => {
     const { database, store, triggers, createFixture } = storeFixture;
     const f = await createFixture("family");
-    const program = {
-      toolContractVersion: 5,
-      language: "javascript",
-      source: "export default async () => null",
-    } as const;
+    const script = { interpreter: null, text: "console.log('ok')" } as const;
     const create = (name: string, anchorThreadId = f.threadId, ownTask?: true) =>
       triggers.create({
         actorThreadId: null,
@@ -498,10 +515,9 @@ integration.sequential("Trigger failure auto-pause", () => {
         idempotencyKey: `family-${name}`,
         name,
         ...(ownTask ? { ownTask } : {}),
-        program,
+        script,
         source: { kind: "webhook" },
         webhookRouteKey: `wh_${randomUUID().replaceAll("-", "")}`,
-        webhookSecretHash: "0".repeat(64),
       });
     const archive = (triggerId: TriggerId) =>
       triggers.setStatus({ actorThreadId: null, ownerId: f.userId, status: "archived", triggerId });
@@ -648,10 +664,10 @@ integration.sequential("Trigger failure auto-pause", () => {
       createdBy: fixture.userId,
       idempotencyKey: "occurrence-retry-proof",
       name: "Retry proof",
-      program: {
-        language: "javascript",
-        source: "export default async () => null",
-        toolContractVersion: 5,
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -818,7 +834,6 @@ integration.sequential("Trigger failure auto-pause", () => {
               createdBy: fixture.userId,
               environmentId: fixture.environmentId,
               executionGeneration: activation.executionGeneration,
-              observationId: "input-watch",
               requestFingerprint: "a".repeat(64),
               requestId: "input-watch",
               revisionId: created.revision.id,
@@ -928,10 +943,9 @@ integration.sequential("Trigger failure auto-pause", () => {
           expectedRevisionId: created.revision.id,
           ownerId: fixture.userId,
           triggerId: created.trigger.id,
-          program: {
-            toolContractVersion: 5,
-            language: "javascript",
-            source: "export default async () => new Promise(() => {})",
+          script: {
+            interpreter: null,
+            text: "await new Promise(() => {});",
           },
         }),
     );
@@ -939,32 +953,39 @@ integration.sequential("Trigger failure auto-pause", () => {
       created.revision.id,
     );
   });
-  it("pauses an active schedule after three current-Revision failures", async ({
+  it("keeps an active schedule running across repeated failures and records failing_since (T9)", async ({
     storeFixture,
   }) => {
-    const { createFixture, createScheduleTrigger, failManual, detail } = storeFixture;
+    const { createFixture, createScheduleTrigger, failManual, detail, database } = storeFixture;
     const fixture = await createFixture("three-failures");
     const created = await createScheduleTrigger(fixture, "three-failures");
     await failManual(fixture, created.trigger.id, "first");
     await failManual(fixture, created.trigger.id, "second");
-    expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 2,
+    await failManual(fixture, created.trigger.id, "third");
+    const afterThird = await detail(created.trigger.id, fixture.userId);
+    expect(afterThird.trigger).toMatchObject({
       pauseReason: null,
       status: "active",
     });
-    await failManual(fixture, created.trigger.id, "third");
-    expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 3,
-      nextFireAt: null,
-      pauseReason: TRIGGER_AUTO_PAUSE_REASON,
-      status: "paused",
-    });
+    expect(afterThird.trigger.nextFireAt).not.toBeNull();
+    const row = await database
+      .selectFrom("triggers")
+      .select(["failingSince", "failureNotifiedAt"])
+      .where("id", "=", created.trigger.id)
+      .executeTakeFirstOrThrow();
+    expect(row.failingSince).not.toBeNull();
+    expect(row.failureNotifiedAt).not.toBeNull();
   });
-  it("resets the consecutive count when a success interrupts failures", async ({
-    storeFixture,
-  }) => {
-    const { createFixture, createScheduleTrigger, failManual, triggers, detail, succeedManual } =
-      storeFixture;
+  it("clears failingSince when a success interrupts failures", async ({ storeFixture }) => {
+    const {
+      createFixture,
+      createScheduleTrigger,
+      failManual,
+      triggers,
+      detail,
+      succeedManual,
+      database,
+    } = storeFixture;
     const fixture = await createFixture("success-reset");
     const created = await createScheduleTrigger(fixture, "success-reset");
     await failManual(fixture, created.trigger.id, "first");
@@ -978,18 +999,29 @@ integration.sequential("Trigger failure auto-pause", () => {
       occurrenceId: canceled.id,
       triggerId: created.trigger.id,
     });
-    expect((await detail(created.trigger.id, fixture.userId)).trigger.consecutiveFailures).toBe(1);
+    const readFailing = async () =>
+      (
+        await database
+          .selectFrom("triggers")
+          .select(["failingSince", "failureNotifiedAt"])
+          .where("id", "=", created.trigger.id)
+          .executeTakeFirstOrThrow()
+      ).failingSince;
+    expect(await readFailing()).not.toBeNull();
     await succeedManual(fixture, created.trigger.id, "success");
-    expect((await detail(created.trigger.id, fixture.userId)).trigger.consecutiveFailures).toBe(0);
+    expect(await readFailing()).toBeNull();
     await failManual(fixture, created.trigger.id, "second-series-1");
     await failManual(fixture, created.trigger.id, "second-series-2");
+    expect(await readFailing()).not.toBeNull();
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 2,
       status: "active",
     });
   });
-  it("does not count a failed occurrence pinned to a stale Revision", async ({ storeFixture }) => {
-    const { createFixture, createScheduleTrigger, triggers, complete, detail } = storeFixture;
+  it("does not mark failing for a failed occurrence pinned to a stale Revision", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createScheduleTrigger, triggers, complete, detail, database } =
+      storeFixture;
     const fixture = await createFixture("stale-revision");
     const created = await createScheduleTrigger(fixture, "stale-revision");
     const occurrence = await triggers.enqueueManual({
@@ -1001,88 +1033,188 @@ integration.sequential("Trigger failure auto-pause", () => {
       actorThreadId: null,
       expectedRevisionId: created.revision.id,
       ownerId: fixture.userId,
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => 'new'",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       triggerId: created.trigger.id,
     });
     await complete(fixture, occurrence, "failed", "stale-failure");
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 0,
       status: "active",
     });
+    expect(
+      (
+        await database
+          .selectFrom("triggers")
+          .select("failingSince")
+          .where("id", "=", created.trigger.id)
+          .executeTakeFirstOrThrow()
+      ).failingSince,
+    ).toBeNull();
   });
 
-  it("allows a manual run while paused and resets the count after success", async ({
+  it("allows a manual run while paused and clears failingSince after success", async ({
     storeFixture,
   }) => {
-    const { createFixture, createScheduleTrigger, failManual, succeedManual, detail } =
-      storeFixture;
+    const {
+      createFixture,
+      createScheduleTrigger,
+      failManual,
+      succeedManual,
+      triggers,
+      detail,
+      database,
+    } = storeFixture;
     const fixture = await createFixture("paused-manual");
     const created = await createScheduleTrigger(fixture, "paused-manual");
     await failManual(fixture, created.trigger.id, "first");
-    await failManual(fixture, created.trigger.id, "second");
-    await failManual(fixture, created.trigger.id, "third");
-    await succeedManual(fixture, created.trigger.id, "repair-check");
-    expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 0,
-      pauseReason: TRIGGER_AUTO_PAUSE_REASON,
-      status: "paused",
-    });
-  });
-  it("counts an in-flight failure without changing an already paused Trigger", async ({
-    storeFixture,
-  }) => {
-    const { createFixture, createScheduleTrigger, triggers, complete, detail } = storeFixture;
-    const fixture = await createFixture("already-paused");
-    const created = await createScheduleTrigger(fixture, "already-paused");
-    const occurrence = await triggers.enqueueManual({
-      actorThreadId: null,
-      ownerId: fixture.userId,
-      triggerId: created.trigger.id,
-    });
     await triggers.setStatus({
       actorThreadId: null,
       ownerId: fixture.userId,
       status: "paused",
       triggerId: created.trigger.id,
     });
-    await complete(fixture, occurrence, "failed", "already-paused");
+    await succeedManual(fixture, created.trigger.id, "repair-check");
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 1,
       pauseReason: null,
       status: "paused",
     });
+    expect(
+      (
+        await database
+          .selectFrom("triggers")
+          .select("failingSince")
+          .where("id", "=", created.trigger.id)
+          .executeTakeFirstOrThrow()
+      ).failingSince,
+    ).toBeNull();
+  });
+  it("counts an in-flight failure without changing an already paused Trigger, and cancels pending firings on pause (Y12)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createScheduleTrigger, triggers, store, detail } = storeFixture;
+    const fixture = await createFixture("already-paused");
+    const created = await createScheduleTrigger(fixture, "already-paused");
+    const pendingOcc = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    const pausedWithPending = await triggers.setStatusWithEffects({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "paused",
+      triggerId: created.trigger.id,
+    });
+    expect(pausedWithPending.canceledOccurrenceIds).toEqual([pendingOcc.id]);
+    expect(pausedWithPending.runningFirings).toEqual([]);
+
+    await triggers.setStatus({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "active",
+      triggerId: created.trigger.id,
+    });
+    const runningOcc = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    await store.claimCommand(runningOcc.commandId, "pause-test");
+    const started = await triggers.startExecution({
+      commandId: runningOcc.commandId,
+      runnerBootId: "boot-already-paused",
+      runnerId: fixture.runnerId,
+    });
+    const pausedWithRunning = await triggers.setStatusWithEffects({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "paused",
+      triggerId: created.trigger.id,
+    });
+    expect(pausedWithRunning.runningFirings).toEqual([
+      {
+        commandId: runningOcc.commandId,
+        environmentId: fixture.environmentId,
+        executionGeneration: started.executionGeneration,
+        occurrenceId: runningOcc.id,
+        runnerBootId: "boot-already-paused",
+        runnerId: fixture.runnerId,
+      },
+    ]);
+    await triggers.completeExecution({
+      executionGeneration: started.executionGeneration,
+      output: {
+        completedAt: new Date().toISOString(),
+        error: "Program failed",
+        exitCode: 1,
+        occurrenceId: runningOcc.id,
+        result: null,
+        status: "failed",
+        stderr: "failure\n",
+        stdout: "",
+      },
+      runnerBootId: "boot-already-paused",
+      runnerId: fixture.runnerId,
+    });
+    expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
+      pauseReason: null,
+      status: "paused",
+    });
+
     const archived = await createScheduleTrigger(fixture, "already-archived");
     const archivedOccurrence = await triggers.enqueueManual({
       actorThreadId: null,
       ownerId: fixture.userId,
       triggerId: archived.trigger.id,
     });
+    await store.claimCommand(archivedOccurrence.commandId, "archive-test");
+    const archivedStarted = await triggers.startExecution({
+      commandId: archivedOccurrence.commandId,
+      runnerBootId: "boot-already-archived",
+      runnerId: fixture.runnerId,
+    });
     await triggers.setStatus({
       actorThreadId: null,
       ownerId: fixture.userId,
       status: "archived",
       triggerId: archived.trigger.id,
     });
-    await complete(fixture, archivedOccurrence, "failed", "already-archived");
+    await triggers.completeExecution({
+      executionGeneration: archivedStarted.executionGeneration,
+      output: {
+        completedAt: new Date().toISOString(),
+        error: "Program failed",
+        exitCode: 1,
+        occurrenceId: archivedOccurrence.id,
+        result: null,
+        status: "failed",
+        stderr: "failure\n",
+        stdout: "",
+      },
+      runnerBootId: "boot-already-archived",
+      runnerId: fixture.runnerId,
+    });
     expect((await detail(archived.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 1,
       pauseReason: null,
       status: "archived",
     });
   });
-  it("clears the auto-pause reason and recomputes a schedule when resumed", async ({
+  it("clears failures and recomputes a schedule when resumed after manual pause", async ({
     storeFixture,
   }) => {
     const { createFixture, createScheduleTrigger, failManual, triggers } = storeFixture;
     const fixture = await createFixture("resume");
     const created = await createScheduleTrigger(fixture, "resume");
     await failManual(fixture, created.trigger.id, "first");
-    await failManual(fixture, created.trigger.id, "second");
-    await failManual(fixture, created.trigger.id, "third");
+    await triggers.setStatus({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "paused",
+      triggerId: created.trigger.id,
+    });
     const resumed = await triggers.setStatus({
       actorThreadId: null,
       ownerId: fixture.userId,
@@ -1090,7 +1222,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       triggerId: created.trigger.id,
     });
     expect(resumed).toMatchObject({
-      consecutiveFailures: 0,
       pauseReason: null,
       status: "active",
     });
@@ -1116,8 +1247,8 @@ integration.sequential("Trigger failure auto-pause", () => {
     const { createFixture, createScheduleTrigger, database, triggers } = storeFixture;
     const fixture = await createFixture("program-repair-wake");
     const created = await createScheduleTrigger(fixture, "program-repair-wake");
-    // An older program version: the schedule keeps its future time but cannot run.
-    await sql`update trigger_revisions set program = jsonb_set(program, '{toolContractVersion}', '4')
+    // A legacy non-script revision: the schedule keeps its future time but cannot run.
+    await sql`update trigger_revisions set script = null, legacy_source = 'export default () => null;'
       where id = ${created.revision.id}`.execute(database);
     expect(await triggers.nextScheduleAt()).toBeNull();
     const reactions: string[] = [];
@@ -1135,10 +1266,10 @@ integration.sequential("Trigger failure auto-pause", () => {
         actorThreadId: null,
         expectedRevisionId: created.revision.id,
         ownerId: fixture.userId,
-        program: {
-          toolContractVersion: 5,
-          language: "javascript",
-          source: "export default async () => 'fixed'",
+        script: {
+          interpreter: null,
+
+          text: "console.log('ok')",
         },
         triggerId: created.trigger.id,
       });
@@ -1148,8 +1279,10 @@ integration.sequential("Trigger failure auto-pause", () => {
     expect(await triggers.nextScheduleAt()).toEqual(expect.any(Date));
     expect(reactions).toContain("triggerSchedulesChanged");
   });
-  it("resets failures on a program update but not a name-only update", async ({ storeFixture }) => {
-    const { createFixture, createScheduleTrigger, failManual, triggers } = storeFixture;
+  it("keeps failingSince on a name-only update and preserves revision history on updates", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createScheduleTrigger, failManual, triggers, database } = storeFixture;
     const fixture = await createFixture("revision-reset");
     const created = await createScheduleTrigger(fixture, "revision-reset");
     await failManual(fixture, created.trigger.id, "first");
@@ -1160,19 +1293,28 @@ integration.sequential("Trigger failure auto-pause", () => {
       ownerId: fixture.userId,
       triggerId: created.trigger.id,
     });
-    expect(renamed.trigger.consecutiveFailures).toBe(1);
+    expect(renamed.trigger.name).toBe("Renamed only");
+    expect(
+      (
+        await database
+          .selectFrom("triggers")
+          .select("failingSince")
+          .where("id", "=", created.trigger.id)
+          .executeTakeFirstOrThrow()
+      ).failingSince,
+    ).not.toBeNull();
     const repaired = await triggers.update({
       actorThreadId: null,
       expectedRevisionId: renamed.revision.id,
       ownerId: fixture.userId,
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => 'fixed'",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       triggerId: created.trigger.id,
     });
-    expect(repaired.trigger.consecutiveFailures).toBe(0);
+    expect(repaired.revision.ordinal).toBe(3);
     await failManual(fixture, created.trigger.id, "after-program-update");
     const rescheduled = await triggers.update({
       actorThreadId: null,
@@ -1188,9 +1330,11 @@ integration.sequential("Trigger failure auto-pause", () => {
       },
       triggerId: created.trigger.id,
     });
-    expect(rescheduled.trigger.consecutiveFailures).toBe(0);
+    expect(rescheduled.revision.ordinal).toBe(4);
   });
-  it("refuses webhook ingress while auto-paused", async ({ storeFixture }) => {
+  it("keeps accepting webhooks across repeated failures and refuses them once paused (T9)", async ({
+    storeFixture,
+  }) => {
     const { createFixture, triggers, failManual } = storeFixture;
     const fixture = await createFixture("paused-webhook");
     const created = await triggers.create({
@@ -1199,20 +1343,32 @@ integration.sequential("Trigger failure auto-pause", () => {
       createdBy: fixture.userId,
       idempotencyKey: "paused-webhook",
       name: "Paused webhook",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => null",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       source: {
         kind: "webhook",
       },
       webhookRouteKey: "wh_paused_webhook_123456789012345678",
-      webhookSecretHash: "a".repeat(64),
     });
     await failManual(fixture, created.trigger.id, "first");
     await failManual(fixture, created.trigger.id, "second");
     await failManual(fixture, created.trigger.id, "third");
+    const stillAccepted = await triggers.enqueueWebhook({
+      headers: {},
+      method: "POST",
+      payload: null,
+      routeKey: created.trigger.webhookRouteKey ?? "",
+    });
+    expect(stillAccepted.occurrence.status).toBe("pending");
+    await triggers.setStatus({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "paused",
+      triggerId: created.trigger.id,
+    });
     await expect(
       triggers.enqueueWebhook({
         headers: {},
@@ -1221,45 +1377,115 @@ integration.sequential("Trigger failure auto-pause", () => {
         routeKey: created.trigger.webhookRouteKey ?? "",
       }),
     ).rejects.toMatchObject({
-      code: "conflict",
-      message: "Webhook automation is not active",
+      code: "not_found",
+      message: "Webhook not found",
     });
   });
   it("does not reset the count when a stale-Revision occurrence succeeds", async ({
     storeFixture,
   }) => {
-    const { createFixture, createScheduleTrigger, triggers, failManual, complete, detail } =
-      storeFixture;
+    const { createFixture, triggers, complete, detail } = storeFixture;
     const fixture = await createFixture("stale-success");
-    const created = await createScheduleTrigger(fixture, "stale-success");
-    const stale = await triggers.enqueueManual({
+    const created = await triggers.create({
       actorThreadId: null,
-      ownerId: fixture.userId,
-      triggerId: created.trigger.id,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "stale-success-wh",
+      name: "Stale success",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
+      },
+      source: { kind: "webhook" },
+      webhookRouteKey: "wh_stale_success_1234567890123456789",
+    });
+    const stale = (
+      await triggers.enqueueWebhook({
+        headers: {},
+        method: "POST",
+        routeKey: created.trigger.webhookRouteKey!,
+      })
+    ).occurrence;
+    await storeFixture.store.claimCommand(stale.commandId, "stale-success-dispatcher");
+    const staleStarted = await triggers.startExecution({
+      commandId: stale.commandId,
+      runnerBootId: "boot-stale-1",
+      runnerId: fixture.runnerId,
+    });
+    // Mark the frame sent so restart settles it to unknown (rather than resetting unsent to pending, Z5).
+    await storeFixture.database
+      .updateTable("commands")
+      .set({ frameSentAt: new Date() })
+      .where("id", "=", stale.commandId)
+      .execute();
+    // Mark the stale firing unknown when the Runner restarts without it, unblocking later firings.
+    await triggers.attachRunnerFirings({
+      dispatchingOccurrenceIds: [],
+      firings: [],
+      runnerBootId: "boot-stale-2",
+      runnerId: fixture.runnerId,
     });
     await triggers.update({
       actorThreadId: null,
       expectedRevisionId: created.revision.id,
       ownerId: fixture.userId,
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => 'new'",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
       },
       triggerId: created.trigger.id,
     });
-    await failManual(fixture, created.trigger.id, "first");
-    await failManual(fixture, created.trigger.id, "second");
-    await complete(fixture, stale, "succeeded", "stale-success");
+    const first = (
+      await triggers.enqueueWebhook({
+        headers: {},
+        method: "POST",
+        routeKey: created.trigger.webhookRouteKey!,
+      })
+    ).occurrence;
+    const second = (
+      await triggers.enqueueWebhook({
+        headers: {},
+        method: "POST",
+        routeKey: created.trigger.webhookRouteKey!,
+      })
+    ).occurrence;
+    await complete(fixture, first, "failed", "first");
+    await complete(fixture, second, "failed", "second");
+    // Late proof settles the stale-Revision occurrence to succeeded without clearing failingSince.
+    await triggers.completeExecution({
+      executionGeneration: staleStarted.executionGeneration,
+      output: {
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: 0,
+        occurrenceId: stale.id,
+        result: null,
+        status: "succeeded",
+        stderr: "",
+        stdout: "",
+      },
+      runnerBootId: "boot-stale-1",
+      runnerId: fixture.runnerId,
+    });
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 2,
       status: "active",
     });
+    expect(
+      (
+        await storeFixture.database
+          .selectFrom("triggers")
+          .select("failingSince")
+          .where("id", "=", created.trigger.id)
+          .executeTakeFirstOrThrow()
+      ).failingSince,
+    ).not.toBeNull();
   });
-  it("treats a repeated status as a no-op that keeps the reason and the count", async ({
+  it("treats a repeated status as a no-op that keeps the reason and failing state", async ({
     storeFixture,
   }) => {
-    const { createFixture, createScheduleTrigger, failManual, triggers } = storeFixture;
+    const { createFixture, createScheduleTrigger, failManual, triggers, database } = storeFixture;
     const fixture = await createFixture("repeat-status");
     const created = await createScheduleTrigger(fixture, "repeat-status");
     await failManual(fixture, created.trigger.id, "first");
@@ -1269,9 +1495,27 @@ integration.sequential("Trigger failure auto-pause", () => {
       status: "active",
       triggerId: created.trigger.id,
     });
-    expect(stillActive.consecutiveFailures).toBe(1);
-    await failManual(fixture, created.trigger.id, "second");
-    await failManual(fixture, created.trigger.id, "third");
+    expect(stillActive.status).toBe("active");
+    expect(
+      (
+        await database
+          .selectFrom("triggers")
+          .select("failingSince")
+          .where("id", "=", created.trigger.id)
+          .executeTakeFirstOrThrow()
+      ).failingSince,
+    ).not.toBeNull();
+    await triggers.setStatus({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "paused",
+      triggerId: created.trigger.id,
+    });
+    await database
+      .updateTable("triggers")
+      .set({ pauseReason: "Paused because its task was marked done." })
+      .where("id", "=", created.trigger.id)
+      .execute();
     const stillPaused = await triggers.setStatus({
       actorThreadId: null,
       ownerId: fixture.userId,
@@ -1279,8 +1523,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       triggerId: created.trigger.id,
     });
     expect(stillPaused).toMatchObject({
-      consecutiveFailures: 3,
-      pauseReason: TRIGGER_AUTO_PAUSE_REASON,
+      pauseReason: "Paused because its task was marked done.",
       status: "paused",
     });
   });
@@ -1302,47 +1545,64 @@ integration.sequential("Trigger failure auto-pause", () => {
       created.revision.id,
     );
   });
-  it("counts concurrent completions exactly once each and pauses once", async ({
+  it("refuses overlapping manual runs (Y11) and counts sequential failures without auto-pausing (T9)", async ({
     storeFixture,
   }) => {
     const { createFixture, createScheduleTrigger, triggers, complete, detail } = storeFixture;
     const fixture = await createFixture("concurrent");
     const created = await createScheduleTrigger(fixture, "concurrent");
-    const occurrences = await Promise.all(
-      ["a", "b", "c"].map(() =>
-        triggers.enqueueManual({
-          actorThreadId: null,
-          ownerId: fixture.userId,
-          triggerId: created.trigger.id,
-        }),
-      ),
-    );
-    await Promise.all(
-      occurrences.map((occurrence, index) =>
-        complete(fixture, occurrence, "failed", `concurrent-${index}`),
-      ),
-    );
+    const first = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    await expect(
+      triggers.enqueueManual({
+        actorThreadId: null,
+        ownerId: fixture.userId,
+        triggerId: created.trigger.id,
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    await complete(fixture, first, "failed", "seq-0");
+    const second = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    await complete(fixture, second, "failed", "seq-1");
+    const third = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    await complete(fixture, third, "failed", "seq-2");
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 3,
-      nextFireAt: null,
-      pauseReason: TRIGGER_AUTO_PAUSE_REASON,
-      status: "paused",
+      pauseReason: null,
+      status: "active",
     });
   });
   it("tracks failures independently for each Trigger", async ({ storeFixture }) => {
-    const { createFixture, createScheduleTrigger, failManual, detail } = storeFixture;
+    const { createFixture, createScheduleTrigger, failManual, detail, database } = storeFixture;
     const fixture = await createFixture("per-trigger");
     const failing = await createScheduleTrigger(fixture, "per-trigger-failing");
     const unaffected = await createScheduleTrigger(fixture, "per-trigger-unaffected");
     await failManual(fixture, failing.trigger.id, "first");
     await failManual(fixture, failing.trigger.id, "second");
     await failManual(fixture, failing.trigger.id, "third");
-    expect((await detail(failing.trigger.id, fixture.userId)).trigger.status).toBe("paused");
+    expect((await detail(failing.trigger.id, fixture.userId)).trigger).toMatchObject({
+      status: "active",
+    });
     expect((await detail(unaffected.trigger.id, fixture.userId)).trigger).toMatchObject({
-      consecutiveFailures: 0,
       pauseReason: null,
       status: "active",
     });
+    const rows = await database
+      .selectFrom("triggers")
+      .select(["id", "failingSince"])
+      .where("id", "in", [failing.trigger.id, unaffected.trigger.id])
+      .execute();
+    expect(rows.find((r) => r.id === failing.trigger.id)?.failingSince).not.toBeNull();
+    expect(rows.find((r) => r.id === unaffected.trigger.id)?.failingSince).toBeNull();
   });
   it("reads downstream Runs separately from the Trigger program outcome", async ({
     storeFixture,
@@ -2000,10 +2260,9 @@ integration.sequential("Trigger failure auto-pause", () => {
       actorThreadId: null,
       expectedRevisionId: created.revision.id,
       ownerId: fixture.userId,
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default async () => new Promise(() => setInterval(() => {}, 1000))",
+      script: {
+        interpreter: null,
+        text: "setInterval(() => {}, 1000);",
       },
       triggerId: created.trigger.id,
     });
@@ -2077,10 +2336,10 @@ integration.sequential("Trigger failure auto-pause", () => {
       observed: "backoff",
     });
   });
-  it("resets a healthy watch failure window and auto-pauses the next crash loop", async ({
+  it("resets a healthy watch failure window and keeps crash-looping watches active with backoff (Y10)", async ({
     storeFixture,
   }) => {
-    const { createFixture, createWatchTrigger, triggers, detail } = storeFixture;
+    const { createFixture, createWatchTrigger, triggers, detail, database } = storeFixture;
     const fixture = await createFixture("watch-crash-loop");
     const created = await createWatchTrigger(fixture, "watch-crash-loop");
     const bootId = `watch-boot-${randomUUID()}`;
@@ -2114,22 +2373,338 @@ integration.sequential("Trigger failure auto-pause", () => {
     await report(2, null, "backoff");
     const healthy = await report(2, new Date(Date.now() - 11 * 60_000), "running");
     expect(healthy.activation.consecutiveFailures).toBe(0);
-    expect((await report(3, null, "backoff")).autoPaused).toBe(false);
-    expect((await report(4, null, "backoff")).autoPaused).toBe(false);
-    expect((await report(5, null, "backoff")).autoPaused).toBe(true);
+    expect((await report(3, null, "backoff")).activation.desired).toBe("active");
+    expect((await report(4, null, "backoff")).activation.desired).toBe("active");
+    expect((await report(5, null, "backoff")).activation.desired).toBe("active");
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      pauseReason: WATCH_AUTO_PAUSE_REASON,
-      status: "paused",
+      pauseReason: null,
+      status: "active",
     });
-    const stopping = await report(6, null, "backoff");
-    expect(stopping.activation).toMatchObject({
-      consecutiveFailures: 3,
-      desired: "stopped",
+    const keptActive = await report(6, null, "backoff");
+    expect(keptActive.activation).toMatchObject({
+      consecutiveFailures: 4,
+      desired: "active",
       observed: "backoff",
     });
-    expect((await report(6, null, "stopped")).activation.observed).toBe("stopped");
+    const row = await database
+      .selectFrom("triggers")
+      .select(["watchCrashNotifiedAt", "failingSince"])
+      .where("id", "=", created.trigger.id)
+      .executeTakeFirstOrThrow();
+    expect(row.watchCrashNotifiedAt).not.toBeNull();
+    expect(row.failingSince).not.toBeNull();
   });
-  it("deduplicates observations and enforces an activation-local rolling limit", async ({
+  it("enforces FIFO one-firing-at-a-time for webhooks, schedule overruns, 100-firing output pruning, and runner removal pause (T8/T10/Y6/Y11)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createScheduleTrigger, triggers, store, database, complete } =
+      storeFixture;
+    const fixture = await createFixture("commit5-fuses");
+
+    // 1. Webhooks queue FIFO and only the head firing appears in listPendingCommands (Y11)
+    const hook = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "fifo-hook",
+      name: "FIFO hook",
+      script: {
+        interpreter: null,
+
+        text: "console.log('ok')",
+      },
+      source: { kind: "webhook" },
+      webhookRouteKey: "wh_fifo_hook_123456789012345678901234",
+    });
+    const wh1 = (
+      await triggers.enqueueWebhook({
+        headers: {},
+        method: "POST",
+        rawBody: Buffer.from("one", "utf8"),
+        routeKey: hook.trigger.webhookRouteKey!,
+      })
+    ).occurrence;
+    const wh2 = (
+      await triggers.enqueueWebhook({
+        headers: {},
+        method: "POST",
+        rawBody: Buffer.from("two", "utf8"),
+        routeKey: hook.trigger.webhookRouteKey!,
+      })
+    ).occurrence;
+    // AA2: One-firing-at-a-time and FIFO order are enforced at trigger claim, not listPendingCommands.
+    expect(await store.claimCommand(wh2.commandId, "fifo-dispatcher")).toBeNull();
+    expect(await store.claimCommand(wh1.commandId, "fifo-dispatcher")).not.toBeNull();
+    const wh1Started = await triggers.startExecution({
+      commandId: wh1.commandId,
+      runnerBootId: "boot-fifo",
+      runnerId: fixture.runnerId,
+    });
+    expect(await store.claimCommand(wh2.commandId, "fifo-dispatcher")).toBeNull();
+
+    await triggers.completeExecution({
+      executionGeneration: wh1Started.executionGeneration,
+      output: {
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: 0,
+        occurrenceId: wh1.id,
+        result: { ok: 1 },
+        status: "succeeded",
+        stderr: "",
+        stdout: "one",
+      },
+      runnerBootId: "boot-fifo",
+      runnerId: fixture.runnerId,
+    });
+    const wh2Claimed = await store.claimCommand(wh2.commandId, "fifo-dispatcher");
+    expect(wh2Claimed).not.toBeNull();
+    const wh2Started = await triggers.startExecution({
+      commandId: wh2.commandId,
+      runnerBootId: "boot-fifo",
+      runnerId: fixture.runnerId,
+    });
+    await triggers.completeExecution({
+      executionGeneration: wh2Started.executionGeneration,
+      output: {
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: 0,
+        occurrenceId: wh2.id,
+        result: { ok: 2 },
+        status: "succeeded",
+        stderr: "",
+        stdout: "two",
+      },
+      runnerBootId: "boot-fifo",
+      runnerId: fixture.runnerId,
+    });
+
+    // 2. Schedule overrun while running enqueues ONE waiting firing, collapses further ticks,
+    // blocks the waiting firing until the running one ends, and emits one 'overran-schedule' notice (T10 / AA8)
+    const sched = await createScheduleTrigger(fixture, "overrun-sched");
+    const firstTick = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: sched.trigger.id,
+    });
+    await store.claimCommand(firstTick.commandId, "overrun-dispatcher");
+    const firstStarted = await triggers.startExecution({
+      commandId: firstTick.commandId,
+      runnerBootId: "boot-overrun",
+      runnerId: fixture.runnerId,
+    });
+    const pastFire = new Date(Date.now() - 60_000);
+    await database
+      .updateTable("triggers")
+      .set({ nextFireAt: pastFire })
+      .where("id", "=", sched.trigger.id)
+      .execute();
+    const overrun1 = await triggers.claimDueSchedules(new Date());
+    const waiting = overrun1.occurrences.filter((o) => o.triggerId === sched.trigger.id);
+    expect(waiting).toHaveLength(1);
+    const waitingOccurrence = waiting[0]!;
+    // Waiting firing cannot be claimed while firstTick is still running (AA2 / AA8).
+    expect(await store.claimCommand(waitingOccurrence.commandId, "overrun-dispatcher")).toBeNull();
+    const overrunNotices1 = await database
+      .selectFrom("automationFailureNotices")
+      .select(["reason"])
+      .where("triggerId", "=", sched.trigger.id)
+      .execute();
+    expect(overrunNotices1).toEqual([{ reason: "overran-schedule" }]);
+    // Second due time while still running collapses into the single waiting firing without a duplicate notice.
+    await database
+      .updateTable("triggers")
+      .set({ nextFireAt: new Date(Date.now() - 30_000) })
+      .where("id", "=", sched.trigger.id)
+      .execute();
+    const overrun2 = await triggers.claimDueSchedules(new Date());
+    expect(overrun2.occurrences.filter((o) => o.triggerId === sched.trigger.id)).toEqual([]);
+    const overrunNotices2 = await database
+      .selectFrom("automationFailureNotices")
+      .select(["reason"])
+      .where("triggerId", "=", sched.trigger.id)
+      .execute();
+    expect(overrunNotices2).toHaveLength(1);
+    await triggers.completeExecution({
+      executionGeneration: firstStarted.executionGeneration,
+      output: {
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: 0,
+        occurrenceId: firstTick.id,
+        result: null,
+        status: "succeeded",
+        stderr: "",
+        stdout: "",
+      },
+      runnerBootId: "boot-overrun",
+      runnerId: fixture.runnerId,
+    });
+    // Once the running firing finishes, the single waiting firing can now be claimed and completed.
+    await complete(fixture, waitingOccurrence, "succeeded", "overrun-waiting");
+
+    // 3. 100-firing output pruning (T10): keep 100 most recent outputs, prune older without deleting rows
+    const principal = await database
+      .selectFrom("principals")
+      .select("id")
+      .where("userId", "=", fixture.userId)
+      .executeTakeFirstOrThrow();
+    const pruneBase = new Date(Date.now() - 200_000);
+    for (let i = 0; i < 101; i += 1) {
+      const cmdId = createId("command");
+      const occId = createId("triggerOccurrence");
+      const at = new Date(pruneBase.getTime() + i * 1_000);
+      await database
+        .insertInto("commands")
+        .values({
+          actorPrincipalId: principal.id,
+          authoritySource: { kind: "user-session", userId: fixture.userId },
+          createdAt: at,
+          dispatcherId: null,
+          environmentId: fixture.environmentId,
+          id: cmdId,
+          idempotencyKey: `prune-cmd-${i}-${randomUUID()}`,
+          lastError: null,
+          payload: { occurrenceId: occId, type: "trigger.execute" },
+          requestedBy: fixture.userId,
+          runId: null,
+          status: "succeeded",
+          threadId: fixture.threadId,
+          type: "trigger.execute",
+          updatedAt: at,
+        })
+        .execute();
+      await database
+        .insertInto("triggerOccurrences")
+        .values({
+          commandId: cmdId,
+          completedAt: at,
+          createdAt: at,
+          environmentId: fixture.environmentId,
+          error: null,
+          event: {
+            id: occId,
+            payload: null,
+            receivedAt: at.toISOString(),
+            source: { kind: "manual" },
+            trigger: {
+              anchorThreadId: fixture.threadId,
+              id: hook.trigger.id,
+              revisionId: hook.revision.id,
+            },
+          },
+          executionGeneration: 1,
+          exitCode: 0,
+          id: occId,
+          result: { i },
+          revisionId: hook.revision.id,
+          runnerBootId: "boot-prune",
+          runnerId: fixture.runnerId,
+          sourceKey: `prune:${i}`,
+          startedAt: at,
+          status: "succeeded",
+          stderr: `err-${i}`,
+          stdout: `out-${i}`,
+          triggerId: hook.trigger.id,
+          updatedAt: at,
+          webhookBody: Buffer.from(`body-${i}`, "utf8"),
+        })
+        .execute();
+    }
+    const trigger102 = (
+      await triggers.enqueueWebhook({
+        headers: {},
+        method: "POST",
+        rawBody: Buffer.from("latest-body", "utf8"),
+        routeKey: hook.trigger.webhookRouteKey!,
+      })
+    ).occurrence;
+    await complete(fixture, trigger102, "succeeded", "prune-102");
+    const hookOccurrences = await database
+      .selectFrom("triggerOccurrences")
+      .select(["id", "stdout", "stderr", "result", "webhookBody", "outputPrunedAt"])
+      .where("triggerId", "=", hook.trigger.id)
+      .orderBy("createdAt", "desc")
+      .orderBy("id", "desc")
+      .execute();
+    expect(hookOccurrences).toHaveLength(104); // 2 from step 1 + 101 seeded + 1 latest
+    const pruned = hookOccurrences.filter((row) => row.outputPrunedAt !== null);
+    const retained = hookOccurrences.filter((row) => row.outputPrunedAt === null);
+    expect(retained).toHaveLength(100);
+    expect(pruned).toHaveLength(4);
+    for (const row of pruned) {
+      expect(row.stdout).toBe("");
+      expect(row.stderr).toBe("");
+      expect(row.result).toBeNull();
+      expect(row.webhookBody).toBeNull();
+    }
+    const retainedDetail = await triggers.getForOwner(hook.trigger.id, fixture.userId, 100, {
+      kind: "person",
+    });
+    expect(retainedDetail?.occurrences).toHaveLength(100);
+    for (const occ of retainedDetail!.occurrences) {
+      expect(occ.outputPrunedAt).toBeNull();
+    }
+    await database
+      .deleteFrom("triggerOccurrences")
+      .where(
+        "id",
+        "in",
+        retained.map(({ id }) => id),
+      )
+      .execute();
+    const prunedDetail = await triggers.getForOwner(hook.trigger.id, fixture.userId, 100, {
+      kind: "person",
+    });
+    expect(prunedDetail?.occurrences).toHaveLength(4);
+    for (const occ of prunedDetail!.occurrences) {
+      expect(occ.status).toBe("succeeded");
+      expect(occ.stdout).toBe("");
+      expect(occ.stderr).toBe("");
+      expect(occ.result).toBeNull();
+      expect(occ.outputPrunedAt).toEqual(expect.any(String));
+    }
+
+    // 4. Removing a computer pauses its automations and settles running firings to unknown (Y6)
+    await database
+      .updateTable("runners")
+      .set({ kind: "local", ownerKind: "user", ownerUserId: fixture.userId })
+      .where("id", "=", fixture.runnerId)
+      .execute();
+    const runningBeforeRemove = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: sched.trigger.id,
+    });
+    await store.claimCommand(runningBeforeRemove.commandId, "remove-dispatcher");
+    await triggers.startExecution({
+      commandId: runningBeforeRemove.commandId,
+      runnerBootId: "boot-before-remove",
+      runnerId: fixture.runnerId,
+    });
+    await store.markCommandFrameSent(runningBeforeRemove.commandId);
+    await store.revokeRunner(fixture.runnerId, fixture.userId);
+    const pausedByRemove = await database
+      .selectFrom("triggers")
+      .select(["status", "pauseReason", "pausedBy", "nextFireAt"])
+      .where("id", "=", sched.trigger.id)
+      .executeTakeFirstOrThrow();
+    expect(pausedByRemove).toEqual({
+      nextFireAt: null,
+      pauseReason: "Paused because its computer was removed.",
+      pausedBy: "system",
+      status: "paused",
+    });
+    const settledRunning = await database
+      .selectFrom("triggerOccurrences")
+      .select(["status", "contactLostAt"])
+      .where("id", "=", runningBeforeRemove.id)
+      .executeTakeFirstOrThrow();
+    expect(settledRunning.status).toBe("unknown");
+    expect(settledRunning.contactLostAt).not.toBeNull();
+  });
+  it("admits live watch tool calls and deduplicates retries by idempotencyKey without an observation ledger (AA7)", async ({
     storeFixture,
   }) => {
     const { createFixture, createWatchTrigger, triggers, store, database } = storeFixture;
@@ -2147,24 +2722,19 @@ integration.sequential("Trigger failure auto-pause", () => {
       snapshot.activations.map(({ activation }) => [activation.triggerId, activation]),
     );
     const firstActivation = activations.get(first.trigger.id)!;
-    const request = (
-      activation: typeof firstActivation,
-      observationId: string,
-      requestId: string,
-    ) => ({
+    const request = (activation: typeof firstActivation, requestId: string) => ({
       action: "thread.message" as const,
       activationId: activation.id,
       anchorThreadId: fixture.threadId,
       createdBy: fixture.userId,
       environmentId: fixture.environmentId,
       executionGeneration: activation.executionGeneration,
-      observationId,
       requestFingerprint: "a".repeat(64),
       requestId,
       revisionId: activation.revisionId,
       triggerId: activation.triggerId,
     });
-    const firstRequest = request(firstActivation, "stable-1", "request-1");
+    const firstRequest = request(firstActivation, "request-1");
     const firstInput = await store.enqueueAdmittedThreadInput({
       admission: {
         kind: "watch",
@@ -2177,13 +2747,13 @@ integration.sequential("Trigger failure auto-pause", () => {
             type: "text",
           },
         ],
-        idempotencyKey: `watch:${firstActivation.id}:stable-1:message`,
+        idempotencyKey: `watch:${firstActivation.id}:op-1:message`,
         policy: "queue",
         requestedBy: fixture.userId,
         source: {
           activationId: firstActivation.id,
           kind: "watch",
-          observationId: "stable-1",
+          observationId: "op-1",
           revisionId: firstActivation.revisionId,
           triggerId: firstActivation.triggerId,
         },
@@ -2205,13 +2775,13 @@ integration.sequential("Trigger failure auto-pause", () => {
             type: "text",
           },
         ],
-        idempotencyKey: `watch:${firstActivation.id}:stable-1:message`,
+        idempotencyKey: `watch:${firstActivation.id}:op-1:message`,
         policy: "queue",
         requestedBy: fixture.userId,
         source: {
           activationId: firstActivation.id,
           kind: "watch",
-          observationId: "stable-1",
+          observationId: "op-1",
           revisionId: firstActivation.revisionId,
           triggerId: firstActivation.triggerId,
         },
@@ -2220,42 +2790,635 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
     expect(duplicateInput.message.id).toBe(firstInput.message.id);
     expect(duplicateInput.input.causalChainId).toBe(firstInput.input.causalChainId);
-    for (let index = 1; index < WATCH_OBSERVATIONS_PER_HOUR; index += 1) {
-      await admitWatchControlRequest(
-        database,
-        request(firstActivation, `stable-${index + 1}`, `request-${index + 2}`),
-      );
-    }
-    await expect(
-      admitWatchControlRequest(
-        database,
-        request(firstActivation, "over-limit", "request-over-limit"),
-      ),
-    ).rejects.toMatchObject({
-      code: "resource_exhausted",
-      details: {
-        limit: WATCH_OBSERVATIONS_PER_HOUR,
-      },
-    });
     const secondActivation = activations.get(second.trigger.id)!;
     await expect(
-      admitWatchControlRequest(database, request(secondActivation, "independent", "other-watch")),
+      admitWatchControlRequest(database, request(secondActivation, "other-watch")),
     ).resolves.toEqual({
       wasDuplicate: false,
     });
   });
-  it("enforces the active watch limit per environment", async ({ storeFixture }) => {
-    const { createFixture, createWatchTrigger } = storeFixture;
-    const fixture = await createFixture("watch-limit");
-    for (let index = 0; index < MAX_ACTIVE_WATCHES_PER_ENVIRONMENT; index += 1) {
-      await createWatchTrigger(fixture, `watch-limit-${index}`);
-    }
-    await expect(createWatchTrigger(fixture, "watch-limit-overflow")).rejects.toMatchObject({
-      code: "resource_exhausted",
-      details: {
-        limit: MAX_ACTIVE_WATCHES_PER_ENVIRONMENT,
+
+  it("serializes concurrent updateEncryptedSecrets under a row lock and returns identical not_found for missing vs out-of-reach (AA9)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, triggers } = storeFixture;
+    const fixture = await createFixture("secrets-atomic");
+    const created = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "secrets-atomic",
+      name: "Secrets hook",
+      script: { interpreter: null, text: "console.log('ok')" },
+      source: { kind: "webhook" },
+      webhookRouteKey: "whk_secrets_atomic_12345678901234567890123",
+    });
+
+    const mergeJson = (current: Buffer | null, key: string, value: string) => {
+      const parsed = current
+        ? (JSON.parse(current.toString("utf8")) as Record<string, string>)
+        : {};
+      parsed[key] = value;
+      return {
+        result: Object.keys(parsed).sort(),
+        sealed: { envelope: Buffer.from(JSON.stringify(parsed), "utf8"), keyVersion: 1 },
+      };
+    };
+
+    let releaseFirst!: () => void;
+    let enteredFirstLock!: () => void;
+    const firstLocked = new Promise<void>((resolve) => {
+      enteredFirstLock = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    const p1 = triggers.updateEncryptedSecrets({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      transform: async (current) => {
+        enteredFirstLock();
+        await withTimeout(gate, 5_000, {
+          timeoutError: () => new Error("First secret patch never released"),
+        });
+        return mergeJson(current, "FIRST", "one");
+      },
+      triggerId: created.trigger.id,
+    });
+    await withTimeout(firstLocked, 5_000, {
+      timeoutError: () => new Error("First secret patch never acquired row lock"),
+    });
+    const p2 = triggers.updateEncryptedSecrets({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      transform: async (current) => mergeJson(current, "SECOND", "two"),
+      triggerId: created.trigger.id,
+    });
+    // Wait until p2 is blocked on the FOR NO KEY UPDATE lock behind p1 before releasing p1.
+    await vi.waitFor(
+      async () => {
+        const waiting = await sql<{ pid: number }>`
+          select pid from pg_locks where not granted
+        `.execute(storeFixture.database);
+        expect(waiting.rows.length).toBeGreaterThan(0);
+      },
+      { timeout: 5_000 },
+    );
+    releaseFirst();
+
+    await Promise.all([p1, p2]);
+    const finalEnvelope = await triggers.getEncryptedSecrets(fixture.userId, created.trigger.id);
+    expect(JSON.parse(finalEnvelope!.toString("utf8"))).toEqual({
+      FIRST: "one",
+      SECOND: "two",
+    });
+
+    // Rule 5: missing automation and another owner's automation produce identical not_found errors.
+    const foreignOwnerId = createId("user");
+    const missingErr = await triggers
+      .updateEncryptedSecrets({
+        actorThreadId: null,
+        ownerId: foreignOwnerId,
+        transform: async (current) => mergeJson(current, "X", "1"),
+        triggerId: createId("trigger"),
+      })
+      .catch((error: unknown) => error);
+    const foreignErr = await triggers
+      .updateEncryptedSecrets({
+        actorThreadId: null,
+        ownerId: foreignOwnerId,
+        transform: async (current) => mergeJson(current, "X", "1"),
+        triggerId: created.trigger.id,
+      })
+      .catch((error: unknown) => error);
+    expect(missingErr).toMatchObject({ code: "not_found", message: "Trigger not found" });
+    expect(foreignErr).toMatchObject({ code: "not_found", message: "Trigger not found" });
+    expect((foreignErr as Error).message).toBe((missingErr as Error).message);
+  });
+
+  it("records true pausedBy for person, agent, connected agent, and authority-loss pauses (AA6)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, database, triggers } = storeFixture;
+    const fixture = await createFixture("paused-by-truth");
+    const created = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "paused-by-truth",
+      name: "Paused by truth",
+      script: { interpreter: null, text: "console.log('ok')" },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "*/5 * * * *", kind: "cron", timezone: "UTC" },
       },
     });
+    const readPaused = () =>
+      database
+        .selectFrom("triggers")
+        .select(["pausedBy", "pausedByConnectionId", "pausedByThreadId", "pausedAt"])
+        .where("id", "=", created.trigger.id)
+        .executeTakeFirstOrThrow();
+
+    // 1. Person pause
+    await triggers.setStatus({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "paused",
+      triggerId: created.trigger.id,
+    });
+    expect(await readPaused()).toMatchObject({
+      pausedAt: expect.any(Date),
+      pausedBy: "person",
+      pausedByConnectionId: null,
+      pausedByThreadId: null,
+    });
+
+    // 2. Agent pause
+    await triggers.setStatus({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "active",
+      triggerId: created.trigger.id,
+    });
+    await triggers.setStatus({
+      actorThreadId: fixture.threadId,
+      ownerId: fixture.userId,
+      status: "paused",
+      triggerId: created.trigger.id,
+    });
+    expect(await readPaused()).toMatchObject({
+      pausedAt: expect.any(Date),
+      pausedBy: "agent",
+      pausedByConnectionId: null,
+      pausedByThreadId: fixture.threadId,
+    });
+
+    // 3. Connected agent pause (never recorded as "person"!)
+    const connectionId = `agc_${randomUUID()}`;
+    const now = new Date();
+    await database
+      .insertInto("agentConnections")
+      .values({
+        accessMode: "full-access",
+        clientName: "External Agent",
+        createdAt: now,
+        expiresAt: new Date(now.getTime() + 60 * 60 * 1_000),
+        grant: { scope: "everything" },
+        grantRevision: 1,
+        id: connectionId,
+        label: "External Agent",
+        lastUsedAt: null,
+        resource: "https://opensteer.test/mcp",
+        revokedAt: null,
+        tokenHash: "sha256-live-agent-token",
+        userId: fixture.userId,
+      })
+      .execute();
+    await triggers.setStatus({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "active",
+      triggerId: created.trigger.id,
+    });
+    await triggers.setStatus({
+      actorConnectionId: connectionId,
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "paused",
+      triggerId: created.trigger.id,
+    });
+    expect(await readPaused()).toMatchObject({
+      pausedAt: expect.any(Date),
+      pausedBy: "connection",
+      pausedByConnectionId: connectionId,
+      pausedByThreadId: null,
+    });
+
+    // 4. Authority-loss pause in claimDueSchedules sets pausedBy: "system" + pausedAt
+    await triggers.setStatus({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      status: "active",
+      triggerId: created.trigger.id,
+    });
+    await database
+      .updateTable("runners")
+      .set({ revokedAt: new Date() })
+      .where("id", "=", fixture.runnerId)
+      .execute();
+    await database
+      .updateTable("triggers")
+      .set({ nextFireAt: new Date(Date.now() - 1_000) })
+      .where("id", "=", created.trigger.id)
+      .execute();
+    await triggers.claimDueSchedules(new Date());
+    expect(await readPaused()).toMatchObject({
+      pausedAt: expect.any(Date),
+      pausedBy: "system",
+      pausedByConnectionId: null,
+      pausedByThreadId: null,
+    });
+  });
+
+  it("lets a person settle a contact-lost personal firing to unknown so later firings can proceed (AA12)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, database, store, triggers } = storeFixture;
+    const fixture = await createFixture("contact-lost-personal");
+    const routeKey = "whk_contact_lost_personal_123456789012345678";
+    const created = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "contact-lost-personal",
+      name: "Contact-lost personal webhook",
+      script: { interpreter: null, text: "console.log('ok')" },
+      source: { kind: "webhook" },
+      webhookRouteKey: routeKey,
+    });
+    const first = (
+      await triggers.enqueueWebhook({
+        headers: {},
+        method: "POST",
+        routeKey,
+      })
+    ).occurrence;
+    const second = (
+      await triggers.enqueueWebhook({
+        headers: {},
+        method: "POST",
+        routeKey,
+      })
+    ).occurrence;
+    await store.claimCommand(first.commandId, "lost-dispatcher");
+    await triggers.startExecution({
+      commandId: first.commandId,
+      runnerBootId: "boot-lost-forever",
+      runnerId: fixture.runnerId,
+    });
+
+    // Computer disconnects and never comes back: personal firing gets contactLostAt stamped.
+    await store.markConnectionAttemptsContactLost({
+      runnerBootId: "boot-lost-forever",
+      runnerId: fixture.runnerId,
+    });
+    const lost = await database
+      .selectFrom("triggerOccurrences")
+      .select(["status", "contactLostAt"])
+      .where("id", "=", first.id)
+      .executeTakeFirstOrThrow();
+    expect(lost.status).toBe("running");
+    expect(lost.contactLostAt).not.toBeNull();
+    // Second firing is blocked while first is still running.
+    expect(await store.claimCommand(second.commandId, "lost-dispatcher")).toBeNull();
+
+    // Ending the stuck contact-lost firing settles it to unknown and unblocks the second firing.
+    const ended = await triggers.cancelPendingOccurrences(fixture.userId, {
+      actorThreadId: null,
+      occurrenceId: first.id,
+      triggerId: created.trigger.id,
+    });
+    expect(ended.canceledOccurrenceIds).toEqual([first.id]);
+    const settled = await database
+      .selectFrom("triggerOccurrences")
+      .select(["status", "completedAt"])
+      .where("id", "=", first.id)
+      .executeTakeFirstOrThrow();
+    expect(settled.status).toBe("unknown");
+    expect(settled.completedAt).not.toBeNull();
+    expect(await store.claimCommand(second.commandId, "lost-dispatcher")).not.toBeNull();
+  });
+
+  it("returns identical 404 from enqueueWebhook when the anchor task loses authority (AA14.3)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, database, triggers } = storeFixture;
+    const fixture = await createFixture("webhook-lost-authority");
+    const routeKey = "whk_lost_authority_123456789012345678901234";
+    await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "webhook-lost-authority",
+      name: "Lost authority webhook",
+      script: { interpreter: null, text: "console.log('ok')" },
+      source: { kind: "webhook" },
+      webhookRouteKey: routeKey,
+    });
+    // Revoke the anchor task's hosting runner so execution authority no longer holds.
+    await database
+      .updateTable("runners")
+      .set({ revokedAt: new Date() })
+      .where("id", "=", fixture.runnerId)
+      .execute();
+
+    await expect(
+      triggers.enqueueWebhook({
+        headers: {},
+        method: "POST",
+        routeKey,
+      }),
+    ).rejects.toMatchObject({
+      code: "not_found",
+      message: "Webhook not found",
+    });
+  });
+
+  it("enforces trigger_occurrences_sent_evidence_check in PostgreSQL after frame_sent_at is stamped (AB5)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createScheduleTrigger, database, store, triggers } = storeFixture;
+    const fixture = await createFixture("ab5-check");
+    const created = await createScheduleTrigger(fixture, "ab5-check");
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    await store.claimCommand(occurrence.commandId, "ab5-dispatcher");
+    const started = await triggers.startExecution({
+      commandId: occurrence.commandId,
+      runnerBootId: "ab5-boot",
+      runnerId: fixture.runnerId,
+    });
+    await store.markCommandFrameSent(occurrence.commandId);
+
+    // Without runner_reported_at or proven_not_started_at, PostgreSQL refuses failed/succeeded/pending/canceled.
+    await expect(
+      database
+        .updateTable("triggerOccurrences")
+        .set({ status: "failed" })
+        .where("id", "=", occurrence.id)
+        .execute(),
+    ).rejects.toThrow(/trigger_occurrences_sent_evidence_check/u);
+    await expect(
+      database
+        .updateTable("triggerOccurrences")
+        .set({ status: "succeeded" })
+        .where("id", "=", occurrence.id)
+        .execute(),
+    ).rejects.toThrow(/trigger_occurrences_sent_evidence_check/u);
+    await expect(
+      database
+        .updateTable("triggerOccurrences")
+        .set({ status: "pending" })
+        .where("id", "=", occurrence.id)
+        .execute(),
+    ).rejects.toThrow(/trigger_occurrences_sent_evidence_check/u);
+    await expect(
+      database
+        .updateTable("triggerOccurrences")
+        .set({ status: "canceled" })
+        .where("id", "=", occurrence.id)
+        .execute(),
+    ).rejects.toThrow(/trigger_occurrences_sent_evidence_check/u);
+
+    // failCommand without provenNotStarted is also refused by PostgreSQL once frame_sent_at is stamped.
+    await expect(store.failCommand(occurrence.commandId, "Late failure")).rejects.toThrow(
+      /trigger_occurrences_sent_evidence_check/u,
+    );
+
+    // Settling via completeExecution stamps runner_reported_at and passes the CHECK.
+    const completed = await triggers.completeExecution({
+      executionGeneration: started.executionGeneration,
+      output: {
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: 0,
+        occurrenceId: occurrence.id,
+        result: null,
+        status: "succeeded",
+        stderr: "",
+        stdout: "",
+      },
+      runnerBootId: "ab5-boot",
+      runnerId: fixture.runnerId,
+    });
+    expect(completed?.status).toBe("succeeded");
+
+    // Requeuing a sent firing WITH provenNotStarted: true stamps proven_not_started_at and passes.
+    const second = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    await store.claimCommand(second.commandId, "ab5-dispatcher-2");
+    await triggers.startExecution({
+      commandId: second.commandId,
+      runnerBootId: "ab5-boot",
+      runnerId: fixture.runnerId,
+    });
+    await store.markCommandFrameSent(second.commandId);
+    await store.retryCommand(second.commandId, new Error("rejected before start"), {
+      provenNotStarted: true,
+    });
+    const requeued = await database
+      .selectFrom("triggerOccurrences")
+      .select(["provenNotStartedAt", "status"])
+      .where("id", "=", second.id)
+      .executeTakeFirstOrThrow();
+    expect(requeued.status).toBe("pending");
+    expect(requeued.provenNotStartedAt).not.toBeNull();
+  });
+
+  it("halts a watch instead of spawning a second copy when a new boot lacks earlier-boots-contained-v1 (AB8)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, database, triggers } = storeFixture;
+    const fixture = await createFixture("ab8-uncontained-watch");
+    const created = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: `ab8-watch-${randomUUID()}`,
+      name: "Uncontained boot watch",
+      script: { interpreter: null, text: "setInterval(() => {}, 1000);" },
+      source: { kind: "watch" },
+    });
+
+    const firstBoot = await triggers.reconcileWatchesForRunner({
+      earlierBootsContained: true,
+      environmentId: fixture.environmentId,
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: "boot-1",
+      runnerConnectionGeneration: 1,
+      runnerId: fixture.runnerId,
+    });
+    expect(firstBoot.activations).toHaveLength(1);
+    const activation = firstBoot.activations[0]!.activation;
+    await triggers.applyWatchStatus({
+      activationId: activation.id,
+      executionGeneration: activation.executionGeneration,
+      healthySince: new Date(),
+      lastError: null,
+      lastExitCode: null,
+      observed: "running",
+      restartCount: 0,
+      runnerBootId: "boot-1",
+      runnerConnectionGeneration: 1,
+      runnerId: fixture.runnerId,
+      stderrTail: "",
+      stdoutTail: "",
+      verifiedContainment: true,
+    });
+
+    // Boot 2 connects without earlier-boots-contained-v1: must halt instead of spawning a duplicate.
+    const secondBoot = await triggers.reconcileWatchesForRunner({
+      earlierBootsContained: false,
+      environmentId: fixture.environmentId,
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: "boot-2",
+      runnerConnectionGeneration: 2,
+      runnerId: fixture.runnerId,
+    });
+    expect(secondBoot.activations).toEqual([]);
+    expect(secondBoot.halted).toBe(true);
+
+    const row = await database
+      .selectFrom("triggerWatchActivations")
+      .select(["lastError", "observed"])
+      .where("id", "=", activation.id)
+      .executeTakeFirstOrThrow();
+    expect(row.observed).toBe("halted");
+    expect(row.lastError).toContain("earlier-boot process containment");
+
+    const notice = await database
+      .selectFrom("automationFailureNotices")
+      .select(["reason", "detail"])
+      .where("triggerId", "=", created.trigger.id)
+      .executeTakeFirst();
+    expect(notice?.reason).toBe("watch-halted");
+
+    // Reconnecting again (even with earlierBootsContained: true) must NOT auto-restart a halted watch.
+    const thirdBoot = await triggers.reconcileWatchesForRunner({
+      earlierBootsContained: true,
+      environmentId: fixture.environmentId,
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: "boot-3",
+      runnerConnectionGeneration: 3,
+      runnerId: fixture.runnerId,
+    });
+    expect(thirdBoot.activations).toEqual([]);
+  });
+
+  it("marks a person's own active watch contact-lost on disconnect, exposes it on list/get, and clears it on reconnect (AB8)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, store, triggers } = storeFixture;
+    const fixture = await createFixture("ab8-personal-watch-contact-lost");
+    const created = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: `ab8-personal-watch-${randomUUID()}`,
+      name: "Personal file watch",
+      script: { interpreter: null, text: "setInterval(() => {}, 1000);" },
+      source: { kind: "watch" },
+    });
+
+    const reconciled = await triggers.reconcileWatchesForRunner({
+      earlierBootsContained: true,
+      environmentId: fixture.environmentId,
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: "personal-boot-1",
+      runnerConnectionGeneration: 1,
+      runnerId: fixture.runnerId,
+    });
+    const activation = reconciled.activations[0]!.activation;
+    await triggers.applyWatchStatus({
+      activationId: activation.id,
+      executionGeneration: activation.executionGeneration,
+      healthySince: new Date(),
+      lastError: null,
+      lastExitCode: null,
+      observed: "running",
+      restartCount: 0,
+      runnerBootId: "personal-boot-1",
+      runnerConnectionGeneration: 1,
+      runnerId: fixture.runnerId,
+      stderrTail: "",
+      stdoutTail: "",
+      verifiedContainment: true,
+    });
+
+    await store.markConnectionAttemptsContactLost({
+      runnerBootId: "personal-boot-1",
+      runnerId: fixture.runnerId,
+    });
+
+    const listed = await triggers.listForOwner({
+      ownerId: fixture.userId,
+      reader: personTaskReader,
+    });
+    const summary = listed.find((item) => item.id === created.trigger.id);
+    expect(summary?.watch?.observed).toBe("running");
+    expect(summary?.watch?.contactLostAt).toEqual(expect.any(String));
+
+    const detail = await triggers.getForOwner(
+      created.trigger.id,
+      fixture.userId,
+      5,
+      personTaskReader,
+    );
+    expect(detail?.activation?.contactLostAt).toEqual(expect.any(String));
+
+    // Reconnecting on the same boot clears contactLostAt so it returns to healthy Watching.
+    await triggers.reconcileWatchesForRunner({
+      earlierBootsContained: true,
+      environmentId: fixture.environmentId,
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: "personal-boot-1",
+      runnerConnectionGeneration: 2,
+      runnerId: fixture.runnerId,
+    });
+    const afterReconnect = await triggers.getForOwner(
+      created.trigger.id,
+      fixture.userId,
+      5,
+      personTaskReader,
+    );
+    expect(afterReconnect?.activation?.contactLostAt).toBeNull();
+  });
+
+  it("cleans automation names from outside at TriggerStore.create and update via outsideName", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, triggers } = storeFixture;
+    const fixture = await createFixture("outside-name-automation");
+    const created = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: `outside-name-${randomUUID()}`,
+      name: "Helper\u202E\nDisconnected\tWork\u200DOps",
+      script: { interpreter: null, text: "console.log('ok')" },
+      source: { kind: "webhook" },
+      webhookRouteKey: `whk_${randomUUID().replaceAll("-", "")}`,
+    });
+    expect(created.trigger.name).toBe("Helper Disconnected WorkOps");
+
+    const updated = await triggers.update({
+      actorThreadId: null,
+      expectedRevisionId: created.trigger.currentRevisionId,
+      name: "x".repeat(5_000),
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    expect(updated.trigger.name).toHaveLength(160);
+
+    const blankFallback = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: `outside-name-blank-${randomUUID()}`,
+      name: "\u202E\u200D\n\t",
+      script: { interpreter: null, text: "console.log('ok')" },
+      source: { kind: "webhook" },
+      webhookRouteKey: `whk_${randomUUID().replaceAll("-", "")}`,
+    });
+    expect(blankFallback.trigger.name).toBe("Automation");
   });
 
   /**

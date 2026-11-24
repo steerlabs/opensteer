@@ -4867,6 +4867,79 @@ describe("Electron geometry lifecycle", () => {
     await browser.close();
   });
 
+  it("keeps hidden pages throttled while an agent CDP channel is idle, and unthrottles only during active operations", async () => {
+    const { browser, page, view, host, unbind } = await launch();
+    const contents = view.webContents;
+    const evalPending = Promise.withResolvers<unknown>();
+    const originalSend = contents.debugger.sendCommand.getMockImplementation()!;
+    contents.debugger.sendCommand.mockImplementation((method, parameters) => {
+      if (method === "Runtime.evaluate") return evalPending.promise;
+      return originalSend(method, parameters);
+    });
+    try {
+      expect(contents.backgroundThrottling).toBe(true);
+      host.showInactive.mockClear();
+      const agent = await page.agentCdp();
+      try {
+        expect(contents.backgroundThrottling).toBe(true);
+        expect(host.showInactive).not.toHaveBeenCalled();
+        const evaluating = agent.send("Runtime.evaluate", {
+          expression: "1 + 1",
+          awaitPromise: true,
+        });
+        expect(contents.backgroundThrottling).toBe(false);
+        evalPending.resolve({ result: { type: "number", value: 2 } });
+        await evaluating;
+        expect(contents.backgroundThrottling).toBe(true);
+      } finally {
+        await agent.close();
+      }
+    } finally {
+      contents.debugger.sendCommand.mockImplementation(originalSend);
+      evalPending.resolve({ result: { type: "undefined" } });
+      unbind();
+      await browser.close();
+    }
+  });
+
+  it("releases rendering demand and stops reporting capturing when a capturePage call stalls and aborts", async () => {
+    const { browser, page, view, unbind } = await launch();
+    const contents = view.webContents as typeof view.webContents & {
+      isBeingCaptured: ReturnType<typeof vi.fn<() => boolean>>;
+      capturePage: ReturnType<typeof vi.fn>;
+    };
+    const stalled = Promise.withResolvers<unknown>();
+    let capturing = false;
+    contents.isBeingCaptured.mockImplementation(() => capturing);
+    contents.capturePage = vi.fn(() => {
+      capturing = true;
+      return stalled.promise;
+    });
+    const controller = new AbortController();
+    try {
+      const pending = page.captureViewport(
+        {
+          format: "png",
+          layout: { width: 800, height: 600 },
+          pageScale: 1,
+        },
+        controller.signal,
+      );
+      await vi.waitFor(() => expect(contents.capturePage).toHaveBeenCalledTimes(1));
+      expect(contents.backgroundThrottling).toBe(false);
+      expect(page.keepAwake?.()).toBe("capturing");
+      controller.abort(new Error("screenshot timed out"));
+      await expect(pending).rejects.toThrow("screenshot timed out");
+      expect(contents.backgroundThrottling).toBe(true);
+      // Stalled internal capturePage must not wedge TabSleeper forever as "capturing".
+      expect(page.keepAwake?.()).toBeNull();
+    } finally {
+      stalled.resolve(null);
+      unbind();
+      await browser.close();
+    }
+  });
+
   it("only composites a hidden page while a caller needs a frame", async () => {
     const { browser, native, view, unbind } = await launch();
     const contents = view.webContents;

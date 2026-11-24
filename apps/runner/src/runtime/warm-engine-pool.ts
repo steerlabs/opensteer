@@ -170,14 +170,14 @@ export class WarmEnginePool {
  */
 export function warmEngineKey(input: {
   readonly warmSelection?: HarnessCapabilities["warmSelection"];
-  readonly attachmentRoot: string | null;
+  /** Where this Run's attachments are delivered, or null when they are not. */
+  readonly attachmentDirectory: string | null;
   readonly baseEnvironment: Readonly<Record<string, string>>;
   readonly context: Extract<RunnerCommand, { readonly type: "run.execute" }>["context"];
   readonly instructions: string | null;
   /** What the engine's launch directory for other computers was written from. */
   readonly machineAccessLaunch: string;
   readonly providerSessionReference: string | null;
-  readonly runtimeBoundary: string;
   /** The skill catalog the engine was started with; an engine reads it at startup. */
   readonly skills: HarnessSkillPlan | undefined;
   readonly homeSkillsDigest: string;
@@ -227,9 +227,8 @@ export function warmEngineKey(input: {
         context.plugins.skillPolicy ?? null,
         context.agentTools.url,
         context.browserCdp.url,
-        input.attachmentRoot,
+        input.attachmentDirectory,
         input.baseEnvironment,
-        input.runtimeBoundary,
         input.machineAccessLaunch,
       ]),
     )

@@ -75,7 +75,9 @@ export type LineageAttempt =
     })
   | ConnectionAttempt<"plugin" | "shared-chrome">
   /** A message to a bridge's chat: written before it is sent, its status is its evidence. */
-  | ConnectionAttempt<"chat">;
+  | ConnectionAttempt<"chat">
+  /** A command acting outside the database (G4): written before it acts, settled after. */
+  | ConnectionAttempt<"command">;
 
 export interface ConnectionAttemptStopper {
   stop(
@@ -234,7 +236,8 @@ export async function connectionAttempts(
           and q.originating_watch_activation_id is null and q.originating_agent_session_id is null
           and t.origin_connection_id = f.id)
       ) and (f.disconnected or
-        coalesce(r.admitted_grant_revision, o.admitted_grant_revision, w.admitted_grant_revision, op.grant_revision)
+        coalesce(r.admitted_grant_revision, o.admitted_grant_revision, w.admitted_grant_revision,
+          op.grant_revision, (q.command->'proposer'->>'grantRevision')::integer)
           < f.cleanup_minimum_grant_revision)
       union all
       select 'trigger', t.id, null, t.anchor_thread_id, null, null, null, false, null, null, null
@@ -282,6 +285,16 @@ export async function connectionAttempts(
       where f.disconnected and (
         d.status in ('pending', 'leased', 'attempt-started', 'retryable-failed')
         or (d.status = 'unknown' and d.updated_at >= f.cleanup_requested_at))
+      union all
+      -- A command with an effect outside the database, acting now in this Home's process: its
+      -- settled state is its evidence; one that may have acted is unknown, contact lost (G4). A
+      -- narrowed grant waits on it as a Disconnect does, as it does on sessions (K4).
+      select 'command', a.id, null, null, null, null, null, a.state = 'running',
+        case when a.state <> 'running' then a.settled_at end,
+        case when a.state = 'unknown' then a.settled_at end, null
+      from command_attempts a join floor f on f.id = a.connection_id
+      where (f.disconnected or f.cleanup_reason = 'narrowed') and (
+        a.state = 'running' or (a.state = 'unknown' and a.settled_at >= f.cleanup_requested_at))
       union all
       select 'session', s.id, null, s.thread_id, null, null, null, false, null, null, null
       from agent_sessions s join floor f on f.id = s.connection_id
@@ -840,17 +853,25 @@ export async function markConnectionAttemptsContactLost(
   await commitPersonalMutation(database, async (tx) => {
     const now = new Date();
     for (const table of ["triggerOccurrences", "triggerWatchActivations"] as const) {
-      const affected = await tx
+      let query = tx
         .selectFrom(table)
         .select("id")
-        .where("connectionId", "is not", null)
         .where("runnerId", "=", input.runnerId)
         .where("runnerBootId", "=", input.runnerBootId)
         .where("terminalEvidenceAt", "is", null)
-        .where("contactLostAt", "is", null)
-        .orderBy("id")
-        .forNoKeyUpdate()
-        .execute();
+        .where("contactLostAt", "is", null);
+      query =
+        table === "triggerOccurrences"
+          ? query.where((eb) =>
+              eb.or([eb("connectionId", "is not", null), eb("status", "=", "running")]),
+            )
+          : query.where((eb) =>
+              eb.or([
+                eb("connectionId", "is not", null),
+                eb("observed", "in", ["starting", "running", "backoff"]),
+              ]),
+            );
+      const affected = await query.orderBy("id").forNoKeyUpdate().execute();
       if (affected.length === 0) continue;
       await tx
         .updateTable(table)
@@ -881,15 +902,29 @@ export async function markConnectionAttemptsContactLost(
         .where("executionGeneration", "=", executionGeneration)
         .execute();
     }
-    await tx
-      .updateTable("runAttempts")
-      .set({ contactLostAt: now })
+    // The attempts in id order first, as the tables above: two Runs a connection started on one
+    // boot are two rows, and an unordered update of both can deadlock against another writer.
+    const attempts = await tx
+      .selectFrom("runAttempts")
+      .select("id")
       .where("connectionId", "is not", null)
       .where("runnerId", "=", input.runnerId)
       .where("runnerBootId", "=", input.runnerBootId)
       .where("terminalEvidenceAt", "is", null)
       .where("contactLostAt", "is", null)
+      .orderBy("id")
+      .forNoKeyUpdate()
       .execute();
+    if (attempts.length > 0)
+      await tx
+        .updateTable("runAttempts")
+        .set({ contactLostAt: now })
+        .where(
+          "id",
+          "in",
+          attempts.map(({ id }) => id),
+        )
+        .execute();
   });
 }
 

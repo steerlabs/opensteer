@@ -29,6 +29,7 @@ export const smokeConfig = {
     "scripts/quit-runner-worker.ts",
     "scripts/harness-owner-smoke.ts",
     "scripts/electron-usb-smoke.ts",
+    "scripts/electron-system-ca-smoke.ts",
   ],
   external: ["electron"],
   banner: {

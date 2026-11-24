@@ -6,6 +6,7 @@
   "type": "module",
   "bin": {
     "browser-harness": "./browser-harness/browser-harness.mjs",
+    "opensteer": "./bin/opensteer",
     "opensteer-runner": "./dist/main.js"
   },
   "exports": {

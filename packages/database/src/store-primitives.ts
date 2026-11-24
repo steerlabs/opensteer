@@ -2,6 +2,7 @@ import { PrincipalIdSchema, type PrincipalId } from "@opensteer/channel-core";
 import {
   IsoDateTimeSchema,
   OpensteerError,
+  raisedBeforeEffect,
   type EnvironmentId,
   type ThreadId,
   type UserId,
@@ -76,14 +77,17 @@ export function requireBoundedIdentity(value: string, label: string, maximum: nu
     });
   }
 }
+/** A key used for a different command: refused before this one did anything (rule 4). */
 export function idempotencyConflict(key: string): OpensteerError {
-  return new OpensteerError({
-    code: "conflict",
-    details: {
-      idempotencyKey: key,
-    },
-    message: "The idempotency key was already used for a different command",
-  });
+  return raisedBeforeEffect(
+    new OpensteerError({
+      code: "conflict",
+      details: {
+        idempotencyKey: key,
+      },
+      message: "The idempotency key was already used for a different command",
+    }),
+  );
 }
 export async function lockCommandIdempotency(
   transaction: Transaction<DatabaseSchema>,
@@ -152,12 +156,14 @@ export async function returnRunToQueue(
   transaction: Transaction<DatabaseSchema>,
   input: {
     readonly run: Pick<RunRow, "environmentId" | "id" | "threadId">;
+    readonly startHoldReason?: import("@opensteer/core").RunStartHoldReason | null;
   },
 ): Promise<void> {
   const queued = await transaction
     .updateTable("runs")
     .set({
       bindingGeneration: null,
+      startHoldReason: input.startHoldReason ?? null,
       status: "queued",
     })
     .where("id", "=", input.run.id)

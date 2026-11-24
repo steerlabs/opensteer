@@ -16,7 +16,7 @@ describe("WatchService", () => {
   it.each([
     {
       capabilities: ["agent-tools-plan-v1"] as const,
-      reason: "Update this computer to run automation programs with tool contract version 5.",
+      reason: "Update this computer to run script automations.",
     },
     {
       capabilities: [] as const,
@@ -28,7 +28,6 @@ describe("WatchService", () => {
       const fixture = watchFixture();
       const context = {
         ...fixture.context,
-        toolContractVersion: 5 as const,
       };
       const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
         async () => undefined,
@@ -74,9 +73,8 @@ describe("WatchService", () => {
     const applyWatchStatus = vi.fn(async () => ({
       activation: {
         ...fixture.context.activation,
-        desired: "stopped" as const,
+        desired: "active" as const,
       },
-      autoPaused: true,
     }));
     const onChanged = vi.fn();
     const service = new WatchService(
@@ -124,7 +122,7 @@ describe("WatchService", () => {
       }),
     );
     expect(onChanged).toHaveBeenCalledWith();
-    await vi.waitFor(() => expect(reconcileWatches).toHaveBeenCalledTimes(2));
+    expect(reconcileWatches).toHaveBeenCalledTimes(1);
     await service.close();
   });
   it("reconciles a desired Watch after a stopped report is replayed", async () => {
@@ -137,7 +135,6 @@ describe("WatchService", () => {
         reconcileWatches,
         applyWatchStatus: async () => ({
           activation: { ...fixture.context.activation, desired: "active" },
-          autoPaused: false,
         }),
       }),
     );
@@ -200,6 +197,42 @@ describe("WatchService", () => {
     });
     await service.close();
   });
+
+  it("passes earlierBootsContained=false when a Runner lacks earlier-boots-contained-v1 and notifies on halted watches (AB8)", async () => {
+    const fixture = watchFixture();
+    const reconcileWatchesForRunner = vi.fn<
+      WatchServiceOptions["store"]["reconcileWatchesForRunner"]
+    >(async () => ({ activations: [], halted: true, reconcileGeneration: 1 }));
+    const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
+      async () => undefined,
+    );
+    const onChanged = vi.fn();
+    const service = new WatchService(
+      options(fixture, {
+        identityForEnvironment: () => ({
+          ...fixture.identity,
+          capabilities: fixture.identity.capabilities.filter(
+            (capability) => capability !== "earlier-boots-contained-v1",
+          ),
+        }),
+        onChanged,
+        reconcileWatches,
+        reconcileWatchesForRunner,
+      }),
+    );
+    try {
+      await service.reconcile(fixture.context.activation.environmentId);
+      expect(reconcileWatchesForRunner).toHaveBeenCalledWith(
+        expect.objectContaining({
+          earlierBootsContained: false,
+        }),
+      );
+      expect(reconcileWatches.mock.calls[0]?.[2]).toEqual([]);
+      expect(onChanged).toHaveBeenCalledOnce();
+    } finally {
+      await service.close();
+    }
+  });
   it("retries a failed reconciliation until the desired state converges", async () => {
     vi.useFakeTimers();
     const fixture = watchFixture();
@@ -241,6 +274,30 @@ describe("WatchService", () => {
       vi.useRealTimers();
     }
   });
+
+  it("arms no periodic renewal timer on an idle Home (Y2 / Rule 7)", async () => {
+    vi.useFakeTimers();
+    const fixture = watchFixture();
+    const reconcileWatchesForRunner = vi.fn(async () => ({
+      activations: [],
+      reconcileGeneration: 1,
+    }));
+    const service = new WatchService(
+      options(fixture, {
+        reconcileWatchesForRunner,
+      }),
+    );
+    try {
+      service.start();
+      expect(vi.getTimerCount()).toBe(0);
+      // Advancing 24 hours on an idle Home must trigger zero watch reconciliation timers.
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1_000);
+      expect(reconcileWatchesForRunner).not.toHaveBeenCalled();
+    } finally {
+      await service.close();
+      vi.useRealTimers();
+    }
+  });
 });
 function options(
   fixture: ReturnType<typeof watchFixture>,
@@ -257,7 +314,7 @@ function options(
   return {
     runnerStore: {
       getEnvironment: async () => ({ runnerId: fixture.identity.runnerId }) as never,
-      runnerCapabilities: async () => ["trigger-program-v5"],
+      runnerCapabilities: async () => ["automation-script-v1"],
     },
     browser: {
       hasBrowserProfiles: async () => false,
@@ -282,7 +339,6 @@ function options(
         overrides.applyWatchStatus ??
         (async () => ({
           activation: fixture.context.activation,
-          autoPaused: false,
         })),
       reconcileWatchesForRunner:
         overrides.reconcileWatchesForRunner ??
@@ -333,7 +389,6 @@ function watchFixture(): {
       triggerId,
       updatedAt: new Date().toISOString(),
     }),
-    toolContractVersion: 5,
     agentHome: { computerId: createId("runner"), path: "/tmp/watch-home" },
   };
   const descriptor = RunnerDescriptorSchema.parse({
@@ -345,7 +400,6 @@ function watchFixture(): {
         harnessDrivers: [],
 
         maxConcurrentRuns: 4,
-        providerStateModes: ["isolated"],
       },
     },
     name: "Runner",

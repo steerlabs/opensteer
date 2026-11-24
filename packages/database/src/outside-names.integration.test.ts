@@ -21,6 +21,7 @@ import {
   listAgentOperations,
 } from "./agent-session-store.js";
 import { AppStore } from "./app-store.js";
+import { BrowserSourceStore } from "./browser-source-store.js";
 import { createBrowserProfile } from "./browser-session-store.js";
 import { computerAppAccessPresentation } from "./computer-app-setup.js";
 import {
@@ -1009,10 +1010,9 @@ describeStore("a name from outside enters the Home clean", (it) => {
         createdBy: userId,
         idempotencyKey: `outside-automation-${index}`,
         name,
-        program: {
-          toolContractVersion: 5,
-          language: "javascript",
-          source: "export default async () => null",
+        script: {
+          interpreter: null,
+          text: "console.log('ok')",
         },
         source: {
           kind: "schedule",
@@ -1063,5 +1063,99 @@ describeStore("a name from outside enters the Home clean", (it) => {
       createdNames: cleaned,
       renamedNames: [...cleaned.slice(1), cleaned[0]],
     });
+  });
+
+  it("keeps a subagent's title and a Chrome profile's reported name clean on start, update, pairing and rename", async ({
+    storeFixture,
+  }) => {
+    const { database, store, startRunFixture } = storeFixture;
+    const f = await startRunFixture("outside-subagents");
+    const titles: string[] = [];
+    let ordinal = 1;
+    for (const [index, title] of boundedNames.entries()) {
+      const nodeId = createId("executionNode");
+      const next = boundedNames[(index + 1) % boundedNames.length]!;
+      for (const event of [
+        {
+          type: "node.started",
+          data: {
+            nodeId,
+            kind: "subagent",
+            model: null,
+            title,
+            nativeRef: `child-${index}`,
+            sessionRef: null,
+            originCallId: null,
+            parentNodeId: null,
+            prompt: null,
+          },
+        },
+        { type: "node.updated", data: { nodeId, title: next } },
+      ] as const) {
+        await store.commitRunnerEvent({
+          environmentId: f.environmentId,
+          runnerId: f.runnerId,
+          runnerBootId: f.runnerBootId,
+          event: pendingEvent({
+            ...event,
+            bindingGeneration: f.bindingGeneration,
+            environmentId: f.environmentId,
+            ordinal: ordinal++,
+            runId: f.run.id,
+            threadId: f.thread.id,
+          }),
+        });
+        const row = await database
+          .selectFrom("executionNodes")
+          .select("title")
+          .where("id", "=", nodeId)
+          .executeTakeFirstOrThrow();
+        titles.push(row.title);
+      }
+    }
+    expect(titles).toEqual(
+      cleaned.flatMap((title, index) => [title, cleaned[(index + 1) % cleaned.length]!]),
+    );
+
+    const sources = new BrowserSourceStore(database);
+    const names: string[] = [];
+    for (const [index, name] of boundedNames.entries()) {
+      const codeHash = `outside-source-code-${index}`;
+      await sources.createPairing({
+        codeHash,
+        ownerId: f.userId,
+        expiresAt: new Date(Date.now() + 60_000),
+        canonicalOrigin: "https://source-host.test",
+        remoteOrigin: null,
+        remoteGeneration: null,
+      });
+      const source = await sources.consumePairing({
+        origin: "https://source-host.test",
+        routeGeneration: null,
+        codeHash,
+        tokenHash: `outside-source-token-${index}`,
+        name,
+        replaces: null,
+      });
+      const sourceName = async () =>
+        (
+          await database
+            .selectFrom("browserSources")
+            .select("name")
+            .where("id", "=", source.id)
+            .executeTakeFirstOrThrow()
+        ).name;
+      names.push(await sourceName());
+      await sources.rename({
+        sourceId: source.id,
+        ownerId: f.userId,
+        name: boundedNames[(index + 1) % boundedNames.length]!,
+      });
+      names.push(await sourceName());
+      await sources.revoke({ sourceId: source.id, ownerId: f.userId });
+    }
+    expect(names).toEqual(
+      cleaned.flatMap((name, index) => [name, cleaned[(index + 1) % cleaned.length]!]),
+    );
   });
 });

@@ -43,13 +43,22 @@ const codexAppServerIdleMs = 5 * 60_000;
 export interface CodexThreadOwner {
   /** A notification or server request on a conversation this owner claimed. Never throws. */
   receive(message: CodexMethodMessage): void;
-  /** The process is gone or retired: nothing it owed will arrive. */
-  serverFailed(error: OpensteerError): void;
+  /**
+   * The process is gone or retired: nothing it owed will arrive. `interrupted`
+   * when a stop ended it; `engineRetired` when another session's stop forced
+   * this shared server to retire, cutting this owner's Run short.
+   */
+  serverFailed(
+    error: OpensteerError,
+    options?: { readonly interrupted?: boolean; readonly engineRetired?: boolean },
+  ): void;
   /**
    * Codex did not answer a request about one of this owner's conversations in
    * time. Whether it acted on it is unknown, so the owner cannot go on.
    */
   requestTimedOut(error: OpensteerError): void;
+  /** True once a stop is under way for this owner. */
+  readonly stopping?: boolean;
 }
 
 export interface CodexAppServerOptions {
@@ -154,12 +163,15 @@ export class CodexAppServer {
       onMethodMessage: (message, bytes) => {
         if (server) server.#route(message, bytes);
       },
-      onRequestTimeout: (_method, params, error) => {
+      onRequestTimeout: (method, params, error) => {
         if (!server) return;
-        // A process that keeps no time takes no new session; the one waiting ends.
-        server.recycle();
         const threadId = isRecord(params) ? optionalString(params.threadId) : undefined;
         const owner = threadId ? server.#owners.get(threadId) : undefined;
+        // Once a stop is under way or the conversation already closed, an
+        // unanswered turn/interrupt decides nothing: the unload's own evidence decides.
+        if (method === "turn/interrupt" && (!owner || owner.stopping)) return;
+        // A process that keeps no time takes no new session; the one waiting ends.
+        server.recycle();
         owner?.requestTimedOut(error);
       },
       redactions: () => (server ? [...server.#redactions] : []),
@@ -211,6 +223,11 @@ export class CodexAppServer {
 
   get failure(): OpensteerError | undefined {
     return this.#failure;
+  }
+
+  /** Whether the process is ending or gone; `close()` settles once it has exited. */
+  get ended(): boolean {
+    return this.#ended;
   }
 
   /**
@@ -345,8 +362,14 @@ export class CodexAppServer {
    * Ends the process now and every session on it: something one of them ran
    * could not be proven stopped any other way.
    */
-  async retire(error: OpensteerError): Promise<void> {
-    this.#fail(error);
+  async retire(
+    error: OpensteerError,
+    options?: {
+      readonly othersInterrupted?: boolean;
+      readonly initiator?: CodexThreadOwner;
+    },
+  ): Promise<void> {
+    this.#fail(error, options);
     await this.close();
   }
 
@@ -370,7 +393,13 @@ export class CodexAppServer {
     this.#onEnded?.(this);
   }
 
-  #fail(error: OpensteerError): void {
+  #fail(
+    error: OpensteerError,
+    options?: {
+      readonly othersInterrupted?: boolean;
+      readonly initiator?: CodexThreadOwner;
+    },
+  ): void {
     if (this.#failure) return;
     this.#failure = error;
     this.#log?.("warn", "codex.app-server.failed", {
@@ -379,9 +408,16 @@ export class CodexAppServer {
     });
     const owners = [...this.#attached];
     this.#end();
+    const interrupted = options?.othersInterrupted === true;
     for (const owner of owners) {
       try {
-        owner.serverFailed(error);
+        const engineRetired = interrupted && owner !== options?.initiator;
+        owner.serverFailed(
+          error,
+          interrupted
+            ? { interrupted: true, ...(engineRetired ? { engineRetired: true } : {}) }
+            : undefined,
+        );
       } catch {
         // One session's teardown cannot keep the others from hearing.
       }

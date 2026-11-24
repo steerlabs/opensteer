@@ -60,7 +60,6 @@ import {
   shippedHarnessCatalogEntry,
   type RunnerId,
 } from "@opensteer/core";
-import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import { hostCommandPlatform, resolveCommand } from "@opensteer/shared/command";
 import {
   createHarnessRegistry,
@@ -213,7 +212,6 @@ describe.skipIf(requestedEngine === undefined)(
             runtimeCacheDirectory: join(tmpdir(), "opensteer-test-runtime-cache"),
           },
         ),
-        harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
         publicOrigin,
         runTimeoutMs,
       });

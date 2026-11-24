@@ -1,4 +1,4 @@
-import { AgentGrantSchema, OpensteerError, type UserId } from "@opensteer/core";
+import { OpensteerError, type UserId } from "@opensteer/core";
 import type { ChannelAccountId } from "@opensteer/channel-core";
 import type { Kysely } from "kysely";
 import { readConnectionRowStanding, type AgentConnectionAuthority } from "./resource-access.js";
@@ -98,7 +98,8 @@ export async function admitBridgeSender(
     connection: {
       agentConnectionId: row.id,
       label: row.label,
-      grant: AgentGrantSchema.parse(row.grant),
+      // The standing read's effective grant (K6).
+      grant: row.grant,
       grantRevision: row.grantRevision,
       consentVersion: row.consentVersion,
       accessMode: row.accessMode,

@@ -47,7 +47,7 @@ import Darwin
       try require(!ownerInput || negotiatedOwnerInput, "This connection did not negotiate owner input")
       return
     }
-    var params: [String: Any] = ["protocolVersion": 10, "ownerViewVersion": 3]
+    var params: [String: Any] = ["protocolVersion": 11, "ownerViewVersion": 3]
     if ownerInput { params["ownerInputVersion"] = 2 }
     if videoProfile { params["videoProfile"] = 1 }
     let reply = try await request("hello", params)
@@ -933,7 +933,7 @@ extension WireJourney {
         .write(to: out.appendingPathComponent("owner-view-only-cases.json"))
     }
     start("baseline-hello-does-not-negotiate-input")
-    let hello = try await request("hello", ["protocolVersion": 10, "ownerViewVersion": 3])
+    let hello = try await request("hello", ["protocolVersion": 11, "ownerViewVersion": 3])
     try require(hello["ownerViewVersion"] as? Int == 3 && hello["ownerInputVersion"] == nil,
       "A baseline helper peer negotiated owner input")
     passed()

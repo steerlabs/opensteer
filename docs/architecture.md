@@ -148,7 +148,9 @@ Listing sizes are pinned in `tests/agent-context-budget.json`.
 
 **Outside the grant reads exactly like non-existent.** A refusal about a target the connection
 may not know of is rewritten to `not_found` with a fixed message and no advice
-(`apps/host/src/mcp/agent-tool-failure.ts`, `packages/agent-tools/src/results.ts`). Pinned by
+(`apps/host/src/mcp/agent-tool-failure.ts`, `packages/agent-tools/src/results.ts`). For Requests,
+a task's `status` is the task's own state and stays truthful while any Request outside the caller's
+authority stays hidden (absent from lists, counts, text, and asker). Pinned by
 `packages/agent-tools/src/results.test.ts` and `apps/host/src/mcp/lineage-visibility.integration.test.ts`.
 
 ### Delegation never widens authority
@@ -188,9 +190,9 @@ Each call is one reviewed **operation** of an **agent session**:
   one. Every result carries it.
 - An operation (`agent_operations`) is written before review or dispatch. It records the caller,
   an operation key and id, a digest of the arguments, the concrete target and its generation, the
-  grant revision, the effective mode, who decided (`structural-read`, `full-access`, `reviewer`,
-  `person`, `refused`), the hand-off time and the outcome: `completed`, `failed`, `refused` or
-  `unknown`.
+  grant revision, the effective mode, who decided (`structural-read`, `full-access`, `person`,
+  `refused`; a past `reviewer` decision stays readable as recorded), the hand-off time and the
+  outcome: `completed`, `failed`, `refused` or `unknown`.
 
 ### The guarantees
 
@@ -202,13 +204,8 @@ Each call is one reviewed **operation** of an **agent session**:
    `browser_connect`, every CDP command, every frame from the browser and a timer once a second
    re-check the same facts; any change closes the socket.
 3. **Held when the mode says so.** A read runs in any mode. An effect runs at once in Full
-   access. In Supervised and Auto-accept edits the person is asked. In Auto a reviewer on the
-   Home may allow it; anything other than a clear allow within 15 seconds (no model, an error, a
-   timeout, an odd answer, a prompt too long, text that looks like a credential) asks the person.
-   The reviewer runs only when a review model is configured (`OPENSTEER_AGENT_REVIEW_MODEL`);
-   without one, Auto asks the person. The reviewer is told that page titles, app names, the
-   calls and the agent's own reason are untrusted. The person sees a page title or an app's own
-   name as a labelled plain line ("The app calls itself: …").
+   access. In Supervised, Auto-accept edits and Auto the person is asked. The person sees a page
+   title or an app's own name as a labelled plain line ("The app calls itself: …").
 4. **The answer applies only to what the person saw.** The Request shows the exact script or
    calls; a script longer than a Request's plain text can show in full (18,956 characters, which
    leaves room for the Home's own first lines, so that an older app shows all of it too) is
@@ -349,6 +346,8 @@ of attempts (`packages/database/src/connection-disconnect.ts`, driven by
 Runs and their handed-off generations, automation occurrences and their attempts, Watch
 activations, queued inputs, Requests, steering commands, active automations (paused), agent
 sessions and operations, plugin executions, standard CDP connections and shared Chrome tabs.
+Display streams are opened only by a person's own session (`computer-use-display-routes.ts` ->
+`DisplayStreamHub.attachViewer`), so they are not in any connection's Disconnect set.
 
 **Nothing leaves the Home before it is in the set.** A Run is recorded before its frame is built;
 a CDP attempt before the attach ticket goes to the browser runtime; a plugin execution before the
@@ -571,7 +570,42 @@ tasks included, since they take the task's lineage), automations and replies not
 that may have been sent is kept as unknown and shown as "may have been sent", never sent again.
 Removing a messaging account ends every chat on it.
 
+## Automations
+
+An automation is a script stored by the Home (`script`: text and an optional interpreter, defaulting
+to the shipped Node) anchored to a task, started on a schedule, an HTTP request to its address, or
+kept alive as a Watch. When it fires, the Runner runs the script directly with `OPENSTEER_EVENT` and
+the `opensteer` CLI on `PATH`, acting under its anchor task's live authority
+(`trigger:<occurrenceId>`, `watch:<activationId>`). Opensteer's own memory passes are two ordinary
+automations.
+
+- **Approval through the door.** Creating, changing, pausing, resuming, running now and removing are
+  admitted through the one command door (`admitCommand`, `dispatchCommand`;
+  `apps/host/src/mcp/handlers/triggers.ts`, `apps/host/src/triggers/trigger-routes.ts`). Creating,
+  changing the script or when it runs, and running now run at once only in Full access with personal
+  context on an anchor in the caller's own lineage, and otherwise open a Request showing the command
+  and its script; approving a Request executes it while keeping the proposing connection's lineage
+  rather than lending the person's authority. Pausing and cancelling a pending firing narrow
+  authority and run now below Full access. Anything outside a caller's grant reads `not_found`, and
+  a chat anyone may speak in holds no automation commands.
+- **Addresses, bounds and contact loss.** A webhook address accepts any HTTP method and raw body,
+  rate-limits before the database without logging requests, and is shown only to callers that may
+  run the automation. One firing of an automation runs at a time (due ticks collapse; webhook
+  requests queue up to 100), stored output is kept for the last 100 firings with 64 KiB tails, and
+  failures never auto-pause an automation. A Home restart or lost connection never guesses a firing's
+  outcome: the Runner reattaches and reports when back, and an unconfirmed firing settles as
+  `unknown`, never retried.
+- **Screens.** On web, desktop and mobile, the automations list and detail views show the stored
+  script, recent firings and output tails, pause state with its reason and who paused it, contact
+  loss, and pause/stop controls that confirm an end only with evidence.
+
 ## Where a Home runs
+
+Every Home and every Runner trusts Node's certificate authorities plus the ones its computer
+trusts (a Mac's keychains, Windows' certificate stores, a Linux container's `/etc/ssl/certs`), so
+it reaches the Opensteer account through a network that inspects TLS
+([opensteer-node-trust.mjs](../deploy/container/opensteer-node-trust.mjs)).
+`OPENSTEER_SYSTEM_CERTIFICATES=off` where the app or the Home starts leaves Node's own list only.
 
 ### On a Mac
 
@@ -606,10 +640,11 @@ The same Home on a Linux server, packaged in `deploy/home` ([operator guide](../
   Host, PostgreSQL (no network listener), the gateway, the Runner, the browser, the browser's
   egress proxy and the messaging runtime, run as one Compose pod.
 - **Separation.** The Host's keys and database credentials live in a volume the Runner does not
-  mount. The Runner has no capabilities and a seccomp policy. Agent shells run in bubblewrap with
-  the Runner's data masked.
-- **Your own agents** on a Linux Home are Codex and Claude Code (pinned in the image). The other
-  engines refuse to run on that shared Runner.
+  mount. The Runner has no capabilities and a seccomp policy. Engines run as the Runner's own user
+  under their own sandbox and safety modes, exactly as on a Mac.
+- **Your own agents** on a Linux Home: the image ships Codex, Claude Code, OpenCode and Pi, and
+  Antigravity downloads itself. Grok, Muse Code and Cursor are not in the image; they show as not
+  installed.
 - **Claim.** A self-hosted Home prints a single-use setup link for the first owner (24 hours by
   default). A managed Home is claimed through the person's Opensteer account. There is no local
   bootstrap.
@@ -641,8 +676,8 @@ each provider write, and reports back. See [cloud-computer-operations.md](cloud-
 **What the verifier proves.** `scripts/verify-home-deployment.mjs` builds the images and runs 34
 checks against a real Linux Home in a local VM, or on the Linux server it runs on with
 `OPENSTEER_HOME_VERIFIER_TARGET=local`: the seven services, HTTPS, no local bootstrap,
-single-use setup and claim, Runner enrollment, sandboxed Codex that cannot read another profile or
-the Runner's credentials, CDP through the gateway with a one-use ticket, egress through the
+single-use setup and claim, Runner enrollment, Codex running as the Runner user in Agent home with
+its account's own home, CDP through the gateway with a one-use ticket, egress through the
 pinned proxy failing closed, no PostgreSQL listener, firewall rules, a Host restart keeping the
 claim, backup, restore, refusal without `--replace`, image-only rollback and the managed install.
 On Colima it runs arm64; locally it runs the server's own architecture. It does not prove
@@ -676,7 +711,7 @@ public certificates, real IPv6, a pristine Ubuntu install or a VM reboot.
   time. It does not hide the value afterwards.
 - **Saved logins and cards work only in the browser of the person's own Mac that hosts the Home.**
   Not on a Cloud Computer, not on another device, not over `browser_connect`.
-- **Auto asks the person unless a review model is configured** on the Home.
+- **Auto asks the person** before a connected agent's direct effect.
 - **A repeat is recognised only with the same `operationKey` or `operationId`.** Without either,
   the key is the MCP call id, and a retried call is a new operation.
 - **Disconnect can stay Stopping** for as long as a Runner cannot prove an end. A Runner too old to

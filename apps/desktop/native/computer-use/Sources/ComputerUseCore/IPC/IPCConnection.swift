@@ -5,6 +5,9 @@ import Foundation
 /// ends when that connection drops.
 public final class IPCConnection: @unchecked Sendable {
   public let id: Int
+  /// The process on the other end, as the kernel names it at accept. The
+  /// desktop's control socket and its video sockets share it.
+  public let peerProcessIdentifier: pid_t?
 
   private let fileDescriptor: Int32
   private let readQueue: DispatchQueue
@@ -53,14 +56,29 @@ public final class IPCConnection: @unchecked Sendable {
     id: Int,
     fileDescriptor: Int32,
     onFrame: @escaping @Sendable (IPCConnection, Data) -> Void,
-    onClose: @escaping @Sendable (IPCConnection) -> Void
+    onClose: @escaping @Sendable (IPCConnection) -> Void,
+    peerProcessIdentifier: pid_t? = nil
   ) {
     self.id = id
+    self.peerProcessIdentifier = peerProcessIdentifier ?? Self.peerProcess(of: fileDescriptor)
     self.fileDescriptor = fileDescriptor
+    var noSigPipe: Int32 = 1
+    setsockopt(
+      fileDescriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe,
+      socklen_t(MemoryLayout<Int32>.size))
     self.onFrame = onFrame
     self.onClose = onClose
     readQueue = DispatchQueue(label: "com.opensteer.computer-use.connection.\(id).read")
     writeQueue = DispatchQueue(label: "com.opensteer.computer-use.connection.\(id).write")
+  }
+
+  private static func peerProcess(of fileDescriptor: Int32) -> pid_t? {
+    var pid: pid_t = 0
+    var size = socklen_t(MemoryLayout<pid_t>.size)
+    guard getsockopt(fileDescriptor, SOL_LOCAL, LOCAL_PEERPID, &pid, &size) == 0, pid > 0 else {
+      return nil
+    }
+    return pid
   }
 
   func resume() {

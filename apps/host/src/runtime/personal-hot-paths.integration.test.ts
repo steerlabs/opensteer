@@ -259,6 +259,26 @@ it.skipIf(Boolean(reportPath))(
         ]),
       );
       close.unshift(() => host.close());
+      // Startup's one read for command Requests (an approval a restart cut off) is served by its
+      // partial index, never a scan of every Request the Home has ever had.
+      const recovery = recorded["home startup"]!.find((statement) =>
+        statement.includes("'running'"),
+      );
+      expect(recovery).toBeDefined();
+      const planner = new pg.Client({ connectionString: database.url });
+      await planner.connect();
+      try {
+        await planner.query("begin");
+        await planner.query("set local enable_seqscan = off");
+        const plan = (await planner.query(`explain ${recovery!}`)).rows
+          .map((row: Record<string, string>) => row["QUERY PLAN"])
+          .join("\n");
+        expect(plan).toContain("requests_command_running");
+        expect(plan).not.toContain("Seq Scan");
+        await planner.query("rollback");
+      } finally {
+        await planner.end();
+      }
       const runner = await connectCallerMachine(host, {
         name: "Parity fixture",
         token: host.hostingRunnerEnrollmentToken,

@@ -1,5 +1,6 @@
 import { getSelfDeviceId, getDeviceSelfRunnerId } from "./device-inventory-store.js";
 import {
+  createId,
   OpensteerError,
   RunnerIdSchema,
   type AuthSessionId,
@@ -25,7 +26,7 @@ import { commitPersonalMutation } from "./personal-mutation.js";
 import { personalDeploymentOwner } from "./machine-store.js";
 import { machineOwnershipIn } from "./machine-ownership.js";
 import { revokeRunner } from "./runner-store.js";
-import type { ChannelLinks } from "./store-primitives.js";
+import { jsonValue, type ChannelLinks } from "./store-primitives.js";
 
 export async function bindDeviceSession(
   database: Kysely<DatabaseSchema>,
@@ -161,6 +162,22 @@ export async function leaveDevice(
       const removed = await revokeRunner(transaction, links, runnerId, ownerId, {
         allowDeployment: true,
       });
+      // The device's own sign-out (AD10): recorded as no person's act, so Activity can say the
+      // device removed itself with its own key. The person removing a device is a door command.
+      if (runner.revokedAt === null)
+        await transaction
+          .insertInto("securityAudit")
+          .values({
+            id: createId("securityAudit"),
+            action: "device.left",
+            actorUserId: null,
+            actorSessionId: null,
+            requestId: null,
+            targetType: "device",
+            targetId: runnerId,
+            metadata: jsonValue({ by: "device-key" }),
+          })
+          .execute();
       return { runnerId: runnerId, removed };
     }
     const pending = await transaction

@@ -15,8 +15,6 @@ import {
   LiveSessionDirectory,
   parseGeneratedThreadName,
   threadTitlePrompt,
-  harnessRuntimeBoundaryForRunner,
-  nativeUserHarnessRuntimeBoundary,
   type HarnessAdapter,
   type HarnessCapabilities,
   type HarnessSession,
@@ -143,26 +141,6 @@ describe("session generation fencing", () => {
     });
     expect(directory.release(first)).toBe(false);
     expect(directory.get(threadId)?.generation).toBe(second.generation);
-  });
-});
-
-describe("harness runtime boundary", () => {
-  it("defaults Personal Runners to native-user", () => {
-    for (const runnerKind of ["main", "local", "managed"] as const) {
-      expect(harnessRuntimeBoundaryForRunner({ deploymentKind: "personal", runnerKind })).toEqual(
-        nativeUserHarnessRuntimeBoundary,
-      );
-    }
-  });
-
-  it("isolates an opted-in Personal Runner", () => {
-    expect(
-      harnessRuntimeBoundaryForRunner({
-        deploymentKind: "personal",
-        runnerKind: "main",
-        isolateHarnesses: true,
-      }),
-    ).toEqual({ kind: "isolated-service" });
   });
 });
 

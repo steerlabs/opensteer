@@ -1,4 +1,4 @@
-import type { OpensteerError } from "@opensteer/core";
+import type { OpensteerError, RunInterruptedCause } from "@opensteer/core";
 import { BoundedEventStream, type PublishOptions } from "./event-stream.js";
 import { isHarnessLiveEvent, type HarnessEvent } from "./types.js";
 
@@ -92,10 +92,16 @@ export function runStartedEvent(): HarnessEvent {
   return { data: { status: "running" }, type: "run.started" };
 }
 
-export function runEndedEvent(status: "completed" | "interrupted"): HarnessEvent {
+export function runEndedEvent(
+  status: "completed" | "interrupted",
+  options?: { readonly cause?: RunInterruptedCause },
+): HarnessEvent {
   return status === "completed"
     ? { data: { status: "completed" }, type: "run.completed" }
-    : { data: { status: "interrupted" }, type: "run.interrupted" };
+    : {
+        data: { status: "interrupted", ...(options?.cause ? { cause: options.cause } : {}) },
+        type: "run.interrupted",
+      };
 }
 
 export function runFailedEvent(failure: {

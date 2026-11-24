@@ -585,10 +585,9 @@ integration.sequential("Thread title lifecycle", () => {
         createdBy: f.userId,
         idempotencyKey: randomUUID(),
         name: "Title automation",
-        program: {
-          language: "javascript",
-          toolContractVersion: 5,
-          source: "export default async () => null",
+        script: {
+          interpreter: null,
+          text: "console.log('ok')",
         },
         source:
           kind === "trigger"
@@ -610,7 +609,6 @@ integration.sequential("Thread title lifecycle", () => {
         iss: "opensteer-host" as const,
         jti: randomUUID(),
         environmentId: f.environmentId,
-        toolContractVersion: 5 as const,
         triggerId: created.trigger.id,
       };
       let handle: (value: unknown) => ReturnType<TriggerToolsTestClient["handle"]>;
@@ -686,11 +684,6 @@ integration.sequential("Thread title lifecycle", () => {
         const task = "Check   inventory " + "with detailed instructions ".repeat(14);
         const request = {
           requestId: randomUUID(),
-          ...(kind === "watch"
-            ? {
-                observationId: randomUUID(),
-              }
-            : {}),
           type: "thread.delegate",
           message: task,
           ...(title === undefined
@@ -711,14 +704,7 @@ integration.sequential("Thread title lifecycle", () => {
           icon: null,
           iconSource: "provisional",
         });
-        const retry =
-          kind === "watch"
-            ? {
-                ...request,
-                requestId: randomUUID(),
-              }
-            : request;
-        expect(await handle(retry)).toMatchObject({
+        expect(await handle(request)).toMatchObject({
           type: "thread.delegate.result",
           result: {
             taskId: worker.id,
@@ -735,7 +721,7 @@ integration.sequential("Thread title lifecycle", () => {
         ]) {
           await expect(
             handle({
-              ...retry,
+              ...request,
               ...changed,
             }),
           ).rejects.toMatchObject({

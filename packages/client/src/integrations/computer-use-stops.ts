@@ -24,7 +24,7 @@ export interface ComputerUseStop extends ComputerUseStopTarget {
   readonly settledAt: number | null;
 }
 
-export type ComputerUseStopClient = Pick<HostClient, "rpc" | "getSnapshot" | "subscribe">;
+export type ComputerUseStopClient = Pick<HostClient, "dispatch" | "getSnapshot" | "subscribe">;
 
 const retainedSettledStops = 64;
 /** Longer than a Stop ever takes, so a request that went nowhere is let go. */
@@ -94,10 +94,7 @@ export class ComputerUseStops {
       }),
     );
     unanswered.catch(() => undefined);
-    void Promise.race([
-      stopComputerUseSession(this.#hostClient, target.sessionId, deadline.signal),
-      unanswered,
-    ])
+    void Promise.race([stopComputerUseSession(this.#hostClient, target.sessionId), unanswered])
       .then(
         () => this.#settle(target.sessionId, generation, attempt, "stopped", null),
         (error: unknown) =>

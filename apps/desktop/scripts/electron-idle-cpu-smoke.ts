@@ -119,9 +119,48 @@ export async function idleCpuPhase(): Promise<void> {
     // budget at 5% of one core. The other phases only need to observe animation.
     await measure("never-demanded", 1_000);
     const agent = await browser.cdp.attach(target);
-    await agent.send("Runtime.evaluate", { expression: "document.body.dataset.agentUsed = 'yes'" });
-    const active = await measure("agent-demand", 1_000);
-    await agent.close();
+    let active;
+    try {
+      await agent.send("Runtime.evaluate", {
+        expression: "document.body.dataset.agentUsed = 'yes'",
+      });
+      // An idle attached agent CDP channel stays throttled; hidden compositing is
+      // demanded only while an active agent operation (e.g. Runtime.evaluate) is in flight.
+      assert.equal(
+        contents.backgroundThrottling,
+        true,
+        "An idle attached agent channel must stay throttled.",
+      );
+      const inFlight = agent.send("Runtime.evaluate", {
+        expression: "new Promise((resolve) => { globalThis.__releaseAgentDemand = resolve; })",
+        awaitPromise: true,
+      });
+      let releasedEvaluation = false;
+      try {
+        active = await measure("agent-demand", 1_000);
+        await platform.send("Runtime.evaluate", {
+          expression: "globalThis.__releaseAgentDemand?.('done')",
+        });
+        await inFlight;
+        releasedEvaluation = true;
+      } finally {
+        if (!releasedEvaluation) {
+          await platform
+            .send("Runtime.evaluate", {
+              expression: "globalThis.__releaseAgentDemand?.('done')",
+            })
+            .catch(() => undefined);
+          await inFlight.catch(() => undefined);
+        }
+      }
+      assert.equal(
+        contents.backgroundThrottling,
+        true,
+        "Hidden compositing demand did not clear after the in-flight agent evaluation finished.",
+      );
+    } finally {
+      await agent.close();
+    }
     const released = await measure("agent-released", 8_000);
     await writeFile(
       path.join(directory, "electron-idle-cpu.json"),
