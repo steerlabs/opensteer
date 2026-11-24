@@ -466,6 +466,9 @@ ${pknameCases}
   local _expected _path _actual _p _h _
   if [[ " $* " == *" -c "* ]]; then
     if [[ ${opts.realInstallHostEnv ? "1" : "0"} == "1" ]]; then
+      # Drain stdin before returning so upstream echo/printf in pipefail pipelines
+      # never dies with SIGPIPE (exit 141) under CPU contention.
+      while IFS= read -r _; do :; done
       return 0
     fi
     while read -r _expected _path; do
@@ -2173,7 +2176,7 @@ esac
   if (( \${#_clean[@]} > 0 )); then /bin/rm "\${_clean[@]}"; fi`,
       );
       hRm.override("nproc", "  echo 8");
-      runScript(copyPath, ["install"], {
+      const rmRes = runScript(copyPath, ["install"], {
         ...hRm.env,
         OSP_TEST_CALLS: join(hRm.root, "calls.jsonl"),
         OSP_PROFILE_DISK: poolProfileDiskDevicePath,
@@ -2182,6 +2185,14 @@ esac
         OSP_PROFILES_ROOT: join(hRm.stateDir, "profiles"),
         OSP_SKIP_DEFAULT_KERNEL: "1",
       });
+      expect(
+        existsSync(join(hRm.optDir, "bin/firecracker")),
+        `setup-host.sh install did not reach firecracker install in install_binaries (status=${rmRes.status}, stderr=${rmRes.stderr})`,
+      ).toBe(true);
+      expect(
+        existsSync(join(hRm.optDir, "node/bin/node")),
+        `setup-host.sh install did not finish node install in install_binaries (status=${rmRes.status}, stderr=${rmRes.stderr})`,
+      ).toBe(true);
       const rmCalls = hRm.readCalls().filter((c) => c.cmd === "rm");
       const oneFsCalls = rmCalls.filter((c) => c.args.includes("--one-file-system"));
       expect(
