@@ -1267,6 +1267,24 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   /** For paintEvidence(): frames a paint wait saw at another size than the placement. */
   #paintFramesOtherSize = 0;
   #paintLastOtherSize: { readonly raster: string; readonly bounds: string } | null = null;
+  /**
+   * For paintEvidence(): when the last paint wait began and when a frame subscription last began
+   * (ms on this process's clock), with the revisions at each moment. A wait that timed out with no
+   * subscription begun since it started never asked for a frame.
+   */
+  #paintWaitBegan: Record<string, number | boolean> | null = null;
+  #paintSubscriptionBegan: Record<string, number | boolean> | null = null;
+  #paintRevisions(): Record<string, number | boolean> {
+    return {
+      at: Math.round(performance.now()),
+      surfaceRevision: this.#surfaceRevision,
+      appliedSurfaceRevision: this.#appliedSurfaceRevision,
+      metricsSurfaceRevision: this.#metricsSurfaceRevision,
+      paintedSurfaceRevision: this.#paintedSurfaceRevision,
+      serializesGeometry: this.#serializeGeometry !== null,
+      attached: this.#mount?.attached ?? false,
+    };
+  }
   #paintedSurfaceRevision = -1;
   #metricsSurfaceRevision = 0;
   #renderingDemand = false;
@@ -1714,6 +1732,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     if (this.#frameSubscriptionRevision === revision) return;
     this.#endPaintSubscription();
     this.#frameSubscriptionRevision = revision;
+    this.#paintSubscriptionBegan = this.#paintRevisions();
     const scale = this.#displayScale();
     this.#webContents.beginFrameSubscription((image) => {
       if (
@@ -1795,6 +1814,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
         remaining,
       );
       timer.unref();
+      this.#paintWaitBegan = this.#paintRevisions();
       this.#paintWaiters.add(waiter);
       this.#syncRenderingDemand();
       signal.addEventListener("abort", abort, { once: true });
@@ -1821,6 +1841,8 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       paintWaiters: this.#paintWaiters.size,
       framesAtOtherSize: this.#paintFramesOtherSize,
       lastOtherSize: this.#paintLastOtherSize,
+      waitBegan: this.#paintWaitBegan,
+      subscriptionBegan: this.#paintSubscriptionBegan,
       renderingDemand: this.#renderingDemand,
       parked: this.#parked,
       mounted: this.#mount !== null,
