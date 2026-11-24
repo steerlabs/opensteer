@@ -55,11 +55,13 @@ export function taskView(task: Task) {
     doneReason: task.doneReason,
     pendingRequestCount: task.pendingRequestCount,
     lastReplyPreview: task.lastReplyPreview,
+    ...(task.failureCode ? { failureCode: task.failureCode } : { failureCode: null }),
     failurePreview: task.failurePreview,
     latestRunCompletedAt: task.latestRunCompletedAt?.toISOString() ?? null,
     environmentId: task.environmentId,
     harnessInstanceId: task.harnessInstanceId,
     runQueued: task.runQueued,
+    ...(task.runStartHoldReason ? { runStartHoldReason: task.runStartHoldReason } : {}),
     ...(task.externalWork?.status === "active"
       ? { agentSessionId: task.externalWork.sessionId }
       : {}),

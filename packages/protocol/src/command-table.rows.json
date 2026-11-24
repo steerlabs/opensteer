@@ -202,6 +202,30 @@
       }
     },
     {
+      "type": "thread.stop.recheck",
+      "family": "tasks",
+      "governs": "the task's unconfirmed stop hold ← `threadId`",
+      "faces": [
+        {
+          "when": null,
+          "class": "person-view",
+          "answers": {
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "person-only recheck button on an unconfirmed stop (`server.ts:1877-1885`)",
+      "effect": {
+        "where": "outside",
+        "why": "server.ts:1877 → thread-service.ts:443: asks the Runner to confirm containment and clears the start hold on proof",
+        "ongoing": false
+      }
+    },
+    {
       "type": "thread.input.lease.take",
       "family": "tasks",
       "governs": "the person's editor lease ← `messageId` + session",

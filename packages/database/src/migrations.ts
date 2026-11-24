@@ -763,6 +763,46 @@ export function migrationProvider(options?: {
                   `.execute(database);
                 },
               },
+              "0117_stop_truth_and_recovery": {
+                /**
+                 * Records why an interrupted Run ended (e.g. a shared engine had to retire),
+                 * why a queued Run is being held back from starting, when a late stop proof
+                 * arrived, and the failure code of a failed task so lists do not collapse
+                 * unconfirmed stops into generic failures.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table runs
+                      add column if not exists interrupted_cause text check (interrupted_cause in ('lease-lost', 'engine-retired')),
+                      add column if not exists start_hold_reason text check (start_hold_reason in ('previous-stop-unconfirmed')),
+                      add column if not exists stop_confirmed_at timestamptz;
+                    alter table threads
+                      add column if not exists failure_code text,
+                      add column if not exists run_start_hold_reason text check (run_start_hold_reason in ('previous-stop-unconfirmed')),
+                      add column if not exists unconfirmed_stop_run_id text;
+                    alter table runners
+                      add column if not exists machine_boot_id text;
+                    alter table run_attempts
+                      add column if not exists machine_boot_id text;
+                    create index if not exists threads_unconfirmed_stop_idx
+                      on threads(environment_id)
+                      where unconfirmed_stop_run_id is not null or run_start_hold_reason is not null;
+                    update threads t
+                      set failure_code = last_run.code,
+                          unconfirmed_stop_run_id = case when last_run.code = 'execution_termination_unproven' then last_run.id else t.unconfirmed_stop_run_id end
+                      from (
+                        select distinct on (thread_id) thread_id, id, failure->>'code' as code
+                        from runs
+                        where maintenance is null
+                        order by thread_id, run_ordinal desc
+                      ) last_run
+                      where t.id = last_run.thread_id
+                        and t.status = 'failed'
+                        and last_run.code is not null;
+                    update client_sync_state set epoch = gen_random_uuid();
+                  `.execute(database);
+                },
+              },
             }
           : {}),
       };

@@ -1,4 +1,4 @@
-import type { ExecutionContainment } from "../runtime/execution-containment.js";
+import { readMachineBootId, type ExecutionContainment } from "../runtime/execution-containment.js";
 import { AppServerError } from "../apps/app-server-manager.js";
 import { harnessMinimumVersion } from "@opensteer/core";
 import { meetsMinimumVersion } from "@opensteer/harness";
@@ -274,6 +274,8 @@ export interface ReconnectingHostConnectionOptions {
   readonly agents?: RunnerAgentsConnection;
   readonly browserBridge?: RunnerConfig["browserBridge"];
   readonly bootId: RunnerDescriptor["bootId"];
+  /** Stable OS boot identity override for tests; defaults to the host's OS boot ID. */
+  readonly machineBootId?: string | null;
   readonly config: RunnerConfig;
   /** The computer this Runner runs on, read once at start. */
   readonly device?: RunnerDescriptor["device"];
@@ -313,6 +315,7 @@ export class ReconnectingHostConnection {
   readonly #agents: RunnerAgentsConnection | undefined;
   readonly #browserBridge: RunnerConfig["browserBridge"];
   readonly #bootId: RunnerDescriptor["bootId"];
+  readonly #machineBootId: string | undefined;
   readonly #config: Omit<RunnerConfig, "enrollmentToken">;
   readonly #device: RunnerDescriptor["device"];
   readonly #platform: NodeJS.Platform;
@@ -404,6 +407,10 @@ export class ReconnectingHostConnection {
     this.#agentsStoppedSince = options.agentsStoppedSince;
     this.#browserBridge = options.browserBridge;
     this.#bootId = options.bootId;
+    this.#machineBootId =
+      options.machineBootId === null
+        ? undefined
+        : (options.machineBootId ?? readMachineBootId(options.platform ?? process.platform));
     const { enrollmentToken, ...config } = options.config;
     this.#config = config;
     this.#device = options.device;
@@ -868,6 +875,7 @@ export class ReconnectingHostConnection {
         ? {}
         : { agentsStoppedSince: this.#agentsStoppedSince }),
       bootId: this.#bootId,
+      ...(this.#machineBootId ? { machineBootId: this.#machineBootId } : {}),
       capabilities: [
         ...runnerCapabilities(harnessDrivers),
         ...(agents?.runFileOptions || agents?.runtime.homeFileOptions?.()
@@ -945,7 +953,6 @@ export class ReconnectingHostConnection {
       computerTool: 1,
       ...(agents.runFileOptions ? { runFiles: 1 as const } : {}),
       maxConcurrentRuns: this.#config.maxConcurrentRuns,
-      providerStateModes: [...agents.runtime.providerStateModes()],
     };
   }
 
@@ -1507,6 +1514,7 @@ export const stoppedWorkAllowed = {
   "host.run-file.receive": false,
   "host.run-file.send": false,
   "host.runs.revoked": true,
+  "host.thread.stop.recheck": true,
   "host.voice": false,
 } satisfies Record<
   Exclude<
@@ -1748,6 +1756,26 @@ export class AgentsWorkSession implements RunnerWorkSession {
       case "host.live.resync":
         this.#options.agents.runtime.resynchronizeLive(message.runId);
         return;
+      case "host.thread.stop.recheck": {
+        void this.#options.agents.runtime
+          .recheckThreadStop(message.threadId)
+          .then(
+            ({ proven }) =>
+              this.#options.sink.send({
+                type: "runner.thread.stop.recheck.result",
+                requestId: message.requestId,
+                proven,
+              }),
+            () =>
+              this.#options.sink.send({
+                type: "runner.thread.stop.recheck.result",
+                requestId: message.requestId,
+                proven: false,
+              }),
+          )
+          .catch(() => undefined);
+        return;
+      }
       case "host.executions.acked":
         this.#options.agents.runtime.acknowledge(message.acks, message.firingAcks);
         return;
@@ -2578,6 +2606,13 @@ function reachOnlyWorkSession(
             fence: message.fence,
             ok: false,
             error: notRunningAgents,
+          });
+          return;
+        case "host.thread.stop.recheck":
+          await sink.send({
+            type: "runner.thread.stop.recheck.result",
+            requestId: message.requestId,
+            proven: true,
           });
           return;
         // A computer that runs no agents holds no Runs to stop, resume or renew.

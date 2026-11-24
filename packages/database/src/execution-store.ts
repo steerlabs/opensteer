@@ -8,6 +8,7 @@ import { withPersonalReadTransaction } from "./personal-transaction.js";
 import "./connection.js";
 import { issueRunGrant, type RevokedRunGrant } from "./run-grants.js";
 import { pendingReplacementAttempt } from "./run-attempts.js";
+import { earlierBootProvenContained } from "./execution-recovery.js";
 import { type CommandRow, type ProviderSessionTable, type DatabaseSchema } from "./schema.js";
 import {
   isPlaceContentPart,
@@ -583,6 +584,7 @@ export async function acquireExecutionBinding(
     readonly continuationIdentity: ProviderContinuationIdentity;
     readonly harnessInstanceId: HarnessInstanceId;
     readonly leaseTokenHash: string;
+    readonly machineBootId?: string | null;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
     readonly runId: RunId;
@@ -685,6 +687,7 @@ export async function acquireExecutionBinding(
         "threads.environmentId",
         "threads.id as threadId",
         "threads.harnessInstanceId",
+        "threads.unconfirmedStopRunId",
         "executionEnvironments.runnerId",
         "harnessInstances.driverKind",
       ])
@@ -780,6 +783,51 @@ export async function acquireExecutionBinding(
         message: "Provider session continuation identity does not match this execution",
       });
     }
+    if (thread.unconfirmedStopRunId && thread.unconfirmedStopRunId !== input.runId) {
+      const priorAttempt = await transaction
+        .selectFrom("runAttempts")
+        .select(["runnerId", "runnerBootId", "machineBootId"])
+        .where("runId", "=", thread.unconfirmedStopRunId)
+        .where("bindingGeneration", "is not", null)
+        .orderBy("ordinal", "desc")
+        .limit(1)
+        .executeTakeFirst();
+      if (
+        priorAttempt &&
+        (priorAttempt.runnerId !== input.runnerId ||
+          priorAttempt.runnerBootId !== input.runnerBootId)
+      ) {
+        const runner = await transaction
+          .selectFrom("runners")
+          .select(["capabilities", "machineBootId"])
+          .where("id", "=", input.runnerId)
+          .executeTakeFirstOrThrow();
+        const proven = earlierBootProvenContained({
+          attemptRunnerId: priorAttempt.runnerId,
+          attemptRunnerBootId: priorAttempt.runnerBootId,
+          attemptMachineBootId: priorAttempt.machineBootId,
+          currentRunnerId: input.runnerId,
+          currentRunnerBootId: input.runnerBootId,
+          currentMachineBootId:
+            input.machineBootId !== undefined ? input.machineBootId : runner.machineBootId,
+          earlierBootsContained: runner.capabilities.includes("earlier-boots-contained-v1"),
+        });
+        if (!proven) {
+          throw new OpensteerError({
+            code: "conflict",
+            message:
+              "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
+            reason: "previous-stop-unconfirmed",
+          });
+        }
+        await transaction
+          .updateTable("threads")
+          .set({ unconfirmedStopRunId: null })
+          .where("id", "=", input.threadId)
+          .where("unconfirmedStopRunId", "=", thread.unconfirmedStopRunId)
+          .execute();
+      }
+    }
     // A reference only identifies native state; it does not prove that the
     // first input was accepted. Earlier unstarted attempts need an ordered
     // Runner terminal or proof that dispatch never began: a Run that was never
@@ -863,6 +911,7 @@ export async function acquireExecutionBinding(
     const { grantId, revokedGrants } = await issueRunGrant(transaction, {
       bindingGeneration: row.bindingGeneration,
       connectionId: run.connectionId,
+      ...(input.machineBootId !== undefined ? { machineBootId: input.machineBootId } : {}),
       modelSelection: run.modelSelection,
       runId: input.runId,
       runnerBootId: input.runnerBootId,
@@ -881,6 +930,7 @@ export async function renewExecutionBinding(
     readonly bindingGeneration: number;
     readonly leaseExpiresAt: Date;
     readonly leaseTokenHash: string;
+    readonly machineBootId?: string | null;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
     readonly runId: RunId;

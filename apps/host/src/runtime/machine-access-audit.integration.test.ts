@@ -700,7 +700,7 @@ async function relayHandshake(
   runnerId: string,
 ): Promise<{ readonly acknowledgedAt: number; close(): void }> {
   return new Promise((resolve, reject) => {
-    const socket = connect(launch.machineAccessRelaySocket);
+    const socket = connect(join(launch.launchDirectory, "relay.sock"));
     let pending = "";
     const timer = setTimeout(() => reject(new Error("relay never acknowledged")), 15_000);
     timer.unref();

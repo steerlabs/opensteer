@@ -1874,6 +1874,16 @@ export async function createHostServer(
           type: command.type,
         };
 
+      case "thread.stop.recheck":
+        return {
+          ...(await threadService.recheckThreadStop(
+            { kind: "person", userId },
+            command,
+            AbortSignal.timeout(35_000),
+          )),
+          type: command.type,
+        };
+
       case "thread.input.lease.take":
       case "thread.input.lease.renew":
       case "thread.input.lease.release":
@@ -2142,10 +2152,10 @@ export async function createHostServer(
           });
         }
         const agents = runner.modules.agents;
-        if (!agents?.providerStateModes.includes(command.stateKind)) {
+        if (!agents) {
           throw new OpensteerError({
             code: "conflict",
-            message: `This work location does not support ${command.stateKind} AI engine state`,
+            message: "This work location does not run AI engines",
           });
         }
         const driver = agents.harnessDrivers.find(

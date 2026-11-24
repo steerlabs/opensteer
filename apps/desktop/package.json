@@ -38,6 +38,7 @@
     "test:electron-cookies:run": "electron .electron-smoke/electron-browser-cookie-smoke.js",
     "test:electron-passkeys:run": "electron .electron-smoke/electron-browser-passkey-smoke.js",
     "test:electron-usb:run": "electron .electron-smoke/electron-usb-smoke.js",
+    "test:electron-system-ca:run": "electron .electron-smoke/electron-system-ca-smoke.js",
     "test:electron-display": "tsup --config scripts/tsup.electron-smoke.config.ts && electron .electron-smoke/electron-display-smoke.js",
     "test:electron-focus": "tsup --config scripts/tsup.electron-smoke.config.ts && electron .electron-smoke/electron-browser-focus-smoke.js",
     "test:electron-passkeys": "tsup --config scripts/tsup.electron-smoke.config.ts && electron .electron-smoke/electron-browser-passkey-smoke.js",

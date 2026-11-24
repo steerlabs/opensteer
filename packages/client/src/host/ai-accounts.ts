@@ -174,7 +174,7 @@ export function engineGroups(
   const canAddAccounts =
     environment.harnessAuthenticationAllowed &&
     environment.connected &&
-    (environment.providerStateModes.includes("isolated") || environment.kind === "managed");
+    (environment.harnessDrivers.length > 0 || environment.kind === "managed");
   return [...kinds]
     .sort((left, right) => harnessDisplayRank(left) - harnessDisplayRank(right))
     .map((driverKind) => {

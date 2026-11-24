@@ -189,7 +189,7 @@ integration("Machine access, end to end", () => {
     expect(keywords.get("hostkeyalgorithms")).toBe("ssh-ed25519");
     expect(keywords.get("canonicalizehostname")).toBe("false");
     expect(keywords.get("proxycommand")).toContain("ssh-proxy --relay");
-    expect(keywords.get("proxycommand")).toContain(launch.machineAccessRelaySocket);
+    expect(keywords.get("proxycommand")).toContain(join(launch.launchDirectory, "relay.sock"));
   }, 120_000);
 
   it("runs a command on the target, half-closes its input, and leaks no Opensteer environment", async () => {

@@ -2,11 +2,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
-  BackgroundModelChoiceSchema,
   BrowserSessionIdSchema,
   DeviceIdSchema,
   OpensteerError,
-  HarnessIdSchema,
   ToolBlockedError,
   agentSessionIdleMs,
   createId,
@@ -23,18 +21,14 @@ import {
   NotificationStore,
   installBrowserPoolSlot,
   agentOperationRequestLifetimeMs,
-  decideAgentOperation,
   listAgentOperations,
   needsYouPage,
   readTranscriptItem,
   readBrowserPoolSlot,
-  reopenAgentOperation,
 } from "@opensteer/database";
 import { createStoreFixture, describeStore } from "@opensteer/database/test-support/store";
 import { expect, vi } from "vitest";
-import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
-import { createAgentReviewer } from "./agent-reviewer.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import { BrowserReplService } from "../browser-use/browser-repl-service.js";
 import { BrowserPoolGate } from "../browser/browser-pool-gate.js";
@@ -54,11 +48,7 @@ import {
   lastService,
 } from "../mcp/connection-caller.test-support.js";
 import type { TabServicePort } from "../tabs/ports.js";
-import {
-  AgentSessionService,
-  OperationOutcomeUnknown,
-  type AgentReviewerPort,
-} from "./agent-session-service.js";
+import { AgentSessionService, OperationOutcomeUnknown } from "./agent-session-service.js";
 
 type Fixture = Awaited<ReturnType<typeof createStoreFixture>>;
 const profile = createId("browserProfile") as BrowserProfileId;
@@ -117,8 +107,6 @@ async function setUp(
   options: {
     readonly accessMode?: ThreadAccessMode;
     readonly grant?: AgentGrant;
-    readonly reviewer?: AgentReviewerPort;
-    readonly reviewTimeoutMs?: number;
     readonly run?: Awaited<ReturnType<Fixture["startRunFixture"]>>;
     readonly browserConnect?: Pick<BrowserToolPorts, "issueTicket"> &
       Pick<BrowserToolPorts["tabs"], "open" | "bindBrowserScript">;
@@ -130,8 +118,6 @@ async function setUp(
   const sessions = new AgentSessionService({
     store: storeFixture.store,
     holdMs: 0,
-    ...(options.reviewer ? { reviewer: options.reviewer } : {}),
-    ...(options.reviewTimeoutMs !== undefined ? { reviewTimeoutMs: options.reviewTimeoutMs } : {}),
   });
   const unexpectedTabOperation = () => {
     throw new Error("This fixture runs scripts by profile ID.");
@@ -528,153 +514,6 @@ describeStore("an external agent's direct work through sessions", (it) => {
       gate.set({ hold: null });
       expect(gate.held).toBe(0);
     });
-
-  it("records a fake background model's allow decision before executing an Auto effect", async ({
-    storeFixture,
-  }) => {
-    const backgroundText = vi
-      .fn<Parameters<typeof createAgentReviewer>[0]["runners"]["backgroundText"]>()
-      .mockResolvedValue({ ok: true, text: "allow" });
-    const f = await storeFixture.startRunFixture("reviewer-model");
-    const harness = {
-      ...(await storeFixture.database
-        .selectFrom("harnessInstances")
-        .selectAll()
-        .where("environmentId", "=", f.environmentId)
-        .executeTakeFirstOrThrow()),
-      driverKind: HarnessIdSchema.parse("codex"),
-      sourceId: "codex",
-    };
-    const catalog = HarnessInstanceCatalogSchema.parse({
-      driverKind: harness.driverKind,
-      harnessInstanceId: harness.id,
-      status: "ready",
-      continuationIdentity: {
-        driverKind: harness.driverKind,
-        continuationKey: "runner:v1:" + "a".repeat(43),
-      },
-      connections: [],
-      models: [
-        {
-          providerId: "openai",
-          modelId: "review-model",
-          nativeModelId: "review-model",
-          displayName: "Review model",
-          isDefault: false,
-          options: [],
-        },
-      ],
-    });
-    const reviewer = createAgentReviewer({
-      model: BackgroundModelChoiceSchema.parse({
-        engine: harness.driverKind,
-        account: harness.id,
-        model: "review-model",
-      }),
-      store: {
-        getAgentHomeSettings: storeFixture.store.getAgentHomeSettings.bind(storeFixture.store),
-        listEnvironmentsForUser: storeFixture.store.listEnvironmentsForUser.bind(
-          storeFixture.store,
-        ),
-        listHarnessInstances: async () => [harness],
-        listHarnessCatalogs: async () => [
-          {
-            environmentId: f.environmentId,
-            harnessInstanceId: harness.id,
-            catalog,
-            capturedAt: new Date(),
-          },
-        ],
-      },
-      runners: {
-        isAvailable: () => true,
-        canRunHarness: () => true,
-        identityForEnvironment: () =>
-          ({ capabilities: ["background-text-v1"] }) as ReturnType<
-            Parameters<typeof createAgentReviewer>[0]["runners"]["identityForEnvironment"]
-          >,
-        backgroundText,
-      },
-    });
-    const s = await setUp(storeFixture, "session-auto", { accessMode: "auto", reviewer, run: f });
-    // The resolver must use the connection owner's authorized environment.
-    const result = await s.ok("browser_use", { ...script, operationKey: "reviewed-open" });
-    expect(result).toMatchObject({ status: "completed" });
-    expect(backgroundText).toHaveBeenCalledOnce();
-    expect(s.runBrowserScript).toHaveBeenCalledOnce();
-    const receipt = await storeFixture.database
-      .selectFrom("agentOperations")
-      .select(["decision", "requestId", "state"])
-      .where("operationKey", "=", "reviewed-open")
-      .executeTakeFirstOrThrow();
-    expect(receipt).toEqual({ decision: { by: "reviewer" }, requestId: null, state: "completed" });
-  });
-
-  it("asks the person when the reviewer never returns or observes cancellation", async ({
-    storeFixture,
-  }) => {
-    const answer = Promise.withResolvers<"allow">();
-    const review = vi.fn(() => answer.promise);
-    const s = await setUp(storeFixture, "session-review-timeout", {
-      accessMode: "auto",
-      reviewer: { review },
-      reviewTimeoutMs: 25,
-    });
-    try {
-      expect(await s.ok("browser_use", script)).toMatchObject({
-        status: "pending",
-        requestId: expect.any(String),
-      });
-      expect(review).toHaveBeenCalledOnce();
-      expect(s.runBrowserScript).not.toHaveBeenCalled();
-    } finally {
-      answer.resolve("allow");
-    }
-  });
-
-  it.for(["revision", "mode", "generation"] as const)(
-    "rejects a late Auto review after the %s changes",
-    async (changed, { storeFixture }) => {
-      const entered = Promise.withResolvers<void>();
-      const answer = Promise.withResolvers<"allow">();
-      const review = vi
-        .fn<AgentReviewerPort["review"]>()
-        .mockImplementationOnce(() => {
-          entered.resolve();
-          return answer.promise;
-        })
-        .mockResolvedValue("ask");
-      const s = await setUp(storeFixture, "session-review-cas", {
-        accessMode: "auto",
-        reviewer: { review },
-      });
-      const running = s.ok("browser_use", script);
-      try {
-        await entered.promise;
-        const old = await storeFixture.database
-          .selectFrom("agentOperations")
-          .selectAll()
-          .where("connectionId", "=", s.agent.id)
-          .executeTakeFirstOrThrow();
-        const approved = await decideAgentOperation(storeFixture.database, old, { by: "reviewer" });
-        const facts = {
-          ...old,
-          ...(changed === "revision" ? { grantRevision: old.grantRevision + 1 } : {}),
-          ...(changed === "mode" ? { mode: "approval-required" as const } : {}),
-          ...(changed === "generation" ? { targetGeneration: "replacement" } : {}),
-        };
-        const newRound = await reopenAgentOperation(storeFixture.database, approved, facts);
-        expect(newRound).toMatchObject({ state: "admitted", decision: null });
-        expect(
-          await decideAgentOperation(storeFixture.database, old, { by: "reviewer" }),
-        ).toMatchObject({ state: "admitted", decision: null });
-        expect(s.runBrowserScript).not.toHaveBeenCalled();
-      } finally {
-        answer.resolve("allow");
-        await running.catch(() => undefined);
-      }
-    },
-  );
 
   it("starts a session on the first direct call, continues it across transports, and refuses input to its task", async ({
     storeFixture,

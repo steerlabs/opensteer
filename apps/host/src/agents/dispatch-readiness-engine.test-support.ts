@@ -82,15 +82,16 @@ lines.on("line", (line) => {
         });
       }
       if (message.method === "turn/start" && !ephemeral) {
+        const threadId = message.params?.threadId;
         publish(
           {
             dispatchReadinessTurn: {
               input: message.params?.input,
-              releaseFile,
-              threadId: message.params?.threadId,
+              releaseFile: threadId ? `${releaseFile}.${threadId}` : releaseFile,
+              threadId,
             },
           },
-          message.params?.threadId ?? null,
+          threadId ?? null,
         );
       }
       child.stdin.write(`${line}\n`);

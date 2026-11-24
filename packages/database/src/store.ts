@@ -662,6 +662,12 @@ export class OpensteerStore {
   }): Promise<boolean> {
     return runnerStore.touchRunnerConnection(this.#database, input);
   }
+  async touchRunnerConnectionForAttach(input: {
+    readonly connectionGeneration: number;
+    readonly runnerId: RunnerId;
+  }): Promise<{ readonly current: boolean; readonly hasUnconfirmedStop: boolean }> {
+    return runnerStore.touchRunnerConnectionForAttach(this.#database, input);
+  }
   async createBrowserProfile(input: {
     readonly homeRunnerId?: RunnerId | null;
     readonly idempotencyKey: string;
@@ -1546,6 +1552,27 @@ export class OpensteerStore {
   }> {
     return threadStore.updateThreadExecutionSelection(this.#database, input);
   }
+  async clearThreadStartHold(threadId: ThreadId): Promise<boolean> {
+    return executionRecovery.clearThreadStartHold(this.#database, threadId);
+  }
+  async readThreadUnconfirmedStop(
+    threadId: ThreadId,
+  ): Promise<executionRecovery.ThreadUnconfirmedStop | null> {
+    return executionRecovery.readThreadUnconfirmedStop(this.#database, threadId);
+  }
+  async confirmThreadUnconfirmedStop(
+    threadId: ThreadId,
+    runId: RunId,
+    confirmedAt?: Date,
+  ): Promise<boolean> {
+    return executionRecovery.confirmThreadUnconfirmedStop(
+      this.#database,
+      threadId,
+      runId,
+      confirmedAt,
+    );
+  }
+
   async resumeThreadInputQueue(input: {
     readonly authority?: import("./thread-caller.js").ThreadCallerAuthority;
     readonly idempotencyKey: string;
@@ -1800,6 +1827,7 @@ export class OpensteerStore {
     readonly continuationIdentity: ProviderContinuationIdentity;
     readonly harnessInstanceId: HarnessInstanceId;
     readonly leaseTokenHash: string;
+    readonly machineBootId?: string | null;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
     readonly runId: RunId;
@@ -1916,6 +1944,7 @@ export class OpensteerStore {
     readonly leaseExpiresAt: Date;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
+    readonly checkUnconfirmedStops?: boolean;
   }): Promise<{
     readonly resumed: readonly ResumedExecution[];
     readonly results: readonly ExecutionAttachment[];

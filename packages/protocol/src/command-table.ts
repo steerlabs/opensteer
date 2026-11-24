@@ -307,6 +307,14 @@ export const commandTable: CommandTable = {
     governs: task,
     effect: "database",
   },
+  "thread.stop.recheck": {
+    family: "tasks",
+    scope: "task",
+    step: "none",
+    faces: [personView],
+    governsKinds: ["task"],
+    governs: task,
+  },
   "thread.input.steer": {
     family: "tasks",
     scope: "task",

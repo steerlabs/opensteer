@@ -1,3 +1,4 @@
+import { nodeTrustVariable } from "../../../../deploy/container/opensteer-node-trust.mjs";
 import { createId } from "@opensteer/core";
 import {
   RunnerAuxiliaryStreamIdSchema,
@@ -26,6 +27,7 @@ import {
   shellAgentsStoppedSentence,
   pumpReadableToWebSocket,
   pumpWebSocketToWritable,
+  runnerTrustVariable,
   shellHelperEnvironment,
 } from "./shell-module-handler.js";
 
@@ -77,6 +79,21 @@ describe("ShellModuleHandler", () => {
       USER: "test",
       XDG_CONFIG_HOME: "/Users/test/.config",
     });
+  });
+
+  it("keeps the Runner's own certificate switch out of the person's shells", () => {
+    expect(runnerTrustVariable).toBe(nodeTrustVariable);
+    expect(
+      shellHelperEnvironment({
+        HOME: "/Users/test",
+        NODE_USE_SYSTEM_CA: "1",
+        node_use_system_ca: "1",
+        Node_Use_System_Ca: "1",
+        opensteer_secret: "never",
+        Opensteer_Token: "never",
+        PATH: "/usr/bin",
+      }),
+    ).toEqual({ HOME: "/Users/test", PATH: "/usr/bin" });
   });
 
   it("bounds a stalled output pump at 1 MiB without blocking a sibling pump", async () => {

@@ -3240,6 +3240,11 @@ async function executeMockCommand(
         asOfSequence: SequenceSchema.parse(String(client.getSnapshot().revision)),
         type: command.type,
       });
+    case "thread.stop.recheck":
+      return rpcSuccess({
+        proven: true,
+        type: command.type,
+      });
     case "thread.input.steer":
       client.assertThreadOriginLive(command.threadId);
       return rpcSuccess({
@@ -5229,6 +5234,18 @@ export class MockHostClient implements HostClient {
       threadId,
       type: "thread.inputQueue.resume",
     });
+  }
+
+  async recheckThreadStop(threadId: string): Promise<{ readonly proven: boolean }> {
+    const result = await this.dispatch({
+      idempotencyKey: `mock-stop-recheck:${crypto.randomUUID()}`,
+      threadId,
+      type: "thread.stop.recheck",
+    });
+    if (result.type !== "thread.stop.recheck") {
+      throw new Error(`Unexpected thread.stop.recheck response: ${result.type}`);
+    }
+    return { proven: result.proven };
   }
 
   async steerThreadInput(threadId: string, messageId: string): Promise<void> {
@@ -14766,7 +14783,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
         id: "env_00000000-0000-4000-8000-000000000001",
         kind: "main",
         name: "Home Mac",
-        providerStateModes: ["ambient", "isolated"],
         // The hosting Runner for this personal Deployment.
         runnerId: "rnr_11111111-1111-4111-8111-111111111111",
         status: "connected",
@@ -14797,7 +14813,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
         id: mockAwaySiteEnvironmentId,
         kind: "main",
         name: "Studio iMac",
-        providerStateModes: ["ambient", "isolated"],
         runnerId: "rnr_44444444-4444-4444-8444-444444444444",
         status: "connected",
       },

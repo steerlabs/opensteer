@@ -182,7 +182,7 @@ function planAction(
   if (accounts.length > 0 || !candidate.addable) return null;
   const source = driver.sources.find(({ sourceId }) => sourceId === candidate.sourceId);
   if (!source || !source.stateKinds.includes("isolated") || source.fields.length > 0) return null;
-  if (!main.harnessAuthenticationAllowed || !main.providerStateModes.includes("isolated")) {
+  if (!main.harnessAuthenticationAllowed || main.harnessDrivers.length === 0) {
     return null;
   }
   return { environmentId: main.id, kind: "add" };
