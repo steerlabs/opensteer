@@ -39,7 +39,7 @@ import {
   TranscriptOrderCursorViewSchema,
 } from "./transcript.js";
 
-export const scopedPersonalApiVersion = 67;
+export const scopedPersonalApiVersion = 66;
 export const personalClientFrameMaxBytes = 32 * 1024;
 export const personalChangesFrameMaxBytes = 512 * 1024;
 export const personalLiveFrameMaxBytes = 16 * 1024;

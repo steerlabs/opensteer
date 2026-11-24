@@ -49,12 +49,14 @@ export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
  * 6 ("wire changes that released apps read are additive and optional") does not
  * apply; removing the team server was the owner's decision.
  *
- * 67 removed `providerStateModes` from each environment: every Runner now runs
- * its engines as its own user, so the field said only whether it ran engines,
- * which its drivers already say. Nothing before this release is served.
+ * The same cutover removed `providerStateModes` from each environment: every
+ * Runner now runs its engines as its own user, so the field said only whether
+ * it ran engines, which its drivers already say. No app speaking 66 was
+ * released before that, so it is one number, not two: CI admits exactly this
+ * cutover (`.github/scripts/ci-stable-api.mjs`).
  */
-export const hostApiVersion = 67;
-export const minimumHostApiVersion = 67;
+export const hostApiVersion = 66;
+export const minimumHostApiVersion = 66;
 /**
  * A personal caller states its minimum here: a Host from before the window
  * compares it for equality, which admits exactly the Hosts this tree still
