@@ -363,9 +363,13 @@ export function AccountSignInDialog({
       <>
         {alternatives}
         {cancel}
-        <button className="btn" onClick={() => setHere(true)} type="button">
-          Open on this device
-        </button>
+        {/* One way in from here: that computer's browser. This device is offered only once
+            that browser could not open the page, to paste back where it lands. */}
+        {homeBrowser.error !== null ? (
+          <button className="btn" onClick={() => setHere(true)} type="button">
+            Open on this device
+          </button>
+        ) : null}
         <button
           className="btn btn--primary"
           disabled={homeBrowser.opening}

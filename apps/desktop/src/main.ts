@@ -94,7 +94,10 @@ import { DesktopAccessProjection } from "./connections/access-projection.js";
 import { DesktopDeploymentProbe } from "./connections/deployment-probe.js";
 import { DeploymentCatalogStore, DesktopUpdatesService } from "@opensteer/client/connections";
 import type { DeploymentId } from "@opensteer/core";
-import { resolveDesktopAppBranding } from "@opensteer/protocol/desktop";
+import {
+  desktopComputerUseOffInTrial,
+  resolveDesktopAppBranding,
+} from "@opensteer/protocol/desktop";
 import { desktopLocalHostRuntime } from "./connections/access-projection.js";
 import { ElectronHostNetwork } from "./app/electron-host-network.js";
 import { ElectronServiceNetwork } from "./app/electron-service-network.js";
@@ -552,6 +555,7 @@ async function runDesktop(
     log: (event, fields) => reportEvent(event, fields),
     platform: desktopNativeHelperPlatform(loaded.config),
     teamId: desktopComputerUseTeamId(app.isPackaged),
+    ...(loaded.config.trial ? { unsupported: desktopComputerUseOffInTrial } : {}),
   });
   shutdown.add(computerUseShutdownStep(computerUse));
   // One Opensteer Passwords connection for this desktop. A development build
