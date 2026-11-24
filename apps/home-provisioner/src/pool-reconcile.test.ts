@@ -1549,21 +1549,6 @@ describe("PoolReconciler — hosts", () => {
     expect(poolPass2).toHaveBeenCalledOnce();
     expect(onError2).toHaveBeenCalledOnce();
   });
-
-  it("reports home-provisioner.pool.misconfigured every pass when Account pooling is on without OPENSTEER_POOL_PROVISIONER_KEY (T9)", async () => {
-    const signal = new AbortController().signal;
-    const onError = vi.fn();
-    const reconciler = { pass: vi.fn(async () => {}) };
-    const poolProbe = { isPoolEnabled: vi.fn(async () => true) };
-
-    await runProvisionerTick({ reconciler, poolProbe, intervalMs: 1000, signal, onError });
-    await runProvisionerTick({ reconciler, poolProbe, intervalMs: 1000, signal, onError });
-
-    const events = onError.mock.calls.map(([err]) => provisionerFailure(err));
-    expect(events).toHaveLength(2);
-    expect(events[0]?.event).toBe("home-provisioner.pool.misconfigured");
-    expect(events[1]?.event).toBe("home-provisioner.pool.misconfigured");
-  });
 });
 
 describe("PoolReconciler — slots", () => {

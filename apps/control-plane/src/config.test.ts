@@ -58,7 +58,29 @@ it("loads optional managed Home settings from the Account runtime directory", ()
       OPENSTEER_CLOUD_COMPUTER_CURRENCY: "usd",
       OPENSTEER_CLOUD_COMPUTER_PRICE_MINOR: "2900",
     };
+    const poolFiles = {
+      OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST: "10",
+      OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON: JSON.stringify({
+        version: "1.0.0",
+        installerUrl: "https://releases.example.com/pool-host.sh",
+        installerSha256: "a".repeat(64),
+        artifacts: Object.fromEntries(
+          ["agent", "relay", "rootfs", "kernel", "egress"].flatMap((name) => [
+            [`${name}Url`, `https://releases.example.com/${name}`],
+            [`${name}Sha256`, "c".repeat(64)],
+          ]),
+        ),
+      }),
+    };
     for (const [name, value] of Object.entries(files)) {
+      writeFileSync(join(directory, name), value + "\n", { mode: 0o600 });
+    }
+    // A Cloud Computer's browser runs in the browser pool, always: without the pool settings
+    // the Account service refuses to start rather than sell a Cloud Computer it cannot serve.
+    expect(() => loadControlPlaneConfig(environment)).toThrow(
+      "Cloud Computers need the browser pool: set OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST and OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON",
+    );
+    for (const [name, value] of Object.entries(poolFiles)) {
       writeFileSync(join(directory, name), value + "\n", { mode: 0o600 });
     }
     const config = loadControlPlaneConfig({
@@ -70,6 +92,7 @@ it("loads optional managed Home settings from the Account runtime directory", ()
       stripeWebhookSecret: files.OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET,
       releaseManifestUrl: files.OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL,
       region: "europe-west3-a",
+      browserPool: { slotsPerHost: 10 },
     });
     expect(() =>
       loadControlPlaneConfig({

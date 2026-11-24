@@ -1,22 +1,12 @@
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import {
-  accountClient,
-  accountRefused,
-  workloadIdentityToken,
-  type PoolAccountApi,
-} from "./account.js";
+import { accountClient, accountRefused, workloadIdentityToken } from "./account.js";
 import { CloudflareDns } from "./cloudflare.js";
 import { loadConfig } from "./config.js";
 import { discoverHome } from "./discovery.js";
 import { GoogleCompute } from "./google-compute.js";
-import {
-  PoolConfigMismatchError,
-  ProviderRateLimited,
-  provisionerFailure,
-  RemoteRequestError,
-} from "./http.js";
+import { ProviderRateLimited, provisionerFailure, RemoteRequestError } from "./http.js";
 import { httpPoolAgentClient } from "./pool-agent-client.js";
 import { PoolReconciler } from "./pool-reconcile.js";
 import { Reconciler } from "./reconcile.js";
@@ -29,14 +19,12 @@ function isFatalAccountError(error: unknown): boolean {
 }
 
 /**
- * T3 + T9: Runs the Home pass and pool pass in separate `try` blocks so one failing Home does not
- * stop pool work, nor a failing pool pass stop Homes. When pooling is enabled on Account while this
- * Google provisioner has no pool key, reports a loud mismatch error on every pass.
+ * T3: Runs the Home pass and pool pass in separate `try` blocks so one failing Home does not
+ * stop pool work, nor a failing pool pass stop Homes.
  */
 export async function runProvisionerTick(options: {
   readonly reconciler: Pick<Reconciler, "pass">;
   readonly poolReconciler?: Pick<PoolReconciler, "pass"> | undefined;
-  readonly poolProbe?: Pick<PoolAccountApi, "isPoolEnabled"> | undefined;
   readonly intervalMs: number;
   readonly signal: AbortSignal;
   readonly onError: (error: unknown) => void;
@@ -67,15 +55,6 @@ export async function runProvisionerTick(options: {
       if (!options.signal.aborted) options.onError(error);
       if (isFatalAccountError(error)) throw error;
     }
-  } else if (options.poolProbe?.isPoolEnabled) {
-    try {
-      if (await options.poolProbe.isPoolEnabled(options.signal)) {
-        options.onError(new PoolConfigMismatchError());
-      }
-    } catch (error) {
-      if (!options.signal.aborted) options.onError(error);
-      if (isFatalAccountError(error)) throw error;
-    }
   }
 
   return waitMs;
@@ -98,7 +77,7 @@ async function main(): Promise<void> {
     http,
     undefined,
     "google",
-    Boolean(config.pool),
+    true,
   );
   const googleProvider = new GoogleCompute({
     ...http,
@@ -130,26 +109,24 @@ async function main(): Promise<void> {
     readinessTimeoutMs: config.readinessTimeoutMs,
     concurrency: config.concurrency,
   });
-  // S8: pool reconciliation runs only when pooling is configured.
-  const poolReconciler =
-    config.pool && account.pool
-      ? new PoolReconciler({
-          account: account.pool,
-          provider: googleProvider,
-          agent: httpPoolAgentClient({
-            provisionerKey: config.pool.provisionerPrivateKey,
-            timeoutMs: config.timeoutMs,
-          }),
-          accountOrigin: config.accountOrigin,
-          image: config.image,
-          pool: config.pool,
-          readinessTimeoutMs: config.readinessTimeoutMs,
-          orphanGraceMs: config.orphanGraceMs,
-          concurrency: config.concurrency,
-          onError: logFailure,
-        })
-      : undefined;
-  const poolProbe = config.pool ? undefined : account.pool;
+  // Every Cloud Computer's browser runs in the pool, so its reconciliation always runs.
+  const poolReconciler = account.pool
+    ? new PoolReconciler({
+        account: account.pool,
+        provider: googleProvider,
+        agent: httpPoolAgentClient({
+          provisionerKey: config.pool.provisionerPrivateKey,
+          timeoutMs: config.timeoutMs,
+        }),
+        accountOrigin: config.accountOrigin,
+        image: config.image,
+        pool: config.pool,
+        readinessTimeoutMs: config.readinessTimeoutMs,
+        orphanGraceMs: config.orphanGraceMs,
+        concurrency: config.concurrency,
+        onError: logFailure,
+      })
+    : undefined;
   const shutdown = new AbortController();
   const stop = () => shutdown.abort();
   process.on("SIGTERM", stop);
@@ -161,7 +138,6 @@ async function main(): Promise<void> {
       const waitMs = await runProvisionerTick({
         reconciler,
         poolReconciler,
-        poolProbe,
         intervalMs: config.intervalMs,
         signal: shutdown.signal,
         onError: logFailure,

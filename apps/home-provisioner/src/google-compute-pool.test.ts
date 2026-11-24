@@ -222,9 +222,6 @@ describe("Google Compute pool host provider", () => {
       OPENSTEER_HOME_GCP_NETWORK: "home-net",
       OPENSTEER_HOME_GCP_SUBNET: "home-subnet",
     };
-    const withoutPool = loadConfig(baseEnv);
-    expect(withoutPool.pool).toBeUndefined();
-
     const withPool = loadConfig({
       ...baseEnv,
       OPENSTEER_POOL_PROVISIONER_KEY: provisionerKeyPkcs8,

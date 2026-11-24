@@ -48,6 +48,7 @@ import {
   HttpManagedHomeClient,
 } from "../apps/control-plane/src/cloud-computers/claim.js";
 import { loadCloudComputerConfig } from "../apps/control-plane/src/cloud-computers/config.js";
+import { browserPoolRelease } from "../apps/control-plane/src/cloud-computers/pool-release.test-support.js";
 import {
   CloudComputerClaimSupersededError,
   CloudComputerStore,
@@ -318,6 +319,8 @@ const config = loadCloudComputerConfig({
   OPENSTEER_CLOUD_COMPUTER_PLAN_NAME: "Cloud Computer",
   OPENSTEER_CLOUD_COMPUTER_CURRENCY: "usd",
   OPENSTEER_CLOUD_COMPUTER_PRICE_MINOR: "2900",
+  OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST: "10",
+  OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON: JSON.stringify(browserPoolRelease(digest)),
 })!;
 const auth = createControlPlaneAuth(database, {
   publicOrigin,

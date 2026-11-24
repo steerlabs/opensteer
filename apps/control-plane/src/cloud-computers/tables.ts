@@ -79,7 +79,8 @@ export interface CloudComputerTable {
   backupObjectsRemovedAt: Generated<Date | null>;
   backupCleanupAttemptedAt: Generated<Date | null>;
   ownerAccessAt: Generated<Date | null>;
-  browserMode: Generated<"local" | "pool">;
+  /** Always `pool`: a Cloud Computer's browser runs in the browser pool (0039_browser_always_pooled). */
+  browserMode: Generated<"pool">;
   browserSlotErasedAt: Generated<Date | null>;
   pendingProviderWrites: ColumnType<CloudComputerProviderWrite[], string | undefined, string>;
   createdAt: Timestamp;

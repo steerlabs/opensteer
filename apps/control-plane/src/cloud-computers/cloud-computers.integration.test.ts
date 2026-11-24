@@ -65,6 +65,7 @@ import { CloudComputerSecretCipher } from "./secret-cipher.js";
 import { createControlPlaneServer } from "../server/server.js";
 import { CloudComputerClaimer, HttpManagedHomeClient } from "./claim.js";
 import { loadCloudComputerConfig } from "./config.js";
+import { browserPoolRelease } from "./pool-release.test-support.js";
 import { CloudComputerStore } from "./store.js";
 import { billingErrorDetails } from "./billing-error.js";
 import { cloudComputerBillingSettledMigration } from "./migration.js";
@@ -112,6 +113,8 @@ const config = loadCloudComputerConfig({
   OPENSTEER_CLOUD_COMPUTER_PLAN_NAME: "Cloud Computer",
   OPENSTEER_CLOUD_COMPUTER_CURRENCY: "usd",
   OPENSTEER_CLOUD_COMPUTER_PRICE_MINOR: "2900",
+  OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST: "10",
+  OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON: JSON.stringify(browserPoolRelease(digest)),
 })!;
 // The Home's own signing key: the fingerprint Account pins is the one its discovery proves.
 const homeKeys = generateKeyPairSync("ed25519");
@@ -657,13 +660,19 @@ integration("Cloud Computer Account service", () => {
     const preparing = (await getDesired(id))!;
     const install = await bootable(preparing);
     const booted = await read();
+    // Its browser's egress is its pool host's to ask for, not its Home's boot.
     expect(booted).toMatchObject({
       status: "preparing",
-      egress: "assigned",
+      egress: "pending",
       steps: steps("done", "current", "pending"),
     });
     expect(booted).not.toHaveProperty("deploymentId");
     expect(booted).not.toHaveProperty("egressAddress");
+
+    expect((await complete(preparing)).statusCode).toBe(200);
+    expect(await cloud.assignEgress(id)).toMatchObject({ endpointId: endpoint });
+    expect(await read()).toMatchObject({ egress: "assigned" });
+    expect(await read()).not.toHaveProperty("egressAddress");
     await expect(cloud.setEgressAddress(endpoint, "proxy.example.test")).rejects.toThrow(
       "Invalid browser egress address",
     );
@@ -671,8 +680,6 @@ integration("Cloud Computer Account service", () => {
     expect((await read()).egressAddress).toBe("203.0.113.5");
     await cloud.setEgressAddress(endpoint, null);
     expect(await read()).not.toHaveProperty("egressAddress");
-
-    expect((await complete(preparing)).statusCode).toBe(200);
     expect(await read()).toMatchObject({
       status: "preparing",
       deploymentId: identity.deploymentId,
@@ -915,7 +922,7 @@ integration("Cloud Computer Account service", () => {
     expect((await read()).json()).toMatchObject({
       status: "ready",
       address: `https://${first!.hostname}`,
-      egress: "unavailable",
+      egress: "pending",
     });
     // Its owner's devices list it as a Home at its own address, signed in with their Account.
     await expect(directory.listDeployments(account.id)).resolves.toMatchObject([
@@ -1413,7 +1420,7 @@ integration("Cloud Computer Account service", () => {
     expect((await read()).json()).toHaveProperty("lastBackupAt", later.completedAt);
   });
 
-  it("assigns a late egress endpoint and serves it only to the current booted Home", async () => {
+  it("assigns a late egress endpoint and never serves it to the Home, whose browser is in the pool", async () => {
     const { account, id } = await buy();
     const computer = (await getDesired(id))!;
     const booted = await bootable(computer);
@@ -1454,7 +1461,8 @@ integration("Cloud Computer Account service", () => {
     const authorized = await read(credentials(oidc.clientSecret));
     expect(authorized.statusCode).toBe(200);
     expect(authorized.headers["cache-control"]).toBe("no-store");
-    expect(authorized.json()).toEqual({ egress: proxy });
+    // T9: only its pool host holds the egress password.
+    expect(authorized.json()).toEqual({});
     expect((await read()).statusCode).toBe(401);
     expect((await read(credentials("ocs_" + "A".repeat(43)))).statusCode).toBe(401);
     expect((await read(`Bearer ${computer.bootstrapToken}`)).statusCode).toBe(401);
@@ -1628,9 +1636,14 @@ integration("Cloud Computer Account service", () => {
     const secondBoot = await bootable(second);
     expect(firstBoot.backup.accessKeyId).not.toBe(secondBoot.backup.accessKeyId);
     expect(firstBoot.backup.prefix).not.toBe(secondBoot.backup.prefix);
-    expect(firstBoot.egress).toEqual(endpoint);
-    expect(secondBoot.egress).toBeUndefined();
+    // A Home's boot carries no egress: its browser's pool host asks for it.
+    expect(firstBoot).not.toHaveProperty("egress");
+    expect(secondBoot).not.toHaveProperty("egress");
     expect(secondBoot.backup.password).not.toBe(firstBoot.backup.password);
+    expect((await complete(first)).statusCode).toBe(200);
+    expect((await complete(second)).statusCode).toBe(200);
+    expect(await cloud.assignEgress(first.id)).toMatchObject({ endpointId });
+    await expect(cloud.assignEgress(second.id)).rejects.toThrow("No browser egress endpoint");
     await expect(cloud.removeEgressEndpoint(endpointId)).rejects.toThrow("assigned");
     await cloud.mutate(first.id, "delete");
     expect((await cloud.listEgressEndpoints())[0]?.computerId).toBe(first.id);
@@ -1645,9 +1658,8 @@ integration("Cloud Computer Account service", () => {
       ).statusCode,
     ).toBe(200);
     expect((await cloud.listEgressEndpoints())[0]?.computerId).toBeNull();
-    expect(
-      CloudComputerBootResponseSchema.parse((await boot(second)).json()).egress,
-    ).toBeUndefined();
+    // Released, it waits for new credentials before anyone else gets it.
+    await expect(cloud.assignEgress(second.id)).rejects.toThrow("No browser egress endpoint");
     expect((await cloud.listEgressEndpoints())[0]?.needsRotation).toBe(true);
     const retired = (await cloud.listBackupTargets()).find(
       (target) => target.prefix === firstBoot.backup.prefix,
@@ -1687,10 +1699,13 @@ integration("Cloud Computer Account service", () => {
       password: "rotated-password",
     });
     const third = await buy(customer);
-    const config = await bootable((await getDesired(third.id))!);
+    const thirdDesired = (await getDesired(third.id))!;
+    const config = await bootable(thirdDesired);
     expect(config.backup.accessKeyId).toBe("access-c");
     expect(config.backup.prefix).toBe("third");
-    expect(config.egress?.password).toBe("rotated-password");
+    expect((await complete(thirdDesired)).statusCode).toBe(200);
+    expect((await cloud.listEgressEndpoints())[0]?.needsRotation).toBe(false);
+    expect(await cloud.assignEgress(third.id)).toMatchObject({ endpointId });
   });
 
   it("records delete before contacting Stripe and tombstones only after cancellation", async () => {
@@ -2651,7 +2666,7 @@ integration("Cloud Computer Account service", () => {
 
   it("reissues a never-ready boot-completed Home with a clean pin and fresh credentials", async () => {
     const { id } = await buy();
-    await cloud.addEgressEndpoint({
+    const oldEndpoint = await cloud.addEgressEndpoint({
       url: "https://old.example.test:8443",
       username: "first-user",
       password: "first-secret",
@@ -2659,6 +2674,7 @@ integration("Cloud Computer Account service", () => {
     const original = (await getDesired(id))!;
     const first = await bootable(original);
     expect((await complete(original)).statusCode).toBe(200);
+    expect(await cloud.assignEgress(id)).toMatchObject({ endpointId: oldEndpoint });
     await cloud.addEgressEndpoint({
       url: "https://new.example.test:8443",
       username: "next-user",
@@ -2677,7 +2693,7 @@ integration("Cloud Computer Account service", () => {
     );
     expect(replacement.backup.prefix).not.toBe(first.backup.prefix);
     expect(replacement.backup.password).not.toBe(first.backup.password);
-    expect(replacement.egress?.username).toBe("next-user");
+    expect(replacement).not.toHaveProperty("egress");
     expect((await cloud.listEgressEndpoints()).filter((entry) => entry.needsRotation)).toHaveLength(
       1,
     );

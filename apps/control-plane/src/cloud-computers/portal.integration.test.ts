@@ -20,6 +20,7 @@ import { PortalSessionStore } from "../portal/portal-sessions.js";
 import { ControlPlaneError } from "../server/errors.js";
 import { createControlPlaneServer } from "../server/server.js";
 import { loadCloudComputerConfig } from "./config.js";
+import { browserPoolRelease } from "./pool-release.test-support.js";
 import { cloudComputerPreparingRefreshSeconds } from "./portal-routes.js";
 import { CloudComputerStore } from "./store.js";
 import type { StripeBilling, StripeSubscription } from "./stripe.js";
@@ -57,6 +58,8 @@ const config = loadCloudComputerConfig({
   OPENSTEER_CLOUD_COMPUTER_PLAN_NAME: "Cloud Computer",
   OPENSTEER_CLOUD_COMPUTER_CURRENCY: "usd",
   OPENSTEER_CLOUD_COMPUTER_PRICE_MINOR: "2900",
+  OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST: "10",
+  OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON: JSON.stringify(browserPoolRelease(digest)),
 })!;
 
 integration("Cloud Computer website pages", () => {

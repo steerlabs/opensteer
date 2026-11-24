@@ -7,8 +7,6 @@ import {
   ManagedBrowserPoolTargetResponseSchema,
   browserPoolHostSlotEgressSigningBytes,
   browserPoolHostSlotEgressWindowMs,
-  defaultBrowserPoolAgentPort,
-  defaultBrowserPoolRelayPort,
   managedBrowserPoolRegistrationSigningBytes,
   managedBrowserPoolRegistrationWindowMs,
   type BrowserPoolHostBootCompleteRequest,
@@ -107,7 +105,6 @@ export class BrowserPoolStore {
     now: Date,
   ): Promise<void> {
     const pool = this.#config.browserPool;
-    if (!pool) return;
     const slotId = BrowserPoolSlotIdSchema.parse(`bps_${randomUUID()}`);
     await tx
       .insertInto("browserPoolSlots")
@@ -218,27 +215,8 @@ export class BrowserPoolStore {
    * (`cloud_computers -> browser_pool_slots`), then reconciles capacity and placement in declared
    * lock order (`advisory:browser-pool-capacity -> browser_pool_hosts -> browser_pool_slots`).
    */
-  async #hasLivePoolRows(): Promise<boolean> {
-    const [host, slot] = await Promise.all([
-      this.#db
-        .selectFrom("browserPoolHosts")
-        .select("id")
-        .where("tombstonedAt", "is", null)
-        .limit(1)
-        .executeTakeFirst(),
-      this.#db
-        .selectFrom("browserPoolSlots")
-        .select("slotId")
-        .where("tombstonedAt", "is", null)
-        .limit(1)
-        .executeTakeFirst(),
-    ]);
-    return host !== undefined || slot !== undefined;
-  }
-
   async #reconcileCapacity(): Promise<void> {
     const pool = this.#config.browserPool;
-    if (!pool && !(await this.#hasLivePoolRows())) return;
 
     // 1. Separate transaction so slot locks are never held before host locks (T7).
     await this.#db.transaction().execute(async (tx) => {
@@ -299,7 +277,7 @@ export class BrowserPoolStore {
         (slot) => slot.state === "active" && (!slot.hostId || activeHostIds.has(slot.hostId)),
       ).length;
 
-      while (pool && activeCapacity < neededOnActive) {
+      while (activeCapacity < neededOnActive) {
         const id = BrowserPoolHostIdSchema.parse(`ph_${randomUUID()}`);
         const profileDiskName = `osp-disk-${id.slice("ph_".length)}`;
         await tx
@@ -389,9 +367,7 @@ export class BrowserPoolStore {
     limit = 100,
     probe = false,
   ): Promise<BrowserPoolHostDesiredResponse> {
-    const pool = this.#config.browserPool;
-    if (probe) return { hosts: [], poolEnabled: Boolean(pool) };
-    if (!pool && !(await this.#hasLivePoolRows())) return { hosts: [], poolEnabled: false };
+    if (probe) return { hosts: [], poolEnabled: true };
     await this.#reconcileCapacity();
     let query = this.#db
       .selectFrom("browserPoolHosts")
@@ -456,8 +432,8 @@ export class BrowserPoolStore {
           profileDiskName: row.profileDiskName,
           profileDiskSizeGb: row.profileDiskSizeGb,
           ...(row.profileDiskRef ? { profileDiskRef: row.profileDiskRef } : {}),
-          agentPort: pool?.agentPort ?? defaultBrowserPoolAgentPort,
-          relayPort: pool?.relayPort ?? defaultBrowserPoolRelayPort,
+          agentPort: this.#config.browserPool.agentPort,
+          relayPort: this.#config.browserPool.relayPort,
           release: row.release,
           ...(row.providerServerRef ? { providerServerRef: row.providerServerRef } : {}),
           ...(row.previousProviderServerRef
@@ -480,7 +456,7 @@ export class BrowserPoolStore {
       }),
     );
     return {
-      poolEnabled: Boolean(pool),
+      poolEnabled: true,
       hosts,
       ...(rows.length > limit ? { next: page.at(-1)!.id } : {}),
     };
@@ -866,7 +842,6 @@ export class BrowserPoolStore {
     after?: BrowserPoolSlotId,
     limit = 100,
   ): Promise<BrowserPoolSlotDesiredResponse> {
-    if (!this.#config.browserPool && !(await this.#hasLivePoolRows())) return { slots: [] };
     await this.#reconcileCapacity();
     let query = this.#db
       .selectFrom("browserPoolSlots as slot")
@@ -1398,8 +1373,7 @@ export class BrowserPoolStore {
       slot.appliedHostGeneration === host?.generation;
     if (!hostReady || !slotReady) return { status: "preparing" };
 
-    const agentPort = this.#config.browserPool?.agentPort ?? defaultBrowserPoolAgentPort;
-    const relayPort = this.#config.browserPool?.relayPort ?? defaultBrowserPoolRelayPort;
+    const { agentPort, relayPort } = this.#config.browserPool;
     return ManagedBrowserPoolTargetResponseSchema.parse({
       status: "ready",
       target: {
@@ -1419,7 +1393,6 @@ export class BrowserPoolStore {
   }
 
   async #poolProvisionerWarning(): Promise<string | undefined> {
-    if (!this.#config.browserPool) return undefined;
     const result = await sql<{ poolConfigured: boolean | null }>`
       select pool_configured as "poolConfigured" from cloud_computer_provisioner_lease where singleton
     `.execute(this.#db);

@@ -797,7 +797,8 @@ export class CloudComputerStore {
         restoreSnapshot: null,
         deletionRequestedAt: null,
         ipv6Enabled: config.ipv6Enabled,
-        browserMode: config.browserPool ? "pool" : "local",
+        // Its browser runs in the browser pool, never in its own VM.
+        browserMode: "pool",
         readinessStartedAt: now,
         phase: "provisioning",
         providerServerId: null,
@@ -816,9 +817,7 @@ export class CloudComputerStore {
         tombstonedAt: null,
       })
       .executeTakeFirst();
-    if (config.browserPool) {
-      await this.#pool.createSlotForComputer(tx, paid.id, now);
-    }
+    await this.#pool.createSlotForComputer(tx, paid.id, now);
   }
 
   /**
@@ -855,9 +854,7 @@ export class CloudComputerStore {
           updatedAt: now,
         })
         .executeTakeFirst();
-      if (row.browserMode === "pool") {
-        await this.#pool.markComputerDeleted(tx, row.id, now);
-      }
+      await this.#pool.markComputerDeleted(tx, row.id, now);
       return;
     }
     const status =
@@ -1457,20 +1454,14 @@ export class CloudComputerStore {
     await this.#db.transaction().execute(async (tx) => {
       const row = await tx
         .selectFrom("cloudComputers")
-        .select([
-          "vmDestroyedAt",
-          "backupsUnreadableAt",
-          "backupKeyProject",
-          "browserMode",
-          "browserSlotErasedAt",
-        ])
+        .select(["vmDestroyedAt", "backupsUnreadableAt", "backupKeyProject", "browserSlotErasedAt"])
         .where("id", "=", id)
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!row?.vmDestroyedAt || row.backupsUnreadableAt) return;
       await this.#vault(row.backupKeyProject ?? undefined).destroy(id);
       const now = this.#now();
-      const settled = row.browserMode !== "pool" || row.browserSlotErasedAt !== null;
+      const settled = row.browserSlotErasedAt !== null;
       await tx
         .updateTable("cloudComputers")
         .where("id", "=", id)
@@ -1626,9 +1617,6 @@ export class CloudComputerStore {
           .set(credentials)
           .executeTakeFirstOrThrow();
       }
-      const pooled = row.browserMode === "pool";
-      const endpoint = pooled ? undefined : await this.#assignEgress(tx, id);
-      const egress = endpoint ? this.#egressCredentials(endpoint) : undefined;
       const { cipher } = this.#options;
       const backup = await tx
         .selectFrom("cloudComputerBackupTargets")
@@ -1674,8 +1662,8 @@ export class CloudComputerStore {
         ...(this.#options.config.releaseManifestUrl
           ? { releaseManifestUrl: this.#options.config.releaseManifestUrl }
           : {}),
-        ...(pooled ? { browserPool: true } : {}),
-        ...(egress ? { egress } : {}),
+        // Its browser runs on a pool host, which alone holds its egress password (T9).
+        browserPool: true,
         backup: {
           endpoint: backupEndpoint,
           bucket,
@@ -1803,16 +1791,9 @@ export class CloudComputerStore {
 
   async egressForHome(id: CloudComputerId, authorization: string | undefined) {
     return this.#db.transaction().execute(async (tx) => {
-      const row = await this.#requireBootedHome(tx, id, authorization, "share");
-      // T9: A pooled Cloud Computer's egress password is held only by its pool host.
-      if (row.browserMode === "pool") return {};
-      const endpoint = await tx
-        .selectFrom("cloudComputerEgressEndpoints")
-        .selectAll()
-        .where("computerId", "=", id)
-        .executeTakeFirst();
-      const egress = endpoint ? this.#egressCredentials(endpoint) : undefined;
-      return egress ? { egress } : {};
+      await this.#requireBootedHome(tx, id, authorization, "share");
+      // T9: A Cloud Computer's egress password is held only by its pool host, never its Home.
+      return {};
     });
   }
 

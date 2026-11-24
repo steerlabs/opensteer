@@ -53,7 +53,6 @@ export interface PoolAccountApi {
     input: BrowserPoolHostReplaceUnreadyRequest,
     signal: AbortSignal,
   ): Promise<BrowserPoolHostReplaceUnreadyResponse>;
-  isPoolEnabled?(signal: AbortSignal): Promise<boolean>;
   desiredSlots(signal: AbortSignal): Promise<readonly BrowserPoolSlotDesired[]>;
   checkSlot(
     slotId: BrowserPoolSlotId,
@@ -247,20 +246,6 @@ export function accountClient(
           json(BrowserPoolHostReplaceUnreadyResponseSchema),
           { method: "POST", body: input, headers: await headers(signal) },
         );
-      },
-      async isPoolEnabled(signal) {
-        const url = new URL(browserPoolHostsDesiredPath, origin);
-        url.searchParams.set("probe", "true");
-        url.searchParams.set("limit", "1");
-        const page = await request(
-          "Account",
-          url,
-          http,
-          signal,
-          json(BrowserPoolHostDesiredResponseSchema),
-          { headers: await headers(signal) },
-        );
-        return page.poolEnabled === true;
       },
       async desiredSlots(signal) {
         const slots: BrowserPoolSlotDesired[] = [];
