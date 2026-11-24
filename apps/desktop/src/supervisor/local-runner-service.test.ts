@@ -60,8 +60,21 @@ import {
 import { RunnerWorkerSecretsMessageSchema } from "./runner-worker-secrets.js";
 
 const temporaryDirectories: string[] = [];
+const createdFixtures: {
+  readonly service: LocalRunnerService;
+  readonly children: FakeUtilityProcess[];
+}[] = [];
 
 afterEach(async () => {
+  vi.useRealTimers();
+  for (const entry of createdFixtures.splice(0)) {
+    entry.service.dispose();
+    const stopping = entry.service.shutdown().catch(() => undefined);
+    for (const child of entry.children) {
+      if (!child.exited) child.emit("exit", 0);
+    }
+    await stopping;
+  }
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -1608,6 +1621,7 @@ describe("LocalRunnerService", () => {
     await Promise.all(starts);
 
     targets.notify();
+    await running.service.reconcile();
     await expect(
       readFile(path.join(directory, "runner", "desktop-runner.json"), "utf8").then(JSON.parse),
     ).resolves.toMatchObject({
@@ -3125,33 +3139,36 @@ function fixture(
     ...(options.currentSession ? { currentSession: options.currentSession } : {}),
     ...(options.bindReply ? { bindReply: options.bindReply } : {}),
   });
+  const service = new LocalRunnerService(config, {
+    ...(options.assertAccountSource ? { assertAccountSource: options.assertAccountSource } : {}),
+    hostApi: host.api,
+    ...(options.leaveFetch ? { leaveFetch: options.leaveFetch } : {}),
+    ...(options.fenceDeployment ? { fenceDeployment: options.fenceDeployment } : {}),
+    ...(options.clearDeploymentSession
+      ? { clearDeploymentSession: options.clearDeploymentSession }
+      : {}),
+    ...(browser ? { browser } : {}),
+    computerName: async () => "Studio Mac",
+    ...(options.profileErasure ? { profileErasure: options.profileErasure } : {}),
+    ...(options.computerUse ? { computerUse: options.computerUse } : {}),
+    fork,
+    inspectIdentity: async (dataDirectory: string) => readTestIdentity(dataDirectory),
+    homeDirectory: config.dataDirectory,
+    ...(restartDelayMs ? { restartDelayMs } : {}),
+    runtimeRelease: testRuntimeRelease(config.dataDirectory),
+    ...(options.stopTimeouts ? { stopTimeouts: options.stopTimeouts } : {}),
+    ...(options.agentsStoppedSince ? { agentsStoppedSince: options.agentsStoppedSince } : {}),
+    confirmShutdown: async (_dataDirectory, proof) => proof !== undefined,
+    ...(options.onUncontainedBoot ? { onUncontainedBoot: options.onUncontainedBoot } : {}),
+    targets,
+    userEnvironment: options.userEnvironment ?? testUserEnvironment(config.dataDirectory),
+  });
+  createdFixtures.push({ service, children });
   return {
     children,
     fork,
     host,
-    service: new LocalRunnerService(config, {
-      ...(options.assertAccountSource ? { assertAccountSource: options.assertAccountSource } : {}),
-      hostApi: host.api,
-      ...(options.leaveFetch ? { leaveFetch: options.leaveFetch } : {}),
-      ...(options.fenceDeployment ? { fenceDeployment: options.fenceDeployment } : {}),
-      ...(options.clearDeploymentSession
-        ? { clearDeploymentSession: options.clearDeploymentSession }
-        : {}),
-      ...(browser ? { browser } : {}),
-      computerName: async () => "Studio Mac",
-      ...(options.profileErasure ? { profileErasure: options.profileErasure } : {}),
-      ...(options.computerUse ? { computerUse: options.computerUse } : {}),
-      fork,
-      inspectIdentity: async (dataDirectory: string) => readTestIdentity(dataDirectory),
-      homeDirectory: config.dataDirectory,
-      ...(restartDelayMs ? { restartDelayMs } : {}),
-      runtimeRelease: testRuntimeRelease(config.dataDirectory),
-      ...(options.stopTimeouts ? { stopTimeouts: options.stopTimeouts } : {}),
-      ...(options.agentsStoppedSince ? { agentsStoppedSince: options.agentsStoppedSince } : {}),
-      ...(options.onUncontainedBoot ? { onUncontainedBoot: options.onUncontainedBoot } : {}),
-      targets,
-      userEnvironment: options.userEnvironment ?? testUserEnvironment(config.dataDirectory),
-    }),
+    service,
   };
 }
 
@@ -3340,6 +3357,7 @@ class FakeUtilityProcess extends EventEmitter implements UtilityProcessLike {
   readonly stdout = new PassThrough();
   /** A worker that does not die when asked, so a test can time its exit. */
   readonly stubborn: boolean;
+  exited = false;
   kills = 0;
 
   constructor(
@@ -3351,6 +3369,9 @@ class FakeUtilityProcess extends EventEmitter implements UtilityProcessLike {
     this.dataDirectory = dataDirectory;
     this.environment = environment;
     this.stubborn = stubborn;
+    this.once("exit", () => {
+      this.exited = true;
+    });
   }
 
   kill(): boolean {

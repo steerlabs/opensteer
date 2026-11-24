@@ -728,6 +728,7 @@ integration("notification decision boundary", () => {
             userId: decision.userId,
             eventId: createId("event"),
             sequence: decision.sequence,
+            connectionId: decision.connectionId,
             occurredAt: new Date(decision.view.occurredAt),
             expiresAt: new Date(
               Date.parse(decision.view.occurredAt) + notificationPushWindowMilliseconds,

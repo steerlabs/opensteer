@@ -341,6 +341,26 @@ describe("browser REPL", () => {
     });
   });
 
+  it("keeps an effect uncertain when the browser cannot return its reply", async () => {
+    let dispatched = false;
+    const { run } = setup({
+      command: async () => {
+        dispatched = true;
+        throw new OpensteerError({
+          code: "bad_request",
+          reason: "browser-reply-limit",
+          message: "Browser result exceeds its byte or nesting limit.",
+        });
+      },
+    });
+    const result = await run(`${bind} await page.cdp("Runtime.evaluate");`);
+    expect(dispatched).toBe(true);
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: { error: { code: "outcome-unknown" } },
+    });
+  });
+
   it("uses the shared wall deadline and frees a context even if the port has not replied", async () => {
     const entered = Promise.withResolvers<BrowserUseCall>();
     const withheld = Promise.withResolvers<readonly []>();

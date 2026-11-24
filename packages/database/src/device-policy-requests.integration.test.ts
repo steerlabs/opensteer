@@ -152,6 +152,7 @@ describeStore("device access Requests", (it) => {
         userId: run.userId,
         eventId: createId("event"),
         sequence: notification!.sequence,
+        connectionId: notification!.connectionId,
         occurredAt: new Date(opened.request.createdAt),
         expiresAt: new Date(Date.parse(opened.request.createdAt) + 60_000),
       }),

@@ -1231,8 +1231,8 @@ func TestShellAuditOverflowEmitsLossLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	emitter.close()
-	_ = reader.Close()
 	<-drained
+	_ = reader.Close()
 	if !bytes.Contains(content.Bytes(), []byte(`"kind":"audit.dropped"`)) {
 		t.Fatalf("audit loss was not reported; bytes=%d", content.Len())
 	}
@@ -1341,15 +1341,15 @@ func TestOpenSSHForwardingPolicyAndGlobalRequestRefusal(t *testing.T) {
 		echoDone <- writeErr
 	}()
 	probeFixtureListener(t, ctx, target.Addr().String())
-	localProbe, err := net.Listen("tcp", "127.0.0.1:0")
+	socketDir, err := os.MkdirTemp("/tmp", "ssh-fwd-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	localPort := localProbe.Addr().(*net.TCPAddr).Port
-	_ = localProbe.Close()
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	allowedSocket := filepath.Join(socketDir, "allowed.sock")
 	targetPort := target.Addr().(*net.TCPAddr).Port
 	allowed := newShellSSHFixture(t, shellPolicy{Reach: "deployment", Forwarding: true})
-	forward := exec.CommandContext(ctx, "ssh", "-F", allowed.config, "-N", "-o", "ExitOnForwardFailure=yes", "-L", fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", localPort, targetPort), "test")
+	forward := exec.CommandContext(ctx, "ssh", "-F", allowed.config, "-N", "-o", "ExitOnForwardFailure=yes", "-L", fmt.Sprintf("%s:127.0.0.1:%d", allowedSocket, targetPort), "test")
 	forward.Env = allowed.environment()
 	if err := forward.Start(); err != nil {
 		t.Fatal(err)
@@ -1361,7 +1361,7 @@ func TestOpenSSHForwardingPolicyAndGlobalRequestRefusal(t *testing.T) {
 	var connection net.Conn
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		connection, err = (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", localPort))
+		connection, err = (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(ctx, "unix", allowedSocket)
 		if err == nil {
 			break
 		}
@@ -1392,13 +1392,8 @@ func TestOpenSSHForwardingPolicyAndGlobalRequestRefusal(t *testing.T) {
 	})
 
 	denied := newShellSSHFixture(t, shellPolicy{Reach: "deployment", Forwarding: false})
-	deniedProbe, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	deniedPort := deniedProbe.Addr().(*net.TCPAddr).Port
-	_ = deniedProbe.Close()
-	forward = exec.CommandContext(ctx, "ssh", "-F", denied.config, "-N", "-o", "ExitOnForwardFailure=yes", "-L", fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", deniedPort, targetPort), "test")
+	deniedSocket := filepath.Join(socketDir, "denied.sock")
+	forward = exec.CommandContext(ctx, "ssh", "-F", denied.config, "-N", "-o", "ExitOnForwardFailure=yes", "-L", fmt.Sprintf("%s:127.0.0.1:%d", deniedSocket, targetPort), "test")
 	forward.Env = denied.environment()
 	var forwardOutput bytes.Buffer
 	forward.Stdout = &forwardOutput
@@ -1408,7 +1403,7 @@ func TestOpenSSHForwardingPolicyAndGlobalRequestRefusal(t *testing.T) {
 	}
 	deadline = time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		connection, err = (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", deniedPort))
+		connection, err = (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(ctx, "unix", deniedSocket)
 		if err == nil {
 			_, _ = connection.Write([]byte("x"))
 			_ = connection.SetReadDeadline(time.Now().Add(time.Second))

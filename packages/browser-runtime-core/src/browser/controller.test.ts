@@ -192,6 +192,167 @@ describe("BrowserController", () => {
     }
   });
 
+  /*
+   * A7: a browser command's error says, as data, whether the command was refused before it was
+   * sent to the page (`unsent`: nothing happened) or came after it may have run (no `unsent`: its
+   * outcome is unknown). Here: a command that ran and whose reply is over its budget; a command
+   * refused by its attachment's router before it was sent; and one the queue refused.
+   */
+  it("says whether a command's error came before it was sent or after it may have run (A7)", async () => {
+    const controller = createController();
+    const scriptAttachmentId = randomUUID();
+    const replyBudget = { maxBytes: 4096, maxDepth: 8, maxEntries: 64 };
+    const reply = (requestId: string) =>
+      sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    const send = (
+      requestId: string,
+      method: string,
+      parameters: Record<string, unknown>,
+      sessionId?: string,
+    ) =>
+      controller.handle({
+        type: "cdp.command",
+        requestId,
+        scriptAttachmentId,
+        replyBudget,
+        command: { method, parameters, ...(sessionId ? { sessionId } : {}) },
+      });
+    try {
+      await controller.start();
+      const targetId = await page.targetId();
+      cdpRouter.openScriptAttachment(
+        validClaims().sessionId,
+        scriptAttachmentId,
+        targetId,
+        replyBudget,
+        () => undefined,
+      );
+      const attachId = randomUUID();
+      await send(attachId, "Target.attachToTarget", { targetId });
+      const attached = reply(attachId);
+      if (attached?.type !== "cdp.result" || typeof attached.result.sessionId !== "string")
+        throw new Error("Script attachment did not return a session ID.");
+      const sessionId = attached.result.sessionId;
+      // It ran: the page changed, and its answer is larger than the reply may be.
+      let ran = false;
+      page.cdpSession.responses.set("Runtime.evaluate", () => {
+        ran = true;
+        return { result: { type: "string", value: "x".repeat(8_192) } };
+      });
+      const tooLarge = randomUUID();
+      await send(tooLarge, "Runtime.evaluate", { expression: "clicked()" }, sessionId);
+      expect(ran).toBe(true);
+      const after = reply(tooLarge);
+      expect(after).toMatchObject({ type: "cdp.error", error: { reason: "browser-reply-limit" } });
+      expect(after?.type === "cdp.error" && after.error.unsent).toBeUndefined();
+      // Refused before it was sent on: a CDP session that is not the attachment's.
+      const refused = randomUUID();
+      await send(refused, "Runtime.evaluate", { expression: "1" }, "not-this-session");
+      expect(reply(refused)).toMatchObject({ type: "cdp.error", error: { unsent: true } });
+      // Refused before dispatch: the same request ID already active.
+      const held = Promise.withResolvers<object>();
+      page.cdpSession.responses.set("Runtime.evaluate", () => held.promise);
+      const busy = randomUUID();
+      const running = send(busy, "Runtime.evaluate", { expression: "slow()" }, sessionId);
+      await vi.waitFor(() =>
+        expect(commandsNamed("Runtime.evaluate", page).length).toBeGreaterThan(1),
+      );
+      await send(busy, "Runtime.evaluate", { expression: "again()" }, sessionId);
+      expect(reply(busy)).toMatchObject({ type: "cdp.error", error: { unsent: true } });
+      held.resolve({ result: { type: "number", value: 1 } });
+      await running;
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  /*
+   * N4: a newer input overtakes one already in flight. The page has APPLIED the first Input
+   * command and not yet answered; a second waits behind it; the agent's newer input (its cancel
+   * of earlier work) arrives. The one still pending is refused before dispatch (`unsent`); the
+   * one already dispatched is not cancelled, and when its page fails it, its outcome is unknown.
+   */
+  it("refuses an overtaken input still pending as unsent, and leaves the one already dispatched unknown (N4)", async () => {
+    const controller = createController();
+    const scriptAttachmentId = randomUUID();
+    const replyBudget = { maxBytes: 4096, maxDepth: 8, maxEntries: 64 };
+    const reply = (requestId: string) =>
+      sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    const send = (
+      requestId: string,
+      method: string,
+      parameters: Record<string, unknown>,
+      sessionId?: string,
+    ) =>
+      controller.handle({
+        type: "cdp.command",
+        requestId,
+        scriptAttachmentId,
+        replyBudget,
+        command: { method, parameters, ...(sessionId ? { sessionId } : {}) },
+      });
+    try {
+      await controller.start();
+      const targetId = await page.targetId();
+      cdpRouter.openScriptAttachment(
+        validClaims().sessionId,
+        scriptAttachmentId,
+        targetId,
+        replyBudget,
+        () => undefined,
+      );
+      const attachId = randomUUID();
+      await send(attachId, "Target.attachToTarget", { targetId });
+      const attached = reply(attachId);
+      if (attached?.type !== "cdp.result" || typeof attached.result.sessionId !== "string")
+        throw new Error("Script attachment did not return a session ID.");
+      const sessionId = attached.result.sessionId;
+      const applied = Promise.withResolvers<void>();
+      const answer = Promise.withResolvers<object>();
+      let inputs = 0;
+      page.cdpSession.responses.set("Input.insertText", () => {
+        if (++inputs > 1) return {};
+        applied.resolve();
+        return answer.promise;
+      });
+      const dispatched = randomUUID();
+      const pending = randomUUID();
+      const first = send(dispatched, "Input.insertText", { text: "first" }, sessionId);
+      await applied.promise;
+      const second = send(pending, "Input.insertText", { text: "second" }, sessionId);
+      await flushMicrotasks();
+      // The newer input: the agent's producer cancels its earlier work. It runs once the input in
+      // flight has ended; the one still pending is refused at once.
+      const overtaking = controller.handle({
+        type: "input.cancel",
+        producerId: scriptAttachmentId,
+      });
+      await second;
+      expect(reply(pending)).toMatchObject({
+        type: "cdp.error",
+        error: { reason: "browser-input-canceled", unsent: true },
+      });
+      expect(inputs).toBe(1);
+      // The page applied the first and then failed it: an error after the effect.
+      answer.reject(new Error("Target closed."));
+      await first;
+      await overtaking;
+      const outcome = reply(dispatched);
+      expect(outcome?.type).toBe("cdp.error");
+      expect(outcome?.type === "cdp.error" && outcome.error.unsent).toBeUndefined();
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
   it("acknowledges cancellation only for the matching queued script command", async () => {
     const controller = createController();
     const scriptAttachmentId = randomUUID();

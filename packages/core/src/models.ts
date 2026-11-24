@@ -1233,6 +1233,13 @@ export const ThreadExecutionBindingSchema = z.object({
 });
 export type ThreadExecutionBinding = z.infer<typeof ThreadExecutionBindingSchema>;
 
+/**
+ * Work a teammate asked this Home for that had not started when teams ended with this update:
+ * cancelled once by the update, kept in its task with this sentence.
+ */
+export const teamWorkEndedCancelReason = "team-work-ended";
+const teamWorkEndedSentence = "Not run: work asked for by a team ended with this update.";
+
 export function threadInputDelivery(input: {
   readonly cancelReason: string | null;
   readonly policy: ThreadInputPolicy;
@@ -1257,6 +1264,7 @@ function cancellationReason(input: {
   readonly policy: ThreadInputPolicy;
 }): string {
   if (input.cancelReason === "stopped") return "Not sent: you stopped the reply.";
+  if (input.cancelReason === teamWorkEndedCancelReason) return teamWorkEndedSentence;
   const detail = input.cancelReason?.replaceAll("-", " ");
   const wasSteer = input.policy === "steer" || input.cancelReason === "run-ended-delivery-unknown";
   if (wasSteer) return detail ? `Steer was not delivered: ${detail}.` : "Steer was not delivered.";

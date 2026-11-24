@@ -452,6 +452,11 @@ export class BrowserController {
     }
   >();
   private readonly cancelledScriptCommands = new WeakSet<BrowserClientMessage>();
+  /**
+   * A7: commands sent toward the page (or whose own effect began: a tab opening, a wake, a
+   * close). An error after this may come after the effect, and is not "unsent".
+   */
+  private readonly forwarded = new WeakSet<BrowserClientMessage>();
   private readonly canceledGenerations = new Map<string, number>();
   private readonly hoverOwners = new Map<BrowserSurfaceId, { owner: string; cdp: CdpChannel }>();
   private readonly cleanupReservations = new Set<string>();
@@ -966,6 +971,7 @@ export class BrowserController {
         error: new BrowserRuntimeError(
           "conflict",
           "The browser command queue is full or the request ID is already active.",
+          { unsent: true },
         ).toProtocolError(),
       });
     this.scriptCommands.set(message.requestId, { message, started: false });
@@ -1009,6 +1015,7 @@ export class BrowserController {
         "The browser command was cancelled before dispatch.",
         {
           reason: "browser-command-cancelled",
+          unsent: true,
         },
       ).toProtocolError(),
     });
@@ -1184,10 +1191,9 @@ export class BrowserController {
       return this.send({
         type: "cdp.error",
         requestId: message.requestId,
-        error: new BrowserRuntimeError(
-          "conflict",
-          "The browser command queue is full.",
-        ).toProtocolError(),
+        error: new BrowserRuntimeError("conflict", "The browser command queue is full.", {
+          unsent: true,
+        }).toProtocolError(),
       });
     return this.enqueueOperation(queue, () => ({ done: this.run(message, surfaceId), surfaceId }));
   }
@@ -1229,9 +1235,11 @@ export class BrowserController {
       await this.send({
         type: "cdp.error",
         requestId: message.requestId,
+        // The detach itself was not done: the session stays attached.
         error: new BrowserRuntimeError(
           "conflict",
           "Browser input cleanup failed; the CDP session remains attached.",
+          { unsent: true },
         ).toProtocolError(),
       });
       return;
@@ -1372,10 +1380,11 @@ export class BrowserController {
     }
     await this.refuseClipboard(message);
     if (this.cancelledScriptCommands.has(message)) return;
+    // The lane refused it before it ran (overload, or cancelled while pending).
     const error = new BrowserRuntimeError(
       "conflict",
       "Browser input was not applied. Try the action again.",
-      { reason },
+      { reason, unsent: true },
     );
     if (isCdpRequest(message)) {
       await this.send({
@@ -1511,8 +1520,14 @@ export class BrowserController {
           }),
         );
       if (isCdpRequest(message)) {
+        // A7: before the command was sent toward the page nothing happened, and a refusal Chromium
+        // itself answered is one too; anything else may have come after its effect.
+        const unsent =
+          normalized.unsent ||
+          !this.forwarded.has(message) ||
+          normalized.reason === "browser-cdp-protocol-error";
         await this.send({
-          error: normalized.toProtocolError(),
+          error: { ...normalized.toProtocolError(), ...(unsent ? { unsent: true as const } : {}) },
           requestId: message.requestId,
           type: "cdp.error",
         });
@@ -3629,6 +3644,7 @@ export class BrowserController {
         agentActivity,
       );
     let result: unknown;
+    this.forwarded.add(message);
     try {
       result =
         pageTargetId &&
@@ -3994,7 +4010,11 @@ export class BrowserController {
       };
       try {
         stopIfCancelled();
-        const reloaded = this.ledger.stateOf(surfaceId) === "suspended";
+        const state = this.ledger.stateOf(surfaceId);
+        if (state === undefined)
+          throw new BrowserRuntimeError("not_found", "The browser tab closed.", { unsent: true });
+        const reloaded = state === "suspended";
+        this.forwarded.add(message);
         let binding = await untilAborted(this.ledger.wake(surfaceId), cancelled.signal);
         stopIfCancelled();
         // Z1, Z4: a wake's unfinished load is the ledger's fact, set when the wake began and
@@ -4014,7 +4034,8 @@ export class BrowserController {
             throw new BrowserRuntimeError(
               "conflict",
               "This tab is awake, but its page is still loading. Try again shortly.",
-              { retryable: true },
+              // A7: no page was handed over; the wake is the tab's own state, shown and kept.
+              { retryable: true, unsent: true },
             );
           // Only a binding read now, after its load was confirmed, is handed over.
           const confirmed = loaded === "loaded" ? this.ledger.binding(surfaceId) : null;
@@ -4022,7 +4043,7 @@ export class BrowserController {
             throw new BrowserRuntimeError(
               "conflict",
               "This tab went back to sleep before its page loaded. Wake it again.",
-              { reason: "target-suspended", retryable: true },
+              { reason: "target-suspended", retryable: true, unsent: true },
             );
           binding = confirmed;
         }
@@ -4156,6 +4177,8 @@ export class BrowserController {
             ? BrowserSurfaceIdSchema.safeParse(parameters?.surfaceId).data
             : undefined;
         this.openOperations.add(opening);
+        // A7: from here a page may exist.
+        this.forwarded.add(message);
         const opened = await withTimeout(
           this.ledger.openSurface({
             signal: operationSignal,
@@ -4211,6 +4234,7 @@ export class BrowserController {
       throw new BrowserRuntimeError("bad_message", "A surface is required.");
     const durableClose = parameters?.durable === true;
     if (durableClose && message.command.method === browserHostMethods.closeTab) {
+      this.forwarded.add(message);
       await this.ledger.closeDurableSurface(BrowserSurfaceIdSchema.parse(surfaceId));
       const last = this.ledger.sealLastSurface();
       await this.drainTabs();
@@ -4241,6 +4265,7 @@ export class BrowserController {
         last = this.ledger.sealLastSurface(surface.id);
         if (!last) throw new BrowserRuntimeError("conflict", "The browser inventory changed.");
       }
+      this.forwarded.add(message);
       if (!last && this.ledger.stateOf(surface.id))
         await this.ledger.closeSurface(surface.id, "host-closed");
       if (last) {
@@ -4515,9 +4540,12 @@ function normalizeControllerError(error: unknown, cdpRequest = false): BrowserRu
         : error.code === "forbidden"
           ? "forbidden"
           : "conflict";
+  // A7: the router refused it before handing it on (its checks, or a lookup it said was one).
+  const unsent = error.unsent || error.code === "bad_command" || error.code === "forbidden";
   return new BrowserRuntimeError(code, error.message, {
     cause: error,
-    ...(error.code === "too_large" ? { reason: "browser-reply-limit" } : {}),
+    ...(error.code === "too_large" && !unsent ? { reason: "browser-reply-limit" } : {}),
+    ...(unsent ? { unsent: true } : {}),
   });
 }
 

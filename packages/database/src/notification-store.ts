@@ -2,8 +2,10 @@ import { personalSettings } from "./personal-settings-store.js";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
 
 import { isPlaceContentPart } from "@opensteer/core";
-import "./connection.js";
-import { createHash } from "node:crypto";
+import { withDatabaseTransaction } from "./connection.js";
+import { createHash, randomUUID } from "node:crypto";
+import { liveConnection } from "./connection-liveness.js";
+import { settleCommandAttempt } from "./command-attempts.js";
 import {
   placeContentLabel,
   ContentPartSchema,
@@ -48,7 +50,27 @@ export interface NotificationPublication {
   readonly sequence: string;
   readonly threadId: ThreadId | null;
   readonly userId: UserId;
+  /**
+   * The connection whose Request this alert is for, or null (your own agents, replies, failed
+   * Runs). A connection's alert is an attempt in its Disconnect set, recorded at hand-off (A5).
+   */
+  readonly connectionId: string | null;
 }
+
+/**
+ * What the hand-off of a connection's alert found, in the statement that records it:
+ * the attempt begun; an earlier attempt for the same alert, which answers instead (running,
+ * done, or unknown: it may have reached the phone, so it is never sent again); or refused,
+ * nothing recorded and nothing sent.
+ */
+export type NotificationPublicationHandoff =
+  | { readonly kind: "begun"; readonly attemptId: string }
+  | { readonly kind: "prior"; readonly state: "running" | "done" | "unknown" }
+  | { readonly kind: "refused"; readonly reason: string };
+
+/** The type of a connection's alert's row in `command_attempts`, where its Disconnect finds it. */
+export const notificationPublicationAttemptType = "notification.publish";
+const notificationPublicationCallerKey = "opensteer.notification";
 
 /** A notification as it was decided, for the recipient's connected clients. */
 export interface DecidedNotification {
@@ -92,7 +114,7 @@ export class NotificationStore {
   }
   async decide(
     change: NotificationTransition,
-  ): Promise<readonly (DecidedNotification & { sequence: string })[]> {
+  ): Promise<readonly (DecidedNotification & { sequence: string; connectionId: string | null })[]> {
     if (!mayNotify(change)) return [];
     return withPersonalReadTransaction(this.#database, async (transaction) =>
       (await candidatesFor(transaction, change))
@@ -124,11 +146,13 @@ export class NotificationStore {
           const id = NotificationIdSchema.parse(
             `ntf_${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
           );
+          const { connectionId, ...view } = candidate;
           return {
             userId: candidate.userId,
             sequence: candidate.sequence,
+            connectionId,
             view: NotificationViewSchema.parse({
-              ...candidate,
+              ...view,
               id,
               threadId: change.threadId,
             }),
@@ -190,6 +214,88 @@ export class NotificationStore {
   }
 
   /**
+   * The hand-off of a connected agent's alert (A5, F1, rule 3), for its Request or for its
+   * Run's reply or failure, after every await before the send: in one transaction that holds
+   * the connection row (the row Disconnect's revoke locks), the statement that records the
+   * attempt also checks the alert is still the connection's to send (live; its Request still
+   * pending; not below a narrowed grant's floor). A revoke that committed first refuses it,
+   * and nothing is sent; one that commits after finds the attempt
+   * in the connection's Disconnect set and waits for its outcome. One attempt per alert: the
+   * same notification id is never begun twice unless the first is known never to have left.
+   */
+  async beginPublication(entry: NotificationPublication): Promise<NotificationPublicationHandoff> {
+    const connectionId = entry.connectionId;
+    const subject = publicationSubject(entry);
+    if (!connectionId || !subject)
+      return { kind: "refused", reason: "Notification names no connection's Request or Run" };
+    return withDatabaseTransaction(this.#database, async (tx) => {
+      const floor = await connectionFloor(tx, connectionId);
+      if (!floor) return { kind: "refused", reason: "The connected agent's access ended" };
+      const id = `cat_${randomUUID()}`;
+      const { rows } = await sql<{ readonly id: string }>`
+        insert into command_attempts
+          (id, requested_by, caller_key, connection_id, type, idempotency_key, settled_at)
+        select ${id}, ${entry.userId}, ${notificationPublicationCallerKey}, ${connectionId},
+          ${notificationPublicationAttemptType}, ${entry.id}, null
+        where ${stillTheConnections(subject, floor.minimumGrantRevision)}
+        on conflict (requested_by, caller_key, idempotency_key) where state <> 'failed' do nothing
+        returning id`.execute(tx);
+      if (rows[0]) return { kind: "begun", attemptId: rows[0].id };
+      const prior = await tx
+        .selectFrom("commandAttempts")
+        .select("state")
+        .where("requestedBy", "=", entry.userId)
+        .where("callerKey", "=", notificationPublicationCallerKey)
+        .where("idempotencyKey", "=", entry.id)
+        .where("state", "<>", "failed")
+        .executeTakeFirst();
+      if (prior) return { kind: "prior", state: prior.state as "running" | "done" | "unknown" };
+      return {
+        kind: "refused",
+        reason:
+          subject.kind === "request"
+            ? "Request is no longer waiting for the person"
+            : "Run is no longer the connected agent's to tell the person about",
+      };
+    });
+  }
+
+  /**
+   * The same hand-off again before the same alert is sent once more (a lost acknowledgement, or
+   * the account's refusal of sealed previews): the same check, in the statement that touches the
+   * running attempt. Sending the same notification id again is the completion of that one
+   * attempt, not a second effect: the Opensteer account records one publication per Deployment
+   * and notification id in the transaction that fans it out, and answers a repeat from that
+   * receipt (`apps/control-plane/src/notifications/notification-store.ts`, `ingest`), so no
+   * phone is reached twice. It is still a hand-off, because if the first never arrived the
+   * repeat is the one that reaches the phone.
+   */
+  async continuePublication(attemptId: string, entry: NotificationPublication): Promise<boolean> {
+    const connectionId = entry.connectionId;
+    const subject = publicationSubject(entry);
+    if (!connectionId || !subject) return false;
+    return withDatabaseTransaction(this.#database, async (tx) => {
+      const floor = await connectionFloor(tx, connectionId);
+      if (!floor) return false;
+      const { rows } = await sql<{ readonly id: string }>`
+        update command_attempts set started_at = started_at
+        where id = ${attemptId} and state = 'running' and connection_id = ${connectionId}
+          and ${stillTheConnections(subject, floor.minimumGrantRevision)}
+        returning id`.execute(tx);
+      return rows.length === 1;
+    });
+  }
+
+  /**
+   * What is known of one alert's outcome: acknowledged (`done`), known never to have reached
+   * the account (`failed`), or `unknown`: a send that may have landed and whose acknowledgement
+   * was lost. Unknown is never sent again (rule 4) and shows on the connection as uncertain.
+   */
+  async settlePublication(attemptId: string, state: "done" | "failed" | "unknown"): Promise<void> {
+    await settleCommandAttempt(this.#database, attemptId, state);
+  }
+
+  /**
    * Host users are reached through their Opensteer Account, read at the moment
    * of publication because a person can link or lose one at any time.
    */
@@ -200,6 +306,7 @@ export class NotificationStore {
   }
 }
 interface NotificationCandidate {
+  readonly connectionId: string | null;
   readonly occurredAt: string;
   readonly sequence: string;
   readonly body: string;
@@ -261,14 +368,18 @@ async function requestCandidates(
   transaction: Transaction<DatabaseSchema>,
   change: Extract<NotificationTransition, { type: "requestChanged" }>,
 ): Promise<readonly NotificationCandidate[]> {
-  const row = await transaction
+  const found = await transaction
     .selectFrom("requests")
     .selectAll()
+    // Read in the same statement: whose Request this is, so a connection's alert is handed
+    // off through its Disconnect set (A5) and your own agents' pays nothing more.
+    .select(requestLineageConnection().as("lineageConnectionId"))
     .where("id", "=", change.requestId)
     .where("originatingThreadId", "=", change.threadId)
     .where("status", "=", "pending")
     .executeTakeFirst();
-  if (!row) return [];
+  if (!found) return [];
+  const { lineageConnectionId, ...row } = found;
   const request = requestFromRow(row);
   const { ownerId } = await personalSettings(transaction);
   const userIds = requestNotificationAudience({
@@ -290,6 +401,7 @@ async function requestCandidates(
     "Opensteer needs your answer";
   return recipients.map(({ id: userId }) => ({
     body,
+    connectionId: lineageConnectionId,
     kind: "request-opened",
     occurredAt: request.createdAt,
     sequence: row.revision,
@@ -346,6 +458,7 @@ async function replyCandidates(
   return [
     {
       body,
+      connectionId: recipient.connectionId,
       kind: "reply-published",
       occurredAt: reply.createdAt.toISOString(),
       sequence: recipient.revision,
@@ -369,6 +482,7 @@ async function failureCandidates(
   return [
     {
       body,
+      connectionId: recipient.connectionId,
       kind: "run-failed",
       occurredAt,
       sequence,
@@ -394,6 +508,8 @@ async function personAnswered(
   readonly title: string;
   readonly userId: UserId;
   readonly revision: string;
+  /** The connection whose lineage the Run is in, the same way the Disconnect set reads it. */
+  readonly connectionId: string | null;
 } | null> {
   if (!change.runId) return null;
   const run = await transaction
@@ -408,6 +524,11 @@ async function personAnswered(
       "runs.requestedBy",
       "threads.parentThreadId",
       "threads.purpose",
+      // In the same statement: a connection's Run has its alert handed off through that
+      // connection's Disconnect set (F1); your own agents' Runs read nothing more.
+      sql<string | null>`coalesce(runs.connection_id, threads.origin_connection_id)`.as(
+        "lineageConnectionId",
+      ),
     ])
     .select(
       sql<boolean>`exists (select 1 from messages input where
@@ -436,6 +557,7 @@ async function personAnswered(
     title,
     userId: run.requestedBy,
     revision: run.revision,
+    connectionId: run.lineageConnectionId,
   };
 }
 
@@ -542,4 +664,86 @@ async function personalLinkSubjectForOwner(
     .$if(issuer !== undefined, (query) => query.where("issuer", "=", issuer!))
     .executeTakeFirst();
   return link?.subject ?? null;
+}
+
+/**
+ * The connection a Request belongs to, as the Disconnect set attributes it
+ * (`connection-disconnect.ts`, its `request` rows): the originating Run's, occurrence's or Watch
+ * activation's connection (or its automation's origin), the agent session's, else the task's
+ * origin. Null for your own agents' Requests on your own tasks. `requests` is unaliased.
+ */
+function requestLineageConnection() {
+  return sql<string | null>`coalesce(
+    (select lineage_run.connection_id from runs lineage_run
+      where lineage_run.id = requests.originating_run_id),
+    (select coalesce(lineage_occurrence.connection_id, lineage_trigger.origin_connection_id)
+      from trigger_occurrences lineage_occurrence
+      join triggers lineage_trigger on lineage_trigger.id = lineage_occurrence.trigger_id
+      where lineage_occurrence.id = requests.originating_occurrence_id),
+    (select coalesce(lineage_watch.connection_id, lineage_trigger.origin_connection_id)
+      from trigger_watch_activations lineage_watch
+      join triggers lineage_trigger on lineage_trigger.id = lineage_watch.trigger_id
+      where lineage_watch.id = requests.originating_watch_activation_id),
+    (select lineage_session.connection_id from agent_sessions lineage_session
+      where lineage_session.id = requests.originating_agent_session_id),
+    (select lineage_thread.origin_connection_id from threads lineage_thread
+      where lineage_thread.id = requests.originating_thread_id))`;
+}
+
+/** The connection row held for a hand-off, when it is live: and its narrowed floor, if any. */
+async function connectionFloor(
+  tx: Kysely<DatabaseSchema>,
+  connectionId: string,
+): Promise<{ readonly minimumGrantRevision: number | null } | null> {
+  const connection = await tx
+    .selectFrom("agentConnections")
+    .select(["cleanupMinimumGrantRevision", liveConnection().as("live")])
+    .where("id", "=", connectionId)
+    .forShare()
+    .executeTakeFirst();
+  return connection?.live
+    ? { minimumGrantRevision: connection.cleanupMinimumGrantRevision ?? null }
+    : null;
+}
+
+/** What a connection's alert speaks for: its Request, or (a reply, a failure) its Run. */
+type PublicationSubject =
+  | { readonly kind: "request"; readonly id: RequestId }
+  | { readonly kind: "run"; readonly id: RunId };
+
+function publicationSubject(entry: NotificationPublication): PublicationSubject | null {
+  if (entry.kind === "request-opened")
+    return entry.requestId ? { kind: "request", id: entry.requestId } : null;
+  return entry.runId ? { kind: "run", id: entry.runId } : null;
+}
+
+/**
+ * The alert is still the live connection's to send: its Request still pending (below), or its
+ * Run not admitted under a grant below a narrowed grant's floor.
+ */
+function stillTheConnections(subject: PublicationSubject, minimumGrantRevision: number | null) {
+  if (subject.kind === "request") return stillTheConnectionsToAsk(subject.id, minimumGrantRevision);
+  return sql<boolean>`exists (
+    select 1 from runs r where r.id = ${subject.id}
+      and not coalesce(r.admitted_grant_revision < ${minimumGrantRevision}::integer, false))`;
+}
+
+/**
+ * The Request is pending and not below a narrowed grant's floor: what the Disconnect set's
+ * `request` rows would not cancel. The grant it was asked under is its originating Run's,
+ * occurrence's or Watch's, its operation's, or its proposer's, as there.
+ */
+function stillTheConnectionsToAsk(requestId: RequestId, minimumGrantRevision: number | null) {
+  return sql<boolean>`exists (
+    select 1 from requests q
+    left join runs r on r.id = q.originating_run_id
+    left join trigger_occurrences o on o.id = q.originating_occurrence_id
+    left join trigger_watch_activations w on w.id = q.originating_watch_activation_id
+    left join agent_operations op on op.request_id = q.id
+    where q.id = ${requestId} and q.status = 'pending'
+      and not coalesce(
+        coalesce(r.admitted_grant_revision, o.admitted_grant_revision, w.admitted_grant_revision,
+          op.grant_revision, (q.command->'proposer'->>'grantRevision')::integer)
+          < ${minimumGrantRevision}::integer,
+        false))`;
 }
