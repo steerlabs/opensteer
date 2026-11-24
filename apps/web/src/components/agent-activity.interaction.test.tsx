@@ -23,7 +23,16 @@ import {
   mockComputerUseToolRefs,
   mockComputerUseTurn,
 } from "@opensteer/client/mock";
-import { TabIdSchema, createId, defaultTaskSymbol, ThreadIdSchema } from "@opensteer/core";
+import {
+  BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
+  TabIdSchema,
+  createId,
+  defaultTaskSymbol,
+  ThreadIdSchema,
+  type BrowserPageContentPart,
+  type Tab,
+} from "@opensteer/core";
 import { computerUseStops } from "@opensteer/client/integrations";
 import {
   createMessageOutboxStorage,
@@ -1178,6 +1187,111 @@ it("keeps an edited message's history a click away after a Run took it", async (
   expect(document.body.textContent).toContain("Check the shard");
   await act(async () => click(marks[1]));
   expect(listMessageRevisions).toHaveBeenLastCalledWith("thread-1", "message-asked", undefined);
+});
+
+describe("a message's pages", () => {
+  // Failure mode: the screen works out which tabs a transcript names from the rows it was given,
+  // so a page only the opened message names, past those its preview carries, keeps the title and
+  // the link it had when the message was opened.
+  it("follow their tabs, the pages an opened message adds to its preview too", async () => {
+    const mock = new MockHostClient({ latencyMs: 0 });
+    try {
+      await mock.load();
+      const threadId = "thr_00000000-0000-4000-8000-000000000005";
+      mock.activateThread(threadId);
+      const viewer = createId("user");
+      const pages = [
+        "mock-tab-0-0",
+        "mock-tab-4-0",
+        "mock-tab-8-0",
+        "mock-tab-11-0",
+        "mock-tab-3-0",
+      ].map((tabId, index): BrowserPageContentPart => ({
+        type: "browser-page",
+        sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000802"),
+        tabId: BrowserSurfaceIdSchema.parse(tabId),
+        title: `Page ${index}`,
+        url: `https://pages.example/${index}`,
+      }));
+      const author = {
+        displayName: "Me",
+        kind: "human",
+        principalId: viewer,
+        userId: viewer,
+      } as const;
+      // The row carries the preview: its words and the first page alone.
+      const preview: MessageEntry = {
+        ...note,
+        author,
+        body: "Everything I read about it",
+        id: "message-pages",
+        itemId: "message-pages",
+        messageKind: "input",
+        pages: pages.slice(0, 1),
+        previewTruncated: true,
+        runId: null,
+      };
+      const read = vi.spyOn(mock, "readTranscriptItem").mockResolvedValue({
+        body: {
+          kind: "message",
+          message: {
+            author,
+            content: [{ type: "text", text: preview.body }, ...pages],
+            createdAt: preview.createdAt,
+            id: preview.id,
+            kind: "input",
+            runId: null,
+            sequence: "1",
+            threadId,
+          },
+        },
+      } as unknown as Awaited<ReturnType<MockHostClient["readTranscriptItem"]>>);
+      const { tabs, browserProfiles } = mock.getSnapshot();
+      const container = document.createElement("div");
+      document.body.append(container);
+      const root = createRoot(container);
+      roots.push(root);
+      await act(async () =>
+        root.render(
+          <MemoryRouter>
+            <TestWorkspace>
+              <AgentTranscript
+                attachmentReader={mock}
+                browserSessions={{ tabs, browserProfiles }}
+                entries={[preview]}
+                threadId={threadId}
+                viewerUserId={viewer}
+              />
+            </TestWorkspace>
+          </MemoryRouter>,
+        ),
+      );
+      const chips = () => [...container.querySelectorAll(".msg--user__pages .surface-chip")];
+      const titles = () =>
+        chips().map((chip) => chip.querySelector(".surface-chip__title")?.textContent);
+      expect(titles()).toEqual(["Your reading list"]);
+      await act(async () =>
+        container.querySelector<HTMLButtonElement>(".message-fold__toggle")!.click(),
+      );
+      await vi.waitFor(() => expect(titles()).toHaveLength(5));
+      expect(read).toHaveBeenCalledWith(threadId, preview.id, undefined);
+      expect(titles()[4]).toBe("Launch brief");
+      const retitle = (change: (rows: Tab[]) => Tab[]) =>
+        act(() => tabs.replaceRows(change([...tabs.rows.values()]), tabs.complete));
+      retitle((rows) =>
+        rows.map((tab) =>
+          tab.tabId === "mock-tab-3-0" ? { ...tab, title: "Launch brief v2" } : tab,
+        ),
+      );
+      expect(titles()[4]).toBe("Launch brief v2");
+      // Closed, it is named as it was sent and opens nothing.
+      retitle((rows) => rows.filter((tab) => tab.tabId !== "mock-tab-3-0"));
+      expect(titles()[4]).toBe("Page 4");
+      expect(chips()[4]?.classList.contains("surface-chip--ended")).toBe(true);
+    } finally {
+      mock.dispose();
+    }
+  });
 });
 
 describe("a message still on this device", () => {

@@ -348,13 +348,13 @@ describe("what the open task shows of itself", () => {
     await until("the answered question never left", () => expect(stack()).not.toContain("of 2"));
   });
 
-  it("follows the tabs its own transcript names", async () => {
+  it("follows the tabs its own transcript names, each where it is drawn", async () => {
     await open(architecture);
     const stop = () => document.querySelector(".trace-place__title")?.textContent;
     expect(stop()).toBe("Le Petit Jardin");
     const counts = await drawsDuring(() => fixture.retitleTab(restaurant, "Le Petit Jardin · Fri"));
-    expect(counts.ThreadView, "its own tab").toBeGreaterThan(0);
-    expect(counts.AgentTranscript, "its own tab, in its transcript").toBeGreaterThan(0);
+    // The stop reads its own tab: the transcript around it is not drawn again.
+    expect(counts.AgentTranscript, "its transcript").toBe(0);
     await until("its tab's new title never showed", () =>
       expect(stop()).toBe("Le Petit Jardin · Fri"),
     );

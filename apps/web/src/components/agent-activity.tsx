@@ -26,7 +26,12 @@ import {
   providerRetryLabel,
 } from "@opensteer/client/host";
 import { TeamInputSource } from "../team/task-source-chip.js";
-import { useToolOutput, useTranscriptMessage, useTranscriptText } from "@opensteer/client/react";
+import {
+  useTabRead,
+  useToolOutput,
+  useTranscriptMessage,
+  useTranscriptText,
+} from "@opensteer/client/react";
 import { copyText } from "@opensteer/shared/clipboard";
 import { voiceCallSeed } from "@opensteer/core";
 import { AppCard } from "./apps/app-card.js";
@@ -107,6 +112,7 @@ import {
   type TranscriptGroup,
   type PlaceEntry,
   type ReasoningEntry,
+  type ReplyPlace,
   type RequestReceiptEntry,
   type RunEntry,
   type ThreadActivity,
@@ -148,9 +154,12 @@ import {
   appChip,
   pageChip,
   phoneChip,
+  sameChip,
+  sameChips,
   SurfaceChip,
   SurfaceChips,
   SurfaceLink,
+  type ChipSurface,
 } from "./surface-chips.js";
 import { MessageFold } from "./message-fold.js";
 import { AnsweredQuestionRow } from "./answered-question.js";
@@ -225,7 +234,10 @@ const TaskViews = createContext<TaskRenderer | undefined>(undefined);
 /** The reader's Home: a message from it leads to Home itself, not to a Thread page. */
 /** Every browser this reader can see, which a Run's pages are looked up in. */
 const TranscriptBrowserUses = createContext<readonly BrowserSessionUseSummary[]>([]);
-/** The person's tabs, as links in the transcript open them; a new object on every tab change. */
+/**
+ * The person's tabs, as links in the transcript open them. Each view that draws a tab reads it from
+ * here itself (`useTabRead`), so a tab changing redraws the chips that draw it and nothing else.
+ */
 export type TranscriptTabSource = Pick<HostSnapshot, "tabs" | "browserProfiles">;
 const noTabs: TranscriptTabSource = { tabs: new TabStore(), browserProfiles: [] };
 const TranscriptBrowsers = createContext<TranscriptTabSource>(noTabs);
@@ -1356,20 +1368,25 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
  */
 function ReplySurfaces({ turn, turnKey }: { turn: Turn; turnKey: string }) {
   const uses = useContext(TranscriptBrowserUses);
-  const sessions = useContext(TranscriptBrowsers);
   const whole = useContext(ActivityOfTurn).get(turnKey)?.turn ?? turn;
-  const surfaces = useMemo(
-    () =>
-      replyPlaces(whole, uses, sessions).map((place) =>
-        place.kind === "page"
-          ? pageChip(place.page)
-          : place.kind === "phone"
-            ? phoneChip(place.phone)
-            : appChip(place.app),
-      ),
-    [uses, sessions, whole],
+  const surfaces = useTabRead(
+    useContext(TranscriptBrowsers),
+    useCallback(
+      (sessions: TranscriptTabSource) => replyPlaces(whole, uses, sessions).map(replyPlaceChip),
+      [uses, whole],
+    ),
+    sameChips,
   );
   return <SurfaceChips label="Pages and apps this reply used" surfaces={surfaces} />;
+}
+
+/** A place a reply's Run used, as its chip. */
+function replyPlaceChip(place: ReplyPlace): ChipSurface {
+  return place.kind === "page"
+    ? pageChip(place.page)
+    : place.kind === "phone"
+      ? phoneChip(place.phone)
+      : appChip(place.app);
 }
 
 /**
@@ -2015,14 +2032,14 @@ function TracePlace({
   turn: Turn;
   markOnly?: boolean;
 }) {
-  const sessions = useContext(TranscriptBrowsers);
-  const place = useMemo(() => placeReply(entry, sessions), [entry, sessions]);
-  const page =
-    place.kind === "page"
-      ? pageChip(place.page)
-      : place.kind === "app"
-        ? appChip(place.app)
-        : phoneChip(place.phone);
+  const page = useTabRead(
+    useContext(TranscriptBrowsers),
+    useCallback(
+      (sessions: TranscriptTabSource) => replyPlaceChip(placeReply(entry, sessions)),
+      [entry],
+    ),
+    sameChip,
+  );
   // An agent is in one tab at a time: the live turn's latest stop, while its tab is listed.
   const acting =
     turnState(turn) !== "settled" &&
@@ -2031,10 +2048,10 @@ function TracePlace({
   if (markOnly)
     return (
       <>
-        {place.kind === "phone" ? (
+        {page.phone ? (
           <Icon name="phone" />
-        ) : place.kind === "app" ? (
-          <AppMark identity={place.app.app} />
+        ) : page.app ? (
+          <AppMark identity={page.app} />
         ) : (
           <SiteMark favicon={page.favicon ?? null} />
         )}
@@ -2055,10 +2072,10 @@ function TracePlace({
       }
     >
       <span className="trace-place__stop">
-        {place.kind === "phone" ? (
+        {page.phone ? (
           <Icon name="phone" />
-        ) : place.kind === "app" ? (
-          <AppMark identity={place.app.app} />
+        ) : page.app ? (
+          <AppMark identity={page.app} />
         ) : (
           <SiteMark favicon={page.favicon ?? null} />
         )}
@@ -2962,16 +2979,23 @@ function PersonWords({ text }: { readonly text: string }) {
 
 /** The pages a person included with their message, above its words. */
 function MessagePages({ pages }: { pages: readonly BrowserPageContentPart[] }) {
-  const sessions = useContext(TranscriptBrowsers);
-  if (pages.length === 0) return null;
+  return pages.length === 0 ? null : <MessagePageChips pages={pages} />;
+}
+
+/** Each page as the message drawn names it, an opened message's whole list included. */
+function MessagePageChips({ pages }: { pages: readonly BrowserPageContentPart[] }) {
+  const chips = useTabRead(
+    useContext(TranscriptBrowsers),
+    useCallback(
+      (sessions: TranscriptTabSource) => messagePages(pages, sessions).map(pageChip),
+      [pages],
+    ),
+    sameChips,
+  );
   return (
     <div aria-label="Pages included" className="msg--user__pages" role="group">
-      {pages.map((part) => (
-        <SurfaceChip
-          key={`${part.sessionId}:${part.tabId}`}
-          surface={pageChip(messagePages([part], sessions)[0]!)}
-          withSite
-        />
+      {pages.map((part, index) => (
+        <SurfaceChip key={`${part.sessionId}:${part.tabId}`} surface={chips[index]!} withSite />
       ))}
     </div>
   );
