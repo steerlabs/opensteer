@@ -1459,3 +1459,70 @@ describe("a long transcript's bodies", () => {
     }
   });
 });
+
+/*
+ * A task's turn under way while the line above the composer speaks for it.
+ * What can go wrong: the head repeats the live words out of view, or loses the
+ * disclosure that folds the turn's steps.
+ */
+describe("a task transcript beside the live line", () => {
+  function transcript(liveRunId: string | null, entries: TranscriptEntry[]): HTMLElement {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    act(() =>
+      root.render(
+        <MemoryRouter initialEntries={["/tasks/thread-1"]}>
+          <AgentTranscript entries={entries} liveRunId={liveRunId} />
+        </MemoryRouter>,
+      ),
+    );
+    return container;
+  }
+
+  it("keeps only the steps' disclosure while live, and heads the turn again once it settles", () => {
+    const working: TranscriptEntry[] = [
+      { ...run, status: "running" },
+      tool(),
+      tool({ completedAt: null, state: "running" }),
+    ];
+    const alone = transcript(null, working);
+    expect(alone.querySelector('[aria-label="Agent status"]')?.textContent).toBe(
+      "Running a command",
+    );
+    const beside = transcript("run-a", working);
+    expect(beside.querySelector('[aria-label="Agent status"]')).toBeNull();
+    expect(beside.querySelector(".work--live")).toBeNull();
+    expect(status(beside).textContent).toBe("Steps");
+    expect(status(beside).getAttribute("aria-expanded")).toBe("true");
+    click(status(beside));
+    expect(status(beside).getAttribute("aria-expanded")).toBe("false");
+
+    // Nor does the line under the transcript stand in for a Run the pinned line speaks for.
+    const paged = document.createElement("div");
+    document.body.append(paged);
+    const pagedRoot = createRoot(paged);
+    roots.push(pagedRoot);
+    act(() =>
+      pagedRoot.render(
+        <MemoryRouter initialEntries={["/tasks/thread-1"]}>
+          <AgentTranscript activity="working" entries={[tool()]} liveRunId="run-a" />
+        </MemoryRouter>,
+      ),
+    );
+    expect(paged.querySelector(".working")).toBeNull();
+    act(() =>
+      pagedRoot.render(
+        <MemoryRouter initialEntries={["/tasks/thread-1"]}>
+          <AgentTranscript activity="working" entries={[tool()]} liveRunId={null} />
+        </MemoryRouter>,
+      ),
+    );
+    expect(paged.querySelector(".working")?.textContent).toBe("Working");
+    // Another Run's turn keeps its own head.
+    expect(transcript("run-b", working).querySelector(".work--live")).not.toBeNull();
+    const settled = transcript(null, [run, tool()]);
+    expect(settled.querySelector('[aria-label="Agent status"]')?.textContent).toBe("Worked for 3s");
+  });
+});

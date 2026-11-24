@@ -27,6 +27,8 @@ import {
   conversationTurnRevealing,
   groupTranscriptEntries,
   incomingTranscriptMessages,
+  liveTurn,
+  threadCurrentRun,
   observedSequence,
   placementAccountTitle,
   selectionForModel,
@@ -61,6 +63,7 @@ import {
 } from "@opensteer/client/react";
 import { fromLivePage, useMediaQuery, usePageVisible, useWindowInForeground } from "../ui-utils.js";
 import { AgentTranscript, ConversationActivity } from "./agent-activity.js";
+import { LiveLine } from "./live-line.js";
 import { useShell } from "./app-shell.js";
 import { ExecutionControls } from "./execution-controls.js";
 import {
@@ -1126,6 +1129,40 @@ function ThreadView({
   const startHold = live
     ? threadStartHold({ environments: snapshot.environments, runQueue: runQueue, thread })
     : null;
+  // A task's turn under way, for the line above its composer. A conversation
+  // types its reply instead. Grouped exactly as the transcript groups, so this
+  // reads the grouping the transcript already made.
+  const currentRun = threadCurrentRun({ runQueue, thread });
+  // A window short of the latest lacks what the Run did since; back at the latest, it returns.
+  const reachesLatest = !historical && !canLoadNewer;
+  const liveTask = useMemo(
+    () =>
+      conversational || voiceThread || !reachesLatest
+        ? null
+        : liveTurn(
+            groupTranscriptEntries(local.transcript, {
+              inputQueuePaused: thread.inputQueuePaused,
+              startHold,
+              assignments: snapshot.assignments,
+            }),
+            currentRun,
+          ),
+    [
+      conversational,
+      voiceThread,
+      reachesLatest,
+      local.transcript,
+      thread.inputQueuePaused,
+      startHold,
+      snapshot.assignments,
+      currentRun,
+    ],
+  );
+  // A question docked above the composer already says the Run waits on it.
+  const liveLine =
+    liveTask !== null && !(liveTask.state === "waiting" && dockedRequests.length > 0)
+      ? liveTask
+      : null;
   const composerPlaceholder = thread.teamOrigin
     ? "Message your agent privately"
     : threadComposerPlaceholder(conversation.length === 0);
@@ -1499,6 +1536,7 @@ function ThreadView({
                         // turn's steps behind its reply; work keeps its whole trace in view.
                         conversation={conversational}
                         live={live}
+                        liveRunId={liveLine?.runId ?? null}
                         computers={computers}
                         entries={local.transcript}
                         afterQueue={local.afterQueue}
@@ -1713,6 +1751,7 @@ function ThreadView({
                     }
                   />
                 ) : null}
+                {liveLine ? <LiveLine connected={live} live={liveLine} /> : null}
                 {voiceThread ? null : (
                   <InputSurface
                     autoContext={false}

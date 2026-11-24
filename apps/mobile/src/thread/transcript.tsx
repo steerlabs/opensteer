@@ -36,6 +36,7 @@ import {
   workRows,
   traceWindow,
   workSummary,
+  liveTurnHeadLabel,
   type ActivityStepHead,
   type AnsweredQuestionEntry,
   type ActivityTone,
@@ -70,6 +71,7 @@ import { CopyMark } from "../ui/copy-mark.js";
 import { appear, bubblePop, bubbleRise, exit } from "../ui/motion.js";
 import { AppText, StatusDot, TypingDots, monoFontFamily } from "../ui/primitives.js";
 import { AnsweredQuestionView } from "./answered-question.js";
+import { LiveLineRunContext } from "./live-line.js";
 import { MessageFold } from "./message-fold.js";
 import { activitySymbol } from "../ui/activity-symbol.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
@@ -297,10 +299,18 @@ function WorkStatus(props: {
   readonly open?: boolean;
 }): ReactNode {
   const { summary, turn } = props;
+  const liveRunId = useContext(LiveLineRunContext);
   const line = useComputerLine(turn, props.live !== false);
-  const unsettled = summary.state !== "settled";
+  // The line above the composer says what a turn under way is doing; the head
+  // keeps only its disclosure, named for the steps it opens.
+  const pinned = liveRunId !== null && turn.runId === liveRunId && turn.continued !== true;
+  const unsettled = summary.state !== "settled" && !pinned;
   const live = props.live !== false && unsettled;
-  const label = summary.state === "live" && restarting(turn.run) ? restartingLabel : summary.label;
+  const label = pinned
+    ? liveTurnHeadLabel
+    : summary.state === "live" && restarting(turn.run)
+      ? restartingLabel
+      : summary.label;
   // On the reader's Mac the line says where the agent is, and still opens its steps.
   const toggle =
     props.onToggle === undefined ? null : { onToggle: props.onToggle, open: props.open === true };
@@ -308,6 +318,7 @@ function WorkStatus(props: {
     return <ComputerUseLine key={line.now.session.sessionId} now={line.now} toggle={toggle} />;
   if (line?.kind === "kept")
     return <KeptComputerStopLine key={line.stop.sessionId} stop={line.stop} toggle={toggle} />;
+  if (pinned && props.onToggle === undefined) return null;
   const content = (
     <>
       {unsettled ? (

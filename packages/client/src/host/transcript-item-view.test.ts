@@ -12,7 +12,13 @@ import {
   type TranscriptItem,
 } from "@opensteer/protocol/transcript";
 import { expect, it } from "vitest";
-import { conversationTurn, groupTranscriptEntries, workSummary } from "./agent-activity-model.js";
+import {
+  conversationTurn,
+  groupTranscriptEntries,
+  liveTurn,
+  liveTurnLine,
+  workSummary,
+} from "./agent-activity-model.js";
 import type { TranscriptEntry } from "./client.js";
 import { ItemTextStore } from "./item-text-store.js";
 import { nodeTranscriptCard, transcriptCard } from "./transcript-item-view.js";
@@ -591,4 +597,34 @@ it("prefers full inline text on message and node-message items and keeps long li
       { type: "text", text: "Line two" },
     ]),
   ).toBe("Line one\nLine two");
+});
+
+it("reads a Run under way from the cards the Host sends, arguments and start time absent", () => {
+  // As the wire carries them: the Run's card has no start time, a tool's no arguments.
+  const runCard = itemCard({
+    ...base,
+    kind: "run",
+    id: `run:${runId}`,
+    runId,
+    view: { status: "running" },
+  });
+  const done = itemCard({ ...tool("completed"), completedAt: "2026-11-17T18:00:04.000Z" });
+  const live = liveTurn(groupTranscriptEntries([runCard, done]), {
+    id: runId,
+    status: "running",
+    createdAt: time,
+  });
+  expect(live).toMatchObject({
+    label: "Ran a command",
+    detail: null,
+    executing: true,
+    startedAt: Date.parse(time),
+    lastActivityAt: Date.parse("2026-11-17T18:00:04.000Z"),
+  });
+  expect(liveTurnLine(live!, Date.parse("2026-11-17T18:00:12.000Z"))).toMatchObject({
+    tone: "working",
+    label: "Ran a command",
+    since: "updated 8s ago",
+    elapsed: "12s",
+  });
 });
