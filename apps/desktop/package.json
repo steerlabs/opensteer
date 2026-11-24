@@ -110,7 +110,7 @@
     "electron": "44.10.2",
     "electron-builder": "26.15.3",
     "electron-builder-squirrel-windows": "26.15.3",
-    "esbuild": "0.27.7",
+    "esbuild": "0.28.1",
     "tsup": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",
