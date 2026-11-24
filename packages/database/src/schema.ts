@@ -1196,7 +1196,9 @@ interface TriggerRevisionTable {
   ordinal: number;
   source: JsonColumn<TriggerSource>;
   script: JsonColumn<AutomationScript> | null;
+  legacyLanguage: Generated<string | null>;
   legacySource: Generated<string | null>;
+  legacyToolContractVersion: Generated<number | null>;
   createdBy: UserId;
   createdByThreadId: ThreadId | null;
   createdAt: Timestamp;
