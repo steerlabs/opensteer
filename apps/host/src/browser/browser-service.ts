@@ -2255,7 +2255,12 @@ export class BrowserService {
     // A pooled target that is still recovering or parked after a Home restart attaches its
     // in-process browser relay once its guest is running; waking it here makes the placement ready.
     const intendedPool = intended ? this.#pool(intended.runnerId) : undefined;
-    if (intended && intendedPool && !this.#resolveTarget(intended)) {
+    if (
+      intended &&
+      intendedPool &&
+      (this.#targetResolver?.pendingAdmission?.(intended.runnerId) ||
+        !this.#resolveTarget(intended))
+    ) {
       if (agent) {
         await this.admitAgentBrowser(agent, "read-write", [], this.#repository, false, {
           profileId,
@@ -2268,8 +2273,17 @@ export class BrowserService {
       ]);
       const reservation = await this.#reservePool(intendedPool.gate, wakeSignal);
       try {
-        if (!this.#resolveTarget(intended))
+        if (this.#targetResolver?.pendingAdmission?.(intended.runnerId)) {
+          await this.#targetResolver
+            .waitForTarget?.(intended.runnerId, wakeSignal)
+            .catch(() => undefined);
+        } else if (!this.#resolveTarget(intended)) {
           await intendedPool.ensureRelayAttached(wakeSignal).catch(() => undefined);
+          if (this.#targetResolver?.pendingAdmission?.(intended.runnerId))
+            await this.#targetResolver
+              .waitForTarget?.(intended.runnerId, wakeSignal)
+              .catch(() => undefined);
+        }
       } finally {
         reservation.release();
       }
@@ -7636,9 +7650,20 @@ export class BrowserService {
       poolStart.pool = { target: pooled, reservation };
       poolStart.signal.throwIfAborted();
       if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
-      if (!this.#resolveTarget(placement))
+      if (this.#targetResolver?.pendingAdmission?.(placement.runnerId)) {
+        await this.#targetResolver
+          .waitForTarget?.(placement.runnerId, poolStart.signal)
+          .catch(() => undefined);
+      } else if (!this.#resolveTarget(placement)) {
         await pooled.ensureRelayAttached(poolStart.signal).catch(() => undefined);
-      const current = this.#resolveTarget(placement);
+        if (this.#targetResolver?.pendingAdmission?.(placement.runnerId))
+          await this.#targetResolver
+            .waitForTarget?.(placement.runnerId, poolStart.signal)
+            .catch(() => undefined);
+      }
+      const current = this.#targetResolver?.pendingAdmission?.(placement.runnerId)
+        ? undefined
+        : this.#resolveTarget(placement);
       if (!current || current.runtimeId !== pooled.runtimeId)
         throw unavailable(
           boundRunnerId
@@ -8850,11 +8875,13 @@ export class BrowserService {
     if (!runnerId || !resolver?.waitForTarget || !homes.some((home) => home.id === runnerId))
       return false;
     // A pooled Cloud Computer drives its browser through its pool coordinator rather than a local
-    // Runner browser stream: never wait on a Runner stream that will not arrive.
+    // Runner browser stream: never wait on a Runner stream that will not arrive, unless its
+    // in-process pooled relay has already attached and is only finishing profile reconciliation.
     if (
-      this.#pool(runnerId) !== undefined ||
-      this.#isPooledRunner(runnerId) ||
-      (this.#pooledOnly && homes.some((home) => home.id === runnerId && home.kind === "main"))
+      (this.#pool(runnerId) !== undefined ||
+        this.#isPooledRunner(runnerId) ||
+        (this.#pooledOnly && homes.some((home) => home.id === runnerId && home.kind === "main"))) &&
+      !resolver.pendingAdmission?.(runnerId)
     )
       return false;
     if (

@@ -1203,8 +1203,13 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
         },
       });
       try {
-        await vi.waitFor(() => expect(hub.stream(runnerId)).not.toBeNull(), { timeout: 10_000 });
-        expect(pool.status()).toBe("ready");
+        await vi.waitFor(
+          () => {
+            expect(hub.stream(runnerId)).not.toBeNull();
+            expect(pool.status()).toBe("ready");
+          },
+          { timeout: 10_000 },
+        );
 
         // Detach the relay while the guest stays running.
         hub.detachRunner(runnerId, "transport-disconnected");
@@ -1449,9 +1454,16 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
         registered: registeredKeys!,
       });
       targetResponse = { status: "ready", target: poolHost.target };
-      await vi.waitFor(() => expect(host!.browser.usesPoolAdmission).toBe(true), {
-        timeout: 10_000,
-      });
+      await vi.waitFor(
+        async () => {
+          expect(host!.browser.usesPoolAdmission).toBe(true);
+          expect((await host!.app.inject({ method: "GET", url: "/ready" })).json()).toEqual({
+            ok: true,
+            browserPool: "ready",
+          });
+        },
+        { timeout: 10_000 },
+      );
 
       // Open a saved profile as person, then let it park automatically on idle.
       const profile = await host.browser.createProfile({
@@ -1651,9 +1663,16 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
         registered: registeredKeys!,
       });
       targetResponse = { status: "ready", target: poolHost.target };
-      await vi.waitFor(() => expect(host!.browser.usesPoolAdmission).toBe(true), {
-        timeout: 10_000,
-      });
+      await vi.waitFor(
+        async () => {
+          expect(host!.browser.usesPoolAdmission).toBe(true);
+          expect((await host!.app.inject({ method: "GET", url: "/ready" })).json()).toEqual({
+            ok: true,
+            browserPool: "ready",
+          });
+        },
+        { timeout: 10_000 },
+      );
 
       const opened = await host.browser.openTab(ownerId, {
         type: "browser.tab.open",
@@ -1760,9 +1779,16 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
         registered: registeredKeys!,
       });
       targetResponse = { status: "ready", target: poolHost.target };
-      await vi.waitFor(() => expect(host!.browser.usesPoolAdmission).toBe(true), {
-        timeout: 10_000,
-      });
+      await vi.waitFor(
+        async () => {
+          expect(host!.browser.usesPoolAdmission).toBe(true);
+          expect((await host!.app.inject({ method: "GET", url: "/ready" })).json()).toEqual({
+            ok: true,
+            browserPool: "ready",
+          });
+        },
+        { timeout: 10_000 },
+      );
 
       // Revoke runner1 and enroll a replacement main Runner (runner2) via real WS registration.
       await host.store.database

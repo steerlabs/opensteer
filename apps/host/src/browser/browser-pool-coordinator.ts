@@ -1226,7 +1226,16 @@ export class BrowserPoolCoordinator {
    * closing one closed: the target that held its guest is over). Then the loop ends.
    */
   async retire(reason: string): Promise<void> {
-    if (this.#released || this.#ended) return;
+    if (this.#ended) return;
+    if (this.#released) {
+      // A main Runner replacement (S7) re-adopts the same pool slot under a new Runner id: stop
+      // the revoked Runner's coordinator loop before the replacement starts so they cannot race.
+      if (reason === "runner-replaced") {
+        this.close();
+        await this.#running?.catch(() => undefined);
+      }
+      return;
+    }
     const ended = this.#beginOver(reason, true);
     this.#step?.preempt.abort(new BrowserPoolAdmissionClosed("This browser is not ready."));
     this.#selecting?.abort(new BrowserPoolAdmissionClosed("This browser is not ready."));

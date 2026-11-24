@@ -452,14 +452,29 @@ export async function startManagedBrowserPool(input: {
           currentCoordinator = undefined;
           currentRelay = undefined;
           syncStatus();
-          // Nothing of the old target is ever sent to the new one. A Stop it held that its own
-          // runtime has not ended yet keeps the old target recorded, and asked (W8).
-          if (previousKey !== key) {
-            await retireBrowserPoolTarget(input.database, previousRunnerId, {
-              target: previousTarget as unknown as Readonly<Record<string, unknown>>,
-            });
-            await drainRetired(previousRunnerId);
-          }
+          // Nothing of the old target (or replaced Runner's slot row, S7) is ever carried to the
+          // new one. A Stop it held that its own runtime has not ended yet keeps the old target
+          // recorded, and asked (W8).
+          await retireBrowserPoolTarget(input.database, previousRunnerId, {
+            target: previousTarget as unknown as Readonly<Record<string, unknown>>,
+          });
+          await drainRetired(previousRunnerId);
+        }
+        if (closed) return;
+        // Across a Home restart after a main Runner replacement (S7), a revoked Runner can still
+        // hold the unique `slot_id` row in `browser_pool_slots`; retire it before adopting the
+        // replacement Runner on the same slot.
+        const staleSlot = await input.database
+          .selectFrom("browserPoolSlots")
+          .select("runnerId")
+          .where("slotId", "=", target.slotId)
+          .where("runnerId", "!=", runnerId)
+          .executeTakeFirst();
+        if (staleSlot) {
+          await retireBrowserPoolTarget(input.database, staleSlot.runnerId, {
+            target: target as unknown as Readonly<Record<string, unknown>>,
+          });
+          await drainRetired(staleSlot.runnerId);
         }
         if (closed) return;
         const parts = managedBrowserPool(target, keys);
