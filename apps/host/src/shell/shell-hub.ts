@@ -8,7 +8,12 @@ import {
   type RunId,
   type RunnerId,
 } from "@opensteer/core";
-import type { OpensteerStore, RevokedRunGrant, ShellStopIdempotency } from "@opensteer/database";
+import type {
+  OpensteerStore,
+  RevokedRunGrant,
+  ShellConnectionWitness,
+  ShellStopIdempotency,
+} from "@opensteer/database";
 import type {
   RunnerAuxiliaryStream,
   RunnerRegistry,
@@ -56,8 +61,10 @@ const auditPathMaxBytes = 1_024;
  */
 const finalizationRetentionMs = 60_000;
 const finalizationMaxRecords = 512;
-/** A terminal write that failed is retried on its own, on a bounded backoff. */
-const terminalRetryMaxAttempts = 6;
+/**
+ * A terminal write that failed is retried on its own, on a capped backoff, for as long as this
+ * Host runs: the person reads the row, and nothing else is coming to end it (B4).
+ */
 const terminalRetryBaseMs = 250;
 const terminalRetryMaxMs = 30_000;
 const auditMarkerMaxAttempts = 6;
@@ -73,6 +80,7 @@ export type ShellHubStore = Pick<
   | "requireSelfDeviceId"
   | "getMachineAccessTarget"
   | "getThreadForOwner"
+  | "recordShellTargetEvidence"
   | "reserveShellSession"
   | "admitExecution"
 >;
@@ -107,6 +115,11 @@ interface ShellSession {
    * promise says is there.
    */
   readonly reserved: Promise<boolean>;
+  /**
+   * The connection whose lineage the Run is in, as its admission read it, or null for your own
+   * agents. A lineaged session is an attempt in that connection's Disconnect set (A4).
+   */
+  readonly lineage: ShellConnectionWitness | null;
   readonly runId: RunId;
   readonly runnerId: RunnerId;
   readonly sessionId: ShellSessionId;
@@ -200,6 +213,8 @@ export interface ShellHubOptions {
   /** Audit persistence is diagnostic: it never affects a byte in flight. */
   readonly onAuditError: (sessionId: ShellSessionId, error: unknown) => void;
   readonly onControlError: (runnerId: RunnerId, error: unknown) => void;
+  /** A connection's shell attempt has its evidence: the Disconnect worker can look again. */
+  readonly onAttemptEvidence?: () => void;
   readonly openTimeoutMs?: number;
   readonly runners: Pick<RunnerRegistry, "identityForRunner"> &
     Partial<Pick<RunnerRegistry, "agentsStoppedSince">>;
@@ -231,6 +246,17 @@ export class ShellHub implements ShellControlStreamHandler {
   readonly #finalized = new Map<ShellSessionId, ShellFinalization>();
   readonly #auditMarkers = new Map<ShellSessionId, ShellAuditMarkerDebt>();
   readonly #auditWrites = new Set<Promise<void>>();
+  /**
+   * A connection's shells whose end on their target is not yet durably known (A4), by the exact
+   * stream the open was sent on: only that stream's close receipt or its loss settles one.
+   */
+  readonly #awaitingEvidence = new Map<
+    ShellSessionId,
+    { readonly fence: RunnerAuxiliaryFrameFence; readonly runnerId: RunnerId }
+  >();
+  /** One machine's evidence writes in the order they were learned: a receipt before a loss. */
+  readonly #evidenceTurns = new Map<RunnerId, Promise<void>>();
+  readonly #retryWakers = new Set<() => void>();
   readonly #options: ShellHubOptions;
   readonly #now: () => number;
   readonly #openTimeoutMs: number;
@@ -285,6 +311,10 @@ export class ShellHub implements ShellControlStreamHandler {
     this.#byPeer.delete(peer.id);
     const runnerId = entry.stream.identity.runnerId;
     if (this.#byRunner.get(runnerId) === entry) this.#byRunner.delete(runnerId);
+    // Nothing this stream would have said can arrive any more: its connection's shells that
+    // have not reported their end there have lost contact (A4). After any receipt it already
+    // delivered, which is ahead of this in the machine's evidence turn.
+    this.#recordTargetEvidence(entry.stream.fence, undefined, true);
     this.#endMachineSessionsInBackground(runnerId, shellLossReason(reason));
   }
 
@@ -338,9 +368,14 @@ export class ShellHub implements ShellControlStreamHandler {
           if ((message.auditDropped ?? 0) > 0) this.#markAuditTruncated(finalization.session);
           if (finalization.timer) clearTimeout(finalization.timer);
           this.#finalized.delete(message.sessionId);
+          this.#recordTargetEvidence(stream.fence, message.sessionId, false);
           return;
         }
       }
+      // A late close receipt on the very stream the open went to still ends that attempt; one
+      // on any other stream proves nothing (the fence is compared here and in the row).
+      if (message.type === "runner.shell.session.closed")
+        this.#recordTargetEvidence(stream.fence, message.sessionId, false);
       if (message.type !== "runner.shell.event") {
         this.#background(entry.stream.identity.runnerId, () =>
           this.#send(entry, {
@@ -361,14 +396,19 @@ export class ShellHub implements ShellControlStreamHandler {
         this.#maybeActivate(session);
         return;
       case "runner.shell.session.rejected":
-        if (message.error.code === "computer_stopped")
+        // A stopped computer refuses before it starts anything, and sends no close after it:
+        // the refusal on this stream is the target's own word that the session never ran.
+        if (message.error.code === "computer_stopped") {
           session.settle.reject(stoppedShell(session.targetName));
+          this.#recordTargetEvidence(stream.fence, session.sessionId, false);
+        }
         this.#background(session.runnerId, () => this.end(session.sessionId, "open-failed"));
         return;
       case "runner.shell.session.closed": {
         // Requests the target could not deliver are still requests that were
         // made, so the history says it is incomplete before it is closed.
         if ((message.auditDropped ?? 0) > 0) this.#markAuditTruncated(session);
+        this.#recordTargetEvidence(stream.fence, session.sessionId, false);
         this.#background(session.runnerId, async () => {
           await this.end(session.sessionId, message.reason);
           const finalization = this.#finalized.get(session.sessionId);
@@ -406,7 +446,8 @@ export class ShellHub implements ShellControlStreamHandler {
     } catch {
       throw rejection("run_invalid", "This task has ended.");
     }
-    if (!(await this.#lineageAdmits(scope)))
+    const lineage = await this.#lineage(scope);
+    if (lineage === false)
       throw rejection(
         "reach_denied",
         "This connected agent may not reach other computers. The person can change what it may use under Connected agents.",
@@ -534,6 +575,7 @@ export class ShellHub implements ShellControlStreamHandler {
         dataPump: null,
         endReason: null,
         fence: current.stream.fence,
+        lineage,
         nonce: ticket.claims.nonce,
         openDeadlineAt: this.#now() + this.#openTimeoutMs,
         opened: false,
@@ -564,24 +606,36 @@ export class ShellHub implements ShellControlStreamHandler {
     });
 
     try {
+      // The row, and for a connection's Run its Disconnect attempt, before the open frame: a
+      // revoke that committed first refuses it here and nothing is sent; one that commits
+      // after finds it and waits for the target's word (A4, rule 3).
       await this.#options.store.reserveShellSession({
         callerMachineName,
         callerRunnerId: scope.runnerId,
+        connection: lineage,
         policyRevision: target.revision,
         requestedBy: scope.requestedBy,
         runId: scope.runId,
         runnerId: input.target,
         sessionId: reserved.session.sessionId,
         startedAt: reserved.startedAt,
+        targetFence: reserved.current.stream.fence,
         threadId: scope.threadId,
         threadTitle: thread.title,
       });
+      if (lineage)
+        this.#awaitingEvidence.set(reserved.session.sessionId, {
+          fence: reserved.current.stream.fence,
+          runnerId: input.target,
+        });
       admitReservation(true);
     } catch (error) {
       // Nothing durable exists and nothing ever will, so an ending has no row
       // to write and must not sit waiting for one.
       admitReservation(false);
       this.#background(input.target, () => this.end(reserved.session.sessionId, "open-failed"));
+      if (error instanceof OpensteerError && error.code === "forbidden")
+        throw rejection("reach_denied", error.message);
       throw error;
     }
     if (this.#closed) {
@@ -590,7 +644,12 @@ export class ShellHub implements ShellControlStreamHandler {
     // Only a session that is still waiting is announced. One that ended while
     // its row was being written has a close on the way to the target already,
     // and an `open` arriving after it would ask for the session back.
-    if (reserved.session.state === "pending") {
+    // Nor is one whose stream went while its row was written: it is never offered to a stream
+    // that cannot answer for it, and its ending (already on the way) says it never left.
+    if (
+      reserved.session.state === "pending" &&
+      this.#byPeer.get(reserved.current.peer.id) === reserved.current
+    ) {
       reserved.session.announced = true;
       // Told in the background: a target that has stopped reading its control
       // stream must cost this session its open timeout and nothing else.
@@ -840,21 +899,77 @@ export class ShellHub implements ShellControlStreamHandler {
    * message would be a database write per SSH packet. The live numbers are
    * here, so the summary a manager reads is overlaid from here.
    */
-  liveSessionBytes(
-    runnerId: RunnerId,
-  ): ReadonlyMap<ShellSessionId, { readonly bytesIn: number; readonly bytesOut: number }> {
-    const live = new Map<ShellSessionId, { readonly bytesIn: number; readonly bytesOut: number }>();
+  liveSessionBytes(runnerId: RunnerId): ReadonlyMap<
+    ShellSessionId,
+    {
+      readonly bytesIn: number;
+      readonly bytesOut: number;
+      /** Its transports are gone and its end is still being written down (B4). */
+      readonly ending?: true;
+    }
+  > {
+    const live = new Map<
+      ShellSessionId,
+      { readonly bytesIn: number; readonly bytesOut: number; readonly ending?: true }
+    >();
     for (const session of this.#sessions.values()) {
       if (session.runnerId !== runnerId) continue;
       live.set(session.sessionId, { bytesIn: session.bytesIn, bytesOut: session.bytesOut });
     }
+    // An ending whose write has not landed: the row still reads open, so the list is told it
+    // is ending. That says this Home cut it, not that the process on the computer has exited.
+    for (const record of this.#tombstones.values()) {
+      if (record.runnerId !== runnerId) continue;
+      live.set(record.sessionId, {
+        bytesIn: record.bytesIn,
+        bytesOut: record.bytesOut,
+        ending: true,
+      });
+    }
     return live;
+  }
+
+  /**
+   * The Disconnect worker's stop for one connection's shell (A4): it ends the session here (the
+   * relays are cut, the target is asked to close) and says what is known of it on its target.
+   * Contact is lost when the exact stream the open was sent on is gone, since nothing it would
+   * say can arrive; otherwise the attempt waits for that stream's close receipt. A row with no
+   * stream was never offered to a target: nothing left.
+   */
+  async stopConnectionAttempt(attempt: {
+    readonly id: ShellSessionId;
+    readonly runnerId: RunnerId | null;
+    readonly targetFence: RunnerAuxiliaryFrameFence | null;
+  }): Promise<void | "ended" | "contact-lost"> {
+    const live = this.#sessions.has(attempt.id);
+    await this.end(attempt.id, "run-ended");
+    if (!attempt.targetFence) return "ended";
+    const fence = attempt.targetFence;
+    const entry = [...this.#byPeer.values()].find((candidate) =>
+      sameRunnerAuxiliaryFence(candidate.stream.fence, fence),
+    );
+    if (!entry) return "contact-lost";
+    // Asked again if this process may not have asked: a target that still has it answers.
+    if (!live)
+      this.#background(fence.runnerId, () =>
+        this.#send(entry, {
+          ...entry.stream.fence,
+          reason: "run-ended",
+          sessionId: attempt.id,
+          type: "host.shell.session.close",
+        }),
+      );
+    return;
   }
 
   /** Host shutdown: no session survives a Host epoch, so none is left open. */
   async close(): Promise<void> {
     this.#closed = true;
     await this.#endMatching(() => true, "host-shutdown");
+    // An evidence write waiting out its backoff gets one more try now; the startup sweep stands
+    // behind any that still fails.
+    for (const wake of [...this.#retryWakers]) wake();
+    await Promise.allSettled([...this.#evidenceTurns.values()]);
     // Endings whose writes failed earlier are still owed, and their scheduled
     // retries will not outlive this process. Each gets one more attempt here;
     // the startup sweep of open rows is what stands behind that.
@@ -1007,12 +1122,16 @@ export class ShellHub implements ShellControlStreamHandler {
       this.#releaseTombstone(record);
       return { ended: false };
     }
+    // A connection's shell whose open frame was never sent never left the Home: that is its
+    // evidence, written with its end. One that was sent waits for its target (A4).
+    const neverSent = record.session.lineage !== null && !record.session.announced;
     const ended = await this.#options.store
       .endShellSession({
         bytesIn: record.bytesIn,
         bytesOut: record.bytesOut,
         reason: record.reason,
         sessionId: record.sessionId,
+        ...(neverSent ? { neverSent: true } : {}),
         ...(options.idempotency ? { idempotency: options.idempotency } : {}),
       })
       .catch((error: unknown) => {
@@ -1028,6 +1147,8 @@ export class ShellHub implements ShellControlStreamHandler {
       return { ended: false };
     }
     this.#releaseTombstone(record);
+    if (neverSent && this.#awaitingEvidence.delete(record.sessionId))
+      this.#options.onAttemptEvidence?.();
     if (ended.ended || record.endedDurably) {
       void this.#options.notifier.ended({
         endReason: record.reason,
@@ -1039,17 +1160,21 @@ export class ShellHub implements ShellControlStreamHandler {
   }
 
   /**
-   * Tries a failed terminal write again, on its own, a bounded number of times.
+   * Tries a failed terminal write again, on its own, for as long as this Host runs (B4).
    *
-   * A durable row that stays open outlives the process that could close it, and
-   * the person looking at it is told a session is still running. The retries
-   * are capped because the startup sweep ends every open row anyway; this is
-   * about a Host that is still here recovering from a moment of database
-   * trouble, not about guaranteeing the write.
+   * A durable row that stays open is what the person reads as a session still running, and
+   * nothing else is coming to end it. So the write is retried on a backoff capped at thirty
+   * seconds until it lands, and until then the person's list shows the session as ending
+   * (`liveSessionBytes`): its transports are already gone, and the old session id names
+   * nothing here that could carry a byte again. The startup sweep stands behind a Host that
+   * stops before it lands.
    */
   #scheduleTerminalRetry(record: ShellTerminalRecord): void {
-    if (record.retryTimer || record.attempts >= terminalRetryMaxAttempts) return;
-    const delay = Math.min(terminalRetryBaseMs * 2 ** record.attempts, terminalRetryMaxMs);
+    if (record.retryTimer || this.#closed) return;
+    const delay = Math.min(
+      terminalRetryBaseMs * 2 ** Math.min(record.attempts, 16),
+      terminalRetryMaxMs,
+    );
     record.attempts += 1;
     const timer = setTimeout(() => {
       record.retryTimer = undefined;
@@ -1189,19 +1314,91 @@ export class ShellHub implements ShellControlStreamHandler {
    * Remote Device files, commands and forwarding have no selected resource kind, so work in a
    * selected connection's lineage reaches none; any lineage ends with its connection.
    */
-  async #lineageAdmits(scope: RunToolScope): Promise<boolean> {
+  async #lineage(scope: RunToolScope): Promise<ShellConnectionWitness | null | false> {
     try {
       const execution = await this.#options.store.admitExecution({
         ownerUserId: scope.requestedBy,
         subject: { kind: "binding", bindingId: `run:${scope.runId}` },
       });
+      const connection = execution.agentConnection;
+      if (connection === null) return null;
       // A shell is an effect: lineaged work needs a mode that allows effects without review.
-      return (
-        execution.agentConnection === null ||
-        (execution.agentConnection.grant.scope === "everything" && execution.mode === "full-access")
-      );
+      return connection.grant.scope === "everything" && execution.mode === "full-access"
+        ? {
+            connectionId: connection.agentConnectionId,
+            grantRevision: connection.grantRevision,
+            mode: execution.mode,
+          }
+        : false;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Writes what one target stream said about a connection's shells, or that it is gone, in the
+   * order it was learned, and keeps writing it until it lands (A4). A session this Home is not
+   * waiting on for that exact stream is left alone: your own agents' shells write nothing here.
+   */
+  #recordTargetEvidence(
+    fence: RunnerAuxiliaryFrameFence,
+    sessionId: ShellSessionId | undefined,
+    contactLost: boolean,
+  ): void {
+    const sessionIds: ShellSessionId[] = [];
+    for (const [id, awaiting] of this.#awaitingEvidence) {
+      if (sessionId !== undefined && id !== sessionId) continue;
+      if (!sameRunnerAuxiliaryFence(awaiting.fence, fence)) continue;
+      // One whose open was never sent is not on that stream: its end says so (`neverSent`).
+      if (contactLost && !this.#offeredToTarget(id)) continue;
+      this.#awaitingEvidence.delete(id);
+      sessionIds.push(id);
+    }
+    if (sessionIds.length === 0) return;
+    const runnerId = fence.runnerId;
+    const previous = this.#evidenceTurns.get(runnerId) ?? Promise.resolve();
+    const next = previous.then(async () => {
+      await this.#untilWritten(runnerId, () =>
+        this.#options.store.recordShellTargetEvidence({ fence, contactLost, sessionIds }),
+      );
+      this.#options.onAttemptEvidence?.();
+    });
+    this.#evidenceTurns.set(runnerId, next);
+    void next.finally(() => {
+      if (this.#evidenceTurns.get(runnerId) === next) this.#evidenceTurns.delete(runnerId);
+    });
+  }
+
+  /** Whether the open frame of this session may have reached its target. */
+  #offeredToTarget(sessionId: ShellSessionId): boolean {
+    const session = this.#sessions.get(sessionId) ?? this.#tombstones.get(sessionId)?.session;
+    return session ? session.announced : true;
+  }
+
+  /** One write tried until it lands, on a capped backoff, while this Host runs. */
+  async #untilWritten(runnerId: RunnerId, write: () => Promise<unknown>): Promise<void> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await write();
+        return;
+      } catch (error) {
+        this.#options.onControlError(runnerId, error);
+        if (this.#closed) return;
+        const delay = Math.min(
+          terminalRetryBaseMs * 2 ** Math.min(attempt, 16),
+          terminalRetryMaxMs,
+        );
+        await new Promise<void>((resolve) => {
+          const wake = () => {
+            clearTimeout(timer);
+            this.#retryWakers.delete(wake);
+            resolve();
+          };
+          const timer = setTimeout(wake, delay);
+          timer.unref();
+          this.#retryWakers.add(wake);
+        });
+      }
     }
   }
 
@@ -1224,7 +1421,7 @@ export class ShellHub implements ShellControlStreamHandler {
       return "run-ended";
     }
     if (scope.runId !== session.runId) return "run-ended";
-    if (!(await this.#lineageAdmits(scope))) return "run-ended";
+    if ((await this.#lineage(scope)) === false) return "run-ended";
     const target = await this.#options.store.getMachineAccessTarget(session.runnerId);
     if (!target?.shell) return "machine-revoked";
     if (!isDeepStrictEqual(shellPolicy(target.policy), session.shellPolicy))

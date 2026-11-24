@@ -31,6 +31,9 @@ import {
 } from "@opensteer/protocol";
 import { afterAll, describe, expect, it as baseIt } from "vitest";
 import "./connection.js";
+import { ShellSessionIdSchema } from "@opensteer/protocol";
+import { AgentConnectionStore } from "./agent-connection-store.js";
+import { connectionAttempts } from "./connection-disconnect.js";
 import { createDatabase, OpensteerStore } from "./index.js";
 import { revokeRunGrants } from "./run-grants.js";
 import { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
@@ -1246,6 +1249,45 @@ integration.sequential("Run stop fencing", () => {
       threadId: f.thread.id,
     });
     expect(bound.runnerBootId).toBe(boot2);
+  });
+  it("counts a lineaged shell reservation as outstanding when the connection is revoked", async ({
+    storeFixture,
+  }) => {
+    const { fixture, running, database, store } = storeFixture;
+    const f = await fixture("shell-disconnect-set");
+    const run = await running(f, "shell-disconnect-set");
+    const connections = new AgentConnectionStore(database);
+    const connection = await connections.create({
+      userId: f.userId,
+      label: "Fixture",
+      clientName: "Fixture",
+      resource: "http://localhost/mcp",
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    await connections.activate(connection.id, "fixture-shell-disconnect");
+    await database
+      .updateTable("runs")
+      .set({ connectionId: connection.id })
+      .where("id", "=", run.id)
+      .executeTakeFirstOrThrow();
+    const sessionId = ShellSessionIdSchema.parse("shs_00000000-0000-4000-8000-000000000001");
+    await store.reserveShellSession({
+      callerMachineName: "Fixture",
+      callerRunnerId: f.runnerId,
+      policyRevision: 1,
+      requestedBy: f.userId,
+      runId: run.id,
+      runnerId: f.runnerId,
+      sessionId,
+      startedAt: new Date(),
+      threadId: f.thread.id,
+      threadTitle: "Fixture",
+    });
+    await connections.revoke(f.userId, connection.id);
+    const attempts = await connectionAttempts(database, connection.id);
+    expect(attempts.map(({ id }) => id)).toContain(sessionId);
   });
 });
 function pendingEvent<T extends PendingAgentEvent>(input: Omit<T, "emittedAt">): T {

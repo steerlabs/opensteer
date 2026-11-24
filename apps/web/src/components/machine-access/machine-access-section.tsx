@@ -504,24 +504,36 @@ export function MachineAccessSection({
         ) : (
           access.activeSessions.map((session) => (
             <div className="machine-access__session" key={session.id}>
-              <span aria-hidden className="status-dot status-dot--ok status-dot--pulse" />
+              <span
+                aria-hidden
+                className={
+                  session.ending ? "status-dot" : "status-dot status-dot--ok status-dot--pulse"
+                }
+              />
               <span className="machine-access__session-body">
                 <span className="machine-access__session-title">
                   {machineAccessSessionLabel(session)}
                 </span>
                 <span className="machine-access__session-detail">
-                  {machineAccessElapsedLabel(session.startedAt, now)} ·{" "}
-                  {formatBytes(machineAccessSessionBytes(session))}
+                  {session.ending
+                    ? "Disconnected. Opensteer is still saving that it ended."
+                    : `${machineAccessElapsedLabel(session.startedAt, now)} · ${formatBytes(
+                        machineAccessSessionBytes(session),
+                      )}`}
                 </span>
               </span>
-              <button
-                className="btn btn--small"
-                disabled={stopping.includes(session.id)}
-                onClick={() => void stop(session.id)}
-                type="button"
-              >
-                {stopping.includes(session.id) ? "Stopping…" : "Stop"}
-              </button>
+              {session.ending ? (
+                <span className="machine-access__session-detail">Ending…</span>
+              ) : (
+                <button
+                  className="btn btn--small"
+                  disabled={stopping.includes(session.id)}
+                  onClick={() => void stop(session.id)}
+                  type="button"
+                >
+                  {stopping.includes(session.id) ? "Stopping…" : "Stop"}
+                </button>
+              )}
             </div>
           ))
         )}

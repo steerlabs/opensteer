@@ -2833,6 +2833,7 @@ export async function createHostRuntime(
       }),
       onAuditError: (sessionId, error) => reportShellAuditError(sessionId, error),
       onControlError: (runnerId, error) => reportShellControlError(runnerId, error),
+      onAttemptEvidence: () => connectionMaintenance?.wake(),
       runners,
       store,
     });
@@ -3532,6 +3533,9 @@ export async function createHostRuntime(
           if (attempt.kind === "plugin") {
             return pluginExecutions?.stopConnectionExecution(attempt.id, cleanup.connectionId);
           }
+          // A shell its Run opened on another computer: cut here, and ended by that computer's
+          // close receipt on the stream it was opened on, or by losing that stream (A4).
+          if (attempt.kind === "shell") return shellHub?.stopConnectionAttempt(attempt);
           if (
             attempt.kind !== "occurrence" &&
             attempt.kind !== "run-attempt" &&

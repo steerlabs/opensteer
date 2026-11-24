@@ -112,6 +112,7 @@ import type {
   BrowserTabOpenBinding,
   HarnessInstanceCatalog,
   MachineAccessPolicy,
+  RunnerAuxiliaryFrameFence,
   RunnerDevice,
   RunnerModuleName,
   RunnerModules,
@@ -601,6 +602,18 @@ interface MachineAccessSessionTable {
   endReason: ShellCloseReason | null;
   bytesIn: ColumnType<string, number | string | undefined, number | string>;
   bytesOut: ColumnType<string, number | string | undefined, number | string>;
+  /**
+   * The connection whose lineage the Run that opened it is in, with the grant it was admitted
+   * under: the session is then an attempt in that connection's Disconnect set (rule 3).
+   */
+  connectionId: Generated<string | null>;
+  admittedGrantRevision: Generated<number | null>;
+  admittedAccessMode: Generated<ThreadAccessMode | null>;
+  /** The exact `shell` stream of the target Runner that was asked to serve it. */
+  targetFence: Generated<RunnerAuxiliaryFrameFence | null>;
+  /** The target's own close receipt on that stream, or the moment contact with it was lost. */
+  terminalEvidenceAt: Generated<Date | null>;
+  contactLostAt: Generated<Date | null>;
 }
 
 /** One audited SSH request, exactly as the target's helper reported it. */
