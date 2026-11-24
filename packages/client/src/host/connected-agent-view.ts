@@ -237,9 +237,9 @@ export function connectedAgentConnected(phase: ConnectedAgentPhase): boolean {
   return phase === "active" || phase === "paused" || phase === "unknown";
 }
 
-/** A connection with no stored grant is one an older Home lets do everything. */
+/** A connection listed without a grant reads as holding nothing (this Home always sends one). */
 export function connectionGrant(connection: Pick<AgentConnection, "grant">): AgentGrant {
-  return connection.grant ?? { scope: "everything" };
+  return connection.grant ?? { scope: "selected", tasks: false, resources: [] };
 }
 
 /** What a grant reaches, in a few words: names where this client knows them, counts elsewhere. */

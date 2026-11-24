@@ -454,6 +454,8 @@ export async function connectCallerMachine(
     readonly modelSettings?: boolean;
     readonly longRequestHold?: boolean;
     readonly runFiles?: boolean;
+    /** It runs script automations (`automation-script-v1`). */
+    readonly automations?: boolean;
   } & (
     | { readonly token: string; readonly previous?: undefined }
     /** Reattach the same computer and disk after its Host restarts. */
@@ -482,6 +484,7 @@ export async function connectCallerMachine(
       runEventsCapability,
       ...(input.voice ? ["voice-run-v1"] : []),
       ...(input.restartsRuns ? ["attempts-v1"] : []),
+      ...(input.automations ? ["automation-script-v1"] : []),
     ],
     modules: {
       ...(input.integrations ? { integrations: input.integrations } : {}),

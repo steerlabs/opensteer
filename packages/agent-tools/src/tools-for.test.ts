@@ -46,3 +46,22 @@ it("offers no automation to work without the person's personal context", () => {
   expect(names(true)).toContain("opensteer_automation_create");
   expect(names(false)).toEqual([]);
 });
+
+it("offers local servers only to your own agents: a folder package is never a connection's (B8)", () => {
+  const names = (grant?: { readonly scope: "everything" }) =>
+    toolsFor({
+      kind: "run",
+      accessMode: "full-access",
+      ...(grant ? { grant } : {}),
+      personalContext: true,
+    })
+      .map(({ name }) => name)
+      .filter((name) => name.startsWith("local_server_"));
+  // Your own Full agent: all of them.
+  expect(names()).toEqual(
+    expect.arrayContaining(["local_server_add", "local_server_list", "local_server_remove"]),
+  );
+  // A Run under an Everything connection at Full: what runs outside its Disconnect set is not
+  // its to add or remove (the table's plugins.install folder source is your own agents' only).
+  expect(names({ scope: "everything" })).toEqual(["local_server_list"]);
+});

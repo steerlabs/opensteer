@@ -18,6 +18,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import {
+  admitCommand,
   OpensteerStore,
   TriggerStore,
   resolveResourceAccess,
@@ -28,6 +29,7 @@ import {
   type PublishedApp,
 } from "@opensteer/database";
 import type { AppRuntimeSpec, RunnerAppState, RunnerConnectionId } from "@opensteer/protocol";
+import type { Command } from "@opensteer/protocol/command-table";
 import { createPrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { appFrameHeaders, prepareAppHtml, type AppTheme } from "@opensteer/shared/appFrame";
@@ -420,17 +422,18 @@ export class AppService {
   async start(actor: AppActor, appId: string, lifetime: AppCallLifetime = {}): Promise<App> {
     const id = parseAppId(appId);
     const ownerId = ownerOf(actor);
+    const command = { type: "app.start", appId: id, idempotencyKey: "app.start" } as Command;
     return this.#locks.run(id, async () => {
-      await this.#admit(actor, lifetime, true);
+      await this.#admit(actor, lifetime, true, "read-write", command);
       const app = await this.#options.apps.get(ownerId, id);
       if (this.#computers.has(app.computerId)) await this.#ready(app.computerId, lifetime.signal);
       else if (actor.kind !== "person") throw startFailure(new ComputerOfflineError());
-      await this.#admit(actor, lifetime, true);
+      await this.#admit(actor, lifetime, true, "read-write", command);
       const record = await this.#options.apps.setDesiredState(
         ownerId,
         id,
         "running",
-        this.#authorize(actor, lifetime, "read-write", true),
+        this.#authorize(actor, lifetime, "read-write", true, command),
       );
       this.#options.changed(ownerId, [id]);
       if (actor.kind === "person" && !this.#computers.has(record.computerId))
@@ -752,6 +755,8 @@ export class AppService {
     lifetime: AppCallLifetime,
     required: "read" | "read-write" = "read-write",
     fullAccess = false,
+    /** The door's command this is, where the door's own answer decides it (B8). */
+    command?: Command,
   ): AppAuthorization {
     return async (database) => {
       lifetime.signal?.throwIfAborted();
@@ -783,6 +788,28 @@ export class AppService {
         !lineageAllowsPersonalContext(execution.agentConnection)
       )
         throw missing();
+      // A server started under a connection outlives that connection's Disconnect: the door's
+      // own rule asks the person (app.start's lineage face), and so does this tool (B8).
+      if (
+        command &&
+        execution.agentConnection &&
+        (actor.kind === "run" || actor.kind === "program")
+      ) {
+        const admission = await admitCommand(database, {
+          ownerUserId: ownerOf(actor),
+          subject: {
+            kind: "binding",
+            bindingId: actor.kind === "run" ? `run:${actor.claims.runId}` : actor.caller.key,
+          },
+          command,
+        });
+        if (admission.answer !== "now")
+          throw new OpensteerError({
+            code: "conflict",
+            reason: "asks-person",
+            message: "This needs the person in Opensteer. Ask them with opensteer_command.",
+          });
+      }
       if (actor.kind === "run")
         await this.#options.apps.authorizeRun(runScope(actor.claims), fullAccess, database);
       if (actor.kind === "program")
@@ -801,13 +828,20 @@ export class AppService {
     lifetime: AppCallLifetime,
     fullAccess: boolean,
     required: "read" | "read-write" = "read-write",
+    command?: Command,
   ): Promise<void> {
     lifetime.signal?.throwIfAborted();
     await lifetime.checkLive?.();
     if (actor.kind === "run") {
       await this.#options.tokens.reauthorize(actor.claims);
     }
-    await this.#authorize(actor, lifetime, required, fullAccess)(this.#options.apps.database);
+    await this.#authorize(
+      actor,
+      lifetime,
+      required,
+      fullAccess,
+      command,
+    )(this.#options.apps.database);
     lifetime.signal?.throwIfAborted();
   }
 
