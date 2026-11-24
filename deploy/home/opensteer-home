@@ -69,7 +69,9 @@ case "${1:-}" in
     pid=$(host_pid) || pid=''
     if ! { [[ -n $pid && -f "$home_dir/host.pid" && $pid == "$(cat "$home_dir/host.pid")" ]] &&
       { check_firewall "$pid" || { apply_firewall "$pid" && check_firewall "$pid"; }; } &&
-      compose ps --all --format json | jq -es 'length == 7 and all(.[]; .Health == "healthy")' >/dev/null; }; then
+      compose ps --all --format json |
+        jq -es --argjson count "$(($(running_services | wc -l) + 1))" \
+          'length == $count and all(.[]; .Health == "healthy")' >/dev/null; }; then
       compose down
       start_pod
     fi

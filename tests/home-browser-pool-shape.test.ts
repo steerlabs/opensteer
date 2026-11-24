@@ -113,8 +113,6 @@ const pooledServices = {
   host: "HOST",
   gateway: "GATEWAY",
   runner: "RUNNER",
-  "browser-runtime": "BROWSER",
-  "browser-egress": "EGRESS",
   "channel-runtime": "CHANNEL",
 } as const;
 
@@ -154,8 +152,7 @@ it("sizes a Cloud Computer's Home from its machine: no limit adds up past it, ro
     expect(limits.OPENSTEER_HOME_LIMIT_RUNNER_CPUS).toBe(`${cpus}`);
     expect(mebibytes(limits.OPENSTEER_HOME_LIMIT_RUNNER_MEMORY!)).toBeGreaterThanOrEqual(1024);
   }
-  // The default machine, 4 GiB with two CPUs. No Chromium runs here: the Browser Runtime and its
-  // egress proxy only idle, so each is held to 256 MiB.
+  // The default machine, 4 GiB with two CPUs. No browser runs here, so nothing is kept for one.
   expect(homeLimits(4096, 2)).toEqual({
     OPENSTEER_HOME_LIMIT_POSTGRES_CPUS: "2",
     OPENSTEER_HOME_LIMIT_POSTGRES_MEMORY: "512m",
@@ -164,15 +161,11 @@ it("sizes a Cloud Computer's Home from its machine: no limit adds up past it, ro
     OPENSTEER_HOME_LIMIT_GATEWAY_CPUS: "1",
     OPENSTEER_HOME_LIMIT_GATEWAY_MEMORY: "256m",
     OPENSTEER_HOME_LIMIT_RUNNER_CPUS: "2",
-    OPENSTEER_HOME_LIMIT_RUNNER_MEMORY: "1280m",
-    OPENSTEER_HOME_LIMIT_BROWSER_CPUS: "1",
-    OPENSTEER_HOME_LIMIT_BROWSER_MEMORY: "256m",
-    OPENSTEER_HOME_LIMIT_EGRESS_CPUS: "1",
-    OPENSTEER_HOME_LIMIT_EGRESS_MEMORY: "256m",
+    OPENSTEER_HOME_LIMIT_RUNNER_MEMORY: "1792m",
     OPENSTEER_HOME_LIMIT_CHANNEL_CPUS: "1",
     OPENSTEER_HOME_LIMIT_CHANNEL_MEMORY: "256m",
   });
-  expect(homeLimits(16384, 4).OPENSTEER_HOME_LIMIT_RUNNER_MEMORY).toBe("9472m");
+  expect(homeLimits(16384, 4).OPENSTEER_HOME_LIMIT_RUNNER_MEMORY).toBe("9984m");
 });
 
 it("refuses a machine too small for a Cloud Computer's Home instead of overcommitting it", () => {
@@ -193,7 +186,7 @@ it("applies the machine's limits on a pooled Cloud Computer only, never on a sel
   // The self-hosted recipe keeps its own limits and their OPENSTEER_HOME_* overrides.
   expect(read("compose.yaml")).not.toContain("OPENSTEER_HOME_LIMIT_");
   expect(composeEnvironment(["managed", "browser-pool"])).toContain(
-    "OPENSTEER_HOME_LIMIT_RUNNER_MEMORY=1280m",
+    "OPENSTEER_HOME_LIMIT_RUNNER_MEMORY=1792m",
   );
   expect(composeEnvironment(["managed"]).join("\n")).not.toContain("OPENSTEER_HOME_LIMIT_");
   expect(composeEnvironment([]).join("\n")).not.toContain("OPENSTEER_HOME_LIMIT_");
@@ -216,6 +209,69 @@ function composeEnvironment(markers: readonly string[]): string[] {
       { env: { ...process.env, OPENSTEER_HOME_DIR: directory }, encoding: "utf8" },
     );
     return printed.split("\n").filter((line) => /^[A-Z_]+=/u.test(line));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+/** Each service's settings once Compose merges the files `common.sh` names for these markers. */
+function mergedServices(markers: readonly string[]): Record<string, Record<string, unknown>> {
+  const merged: Record<string, Record<string, unknown>> = {};
+  for (const file of composeFiles(markers)) {
+    const { services } = parse(read(file)) as {
+      services: Record<string, Record<string, unknown>>;
+    };
+    for (const [name, settings] of Object.entries(services))
+      merged[name] = { ...merged[name], ...settings };
+  }
+  return merged;
+}
+
+it("starts no local browser and no local browser egress on a Cloud Computer", () => {
+  const pooled = mergedServices(["managed", "browser-pool"]);
+  // Neither the person's profiles nor Chromium run in the VM, and nothing can leave through a
+  // local browser proxy on the VM's own address: Compose creates no container for either.
+  expect(pooled["browser-runtime"]?.scale).toBe(0);
+  expect(pooled["browser-egress"]?.scale).toBe(0);
+  for (const service of ["postgres", "host", "gateway", "runner", "channel-runtime"])
+    expect(pooled[service]?.scale).toBeUndefined();
+  expect(runningServices(["managed", "browser-pool"])).toEqual([
+    "host",
+    "gateway",
+    "runner",
+    "channel-runtime",
+  ]);
+  // A self-hosted Home keeps its browser exactly as before.
+  for (const markers of [[], ["managed"]]) {
+    const services = mergedServices(markers);
+    expect(services["browser-runtime"]?.scale).toBeUndefined();
+    expect(services["browser-egress"]?.scale).toBeUndefined();
+    expect(runningServices(markers)).toEqual([
+      "host",
+      "gateway",
+      "runner",
+      "browser-runtime",
+      "browser-egress",
+      "channel-runtime",
+    ]);
+  }
+  // Maintenance and update count what runs, not the six images, or a pooled Home would be torn
+  // down and restarted on every maintenance pass and could never update.
+  expect(read("opensteer-home")).toContain("running_services");
+  expect(read("update.sh")).toContain("running_services");
+});
+
+/** `running_services` from `common.sh` for a Home directory holding these markers. */
+function runningServices(markers: readonly string[]): string[] {
+  const directory = mkdtempSync(join(tmpdir(), "opensteer-home-running-"));
+  try {
+    for (const marker of markers) writeFileSync(join(directory, marker), "");
+    return execFileSync("bash", ["-c", 'source "$1"; running_services', "running", join(home, "common.sh")], {
+      env: { ...process.env, OPENSTEER_HOME_DIR: directory },
+      encoding: "utf8",
+    })
+      .trim()
+      .split("\n");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

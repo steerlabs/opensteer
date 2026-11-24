@@ -85,6 +85,12 @@ update_home() (
   project=$(compose_project)
   printf 'OPENSTEER_HOME_VERSION=%s\n' "$old_version" > "$previous"
   for service in "${services[@]}"; do
+    if ! running_services | grep -qx -- "$service"; then
+      # Not run on this Home (a Cloud Computer's browser is in the pool): it keeps its selection.
+      grep -m1 "^OPENSTEER_HOME_$(printf %s "$service" | tr 'a-z-' 'A-Z_')_IMAGE=" "$active" >> "$previous" ||
+        fail "The selected $service image is missing."
+      continue
+    fi
     container=$(compose ps -q "$service")
     [[ -n $container ]] || fail "Start the Home before updating."
     ref=$(docker inspect --format '{{.Config.Image}}' "$container")
