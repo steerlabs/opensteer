@@ -1764,10 +1764,10 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       this.#paintedSurfaceRevision = revision;
       for (const waiter of this.#paintWaiters) waiter.resolve();
     });
-    // Ask for a frame: a static page draws nothing new on its own, whether it was just put back
-    // onto a visible window or rests in its host for a cast (the person's start for an agent's
-    // new tab waited five seconds for a resting page that never drew, Nov 24).
-    if (typeof this.#webContents.invalidate === "function") this.#webContents.invalidate();
+    // Kick the owner compositor when reparenting an idle/static view back onto
+    // a visible window so macOS/Electron does not wait passively for a new frame.
+    if (this.#mount?.attached && typeof this.#webContents.invalidate === "function")
+      this.#webContents.invalidate();
   }
 
   #endPaintSubscription(): void {
