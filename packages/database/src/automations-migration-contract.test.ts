@@ -4,10 +4,11 @@ import { describe, expect, it } from "vitest";
 import { migrationProvider } from "./migrations.js";
 
 describe("Automations migration contract (AA13 / AB5)", () => {
-  it("collapses all automations schema changes into a single 0113_automations_contract migration", async () => {
+  it("pins the exact set of automations migrations (0113 contract + 0119 secret names)", async () => {
     const names = Object.keys(await migrationProvider().getMigrations());
     expect(names.filter((name) => name.includes("automation"))).toEqual([
       "0113_automations_contract",
+      "0119_automation_secret_names",
     ]);
   });
 

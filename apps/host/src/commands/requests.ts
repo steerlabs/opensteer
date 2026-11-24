@@ -538,8 +538,9 @@ export class CommandRequestService {
         .where("createdBy", "=", input.ownerUserId)
         .executeTakeFirst();
       if (!row) return null;
-      const names = Array.isArray(row.secretNames) ? row.secretNames : [];
-      return { secretCount: names.length };
+      if (Array.isArray(row.secretNames)) return { secretCount: row.secretNames.length };
+      if (row.encryptedSecrets !== null) return { secretCount: "unknown" };
+      return { secretCount: 0 };
     }
     if (input.command.type === "trigger.secrets.set") {
       const subject = input.proposerCallerKey

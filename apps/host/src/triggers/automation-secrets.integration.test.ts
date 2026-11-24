@@ -11,10 +11,16 @@ import {
 import {
   AgentConnectionStore,
   CommandRequestStore,
+  OpensteerStore,
   TriggerStore,
   commandNotFoundMessage,
+  createDatabase,
+  migrateToLatest,
+  migrationProvider,
   personTaskReader,
 } from "@opensteer/database";
+import { cloneTestDatabase } from "@opensteer/database/test-support/database";
+import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { describeStore, type StoreFixture } from "@opensteer/database/test-support/store";
 import type { HostApiCommand, HostApiServerContext } from "@opensteer/protocol";
 import {
@@ -23,7 +29,7 @@ import {
   MAX_AUTOMATION_SECRETS_TOTAL_BYTES,
 } from "@opensteer/triggers";
 import { sql } from "kysely";
-import { expect, vi } from "vitest";
+import { describe, expect, it as standaloneIt, vi } from "vitest";
 import type { AdministrationService } from "../administration/administration-service.js";
 import { HostCommandDispatcher } from "../agents/dispatcher.js";
 import { personActor } from "../commands/actor.js";
@@ -1125,4 +1131,207 @@ describeStore("automation secrets through the one door", (it) => {
       for (const spy of logSpies) spy.mockRestore();
     }
   });
+});
+
+describe("0119_automation_secret_names upgrade from an already-applied 0113 database", () => {
+  standaloneIt(
+    "preserves a pre-0119 trigger holding sealed secrets, backfills secret_names on first read, and supports replace and remove",
+    async () => {
+      const clone = await cloneTestDatabase("host");
+      const database = createDatabase({ connectionString: clone.url });
+      try {
+        await sql`drop schema public cascade; create schema public`.execute(database);
+        const all = await migrationProvider().getMigrations();
+        expect(Object.keys(all)).toContain("0119_automation_secret_names");
+
+        // Migrate ONLY up to before 0119 — simulating a real database where 0113 already ran.
+        await migrateToLatest(database, {
+          async getMigrations() {
+            return Object.fromEntries(
+              Object.entries(all).filter(([key]) => key < "0119_automation_secret_names"),
+            );
+          },
+        });
+
+        // 0113 on the head does NOT create triggers.secret_names.
+        const beforeCol = await sql<{ columnName: string }>`
+          select column_name as "columnName"
+          from information_schema.columns
+          where table_schema = 'public'
+            and table_name = 'triggers'
+            and column_name = 'secret_names'
+        `.execute(database);
+        expect(beforeCol.rows).toEqual([]);
+
+        const home = await seedPersonalFixture(database, "/tmp/secrets-0119-upgrade-fixture");
+        const threadId = createId("thread");
+        const harnessId = createId("harnessInstance");
+        const triggerId = createId("trigger");
+        const revisionId = `trv_${randomUUID()}`;
+        const {
+          rows: [principal],
+        } = await sql<{ id: string }>`
+          select id from principals where user_id = ${home.userId}
+        `.execute(database);
+
+        await sql`insert into harness_instances
+          (id, environment_id, driver_kind, name, config, runtime_revision, state_kind, enabled, is_default, source_id)
+          values (${harnessId}, ${home.environmentId}, 'codex', 'Codex', '{}', 1, 'ready', true, true, 'native')
+        `.execute(database);
+        await sql`insert into threads
+          (id, lineage_root_thread_id, purpose, listed, title, icon_source, color, environment_id,
+           harness_instance_id, model_selection, created_by, created_by_principal_id)
+          values (${threadId}, ${threadId}, 'task', true, 'Pre-0119 secrets', 'default', 'blue',
+                  ${home.environmentId}, ${harnessId},
+                  '{"providerId":"openai","modelId":"fixture","options":{}}'::jsonb,
+                  ${home.userId}, ${principal!.id})
+        `.execute(database);
+
+        const secrets = new AutomationSecrets(
+          new AesGcmSecretVault(
+            new StaticEncryptionKeyProvider(new Map([[1, Buffer.alloc(32, 0x6b)]]), 1),
+          ),
+        );
+        const sealed = await secrets.applyWithMeta(triggerId, null, {
+          set: { KEEP_ME: "keep-v1", LEGACY_TOKEN: "tok-v1" },
+        });
+        expect(sealed.sealed).not.toBeNull();
+
+        await database.transaction().execute(async (tx) => {
+          await sql`insert into triggers
+            (id, anchor_thread_id, created_by, idempotency_key, request_fingerprint, name, kind, status,
+             current_revision_id, encrypted_secrets, secrets_key_version)
+            values (${triggerId}, ${threadId}, ${home.userId}, 'pre-0119-trg', 'fp-pre-0119',
+                    'Existing secret automation', 'schedule', 'active', ${revisionId},
+                    ${sealed.sealed!.envelope}, ${sealed.sealed!.keyVersion})
+          `.execute(tx);
+          await sql`insert into trigger_revisions(id, trigger_id, ordinal, source, script, created_by)
+            values (${revisionId}, ${triggerId}, 1,
+                    ${JSON.stringify(scheduleSource)}::jsonb,
+                    ${JSON.stringify(script)}::jsonb,
+                    ${home.userId})
+          `.execute(tx);
+        });
+
+        // Apply 0119 onto the database that already ran 0113 with rows, and verify replay is safe.
+        await migrateToLatest(database);
+        await all["0119_automation_secret_names"]!.up(database);
+
+        const afterRow = (
+          await sql<{ encryptedSecrets: Buffer | null; secretNames: unknown }>`
+            select encrypted_secrets as "encryptedSecrets", secret_names as "secretNames"
+            from triggers
+            where id = ${triggerId}
+          `.execute(database)
+        ).rows[0];
+        expect(afterRow?.encryptedSecrets).not.toBeNull();
+        expect(afterRow?.secretNames).toBeNull();
+
+        const store = new OpensteerStore(database);
+        const triggerStore = new TriggerStore(database);
+        const triggerService = new TriggerService({
+          onOccurrenceQueued: () => {},
+          publicUrl: new URL("http://127.0.0.1:8788"),
+          runnerStore: store,
+          secrets,
+          store: triggerStore,
+          threads: store,
+        });
+
+        // First read decrypts once and backfills triggers.secret_names in PostgreSQL.
+        const firstRead = await triggerService.get(home.userId, triggerId, 10, personTaskReader);
+        expect(firstRead.secretNames).toEqual(["KEEP_ME", "LEGACY_TOKEN"]);
+
+        const backfilledRow = (
+          await sql<{ secretNames: unknown }>`
+            select secret_names as "secretNames" from triggers where id = ${triggerId}
+          `.execute(database)
+        ).rows[0];
+        expect(backfilledRow?.secretNames).toEqual(["KEEP_ME", "LEGACY_TOKEN"]);
+
+        // Subsequent reads use the backfilled column without needing to decrypt values.
+        const wrongKeyService = new TriggerService({
+          onOccurrenceQueued: () => {},
+          publicUrl: new URL("http://127.0.0.1:8788"),
+          runnerStore: store,
+          secrets: new AutomationSecrets(
+            new AesGcmSecretVault(
+              new StaticEncryptionKeyProvider(new Map([[1, Buffer.alloc(32, 0x77)]]), 1),
+            ),
+          ),
+          store: triggerStore,
+          threads: store,
+        });
+        expect(
+          (await wrongKeyService.get(home.userId, triggerId, 10, personTaskReader)).secretNames,
+        ).toEqual(["KEEP_ME", "LEGACY_TOKEN"]);
+
+        // Replace LEGACY_TOKEN and remove KEEP_ME through the command door.
+        const sessionId = `ses_${randomUUID()}`;
+        await database
+          .insertInto("authSessions")
+          .values({
+            id: sessionId as never,
+            userId: home.userId,
+            token: randomUUID(),
+            expiresAt: new Date(Date.now() + 60 * 60_000),
+            absoluteExpiresAt: new Date(Date.now() + 60 * 60_000),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            lastSeenAt: new Date(),
+            deviceLabel: "Owner Mac",
+            ipAddress: null,
+            userAgent: null,
+          })
+          .execute();
+        const session = {
+          id: sessionId,
+          user: { id: home.userId },
+        } as unknown as AuthenticatedSession;
+        const context = { session } as unknown as HostApiServerContext;
+        const personDoor: CommandDoor = {
+          registry: createCommandRegistry({
+            triggers: triggerService,
+            devices: {} as never,
+            channels: {} as never,
+            browserSources: {} as never,
+            handleCoreCommand: async () => {
+              throw new Error("unexpected core command");
+            },
+            approveCommand: async () => {
+              throw new Error("unexpected approve command");
+            },
+          }),
+        };
+
+        const updated = await dispatchCommand(
+          personActor(context),
+          {
+            idempotencyKey: "upgrade-replace-remove",
+            remove: ["KEEP_ME"],
+            set: { LEGACY_TOKEN: "tok-v2" },
+            triggerId,
+            type: "trigger.secrets.set",
+          },
+          personDoor,
+          context,
+        );
+        expect(updated).toEqual({
+          secretNames: ["LEGACY_TOKEN"],
+          type: "trigger.secrets.set",
+        });
+
+        expect(
+          (await triggerService.get(home.userId, triggerId, 10, personTaskReader)).secretNames,
+        ).toEqual(["LEGACY_TOKEN"]);
+        const finalEnvelope = await triggerStore.getEncryptedSecrets(home.userId, triggerId);
+        expect(await secrets.values(triggerId, finalEnvelope)).toEqual({
+          LEGACY_TOKEN: "tok-v2",
+        });
+      } finally {
+        await database.destroy();
+        await clone.drop();
+      }
+    },
+  );
 });

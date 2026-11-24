@@ -36,8 +36,6 @@ export async function applyAutomationsContract(database: Kysely<DatabaseSchema>)
       add column watch_crash_notified_at timestamptz,
       add column encrypted_secrets bytea,
       add column secrets_key_version integer check (secrets_key_version >= 1),
-      add column secret_names jsonb not null default '[]'::jsonb
-        check (jsonb_typeof(secret_names) = 'array'),
       add constraint triggers_secrets_envelope check (
         (encrypted_secrets is null) = (secrets_key_version is null)
       );

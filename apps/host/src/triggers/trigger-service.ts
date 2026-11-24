@@ -206,16 +206,19 @@ export class TriggerService {
         : null;
     let secretNames: string[] = [];
     if (this.#secrets) {
-      const storedNames = this.#store.getSecretNames
+      const stored = this.#store.getSecretNames
         ? await this.#store.getSecretNames(ownerId, detail.trigger.id)
         : null;
-      if (storedNames && storedNames.length > 0) {
-        secretNames = [...storedNames];
-      } else if (this.#store.getEncryptedSecrets) {
+      if (stored && stored.names !== null) {
+        secretNames = [...stored.names];
+      } else if ((!stored || stored.hasEncryptedSecrets) && this.#store.getEncryptedSecrets) {
         const envelope = await this.#store.getEncryptedSecrets(ownerId, detail.trigger.id);
         if (envelope) {
           try {
             secretNames = [...(await this.#secrets.names(detail.trigger.id, envelope))];
+            if (this.#store.backfillSecretNames) {
+              await this.#store.backfillSecretNames(ownerId, detail.trigger.id, secretNames);
+            }
           } catch {
             secretNames = [];
           }

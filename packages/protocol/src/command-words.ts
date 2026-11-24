@@ -388,8 +388,8 @@ export interface CommandScriptPlace {
 export interface CommandAutomationContext {
   /** Whether the proposing agent can change this automation's script without asking. */
   readonly proposerCanChangeScript?: boolean;
-  /** How many secrets this automation holds (count only, never values or names). */
-  readonly secretCount?: number;
+  /** How many secrets this automation holds (count only, never values or names), or `"unknown"` for an unbackfilled pre-0119 sealed row. */
+  readonly secretCount?: number | "unknown";
 }
 
 /**
@@ -462,7 +462,10 @@ export function commandGives(
         input.input !== null &&
         (input.input as Record<string, unknown>).script !== undefined;
       const secretCount = automation?.secretCount ?? 0;
-      if (changingScript && secretCount > 0) {
+      if (changingScript && secretCount === "unknown") {
+        return `${base} The new script receives this automation's stored secrets.`;
+      }
+      if (changingScript && typeof secretCount === "number" && secretCount > 0) {
         return `${base} The new script receives this automation's ${secretCount === 1 ? "1 secret" : `${secretCount} secrets`}.`;
       }
       return base;

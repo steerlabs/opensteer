@@ -1598,18 +1598,48 @@ export class TriggerStore {
       triggerId: input.triggerId,
     };
   }
-  async getSecretNames(ownerId: UserId, triggerId: TriggerId): Promise<readonly string[]> {
+  async getSecretNames(
+    ownerId: UserId,
+    triggerId: TriggerId,
+  ): Promise<{ readonly hasEncryptedSecrets: boolean; readonly names: readonly string[] | null }> {
     await requirePersonalOwner(this.#database, ownerId);
     const row = await this.#database
       .selectFrom("triggers")
-      .select("secretNames")
+      .select([
+        "secretNames",
+        sql<boolean>`encrypted_secrets is not null`.as("hasEncryptedSecrets"),
+      ])
       .where("id", "=", triggerId)
       .where("createdBy", "=", ownerId)
       .executeTakeFirst();
     if (!row) throw notFound("Automation not found");
-    return Array.isArray(row.secretNames)
-      ? row.secretNames.filter((item): item is string => typeof item === "string")
-      : [];
+    return {
+      hasEncryptedSecrets: Boolean(row.hasEncryptedSecrets),
+      names: Array.isArray(row.secretNames)
+        ? row.secretNames.filter((item): item is string => typeof item === "string")
+        : null,
+    };
+  }
+  /**
+   * One-time backfill of `triggers.secret_names` for rows written before `0119_automation_secret_names`
+   * (where SQL cannot decrypt `encrypted_secrets` without the Host's `credentialKey`). Conditionally
+   * updates only while `encrypted_secrets is not null` and `secret_names is null`, so it never
+   * overwrites a concurrent secret update and never bumps revisions or restarts watches.
+   */
+  async backfillSecretNames(
+    ownerId: UserId,
+    triggerId: TriggerId,
+    names: readonly string[],
+  ): Promise<void> {
+    await requirePersonalOwner(this.#database, ownerId);
+    await this.#database
+      .updateTable("triggers")
+      .set({ secretNames: jsonValue([...names]) })
+      .where("id", "=", triggerId)
+      .where("createdBy", "=", ownerId)
+      .where("encryptedSecrets", "is not", null)
+      .where("secretNames", "is", null)
+      .execute();
   }
   async getEncryptedSecrets(ownerId: UserId, triggerId: TriggerId): Promise<Buffer | null> {
     await requirePersonalOwner(this.#database, ownerId);
