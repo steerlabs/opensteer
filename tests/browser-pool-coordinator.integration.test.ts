@@ -6,6 +6,7 @@ import {
   type BrowserPoolAdopter,
   type BrowserPoolRuntimeChannel,
 } from "../apps/host/src/browser/browser-pool-coordinator.js";
+import { BrowserPoolAttemptRefused } from "../apps/host/src/browser/browser-pool-gate.js";
 import type {
   BrowserPoolControllerCall,
   BrowserPoolPhysicalController,
@@ -2671,6 +2672,159 @@ it("never serves from a guest whose lost session's pages could not be confirmed 
     // Both sessions ended with the replaced guest, with their notes; none is closed on a guess.
     expect((await f.row(f.sessionId))?.state).toBe("failed");
     expect((await f.row(other))?.state).toBe("failed");
+  } finally {
+    await f.close();
+  }
+});
+
+it("clears a prior refusal when a follow-up wake goes unanswered instead of repeating the stale refusal", async () => {
+  const f = await poolFixture("refusal-then-silence");
+  try {
+    let mode: "normal" | "refuse" | "silent" = "normal";
+    const port: BrowserPoolPhysicalController = {
+      status: (slot, term) =>
+        mode === "silent"
+          ? Promise.reject(
+              Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+            )
+          : f.controller.status(slot, term),
+      result: (slot, term, id) =>
+        mode === "silent"
+          ? Promise.reject(
+              Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+            )
+          : f.controller.result(slot, term, id),
+      apply: async (call) => {
+        if (mode === "silent") {
+          throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+        }
+        if (mode === "refuse" && (call.kind === "resume" || call.kind === "start")) {
+          return {
+            id: call.id,
+            applied: false,
+            reason: "egress-required",
+            status: await f.controller.status(call.slotId, call.term),
+          };
+        }
+        return f.controller.apply(call);
+      },
+    };
+    const home = f.home(undefined, port, {
+      unreachableAfterMs: 30,
+      refusedRetryMs: 10_000,
+    });
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+
+    // First wake is refused by the controller.
+    mode = "refuse";
+    await expect(
+      home.gate.reserve(AbortSignal.timeout(5_000), { failOnRefusal: true }),
+    ).rejects.toBeInstanceOf(BrowserPoolAttemptRefused);
+    expect(home.report()?.refused).toBe("egress-required");
+
+    // Next wake goes unanswered (host outage): the stale refusal must clear and unreachable take over.
+    mode = "silent";
+    await expect(
+      home.gate.reserve(AbortSignal.timeout(150), { failOnRefusal: true }),
+    ).rejects.toBeInstanceOf(BrowserPoolAdmissionClosed);
+    expect(home.unanswered).toBe(true);
+    expect(home.report()?.refused).toBeUndefined();
+    expect(home.report()?.unreachable).toBe(true);
+  } finally {
+    await f.close();
+  }
+});
+
+it("delivers a refusal after an outage without waiting for the database announce bound", async () => {
+  const f = await poolFixture("outage-then-refusal");
+  try {
+    let mode: "normal" | "silent" | "refuse" = "normal";
+    let refusalReturned = false;
+    let releaseAnnounce: (() => void) | undefined;
+    let holdNextAnnounce = false;
+    const rawConnection = f.database.connection.bind(f.database);
+    vi.spyOn(f.database, "connection").mockImplementation(() => {
+      const builder = rawConnection();
+      const rawExecute = builder.execute.bind(builder);
+      builder.execute = async (...args) => {
+        if (holdNextAnnounce) {
+          holdNextAnnounce = false;
+          await new Promise<void>((resolve) => {
+            releaseAnnounce = resolve;
+          });
+        }
+        return rawExecute(...args);
+      };
+      return builder;
+    });
+    const port: BrowserPoolPhysicalController = {
+      status: (slot, term) =>
+        mode === "silent"
+          ? Promise.reject(
+              Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+            )
+          : f.controller.status(slot, term),
+      result: (slot, term, id) =>
+        mode === "silent"
+          ? Promise.reject(
+              Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+            )
+          : f.controller.result(slot, term, id),
+      apply: async (call) => {
+        if (mode === "silent") {
+          throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+        }
+        if (mode === "refuse" && (call.kind === "resume" || call.kind === "start")) {
+          refusalReturned = true;
+          return {
+            id: call.id,
+            applied: false,
+            reason: "egress-required",
+            status: await f.controller.status(call.slotId, call.term),
+          };
+        }
+        return f.controller.apply(call);
+      },
+    };
+    const home = f.home(undefined, port, {
+      unreachableAfterMs: 20,
+      unansweredRetryMaxMs: 20,
+      refusedRetryMs: 10_000,
+      onStateChanged: () => {
+        if (refusalReturned) {
+          refusalReturned = false;
+          holdNextAnnounce = true;
+        }
+      },
+    });
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+
+    // Put the coordinator into unreachable state first.
+    mode = "silent";
+    await expect(
+      home.gate.reserve(AbortSignal.timeout(120), { failOnRefusal: true }),
+    ).rejects.toBeInstanceOf(BrowserPoolAdmissionClosed);
+    await vi.waitFor(() => expect(home.report()?.unreachable).toBe(true), { timeout: 2_000 });
+
+    // Now the host answers with a refusal while the DB announce is stalled: the waiting caller
+    // must receive BrowserPoolAttemptRefused immediately, not miss its deadline waiting on #announce.
+    mode = "refuse";
+    try {
+      await expect(
+        home.gate.reserve(AbortSignal.timeout(250), { failOnRefusal: true }),
+      ).rejects.toMatchObject({
+        name: "BrowserPoolAttemptRefused",
+        refusedReason: "egress-required",
+      });
+      expect(home.report()?.unreachable).toBeUndefined();
+      expect(home.report()?.refused).toBe("egress-required");
+    } finally {
+      releaseAnnounce?.();
+    }
   } finally {
     await f.close();
   }

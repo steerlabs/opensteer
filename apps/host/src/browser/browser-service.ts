@@ -1266,23 +1266,86 @@ export class BrowserService {
     return this.#pooledUnavailableReason() ?? fallback;
   }
 
-  #pooledWakeRefusalMessage(
-    pool: BrowserPoolCoordinator | undefined,
+  #pooledPlacementRefusal(
     homes: readonly { readonly id: RunnerId; readonly kind: string }[],
-    runnerId: RunnerId,
-  ): string {
-    if (pool?.gate.phase === "released") return "This device was removed.";
-    if (pool?.report()?.refused)
-      return this.#pooledRefusalMessage(
-        homes,
-        runnerId,
-        "Your Cloud Computer’s browser can’t start right now.",
-      );
-    return this.#pooledRefusalMessage(
-      homes,
-      runnerId,
-      "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
-    );
+    runnerId: RunnerId | undefined,
+    fallback: string,
+  ): { readonly reason: BrowserTabOpenRefusalReason; readonly message: string } {
+    const pool = runnerId ? this.#pool(runnerId) : undefined;
+    if (pool) {
+      if (pool.gate.phase === "released") {
+        return { reason: "browser-placement-unavailable", message: "This device was removed." };
+      }
+      const report = pool.report();
+      if (
+        report?.unreachable ||
+        report?.relayFailed ||
+        pool.unanswered ||
+        pool.gate.phase === "unavailable"
+      ) {
+        return {
+          reason: "browser-pool-unreachable",
+          message: "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
+        };
+      }
+      if (report?.refused) {
+        return {
+          reason: "browser-pool-refused",
+          message:
+            "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
+        };
+      }
+      if (pool.gate.phase === "open") {
+        return {
+          reason: "browser-pool-disconnected",
+          message:
+            "Your Cloud Computer’s browser isn’t connected right now. Try again in a moment.",
+        };
+      }
+    }
+    return {
+      reason: "browser-placement-unavailable",
+      message: this.#pooledRefusalMessage(homes, runnerId, fallback),
+    };
+  }
+
+  #pooledWakeRefusal(
+    error: unknown,
+    pool: BrowserPoolCoordinator | undefined,
+  ): { readonly reason: BrowserTabOpenRefusalReason; readonly message: string } {
+    if (error instanceof BrowserPoolAttemptRefused) {
+      return {
+        reason: "browser-pool-refused",
+        message:
+          "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
+      };
+    }
+    if (pool?.gate.phase === "released") {
+      return { reason: "browser-placement-unavailable", message: "This device was removed." };
+    }
+    const report = pool?.report();
+    if (
+      report?.unreachable ||
+      report?.relayFailed ||
+      pool?.unanswered ||
+      pool?.gate.phase === "unavailable"
+    ) {
+      return {
+        reason: "browser-pool-unreachable",
+        message: "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
+      };
+    }
+    if (report?.refused) {
+      return {
+        reason: "browser-pool-refused",
+        message:
+          "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
+      };
+    }
+    return {
+      reason: "browser-pool-unreachable",
+      message: "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
+    };
   }
 
   get available(): boolean {
@@ -2357,8 +2420,26 @@ export class BrowserService {
           : remembered
             ? { kind: "runner" as const, runnerId: remembered }
             : null);
-    if (await this.#waitForBrowser(homes, intended?.runnerId, signal))
-      return this.#resolveIdentityOpen(ownerId, command, signal, agent, onPoolWait);
+    if (intended?.runnerId && this.#shouldWaitForBrowser(homes, intended.runnerId)) {
+      if (agent) {
+        const runnerId = intended.runnerId;
+        const waited = await this.#waitForAgentBrowser(
+          homes,
+          runnerId,
+          agent.agentBindingId,
+          signal,
+          async () => {
+            await this.#requireAgentAccess(runnerId);
+            await this.admitAgentBrowser(agent, "read-write", [], this.#repository, false, {
+              profileId,
+            });
+          },
+        );
+        if (waited) return this.#resolveIdentityOpen(ownerId, command, signal, agent, onPoolWait);
+      } else if (await this.#waitForBrowser(homes, intended.runnerId, signal)) {
+        return this.#resolveIdentityOpen(ownerId, command, signal, agent, onPoolWait);
+      }
+    }
     // Reserve the pooled browser's gate before checking target availability and keep that
     // reservation into `select()`: a parked (memory or disk) slot, Home restart, or relay
     // reconnect wakes here on demand instead of refusing as unavailable or selecting a stale
@@ -2386,10 +2467,15 @@ export class BrowserService {
         const selector: BrowserPlacementSelector = { kind: "runner", runnerId: candidateRunnerId };
         const agentRecheck = agent
           ? async () => {
+              // Run the device-access check first (serialized by `withRunnerAdmission`) so the
+              // exact grant read is the last await before synchronous `gate.reserve(...)`; a
+              // grant narrowing committed during that read can still reserve or wake once before
+              // the post-wait/post-attach recheck refuses `not_found` with no tab or data, which
+              // avoids adding a cross-path grant fence on every browser open.
+              await this.#requireAgentAccess(candidateRunnerId);
               await this.admitAgentBrowser(agent, "read-write", [], this.#repository, false, {
                 profileId,
               });
-              await this.#requireAgentAccess(candidateRunnerId);
             }
           : undefined;
         onPoolWait?.(candidateRunnerId);
@@ -2448,25 +2534,26 @@ export class BrowserService {
       if (
         command.placement &&
         !eligible.some((candidate) => candidate.runnerId === command.placement?.runnerId)
-      )
+      ) {
+        const refusal = this.#pooledPlacementRefusal(
+          homes,
+          command.placement.runnerId,
+          "The selected browser computer is unavailable.",
+        );
         throw this.#tabOpenRefusal(
-          "browser-placement-unavailable",
-          this.#pooledRefusalMessage(
-            homes,
-            command.placement.runnerId,
-            "The selected browser computer is unavailable.",
-          ),
+          refusal.reason,
+          refusal.message,
           this.#eligiblePlacements(homes),
         );
-      if (this.#personal && !profile && !command.placement && !main)
-        throw this.#tabOpenRefusal(
-          "browser-placement-unavailable",
-          this.#pooledRefusalMessage(
-            homes,
-            undefined,
-            "The main computer's browser is unavailable.",
-          ),
+      }
+      if (this.#personal && !profile && !command.placement && !main) {
+        const refusal = this.#pooledPlacementRefusal(
+          homes,
+          undefined,
+          "The main computer's browser is unavailable.",
         );
+        throw this.#tabOpenRefusal(refusal.reason, refusal.message);
+      }
       let placement = intended;
       if (!placement) {
         if (eligible.length > 1)
@@ -2481,18 +2568,20 @@ export class BrowserService {
         !placement ||
         !eligible.some((candidate) => candidate.runnerId === placement.runnerId) ||
         !this.#resolveTarget(placement)
-      )
+      ) {
+        const refusal = this.#pooledPlacementRefusal(
+          homes,
+          placement?.runnerId,
+          boundRunnerId
+            ? "Waiting for this computer to open its browser profile. Reconnect the owning computer."
+            : "The selected browser computer is unavailable.",
+        );
         throw this.#tabOpenRefusal(
-          "browser-placement-unavailable",
-          this.#pooledRefusalMessage(
-            homes,
-            placement?.runnerId,
-            boundRunnerId
-              ? "Waiting for this computer to open its browser profile. Reconnect the owning computer."
-              : "The selected browser computer is unavailable.",
-          ),
+          refusal.reason,
+          refusal.message,
           this.#eligiblePlacements(homes),
         );
+      }
       return {
         profileId,
         identityKey,
@@ -2519,9 +2608,10 @@ export class BrowserService {
           error instanceof BrowserPoolAdmissionClosed ||
           (error instanceof OpensteerError && error.reason === "browser-open.timeout"))
       ) {
+        const refusal = this.#pooledWakeRefusal(error, pool);
         throw this.#tabOpenRefusal(
-          "browser-placement-unavailable",
-          this.#pooledWakeRefusalMessage(pool, homes, candidateRunnerId),
+          refusal.reason,
+          refusal.message,
           this.#eligiblePlacements(homes),
         );
       }
@@ -2608,11 +2698,8 @@ export class BrowserService {
     const timeout = () => {
       if (budget.poolWaitingRunnerId && !budget.admitted && !budget.pageRequested) {
         const waitingRunner = budget.poolWaitingRunnerId;
-        return this.#tabOpenRefusal(
-          "browser-placement-unavailable",
-          this.#pooledWakeRefusalMessage(this.#pool(waitingRunner), [], waitingRunner),
-          this.resourcePlacements(),
-        );
+        const refusal = this.#pooledWakeRefusal(undefined, this.#pool(waitingRunner));
+        return this.#tabOpenRefusal(refusal.reason, refusal.message, this.resourcePlacements());
       }
       return new OpensteerError({
         code: "conflict",
@@ -9518,11 +9605,10 @@ export class BrowserService {
     return transitioned.session;
   }
 
-  async #waitForBrowser(
+  #shouldWaitForBrowser(
     homes: Awaited<ReturnType<OpensteerStore["listEligibleBrowserRunners"]>>,
     runnerId: RunnerId | undefined,
-    operationSignal: AbortSignal | undefined,
-  ): Promise<boolean> {
+  ): boolean {
     if (this.#closed) throw unavailable("The Host browser service is shutting down.");
     const resolver = this.#targetResolver;
     if (!runnerId || !resolver?.waitForTarget || !homes.some((home) => home.id === runnerId))
@@ -9548,13 +9634,67 @@ export class BrowserService {
       !resolver.pendingAdmission?.(runnerId)
     )
       return false;
+    return true;
+  }
+
+  async #waitForAgentBrowser(
+    homes: Awaited<ReturnType<OpensteerStore["listEligibleBrowserRunners"]>>,
+    runnerId: RunnerId,
+    binding: string,
+    upstream: AbortSignal | undefined,
+    check: () => Promise<void>,
+  ): Promise<boolean> {
+    if (this.browserBindingEnded(binding)) throw new BrowserCdpConnectionEnded();
+    const waiters =
+      this.#poolAgentWaiters.get(binding) ??
+      new Set<{ readonly controller: AbortController; readonly runnerId?: RunnerId }>();
+    const waiter = new AbortController();
+    const entry = { controller: waiter, runnerId };
+    waiters.add(entry);
+    this.#poolAgentWaiters.set(binding, waiters);
+    try {
+      await this.withRunnerAdmission(runnerId, async () => {
+        const genBefore = this.#runnerAccessGeneration.get(runnerId) ?? 0;
+        await check();
+        if (waiter.signal.aborted) throw waiter.signal.reason;
+        if ((this.#runnerAccessGeneration.get(runnerId) ?? 0) !== genBefore) await check();
+      });
+      const waited = await this.#waitForBrowser(
+        homes,
+        runnerId,
+        upstream ? AbortSignal.any([waiter.signal, upstream]) : waiter.signal,
+      );
+      if (waiter.signal.aborted) throw waiter.signal.reason;
+      return waited;
+    } catch (error) {
+      if (waiter.signal.aborted && waiter.signal.reason === this.#deviceAccessDisabled) {
+        await this.withRunnerAdmission(runnerId, check);
+        throw new BrowserCdpConnectionEnded("This device's browser access was turned off.");
+      }
+      if (waiter.signal.aborted && waiter.signal.reason instanceof BrowserCdpConnectionEnded) {
+        throw waiter.signal.reason;
+      }
+      throw error;
+    } finally {
+      waiters.delete(entry);
+      if (!waiters.size) this.#poolAgentWaiters.delete(binding);
+    }
+  }
+
+  async #waitForBrowser(
+    homes: Awaited<ReturnType<OpensteerStore["listEligibleBrowserRunners"]>>,
+    runnerId: RunnerId | undefined,
+    operationSignal: AbortSignal | undefined,
+  ): Promise<boolean> {
+    if (!this.#shouldWaitForBrowser(homes, runnerId)) return false;
+    const resolver = this.#targetResolver!;
     // A restore has no open budget of its own, so it waits no longer than an open would.
     const signal = AbortSignal.any([
       this.#closing.signal,
       operationSignal ?? AbortSignal.timeout(browserOpenWorkMs),
     ]);
     try {
-      await resolver.waitForTarget(runnerId, signal);
+      await resolver.waitForTarget!(runnerId!, signal);
     } catch (error) {
       if (this.#closing.signal.aborted || operationSignal?.aborted) throw error;
       // It never arrived or can't be admitted: the ordinary refusal explains why.

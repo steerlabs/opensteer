@@ -512,7 +512,6 @@ export async function startManagedBrowserPool(input: {
     const phase = applied.coordinator.gate.phase;
     const report = applied.coordinator.report();
     if (phase === "released") return "This device was removed.";
-    if (report?.refused) return "Your Cloud Computer’s browser can’t start right now.";
     if (
       report?.unreachable ||
       report?.relayFailed ||
@@ -520,6 +519,8 @@ export async function startManagedBrowserPool(input: {
       phase === "unavailable"
     )
       return "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.";
+    if (report?.refused)
+      return "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.";
     if (phase === "open" && applied.relay && !applied.relay.isAttached())
       return "Your Cloud Computer’s browser isn’t connected right now. Try again in a moment.";
     return "Setting up your browser… This can take a few minutes.";

@@ -892,6 +892,7 @@ export class BrowserPoolCoordinator {
     while (!this.#closed && !this.#ended) {
       const changed = this.#changed.signal;
       let step: Step | undefined;
+      let priorRefused: { readonly reason: string; readonly since: Date } | undefined;
       try {
         // Choosing the next step reads the database too: it has a bound, and a removal ends it.
         const selecting = new AbortController();
@@ -955,6 +956,18 @@ export class BrowserPoolCoordinator {
         const deadlineMs = step.deadlineMs ?? defaultStepMs;
         const preempt = new AbortController();
         const signal = AbortSignal.any([preempt.signal, AbortSignal.timeout(deadlineMs)]);
+        priorRefused = this.#refused;
+        if (
+          !this.#over &&
+          this.#refused !== undefined &&
+          (step.name === "wake" ||
+            step.name === "recover" ||
+            step.name === "discard" ||
+            step.name === "restart")
+        ) {
+          this.#refused = undefined;
+          this.#options.onStateChanged?.();
+        }
         this.#step = { name: step.name, preempt };
         this.#signal = signal;
         try {
@@ -1004,11 +1017,16 @@ export class BrowserPoolCoordinator {
           continue;
         }
         if (error instanceof BrowserPoolNotStarted) {
-          await this.#answered();
+          // Clear unreachability and notify waiting callers before awaiting the DB announce so a
+          // slow announce can never delay a received refusal past a caller's deadline.
+          const clearedUnreachable = this.#clearUnanswered();
           // Not started, and nothing of the guest lost: asked again later, never a reason to
           // give live state up, and spaced so the host is not asked in a loop.
-          const announce = this.#refused?.reason !== error.reason;
-          this.#refused = { reason: error.reason, since: this.#refused?.since ?? new Date() };
+          const announce = priorRefused?.reason !== error.reason || clearedUnreachable;
+          this.#refused = {
+            reason: error.reason,
+            since: priorRefused?.reason === error.reason ? priorRefused.since : new Date(),
+          };
           this.#options.onStateChanged?.();
           this.gate.noteAttemptRefused(error.reason);
           // Subscribed clients learn of a refusal when it begins or its reason changes; the
@@ -1042,20 +1060,27 @@ export class BrowserPoolCoordinator {
           // Not knowing (P18): asked again, later each time; it never counts toward a discard,
           // and nothing of the guest is given up for it. Past its bound the report says the
           // browser cannot be reached; a turn falls at the bound so that is said on time.
+          const clearedRefused =
+            !this.#over && (this.#refused !== undefined || priorRefused !== undefined);
+          if (!this.#over) this.#refused = undefined;
           const at = Date.now();
           this.#unknownSince ??= at;
           let wait = Math.min(
             (this.#options.retryMs ?? 100) * 2 ** Math.min(unanswered++, 16),
             this.#options.unansweredRetryMaxMs ?? unansweredRetryMaxMs,
           );
+          let announce = clearedRefused;
           if (!this.#unreachable) {
             const left =
               this.#unknownSince + (this.#options.unreachableAfterMs ?? unreachableAfterMs) - at;
             if (left <= 0) {
               this.#unreachable = true;
-              this.#options.onStateChanged?.();
-              await this.#announce(changed);
+              announce = true;
             } else wait = Math.min(wait, left);
+          }
+          if (announce) {
+            this.#options.onStateChanged?.();
+            await this.#announce(changed);
           }
           await this.#sleep(wait, changed, "unknown");
           continue;
@@ -2293,12 +2318,16 @@ export class BrowserPoolCoordinator {
       .catch(() => undefined);
   }
 
+  #clearUnanswered(): boolean {
+    this.#unknownSince = undefined;
+    if (!this.#unreachable) return false;
+    this.#unreachable = false;
+    return !this.#relayUnreachable;
+  }
+
   /** An answer came: not knowing ends, and a report that said unreachable is taken back. */
   async #answered(): Promise<void> {
-    this.#unknownSince = undefined;
-    if (!this.#unreachable) return;
-    this.#unreachable = false;
-    if (this.#relayUnreachable) return;
+    if (!this.#clearUnanswered()) return;
     this.#options.onStateChanged?.();
     await this.#announce(this.#changed.signal);
   }

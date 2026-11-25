@@ -12499,6 +12499,174 @@ describe("pooled identity open authority precheck and outage refusal words (pool
     expect(setup.gate.held).toBe(0);
   });
 
+  it("runs the exact grant read last before reserving so narrowing during the device read takes zero reservations or dials", async () => {
+    let setup!: Awaited<ReturnType<typeof makePooledSetup>>;
+    setup = await makePooledSetup({
+      gateOpen: true,
+      requireAgentAccess: async () => {
+        // Narrow the grant while the device-access read is in flight.
+        setup.repository.granted = [];
+      },
+    });
+    const agent = {
+      ownerId: setup.ownerId,
+      agentBindingId: "session:selected",
+      threadId: createId("thread"),
+    };
+    await expect(
+      setup.service.openTab(
+        setup.ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `narrow-during-device-${randomUUID()}`,
+          identity: { kind: "profile", profileId: setup.kept.id },
+          url: "https://example.test/narrow-during-device",
+        },
+        agent,
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(setup.getReserveCalls()).toBe(0);
+    expect(setup.getEnsureRelayCalls()).toBe(0);
+    expect(setup.gate.held).toBe(0);
+  });
+
+  it("refuses immediately instead of waiting on a pending pooled relay when Browser access is off before or during wait", async () => {
+    vi.useFakeTimers();
+    try {
+      let deviceBrowserAllowed = false;
+      let waitCalls = 0;
+      let waitEntered!: () => void;
+      const enteredWait = new Promise<void>((resolve) => {
+        waitEntered = resolve;
+      });
+      let waitSignalAborted = false;
+      const keys = generateKeyPairSync("ed25519");
+      const ownerId = createId("user");
+      const runnerId = createId("runner");
+      const repository = new SelectedGrantRepository(ownerId);
+      const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+      repository.granted = [kept.id];
+      const gate = new BrowserPoolGate();
+      gate.set({ recovered: true, away: null });
+      let reserveCalls = 0;
+      const realReserve = gate.reserve.bind(gate);
+      gate.reserve = ((...args: Parameters<typeof gate.reserve>) => {
+        reserveCalls++;
+        return realReserve(...args);
+      }) as typeof gate.reserve;
+      const coordinator = {
+        runtimeId: "browser-main",
+        gate,
+        unanswered: false,
+        report: () => undefined,
+        setAdopter: () => undefined,
+        recover: async () => undefined,
+        retire: async () => undefined,
+        close: () => undefined,
+        ensureRelayAttached: async () => undefined,
+      } as unknown as BrowserPoolCoordinator;
+      const service = new BrowserService({
+        ...profileStateOptions,
+        repository,
+        signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+        personal: true,
+        pooledOnly: true,
+        requireAgentAccess: async (id) => {
+          if (!deviceBrowserAllowed)
+            throw new DeviceAccessRefusal("device-access-off", DeviceIdSchema.parse(id), "browser");
+        },
+        targetResolver: {
+          resolve: () => undefined,
+          placements: () => [],
+          pendingAdmission: (id) => id === runnerId,
+          waitForTarget: (_id, signal) => {
+            waitCalls++;
+            waitEntered();
+            return new Promise<void>((_resolve, reject) => {
+              signal?.addEventListener(
+                "abort",
+                () => {
+                  waitSignalAborted = true;
+                  reject(signal.reason);
+                },
+                { once: true },
+              );
+            });
+          },
+        },
+        onSessionsChanged: () => undefined,
+        onError: () => undefined,
+      });
+      const originalList = repository.listEligibleBrowserRunners.bind(repository);
+      repository.listEligibleBrowserRunners = async () => [
+        ...(await originalList()),
+        {
+          id: runnerId,
+          kind: "main",
+          name: "Cloud Computer",
+          allowedModules: ["browser"],
+          ownerKind: "deployment",
+          ownerUserId: null,
+        },
+      ];
+      await service.adoptPool(runnerId, coordinator, {
+        label: "Cloud Computer",
+        environmentIds: [],
+      });
+      cleanups.push(() => service.close());
+      const agent = {
+        ownerId,
+        agentBindingId: "session:selected",
+        threadId: createId("thread"),
+      };
+
+      // Switch off BEFORE pending-admission wait: immediate refusal, zero waitForTarget or reserve calls.
+      await expect(
+        service.openTab(
+          ownerId,
+          {
+            type: "browser.tab.open",
+            idempotencyKey: `pending-off-before-${randomUUID()}`,
+            identity: { kind: "profile", profileId: kept.id },
+            placement: { kind: "runner", runnerId },
+            url: "https://example.test/pending-off-before",
+          },
+          agent,
+        ),
+      ).rejects.toMatchObject({ code: "forbidden", reason: "device-access-off" });
+      expect(waitCalls).toBe(0);
+      expect(reserveCalls).toBe(0);
+
+      // Switch turned off DURING pending-admission wait: aborts waitForTarget and refuses immediately.
+      deviceBrowserAllowed = true;
+      const opening = service.openTab(
+        ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `pending-off-during-${randomUUID()}`,
+          identity: { kind: "profile", profileId: kept.id },
+          placement: { kind: "runner", runnerId },
+          url: "https://example.test/pending-off-during",
+        },
+        agent,
+      );
+      await withTimeout(enteredWait, 5_000, {
+        timeoutError: () => new Error("waitForTarget was not entered"),
+      });
+      deviceBrowserAllowed = false;
+      await service.withRunnerAdmission(runnerId, () => service.disableAgentAccess(runnerId));
+      await expect(opening).rejects.toMatchObject({
+        code: "forbidden",
+        reason: "device-access-off",
+      });
+      expect(waitCalls).toBe(1);
+      expect(waitSignalAborted).toBe(true);
+      expect(reserveCalls).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("carries the pool's unreachable reason (not generic timeout) when an ordinary 18s person open gets no answer, while keeping the placement offered", async () => {
     vi.useFakeTimers();
     try {
@@ -12526,7 +12694,7 @@ describe("pooled identity open authority precheck and outage refusal words (pool
       expect(await settled).toMatchObject({
         error: {
           code: "conflict",
-          reason: "browser-placement-unavailable",
+          reason: "browser-pool-unreachable",
           message: "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
         },
       });
@@ -12548,7 +12716,7 @@ describe("pooled identity open authority precheck and outage refusal words (pool
         gateOpen: false,
         unavailableReason: () =>
           refused
-            ? "Your Cloud Computer’s browser can’t start right now."
+            ? "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept."
             : "Setting up your browser… This can take a few minutes.",
       });
       // Wire the coordinator's refusal into the mock report() too.
@@ -12574,8 +12742,9 @@ describe("pooled identity open authority precheck and outage refusal words (pool
       });
       await expect(firstOpen).rejects.toMatchObject({
         code: "conflict",
-        reason: "browser-placement-unavailable",
-        message: "Your Cloud Computer’s browser can’t start right now.",
+        reason: "browser-pool-refused",
+        message:
+          "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
       });
       // Placement stays offered so asking is the retry.
       expect(setup.service.resourcePlacements()).toMatchObject([
@@ -12589,7 +12758,7 @@ describe("pooled identity open authority precheck and outage refusal words (pool
           identity: { kind: "profile", profileId: setup.kept.id },
           url: "https://example.test/retry",
         }),
-      ).rejects.toMatchObject({ reason: "browser-placement-unavailable" });
+      ).rejects.toMatchObject({ reason: "browser-pool-disconnected" });
       expect(demandCount).toBe(2);
       expect(setup.gate.held).toBe(0);
     } finally {

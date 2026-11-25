@@ -321,6 +321,33 @@ it.each(["computer-view-limit", "locked-screen"])(
     );
   },
 );
+it.each([
+  [
+    "browser-pool-refused",
+    "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
+  ],
+  [
+    "browser-pool-unreachable",
+    "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
+  ],
+])(
+  "shows the Cloud Computer pool reason (%s) when opening a new browser tab fails",
+  async (reason, expectedText) => {
+    const w = await setup();
+    w.open.mockRejectedValue(
+      new HostClientRequestError({
+        code: "conflict",
+        message: expectedText,
+        reason,
+        status: 409,
+      }),
+    );
+    await w.render();
+    await press("Guest");
+    expect(container.textContent).toContain(expectedText);
+    expect(container.textContent).not.toContain("The new tab can’t be shown right now.");
+  },
+);
 it("retries the approved list and shows its empty state", async () => {
   const w = await setup();
   w.list.mockRejectedValueOnce(new Error("Unavailable")).mockResolvedValue([]);

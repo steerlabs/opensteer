@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { HostClientRequestError } from "../host/client.js";
 import {
+  browserPoolRefusalWords,
   clientIssue,
   presentClientIssue,
   presentConnectionDetail,
@@ -339,4 +340,35 @@ describe("safe client issues", () => {
       action: "check",
     });
   });
+
+  it.each([
+    [
+      "browser-pool-refused",
+      "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
+    ],
+    [
+      "browser-pool-unreachable",
+      "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
+    ],
+    [
+      "browser-pool-disconnected",
+      "Your Cloud Computer’s browser isn’t connected right now. Try again in a moment.",
+    ],
+  ])(
+    "words Cloud Computer pooled-browser refusal (%s) without exposing raw messages",
+    (reason, words) => {
+      expect(browserPoolRefusalWords(reason)).toBe(words);
+      const error = new HostClientRequestError({
+        code: "conflict",
+        message: "INTERNAL_UNFILTERED_MESSAGE",
+        reason,
+        status: 409,
+      });
+      const issue = clientIssue(error, { operation: "action", label: "open this" });
+      expect(issue).toMatchObject({ code: "rejected", reason });
+      expect(presentClientIssue({ ...issue!, done: "opened" }).title).toBe(`Not opened. ${words}`);
+      expect(browserPoolRefusalWords("browser-placement-unavailable")).toBeUndefined();
+      expect(browserPoolRefusalWords(undefined)).toBeUndefined();
+    },
+  );
 });

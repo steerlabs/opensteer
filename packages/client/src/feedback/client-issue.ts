@@ -90,7 +90,24 @@ export function clientIssueFromFailure(
     : { code: "unconfirmed", action: context.label };
 }
 
+const browserPoolRefusals: Readonly<Record<string, string>> = {
+  "browser-pool-refused":
+    "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
+  "browser-pool-unreachable":
+    "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
+  "browser-pool-disconnected":
+    "Your Cloud Computer’s browser isn’t connected right now. Try again in a moment.",
+};
+
+/** Human words for a Cloud Computer pooled-browser open refusal, when the Host gave one. */
+export function browserPoolRefusalWords(reason: string | undefined): string | undefined {
+  return reason && Object.hasOwn(browserPoolRefusals, reason)
+    ? browserPoolRefusals[reason]
+    : undefined;
+}
+
 const rejectionReasons: Readonly<Record<string, string>> = {
+  ...browserPoolRefusals,
   "request-changed": "This request changed. Review it before answering.",
   "request-review-required": "Review the latest request before answering.",
   forbidden: "You don't have access.",

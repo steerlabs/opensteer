@@ -3632,8 +3632,9 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
         }),
       ).rejects.toMatchObject({
         code: "conflict",
-        reason: "browser-placement-unavailable",
-        message: "Your Cloud Computer’s browser can’t start right now.",
+        reason: "browser-pool-refused",
+        message:
+          "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
       });
       // Ended at once on the controller refusal, not at the 18s deadline.
       expect(Date.now() - refusedAt).toBeLessThan(5_000);
@@ -3684,11 +3685,11 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
             url: "https://example.test/never-wakes",
           },
           undefined,
-          AbortSignal.timeout(400),
+          AbortSignal.timeout(150),
         ),
       ).rejects.toMatchObject({
         code: "conflict",
-        reason: "browser-placement-unavailable",
+        reason: "browser-pool-unreachable",
         message: "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
       });
       expect(home6.browser.resourcePlacements()).toMatchObject([{ runnerId, available: true }]);
@@ -3725,7 +3726,7 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
       await database.drop();
       await rm(directory, { recursive: true, force: true });
     }
-  }, 60_000);
+  }, 45_000);
 
   it("a ready pool is always offered (Run): wakes a disk-parked pooled slot after a Home restart on a Run's first open", async () => {
     const database = await cloneTestDatabase("host");
