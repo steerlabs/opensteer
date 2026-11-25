@@ -124,6 +124,26 @@ describe("ConnectionExtensionIsolation: every field of a page session that can n
       { url: `${extension}/frame.html`, message: "hi", type: "alert", hasBrowserHandler: false },
     ],
     [
+      "a document opened in an extension frame",
+      "Page.documentOpened",
+      { frame: { id: "ext-frame", parentId: "main", url: "https://web.test/" } },
+    ],
+    [
+      "a document opened in a frame nested in an extension frame",
+      "Page.documentOpened",
+      { frame: { id: "child-web", parentId: "ext-frame", url: "https://web.test/" } },
+    ],
+    [
+      "an event shape no rule names, carrying an extension frame's id",
+      "Made.upEvent",
+      { thing: { id: "ext-frame" } },
+    ],
+    [
+      "an extension frame's id deep in an array",
+      "Made.upList",
+      { items: [{ nested: [{ ref: "ext-frame" }] }] },
+    ],
+    [
       "a lifecycle event of an extension frame",
       "Page.lifecycleEvent",
       { frameId: "ext-frame", loaderId: "l1", name: "load", timestamp: 1 },
@@ -217,6 +237,25 @@ describe("ConnectionExtensionIsolation: every field of a page session that can n
     ];
     for (const [method, params] of own)
       expect(isolation.observeEvent(method, params), method).toEqual({ action: "forward", params });
+  });
+
+  it("compromises the channel when its main frame opens an extension document (P2)", () => {
+    const isolation = page();
+    expect(
+      isolation.observeEvent("Page.documentOpened", {
+        frame: { id: "main", url: `${extension}/page.html` },
+      }),
+    ).toEqual({ action: "compromised" });
+    expect(isolation.compromised).toBe(true);
+  });
+
+  it("removes an extension frame's id from a reply under any key (P2)", () => {
+    expect(
+      page().sanitizeResult("Made.upCommand", {
+        thing: { id: "ext-frame", name: "kept" },
+        list: ["ext-frame", "web-child"],
+      }),
+    ).toEqual({ thing: { name: "kept" }, list: ["web-child"] });
   });
 
   it("removes an extension frame from a reply", () => {
