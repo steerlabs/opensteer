@@ -80,6 +80,9 @@ interface Target {
   url: string;
   readonly opener?: string;
   readonly parent?: string;
+  /** The frame in its opener or parent page it came from: an iframe of that page, or the page. */
+  readonly openerFrame?: string;
+  readonly parentFrame?: string;
   /** The Browser Session it belongs to, or none (an extension's own targets). */
   readonly home: "A" | "B" | null;
   /** The Browser Session the router claims it for now, or none. */
@@ -91,6 +94,7 @@ interface Target {
 
 class Backend implements BrowserCdpBackend {
   readonly listeners = new Set<Listener>();
+  create: ((url: string) => string) | undefined;
   readonly targets = new Map<string, Target>();
   info(target: Target): CdpParameters {
     return {
@@ -99,8 +103,16 @@ class Backend implements BrowserCdpBackend {
       url: target.url,
       title: "",
       attached: false,
-      ...(target.opener ? { openerId: target.opener, canAccessOpener: true } : {}),
-      ...(target.parent ? { parentId: target.parent, parentFrameId: target.parent } : {}),
+      ...(target.opener
+        ? {
+            openerId: target.opener,
+            openerFrameId: target.openerFrame ?? target.opener,
+            canAccessOpener: true,
+          }
+        : {}),
+      ...(target.parent
+        ? { parentId: target.parent, parentFrameId: target.parentFrame ?? target.parent }
+        : {}),
     };
   }
   attach(targetId: string): Promise<CdpChannel> {
@@ -121,6 +133,9 @@ class Backend implements BrowserCdpBackend {
       const target = this.targets.get(String(parameters?.targetId));
       return Promise.resolve(target?.alive ? { targetInfo: this.info(target) } : {});
     }
+    // The browser announces a new tab before it answers.
+    if (method === "Target.createTarget" && this.create)
+      return Promise.resolve({ targetId: this.create(String(parameters?.url)) });
     return Promise.resolve({});
   }
   emit(method: string, parameters: CdpParameters): void {
@@ -159,6 +174,10 @@ interface Client {
   readonly expected: Map<string, number>;
   /** Terminal events an exception (E1-E3) allows it to hear at most once. */
   readonly optional: Set<string>;
+  /** Terminal events E1 says it must never hear (its own target, on an extension page). */
+  readonly forbidden: Set<string>;
+  /** Targets it created (Target.createTarget): its own. */
+  readonly created: Set<string>;
   checked: number;
   send(command: CdpCommand): Promise<unknown>;
 }
@@ -177,14 +196,17 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
   const backend = new Backend();
   const router = new SessionCdpRouter(backend);
   let serial = 0;
+  // How many times each id was a live target (an id the browser reused counts again).
+  const incarnations = new Map<string, number>();
   const add = (target: Omit<Target, "alive" | "home">) => {
+    incarnations.set(target.id, (incarnations.get(target.id) ?? 0) + 1);
     const created: Target = { ...target, home: target.session, alive: true };
     backend.targets.set(created.id, created);
     return created;
   };
   add({ id: "tgt-a-root", type: "page", url: webUrl(0), session: "A", root: "tgt-a-root" });
   add({ id: "tgt-b-root", type: "page", url: webUrl(1), session: "B", root: "tgt-b-root" });
-  add({ id: "tgt-a-person", type: "page", url: webUrl(2), session: "A", root: null });
+  add({ id: "tgt-a-person", type: "page", url: webUrl(2), session: "A", root: "tgt-a-person" });
   router.registerSession("A", "tgt-a-root", async () => true, "/files/a");
   router.registerSession("B", "tgt-b-root", async () => true, "/files/b");
   router.claimTarget("A", "tgt-a-person");
@@ -211,6 +233,8 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
       open: true,
       expected: new Map(),
       optional: new Set(),
+      forbidden: new Set(),
+      created: new Set(),
       checked: 0,
       send: (command) => {
         trace.push(`${name} ${command.method} ${JSON.stringify(command.parameters ?? {})}`);
@@ -233,19 +257,14 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
     c.replies.push(value);
     c.log.push(value);
   };
-  const standard = (session: "A" | "B", seedTarget: string) => {
+  const standard = (session: "A" | "B", seedTarget: string, name = `standard-${session}`) => {
     const attachment = router.openStandardClient(session, {
       wholeContext: false,
       connection: true,
-      lineage: { attachmentId: `lineage-${session}`, seedTargetId: seedTarget },
+      lineage: { attachmentId: `lineage-${name}`, seedTargetId: seedTarget },
     });
-    const created = client(
-      `standard-${session}`,
-      session,
-      seedTarget,
-      "standard",
-      true,
-      (command) => attachment.send(command),
+    const created = client(name, session, seedTarget, "standard", true, (command) =>
+      attachment.send(command),
     );
     attachment.onEvent((event) => {
       created.events.push(event);
@@ -255,6 +274,8 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
   };
   const standardA = standard("A", "tgt-a-root");
   const standardB = standard("B", "tgt-b-root");
+  // A second connection on the same Browser Session, its lineage seeded on the person's tab.
+  const standardA2 = standard("A", "tgt-a-person", "standard-A2");
   const own = client("own-A", "A", "tgt-a-root", "own", false, (command) =>
     router.send("A", command),
   );
@@ -282,7 +303,7 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
     );
     script = created;
   };
-  for (const discovering of [standardA, standardB])
+  for (const discovering of [standardA, standardB, standardA2])
     reply(
       discovering,
       await discovering.send({
@@ -290,7 +311,7 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
         parameters: { discover: true },
       }),
     );
-  if (random() < 0.5) openScript();
+  if (random() < 0.5) openScript(); // The root starts on the web.
 
   // What the non-connection state must hear: every event about a target its session claimed.
   const ownExpected: string[] = [];
@@ -310,9 +331,12 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
         .map((s) => ({ client: c, session: s })),
     );
   const bump = (c: Client, key: string, exempt: string | false = false) => {
-    if (exempt) c.optional.add(key);
+    if (exempt === "E1") c.forbidden.add(key);
+    else if (exempt) c.optional.add(key);
     else c.expected.set(key, (c.expected.get(key) ?? 0) + 1);
   };
+  // Failures seen the moment a crash was told (checked per crash, so none can cancel another).
+  const immediate: string[] = [];
 
   // The router releases an auto-attached child's claim when its last channel ends (as at
   // fe6fc0d73): from then on no session hears of that target or what it opened.
@@ -347,14 +371,28 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
   const crashes = new Map<string, number>();
   const crash = (target: Target) => {
     crashes.set(target.id, (crashes.get(target.id) ?? 0) + 1);
+    const before = new Map(clients.map((c) => [c, c.events.length]));
+    emit("Target.targetCrashed", { targetId: target.id, status: "crashed", errorCode: 1 }, target);
     for (const c of clients) {
       if (!c.connection || !c.open) continue;
-      const ownTarget =
+      const own =
         (c.kind === "script" && target.id === "tgt-a-root" && !c.rootDestroyed) ||
+        c.created.has(target.id) ||
         owners(target.id).some(({ client: o }) => o === c);
-      if (ownTarget) bump(c, `crash:${target.id}`, isExtension(target) && "E1");
+      const told = c.events
+        .slice(before.get(c))
+        .filter(
+          (e) =>
+            e.method === "Target.targetCrashed" &&
+            (e.parameters as { targetId?: unknown }).targetId === target.id,
+        ).length;
+      // Its own target's crash, exactly once on the web and never on an extension page (E1).
+      const expected = own ? (isExtension(target) ? 0 : 1) : undefined;
+      if (expected === undefined ? told > 1 : told !== expected)
+        immediate.push(
+          `${c.name} was told ${told} of ${target.id}'s crash (own: ${own}, extension page: ${isExtension(target)})`,
+        );
     }
-    emit("Target.targetCrashed", { targetId: target.id, status: "crashed", errorCode: 1 }, target);
   };
   const destroy = (target: Target) => {
     const childSessions = owners(target.id).filter(({ session }) => session.parent);
@@ -378,20 +416,45 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
         bump(c, `destroy:${target.id}`, hidden);
         c.rootDestroyed = true;
       }
-      let told = false;
+      // The script's root was counted above; any other client's own target is told once.
+      let told = c.kind === "script" && target.id === "tgt-a-root";
+      if (c.created.has(target.id) && !told) {
+        bump(c, `destroy:${target.id}`, hidden || (c.rootDestroyed && "E2") || false);
+        told = true;
+      }
       for (const { client: o, session } of owners(target.id)) {
         if (o !== c) continue;
         const exempt = hidden || (c.rootDestroyed && "E2") || false;
         bump(c, `detach:${session.id}`, exempt);
-        if (!told && target.id !== "tgt-a-root") bump(c, `destroy:${target.id}`, exempt);
+        if (!told) bump(c, `destroy:${target.id}`, exempt);
         told = true;
         endSession(c, session, exempt);
       }
     }
+    const before = new Map(clients.map((c) => [c, c.events.length]));
+    const hiddenOwners = clients.filter(
+      (c) =>
+        c.connection &&
+        c.open &&
+        isExtension(target) &&
+        (c.created.has(target.id) ||
+          (c.kind === "script" && target.id === "tgt-a-root") ||
+          [...c.sessions.values()].some((x) => x.target === target.id)),
+    );
     if (pageDetachFirst) pageDetach();
     target.alive = false;
     emit("Target.targetDestroyed", { targetId: target.id }, target);
     if (!pageDetachFirst) pageDetach();
+    // E1, asserted at the end itself: its own target on an extension page ends untold.
+    for (const c of hiddenOwners) {
+      const told = c.events
+        .slice(before.get(c))
+        .filter((e) => JSON.stringify(e.parameters).includes(`"${target.id}"`));
+      if (told.length)
+        immediate.push(
+          `${c.name} was told ${told.map((e) => e.method).join(", ")} of its ${target.id} on an extension page`,
+        );
+    }
   };
   const leaves = () =>
     [...backend.targets.values()].filter(
@@ -403,7 +466,8 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
 
   const recordOwn = (c: Client, reply: unknown, target: string) => {
     const sessionId = (reply as { sessionId?: unknown } | undefined)?.sessionId;
-    if (typeof sessionId === "string") {
+    // An attach to a target it already holds a child session on answers with that session.
+    if (typeof sessionId === "string" && !c.sessions.has(sessionId)) {
       const channel = lastChannel(target);
       c.sessions.set(sessionId, { id: sessionId, target, ...(channel ? { channel } : {}) });
     }
@@ -420,16 +484,27 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
 
   const steps: (() => Promise<void> | void)[] = [
     // A popup or an iframe, opened from a web or an extension page, at a web or extension address.
+    // From an iframe (perhaps an extension's, inside a shown page), the opener or parent is the
+    // iframe's page and the frame is the iframe; or the iframe itself is the parent.
     () => {
-      const from = pick(pages());
-      if (!from) return;
+      const frames = [...backend.targets.values()].filter(
+        (t) => t.alive && t.type === "iframe" && t.session && t.parent,
+      );
+      const fromFrame = random() < 0.4 ? pick(frames) : undefined;
+      const from = fromFrame ? backend.targets.get(fromFrame.parent!)! : pick(pages());
+      if (!from || !from.alive) return;
       const type = random() < 0.6 ? "page" : "iframe";
       const url = random() < 0.35 ? extensionUrl(++serial) : webUrl(++serial);
+      const nested = fromFrame && type === "iframe" && random() < 0.5;
       const target = add({
         id: `tgt-${serial}`,
         type,
         url,
-        ...(type === "page" ? { opener: from.id } : { parent: from.id }),
+        ...(type === "page"
+          ? { opener: from.id, ...(fromFrame ? { openerFrame: fromFrame.id } : {}) }
+          : nested
+            ? { parent: fromFrame.id }
+            : { parent: from.id, ...(fromFrame ? { parentFrame: fromFrame.id } : {}) }),
         session: from.session,
         root: from.root,
       });
@@ -475,8 +550,15 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
     // An attach by any client, sometimes raced by its target's end before the reply.
     async () => {
       const c = pick(clients.filter((x) => x.open));
-      const target = pick([...backend.targets.values()].filter((t) => t.session === c?.session));
+      const target = pick([...backend.targets.values()].filter((t) => t.home === c?.session));
       if (!c || !target) return;
+      // What the world allows: a live, claimed page or frame in its reach, not on an extension's
+      // page. An attach the router answers otherwise is the router's fault, not the test's.
+      const mayAttach =
+        target.alive &&
+        target.session === c.session &&
+        (c.kind === "own" || target.root === c.root) &&
+        !isExtension(target);
       const sending = c
         .send({
           method: "Target.attachToTarget",
@@ -493,6 +575,10 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
       }
       const settled = await sending;
       reply(c, settled);
+      if ("reply" in settled && c.connection && !mayAttach)
+        immediate.push(
+          `${c.name} was attached to ${target.id}, which the world does not let it reach`,
+        );
       if ("reply" in settled) {
         recordOwn(c, settled.reply, target.id);
         const own_ = c.sessions.get(String((settled.reply as { sessionId?: string }).sessionId));
@@ -516,7 +602,7 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
     },
     // An auto-attached iframe on a standard client's page session.
     async () => {
-      const c = pick([standardA, standardB]);
+      const c = pick([standardA, standardB, standardA2]);
       const parent = pick([...c.sessions.values()].filter((s) => !s.ended && !s.parent));
       const child = parent && pick(descendants(parent.target).filter((t) => t.type === "iframe"));
       if (!parent || !child || !parent.channel) return;
@@ -551,6 +637,17 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
               child.id,
         );
       const sessionId = announced?.parameters.sessionId;
+      // What the world allows: a live web frame in its reach, on a page of its own on the web.
+      const allowed =
+        child.alive &&
+        !isExtension(child) &&
+        child.session === c.session &&
+        child.root === c.root &&
+        !isExtension(backend.targets.get(parent.target)!);
+      if (allowed && typeof sessionId !== "string")
+        immediate.push(`${c.name}'s page auto-attached ${child.id}, and it was not told`);
+      if (!allowed && typeof sessionId === "string" && isExtension(child))
+        immediate.push(`${c.name} was given an extension frame ${child.id} as a child`);
       if (typeof sessionId === "string")
         c.sessions.set(sessionId, {
           id: sessionId,
@@ -558,6 +655,46 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
           parent: parent.id,
           physical,
         });
+    },
+    // A connection creates a tab: its own, announced by the browser before the reply.
+    async () => {
+      const c = pick([standardA, standardA2, standardB, ...(script ? [script] : [])]);
+      if (!c?.open || (c.kind === "script" && c.rootDestroyed)) return;
+      // Now and then the browser reuses the id of a tab that has ended.
+      const reused = pick(
+        [...backend.targets.values()].filter(
+          (t) =>
+            !t.alive && t.type === "page" && !t.id.endsWith("-root") && t.id !== "tgt-a-person",
+        ),
+      );
+      const id = reused && random() < 0.3 ? reused.id : `tgt-new-${++serial}`;
+      backend.create = (url) => {
+        // A reused id is a new tab: the old one's creator no longer holds it.
+        for (const other of clients) other.created.delete(id);
+        const target = add({
+          id,
+          type: "page",
+          url,
+          session: c.session,
+          root: c.root,
+        });
+        emit("Target.targetCreated", { targetInfo: backend.info(target) });
+        return id;
+      };
+      const settled = await c
+        .send({ method: "Target.createTarget", parameters: { url: webUrl(++serial) } })
+        .then(
+          (value) => ({ reply: value }),
+          (error: unknown) => ({ error: String((error as Error).message) }),
+        );
+      backend.create = undefined;
+      reply(c, settled);
+      if ("reply" in settled) c.created.add(id);
+      else if (backend.targets.get(id)) {
+        // Not adopted: the router closes it; the world forgets it.
+        backend.targets.get(id)!.alive = false;
+        backend.targets.get(id)!.session = null;
+      }
     },
     // A client detaches one of its own page sessions itself.
     async () => {
@@ -568,19 +705,28 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
       const exempt = (isExtension(target) && "E1") || (c.rootDestroyed && "E2") || false;
       bump(c, `detach:${s.id}`, exempt);
       endSession(c, s, exempt);
+      const before = c.events.length;
       reply(
         c,
         await c
           .send({ method: "Target.detachFromTarget", parameters: { sessionId: s.id } })
           .catch((error: unknown) => ({ error: String((error as Error).message) })),
       );
+      // E1, asserted: detaching its own tab while that tab is on an extension page is answered,
+      // and no event names it.
+      if (exempt === "E1" && c.events.length !== before)
+        immediate.push(
+          `${c.name} was told of its own detach from ${s.target} on an extension page`,
+        );
     },
     () => {
-      if (!script) openScript();
+      // The runtime opens a connection's script only on a tab on the web (N1).
+      if (!script && !isExtension(backend.targets.get("tgt-a-root")!)) openScript();
     },
   ];
 
   const check = (step: number): Failure | undefined => {
+    if (immediate.length) return { step, message: immediate.join("; ") };
     const allSessions = new Map<string, Client>();
     for (const c of clients) for (const id of c.sessions.keys()) allSessions.set(id, c);
     for (const c of clients) {
@@ -659,9 +805,11 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
       for (const [key, count] of counted) {
         const limit = key.startsWith("crash:")
           ? (crashes.get(key.slice("crash:".length)) ?? 0)
-          : key.startsWith("detach:") && !c.expected.has(key)
-            ? Number(c.optional.has(key))
-            : 1;
+          : key.startsWith("destroy:")
+            ? (incarnations.get(key.slice("destroy:".length)) ?? 1)
+            : key.startsWith("detach:") && !c.expected.has(key)
+              ? Number(c.optional.has(key))
+              : 1;
         if (count > limit) return fail(`${c.name} received ${key} ${count} times`);
       }
     }

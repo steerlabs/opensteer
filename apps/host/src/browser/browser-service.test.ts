@@ -3370,6 +3370,34 @@ describe("BrowserService", () => {
     };
   }
 
+  it("records no place, nor its title, for a page at an extension's address", async () => {
+    const f = await runPlaceFixture(new ManualClock(0));
+    f.record.mockResolvedValue(true);
+    f.runtime.publishTabs({
+      surfaces: [
+        {
+          id: "page-1",
+          active: true,
+          title: "My Extension Options",
+          url: `chrome-extension://${"a".repeat(32)}/options.html`,
+          geometryRevision: 1,
+        },
+        {
+          id: "page-2",
+          active: false,
+          title: "Web",
+          url: "https://example.com",
+          geometryRevision: 1,
+        },
+      ],
+    });
+    await f.activity("page-1");
+    await f.activity("page-2");
+    await f.drain();
+    expect(f.record.mock.calls.map(([input]) => input.data.tabId)).toEqual(["page-2"]);
+    expect(JSON.stringify(f.record.mock.calls)).not.toContain("My Extension Options");
+  });
+
   it("bounds interleaved activity writes and converges usage on the final surface", async () => {
     const clock = new ManualClock(0);
     const f = await runPlaceFixture(clock);
@@ -10953,6 +10981,8 @@ describe("work under a connection's authority never uses the clipboard or change
     cleanups.push(async () => service.close());
     const profile = await repository.createBrowserProfile({ ownerId, name });
     const binding = { agentBindingId: `run:${runId}`, ownerId };
+    // One of your own agents (no connection leads it) when false.
+    let asConnection = true;
     repository.resolveResourceAccess = async () => ({
       access: "read-write",
       runAccess: "read-write",
@@ -10960,33 +10990,39 @@ describe("work under a connection's authority never uses the clipboard or change
       execution: {
         ownerUserId: ownerId,
         subject: { kind: "binding", bindingId: binding.agentBindingId },
-        actor: "agent",
+        actor: asConnection ? "agent" : "native",
         threadId,
         runId,
-        agentConnection: {
-          agentConnectionId: `acn_${randomUUID()}`,
-          grant: { scope: "everything" },
-          grantRevision: 1,
-          consentVersion: 1,
-          accessMode: "full-access",
-          bridgeSenders: null,
-        },
+        agentConnection: asConnection
+          ? {
+              agentConnectionId: `acn_${randomUUID()}`,
+              grant: { scope: "everything" },
+              grantRevision: 1,
+              consentVersion: 1,
+              accessMode: "full-access",
+              bridgeSenders: null,
+            }
+          : null,
         taskMode: "full-access",
         runMode: "full-access",
         mode: "full-access",
       },
     });
     const opened = await service.openAgentSession({ ...binding, profileId: profile.id });
-    const attach = async () => {
+    const attach = async (connection = true) => {
+      asConnection = connection;
       const events: {
         method: string;
         parameters: Record<string, unknown>;
         sessionId?: string;
       }[] = [];
-      const attached = await service.attachCdpForAgent(
-        { ...binding, sessionId: opened.session.id },
-        (event) => events.push(event as (typeof events)[number]),
-      );
+      const attached = await service
+        .attachCdpForAgent({ ...binding, sessionId: opened.session.id }, (event) =>
+          events.push(event as (typeof events)[number]),
+        )
+        .finally(() => {
+          asConnection = true;
+        });
       return { attached, events };
     };
     return { runtime, attach };
@@ -11119,15 +11155,19 @@ describe("work under a connection's authority never uses the clipboard or change
   });
 
   /*
-   * Generated sequences on one shared root: two connected subscribers on one Browser Session,
-   * random attaches, creates and resumes answered or refused in any order, their own terminal
-   * events before and after the reply, auto-attached children, browser-level events, and foreign
-   * churn (extension targets and pages, other targets' and sessions' ends). After every step:
-   * (1) a subscriber receives no id of the other's sessions or unannounced targets, of an
-   * extension's target, nor any extension address; at the end (2) each of its own sessions'
-   * detaches and targets' destroys and crashes arrived exactly as often as they happened, and
-   * none of a refused command's. Bounds: churn stays below 4,096 terminal events inside any one
-   * create's or resume's wait (the next test pins what happens above it).
+   * Generated sequences on one shared root: two connected subscribers and one of your own agents
+   * on one Browser Session. Random attaches, creates and resumes answered or refused in any order;
+   * their own detaches, destroys and crashes before and after the reply; their own tabs going web
+   * -> extension -> web; auto-attached children; page events and nested replies on their
+   * sessions; web tabs announced at the root; a close in mid-flight; and foreign churn (extension
+   * pages, service workers and their sessions, other targets' ends, target-less detaches,
+   * browser-level events). After every step a connected subscriber may receive no id of the
+   * other's sessions or unannounced targets, of an extension's targets or sessions, and no
+   * extension address; at the end each of its own events arrived exactly as often as it happened
+   * (none while its tab was on an extension page: E1), none of a refused command's, none after
+   * its close. Your own agent's subscriber hears every event the runtime sent, as before. Bounds:
+   * churn stays below 4,096 terminal events inside any one create's or resume's wait (the bound
+   * test pins what happens above it).
    */
   it("keeps both invariants for generated sequences on a shared root", async () => {
     const prng = (seed: number) => {
@@ -11147,6 +11187,7 @@ describe("work under a connection's authority never uses the clipboard or change
       }
     };
     const failures: string[] = [];
+    const extensionUrl = (id: number) => `chrome-extension://${"e".repeat(32)}/p-${id}.html`;
     for (let seed = 1; seed <= 30 && failures.length === 0; seed += 1) {
       const random = prng(seed);
       const pick = <T>(values: readonly T[]): T | undefined =>
@@ -11155,12 +11196,14 @@ describe("work under a connection's authority never uses the clipboard or change
       let serial = 0;
       let sequence = 1;
       let marker = 0;
+      let sent = 0;
       const subscribers = await Promise.all(
         ["s1", "s2"].map(async (name) => {
           const attached = await attach();
           return {
             name,
             ...attached,
+            open: true,
             checked: 0,
             own: new Set<string>(),
             expected: new Map<string, number>(),
@@ -11172,22 +11215,27 @@ describe("work under a connection's authority never uses the clipboard or change
               result: Promise<unknown>;
             }[],
             sessions: [] as { id: string; target: string; ended: boolean }[],
-            targets: [] as { id: string; destroyed: boolean }[],
+            targets: [] as { id: string; destroyed: boolean; hidden: boolean }[],
           };
         }),
       );
+      const yours = await attach(false);
       type Subscriber = (typeof subscribers)[number];
       // Terminal events sent for a pending command's ids, delivered only if it succeeds.
       const early = new Map<Subscriber["pending"][number], string[]>();
       const send = (method: string, parameters: Record<string, unknown>, sessionId?: string) => {
+        sent += 1;
         trace.push(`runtime ${method} ${sessionId ?? ""} ${JSON.stringify(parameters)}`);
         runtime.sendServer({
           type: "cdp.event",
           event: { method, parameters, sequence: sequence++, ...(sessionId ? { sessionId } : {}) },
         });
       };
-      const bump = (sub: Subscriber, key: string) =>
-        sub.expected.set(key, (sub.expected.get(key) ?? 0) + 1);
+      const bump = (sub: Subscriber, key: string) => {
+        if (sub.open) sub.expected.set(key, (sub.expected.get(key) ?? 0) + 1);
+      };
+      const hiddenTarget = (sub: Subscriber, id: string) =>
+        sub.targets.some((t) => t.id === id && t.hidden);
       const terminal = (
         sub: Subscriber,
         key: string,
@@ -11196,12 +11244,14 @@ describe("work under a connection's authority never uses the clipboard or change
         pending?: Subscriber["pending"][number],
       ) => {
         if (pending) early.set(pending, [...(early.get(pending) ?? []), key]);
-        else bump(sub, key);
+        else if (!hiddenTarget(sub, String(parameters.targetId))) bump(sub, key);
         send(method, parameters);
       };
       let churn = 0;
+      const announced = new Set<string>();
       const steps: ((sub: Subscriber) => Promise<void> | void)[] = [
         async (sub) => {
+          if (!sub.open) return;
           const kind = pick(["attach", "create", "resume"] as const)!;
           const id = ++serial;
           const target = `tgt-${sub.name}-${id}`;
@@ -11267,6 +11317,7 @@ describe("work under a connection's authority never uses the clipboard or change
             sub.targets.push({
               id: pending.target,
               destroyed: (early.get(pending) ?? []).includes(`destroy:${pending.target}`),
+              hidden: false,
             });
           if (pending.session) {
             sub.own.add(pending.session);
@@ -11288,10 +11339,7 @@ describe("work under a connection's authority never uses the clipboard or change
                 sub,
                 `detach:${pending.session}`,
                 "Target.detachedFromTarget",
-                {
-                  sessionId: pending.session,
-                  targetId: pending.target,
-                },
+                { sessionId: pending.session, targetId: pending.target },
                 pending,
               );
             else if (random() < 0.5)
@@ -11299,11 +11347,7 @@ describe("work under a connection's authority never uses the clipboard or change
                 sub,
                 `crash:${pending.target}`,
                 "Target.targetCrashed",
-                {
-                  targetId: pending.target,
-                  status: "crashed",
-                  errorCode: 1,
-                },
+                { targetId: pending.target, status: "crashed", errorCode: 1 },
                 pending,
               );
             else
@@ -11311,9 +11355,7 @@ describe("work under a connection's authority never uses the clipboard or change
                 sub,
                 `destroy:${pending.target}`,
                 "Target.targetDestroyed",
-                {
-                  targetId: pending.target,
-                },
+                { targetId: pending.target },
                 pending,
               );
             return;
@@ -11333,16 +11375,31 @@ describe("work under a connection's authority never uses the clipboard or change
               errorCode: 1,
             });
           } else if (target) {
-            target.destroyed = true;
             terminal(sub, `destroy:${target.id}`, "Target.targetDestroyed", {
               targetId: target.id,
             });
+            target.destroyed = true;
           }
+        },
+        // Its own tab goes to an extension page, or back to the web.
+        (sub) => {
+          const target = pick(sub.targets.filter((t) => !t.destroyed));
+          if (!target) return;
+          target.hidden = !target.hidden;
+          // Announced at the root: on a shared root every subscriber may know a web tab.
+          if (!target.hidden) announced.add(target.id);
+          send("Target.targetInfoChanged", {
+            targetInfo: {
+              targetId: target.id,
+              type: "page",
+              url: target.hidden ? extensionUrl(++serial) : `https://back-${++serial}.test/`,
+            },
+          });
         },
         // An auto-attached child of one of its sessions, and later its end.
         (sub) => {
           const parent = pick(sub.sessions.filter((s) => !s.ended));
-          if (!parent) return;
+          if (!parent || hiddenTarget(sub, parent.target)) return;
           const id = ++serial;
           const child = {
             id: `cdp_${sub.name}_child_${id}`,
@@ -11386,14 +11443,29 @@ describe("work under a connection's authority never uses the clipboard or change
             message: JSON.stringify({ id: serial, result: {} }),
           });
         },
+        // A web tab of the session announced at the root: every subscriber may know it.
+        () => {
+          const id = ++serial;
+          send("Target.targetCreated", {
+            targetInfo: { targetId: `tgt-web-${id}`, type: "page", url: `https://web-${id}.test/` },
+          });
+          if (random() < 0.5) send("Target.targetDestroyed", { targetId: `tgt-web-${id}` });
+        },
+        // A close in mid-flight: from now on it hears nothing.
+        (sub) => {
+          if (!sub.open || random() < 0.7) return;
+          trace.push(`${sub.name} close`);
+          sub.open = false;
+          sub.attached.close();
+        },
         // Foreign churn: extension targets and pages, their sessions and ends, other ids' ends.
         () => {
           const count = Math.floor(random() * (churn > 2_000 ? 10 : 200));
           churn += count;
           for (let index = 0; index < count; index += 1) {
             const id = ++serial;
-            const ext = `chrome-extension://${"e".repeat(32)}/p-${id}.html`;
-            switch (index % 6) {
+            const ext = extensionUrl(id);
+            switch (index % 7) {
               case 0:
                 send("Target.targetCreated", {
                   targetInfo: { targetId: `tgt-ext-${id}`, type: "page", url: ext },
@@ -11423,6 +11495,9 @@ describe("work under a connection's authority never uses the clipboard or change
                   suggestedFilename: "f.txt",
                 });
                 break;
+              case 5:
+                send("Target.detachedFromTarget", { sessionId: `cdp_churn_${id}` });
+                break;
               default:
                 send("Target.targetCrashed", {
                   targetId: `tgt-churn-${id}`,
@@ -11433,13 +11508,13 @@ describe("work under a connection's authority never uses the clipboard or change
           }
         },
       ];
-      // Every message before a marker has been handled once both subscribers hear the marker.
+      // Every message before a marker has been handled once every subscriber hears the marker.
       const settle = async () => {
         const n = ++marker;
         send("Page.marker", { n });
         await vi.waitFor(
           () => {
-            for (const sub of subscribers)
+            for (const sub of [...subscribers.filter((x) => x.open), yours])
               expect(
                 sub.events.some((e) => e.method === "Page.marker" && e.parameters.n === n),
               ).toBe(true);
@@ -11458,13 +11533,26 @@ describe("work under a connection's authority never uses the clipboard or change
               .map((pattern) => fresh.match(pattern)?.[0])
               .find(Boolean) ||
             [...other.own, ...other.pending.flatMap((p) => [p.target, p.session ?? ""])]
-              .filter(Boolean)
+              .filter((id) => id && !announced.has(id))
+              .find((id) => fresh.includes(`"${id}"`)) ||
+            sub.targets
+              .filter((t) => t.hidden)
+              .map((t) => t.id)
               .find((id) => fresh.includes(`"${id}"`));
           if (leaked)
             failures.push(
               `seed ${seed} at ${step}: ${sub.name} received ${leaked}\n${trace.join("\n")}`,
             );
+          if (!sub.open && fresh !== "[]")
+            failures.push(
+              `seed ${seed} at ${step}: ${sub.name} heard after its close\n${trace.join("\n")}`,
+            );
         }
+        // Your own agent's subscriber: every event the runtime sent, nothing taken.
+        if (yours.events.length !== sent)
+          failures.push(
+            `seed ${seed} at ${step}: your own agent heard ${yours.events.length} of ${sent}\n${trace.join("\n")}`,
+          );
       };
       try {
         for (let step = 0; step < 30 && failures.length === 0; step += 1) {
@@ -11505,7 +11593,10 @@ describe("work under a connection's authority never uses the clipboard or change
                       : event.method === "Target.receivedMessageFromTarget"
                         ? `nested:${String(p.sessionId)}`
                         : undefined;
-            if (key) counted.set(key, (counted.get(key) ?? 0) + 1);
+            // Announced tabs are every subscriber's to hear: only its own are counted.
+            const id = key?.slice(key.indexOf(":") + 1);
+            if (key && id && !key.includes("tgt-web-") && (sub.own.has(id) || !announced.has(id)))
+              counted.set(key, (counted.get(key) ?? 0) + 1);
           }
           for (const key of new Set([...counted.keys(), ...sub.expected.keys()]))
             if ((counted.get(key) ?? 0) !== (sub.expected.get(key) ?? 0))
@@ -11514,7 +11605,8 @@ describe("work under a connection's authority never uses the clipboard or change
               );
         }
       } finally {
-        for (const sub of subscribers) sub.attached.close();
+        for (const sub of subscribers) if (sub.open) sub.attached.close();
+        yours.attached.close();
       }
     }
     expect(failures.slice(0, 1)).toEqual([]);
@@ -11571,6 +11663,184 @@ describe("work under a connection's authority never uses the clipboard or change
       ).toEqual(kept ? [own] : []);
       attached.close();
     }
+  });
+
+  it("delivers nothing to a connection's shared-root attachment after its Disconnect or its binding's end", async () => {
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Disconnect Profile" });
+    const agentConnectionId = `acn_${randomUUID()}`;
+    const connected = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const ownAgent = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const threadId = createId("thread");
+    let isConnected = true;
+    repository.resolveResourceAccess = async () => {
+      return {
+        access: "read-write",
+        runAccess: "read-write",
+        grantAccess: "read-write",
+        execution: {
+          ownerUserId: ownerId,
+          subject: {
+            kind: "binding",
+            bindingId: isConnected ? connected.agentBindingId : ownAgent.agentBindingId,
+          },
+          actor: isConnected ? "agent" : "native",
+          threadId,
+          runId: createId("run"),
+          agentConnection: isConnected
+            ? {
+                agentConnectionId,
+                grant: { scope: "everything" },
+                grantRevision: 1,
+                consentVersion: 1,
+                accessMode: "full-access",
+                bridgeSenders: null,
+              }
+            : null,
+          taskMode: "full-access",
+          runMode: "full-access",
+          mode: "full-access",
+        },
+      };
+    };
+    const opened = await service.openAgentSession({ ...connected, profileId: profile.id });
+    const attach = async (binding: typeof connected) => {
+      isConnected = binding === connected;
+      const events: { method: string }[] = [];
+      let closed = false;
+      const attached = await service.attachCdpForAgent(
+        { ...binding, sessionId: opened.session.id },
+        (event) => events.push(event),
+        () => {
+          closed = true;
+        },
+      );
+      return { attached, events, closed: () => closed };
+    };
+    let sequence = 1;
+    const send = (method: string) =>
+      runtime.sendServer({
+        type: "cdp.event",
+        event: { method, parameters: {}, sequence: sequence++ },
+      });
+    for (const end of ["disconnect", "binding-ended"] as const) {
+      const theirs = await attach(connected);
+      const mine = await attach(ownAgent);
+      send("Page.before");
+      await vi.waitFor(() => expect(theirs.events.at(-1)?.method).toBe("Page.before"));
+      if (end === "disconnect")
+        service.closeStandardCdpForConnection(
+          agentConnectionId,
+          "Agent connection authority ended.",
+        );
+      else await service.detachAgentSessionsForBinding(connected.agentBindingId);
+      send("Page.after");
+      // Your own agent's attachment, on the same shared root, still hears it: so it has arrived.
+      await vi.waitFor(() => expect(mine.events.at(-1)?.method).toBe("Page.after"));
+      expect(
+        theirs.events.map(({ method }) => method),
+        end,
+      ).not.toContain("Page.after");
+      if (end === "disconnect") expect(theirs.closed(), end).toBe(true);
+      theirs.attached.close();
+      mine.attached.close();
+      if (end === "binding-ended") break;
+    }
+  });
+
+  it("keeps target-less foreign detaches out of an attach's buffer, and hides a tab that went to an extension page (shared root)", async () => {
+    const { runtime, attach } = await connectedRootAttachment("Shared Root Profile");
+    const { attached, events } = await attach();
+    let sequence = 1;
+    const send = (method: string, parameters: Record<string, unknown>, sessionId?: string) =>
+      runtime.sendServer({
+        type: "cdp.event",
+        event: { method, parameters, sequence: sequence++, ...(sessionId ? { sessionId } : {}) },
+      });
+    const settle = async (n: number) => {
+      send("Page.marker", { n });
+      await vi.waitFor(() =>
+        expect(events.some((e) => e.method === "Page.marker" && e.parameters.n === n)).toBe(true),
+      );
+    };
+    // 1. An attach's own early detach survives any number of target-less foreign detaches.
+    const request = attached.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "own-tab", flatten: true },
+    });
+    const forward = await runtime.nextCommand();
+    send("Target.detachedFromTarget", { sessionId: "cdp_own", targetId: "own-tab" });
+    for (let index = 0; index < 100; index += 1)
+      send("Target.detachedFromTarget", { sessionId: `cdp_foreign_${index}` });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: forward.requestId,
+      result: { sessionId: "cdp_own" },
+    });
+    await request;
+    await settle(1);
+    expect(events.filter((e) => e.method === "Target.detachedFromTarget")).toEqual([
+      expect.objectContaining({ parameters: { sessionId: "cdp_own", targetId: "own-tab" } }),
+    ]);
+    // 2. Its own tab goes to an extension page: its id is named no more (its end included), and a
+    // page it opens is told without its opener; back on the web, it is told again.
+    const second = attached.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "own-tab-2", flatten: true },
+    });
+    const secondForward = await runtime.nextCommand();
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: secondForward.requestId,
+      result: { sessionId: "cdp_own_2" },
+    });
+    await second;
+    const before = events.length;
+    const extension = `chrome-extension://${"a".repeat(32)}/options.html`;
+    send("Target.targetInfoChanged", {
+      targetInfo: { targetId: "own-tab-2", type: "page", url: extension },
+    });
+    send("Target.targetCreated", {
+      targetInfo: {
+        targetId: "popup",
+        type: "page",
+        url: "https://popup.test/",
+        openerId: "own-tab-2",
+        openerFrameId: "own-tab-2",
+        canAccessOpener: true,
+      },
+    });
+    send("Target.targetCrashed", { targetId: "own-tab-2", status: "crashed", errorCode: 1 });
+    await settle(2);
+    const hidden = JSON.stringify(events.slice(before));
+    expect(hidden).not.toContain("own-tab-2");
+    expect(hidden).not.toContain("chrome-extension:");
+    expect(events.find((e) => e.parameters.targetInfo)?.parameters).toBeDefined();
+    expect(
+      events.slice(before).find((e) => e.method === "Target.targetCreated")?.parameters.targetInfo,
+    ).toEqual({
+      targetId: "popup",
+      type: "page",
+      url: "https://popup.test/",
+      canAccessOpener: false,
+    });
+    send("Target.targetInfoChanged", {
+      targetInfo: { targetId: "own-tab-2", type: "page", url: "https://back.test/" },
+    });
+    send("Target.targetDestroyed", { targetId: "own-tab-2" });
+    await settle(3);
+    expect(
+      events
+        .slice(before)
+        .filter((e) => JSON.stringify(e).includes("own-tab-2"))
+        .map((e) => e.method),
+    ).toEqual(["Target.targetInfoChanged", "Target.targetDestroyed"]);
+    attached.close();
   });
 
   it("keeps a subscriber's own child however many children a neighbour opens on the shared root (S2)", async () => {

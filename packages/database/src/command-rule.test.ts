@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isAllowedConnectionPageUrl,
-  isChromeExtensionUrl,
+  isExtensionUrl,
   normalizePageOpenUrl,
   ThreadAccessModeSchema,
   type ThreadAccessMode,
@@ -458,7 +458,7 @@ describe("connection page-open URL protocol checks (M4)", () => {
       `blob:chrome-extension://${id}/0b1c`,
       `filesystem:chrome-extension://${id}/temporary/x`,
     ]) {
-      expect(isChromeExtensionUrl(blocked), blocked).toBe(true);
+      expect(isExtensionUrl(blocked), blocked).toBe(true);
       expect(isAllowedConnectionPageUrl(blocked), blocked).toBe(false);
     }
     for (const otherBlocked of [

@@ -112,7 +112,7 @@ import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
-  isChromeExtensionUrl,
+  isExtensionUrl,
   normalizePageOpenUrl,
   OpensteerError,
   agentGrantAllows,
@@ -278,7 +278,7 @@ function connectedAgentBinding(agentBindingId: string | undefined): boolean {
 
 /** Whether any string in a (bounded) CDP value is an extension's address. */
 function mentionsChromeExtensionUrl(value: unknown, depth: number): boolean {
-  if (typeof value === "string") return isChromeExtensionUrl(value);
+  if (typeof value === "string") return isExtensionUrl(value);
   if (depth > 16 || value === null || typeof value !== "object") return false;
   for (const entry of Array.isArray(value) ? value : Object.values(value))
     if (mentionsChromeExtensionUrl(entry, depth + 1)) return true;
@@ -1031,7 +1031,13 @@ export class BrowserService {
   readonly #standardCdpProfiles = new StandardCdpProfileLeases();
   readonly #deviceAttachments = new Map<
     string,
-    { runnerId: RunnerId; close: () => void; binding?: string }
+    {
+      runnerId: RunnerId;
+      close: () => void;
+      binding?: string;
+      /** The connection whose work this is, so its Disconnect closes it. */
+      agentConnectionId?: string;
+    }
   >();
   readonly #inRunnerAdmission = new AsyncLocalStorage<boolean>();
   withRunnerAdmission<T>(runnerId: RunnerId, action: () => Promise<T>): Promise<T> {
@@ -1725,7 +1731,11 @@ export class BrowserService {
   }
 
   #placeData(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId) {
-    const page = this.#brokers.get(sessionId)?.pageOf(surfaceId);
+    const broker = this.#brokers.get(sessionId);
+    // A Run's places are read back by the connection that leads it (task_read): a page at an
+    // extension's address is no place, its title included.
+    if (broker?.onExtensionPage(surfaceId)) return null;
+    const page = broker?.pageOf(surfaceId);
     if (!page) return null;
     let site: string | null = null;
     try {
@@ -5862,6 +5872,11 @@ export class BrowserService {
       if (claims.facts.agentConnectionId === connectionId)
         bindings.add(claims.authority.agentBindingId);
     for (const binding of bindings) this.closeStandardCdpForBinding(binding, reason);
+    // Its Disconnect also closes every other CDP attachment of its work, a shared root's
+    // included: no event of it reaches the connection after this (rule 3).
+    // (A Map's iteration is safe while close() deletes the entry it is on.)
+    for (const attachment of this.#deviceAttachments.values())
+      if (attachment.agentConnectionId === connectionId) attachment.close();
   }
 
   listStandardCdpAttachmentsForBinding(agentBindingId: string) {
@@ -6098,6 +6113,7 @@ export class BrowserService {
     // Work under a connection's authority, as the one authority rule resolved this attachment's
     // binding: settled here, once, and never read again per command.
     let connectionWork = connectedAgentBinding(input.agentBindingId);
+    let agentConnectionId: string | undefined;
     const globalAccessGeneration = this.#accessGeneration;
     const { record, broker } = await this.#admitAgentBackend(
       input,
@@ -6105,7 +6121,10 @@ export class BrowserService {
       !input.browserSend,
       undefined,
       (facts) => {
-        if (facts.agentConnectionId !== null) connectionWork = true;
+        if (facts.agentConnectionId !== null) {
+          connectionWork = true;
+          agentConnectionId = facts.agentConnectionId;
+        }
       },
       lane,
     );
@@ -6183,17 +6202,40 @@ export class BrowserService {
       targetId: string | undefined,
       sessionId: string | undefined,
     ) => {
-      if (
-        targetId !== undefined
-          ? pendingTargetIds.has(targetId)
-          : pendingNamedAttaches > 0 && sessionId !== undefined
-      ) {
+      // A detach naming no target is never a pending attach's own (the router names the target
+      // of every channel it ends), so it cannot displace one (S2).
+      if (targetId !== undefined && pendingTargetIds.has(targetId)) {
         if (namedTerminalEvents.length >= 64) namedTerminalEvents.shift();
         namedTerminalEvents.push(event);
-      } else if (pendingUnknownTargets > 0) {
+      } else if (pendingUnknownTargets > 0 && (targetId !== undefined || sessionId !== undefined)) {
         if (unknownTerminalEvents.length >= 4_096) unknownTerminalEvents.shift();
         unknownTerminalEvents.push(event);
       }
+    };
+    // Targets this subscriber was shown on an extension's page: their ids are named to it no more.
+    const hiddenTargets = new Set<string>();
+    const knownTarget = (id: string) =>
+      !hiddenTargets.has(id) && (attachedTargets.has(id) || visibleRootTargets.has(id));
+    /** A related target or frame is named only where this subscriber knows that target. */
+    const confineRelated = (info: Record<string, unknown>): Record<string, unknown> => {
+      let next: Record<string, unknown> | undefined;
+      const drop = (key: string) => {
+        next ??= { ...info };
+        delete next[key];
+      };
+      if (typeof info.openerId === "string" && !knownTarget(info.openerId)) {
+        drop("openerId");
+        drop("openerFrameId");
+        next!.canAccessOpener = false;
+      }
+      if (typeof info.parentId === "string" && !knownTarget(info.parentId)) {
+        drop("parentId");
+        drop("parentFrameId");
+      }
+      for (const key of ["openerFrameId", "parentFrameId"])
+        if (typeof (next ?? info)[key] === "string" && !knownTarget(String((next ?? info)[key])))
+          drop(key);
+      return next ?? info;
     };
     const releasePendingAttach = (named: boolean, targetId: string | undefined) => {
       if (named) {
@@ -6253,6 +6295,7 @@ export class BrowserService {
       visibleRootTargets.clear();
       attachedTargets.clear();
       attachedSessions.clear();
+      hiddenTargets.clear();
       namedTerminalEvents.length = 0;
       unknownTerminalEvents.length = 0;
       pendingTargetIds.clear();
@@ -6281,6 +6324,9 @@ export class BrowserService {
     };
     const unsubscribe = broker.subscribeCdp((event) => {
       if (event.scriptAttachmentId !== scriptAttachmentId) return;
+      // A connection's work hears nothing once its binding has ended (Stop, Disconnect), even
+      // before the attachment itself is closed.
+      if (connectionWork && (this.#closed || this.#endedBindings.has(input.agentBindingId))) return;
       // On a shared root every attachment hears every other's events. A connection's subscriber
       // hears only its own sessions' (H1), and a browser-level event only of a target or frame it
       // may know, never with an extension's address (H2).
@@ -6326,10 +6372,15 @@ export class BrowserService {
               : undefined;
         const eventSessionId = typeof params?.sessionId === "string" ? params.sessionId : undefined;
         if (params?.targetInfo !== undefined) {
-          if (isChromeExtensionUrl(params.targetInfo.url)) {
-            if (targetId) visibleRootTargets.delete(targetId);
+          if (isExtensionUrl(params.targetInfo.url)) {
+            if (targetId) {
+              visibleRootTargets.delete(targetId);
+              attachedTargets.delete(targetId);
+              rememberBounded(hiddenTargets, targetId);
+            }
             return;
           }
+          if (targetId) hiddenTargets.delete(targetId);
           // S2: learn only from this subscriber's own root discovery (no envelope) or from a
           // session it already holds, so another attachment's children on a shared root cannot
           // evict its own. Its own page sessions come from its attach replies.
@@ -6343,6 +6394,16 @@ export class BrowserService {
           if (event.method === "Target.attachedToTarget" && eventSessionId && envelope) {
             rememberBounded(attachedSessions, eventSessionId);
           }
+          const info = confineRelated(params.targetInfo as Record<string, unknown>);
+          if (info !== params.targetInfo)
+            event = { ...event, parameters: { ...event.parameters, targetInfo: info } };
+        } else if (targetId && hiddenTargets.has(targetId)) {
+          // A target on an extension's page: its end is not named to this subscriber either (as
+          // the router hides it from a connection's state).
+          if (event.method === "Target.targetDestroyed") hiddenTargets.delete(targetId);
+          if (event.method === "Target.detachedFromTarget" && eventSessionId)
+            attachedSessions.delete(eventSessionId);
+          return;
         } else if (event.method === "Target.detachedFromTarget") {
           // A detach names its session: only this subscriber's own is told to it (H3).
           if (eventSessionId && attachedSessions.has(eventSessionId)) {
@@ -6393,6 +6454,7 @@ export class BrowserService {
         runnerId: record.runnerId,
         close,
         ...(scriptAttachmentId || pooledRelay ? { binding: input.agentBindingId } : {}),
+        ...(agentConnectionId ? { agentConnectionId } : {}),
       });
       if (nativeAttachment) {
         this.#actionAttachments.set(nativeAttachment.attachmentId, {
@@ -9798,6 +9860,11 @@ export class HostedBrowserBroker {
    * What one tab shows now, as a conversation's use of it records it. A page
    * that failed to load shows an address it never reached, so it records none.
    */
+  /** Whether this surface shows a page at an extension's address. */
+  onExtensionPage(surfaceId: string): boolean {
+    return isExtensionUrl(this.#surfaces.find((surface) => surface.id === surfaceId)?.url);
+  }
+
   pageOf(surfaceId: string): BrowserUsePage | null {
     const surface = this.#surfaces.find((surface) => surface.id === surfaceId);
     if (!surface) return null;

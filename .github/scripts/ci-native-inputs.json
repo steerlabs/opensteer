@@ -35,6 +35,7 @@
     "apps/desktop/scripts/signing-input.cjs",
     "apps/desktop/src/signed-helpers/metadata.ts",
     "apps/desktop/tsconfig.json",
+    "packages/browser-core",
     "packages/core",
     "packages/protocol",
     "packages/shared",

@@ -16,7 +16,8 @@
     "./input-lane": "./src/input-lane.ts",
     "./page-policy": "./src/page-policy.ts",
     "./attach-ticket-policy": "./src/attach-ticket-policy.ts",
-    "./latest-frame-stream": "./src/latest-frame-stream.ts"
+    "./latest-frame-stream": "./src/latest-frame-stream.ts",
+    "./extension-url": "./src/extension-url.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -47,26 +47,8 @@ export const TabOpenedBySchema = z.union([
   z.strictObject({ taskId: ThreadIdSchema }),
 ]);
 export type TabOpenedBy = z.infer<typeof TabOpenedBySchema>;
-/**
- * Whether a URL parses (via the WHATWG URL parser, which strips ASCII tabs/newlines and leading C0
- * control characters) to a Chrome extension scheme, including `view-source:` wrapping one.
- */
-export function isChromeExtensionUrl(value: unknown): boolean {
-  if (typeof value !== "string") return false;
-  try {
-    const url = new URL(value);
-    if (url.protocol === "chrome-extension:") return true;
-    if (
-      url.protocol === "view-source:" ||
-      url.protocol === "blob:" ||
-      url.protocol === "filesystem:"
-    )
-      return isChromeExtensionUrl(url.pathname);
-    return false;
-  } catch {
-    return false;
-  }
-}
+/** The one test for an extension's address (see `@opensteer/browser-core/extension-url`). */
+export { isExtensionUrl } from "@opensteer/browser-core/extension-url";
 
 /**
  * Whether a page-open URL is allowed for a connected agent (`about:blank` or credential-free

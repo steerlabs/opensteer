@@ -2987,6 +2987,60 @@ describe("SessionCdpRouter: Chrome extension boundaries (2a and 2b)", () => {
     }
   });
 
+  it("names no hidden iframe as the frame a shown page's popup or child came from (N4)", async () => {
+    const backend = new FakeBackend();
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("session", "root", async () => true, "/files/a");
+    const events: CdpEvent[] = [];
+    const budget = { maxBytes: 64_000, maxDepth: 16, maxEntries: 1_024 };
+    router.openScriptAttachment("session", "script", "root", budget, (e) => events.push(e), {
+      connection: true,
+    });
+    try {
+      // An extension's iframe inside the shown root page (hidden), and one created before the
+      // script opened, so never projected to it at all.
+      backend.emit("Target.targetCreated", {
+        targetInfo: {
+          targetId: "ext-frame",
+          type: "iframe",
+          parentId: "root",
+          url: `chrome-extension://${"a".repeat(32)}/frame.html`,
+        },
+      });
+      for (const [targetId, info] of [
+        [
+          "popup",
+          { type: "page", openerId: "root", openerFrameId: "ext-frame", canAccessOpener: true },
+        ],
+        ["child", { type: "iframe", parentId: "root", parentFrameId: "ext-frame" }],
+        ["own-frame", { type: "iframe", parentId: "root", parentFrameId: "root" }],
+      ] as const)
+        backend.emit("Target.targetCreated", {
+          targetInfo: { targetId, url: `https://${targetId}.test/`, ...info },
+        });
+      expect(JSON.stringify(events)).not.toContain("ext-frame");
+      expect(events.map(({ parameters }) => parameters.targetInfo)).toEqual([
+        {
+          targetId: "popup",
+          url: "https://popup.test/",
+          type: "page",
+          openerId: "root",
+          canAccessOpener: true,
+        },
+        { targetId: "child", url: "https://child.test/", type: "iframe", parentId: "root" },
+        {
+          targetId: "own-frame",
+          url: "https://own-frame.test/",
+          type: "iframe",
+          parentId: "root",
+          parentFrameId: "root",
+        },
+      ]);
+    } finally {
+      await router.close();
+    }
+  });
+
   it("never tells a connection's script of another session's or another tab's target ending", async () => {
     const backend = new FakeBackend();
     const router = new SessionCdpRouter(backend);

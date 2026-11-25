@@ -1492,18 +1492,21 @@ export class SessionCdpRouter {
     return projected;
   }
 
-  /** A frame ID that is also a target's (a frame in its own process) follows that target's rule. */
+  /**
+   * A frame ID is told to a connection only where it is the related page's own main frame or a
+   * target the connection may be told of (N4): a frame in another process (an extension's iframe
+   * inside a shown page, say) is a target of its own, claimed or not; a frame the connection
+   * cannot name is left out, whatever it is.
+   */
   #confineFrameIds(state: ConnectionState, projected: Record<string, unknown>): void {
-    for (const key of ["openerFrameId", "parentFrameId"]) {
+    for (const [key, relatedKey] of [
+      ["openerFrameId", "openerId"],
+      ["parentFrameId", "parentId"],
+    ] as const) {
       const frameId = readString(projected, key);
       if (!frameId) continue;
-      const frameClaim = this.#ownerByTargetId.get(frameId);
-      if (
-        state.hiddenTargets.has(frameId) ||
-        (frameClaim &&
-          (frameClaim.sessionId !== state.session.sessionId || !this.#mayName(state, frameId)))
-      )
-        delete projected[key];
+      if (frameId === readString(projected, relatedKey) || this.#mayName(state, frameId)) continue;
+      delete projected[key];
     }
   }
 
@@ -1511,7 +1514,9 @@ export class SessionCdpRouter {
    * The one rule for what a connection state may be told of (M1, G2): a target it was shown and
    * that is not hidden from it, its script's root, or a target one of its own channels is on.
    * Terminal events, browser-level events naming a target or frame, and every target-valued
-   * field of a projected `targetInfo` go through it.
+   * field of a projected `targetInfo` go through it. Every other door through which a connection
+   * is given a target, frame, session, address or title is listed at `isExtensionUrl`
+   * (`extension-url.ts`), with where the same rule is applied there.
    */
   #mayName(state: ConnectionState, targetId: string): boolean {
     if (state.hiddenTargets.has(targetId)) return false;
@@ -2374,6 +2379,12 @@ export class SessionCdpRouter {
         // A connection's target that was hidden when it was created (an extension page) is
         // announced when it is first shown, so it hears that target's later end.
         const info = asRecord(parameters.targetInfo);
+        // A connection learns a target went to an extension's page even if it never discovered
+        // it (one of its own channels may be on it), so that target is hidden from it alike.
+        if (state.connection && isExtensionUrl(info.url) && this.#canReach(state, targetId)) {
+          this.#setTargetVisibility(state, targetId, false);
+          return;
+        }
         if (
           !state.connection ||
           method !== "Target.targetInfoChanged" ||
@@ -2644,10 +2655,9 @@ export class SessionCdpRouter {
         // `Target.detachedFromTarget` naming it are dropped here, as they were before the
         // allow-list below; the root's destroy still closes the attachment (`#discover`), so its
         // later commands answer as a missing session.
-        if (targetId && state.hiddenTargets.has(targetId)) {
-          if (method === "Target.targetDestroyed") this.#forgetTargetVisibility(state, targetId);
-          return;
-        }
+        // It stays hidden through its destroy: its channels' detaches, which follow, are dropped
+        // as well (E1). The bounded set and the connection's close forget it.
+        if (targetId && state.hiddenTargets.has(targetId)) return;
         if (
           state.connection &&
           targetId &&
