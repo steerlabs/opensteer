@@ -16,7 +16,7 @@ import {
   type BrowserPoolAgentResult,
   type BrowserPoolAgentStatus,
 } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentCrashed } from "./agent.js";
 import { FakeHypervisorDriver } from "./fake-driver.test-support.js";
 import { callFor, open } from "./review.test-support.js";
@@ -187,11 +187,21 @@ describe("slot proxy readiness when upstream is required", () => {
     expect(h.driver.boots).toHaveLength(1);
   });
 
-  it.each(["memory", "disk"] as const)(
-    "revives a failed proxy and wakes the same guest from %s",
-    async (tier) => {
+  it.each([
+    { tier: "memory", service: "failed" },
+    { tier: "disk", service: "activating" },
+  ] as const)(
+    "resets the $service proxy before consuming the wake from $tier",
+    async ({ tier, service }) => {
       const slotId = `bps-e4-${tier}`;
-      const h = await setup({ pullsEgress: true });
+      let serviceState: typeof service | "inactive" = "inactive";
+      let stateAtConsumption: string | undefined;
+      const h = await setup({
+        pullsEgress: true,
+        checkpoint: (point) => {
+          if (point === "resume:consumed") stateAtConsumption = serviceState;
+        },
+      });
       await h.create(slotId);
       const started = (await h.apply(slotId, "start")).result;
       expect(started).toMatchObject({ applied: true, status: { phase: "running", epoch: 1 } });
@@ -208,7 +218,15 @@ describe("slot proxy readiness when upstream is required", () => {
 
       h.driver.proxyDown.add(slotId);
       h.driver.sockets.delete(slotId);
+      serviceState = service;
+      const prepareProxy = vi.spyOn(h.driver, "prepareProxy").mockImplementation(async () => {
+        expect(h.driver.revived).toEqual([slotId]);
+        expect(serviceState).toBe(service);
+        serviceState = "inactive";
+      });
       const { call, result } = await h.apply(slotId, "resume");
+      expect(prepareProxy).toHaveBeenCalledExactlyOnceWith(slotId, expect.any(AbortSignal));
+      expect(stateAtConsumption).toBe("inactive");
       expect(result).toMatchObject({
         applied: true,
         status: { phase: "running", instance: started.status.instance, epoch: 2, savedState: null },
