@@ -768,10 +768,26 @@ export function authorizeTarget(
  * agents, which no connection leads, see every page.
  */
 export function authorizePageAddress(
-  execution: Pick<ExecutionAuthority, "agentConnection">,
+  // The connection that leads the work, if any: its admitted execution's, or a caller's lineage.
+  execution: { readonly agentConnection: object | null },
   url: unknown,
 ): boolean {
   return execution.agentConnection === null || !isExtensionUrl(url);
+}
+
+/**
+ * May this admitted execution read a recorded place (a page a Run entered)? A place keeps only its
+ * page's web origin, and records none for a page without one, an extension's page among them: so
+ * a connection's work reads a place only where it has a web origin, past rows included, and the
+ * person and their own agents read every place (P3).
+ */
+export function authorizePlaceSite(
+  execution: { readonly agentConnection: object | null },
+  site: string | null,
+): boolean {
+  return (
+    execution.agentConnection === null || (site !== null && authorizePageAddress(execution, site))
+  );
 }
 
 /**

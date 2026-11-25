@@ -29,6 +29,7 @@ import {
   readAgentRequest,
   AgentRequestResponderSchema,
   reachableNode,
+  authorizePlaceSite,
 } from "@opensteer/database";
 import { activityItem, messageItem, taskItem, boundedThreadItems } from "../thread-items.js";
 import { productToolOutput } from "../tool-output.js";
@@ -164,11 +165,14 @@ export class ProductToolHandlers {
     });
     return this.#door.through(caller, command as unknown as HostApiCommand, act);
   }
-  async #readableTabPlaces<T extends { tabId: import("@opensteer/core").TabId }>(
-    caller: AgentCaller,
-    rows: readonly T[],
-  ): Promise<T[]> {
+  async #readableTabPlaces<
+    T extends { tabId: import("@opensteer/core").TabId; site: string | null },
+  >(caller: AgentCaller, rows: readonly T[]): Promise<T[]> {
     const owner = caller.userId;
+    // Rule 1's place rule (P3): a connection's work reads a place only where it has a web origin;
+    // an extension's page records none. The person and their own agents read every place.
+    const lineage = callerLineage(caller);
+    rows = rows.filter((row) => authorizePlaceSite({ agentConnection: lineage }, row.site));
     // A selected grant reads only places in tabs its own lineage's tasks opened.
     const lineageId = selectedLineageId(caller);
     if (lineageId && rows.length) {
@@ -833,7 +837,9 @@ export class ProductToolHandlers {
       this.#readableTabPlaces(
         caller,
         page.items.flatMap((item) =>
-          item.type === "place.entered" ? [{ id: item.id, tabId: item.place.tabId }] : [],
+          item.type === "place.entered"
+            ? [{ id: item.id, tabId: item.place.tabId, site: item.place.site }]
+            : [],
         ),
       ),
       machineIds.length

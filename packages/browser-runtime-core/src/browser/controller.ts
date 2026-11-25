@@ -1,5 +1,5 @@
 import { boundedJsonSize } from "@opensteer/browser-core/bounded-json";
-import { isExtensionUrl } from "@opensteer/browser-core/extension-url";
+import { isExtensionUrl } from "@opensteer/shared/extensionUrl";
 import { DeploymentIdSchema } from "@opensteer/core";
 import {
   BrowserListTabsParametersSchema,
@@ -617,7 +617,12 @@ export class BrowserController {
   ): boolean {
     if (message.connection !== true) return false;
     const surfaceId = this.ledger.surfaceIdForTarget(targetId);
-    return surfaceId !== undefined && isExtensionUrl(this.ledger.toRecord(surfaceId)?.url);
+    // Its live address as well as the ledger's record, as resumeTab checks (P7).
+    return (
+      surfaceId !== undefined &&
+      (isExtensionUrl(this.ledger.toRecord(surfaceId)?.url) ||
+        isExtensionUrl(this.ledger.binding(surfaceId)?.page.url()))
+    );
   }
 
   async start(): Promise<void> {
@@ -3848,7 +3853,14 @@ export class BrowserController {
       );
     const request = parsedCapture.data;
     const page = this.ledger.binding(surfaceId)?.page;
-    if (!page) throw new BrowserRuntimeError("not_found", "The browser page closed.");
+    // A connection's picture of a page on an extension's address (its live address, or the
+    // ledger's): the same answer as a closed page (N1, P7).
+    if (
+      !page ||
+      (command.connection === true &&
+        (isExtensionUrl(page.url()) || isExtensionUrl(this.ledger.toRecord(surfaceId)?.url)))
+    )
+      throw new BrowserRuntimeError("not_found", "The browser page closed.");
     const stop = new AbortController();
     const closed = () =>
       stop.abort(new BrowserRuntimeError("not_found", "The browser page closed."));

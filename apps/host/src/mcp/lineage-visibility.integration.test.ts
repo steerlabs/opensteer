@@ -15,6 +15,7 @@ import {
   TabStore,
   TriggerStore,
   beginAgentSession,
+  readAgentThreadRecent,
 } from "@opensteer/database";
 import pg from "pg";
 import { expect, vi } from "vitest";
@@ -701,6 +702,100 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     } finally {
       service.dispose();
     }
+  });
+
+  it("keeps an extension page's place for the person and their own agents, and from every connection (P3)", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("extension-place");
+    const tabs = new TabStore(storeFixture.database);
+    const runScopes: Record<string, RunToolScope> = {};
+    const url = await serveMcp(storeFixture, {
+      runScopes,
+      tabs: {
+        get: async (owner, tabId) => {
+          const row = await tabs.get(owner, tabId, true);
+          if (!row) throw new Error("No such tab");
+          return { ...row, profile: null } as never;
+        },
+      },
+    });
+    const tab = async (label: string): Promise<TabId> => {
+      const sessionId = `bsn_${randomUUID()}` as import("@opensteer/core").BrowserSessionId;
+      await storeFixture.store.createBrowserSession({
+        id: sessionId,
+        ownerId: f.userId,
+        runnerId: f.runnerId,
+        origin: "agent",
+        opener: { kind: "person", userId: f.userId },
+        placementKey: "test",
+        profileId: null,
+        runtimeId: "test",
+      });
+      const id = TabIdSchema.parse(`bsf_${label}`);
+      await tabs.open(
+        {
+          id,
+          ownerId: f.userId,
+          computerId: DeviceIdSchema.parse(f.runnerId),
+          kind: "page",
+          title: label,
+          url: "https://web.test/",
+          openedBy: "person",
+          pageBinding: { lineageId: sessionId, sessionId, surfaceId: id },
+        },
+        label,
+      );
+      return id;
+    };
+    const extensionTab = await tab("extension");
+    const webTab = await tab("web");
+    // One of your own agents' Runs entered an extension's options page and a web page: its place
+    // keeps no site for the extension's page (it has no web origin), as rows always have.
+    for (const [tabId, title, site] of [
+      [extensionTab, "My Extension Options", null],
+      [webTab, "Web", "https://web.test"],
+    ] as const)
+      await storeFixture.store.recordRunTabPlace({
+        runId: f.runId,
+        bindingGeneration: f.bindingGeneration,
+        data: { tabId, title, site },
+      });
+    const placesOf = (result: Awaited<ReturnType<Client["callTool"]>>) => {
+      expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
+      return (result.structuredContent as { recentPlaces: { tabId: string }[] }).recentPlaces
+        .map(({ tabId }) => tabId)
+        .sort();
+    };
+    // The Run itself reads both.
+    runScopes.own = fixtureRunScope({ ...f, threadId: f.threadId });
+    const own = await runClient(url, "own");
+    expect(
+      placesOf(
+        await own.callTool({ name: "opensteer_task_read", arguments: { taskId: f.threadId } }),
+      ),
+    ).toEqual([extensionTab, webTab].sort());
+    // So does the person's record of the task.
+    const recent = await readAgentThreadRecent(storeFixture.database, {
+      threadId: f.threadId,
+      ownerId: f.userId,
+      runLimit: 5,
+    });
+    expect(recent?.places.map(({ tabId }) => tabId).sort()).toEqual([extensionTab, webTab].sort());
+    // A connection that may read every task reads only the web place.
+    const agent = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+    });
+    expect(
+      placesOf(
+        await agent.client.callTool({
+          name: "opensteer_task_read",
+          arguments: { taskId: f.threadId },
+        }),
+      ),
+    ).toEqual([webTab]);
   });
 
   it("derives task list pending filter, counts, changedSince questions, and task read pendingRequests from connectionRequests", async ({

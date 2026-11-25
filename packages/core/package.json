@@ -14,7 +14,6 @@
   },
   "dependencies": {
     "@noble/hashes": "2.4.0",
-    "@opensteer/browser-core": "workspace:*",
     "@opensteer/shared": "workspace:*",
     "zod": "catalog:"
   },

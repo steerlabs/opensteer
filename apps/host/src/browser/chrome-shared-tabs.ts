@@ -11,6 +11,7 @@ import {
 } from "@opensteer/core";
 import {
   authorizeTarget,
+  authorizePageAddress,
   executionAccess,
   withDatabaseOperationSignal,
   type ExecutionAuthority,
@@ -273,11 +274,15 @@ export class ChromeSharedTabs {
     );
     return sources.flatMap((entry) =>
       entry && this.#sources.get(entry.source.sourceId) === entry.source
-        ? [...entry.source.shares.values()].map((share) => ({
-            share,
-            execution,
-            computerName: entry.computerName,
-          }))
+        ? [...entry.source.shares.values()]
+            // Rule 1's page rule (P6): the address is the one the browser extension reports; a
+            // shared tab on an extension's page does not exist to a connection's work.
+            .filter((share) => authorizePageAddress(execution, share.info.url))
+            .map((share) => ({
+              share,
+              execution,
+              computerName: entry.computerName,
+            }))
         : [],
     );
   }
@@ -642,7 +647,11 @@ export class ChromeSharedTabs {
         "This browser authority changed. Request a new attachment.",
       );
     await this.#authorizeSource(execution, expected.source, false);
-    if (this.#shares.get(expected.info.shareId) !== expected) throw unavailable();
+    if (
+      this.#shares.get(expected.info.shareId) !== expected ||
+      !authorizePageAddress(execution, expected.info.url)
+    )
+      throw unavailable();
     if (expected.group.binding && expected.group.binding !== authority.agentBindingId)
       throw forbidden("Another agent is using this shared Chrome tab.");
     if (

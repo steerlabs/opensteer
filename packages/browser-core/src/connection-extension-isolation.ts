@@ -1,7 +1,7 @@
 import { remoteObjectContextId } from "./execution-contexts.js";
 import { SessionCdpRouterError, type CdpParameters } from "./portable-session-cdp-router.js";
 
-import { isExtensionUrl } from "./extension-url.js";
+import { isExtensionUrl } from "@opensteer/shared/extensionUrl";
 
 export { isExtensionUrl };
 
@@ -13,9 +13,6 @@ function containsExtensionUrl(value: unknown): boolean {
   // be an extension's address without the plain text in it.
   return /[\t\n\r]/u.test(value) && value.length <= 8_192 && isExtensionUrl(value);
 }
-
-/** CDP fields whose string value names a frame. */
-const frameIdKeys = new Set(["frameId", "parentFrameId", "openerFrameId", "ownerFrameId"]);
 
 function isHttpOrHttpsUrl(value: unknown): boolean {
   if (typeof value !== "string") return false;
@@ -168,10 +165,11 @@ export class ConnectionExtensionIsolation {
    * extension page. After each method's own rule, every forwarded event meets one more (N2): a
    * frame attached under an extension frame, or by script from outside what this connection may
    * know, is an extension frame; stacks anywhere in it are scrubbed; and it is dropped when any
-   * field still carries an extension's address or names an extension frame. The fields that can
+   * field still carries an extension's address or names an extension frame (by value, under any
+   * key). The fields that can
    * carry one, by domain this isolation forwards:
-   * - Page: frameAttached (frameId, parentFrameId, stack), frameNavigated (frame.id, parentId,
-   *   url, securityOrigin, unreachableUrl), navigatedWithinDocument, frameRequestedNavigation,
+   * - Page: frameAttached (frameId, parentFrameId, stack), frameNavigated and documentOpened
+   *   (frame.id, parentId, url, securityOrigin, unreachableUrl), navigatedWithinDocument, frameRequestedNavigation,
    *   windowOpen, javascriptDialogOpening, downloadWillBegin (url, frameId), lifecycleEvent,
    *   fileChooserOpened (frameId);
    * - Runtime: executionContextCreated (origin, auxData), consoleAPICalled and exceptionThrown
@@ -201,7 +199,7 @@ export class ConnectionExtensionIsolation {
         return { action: "drop" };
       }
     }
-    if (method === "Page.frameNavigated") {
+    if (method === "Page.frameNavigated" || method === "Page.documentOpened") {
       const frame = asRecord(params.frame);
       // A frame hidden as an extension's stays hidden when it navigates to a web address.
       if (this.#isExtensionFrameId(frame.parentId) || this.#isExtensionFrameId(frame.id)) {
@@ -210,7 +208,7 @@ export class ConnectionExtensionIsolation {
       }
     }
     const scrubbed = this.#scrubStacksIn(params, 0) as CdpParameters;
-    return this.#namesExtension(scrubbed, 0, false)
+    return this.#namesExtension(scrubbed, 0)
       ? { action: "drop" }
       : { action: "forward", params: scrubbed };
   }
@@ -235,29 +233,37 @@ export class ConnectionExtensionIsolation {
     return next ?? value;
   }
 
-  /** Whether any field of a value carries an extension's address or names an extension frame. */
-  #namesExtension(value: unknown, depth: number, frameField: boolean): boolean {
+  /**
+   * Whether any field of a value carries an extension's address or names an extension frame. By
+   * value (P2): once an id is known as an extension frame's, it confines the event under any key,
+   * at any depth, whatever the event is called; keys matter only where the isolation learns new
+   * extension frames.
+   */
+  #namesExtension(value: unknown, depth: number): boolean {
     if (typeof value === "string")
-      return containsExtensionUrl(value) || (frameField && this.#extensionFrameIds.has(value));
+      return containsExtensionUrl(value) || this.#extensionFrameIds.has(value);
     if (depth > 32 || !value || typeof value !== "object") return false;
-    if (Array.isArray(value))
-      return value.some((item) => this.#namesExtension(item, depth + 1, false));
-    for (const [key, field] of Object.entries(value as Record<string, unknown>))
-      if (this.#namesExtension(field, depth + 1, frameIdKeys.has(key))) return true;
+    if (Array.isArray(value)) return value.some((item) => this.#namesExtension(item, depth + 1));
+    for (const field of Object.values(value as Record<string, unknown>))
+      if (this.#namesExtension(field, depth + 1)) return true;
     return false;
   }
 
-  /** A reply's fields that name an extension frame, removed (N2). */
+  /** A reply's fields (and array entries) whose value is an extension frame's id, removed (N2, P2). */
   #withoutExtensionFrames(value: unknown, depth: number): unknown {
     if (this.#extensionFrameIds.size === 0 || depth > 32 || !value || typeof value !== "object")
       return value;
     if (Array.isArray(value)) {
-      const next = value.map((item) => this.#withoutExtensionFrames(item, depth + 1));
-      return next.some((item, index) => item !== value[index]) ? next : value;
+      const next = value
+        .filter((item) => !this.#isExtensionFrameId(item))
+        .map((item) => this.#withoutExtensionFrames(item, depth + 1));
+      return next.length !== value.length || next.some((item, index) => item !== value[index])
+        ? next
+        : value;
     }
     let next: Record<string, unknown> | undefined;
     for (const [key, field] of Object.entries(value as Record<string, unknown>)) {
-      if (frameIdKeys.has(key) && this.#isExtensionFrameId(field)) {
+      if (this.#isExtensionFrameId(field)) {
         next ??= { ...(value as Record<string, unknown>) };
         delete next[key];
         continue;
@@ -277,7 +283,8 @@ export class ConnectionExtensionIsolation {
       this.#allowedScripts.clear();
       return { action: "forward", params };
     }
-    if (method === "Page.frameNavigated") {
+    // A document opening in a frame (Page.documentOpened) is observed as a navigation (P2).
+    if (method === "Page.frameNavigated" || method === "Page.documentOpened") {
       const frame = asRecord(params.frame);
       const frameId = typeof frame.id === "string" ? frame.id : undefined;
       const isMain =

@@ -1516,7 +1516,7 @@ export class SessionCdpRouter {
    * Terminal events, browser-level events naming a target or frame, and every target-valued
    * field of a projected `targetInfo` go through it. Every other door through which a connection
    * is given a target, frame, session, address or title is listed at `isExtensionUrl`
-   * (`extension-url.ts`), with where the same rule is applied there.
+   * (`@opensteer/shared/extensionUrl`), with where the same rule is applied there.
    */
   #mayName(state: ConnectionState, targetId: string): boolean {
     if (state.hiddenTargets.has(targetId)) return false;

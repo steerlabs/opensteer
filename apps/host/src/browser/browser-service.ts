@@ -35,6 +35,7 @@ import type { TabActor } from "../tabs/ports.js";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import {
   TabStore,
+  storablePageUrl,
   acquireBrowserStandardCdpLease,
   admitExecution,
   listBrowserStandardCdpLeases,
@@ -1008,6 +1009,8 @@ export class BrowserService {
   readonly #actingTimers = new Map<BrowserSessionId, () => void>();
   /** Bindings whose Run ended, by when; see `endedBindingMemoryMs`. */
   readonly #endedBindings = new Map<string, number>();
+  /** Connections whose Disconnect closed their attachments here, when (rule 3, P1). */
+  readonly #endedConnections = new Map<string, number>();
   readonly #actionAttachments = new Map<
     string,
     {
@@ -1731,11 +1734,7 @@ export class BrowserService {
   }
 
   #placeData(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId) {
-    const broker = this.#brokers.get(sessionId);
-    // A Run's places are read back by the connection that leads it (task_read): a page at an
-    // extension's address is no place, its title included.
-    if (broker?.onExtensionPage(surfaceId)) return null;
-    const page = broker?.pageOf(surfaceId);
+    const page = this.#brokers.get(sessionId)?.pageOf(surfaceId);
     if (!page) return null;
     let site: string | null = null;
     try {
@@ -4638,6 +4637,9 @@ export class BrowserService {
       return pending;
     for (const descriptor of descriptors) {
       if (this.#pendingPageCloses.get(record.id)?.has(descriptor.id)) continue;
+      // A page at an address a tab row does not keep (an extension's options page, say) is
+      // skipped: its row keeps its last web address, and the rest of the batch goes through (P4).
+      if (!storablePageUrl(descriptor.url)) continue;
       const binding: PageBinding = { lineageId, sessionId: record.id, surfaceId: descriptor.id };
       let row: TabRecord | null;
       if (descriptor.creatorAttachmentId) {
@@ -5253,15 +5255,35 @@ export class BrowserService {
     onEvent: (event: BrowserActionEvent) => void,
     onClosed?: () => void,
   ) {
-    const { record, broker } = await this.#admitAgentBackend(input, "actions", true);
+    let agentConnectionId: string | undefined;
+    const { record, broker } = await this.#admitAgentBackend(
+      input,
+      "actions",
+      true,
+      undefined,
+      (facts) => {
+        if (facts.agentConnectionId !== null) agentConnectionId = facts.agentConnectionId;
+      },
+    );
+    const connectionLed =
+      agentConnectionId !== undefined || connectedAgentBinding(input.agentBindingId);
     const attachmentId = globalThis.crypto.randomUUID();
     const actorToken = (await this.#actorToken(input, record.id)) ?? globalThis.crypto.randomUUID();
     let closed = false;
     const assertOpen = () => {
-      if (closed || this.#closed || this.#endedBindings.has(input.agentBindingId))
+      if (closed || !this.#workStands(input.agentBindingId, agentConnectionId))
         throw new BrowserCdpConnectionEnded("This browser attachment has ended.");
     };
-    const unsubscribe = broker.subscribeActions(attachmentId, onEvent, () => close());
+    const unsubscribe = broker.subscribeActions(
+      attachmentId,
+      (event) => {
+        // A connection's work hears nothing once its binding or its connection has ended (P1).
+        if (connectionLed && (closed || !this.#workStands(input.agentBindingId, agentConnectionId)))
+          return;
+        onEvent(event);
+      },
+      () => close(),
+    );
     const close = () => {
       if (closed) return;
       closed = true;
@@ -5275,7 +5297,17 @@ export class BrowserService {
       onClosed?.();
     };
     await this.withRunnerAdmission(record.runnerId, async () => {
-      this.#deviceAttachments.set(attachmentId, { runnerId: record.runnerId, close });
+      // Admitted before its connection's Disconnect or its binding's end, registering after it:
+      // it fails closed (P1).
+      if (!this.#workStands(input.agentBindingId, agentConnectionId)) {
+        close();
+        throw new BrowserCdpConnectionEnded("This browser attachment has ended.");
+      }
+      this.#deviceAttachments.set(attachmentId, {
+        runnerId: record.runnerId,
+        close,
+        ...(agentConnectionId ? { agentConnectionId } : {}),
+      });
       this.#actionAttachments.set(attachmentId, {
         binding: input.agentBindingId,
         profileId: record.profileId,
@@ -5866,7 +5898,29 @@ export class BrowserService {
         this.stopStandardCdpAttempt(id);
   }
 
+  /**
+   * Rule 3's one rule for an attachment of a connection's work (P1): it is registered, and an
+   * event is delivered to it, only while its binding and its connection stand. Checked at
+   * registration and at every delivery: the live CDP subscription, the buffered early terminal
+   * events, and the actions subscription.
+   */
+  #workStands(agentBindingId: string, agentConnectionId: string | undefined): boolean {
+    return (
+      !this.#closed &&
+      !this.#endedBindings.has(agentBindingId) &&
+      (agentConnectionId === undefined || !this.#endedConnections.has(agentConnectionId))
+    );
+  }
+
   closeStandardCdpForConnection(connectionId: string, reason: string): void {
+    // Recorded first, so an attachment still being admitted fails closed when it registers.
+    const now = this.#activityClock.now();
+    this.#endedConnections.delete(connectionId);
+    this.#endedConnections.set(connectionId, now);
+    for (const [ended, at] of this.#endedConnections) {
+      if (now - at < endedBindingMemoryMs && this.#endedConnections.size <= 4_096) break;
+      this.#endedConnections.delete(ended);
+    }
     const bindings = this.standardCdpTickets.bindingsForConnection(connectionId);
     for (const { claims } of this.#standardCdpAttachments.values())
       if (claims.facts.agentConnectionId === connectionId)
@@ -6284,7 +6338,11 @@ export class BrowserService {
           attachedTargets.delete(matchedTargetId);
           visibleRootTargets.delete(matchedTargetId);
         }
-        if (!attachmentClosed) onEvent(buffered);
+        if (
+          !attachmentClosed &&
+          (!connectionWork || this.#workStands(input.agentBindingId, agentConnectionId))
+        )
+          onEvent(buffered);
       }
     };
     const close = () => {
@@ -6326,7 +6384,7 @@ export class BrowserService {
       if (event.scriptAttachmentId !== scriptAttachmentId) return;
       // A connection's work hears nothing once its binding has ended (Stop, Disconnect), even
       // before the attachment itself is closed.
-      if (connectionWork && (this.#closed || this.#endedBindings.has(input.agentBindingId))) return;
+      if (connectionWork && !this.#workStands(input.agentBindingId, agentConnectionId)) return;
       // On a shared root every attachment hears every other's events. A connection's subscriber
       // hears only its own sessions' (H1), and a browser-level event only of a target or frame it
       // may know, never with an extension's address (H2).
@@ -6449,6 +6507,12 @@ export class BrowserService {
           close();
           throw error;
         }
+      }
+      // An attachment admitted before its connection's Disconnect or its binding's end, and
+      // registering after it, fails closed (P1).
+      if (connectionWork && !this.#workStands(input.agentBindingId, agentConnectionId)) {
+        close();
+        throw new BrowserCdpConnectionEnded("This browser attachment has ended.");
       }
       this.#deviceAttachments.set(deviceAttachmentId, {
         runnerId: record.runnerId,
@@ -9860,11 +9924,6 @@ export class HostedBrowserBroker {
    * What one tab shows now, as a conversation's use of it records it. A page
    * that failed to load shows an address it never reached, so it records none.
    */
-  /** Whether this surface shows a page at an extension's address. */
-  onExtensionPage(surfaceId: string): boolean {
-    return isExtensionUrl(this.#surfaces.find((surface) => surface.id === surfaceId)?.url);
-  }
-
   pageOf(surfaceId: string): BrowserUsePage | null {
     const surface = this.#surfaces.find((surface) => surface.id === surfaceId);
     if (!surface) return null;
