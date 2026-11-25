@@ -62,11 +62,12 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer
 	}
 	defer control.Close()
 
-	containment, err := newProcessContainment()
+	contained, err := newProcessContainment()
 	if err != nil {
 		fmt.Fprintf(stderr, "opensteer-process-supervisor: containment setup failed: %v\n", err)
 		return drainedExitCode(70)
 	}
+	containment := &stopRecordingContainment{processContainment: contained}
 	command := targetCommand(target)
 	command.Stdin = stdin
 	command.Stdout = stdout
@@ -97,6 +98,8 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer
 	defer ticker.Stop()
 
 	var targetResult error
+	// The stops this supervisor had sent when its target ended; a cleanup after that cannot have ended it.
+	var stopsBeforeExit sentStops
 	rootExited := false
 	forced := false
 	externalSignals := 0
@@ -110,6 +113,7 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer
 			if exit.observationError != nil {
 				fmt.Fprintf(stderr, "opensteer-process-supervisor: target exit observation failed: %v\n", exit.observationError)
 			}
+			stopsBeforeExit = containment.sent
 			if exit.reap {
 				if !forced {
 					forced = true
@@ -183,6 +187,11 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer
 				return undrainedExitCode
 			}
 			if isEmpty {
+				if signal := signalNotSent(targetResult, stopsBeforeExit); signal != 0 {
+					// The parent reads this one line before it takes the exit; a parent that is gone, or a
+					// control channel that only reads, simply hears nothing.
+					_, _ = fmt.Fprintf(control, "%s %d\n", targetSignalledReport, signal)
+				}
 				return drainedExitCode(targetExitCode(targetResult))
 			}
 			if forced {
@@ -190,6 +199,53 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer
 			}
 		}
 	}
+}
+
+// The line the supervisor writes on the control channel, just before it exits, when a signal it
+// did not send ended its target: the kernel's kill for memory looks so, a stop of its own does
+// not, and neither does a target that exited with any status (137 included) by itself. An exit
+// status is 8 bits on POSIX, so this cannot ride on it.
+const targetSignalledReport = "target-signalled"
+
+// The stops this supervisor sent its target's group.
+type sentStops struct {
+	graceful bool
+	force    bool
+}
+
+// A containment that notes each stop the supervisor sends through it, before sending it.
+type stopRecordingContainment struct {
+	processContainment
+	sent sentStops
+}
+
+func (containment *stopRecordingContainment) graceful() error {
+	containment.sent.graceful = true
+	return containment.processContainment.graceful()
+}
+
+func (containment *stopRecordingContainment) force() error {
+	containment.sent.force = true
+	return containment.processContainment.force()
+}
+
+// The number of the signal that ended the target when the supervisor had sent no such signal
+// before it ended, and 0 otherwise: a target that exited by itself, whatever its status, or one
+// the supervisor's own SIGTERM (graceful) or SIGKILL (force) ended.
+func signalNotSent(result error, sent sentStops) int {
+	var exitError *exec.ExitError
+	if !errors.As(result, &exitError) {
+		return 0
+	}
+	status, ok := exitError.Sys().(syscall.WaitStatus)
+	if !ok || !status.Signaled() {
+		return 0
+	}
+	signal := status.Signal()
+	if (signal == syscall.SIGTERM && sent.graceful) || (signal == syscall.SIGKILL && sent.force) {
+		return 0
+	}
+	return int(signal)
 }
 
 type launch struct {

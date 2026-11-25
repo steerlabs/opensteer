@@ -7126,7 +7126,7 @@ describe("harness process environment", () => {
     }
   });
 
-  it("tells the Run whose engine the kernel killed for memory, not another Run failing beside it, and reads nothing for a Run that completed", async () => {
+  it("tells the Run whose engine the kernel killed for memory, not another Run failing beside it, and claims nothing for a Run that completed", async () => {
     const environmentId = createId("environment");
     const registry = new HarnessRegistry();
     const killedKind = HarnessIdSchema.parse("memory-killed-engine-test");
@@ -7164,15 +7164,20 @@ describe("harness process environment", () => {
     const killed = executeCommand(environmentId, killedKind);
     const other = executeCommand(environmentId, otherKind);
     const completed = executeCommand(environmentId, completedKind);
-    // One kill counted for the whole Runner, and a SIGKILL of the killed Run's engine only.
+    // One kill counted for the whole Runner after the killed Run started, and a SIGKILL nobody
+    // stopping it sent of the killed Run's engine only. Each Run keeps the count as it starts.
+    let count = 0;
+    const marks = vi.fn(() => ++count);
     let kills = 1;
-    const claims = vi.fn(() => (kills > 0 ? (kills--, true) : false));
+    const claims = vi.fn((since: number | undefined) =>
+      since === 1 && kills > 0 ? (kills--, true) : false,
+    );
     const runtime = configuredRuntime({
       engineKilled: (scope) =>
         scope.endsWith(`.${killed.context.runId}-${killed.context.bindingGeneration}`),
       environmentId,
       maxConcurrentRuns: 3,
-      memoryKills: { claimKill: claims },
+      memoryKills: { claimKill: claims, mark: marks },
       registry,
     });
     try {
@@ -7214,10 +7219,13 @@ describe("harness process environment", () => {
         },
       });
       expect(claims).toHaveBeenCalledTimes(1);
-      // A Run that completed costs no look at the count (rule 7).
+      // It claimed only a kill counted since it started.
+      expect(claims).toHaveBeenCalledWith(1);
+      // A Run that completed reads the count only as it starts, and claims nothing (rule 7).
       await expect(runtime.handleCommand(completed, sink)).resolves.toEqual({ status: "accepted" });
       await waitUntil(() => end(completed) !== undefined);
       expect(claims).toHaveBeenCalledTimes(1);
+      expect(marks).toHaveBeenCalledTimes(3);
     } finally {
       await runtime.close();
     }

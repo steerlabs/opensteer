@@ -2,17 +2,24 @@ import { readFileSync } from "node:fs";
 
 /**
  * The kernel's count of processes it killed for lack of memory in the Runner's
- * own memory cgroup (cgroup v2 `memory.events`, `oom_kill`). The Runner reads
- * it only when a failed Run's own engine was ended by a SIGKILL, never on a
- * timer and never for a Run that ended otherwise.
+ * own memory cgroup (cgroup v2 `memory.events`, `oom_kill`). A Run notes the
+ * count once as it starts, and reads it again only when it failed and its own
+ * engine was ended by a SIGKILL nobody stopping it sent.
  */
 export interface MemoryKills {
   /**
-   * Claims one of the kills counted since the Runner started that no Run has
-   * claimed yet: true once per kill, so two Runs whose engines were both killed
-   * each get one, and a third gets none.
+   * The count now, which a starting Run keeps: one synchronous read of a small
+   * kernel file in memory (no disk and no database statement), or undefined
+   * where it cannot be read.
    */
-  claimKill(): boolean;
+  mark(): number | undefined;
+  /**
+   * Claims one kill counted after `since` (a Run's mark) that no Run has
+   * claimed yet: true once per kill, so two Runs whose engines were both killed
+   * each get one, a third gets none, and a kill counted before a Run started
+   * (a tool's, say, whose engine lived on) is never that Run's.
+   */
+  claimKill(since: number | undefined): boolean;
 }
 
 /**
@@ -25,15 +32,21 @@ export function cgroupMemoryKills(
   const file = memoryEventsFile(read);
   if (!file) return undefined;
   const count = () => oomKills(read, file);
-  let claimed = count();
-  if (claimed === undefined) return undefined;
+  if (count() === undefined) return undefined;
+  // The kills (by their place in the count) a Run has claimed: one entry per kill for memory.
+  const claimed = new Set<number>();
   return {
-    claimKill() {
+    claimKill(since) {
       const now = count();
-      if (now === undefined || claimed === undefined || now <= claimed) return false;
-      claimed += 1;
-      return true;
+      if (since === undefined || now === undefined) return false;
+      for (let kill = since + 1; kill <= now; kill += 1) {
+        if (claimed.has(kill)) continue;
+        claimed.add(kill);
+        return true;
+      }
+      return false;
     },
+    mark: count,
   };
 }
 

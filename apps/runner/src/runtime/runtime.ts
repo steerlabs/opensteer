@@ -240,14 +240,15 @@ export interface RunnerRuntimeOptions {
   readonly maxConcurrentRuns: number;
   /**
    * The kernel's count of the Runner's processes killed for lack of memory,
-   * where the Runner can read one (its Linux cgroup); read only when a Run failed.
+   * where the Runner can read one (its Linux cgroup); marked as each Run starts
+   * and read again only when a Run failed.
    */
   readonly memoryKills?: MemoryKills;
   /**
-   * Whether a SIGKILL ended an engine process of this containment scope before
-   * `before` (the supervisor's 137). By default, the supervised processes' own record.
+   * Whether a SIGKILL its supervisor did not send ended an engine process of
+   * this containment scope. By default, the supervised processes' own record.
    */
-  readonly engineKilled?: (scope: string, before: number) => boolean;
+  readonly engineKilled?: (scope: string) => boolean;
   /**
    * The person stopped agents on this computer. While true, new Runs and
    * Trigger programs are refused as not ready, so the Home keeps them queued.
@@ -502,7 +503,7 @@ export class RunnerRuntime {
   readonly #safeMessageOptions: typeof safeMessageOptions;
   readonly #maxConcurrentRuns: number;
   readonly #memoryKills: MemoryKills | undefined;
-  readonly #engineKilled: (scope: string, before: number) => boolean;
+  readonly #engineKilled: (scope: string) => boolean;
   readonly #maxConcurrentTriggerPrograms: number;
   readonly #maxRunEventBytes: number;
   readonly #maxRunEvents: number;
@@ -3370,8 +3371,9 @@ export class RunnerRuntime {
     let machineAccessSetup: MachineAccessSetup | undefined;
     let plugins: Awaited<ReturnType<typeof cacheRunPlugins>> | undefined;
     let terminal: HarnessDurableEvent | undefined;
-    // When the Runner itself began stopping this Run's engine: a kill after it is the Runner's own.
-    let stoppingAt: number | undefined;
+    // The kernel's count of kills for memory as this Run starts: only a kill counted after it can
+    // be this Run's. One synchronous read of a small kernel file, where there is one; no statement.
+    const memoryKillsSince = this.#memoryKills?.mark();
     let consumptionError: unknown;
     let internalBinding: ReturnType<LiveSessionDirectory["acquire"]> | undefined;
     // An engine this Run took from the warm pool, or one it may leave there.
@@ -3896,7 +3898,6 @@ export class RunnerRuntime {
       // any other engine is stopped so its event stream ends.
       if (warmEngine && !active.abort.signal.aborted) await Promise.race([consume, halted]);
       if (!terminal) {
-        stoppingAt ??= Date.now();
         await this.#containment.note(active.containmentScope).catch(() => undefined);
         await Promise.race([active.session.stop(), halted]);
       }
@@ -3936,7 +3937,6 @@ export class RunnerRuntime {
                     : "runner_execution_error",
               );
     } finally {
-      stoppingAt ??= Date.now();
       // A Run without personal context had no Agent home: nothing of it is scanned after.
       if (workspace && this.#skillObserver && active.folders?.agentHome) {
         await this.#scanAgentHomeSkills(workspace.path, context.bindingGeneration).catch(
@@ -4008,16 +4008,13 @@ export class RunnerRuntime {
         terminal = { data: { status: "interrupted" }, type: "run.interrupted" };
       // A Run whose engine the kernel killed for lack of memory says so, whatever
       // its engine's driver made of the loss. What it did until then stands. The
-      // count is the whole Runner's: only a Run whose own engine a SIGKILL ended
-      // before the Runner stopped it may claim one of its kills.
+      // count is the whole Runner's: only a Run whose own engine a SIGKILL its
+      // supervisor did not send ended may claim one of the kills counted since it started.
       if (
         terminal.type === "run.failed" &&
         this.#memoryKills &&
-        this.#engineKilled(
-          this.#containment.scope(warmEngine?.scope ?? active.containmentScope),
-          stoppingAt,
-        ) &&
-        this.#memoryKills.claimKill()
+        this.#engineKilled(this.#containment.scope(warmEngine?.scope ?? active.containmentScope)) &&
+        this.#memoryKills.claimKill(memoryKillsSince)
       ) {
         terminal = failureEvent(
           "The Run's engine was stopped by the kernel for lack of memory",
@@ -5163,10 +5160,10 @@ function fittedTail(text: string, truncated: boolean, maxBytes: number): string 
   return `…${text.slice(start).toWellFormed()}`;
 }
 
-/** Whether the supervisor reported a SIGKILL of a process of this scope before `before`. */
-function engineKilledBySignal(scope: string, before: number): boolean {
+/** Whether a supervisor reported a SIGKILL it did not send of a process of this scope. */
+function engineKilledBySignal(scope: string): boolean {
   return killedSupervisedProcesses().some(
-    (killed) => killed.environment[executionScopeVariable] === scope && killed.at < before,
+    (killed) => killed.environment[executionScopeVariable] === scope,
   );
 }
 

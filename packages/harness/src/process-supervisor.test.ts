@@ -52,6 +52,48 @@ describe("spawnSupervised", () => {
     },
   );
 
+  describe.skipIf(process.platform === "win32")("a SIGKILL the supervisor did not send", () => {
+    const recorded = (marker: string) =>
+      killedSupervisedProcesses().some(
+        ({ environment }) => environment.OPENSTEER_TEST_MARKER === marker,
+      );
+    const ready = async (child: ReturnType<typeof node>) => {
+      for await (const chunk of child.stdout) if (String(chunk).includes("ready")) return;
+    };
+
+    it("is kept for a target that a SIGKILL nobody sent ended while the parent was stopping it", async () => {
+      // As the kernel's kill for memory does while a Run is stopping.
+      const marker = `while-stopping-${process.pid}-${Date.now()}`;
+      const child = node(
+        'process.on("SIGTERM", () => process.kill(process.pid, "SIGKILL")); console.log("ready"); setInterval(() => {}, 1000)',
+        { environment: { OPENSTEER_TEST_MARKER: marker } },
+      );
+      await ready(child);
+      await child.terminate(5_000);
+      await expect(child.exited).resolves.toMatchObject({ code: 137 });
+      expect(recorded(marker)).toBe(true);
+    });
+
+    it("is not kept for a target the supervisor itself forced", async () => {
+      const marker = `forced-${process.pid}-${Date.now()}`;
+      const child = node(
+        'process.on("SIGTERM", () => {}); console.log("ready"); setInterval(() => {}, 1000)',
+        { environment: { OPENSTEER_TEST_MARKER: marker } },
+      );
+      await ready(child);
+      await child.terminate(100);
+      await expect(child.exited).resolves.toMatchObject({ code: 137 });
+      expect(recorded(marker)).toBe(false);
+    });
+
+    it("is not kept for a target that exited 137 by itself", async () => {
+      const marker = `exited-${process.pid}-${Date.now()}`;
+      const child = node("process.exit(137)", { environment: { OPENSTEER_TEST_MARKER: marker } });
+      await expect(child.exited).resolves.toMatchObject({ code: 137 });
+      expect(recorded(marker)).toBe(false);
+    });
+  });
+
   it("refuses to start anything without the native supervisor", () => {
     vi.stubEnv(processSupervisorExecutableVariable, undefined);
     expect(() => node("")).toThrow(processSupervisorExecutableVariable);
