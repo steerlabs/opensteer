@@ -143,7 +143,7 @@ export { executionNodeFromRow } from "./thread-row-mappers.js";
 export { isEligibleBrowserRunner } from "./browser-home-store.js";
 export { decorateQueueEntries, readQueueLeaseHolders } from "./personal-queue-view.js";
 export { republishThreads } from "./thread-status.js";
-export { returnHintResources } from "./personal-snapshot-store.js";
+export { externalWorkView, returnHintResources } from "./personal-snapshot-store.js";
 
 export {
   acquireBrowserStandardCdpLease,
@@ -157,3 +157,4 @@ export * from "./shared-chrome-attempts.js";
 export type { BrowserSessionCut, BrowserBindingRefusal } from "./browser-session-store.js";
 export * from "./browser-pool-store.js";
 export * from "./command-request-store.js";
+export * from "./home-problems.js";

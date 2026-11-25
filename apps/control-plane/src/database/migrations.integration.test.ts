@@ -13,10 +13,13 @@ import {
   betterAuth17Migration,
   directoryVisibilityMigration,
   hostIdentityMigration,
+  migrateControlPlaneTo,
   migrateControlPlaneToLatest,
   ownerDirectoryVisibilityMigration,
 } from "./migrations.js";
 import { browserPoolMigration } from "../cloud-computers/pool-migration.js";
+import { problemReportsMigration } from "../cloud-computers/health-migration.js";
+import { CloudComputerStore } from "../cloud-computers/store.js";
 import { organizationsMigrationBeforeRemoval } from "./one-person-account-migration.test-support.js";
 
 const databaseUrl = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
@@ -252,6 +255,8 @@ integration("Better Auth 1.7 Account migration", () => {
         '["openid", "email", "offline_access", "deployments:read"]');
     `.execute(database);
     await betterAuth17Migration.up(database);
+    // The one column of a later migration this release's sign-in reads: the synthetic mark (0039).
+    await sql`alter table public.users add column synthetic_at timestamptz`.execute(database);
   });
   afterAll(async () => {
     await database?.destroy();
@@ -663,15 +668,143 @@ integration("organizations removed (0037_remove_organizations)", () => {
     // Then the migration runs, and keeps both computers.
     await migrateControlPlaneToLatest(database);
     expect(await left()).toEqual([]);
-    // Every column it had is kept, but the one the migration drops.
+    // Every column it had is kept, but the one the migration drops; 0039, run again after it, gives
+    // this computer that is ready the last time it was seen so (it never reported: its last change).
     const { workAssignmentId, ...kept } = { ...before };
     expect(workAssignmentId).toBeNull();
-    expect(await computer(personal)).toEqual(kept);
+    expect(kept.readyAt).toBeNull();
+    expect(await computer(personal)).toEqual({ ...kept, readyAt: kept.updatedAt });
     expect(await computer(work)).toMatchObject({ accountId: assignee, state: "active" });
     // The seat it reserved is a free backup target.
     const target = await sql<{ id: string }>`
       select id from public.cloud_computer_backup_targets where id = ${reservedTarget}
         and computer_id is null and checkout_key is null`.execute(database);
     expect(target.rows).toEqual([{ id: reservedTarget }]);
+  });
+});
+
+integration("problem reports (0039_problem_reports)", () => {
+  const databaseName = `opensteer_problem_reports_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  let maintenance: Pool;
+  let database: Kysely<ControlPlaneDatabaseSchema>;
+  const urlForDatabase = (name: string) => {
+    const url = new URL(databaseUrl ?? "postgres://unconfigured");
+    url.pathname = `/${name}`;
+    return url.toString();
+  };
+
+  beforeAll(async () => {
+    maintenance = new Pool({ connectionString: urlForDatabase("postgres") });
+    await maintenance.query(`drop database if exists ${databaseName}`);
+    await maintenance.query(`create database ${databaseName}`);
+    database = createControlPlaneDatabase({
+      connectionString: urlForDatabase(databaseName),
+      maxConnections: 2,
+    });
+    // The release before this one.
+    await migrateControlPlaneTo(database, "0038_remove_platform_verification");
+  });
+
+  afterAll(async () => {
+    await database?.destroy();
+    await maintenance?.query(`drop database if exists ${databaseName}`);
+    await maintenance?.end();
+  });
+
+  it("pages nobody on its first watch pass for time that passed under the old rules (S3, P4)", async () => {
+    const base = Date.now();
+    const hoursAgo = (hours: number) => new Date(base - hours * 60 * 60_000).toISOString();
+    const deadline = "The Cloud Computer did not become ready before its deadline.";
+    const rows = {
+      ready: { phase: "ready", everReady: true, readiness: hoursAgo(48), reported: hoursAgo(2) },
+      readyNeverReported: { phase: "ready", everReady: true, readiness: hoursAgo(48) },
+      // Ready before and down at the cutover, its old clock long past the limit.
+      down: { phase: "booting", everReady: true, readiness: hoursAgo(2), reported: hoursAgo(1) },
+      reprovisioning: { phase: "provisioning", everReady: true, readiness: hoursAgo(2) },
+      // The old rules' deadline failure of a restart, judged against an attempt before it.
+      deadlineFailed: {
+        phase: "failed",
+        everReady: true,
+        readiness: hoursAgo(2),
+        error: deadline,
+      },
+      // A terminal failure, and a first set-up past its limit: both page, as they should.
+      providerFailed: {
+        phase: "failed",
+        everReady: true,
+        readiness: hoursAgo(2),
+        error: "The Cloud Computer provider operation failed.",
+      },
+      neverReadyLate: { phase: "provisioning", everReady: false, readiness: hoursAgo(1) },
+      neverReadyFresh: { phase: "booting", everReady: false, readiness: hoursAgo(0.1) },
+    } as const;
+    const ids = new Map<string, string>();
+    let n = 0;
+    for (const [name, row] of Object.entries(rows)) {
+      n += 1;
+      const id = `cc_00000000-0000-4000-8000-0000000004${String(n).padStart(2, "0")}`;
+      const account = `acct_00000000-0000-4000-8000-0000000004${String(n).padStart(2, "0")}`;
+      ids.set(name, id);
+      await sql`insert into public.users (id, display_name, email, email_verified)
+        values (${account}, 'Ada', ${`ada-4${n}@example.test`}, true)`.execute(database);
+      await sql`
+        insert into public.cloud_computers (
+          id, account_id, generation, state, hostname, region, server_type, release,
+          readiness_started_at, phase, ever_ready, reported_at, last_error, boot_completed_at,
+          bootstrap_receipt_at, last_backup_at, stripe_checkout_id, stripe_customer_id,
+          stripe_subscription_id, stripe_price_id, billing_currency, billing_status, created_at,
+          updated_at
+        ) values (
+          ${id}, ${account}, 1, 'active', ${`cc-4${n}.home.example.test`}, 'us-central1-a',
+          'default', '{}'::jsonb, ${row.readiness}, ${row.phase}, ${row.everReady},
+          ${"reported" in row ? row.reported : null}, ${"error" in row ? row.error : null},
+          ${row.everReady ? hoursAgo(48) : null}, ${row.everReady ? hoursAgo(47) : null}, now(),
+          ${`cs_4${n}`}, ${`cus_4${n}`}, ${`sub_4${n}`}, 'price_1', 'usd', 'active',
+          ${hoursAgo(49)}, ${hoursAgo(3)}
+        )`.execute(database);
+    }
+    // 0039 through the migrator, then once more as a replay: the second run changes nothing.
+    await migrateControlPlaneToLatest(database);
+    const once = await sql`select * from public.cloud_computers order by id`.execute(database);
+    await problemReportsMigration.up(database);
+    expect(
+      (await sql`select * from public.cloud_computers order by id`.execute(database)).rows,
+    ).toEqual(once.rows);
+
+    // One watch pass, as the account service runs it right after it starts.
+    const store = new CloudComputerStore(database, {
+      config: {},
+      cipher: {},
+      now: () => new Date(),
+    } as never);
+    const paged = (await store.watch(30 * 60_000))
+      .filter((finding) => finding.event === "account.cloud_computer.not_ready")
+      .map((finding) => ("computerId" in finding ? finding.computerId : undefined));
+    const name = (id: string | undefined) => [...ids].find(([, value]) => value === id)?.[0];
+    expect(paged.map(name).toSorted()).toEqual(["neverReadyLate", "providerFailed"]);
+
+    const migrated = await database
+      .selectFrom("cloudComputers")
+      .select(["id", "phase", "lastError", "readyAt", "downAt"])
+      .where("id", "in", [
+        ids.get("ready")!,
+        ids.get("readyNeverReported")!,
+        ids.get("deadlineFailed")!,
+        ids.get("down")!,
+      ] as never)
+      .orderBy("id")
+      .execute();
+    expect(migrated).toEqual([
+      // Ready since no later than its last report; never reported: its last change.
+      expect.objectContaining({
+        phase: "ready",
+        readyAt: new Date(rows.ready.reported),
+        downAt: null,
+      }),
+      expect.objectContaining({ phase: "ready", readyAt: new Date(hoursAgo(3)), downAt: null }),
+      expect.objectContaining({ phase: "booting", downAt: expect.any(Date) }),
+      // Booting again, its deadline the provisioner's to judge in ten real minutes.
+      expect.objectContaining({ phase: "booting", lastError: null, downAt: expect.any(Date) }),
+    ]);
   });
 });

@@ -406,7 +406,8 @@ keychainCase(
     assert.equal(step("unlock"), 77);
     assert.deepEqual(calls(root), []);
     assert.equal(step("begin"), 0);
-    // The fixture authority: its files, the address on loopback and the name on it, and of root
+    // The fixture keychain unlocked in the GUI session too, where the journeys' apps run; the
+    // fixture authority: its files, the address on loopback and the name on it; and of root
     // nothing else: the guest's trust, and the right to change it, are never touched.
     const authority = path.join(root, "opensteer-job/fixture-authority");
     for (const file of ["ca.pem", "account.pem", "account.key"])
@@ -415,12 +416,13 @@ keychainCase(
     assert.deepEqual(
       asked.map(({ line }) => line),
       [
+        `-n launchctl asuser ${process.getuid!()} security unlock-keychain -p opensteer-journey-fixture ${fixture}`,
         "-n tail -c 1 /etc/hosts",
         "-n ifconfig lo0 alias 192.88.99.10 255.255.255.255",
         "-n tee -a /etc/hosts",
       ],
     );
-    assert.equal(asked[2]?.input, `${accountHostsLine}\n`);
+    assert.equal(asked[3]?.input, `${accountHostsLine}\n`);
     assert.equal(hostsOf(root), `${guestHosts}${accountHostsLine}\n`);
     assert.deepEqual(loopbackAliases(root), ["192.88.99.10"]);
     // Each recorded before it was done.
@@ -501,16 +503,18 @@ keychainCase(
   (step, root) => {
     assert.equal(step("begin"), 77);
     assert.equal(hostsOf(root), guestHosts.trimEnd());
+    // The keychain is made and unlocked, in the GUI session too, before the authority refuses.
+    const unlockInGuiSession = `-n launchctl asuser ${process.getuid!()} security unlock-keychain -p opensteer-journey-fixture ${path.join(root, "Library/Keychains/opensteer-journey-fixture.keychain-db")}`;
     assert.deepEqual(
       sudoCalls(root).map(({ args }) => args.join(" ")),
-      ["-n tail -c 1 /etc/hosts"],
+      [unlockInGuiSession, "-n tail -c 1 /etc/hosts"],
     );
     assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority.state")), false);
     // `end` still puts the keychain back, and asks nothing of root.
     assert.equal(step("end"), 0);
     assert.deepEqual(
       sudoCalls(root).map(({ args }) => args.join(" ")),
-      ["-n tail -c 1 /etc/hosts"],
+      [unlockInGuiSession, "-n tail -c 1 /etc/hosts"],
     );
   },
 );
@@ -589,9 +593,11 @@ for (const [name, listing] of [
 ] as const)
   keychainCase(name, { guest: true, marker: "opensteer-gui-job-contract" }, (step, root) => {
     assert.equal(step("begin", listing), 77);
+    // The keychain is made and unlocked, in the GUI session too, before the authority refuses.
+    const unlockInGuiSession = `-n launchctl asuser ${process.getuid!()} security unlock-keychain -p opensteer-journey-fixture ${path.join(root, "Library/Keychains/opensteer-journey-fixture.keychain-db")}`;
     assert.deepEqual(
       sudoCalls(root).map(({ args }) => args.join(" ")),
-      ["-n tail -c 1 /etc/hosts"],
+      [unlockInGuiSession, "-n tail -c 1 /etc/hosts"],
     );
     assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority.state")), false);
     assert.match(
@@ -601,7 +607,7 @@ for (const [name, listing] of [
     assert.equal(step("end", listing), 0);
     assert.deepEqual(
       sudoCalls(root).map(({ args }) => args.join(" ")),
-      ["-n tail -c 1 /etc/hosts"],
+      [unlockInGuiSession, "-n tail -c 1 /etc/hosts"],
     );
   });
 

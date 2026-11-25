@@ -905,6 +905,15 @@ export interface HarnessInstalledEngine {
   /** Which profiles use this executable: shipped alternatives are ambient-only. */
   readonly scope?: "ambient" | "all";
   readonly update?: InstalledEngineUpdateFacts;
+  /**
+   * Every copy of the person's CLI here, in PATH order, and how to read one's
+   * version. With both and `update`, the newest copy at or above the minimum
+   * runs. When every copy whose version was read is older, an ambient-scoped
+   * engine runs the copy Opensteer ships (`shippedVersion`), as T3 Code does.
+   */
+  readonly copies?: () => readonly string[];
+  readonly version?: (executable: string) => Promise<string | undefined>;
+  readonly shippedVersion?: string;
 }
 
 /**

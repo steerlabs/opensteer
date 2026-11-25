@@ -1,7 +1,11 @@
 import { ModelSelectionSchema, ThreadAccessModeSchema } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import type { ThreadPlacementOption } from "@opensteer/client/host";
-import { createdHarnessSignInAction, installationUpdateLabel } from "./ai-engines.js";
+import {
+  createdHarnessSignInAction,
+  installationDetailLine,
+  installationUpdateLabel,
+} from "./ai-engines.js";
 
 describe("installed engine update states", () => {
   it.each([
@@ -14,6 +18,31 @@ describe("installed engine update states", () => {
     ["failed", "Update failed"],
   ] as const)("renders %s explicitly", (state, label) => {
     expect(installationUpdateLabel(state)).toBe(label);
+  });
+});
+
+describe("installed engine line", () => {
+  const base = { latestVersion: null, scope: "ambient", version: "0.146.1" } as const;
+  it("says when Opensteer's own copy runs, beside the Update button", () => {
+    const detail =
+      "Using Opensteer’s own Codex 0.162.0: the one on this computer (0.146.1) is too old.";
+    expect(
+      installationDetailLine({
+        ...base,
+        detail,
+        manualCommand: "brew upgrade codex",
+        update: "available",
+      }),
+    ).toBe(detail);
+  });
+  it("names how to update one Opensteer cannot update, and nothing for a current one", () => {
+    expect(
+      installationDetailLine({ ...base, manualCommand: "mise upgrade codex", update: "manual" }),
+    ).toBe("Update this agent on its computer. Run mise upgrade codex.");
+    expect(installationDetailLine({ ...base, update: "current" })).toBeNull();
+    expect(
+      installationDetailLine({ ...base, detail: "Update finished.", update: "succeeded" }),
+    ).toBeNull();
   });
 });
 

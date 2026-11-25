@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useHostSelector } from "@opensteer/client/react";
 import { needsYouEntryKey, type HostClient } from "@opensteer/client/host";
 import type { NeedsYouEntry } from "@opensteer/protocol";
@@ -15,6 +15,7 @@ export function NeedsYouList({
   onClose: () => void;
   onOpen: (entry: NeedsYouEntry) => void;
 }) {
+  const titleId = useId();
   const page = useHostSelector(client, (snapshot) => snapshot.needsYou);
   const summaries = useHostSelector(client, (snapshot) => snapshot.attentionSummaries);
   const count = useHostSelector(client, (snapshot) => snapshot.needsYouCount);
@@ -36,7 +37,7 @@ export function NeedsYouList({
     }
   };
   return (
-    <Dialog title="Needs you" onClose={onClose}>
+    <Dialog labelledBy={titleId} title="Needs you" onClose={onClose}>
       {count === 0 || page?.entries.length === 0 ? <p>Nothing needs you.</p> : null}
       <ul className="side-list" aria-label="Needs you">
         {page === null &&

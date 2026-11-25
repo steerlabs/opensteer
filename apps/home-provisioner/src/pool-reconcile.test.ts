@@ -1550,6 +1550,26 @@ describe("PoolReconciler — hosts", () => {
     expect(onError2).toHaveBeenCalledOnce();
   });
 
+  it("sends its heartbeat only after a pass in which nothing failed", async () => {
+    const signal = new AbortController().signal;
+    const heartbeat = vi.fn();
+    const tick = (pass: () => Promise<void>) =>
+      runProvisionerTick({
+        reconciler: { pass },
+        poolReconciler: { pass: async () => {} },
+        intervalMs: 1000,
+        signal,
+        onError: () => undefined,
+        heartbeat,
+      });
+    await tick(async () => {});
+    expect(heartbeat).toHaveBeenCalledOnce();
+    await tick(async () => {
+      throw new Error("one Home failed");
+    });
+    expect(heartbeat).toHaveBeenCalledOnce();
+  });
+
   it("reports home-provisioner.pool.misconfigured every pass when Account pooling is on without OPENSTEER_POOL_PROVISIONER_KEY (T9)", async () => {
     const signal = new AbortController().signal;
     const onError = vi.fn();

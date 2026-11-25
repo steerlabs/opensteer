@@ -98,6 +98,7 @@ import {
 } from "./composer-drafts.js";
 import { belongsToPreviousLogin, draftTaskStart, startTask } from "./home/task-start.js";
 import { SidebarChromeProvider } from "./sidebar-chrome.js";
+import { ConnectedAgentsProvider } from "./connected-agents-now.js";
 import { useChromeConnectEnvironment } from "./chrome/chrome-environment.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
 import {
@@ -146,6 +147,7 @@ import {
 import { useToast } from "./toast.js";
 import { presentFailure } from "./use-action.js";
 import { openAppLink } from "./apps/app-links.js";
+import { thisComputerRunnerId } from "./this-computer.js";
 
 interface TaskStartDraft {
   readonly draftKey: string | null;
@@ -427,7 +429,7 @@ export function AppShell({
       ? null
       : (snapshot.environments.find((environment) => environment.id === hostedEnvironmentId)
           ?.runnerId ?? null);
-  const thisMachineId = localRunnerId ?? hostingRunnerId;
+  const thisMachineId = thisComputerRunnerId({ hostingRunnerId, localRunnerId });
   webLinkHere.current = thisMachineId;
   const openWebLink = useCallback(
     (address: string) =>
@@ -564,7 +566,9 @@ export function AppShell({
         return open !== null && listedRowThreadId(hostClient.getSnapshot(), open) === threadId;
       };
       const next =
-        done && inView() ? taskAfter(taskList(hostClient.getSnapshot()), threadId) : undefined;
+        done && inView()
+          ? taskAfter(taskList(hostClient.getSnapshot(), { personTasksOnly: true }), threadId)
+          : undefined;
       await hostClient.setTaskDone(threadId, done);
       if (next !== undefined && inView()) openConversation(next === null ? "/" : threadPath(next));
     },
@@ -621,7 +625,7 @@ export function AppShell({
         flow: startAccountSignIn({
           client: hostClient,
           errorMessage: signInFailureWords,
-          localRunnerId,
+          localRunnerId: thisMachineId,
           target: {
             environmentId: placement.environmentId,
             harnessInstanceId: placement.harnessInstanceId,
@@ -636,7 +640,7 @@ export function AppShell({
         whereLabel: placement.whereLabel,
       });
     },
-    [harnessAuthenticationEnvironmentIds, hostClient, localRunnerId, toast],
+    [harnessAuthenticationEnvironmentIds, hostClient, thisMachineId, toast],
   );
   // The flow outlives a dialog closing but not the shell: leaving this
   // Deployment must not keep signing in, or leave an account half added, unseen.
@@ -662,7 +666,7 @@ export function AppShell({
         flow: startAccountSignIn({
           client: hostClient,
           errorMessage: signInFailureWords,
-          localRunnerId,
+          localRunnerId: thisMachineId,
           target: { kind: "create", request },
           ...(selectMethod ? { selectMethod } : {}),
         }),
@@ -672,7 +676,7 @@ export function AppShell({
         whereLabel,
       });
     },
-    [hostClient, localRunnerId],
+    [hostClient, thisMachineId],
   );
   const refreshHarnessCatalog = useCallback(
     async (placement: ThreadPlacementOption) => {
@@ -1160,7 +1164,12 @@ export function AppShell({
                   ) : null}
                   <VoiceIsland ask={<VoiceAsk />} />
                   <SidebarChromeProvider
+                    hostClient={hostClient}
                     onRestore={toggleSidebar}
+                    showConnectedAgents={
+                      !fullWindow &&
+                      (mobileNavigation ? !(mobileNavigationOpen && drawerReady) : sidebarCollapsed)
+                    }
                     restoreVisible={!fullWindow && !mobileNavigation && sidebarCollapsed}
                   >
                     {fullWindow ? (
@@ -1230,7 +1239,11 @@ export function AppShell({
   );
   return (
     <ShellContext value={shell}>
-      <ConnectionGateScope>{workspace}</ConnectionGateScope>
+      <ConnectionGateScope>
+        <ConnectedAgentsProvider hostClient={hostClient} readActivity={!fullWindow}>
+          {workspace}
+        </ConnectedAgentsProvider>
+      </ConnectionGateScope>
     </ShellContext>
   );
 }

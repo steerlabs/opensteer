@@ -35,9 +35,11 @@ import {
   RunnerIdSchema,
 } from "@opensteer/core";
 import { z } from "zod";
+import { AgentConnectionIdSchema } from "./agent-connections.js";
 
 import { ProtocolErrorSchema, type RealtimeFrameDiagnostic } from "./common.js";
 import { ComputerUseSessionIdSchema, computerUseMaxSessionApps } from "./computer-use.js";
+import { PersonalTaskExternalWorkSchema } from "./personal-sync.js";
 import { ShellCloseReasonSchema, ShellSessionSummarySchema } from "./shell.js";
 
 const clientMessageBase = {} as const;
@@ -191,6 +193,10 @@ export const taskLineMaxLength = 280;
  * `taskLineMaxLength`, read from the latest published reply and latest Run.
  */
 export const TaskEntryViewSchema = z.object({
+  /** Kept beside Thread because the person's task pages alone carry this lineage. */
+  originConnectionId: AgentConnectionIdSchema.optional(),
+  /** Session metadata belongs to the person's view, beside the shared Thread. */
+  externalWork: PersonalTaskExternalWorkSchema.optional(),
   failure: z.string().max(taskLineMaxLength).nullable(),
   lastReply: z.string().max(taskLineMaxLength).nullable(),
   thread: ThreadViewSchema,
@@ -200,6 +206,29 @@ export const TaskEntryViewSchema = z.object({
   retry: RunRetryViewSchema.nullable().optional(),
 });
 export type TaskEntryView = z.infer<typeof TaskEntryViewSchema>;
+
+/** Project the same owner task-page entry for a real Home and the preview. */
+export function taskPageEntryView({
+  thread,
+  failure,
+  lastReply,
+  originConnectionId,
+  externalWork,
+  runQueued,
+  retry,
+}: Omit<TaskEntryView, "externalWork" | "originConnectionId"> & {
+  externalWork?: TaskEntryView["externalWork"] | null;
+  originConnectionId?: string | null | undefined;
+}): TaskEntryView {
+  return {
+    thread,
+    ...(externalWork ? { externalWork } : originConnectionId ? { originConnectionId } : {}),
+    failure: failure?.slice(0, taskLineMaxLength) ?? null,
+    lastReply: lastReply?.slice(0, taskLineMaxLength) ?? null,
+    ...(runQueued === undefined ? {} : { runQueued }),
+    ...(retry === undefined ? {} : { retry }),
+  };
+}
 
 export const TaskPageSchema = z.object({
   asOfSequence: SequenceSchema,

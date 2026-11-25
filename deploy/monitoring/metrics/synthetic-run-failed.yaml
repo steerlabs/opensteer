@@ -1,0 +1,10 @@
+# Counts failed runs of the synthetic purchase, for page-synthetic-failed-twice.yaml.
+# Applied with: gcloud logging metrics create opensteer_synthetic_run_failed --config-from-file=...
+description: "Failed runs of the Opensteer synthetic purchase (scripts/synthetic-cloud-computer.mjs)."
+filter: >-
+  resource.type="k8s_container" AND resource.labels.namespace_name="opensteer-system" AND
+  jsonPayload.event="synthetic.run.failed"
+metricDescriptor:
+  metricKind: DELTA
+  valueType: INT64
+  unit: "1"

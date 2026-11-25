@@ -77,7 +77,8 @@
     "./markdownLinks": "./src/markdownLinks.ts",
     "./stripRefs": "./src/stripRefs.ts",
     "./personMarkdown": "./src/personMarkdown.ts",
-    "./extensionUrl": "./src/extensionUrl.ts"
+    "./extensionUrl": "./src/extensionUrl.ts",
+    "./heartbeat": "./src/heartbeat.ts"
   },
   "scripts": {
     "clean": "node ../../scripts/clean.mjs dist *.tsbuildinfo",

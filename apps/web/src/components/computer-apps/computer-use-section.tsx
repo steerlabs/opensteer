@@ -58,6 +58,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { act, failureWords, useDisposedWithView } from "../use-action.js";
 
 import { AppMark } from "./app-icons.js";
+import { unsignedBuildSentence } from "../devices/macos-permission-rows.js";
 
 /**
  * What the desktop on the Mac itself can do that no other client can: show the
@@ -470,10 +471,6 @@ function ToneDot({ tone }: { readonly tone: ComputerUseTone }) {
       return <span aria-hidden className="status-dot status-dot--idle" />;
   }
 }
-
-/** Matches the desktop docs: computer use needs a build signed with a Developer ID. */
-const unsignedBuildSentence =
-  "This build isn’t signed with a Developer ID, so it can’t set up computer use. See apps/desktop/README.md.";
 
 /**
  * The two macOS grants as steps, each with its state and — on the Mac itself —

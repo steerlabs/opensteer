@@ -1,0 +1,25 @@
+# A deleted Cloud Computer's backup key or stored backups are not removed yet; the backup target stays held until they are.
+# Runbook: docs/cloud-computer-operations.md, "Stripe outage during delete".
+displayName: "Opensteer: Removing a deleted Cloud Computer's backups is not finished"
+severity: WARNING
+userLabels:
+  opensteer_alert: digest
+documentation:
+  mimeType: text/markdown
+  subject: "Opensteer: Removing a deleted Cloud Computer's backups is not finished"
+  content: |-
+    A deleted Cloud Computer's backup key or stored backups are not removed yet; the backup target stays held until they are.
+
+    Open the runbook, docs/cloud-computer-operations.md, section "Stripe outage during delete".
+combiner: OR
+conditions:
+  - displayName: "Removing a deleted Cloud Computer's backups is not finished"
+    conditionMatchedLog:
+      filter: >-
+        resource.type="k8s_container" AND resource.labels.namespace_name="opensteer-system" AND jsonPayload.event="account.backup.erasure_pending"
+      labelExtractors:
+        event: EXTRACT(jsonPayload.event)
+alertStrategy:
+  notificationRateLimit:
+    period: 86400s
+  autoClose: 604800s

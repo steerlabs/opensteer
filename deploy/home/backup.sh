@@ -59,6 +59,11 @@ postgres_tool() {
   ' postgres-tool "$tool" "$@"
 }
 
+# Names, for the machine status, why a scheduled backup failed (deploy/home/machine-status.sh).
+backup_failure() {
+  printf '%s' "$1" > "$home_dir/backup.failure"
+}
+
 report_backup() {
   local snapshot_id=$1 completed_at=$2 origin id client_id secret status
   local secret_file="$home_dir/secrets/oidc_client_secret"
@@ -69,15 +74,17 @@ report_backup() {
   secret=$(cat "$secret_file")
   [[ $origin =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ && $id =~ ^cc_[a-f0-9-]{36}$ &&
     $client_id =~ ^occ_[a-f0-9-]{36}$ && $secret =~ ^ocs_[a-zA-Z0-9_-]{43}$ ]] ||
-    fail 'Backup saved. The Home credentials for reporting it are invalid.'
+    { backup_failure report-refused; fail 'Backup saved. The Home credentials for reporting it are invalid.'; }
   status=$(printf 'user = "%s:%s"\n' "$client_id" "$secret" |
     curl -q --config - --basic --silent --proto '=https' --tlsv1.2 \
       --connect-timeout 10 --max-time 20 --max-filesize 16384 \
       --header 'Content-Type: application/json' \
       --data-binary "$(jq -nc --arg completedAt "$completed_at" --arg snapshotId "$snapshot_id" '{$completedAt, $snapshotId}')" \
       --output /dev/null --write-out '%{http_code}' \
-      -- "$origin/v1/cloud-computers/$id/backup") || fail 'Backup saved. Reporting it to the Opensteer account failed.'
-  [[ $status == 204 ]] || fail "Backup saved. The Opensteer account refused the report (HTTP $status)."
+      -- "$origin/v1/cloud-computers/$id/backup") ||
+    { backup_failure report-refused; fail 'Backup saved. Reporting it to the Opensteer account failed.'; }
+  [[ $status == 204 ]] ||
+    { backup_failure report-refused; fail "Backup saved. The Opensteer account refused the report (HTTP $status)."; }
 }
 
 backup_check_seconds=30
@@ -109,8 +116,12 @@ check_backup_repository() {
   ' "$backup_check_seconds" >&2 || status=$?
   case $status in
     0) ;;
-    124) fail "The backup repository did not answer within ${backup_check_seconds} seconds. The Home was not stopped." ;;
-    *) fail 'The backup repository could not be reached or written. The Home was not stopped.' ;;
+    124)
+      backup_failure repository-unreachable
+      fail "The backup repository did not answer within ${backup_check_seconds} seconds. The Home was not stopped." ;;
+    *)
+      backup_failure repository-unreachable
+      fail 'The backup repository could not be reached or written. The Home was not stopped.' ;;
   esac
 }
 
@@ -139,6 +150,7 @@ backup_home() {
   echo 'Starting Home services.'
   resume_after_backup=false
   if ! start_pod; then
+    backup_failure restart-failed
     echo "Snapshot $snapshot_id was saved, but the Home did not start again. Start it with: sudo opensteer-home start" >&2
     return 1
   fi
@@ -387,6 +399,7 @@ backup_command() {
     restore_state
   fi
   staging=$(mktemp -d "$home_dir/backup.XXXXXX")
+  rm -f -- "$home_dir/backup.failure"
   # The EXIT trap must run while these local variables and the operation lock are in scope.
   # Interruption and termination end it like any failure, so cleanup always runs.
   (
@@ -416,5 +429,13 @@ backup_command() {
     wait "$operation" || status=$?
   done
   trap - INT TERM HUP
+  if [[ $action == scheduled-backup ]] && declare -F record_backup_result >/dev/null; then
+    if ((status == 0)); then
+      record_backup_result ok
+    else
+      record_backup_result failed "$(cat "$home_dir/backup.failure" 2>/dev/null || true)"
+    fi
+  fi
+  rm -f -- "$home_dir/backup.failure"
   return "$status"
 }
