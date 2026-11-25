@@ -18,6 +18,7 @@ import {
 import { commandAttempts, runCommandEffect } from "./command-effect.js";
 import {
   AgentConnectionStore,
+  automationLineageStands,
   proposalSubject,
   standingSubject,
   stillReaches,
@@ -540,6 +541,7 @@ export class CommandRequestService {
             idempotencyKey: `command-request:${input.requestId}`,
           },
           readmit,
+          receiptRetryMs: this.#reconcileDelayMs,
           act: () =>
             run(approver, {
               ...command,
@@ -678,22 +680,9 @@ export class CommandRequestService {
     request: Request,
     command: HostApiCommand,
   ): Promise<boolean> {
-    if (request.originatingOccurrenceId || request.originatingWatchActivationId) {
-      const trigger = await (
-        request.originatingOccurrenceId
-          ? database
-              .selectFrom("triggerOccurrences")
-              .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
-              .select("triggers.status")
-              .where("triggerOccurrences.id", "=", request.originatingOccurrenceId)
-          : database
-              .selectFrom("triggerWatchActivations")
-              .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
-              .select("triggers.status")
-              .where("triggerWatchActivations.id", "=", request.originatingWatchActivationId!)
-      ).executeTakeFirst();
-      if (trigger?.status !== "active") return false;
-    }
+    // An automation's lineage (its firing's own ask, or a Run its firings started) stands only
+    // while the automation does: refused here, at the click, whatever any later sweep tidies.
+    if (!(await automationLineageStands(database, request))) return false;
     // As the task it came from, not the Run or firing that sent it: one that ended on its own
     // leaves its ask standing (D5).
     const subject = standingSubject({

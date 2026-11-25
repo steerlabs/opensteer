@@ -48,6 +48,8 @@ export async function runCommandEffect<T>(input: {
   readonly attempt: CommandAttemptInput;
   readonly readmit?: ((transaction: Kysely<DatabaseSchema>) => Promise<void>) | undefined;
   readonly act: () => Promise<T>;
+  /** How long after a lost attempt receipt it is written once more (default 30 seconds). */
+  readonly receiptRetryMs?: number;
 }): Promise<CommandEffectOutcome<T>> {
   const outside = commandEffect(input.row) === "outside";
   const begun =
@@ -58,18 +60,27 @@ export async function runCommandEffect<T>(input: {
   // One that is done is replayed by the handler's own lookup, with no second attempt.
   const id = begun?.kind === "begun" ? begun.id : null;
   // The attempt's receipt of what is already known: if it cannot be written, the caller is still
-  // told what happened (rule 4), never an error for an effect that ran. The attempt stays as it
-  // was, which reads as "may have happened" to anything that asks it later, so nothing runs twice.
+  // told what happened (rule 4), never an error for an effect that ran. Until it is written the
+  // attempt reads as "may have happened" to anything that asks it, so nothing runs twice; it is
+  // written once more a little later, so the row reaches its known outcome without a restart
+  // (and a Disconnect waiting on it is not held until then).
   const settle = async (state: "done" | "failed" | "unknown") => {
     if (!id || !input.attempts) return;
-    try {
-      await input.attempts.settle(id, state);
-    } catch (error) {
+    const attempts = input.attempts;
+    const warn = (error: unknown) =>
       console.warn("A command's attempt receipt could not be written", {
         type: input.attempt.type,
         state,
         error: error instanceof Error ? error.message : String(error),
       });
+    try {
+      await attempts.settle(id, state);
+    } catch (error) {
+      warn(error);
+      const timer = setTimeout(() => {
+        void attempts.settle(id, state).catch(warn);
+      }, input.receiptRetryMs ?? 30_000);
+      timer.unref?.();
     }
   };
   let output: T;

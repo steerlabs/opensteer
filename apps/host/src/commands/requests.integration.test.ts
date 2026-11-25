@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { sql } from "kysely";
+import { sql, type Kysely } from "kysely";
+import { commitPersonalMutation } from "@opensteer/database/personal-mutation";
 import {
   isRaisedBeforeEffect,
   OpensteerError,
@@ -15,6 +16,8 @@ import {
   beginAgentSession,
   CommandRequestStore,
   endAgentSessions,
+  pauseTriggerInTransaction,
+  type DatabaseSchema,
   standingSubject,
   stillReaches,
   storedProposal,
@@ -2310,6 +2313,168 @@ describeStore("command Requests at the Home", (it) => {
     });
   });
 
+  /** A one-shot automation on the task, with a running firing whose causal chain its Run shares. */
+  const oneShot = async (
+    f: Awaited<ReturnType<typeof setup>>["f"],
+    database: Kysely<DatabaseSchema>,
+  ) => {
+    const triggers = new TriggerStore(database);
+    const automation = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: f.threadId,
+      createdBy: f.userId,
+      idempotencyKey: randomUUID(),
+      name: "Tomorrow's reminder",
+      source: {
+        kind: "schedule",
+        schedule: { kind: "at", at: new Date(Date.now() + 60 * 60_000).toISOString() },
+      },
+      script: { interpreter: null, text: "console.log('ok');" },
+    });
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: f.userId,
+      triggerId: automation.trigger.id,
+      idempotencyKey: randomUUID(),
+    });
+    const { causalChainId } = await database
+      .selectFrom("runs")
+      .select("causalChainId")
+      .where("id", "=", f.run.id)
+      .executeTakeFirstOrThrow();
+    // Its one firing is the one claimed: running on the fixture's Runner, nothing more to fire.
+    await database
+      .updateTable("triggerOccurrences")
+      .set({
+        causalChainId,
+        status: "running",
+        startedAt: new Date(),
+        runnerId: f.runnerId,
+        runnerBootId: f.runnerBootId,
+      })
+      .where("id", "=", occurrence.id)
+      .execute();
+    await database
+      .updateTable("triggers")
+      .set({ nextFireAt: null })
+      .where("id", "=", automation.trigger.id)
+      .execute();
+    const complete = async () => {
+      const row = await database
+        .selectFrom("triggerOccurrences")
+        .select("executionGeneration")
+        .where("id", "=", occurrence.id)
+        .executeTakeFirstOrThrow();
+      await triggers.completeExecution({
+        executionGeneration: row.executionGeneration,
+        runnerBootId: f.runnerBootId,
+        runnerId: f.runnerId,
+        output: {
+          occurrenceId: occurrence.id,
+          completedAt: new Date().toISOString(),
+          error: null,
+          exitCode: 0,
+          result: null,
+          status: "succeeded",
+          stderr: "",
+          stdout: "",
+        },
+      });
+      return database
+        .selectFrom("triggers")
+        .select(["status", "pausedBy"])
+        .where("id", "=", automation.trigger.id)
+        .executeTakeFirstOrThrow();
+    };
+    return { triggers, trigger: automation.trigger, occurrence, complete };
+  };
+
+  it("keeps a one-shot's asks when it archives itself on completing, and approving runs them (Q7 a)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, store, service, ran, run, door, rename, approve } =
+      await setup(storeFixture);
+    const shot = await oneShot(f, database);
+    // A Run its firing started asks, and so does the firing itself.
+    const fromRun = (await dispatchCommand(run, rename("Work"), door(run))) as {
+      requestId: string;
+    };
+    const fromFiring = (await service.propose({
+      ownerUserId: f.userId,
+      command: rename("Work", "hin_00000000-0000-4000-8000-000000003401"),
+      ask: { status: "ask", reason: "approval" },
+      face: undefined,
+      proposer: {
+        kind: "program",
+        name: "Tomorrow's reminder",
+        taskTitle: null,
+        key: `automation:${shot.trigger.id}` as ProposerLineageKey,
+      },
+      origin: { occurrenceId: shot.occurrence.id },
+      originatingThreadId: f.threadId,
+      callKey: randomUUID(),
+    })) as { status: string; requestId: string };
+    expect(fromFiring.status).toBe("pending");
+    // Its one firing completes: it archives itself, which is bookkeeping, not a decision.
+    expect(await shot.complete()).toEqual({ status: "archived", pausedBy: "system" });
+    for (const { requestId } of [fromRun, fromFiring]) {
+      expect((await store.requests.get(requestId as never))!.status).toBe("pending");
+      const asked = (await store.requests.get(requestId as never))!;
+      expect(await approve(requestId, asked.command!.command)).toMatchObject({ status: "done" });
+    }
+    expect(ran).toHaveLength(2);
+  });
+
+  it("closes a one-shot's Run's ask when the person archives it (Q7 b)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, store, run, door, rename } = await setup(storeFixture);
+    const shot = await oneShot(f, database);
+    const fromRun = (await dispatchCommand(run, rename("Work"), door(run))) as {
+      requestId: string;
+    };
+    await shot.triggers.setStatus({
+      actorThreadId: null,
+      ownerId: f.userId,
+      status: "archived",
+      triggerId: shot.trigger.id,
+    });
+    expect(await store.requests.get(fromRun.requestId as never)).toMatchObject({
+      status: "cancelled",
+      cancellationReason: "authority-revoked",
+    });
+  });
+
+  it("refuses at the click an ask of a Run an automation started once it was paused for lost standing, before any sweep (Q7 c)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, store, ran, run, door, rename, approve } = await setup(storeFixture);
+    const shot = await oneShot(f, database);
+    const fromRun = (await dispatchCommand(run, rename("Work"), door(run))) as {
+      requestId: string;
+    };
+    const asked = (await store.requests.get(fromRun.requestId as never))!;
+    // Paused as the scheduler pauses one whose standing was lost, with the follow-up sweep held
+    // (it runs only after the scheduler's own pass).
+    await commitPersonalMutation(database, async (transaction) => {
+      const row = await transaction
+        .selectFrom("triggers")
+        .selectAll()
+        .where("id", "=", shot.trigger.id)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      await pauseTriggerInTransaction(transaction, row, {
+        pauseReason: "Paused because its conversation could not run when it was due.",
+        pausedBy: "system",
+      });
+    });
+    expect((await store.requests.get(fromRun.requestId as never))!.status).toBe("pending");
+    await expect(approve(fromRun.requestId, asked.command!.command)).rejects.toBeInstanceOf(
+      OpensteerError,
+    );
+    expect(ran).toEqual([]);
+  });
+
   it("ends an ask when the person marks its task Done", async ({ storeFixture }) => {
     const { f, store, run, door, rename } = await setup(storeFixture);
     const proposed = (await dispatchCommand(run, rename("Work"), door(run))) as {
@@ -2674,8 +2839,22 @@ describeStore("command Requests at the Home", (it) => {
         status: "done",
       });
       expect(ran).toHaveLength(1);
-    } finally {
+      // Once the database takes it again, the attempt's own row reaches what is known, with no
+      // restart: its receipt is written once more a little later.
       await sql`drop trigger ${sql.raw(fn)} on command_attempts`.execute(database);
+      await vi.waitFor(
+        async () =>
+          expect(
+            await database
+              .selectFrom("commandAttempts")
+              .select("state")
+              .where("callerKey", "=", `request:${proposed.requestId}`)
+              .execute(),
+          ).toEqual([{ state: "done" }]),
+        { timeout: 5_000 },
+      );
+    } finally {
+      await sql`drop trigger if exists ${sql.raw(fn)} on command_attempts`.execute(database);
       await sql`drop function ${sql.raw(fn)}()`.execute(database);
     }
   });

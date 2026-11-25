@@ -188,6 +188,43 @@ function automationLineage(transaction: Kysely<DatabaseSchema>, triggerId: strin
     );
 }
 
+/**
+ * Whether the automation an ask came from still stands for it, decided when the person approves:
+ * an ask in an automation's lineage (its firing's or watch's own, or a Run its firings started
+ * or steered, joined by their causal chain as `closeAutomationProposals` joins them) is refused
+ * when the person (or an agent) paused or archived the automation, or it was paused for lost
+ * standing. A one-shot that archived itself because its one firing completed (`pausedBy:
+ * "system"` on an archived automation) still stands: that is bookkeeping, not a decision. An ask
+ * in no automation's lineage stands here.
+ */
+export async function automationLineageStands(
+  database: Kysely<DatabaseSchema>,
+  request: {
+    readonly originatingOccurrenceId?: string | null | undefined;
+    readonly originatingWatchActivationId?: string | null | undefined;
+    readonly originatingRunId?: string | null | undefined;
+  },
+): Promise<boolean> {
+  const occurrence = request.originatingOccurrenceId ?? null;
+  const watch = request.originatingWatchActivationId ?? null;
+  const run = request.originatingRunId ?? null;
+  if (!occurrence && !watch && !run) return true;
+  const ended = await sql<{ readonly id: string }>`
+    select t.id from triggers t
+    where t.id in (
+      select trigger_id from trigger_occurrences where id = ${occurrence}
+      union select trigger_id from trigger_watch_activations where id = ${watch}
+      union select o.trigger_id from trigger_occurrences o
+        join runs r on r.causal_chain_id = o.causal_chain_id where r.id = ${run}
+      union select o.trigger_id from trigger_occurrences o
+        join thread_inputs i on i.causal_chain_id = o.causal_chain_id where i.run_id = ${run}
+    )
+    and (t.status = 'paused'
+      or (t.status = 'archived' and t.paused_by is distinct from 'system'))
+    limit 1`.execute(database);
+  return ended.rows.length === 0;
+}
+
 /** Whether a proposer, as it asked, could still ask for this command now. */
 export async function stillReaches(
   database: Kysely<DatabaseSchema>,

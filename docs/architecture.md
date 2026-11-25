@@ -198,7 +198,10 @@ exactly that, as the person (`apps/host/src/commands/requests.ts`). An ask belon
 proposer's lineage: one of your own agents' to its task, so it waits after the Run that sent it
 ends and approving it continues the task; a connection's (its direct session, or a Run or
 automation working under it) to that connection, re-admitted as the connection stands then, never
-as the task's own origin. A database-only effect of an approval is decided at the approval's
+as the task's own origin. What ends an automation's asks is a decision or a loss of standing,
+never bookkeeping: the person's pause or archive, or a pause for lost standing, refuses them when
+the person approves (a later sweep only tidies); a one-shot that archives itself because its one
+firing completed keeps them. A database-only effect of an approval is decided at the approval's
 commit: the proposer stood when the person's approval committed, and nothing leaves the Home. An
 outside effect is admitted once more where its attempt is recorded, before anything leaves. The
 person's approval is the person's act: a Stop of the Run that lands after the approval committed

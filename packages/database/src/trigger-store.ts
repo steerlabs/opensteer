@@ -2512,10 +2512,11 @@ export class TriggerStore {
   }
 
   /**
-   * A paused or archived automation acts no more, however it got there: after a pass that paused
-   * or archived one on its own commits, what its lineage asked closes, its tasks locked first as
-   * every task is. One that is active again by then (a resume meanwhile, or a claim rolled back)
-   * keeps its asks; any left is still refused when the person approves.
+   * An automation the scheduler paused for its lost standing acts no more: after the pass
+   * commits, what its lineage asked closes, its tasks locked first as every task is. One active
+   * again by then (a resume meanwhile, or a claim rolled back) keeps its asks. This is tidying,
+   * not the decision: the click refuses such an ask on its own (`automationLineageStands`), so a
+   * failure here is logged and not retried.
    */
   async #closeEndedAutomationAsks(triggerIds: readonly TriggerId[]): Promise<void> {
     for (const triggerId of new Set(triggerIds))
@@ -2825,10 +2826,7 @@ export class TriggerStore {
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
   }): Promise<TriggerOccurrence | null> {
-    // A one-shot automation archived by its last firing: what its lineage asked closes after.
-    let archived: TriggerId | null = null;
     const completed = await commitPersonalMutation(this.#database, async (transaction) => {
-      archived = null;
       const occurrence = await transaction
         .selectFrom("triggerOccurrences")
         .selectAll()
@@ -2922,9 +2920,14 @@ export class TriggerStore {
                     overrunNotifiedAt: null,
                   }
                 : {}),
+              // A one-shot that archives itself because its one firing completed: bookkeeping, not
+              // a decision. `pausedBy: "system"` on an archived automation says exactly that (a
+              // person's or an agent's archive clears it), and its lineage's asks stay: a person
+              // may approve tomorrow what it asked today.
               ...(finished
                 ? {
                     pauseReason: null,
+                    pausedBy: "system" as const,
                     status: "archived" as const,
                   }
                 : {}),
@@ -2932,7 +2935,6 @@ export class TriggerStore {
             })
             .where("id", "=", trigger.id)
             .execute();
-          if (finished) archived = trigger.id;
         }
       } else if (
         input.output.status === "failed" &&
@@ -3059,7 +3061,6 @@ export class TriggerStore {
     if (completed) {
       await pruneCompletedOccurrenceOutputs(this.#database, completed.triggerId);
     }
-    if (archived) await this.#closeEndedAutomationAsks([archived]);
     return completed;
   }
 
