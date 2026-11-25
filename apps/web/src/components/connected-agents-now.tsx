@@ -286,7 +286,7 @@ function ActiveAgents({
                       {entry.places.map(({ device, name }, index) => (
                         <span key={index}>
                           <OutsideName value={name} />
-                          {device && device.name !== deviceName ? (
+                          {device && device.name !== deviceName && device.name !== name ? (
                             <>
                               {" "}
                               · <OutsideName value={device.name} />

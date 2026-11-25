@@ -3,6 +3,7 @@ import type { AuthSessionId, MessageId } from "@opensteer/core";
 import { OpensteerError, SequenceSchema, ThreadIdSchema, type ThreadId } from "@opensteer/core";
 import {
   decorateQueueEntries,
+  externalWorkView,
   personalShellSessionState,
   isEligibleBrowserRunner,
   readPersonalDetailSnapshot,
@@ -18,6 +19,7 @@ import { personalScopeKey, withPersonalSyncRead } from "@opensteer/database/pers
 import {
   hostApi,
   rpcSuccess,
+  taskPageEntryView,
   type HostApiHandlers,
   type WaitingInputView,
 } from "@opensteer/protocol";
@@ -478,16 +480,15 @@ export function createPersonalReads(
         for (const task of page.tasks) {
           const thread = threads.get(task.id);
           if (!thread) return unavailable();
-          const entry = {
+          const entry = taskPageEntryView({
             thread,
-            ...(!task.externalWork && task.originConnectionId !== null
-              ? { originConnectionId: task.originConnectionId }
-              : {}),
-            failure: task.failurePreview?.slice(0, 280) ?? null,
-            lastReply: task.lastReplyPreview?.slice(0, 280) ?? null,
+            originConnectionId: task.originConnectionId,
+            externalWork: task.externalWork ? externalWorkView(task.externalWork) : null,
+            failure: task.failurePreview,
+            lastReply: task.lastReplyPreview,
             runQueued: task.runQueued,
             retry: task.retry ?? null,
-          };
+          });
           const bytes = Buffer.byteLength(JSON.stringify(entry)) + (tasks.length ? 1 : 0);
           if (byteCount + bytes > 63 * 1024) {
             if (!last) throw new Error("A single task exceeded the page budget");

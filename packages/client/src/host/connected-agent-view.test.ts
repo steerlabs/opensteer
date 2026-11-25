@@ -73,15 +73,23 @@ it("names a task's held connected agent and leaves bridges, ended agents and unk
   const { connections } = mockConnectedAgents("seeded", now);
   const verified = connections.find(({ label }) => label === "ChatGPT")!;
   const declared = connection({ label: "Opensteer" });
+  const blank = connection({
+    id: "mcn_00000000-0000-4000-8000-0000000000ae",
+    label: " \t ",
+    clientName: "Research helper",
+  });
   const bridge = mockConnectedAgents("chats", now).connections.find(({ bridge }) => bridge)!;
   const revoked = connection({
     id: "mcn_00000000-0000-4000-8000-0000000000af",
     state: "stopped",
   });
-  const labels = taskOriginLabels([verified, declared, bridge, revoked], new Set(), now);
+  const labels = taskOriginLabels([verified, declared, blank, bridge, revoked], new Set(), now);
   expect(isolatedPlainSentence(labels.get(verified.id)!)).toBe("started by ChatGPT");
   expect(isolatedPlainSentence(labels.get(declared.id)!)).toBe(
     "started by “\u2068Opensteer\u2069”",
+  );
+  expect(isolatedPlainSentence(labels.get(blank.id)!)).toBe(
+    "started by “\u2068Research helper\u2069”",
   );
   expect(labels.has(bridge.id)).toBe(false);
   expect(labels.has(revoked.id)).toBe(false);

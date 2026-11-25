@@ -277,6 +277,7 @@ import {
   machineAccessPolicyDefault,
   previousReleaseEligibility,
   rpcSuccess,
+  taskPageEntryView,
   taskLineMaxLength,
   type ComputerUseInstalledApp,
   type HarnessInstanceCatalog,
@@ -2760,13 +2761,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       return rpcSuccess(
         hostApi["tasks.list"].success.parse({
           asOfSequence: SequenceSchema.parse(String(client.getSnapshot().revision)),
-          tasks: page.map((entry) => ({
-            ...entry,
-            ...(entry.thread.originConnectionId
-              ? { originConnectionId: entry.thread.originConnectionId }
-              : {}),
-            thread: mockThread(entry.thread),
-          })),
+          tasks: page.map(mockTaskPageEntry),
           window: {
             byteCount: 2,
             hasMore: end < entries.length,
@@ -3808,6 +3803,18 @@ function mockAuthenticatedSession(snapshot: HostSnapshot) {
   };
 }
 
+function mockTaskPageEntry({ thread, failure, lastReply }: TaskEntry) {
+  return taskPageEntryView({
+    thread: mockThread(thread),
+    failure,
+    lastReply,
+    originConnectionId: thread.originConnectionId,
+    externalWork: thread.externalWork,
+    runQueued: thread.runQueued,
+    retry: thread.retry ?? null,
+  });
+}
+
 function mockThread(thread: ThreadSummary): Thread {
   return ThreadSchema.parse({
     returnHint: thread.returnHint ?? null,
@@ -4067,13 +4074,7 @@ export class MockHostClient implements HostClient {
     const snapshot = this.getSnapshot(),
       page = (entries: readonly TaskEntry[]) => ({
         asOfSequence: SequenceSchema.parse(sequence),
-        tasks: entries.slice(0, 100).map((entry) => ({
-          ...entry,
-          ...(entry.thread.originConnectionId
-            ? { originConnectionId: entry.thread.originConnectionId }
-            : {}),
-          thread: mockThread(entry.thread),
-        })),
+        tasks: entries.slice(0, 100).map(mockTaskPageEntry),
         window: {
           ...mockWindow(Math.min(100, entries.length)),
           hasMore: entries.length > 100,
@@ -13945,7 +13946,22 @@ class MockHostState {
     if (!tasks) return {};
     return {
       [mainDoneTasks]: {
-        entries: tasks.entries.filter(({ thread }) => thread.doneAt !== null).sort(newestDone),
+        entries: tasks.entries
+          .filter(({ thread }) => thread.doneAt !== null)
+          .sort(newestDone)
+          .map((entry) => {
+            const { externalWork, agentSessionId, ...thread } = entry.thread;
+            if (!externalWork && !agentSessionId) return entry;
+            // Done is paged on a real Home. The preview must use the same classification facts.
+            const paged = mockTaskPageEntry(entry);
+            return {
+              ...entry,
+              thread: {
+                ...thread,
+                ...(paged.externalWork ? { externalWork: paged.externalWork } : {}),
+              },
+            };
+          }),
         window: mockWindow(tasks.entries.filter(({ thread }) => thread.doneAt !== null).length),
       },
     };

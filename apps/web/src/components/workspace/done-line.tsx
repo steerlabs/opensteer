@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type Ref } from "react";
 import {
+  isolatedPlainSentence,
   seenThroughOf,
   taskMark,
   type HostClient,
@@ -227,31 +228,35 @@ function QuietMovedCard({
           : "No recent activity"}
       </p>
       <ul className="quiet-moved__rows">
-        {rows.map((row) => (
-          <li className="quiet-moved__row" key={row.threadId}>
-            <button
-              className="quiet-moved__open"
-              onClick={() => onOpenTask(row.threadId)}
-              type="button"
-            >
-              <TaskMark size={20} mark={taskMark(row)} quiet={row.quiet} />
-              <span className="side-task__text">
-                <span className="quiet-moved__name">{row.title}</span>
-                <TaskOriginLine parts={origins.get(row.originConnectionId ?? "")} />
-              </span>
-            </button>
-            <button
-              aria-label={`Move back: ${row.title}`}
-              className="icon-btn icon-btn--small quiet-moved__back"
-              disabled={moving.has(row.threadId)}
-              onClick={() => void moveBack([row])}
-              title="Move back to Tasks"
-              type="button"
-            >
-              <Icon name="undo" />
-            </button>
-          </li>
-        ))}
+        {rows.map((row) => {
+          const origin = origins.get(row.originConnectionId ?? "");
+          return (
+            <li className="quiet-moved__row" key={row.threadId}>
+              <button
+                aria-label={origin ? `${row.title} — ${isolatedPlainSentence(origin)}` : undefined}
+                className="quiet-moved__open"
+                onClick={() => onOpenTask(row.threadId)}
+                type="button"
+              >
+                <TaskMark size={20} mark={taskMark(row)} quiet={row.quiet} />
+                <span className="side-task__text">
+                  <span className="quiet-moved__name">{row.title}</span>
+                  <TaskOriginLine parts={origin} />
+                </span>
+              </button>
+              <button
+                aria-label={`Move back: ${row.title}`}
+                className="icon-btn icon-btn--small quiet-moved__back"
+                disabled={moving.has(row.threadId)}
+                onClick={() => void moveBack([row])}
+                title="Move back to Tasks"
+                type="button"
+              >
+                <Icon name="undo" />
+              </button>
+            </li>
+          );
+        })}
       </ul>
       {rows.length > 1 ? (
         <div className="quiet-moved__actions">

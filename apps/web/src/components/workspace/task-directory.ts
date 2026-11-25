@@ -1,8 +1,6 @@
 import { useCallback, useMemo, useRef } from "react";
 import {
   doneTaskList,
-  isConnectedAgentTask,
-  mainDoneTasks,
   sameTaskListSource,
   sameTaskMark,
   taskAttention,
@@ -131,12 +129,10 @@ export function useTaskMark(hostClient: HostClient, threadId: string | null): Ta
 export function personDoneTaskList(snapshot: HostSnapshot) {
   const list = doneTaskList(snapshot);
   if (!list) return null;
-  const entries = snapshot.doneTasks[mainDoneTasks]!.entries;
+  const rows = list.rows.filter((row) => !row.connectedAgentTask);
   return {
-    rows: list.rows.filter((row) => !row.connectedAgentTask),
-    total: list.hasMore
-      ? null
-      : entries.filter(({ thread }) => !isConnectedAgentTask(thread)).length,
+    rows,
+    total: list.hasMore ? null : rows.length,
     hasMore: list.hasMore,
   };
 }

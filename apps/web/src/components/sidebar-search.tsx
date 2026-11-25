@@ -1,4 +1,5 @@
 import {
+  isolatedPlainSentence,
   tabGroupOf,
   matchSearch,
   placeSearchFields,
@@ -484,6 +485,11 @@ function TaskResult({
 }) {
   const { ask, match, row: task } = result;
   const hint = match.hint;
+  const hintField = hint ? result.fields[hint.field] : undefined;
+  const description = hintField?.name === "ask" ? ask : (hintField?.text.source ?? ask);
+  const label = origin
+    ? [task.title, isolatedPlainSentence(origin), description].filter(Boolean).join(" — ")
+    : undefined;
   const quiet = task.quiet && !open;
   const classes = [
     "side-task",
@@ -494,7 +500,7 @@ function TaskResult({
     row.selected ? "is-selected" : "",
   ];
   return (
-    <div className={classes.filter(Boolean).join(" ")} {...optionProps(row)}>
+    <div aria-label={label} className={classes.filter(Boolean).join(" ")} {...optionProps(row)}>
       <span className="side-task__main">
         <TaskMark size={20} mark={taskMark(task)} quiet={quiet} />
         <span className="side-task__text">
@@ -503,16 +509,13 @@ function TaskResult({
           </span>
           <TaskOriginLine parts={origin} />
           {/* The line under the title says why it matched when the title does not. */}
-          {hint && result.fields[hint.field]!.name !== "ask" ? (
+          {hint && hintField && hintField.name !== "ask" ? (
             <span className="side-result__hint">
-              <Lit ranges={hint.ranges} text={result.fields[hint.field]!.text.source} />
+              <Lit ranges={hint.ranges} text={hintField.text.source} />
             </span>
           ) : ask ? (
             <span className="side-task__ask">
-              <Lit
-                ranges={hint && result.fields[hint.field]!.name === "ask" ? hint.ranges : []}
-                text={ask}
-              />
+              <Lit ranges={hint && hintField?.name === "ask" ? hint.ranges : []} text={ask} />
             </span>
           ) : null}
         </span>

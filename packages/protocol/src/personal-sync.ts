@@ -175,6 +175,26 @@ export const ScopedClientMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("client.ping"), nonce: z.string().min(1).max(256) }),
 ]);
 
+/** A connected agent's own task, with its session retained after it ends. */
+export const PersonalTaskExternalWorkSchema = z.object({
+  sessionId: AgentSessionIdSchema,
+  status: z.enum(["active", "ended"]),
+  endReason: AgentSessionEndReasonSchema.nullable(),
+  connection: z.object({
+    id: z.string().min(1).max(255),
+    label: z.string().max(200),
+    clientName: z.string().max(200),
+    client: z
+      .object({
+        fingerprint: z.string().max(128).nullable(),
+        redirectOrigin: z.string().max(2048).nullable(),
+      })
+      .optional(),
+    identityAtConsent: AgentConnectionIdentityAtConsentViewSchema.nullable().optional(),
+  }),
+});
+export type PersonalTaskExternalWork = z.infer<typeof PersonalTaskExternalWorkSchema>;
+
 const task = z.object({
   /** A task's connection lineage, for the person's own task views. */
   originConnectionId: AgentConnectionIdSchema.optional(),
@@ -202,34 +222,10 @@ const task = z.object({
   runStartHoldReason: RunStartHoldReasonSchema.nullable().optional(),
   /** A connected agent is working this task itself; Stop it with `agent.session.stop`. */
   agentSessionId: AgentSessionIdSchema.nullable().optional(),
-  /**
-   * A connected agent's own task: its session and connection, kept after the session ends so
-   * the task stays the agent's.
-   */
-  externalWork: z
-    .object({
-      sessionId: AgentSessionIdSchema,
-      status: z.enum(["active", "ended"]),
-      endReason: AgentSessionEndReasonSchema.nullable(),
-      connection: z.object({
-        id: z.string().min(1).max(255),
-        label: z.string().max(200),
-        clientName: z.string().max(200),
-        client: z
-          .object({
-            fingerprint: z.string().max(128).nullable(),
-            redirectOrigin: z.string().max(2048).nullable(),
-          })
-          .optional(),
-        identityAtConsent: AgentConnectionIdentityAtConsentViewSchema.nullable().optional(),
-      }),
-    })
-    .nullable()
-    .optional(),
+  externalWork: PersonalTaskExternalWorkSchema.nullable().optional(),
   /** Active provider retry on the earliest executing Run, when retrying. */
   retry: RunRetryViewSchema.nullable().optional(),
 });
-export type PersonalTaskExternalWork = NonNullable<z.infer<typeof task>["externalWork"]>;
 /** A task row plus the full Thread detail view, return hint included. */
 export const PersonalDetailThreadSchema = task.extend({
   thread: ThreadViewSchema,

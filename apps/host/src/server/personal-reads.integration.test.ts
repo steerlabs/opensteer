@@ -1,5 +1,11 @@
 import { createId } from "@opensteer/core";
-import { AgentConnectionStore, beginAgentSession, republishThreads } from "@opensteer/database";
+import { isConnectedAgentTask } from "@opensteer/client/host";
+import {
+  AgentConnectionStore,
+  beginAgentSession,
+  endAgentSessions,
+  republishThreads,
+} from "@opensteer/database";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { createPersonalRunFixturePort } from "@opensteer/database/test-support/personal-run";
 import type { PersonalResumeCursor, ScopedHostMessage } from "@opensteer/protocol/personal-sync";
@@ -126,6 +132,30 @@ it("carries connection lineage on the owner's task views", async () => {
     if (!detail.ok) throw new Error(detail.error.message);
     expect(detail.data.thread).toHaveProperty("originConnectionId", connection.id);
     expect(detail.data.thread.thread).not.toHaveProperty("originConnectionId");
+
+    await endAgentSessions(store.database, {
+      userId: ownerId,
+      sessionIds: [direct.id],
+      reason: "stopped",
+    });
+    // A quiet move puts this task outside the open shell window.
+    await store.database
+      .updateTable("threads")
+      .set({ doneAt: new Date(), doneReason: "quiet", status: "idle" })
+      .where("id", "=", direct.threadId)
+      .execute();
+    const after = await host.api["personal.shell.get"]({});
+    if (!after.ok) throw new Error(after.error.message);
+    expect(after.data.tasks.some(({ id }) => id === direct.threadId)).toBe(false);
+    const done = await host.api["tasks.page"]({ done: true });
+    if (!done.ok) throw new Error(done.error.message);
+    const quiet = done.data.tasks.find(({ thread }) => thread.id === direct.threadId);
+    expect(quiet).toMatchObject({
+      thread: { doneReason: "quiet" },
+      externalWork: { sessionId: direct.id, status: "ended", connection: { id: connection.id } },
+    });
+    expect(isConnectedAgentTask(quiet!)).toBe(true);
+    expect(done.data.tasks.filter((entry) => !isConnectedAgentTask(entry))).not.toContain(quiet);
   } finally {
     await host?.close();
     await database.drop();

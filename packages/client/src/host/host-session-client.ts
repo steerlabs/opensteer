@@ -4270,10 +4270,11 @@ export class HttpHostClient {
       if (this.#removedTasks.has(entry.thread.id)) return [];
       const row = rows.get(entry.thread.id);
       if (row && BigInt(row.revision) > asOf) return [this.#shellEntry(row)];
-      const { originConnectionId, ...task } = entry;
+      const { originConnectionId, externalWork, ...task } = entry;
       const thread = {
         ...toThreadSummary(entry.thread, this.#snapshot.environments, this.#snapshot.harnesses),
         ...(originConnectionId ? { originConnectionId } : {}),
+        ...(externalWork ? { externalWork } : {}),
       };
       return [
         {

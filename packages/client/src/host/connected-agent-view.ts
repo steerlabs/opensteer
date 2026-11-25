@@ -1,5 +1,5 @@
 import { workSentence, workWords } from "./agent-work-copy.js";
-import { activityRows, connectedAgentNamePart } from "./agent-work.js";
+import { activityRows, connectedAgentNamePart, sessionAgent } from "./agent-work.js";
 import {
   BrowserProfileIdSchema,
   agentGrantPluginTargetKey,
@@ -251,10 +251,11 @@ export function taskOriginLabels(
       !connectedAgentConnected(connectedAgentPhase(connection, revoked, now))
     )
       continue;
-    const { label, who } = connectedAgentIdentity(connection);
     labels.set(
       connection.id,
-      workSentence("work.startedBy", { agent: connectedAgentNamePart({ name: label, who }) }),
+      workSentence("work.startedBy", {
+        agent: connectedAgentNamePart(sessionAgent(connection, connection.verificationWithdrawnAt)),
+      }),
     );
   }
   return labels;

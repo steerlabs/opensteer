@@ -296,7 +296,7 @@ async function readPendingAttention(tx: Tx) {
 }
 
 /** A session task's connection as clients name it: no credential, only what the Home proved. */
-function externalWorkView(work: TaskExternalWork) {
+export function externalWorkView(work: TaskExternalWork) {
   const { connection } = work;
   let redirectOrigin: string | null = null;
   try {

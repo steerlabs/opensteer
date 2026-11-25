@@ -69,8 +69,18 @@ it("shows verified and isolated self-declared origins in Tasks, search and Done 
   expect(document.querySelector(".side-results .side-task__origin")?.textContent).toBe(
     "started by ChatGPT",
   );
+  await typeInto(document.querySelector<HTMLInputElement>("#sidebar-search")!, "Follow up");
+  const declaredLabel = "Follow up on the notes — started by “\u2068Opensteer\u2069”";
+  expect(document.querySelector(".side-results .side-task")?.getAttribute("aria-label")).toBe(
+    declaredLabel,
+  );
   await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
 
+  await act(async () => client.moveQuietly(declaredTask));
+  await act(async () => document.querySelector<HTMLButtonElement>(".side-done__moved")!.click());
+  expect(document.querySelector(".quiet-moved__open")?.getAttribute("aria-label")).toBe(
+    declaredLabel,
+  );
   await act(async () => client.setTaskDone(verifiedTask, true));
   await act(async () => document.querySelector<HTMLButtonElement>(".side-done__main")!.click());
   expect(line(verifiedTask)?.textContent).toBe("started by ChatGPT");
