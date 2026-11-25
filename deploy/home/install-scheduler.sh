@@ -7,6 +7,9 @@ unit=${2:-opensteer-home}
 if [[ $unit == opensteer-home && $home_dir == /etc/opensteer-home ]]; then
   install -m 0755 "$home_dir/opensteer-home" /usr/local/bin/opensteer-home
 fi
+# Each unit (and the restore step) is written beside itself and renamed into place: an interruption leaves the old unit
+# or the new one, never an empty one a reboot would load.
+put_unit() { sync "$1.new" && mv -f -- "$1.new" "$1"; }
 unit_env=''
 if [[ -f "$home_dir/boot/options.env" ]]; then unit_env="EnvironmentFile=$home_dir/boot/options.env"; fi
 # Written with the units, so it changes only once an update has committed: before any of the
@@ -28,9 +31,9 @@ exec /usr/bin/flock "$home/operation.lock" /bin/sh -c '
   sync' restore "$home"
 RESTORE
 chmod 0700 "$home_dir/restore-recipe.sh.new"
-mv -f -- "$home_dir/restore-recipe.sh.new" "$home_dir/restore-recipe.sh"
+put_unit "$home_dir/restore-recipe.sh"
 restore="ExecStartPre=$home_dir/restore-recipe.sh $home_dir"
-cat > "$unit_dir/$unit.service" <<UNIT
+cat > "$unit_dir/$unit.service.new" <<UNIT
 [Unit]
 Description=Opensteer Home
 PartOf=docker.service
@@ -54,6 +57,7 @@ ExecStop=$home_dir/opensteer-home stop
 [Install]
 WantedBy=multi-user.target
 UNIT
+put_unit "$unit_dir/$unit.service"
 
 timers=()
 # Every Home has an update timer from install: a managed Home asks its account for its feed at each
@@ -67,7 +71,7 @@ for task in update backup maintain; do
   esac
   command=scheduled-$task
   if [[ $task == maintain ]]; then command=maintain; fi
-  cat > "$unit_dir/$unit-$task.service" <<UNIT
+  cat > "$unit_dir/$unit-$task.service.new" <<UNIT
 [Unit]
 Description=Opensteer Home $task
 Requisite=$unit.service
@@ -80,6 +84,7 @@ $unit_env
 $restore
 ExecStart=$home_dir/opensteer-home $command
 UNIT
+  put_unit "$unit_dir/$unit-$task.service"
   timer="OnCalendar=$calendar
 Persistent=true"
   if [[ $task == maintain ]]; then
@@ -87,7 +92,7 @@ Persistent=true"
 OnUnitInactiveSec=15s
 AccuracySec=1s'
   fi
-  cat > "$unit_dir/$unit-$task.timer" <<UNIT
+  cat > "$unit_dir/$unit-$task.timer.new" <<UNIT
 [Unit]
 Description=Schedule Opensteer Home $task
 
@@ -97,7 +102,9 @@ $timer
 [Install]
 WantedBy=timers.target
 UNIT
+  put_unit "$unit_dir/$unit-$task.timer"
 done
+sync "$unit_dir"
 systemctl daemon-reload
 systemctl enable "$unit.service"
 systemctl enable --now "${timers[@]}"

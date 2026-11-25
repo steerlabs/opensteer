@@ -200,7 +200,13 @@ it("gives every managed Home an hourly update timer from install, feed or not", 
 
 it("runs a scheduled update from the account's feed and decides by the release's identity", () => {
   config(`OPENSTEER_HOME_RELEASE_MANIFEST_URL='${configured}'`);
-  account({ releaseManifestUrl: moved });
+  // A managed Home's release is its images and its account's pinned recipe, which it runs already.
+  const pin = {
+    url: "https://releases.example.test/opensteer-home-installer.sh",
+    sha256: "c".repeat(64),
+  };
+  account({ releaseManifestUrl: moved, recipe: pin });
+  writeFileSync(join(home, "recipe.sha256"), `${pin.sha256}\n`);
   const images = (digit: string) =>
     Object.fromEntries(
       // In the order release_to_env writes them (common.sh's services).

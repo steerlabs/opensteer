@@ -53,7 +53,7 @@ Opensteer account does not answer it uses the feed it has and logs so. Managed u
 require image digests. A release is its version and its image digests: the updater says
 "Already on this release", "Same version, different build: updating", "Updating from
 … to …", or, on a scheduled update, refuses an older version ("older: refused").
-The updater pulls before replacing services and retains prior image IDs for rollback.
+The updater pulls before replacing services and keeps the prior image IDs and recipe for rollback.
 A release that migrates the database must remain compatible with the previous Host
 for image rollback to work.
 
@@ -303,7 +303,7 @@ operator instead of deleting a volume set. Move DNS once the restored Home is re
 Before switching to a new release, the updater pulls its images, records both
 image sets, and saves `update-database.dump` in the root-only configuration
 directory. An interrupted or unhealthy candidate rolls back to the previous
-images only. Migrations are expand-only and must keep the preceding Host compatible.
+recipe and images (not the database). Migrations are expand-only and must keep the preceding Host compatible.
 The dump is a consistent, last-resort copy for manual recovery. It does not include
 writes made after the dump. Managed updates take only digest-pinned images from
 the stored HTTPS feed from the Opensteer account and refuse a local manifest. Each fetch checks DNS

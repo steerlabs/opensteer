@@ -283,14 +283,15 @@ managed_feed() {
   configured=$(configured_feed) || return
   answer=$(mktemp "$home_dir/feed.XXXXXX") || return
   if ask_account release-feed "$answer"; then
-    # The recipe of the account's release, pinned in its own config: kept for the update to fetch.
-    if [[ -n $recipe ]]; then
-      jq -ce '.recipe | select(type == "object" and (.url | type) == "string" and
-        (.sha256 | type) == "string" and (.sha256 | test("^[0-9a-f]{64}$")))' "$answer" \
-        > "$recipe" 2>/dev/null || rm -f -- "$recipe"
-    fi
     asked=$(jq -r '.releaseManifestUrl | select(type == "string")' "$answer" 2>/dev/null) || asked=''
     if [[ -n $asked ]] && valid_managed_feed "$asked"; then
+      # The recipe of the account's release, pinned in its own config, taken with the feed it
+      # names only once that feed passed the checks: kept for the update to fetch.
+      if [[ -n $recipe ]]; then
+        jq -ce '.recipe | select(type == "object" and (.url | type) == "string" and
+          (.sha256 | type) == "string" and (.sha256 | test("^[0-9a-f]{64}$")))' "$answer" \
+          > "$recipe" 2>/dev/null || rm -f -- "$recipe"
+      fi
       rm -f -- "$answer"
       if [[ $asked != "$configured" ]]; then
         set_configured_feed "$asked" || return
@@ -698,7 +699,7 @@ compose_down_home() {
 remove_home_files() {
   rm -rf -- "${home_dir:?}/"{secrets,boot,identity,restore.pending,update.pending,restore.pending.retired,update.pending.retired}
   rm -rf -- "$home_dir/"{install,backup,update,egress,images.placeholder,feed,config.env,pool-network}.??????
-  rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,compose.browser-pool.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,browser-pool,pool-network,pool-network-asked,restore-recipe.sh,update-database.dump,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
+  rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,compose.browser-pool.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,browser-pool,pool-network,pool-network-asked,restore-recipe.sh,recipe.sha256,machine-status.sh,update-database.dump,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
 }
 
 # Whether this Home was installed with --local-images.
@@ -722,7 +723,7 @@ owns_operator_command() {
 # its standalone installer, checked against its SHA-256 and unpacked into DIRECTORY without running
 # anything of it. PINNED (a managed Home) fetches only from public addresses, as the feed does.
 fetch_recipe() {
-  local url=$1 sha=$2 directory=$3 pinned=$4 bundle archive name resolution args=()
+  local url=$1 sha=$2 directory=$3 pinned=$4 bundle archive name resolution listing args=()
   [[ ${#url} -le 2048 && $url =~ ^https://[^@/?#[:space:]]+(/[^?#[:space:]]*)?$ && $sha =~ ^[0-9a-f]{64}$ ]] ||
     { echo 'The release names an invalid recipe.' >&2; return 1; }
   if $pinned; then
@@ -739,10 +740,11 @@ fetch_recipe() {
   sed -n "/^base64 -d <<'OPENSTEER_HOME_FILES'/,/^OPENSTEER_HOME_FILES\$/p" "$bundle" | sed '1d;$d' |
     base64 -d > "$archive" 2>/dev/null || { echo 'The recipe is not an installer.' >&2; return 1; }
   # Plain names only: nothing of it lands outside its directory.
+  listing=$(tar -tzf "$archive") || { echo 'The recipe is not an installer.' >&2; return 1; }
   while IFS= read -r name; do
     name=${name#./}
     [[ -z $name || $name =~ ^[a-z0-9][a-z0-9._-]*$ ]] || { echo 'The recipe holds an unexpected path.' >&2; return 1; }
-  done < <(tar -tzf "$archive") || return 1
+  done <<< "$listing"
   mkdir -- "$directory" && tar -xzf "$archive" -C "$directory" || return 1
   for name in "${recipe_files[@]}"; do
     [[ -f "$directory/$name" && ! -L "$directory/$name" ]] ||
@@ -757,6 +759,10 @@ put_recipe() {
     [[ -f "$1/$name" ]] || continue
     install -m 0600 "$1/$name" "$home_dir/.$name.new" && mv -f -- "$home_dir/.$name.new" "$home_dir/$name" || return
   done
+  if [[ -f "$1/recipe.sha256" ]]; then
+    install -m 0600 "$1/recipe.sha256" "$home_dir/.recipe.sha256.new" &&
+      mv -f -- "$home_dir/.recipe.sha256.new" "$home_dir/recipe.sha256" || return
+  fi
   chmod 0700 "$home_dir/"{firewall.sh,opensteer-home,install-scheduler.sh} && sync "$home_dir"
 }
 

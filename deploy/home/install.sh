@@ -142,14 +142,9 @@ install -d -m 0700 "$home_dir/secrets"
 lock_home
 staging=$(mktemp -d "$home_dir/install.XXXXXX")
 trap 'rm -rf -- "$staging"' EXIT
-# The recipe and its command are in place before the configuration is written, so an install
-# that fails from here on is removed with `opensteer-home uninstall --purge`.
-install_recipe "$source_dir" "$home_dir"
-# The units this Home is installed under, so its own command finds them to remove them.
-printf '%s\n' "$unit_prefix" > "$home_dir/unit-prefix"
-if ! $prepare && owns_operator_command; then
-  install -m 0755 "$home_dir/opensteer-home" /usr/local/bin/opensteer-home
-fi
+# A managed boot that already finished (the bootstrap unit runs again at every boot) is decided
+# before anything of boot's own recipe is copied: an update may have committed another recipe
+# since, and an interrupted one is the installed recovery's to finish (restore-recipe.sh).
 setup_code=''
 finish_managed_boot() {
   local outcome=$1 original
@@ -170,6 +165,14 @@ if $resume_managed; then
   for outcome in refused completed; do
     if [[ -f "$home_dir/boot/$outcome" ]]; then finish_managed_boot "$outcome"; fi
   done
+fi
+# The recipe and its command are in place before the configuration is written, so an install
+# that fails from here on is removed with `opensteer-home uninstall --purge`.
+install_recipe "$source_dir" "$home_dir"
+# The units this Home is installed under, so its own command finds them to remove them.
+printf '%s\n' "$unit_prefix" > "$home_dir/unit-prefix"
+if ! $prepare && owns_operator_command; then
+  install -m 0755 "$home_dir/opensteer-home" /usr/local/bin/opensteer-home
 fi
 if [[ -n $managed ]]; then
   if $resume_managed; then result="$home_dir/boot/result.json"; else result="$staging/result.json"; fi
@@ -205,6 +208,9 @@ else
     if [[ ! $computer =~ ^cc_[a-f0-9-]{36}$ ]] || ! valid_hostname "$hostname"; then
       fail "Invalid managed boot spec."
     fi
+    # The recipe this Home runs: the installer cloud-init checked against this SHA-256.
+    jq -er '.installerSha256 | select(test("^[0-9a-f]{64}$"))' "$managed" > "$home_dir/recipe.sha256.new" &&
+      mv -f -- "$home_dir/recipe.sha256.new" "$home_dir/recipe.sha256" || fail "Invalid managed boot spec."
     manifest="$staging/release.json"
     jq -e .release "$result" > "$manifest"
     jq -er .setupCodeDigest "$result" | save_secret "$home_dir/secrets/setup_digest"

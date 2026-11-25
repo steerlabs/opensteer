@@ -113,7 +113,13 @@ esac
 }
 
 /** The update as its timer runs it, with Docker and the database stood in for. */
-function update(release: object, args = "scheduled-update", manifestPath?: string) {
+function update(
+  release: object,
+  args = "scheduled-update",
+  manifestPath?: string,
+  /** More stand-ins, after the usual ones: a fault to inject. */
+  fault = "",
+) {
   writeFileSync(join(work, "release.json"), JSON.stringify(release));
   return spawnSync(
     "bash",
@@ -132,6 +138,7 @@ function update(release: object, args = "scheduled-update", manifestPath?: strin
        }
        docker() { case $1 in inspect) c=\${*: -1}; echo "example.test/\${c#container-}@sha256:${"a".repeat(64)}" ;; esac; }
        start_pod() { printf 'start_pod from the updater (the previous recipe)\\n' >> "${log}"; }
+       ${fault}
        update_home ${args}${manifestPath ? ` "${manifestPath}"` : ""}`,
       "update",
       join(source, "common.sh"),
@@ -253,14 +260,32 @@ it.each([
   expect(data()).toBe(before);
 });
 
-it("never takes a managed Home's recipe from a manifest, and says when its account names none", () => {
+it("never takes a managed Home's recipe from a manifest, and does not update without its account's pin", () => {
   const b = installer(recipe("B"));
+  // The account is down for the pin (or names none); the manifest names a recipe of its own.
   network({ releaseManifestUrl: "https://releases.example.test/stable.json" }, b.path);
   const result = update({ ...newer, recipe: { url: recipeUrl, sha256: b.sha256 } });
-  expect(result.status, result.stderr).toBe(0);
-  expect(result.stdout).toContain("The Opensteer account named no recipe for this release");
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain("gave no recipe for this release: not updating now");
   expect(onDisk()).toBe("# recipe A: compose.yaml\n");
-  expect(readFileSync(join(home, "images.env"), "utf8")).toBe(selection("1.2.4", "b"));
+  expect(readFileSync(join(home, "images.env"), "utf8")).toBe(selection("1.2.3", "a"));
+  expect(said()).not.toContain("compose down");
+});
+
+it("heals a Home left with a release's images and an older recipe at its next update", () => {
+  // As an earlier updater left it: B's images under A's recipe, with no recipe identity on disk.
+  writeFileSync(join(home, "images.env"), selection("1.2.4", "b"));
+  const b = installer(recipe("B"));
+  const pin = { url: recipeUrl, sha256: b.sha256 };
+  network({ releaseManifestUrl: "https://releases.example.test/stable.json", recipe: pin }, b.path);
+  const result = update(newer);
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain("Same images, another recipe");
+  expect(onDisk()).toBe("# recipe B: compose.yaml\n");
+  expect(readFileSync(join(home, "recipe.sha256"), "utf8").trim()).toBe(b.sha256);
+  // And then it is the same release.
+  const again = update(newer);
+  expect(again.stdout).toContain("Already on this release (1.2.4).");
 });
 
 it("updates a self-hosted Home's recipe from the manifest its owner gives, or says it did not", () => {
@@ -409,4 +434,105 @@ it("keeps machine-status.sh where opensteer-home reads it on an installed Home",
   );
   expect(result.status, result.stderr).toBe(0);
   expect(result.stdout.trim()).toBe("publish_machine_status");
+});
+
+const pinned = (gate?: { readonly exit: number; readonly says?: string }) => {
+  const b = installer(recipe("B", gate));
+  network(
+    {
+      releaseManifestUrl: "https://releases.example.test/stable.json",
+      recipe: { url: recipeUrl, sha256: b.sha256 },
+    },
+    b.path,
+  );
+};
+
+it("never reports an update whose image selector could not be written, and rolls it back", () => {
+  pinned();
+  // The rename of the selector to images.env fails once (errexit is off under the operator).
+  const result = update(
+    newer,
+    "scheduled-update",
+    undefined,
+    `failed_once=${join(work, "failed-once")}
+     publish_file() {
+       if [[ $2 == */images.env && ! -e $failed_once ]]; then touch "$failed_once"; return 1; fi
+       sync "$1" && mv -f -- "$1" "$2"
+     }`,
+  );
+  expect(result.status).not.toBe(0);
+  expect(result.stdout).not.toContain("Updated Home");
+  expect(result.stderr).toContain("The update was rolled back.");
+  expect(onDisk()).toBe("# recipe A: compose.yaml\n");
+  expect(readFileSync(join(home, "images.env"), "utf8")).toBe(selection("1.2.3", "a"));
+  expect(existsSync(join(home, "update.pending"))).toBe(false);
+});
+
+it("rolls back past a candidate whose Compose files do not parse, and says so only once A started", () => {
+  const unparsable = { exit: 1, says: "compose: the candidate's files do not parse" };
+  pinned(unparsable);
+  // B's Compose files do not parse: anything that reads them fails, the gate first.
+  const invalid = `compose() {
+       printf 'compose %s\\n' "$*" >> "${log}"
+       grep -q 'recipe B' "$OPENSTEER_HOME_DIR/compose.yaml" && return 1
+       case "$1 \${2:-}" in "ps -q") echo "container-$3" ;; esac
+     }`;
+  const result = update(newer, "scheduled-update", undefined, invalid);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain("The update was rolled back.");
+  expect(onDisk()).toBe("# recipe A: compose.yaml\n");
+  expect(said()).toContain("start_pod from the updater (the previous recipe)");
+  // A that does not start again is not called rolled back.
+  installed(recipe("A"));
+  pinned(unparsable);
+  const stuck = update(
+    newer,
+    "scheduled-update",
+    undefined,
+    `${invalid}
+     start_pod() { return 1; }`,
+  );
+  expect(stuck.status).not.toBe(0);
+  expect(stuck.stderr).not.toContain("The update was rolled back.");
+  expect(stuck.stderr).toContain("did not start again");
+});
+
+it("writes every unit beside itself and renames it: an interrupted write never leaves an empty unit", () => {
+  writeFileSync(join(work, "systemctl"), "#!/usr/bin/env bash\nexit 0\n");
+  chmodSync(join(work, "systemctl"), 0o755);
+  const main = join(work, "units", "recipe-test.service");
+  writeFileSync(main, "[Service]\nExecStart=the committed one\n");
+  // The writer dies while writing the main unit (it never gets its first byte out).
+  writeFileSync(
+    join(work, "cat"),
+    "#!/usr/bin/env bash\ncontent=$(/bin/cat)\ngrep -qx 'Description=Opensteer Home' <<< \"$content\" && exit 1\nprintf '%s\\n' \"$content\"\n",
+  );
+  chmodSync(join(work, "cat"), 0o755);
+  const scheduler = spawnSync("bash", [join(source, "install-scheduler.sh"), home, "recipe-test"], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      OPENSTEER_HOME_UNIT_DIR: join(work, "units"),
+      PATH: `${work}:${process.env.PATH}`,
+    },
+  });
+  expect(scheduler.status).not.toBe(0);
+  expect(readFileSync(main, "utf8")).toBe("[Service]\nExecStart=the committed one\n");
+});
+
+it("decides a finished managed boot before it copies boot's own recipe over the Home's", () => {
+  // The bootstrap unit runs install.sh --resume-managed at every boot; an update may have
+  // committed another recipe since. (install.sh runs only as root on Linux: its order is read.)
+  const install = readFileSync(join(source, "install.sh"), "utf8");
+  const finished = install.indexOf(
+    'if [[ -f "$home_dir/boot/$outcome" ]]; then finish_managed_boot',
+  );
+  const copied = install.indexOf('install_recipe "$source_dir" "$home_dir"');
+  expect(finished).toBeGreaterThan(0);
+  expect(copied).toBeGreaterThan(0);
+  expect(finished).toBeLessThan(copied);
+  // Its finish writes the units from the Home's own recipe, never from boot's copy.
+  const finish = install.slice(install.indexOf("finish_managed_boot() {"), finished);
+  expect(finish).toContain('"$home_dir/install-scheduler.sh"');
+  expect(finish).not.toContain("$source_dir");
 });

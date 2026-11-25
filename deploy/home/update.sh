@@ -38,15 +38,21 @@ update_recovery() {
     recovery_needs_operator "$journal"
     return
   fi
-  release_env="$journal/candidate.env" compose down || return
-  # The previous recipe comes back with the previous images (a unit's restore step may already
-  # have put it back before this code ran).
+  # The previous recipe comes back first (a unit's restore step may already have put it back);
+  # the candidate is then stopped with the previous recipe's Compose files under the Home's own
+  # project, never with the candidate's, which need not even parse.
   if [[ -d "$journal/recipe.previous" ]]; then put_recipe "$journal/recipe.previous" || return; fi
+  release_env="$journal/candidate.env" compose down --remove-orphans || return
   cp "$journal/previous.env" "$active.new" || return
   publish_file "$active.new" "$active" || return
   install_sandbox_policies && start_pod || return
-  echo 'Rolled back to the previous images. The pre-update dump is retained for manual recovery.'
+  echo 'Rolled back to the previous recipe and images. The pre-update dump is retained for manual recovery.'
   retire_journal "$journal"
+}
+
+# recipe_installed RECIPE_JSON: whether the Home runs that recipe already (no recipe named: yes).
+recipe_installed() {
+  [[ ! -s $1 ]] || [[ $(jq -r .sha256 "$1") == "$(cat "$home_dir/recipe.sha256" 2>/dev/null)" ]]
 }
 
 # release_recipe MANIFEST OUT: the recipe a self-hosted Home's release manifest names, if any.
@@ -92,13 +98,23 @@ update_home() (
     release_to_env "$current_dir/release.json" "$candidate" "$pinned"
     if ! $pinned; then release_recipe "$current_dir/release.json" "$current_dir/recipe.json"; fi
   fi
+  # A managed Home's release is its images and its account's pinned recipe together: without the
+  # pin (the account did not answer, or named none) it does not update, and the next check tries.
+  if $pinned && [[ ! -s "$current_dir/recipe.json" ]]; then
+    fail 'The Opensteer account gave no recipe for this release: not updating now; the next check tries again.'
+  fi
   old_version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$active")
   new_version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$candidate")
   # A release is its version and its image digests together.
   case $(release_change "$active" "$candidate") in
     same)
-      echo "Already on this release ($old_version)."
-      return 0
+      # The same images; the same release only if the recipe is the same too (a Home left with a
+      # release's images and an older recipe takes its recipe now).
+      if recipe_installed "$current_dir/recipe.json"; then
+        echo "Already on this release ($old_version)."
+        return 0
+      fi
+      echo "Same images, another recipe: updating the recipe of $new_version."
       ;;
     rebuild) echo "Same version, different build: updating $new_version." ;;
     newer) echo "Updating from $old_version to $new_version." ;;
@@ -112,10 +128,11 @@ update_home() (
       echo "Release $new_version is older than the running $old_version: updating, as asked by hand."
       ;;
   esac
-  cp "$active" "$current_dir/original.env"
+  cp "$active" "$current_dir/original.env" || fail 'The update could not record the running release. Nothing was changed.'
 
-  project=$(compose_project)
-  printf 'OPENSTEER_HOME_VERSION=%s\n' "$old_version" > "$previous"
+  project=$(compose_project) || fail "The Home's Compose project could not be read. Nothing was changed."
+  printf 'OPENSTEER_HOME_VERSION=%s\n' "$old_version" > "$previous" ||
+    fail 'The update could not record the running images. Nothing was changed.'
   for service in "${services[@]}"; do
     if ! running_services | grep -qx -- "$service"; then
       # Not run on this Home (a Cloud Computer's browser is in the pool): it keeps its selection.
@@ -133,7 +150,8 @@ update_home() (
       docker image tag "$id" "$tag"
       ref=$tag
     fi
-    printf 'OPENSTEER_HOME_%s_IMAGE=%s\n' "$(printf %s "$service" | tr 'a-z-' 'A-Z_')" "$ref" >> "$previous"
+    printf 'OPENSTEER_HOME_%s_IMAGE=%s\n' "$(printf %s "$service" | tr 'a-z-' 'A-Z_')" "$ref" >> "$previous" ||
+      fail 'The update could not record the running images. Nothing was changed.'
   done
 
   fetch_release_images "$candidate" "$(uses_local_images)"
@@ -144,34 +162,43 @@ update_home() (
     fetch_recipe "$(jq -r .url "$current_dir/recipe.json")" "$(jq -r .sha256 "$current_dir/recipe.json")" \
       "$current_dir/recipe.new" "$pinned" || fail "The release's recipe could not be used. Nothing was changed."
     rm -f -- "$current_dir/recipe.new.bundle" "$current_dir/recipe.new.tgz"
-    mkdir -- "$current_dir/recipe.previous"
+    # Which recipe each side is, so a later check knows the release is whole.
+    jq -r .sha256 "$current_dir/recipe.json" > "$current_dir/recipe.new/recipe.sha256" &&
+      mkdir -- "$current_dir/recipe.previous" ||
+      fail 'The update could not stage the recipe. Nothing was changed.'
     for service in "${recipe_files[@]}"; do
-      if [[ -f "$home_dir/$service" ]]; then cp -p -- "$home_dir/$service" "$current_dir/recipe.previous/$service"; fi
+      if [[ -f "$home_dir/$service" ]]; then
+        cp -p -- "$home_dir/$service" "$current_dir/recipe.previous/$service" ||
+          fail 'The update could not keep the running recipe. Nothing was changed.'
+      fi
     done
-  elif $pinned; then
-    echo 'The Opensteer account named no recipe for this release: only its images are updated.'
+    { cat "$home_dir/recipe.sha256" 2>/dev/null || echo unknown; } > "$current_dir/recipe.previous/recipe.sha256" ||
+      fail 'The update could not keep the running recipe. Nothing was changed.'
   else
     echo 'This release names no recipe: only its images are updated; the recipe was not updated.'
   fi
   # shellcheck source=deploy/home/backup.sh
   source "$home_dir/backup.sh"
-  postgres_tool pg_dump --format=custom > "$current_dir/database.dump"
-  publish_file "$current_dir/database.dump" "$dump"
+  postgres_tool pg_dump --format=custom > "$current_dir/database.dump" &&
+    publish_file "$current_dir/database.dump" "$dump" ||
+    fail 'The database could not be dumped before the update. Nothing was changed.'
   rm -f -- "$current_dir/release.json"
-  sync -f "$home_dir"
-  mv -- "$current_dir" "$journal"
-  sync "$home_dir"
-  compose down
-  # The new recipe replaces the Home's (each file by a rename); its own code then starts the release
-  # and runs one maintenance check. Only then is the update committed.
-  if { [[ ! -d "$journal/recipe.new" ]] || put_recipe "$journal/recipe.new"; } &&
-    OPENSTEER_HOME_UPDATE_JOURNAL="$journal" "$home_dir/opensteer-home" update-gate; then
-    cp "$journal/candidate.env" "$active.new"
-    publish_file "$active.new" "$active"
-    durable_marker "$journal/committed"
-    # Units, timers and the command on the path follow the committed recipe only.
-    refresh_installed_units || fail 'Updated; its units could not be written yet: the next start writes them.'
-    retire_journal "$journal"
+  # From the journal on, no step is taken for granted (this runs with errexit off): each write
+  # either leads to the commit, or to the rollback below, or leaves the journal for recovery.
+  sync -f "$home_dir" && mv -- "$current_dir" "$journal" && sync "$home_dir" ||
+    fail 'The update journal could not be written. Nothing was changed.'
+  # The Home stops; the new recipe replaces its own (each file by a rename); that recipe's code
+  # starts the release and runs one maintenance check; the selector and the commit marker follow.
+  if compose down && { [[ ! -d "$journal/recipe.new" ]] || put_recipe "$journal/recipe.new"; } &&
+    OPENSTEER_HOME_UPDATE_JOURNAL="$journal" "$home_dir/opensteer-home" update-gate &&
+    cp "$journal/candidate.env" "$active.new" && publish_file "$active.new" "$active" &&
+    durable_marker "$journal/committed"; then
+    # Committed. Units, timers and the command on the path follow the committed recipe only; what
+    # fails from here is finished from the committed journal at the next start.
+    refresh_installed_units ||
+      fail "Updated to $new_version; its units could not be written yet: the next start writes them."
+    retire_journal "$journal" ||
+      fail "Updated to $new_version; its journal could not be retired yet: the next start does it."
     echo "Updated Home to $new_version."
     if declare -F record_update_result >/dev/null; then
       record_update_result updated "$old_version" "$new_version"
@@ -179,9 +206,14 @@ update_home() (
     return
   fi
   printf '%s\n' "Home $new_version did not become healthy. Restoring $old_version." >&2
-  update_recovery
-  if declare -F record_update_result >/dev/null; then
-    record_update_result rolled-back "$old_version" "$new_version"
+  if update_recovery; then
+    if declare -F record_update_result >/dev/null; then
+      record_update_result rolled-back "$old_version" "$new_version"
+    fi
+    fail "The update was rolled back."
   fi
-  fail "The update was rolled back."
+  if declare -F record_update_result >/dev/null; then
+    record_update_result failed "$old_version" "$new_version"
+  fi
+  fail "The update failed, and $old_version did not start again: its journal is kept for the next start (sudo opensteer-home logs host)."
 )
