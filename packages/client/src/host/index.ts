@@ -100,6 +100,7 @@ export * from "./agent-work.js";
 export * from "./connected-agents-now.js";
 export * from "./connected-agent-earlier.js";
 export * from "./agent-work-copy.js";
+export * from "./command-request.js";
 export * from "./connected-agent-options.js";
 
 export * from "./automatic-models.js";

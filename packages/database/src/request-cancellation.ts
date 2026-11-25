@@ -16,6 +16,10 @@ interface Cancellation {
   readonly resolvedAt: Date;
   readonly runId?: RunId;
   readonly cancelHandedOffPlugins?: boolean;
+  /** A Run stopped: the commands it proposed close too, as nothing it asked may run after. */
+  readonly cancelProposals?: boolean;
+  /** Closed with nothing said to the proposer: a connection's lineage that lost its reach. */
+  readonly withoutContinuation?: true;
   readonly originatingThreadId?: ThreadId;
   readonly requestIds?: readonly RequestId[];
   readonly requestedBy?: UserId;
@@ -42,27 +46,27 @@ function pendingCancellationQuery(transaction: Transaction<DatabaseSchema>, inpu
     pending = pending.where("id", "in", [...input.requestIds]);
   }
   if (input.runId)
-    pending = pending
-      .where("originatingRunId", "=", input.runId)
-      .where((eb) =>
-        eb.or([
-          eb("mode", "=", "live"),
-          eb.and([
-            eb("kind", "in", ["plugin.approval", "plugin.input"]),
-            input.cancelHandedOffPlugins
-              ? eb.val(true)
-              : eb.not(
-                  eb.exists(
-                    eb
-                      .selectFrom("pluginExecutions")
-                      .select("id")
-                      .whereRef("pluginExecutions.requestId", "=", "requests.id")
-                      .where("handoff", "=", true),
-                  ),
+    pending = pending.where("originatingRunId", "=", input.runId).where((eb) =>
+      eb.or([
+        eb("mode", "=", "live"),
+        // Only when asked for: the statement is otherwise exactly as it was (rule 7).
+        ...(input.cancelProposals ? [eb("command", "is not", null)] : []),
+        eb.and([
+          eb("kind", "in", ["plugin.approval", "plugin.input"]),
+          input.cancelHandedOffPlugins
+            ? eb.val(true)
+            : eb.not(
+                eb.exists(
+                  eb
+                    .selectFrom("pluginExecutions")
+                    .select("id")
+                    .whereRef("pluginExecutions.requestId", "=", "requests.id")
+                    .where("handoff", "=", true),
                 ),
-          ]),
+              ),
         ]),
-      );
+      ]),
+    );
   if (input.originatingThreadId) {
     pending = pending.where("originatingThreadId", "=", input.originatingThreadId);
   }
@@ -77,6 +81,7 @@ export async function preparePendingCancellation(
   const pending = pendingCancellationQuery(transaction, input);
   const refresh = !isOfflineSettlement(transaction);
   if (
+    !input.withoutContinuation &&
     ["resource-deleted", "authority-revoked", "plugin-interrupted", "plugin-expired"].includes(
       input.reason,
     )

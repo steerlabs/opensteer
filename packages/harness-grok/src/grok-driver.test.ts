@@ -207,5 +207,14 @@ describe("Grok tool identity", () => {
         title: "opensteer_task_read",
       }),
     ).toBeUndefined();
+    expect(
+      grokToolIdentity(
+        { id: "4", title: "opensteer_command" },
+        { agentTools: { tools: ["opensteer_command"] } as HarnessSessionContext["agentTools"] },
+      ),
+    ).toEqual({
+      name: "opensteer_command",
+      namespace: "opensteer",
+    });
   });
 });

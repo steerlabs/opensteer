@@ -18,6 +18,7 @@ import {
   type RequestResponse,
   type RunUsage,
   type ThreadAccessMode,
+  type ToolIdentity,
   type UserId,
 } from "@opensteer/core";
 import {
@@ -70,6 +71,7 @@ import {
   GuidanceDelivery,
   type GuidanceTicket,
   assertEngineMayRun,
+  opensteerToolIdentity,
 } from "@opensteer/harness";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { copyFile, mkdir, realpath, rm } from "node:fs/promises";
@@ -1330,7 +1332,7 @@ class MuseHarnessSession implements HarnessSession {
         data: {
           arguments: item.args ?? item.commandText ?? "",
           callId,
-          tool: { name: item.tool ?? item.kind, namespace: "muse" },
+          tool: museToolIdentity(item.tool ?? item.kind, this.#context.agentTools.tools),
         },
         type: "tool.started",
       });
@@ -1967,4 +1969,22 @@ async function waitForDeviceCode(
       cause: error,
     });
   }
+}
+
+const opensteerMusePrefixes = ["mcp__opensteer__", "opensteer__", "opensteer:", "opensteer/"];
+
+/**
+ * Normalizes Muse Code tool names so Opensteer MCP calls share the canonical `opensteer`
+ * namespace while Muse's own tools stay under `muse`.
+ */
+export function museToolIdentity(name: string, opensteerTools: readonly string[]): ToolIdentity {
+  for (const prefix of opensteerMusePrefixes) {
+    if (name.startsWith(prefix) && name.length > prefix.length) {
+      return opensteerToolIdentity("opensteer", name.slice(prefix.length));
+    }
+  }
+  if (opensteerTools.includes(name)) {
+    return opensteerToolIdentity("opensteer", name);
+  }
+  return { name, namespace: "muse" };
 }

@@ -1,3 +1,4 @@
+import { closeLostConnectionProposals } from "./command-proposal-reach.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
@@ -427,7 +428,15 @@ export class AgentConnectionStore {
   ): Promise<{ readonly connection: AgentConnection; readonly narrowed: boolean }> {
     return commitPersonalMutation(this.database, async (tx) => {
       const { changed, ...result } = await this.#writeUpdate(tx, userId, input);
-      if (changed) await closeObsoleteAgentOperationRequests(tx, [input.connectionId], this.now());
+      if (changed) {
+        await closeObsoleteAgentOperationRequests(tx, [input.connectionId], this.now());
+        // Its proposals it may no longer ask for close with the change (D5).
+        await closeLostConnectionProposals(tx, {
+          ownerUserId: userId,
+          connectionId: input.connectionId,
+          all: false,
+        });
+      }
       return result;
     });
   }
@@ -564,6 +573,12 @@ export class AgentConnectionStore {
         .orderBy("id")
         .execute();
       for (const { id: threadId } of originated) await publishThreadSummary(tx, threadId);
+      // Every proposal it made closes with the Disconnect (D5).
+      await closeLostConnectionProposals(tx, {
+        ownerUserId: userId,
+        connectionId: row.id,
+        all: true,
+      });
       return true;
     });
   }

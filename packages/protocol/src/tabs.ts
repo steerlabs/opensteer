@@ -125,8 +125,17 @@ export const TabCommandSchema = z.discriminatedUnion("type", [
   TabOrganizeInputSchema.extend({ ...command, type: z.literal("tab.organize") }),
   TabGroupUpdateInputSchema.safeExtend({ ...command, type: z.literal("tab.group.update") }),
   z.strictObject({ ...command, type: z.literal("tab.group.delete"), groupId }),
-  /** Closes the members the group has when it runs, and the group once none is left. */
-  z.strictObject({ ...command, type: z.literal("tab.group.close"), groupId }),
+  /**
+   * Closes the group's members, and the group once none is left. With `tabIds`, only those
+   * members close: a proposal names the members the person was shown, and one that is no longer
+   * in the group refuses the close as changed. Without, the members it has when it runs.
+   */
+  z.strictObject({
+    ...command,
+    type: z.literal("tab.group.close"),
+    groupId,
+    tabIds: z.array(TabIdSchema).max(500).optional(),
+  }),
 ]);
 export type TabCommand = z.infer<typeof TabCommandSchema>;
 export const TabCommandResultSchema = z.discriminatedUnion("type", [

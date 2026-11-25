@@ -313,6 +313,7 @@
     "apps/host/src/commands/dispatch.ts",
     "apps/host/src/commands/registry.ts",
     "apps/host/src/commands/requests.ts",
+    "apps/host/src/commands/secret-digest.ts",
     "apps/host/src/computer-apps/computer-app-availability.ts",
     "apps/host/src/computer-apps/computer-app-frame-send.ts",
     "apps/host/src/computer-apps/computer-app-hub.ts",

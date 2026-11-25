@@ -55,7 +55,16 @@ import { readerSees, type TaskReader } from "./task-reader.js";
  */
 export type AuthoritySubject =
   | { readonly kind: "person" }
-  | { readonly kind: "connection"; readonly agentConnectionId: string }
+  | {
+      readonly kind: "connection";
+      readonly agentConnectionId: string;
+      /**
+       * Work of a task under the connection (a Run's, an automation's), as it stands now with no
+       * execution of it live: the connection's live grant and its Tasks switch, as delegated work
+       * needs. Without it, the connection acting directly.
+       */
+      readonly delegated?: true;
+    }
   | { readonly kind: "binding"; readonly bindingId: string };
 
 /** The external agent connection an execution works for, as it stands now. */
@@ -670,12 +679,9 @@ async function admitExecutionWith(
     };
   }
   if (subject.kind === "connection") {
-    const connection = await liveAgentConnection(
-      database,
-      ownerUserId,
-      subject.agentConnectionId,
-      input,
-    );
+    const connection = subject.delegated
+      ? await liveDelegatingConnection(database, ownerUserId, subject.agentConnectionId, input)
+      : await liveAgentConnection(database, ownerUserId, subject.agentConnectionId, input);
     let taskMode: ThreadAccessMode | null = null;
     if (input.threadId) {
       const thread = await ownedThread(database, input.threadId, ownerUserId);

@@ -244,7 +244,10 @@ export async function connectionAttempts(
       left join agent_sessions s on s.id = q.originating_agent_session_id
       left join agent_operations op on op.request_id = q.id
       cross join floor f
-      where q.status = 'pending' and (
+      -- A command ask is in the set when the connection is gone (it stands for none), never by a
+      -- narrowing's revision floor: the one standing check decides that, in its own step of the
+      -- cleanup (closeLostConnectionProposals, as the grant edit does).
+      where q.status = 'pending' and (f.disconnected or q.command is null) and (
         r.id is not null or o.id is not null or w.id is not null or s.connection_id = f.id
         or (f.disconnected and t.origin_connection_id = f.id)
         or (q.originating_run_id is null and q.originating_occurrence_id is null
@@ -801,12 +804,33 @@ export async function settleLineageRequests(
           linked.map(({ id }) => id),
         )
         .execute();
-    await cancelPending(tx, {
-      reason: "authority-revoked",
-      resolvedAt: new Date(),
-      requestIds,
-      cancelHandedOffPlugins: false,
-    });
+    // A command ask closed by its connection's lost reach says nothing to that lineage (rule 5).
+    const commandAsks = new Set(
+      (
+        await tx
+          .selectFrom("requests")
+          .select("id")
+          .where("id", "in", requestIds)
+          .where("command", "is not", null)
+          .execute()
+      ).map(({ id }) => id),
+    );
+    const others = requestIds.filter((id) => !commandAsks.has(id));
+    if (others.length)
+      await cancelPending(tx, {
+        reason: "authority-revoked",
+        resolvedAt: new Date(),
+        requestIds: others,
+        cancelHandedOffPlugins: false,
+      });
+    if (commandAsks.size)
+      await cancelPending(tx, {
+        reason: "authority-revoked",
+        resolvedAt: new Date(),
+        requestIds: [...commandAsks],
+        cancelHandedOffPlugins: false,
+        withoutContinuation: true,
+      });
   });
 }
 

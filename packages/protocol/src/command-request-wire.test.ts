@@ -123,14 +123,17 @@ describe("a command Request on the wire", () => {
     // Approving is its own command, never a respond: no release is kept yet (rule 6), so the
     // frozen shapes are this branch's own and hold it; only the person's session sends it.
     expect(baseline.input["command request.command.approve"]).toBeDefined();
-    expect(
+    const approve = (extra: Record<string, unknown>) =>
       hostApi["commands.dispatch"].payload.safeParse({
         type: "request.command.approve",
         idempotencyKey: "k",
         requestId,
         expectedRevision: "1",
-        command: {},
-      }).success,
-    ).toBe(true);
+        ...extra,
+      }).success;
+    // The approval names the Request and the revision reviewed; the Home runs what it stored, so
+    // an approval that carries a command of its own is not an approval at all (D1).
+    expect(approve({})).toBe(true);
+    expect(approve({ command: {} })).toBe(false);
   });
 });

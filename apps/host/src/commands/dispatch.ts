@@ -2,6 +2,7 @@ import { OpensteerError } from "@opensteer/core";
 import { z } from "zod";
 import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import { runCommandEffect, type CommandAttempts } from "./command-effect.js";
+import { sanitizeCommandRequestWithSecretDigests } from "./secret-digest.js";
 import {
   admitCommand,
   assertCommandAdmitted,
@@ -18,7 +19,8 @@ import {
   type DatabaseSchema,
 } from "@opensteer/database";
 import {
-  hostApi,
+  commandSchemaVariants,
+  parseCommandArguments,
   type HostApiCommand,
   type HostApiCommandOutput,
   type HostApiServerContext,
@@ -60,7 +62,10 @@ export type AgentCommandOutcome =
   /** The person declined this ask within the last day: answered at once, nothing opened. */
   | { readonly status: "declined"; readonly requestId: string }
   /** The same call again, after its Request ended unapproved: what became of it. */
-  | { readonly status: "withdrawn" | "closed"; readonly requestId: string }
+  | {
+      readonly status: "withdrawn" | "closed" | "person-says-done" | "done-by-person";
+      readonly requestId: string;
+    }
   /** The same call again, after the person approved it: what it came to. */
   | {
       readonly status: "answered";
@@ -72,9 +77,16 @@ export type CommandAsk = Extract<AgentCommandOutcome, { readonly status: "ask" }
 
 export interface CommandDoor {
   readonly registry: CommandRegistry;
+  /**
+   * After a person's own command succeeded, for a type whose row declares values only the person
+   * types: what pending proposals it did (`CommandRequestService.settleDoneByPerson`).
+   */
+  readonly afterPerson?: (actor: PersonActor, command: HostApiCommand) => Promise<void>;
 }
 /** The door as an agent meets it: the same registry, and the one admission. */
 export interface AgentCommandDoor extends CommandDoor {
+  /** Private Host HMAC key (derived from credentialKey) for secret-field idempotency digests. */
+  readonly secretDigestKey: Buffer;
   readonly admit: (
     caller: AgentCaller,
     command: HostApiCommand,
@@ -180,9 +192,22 @@ export async function dispatchCommand(
       throw new OpensteerError({ code: "unauthorized", message: "Authentication required" });
     if (!context) throw new OpensteerError({ code: "internal", message: "Missing request" });
     const handler = door.registry[command.type] as CommandHandler<HostApiCommand["type"]>;
-    return handler.accepts === "person"
+    const output = await (handler.accepts === "person"
       ? handler.run(actor, command as never, context)
-      : handler.run(actor, command as never, { context, authority: null });
+      : handler.run(actor, command as never, { context, authority: null }));
+    // Only after the handler, and only for a type whose row declares values only the person
+    // types: the person did what proposals of the same command asked (D3). Nothing before it.
+    // It is a receipt of what already happened: if it cannot be written, the person's command
+    // still answers what it did (so they never do it twice), and the asks stay pending, to be
+    // answered still (rule 4).
+    if (door.afterPerson && (commandRow(command.type) as CommandRow).secretFields?.length)
+      await door.afterPerson(actor, command).catch((error: unknown) => {
+        console.warn("The person's command ran; settling the asks it answers failed", {
+          type: command.type,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    return output;
   }
   if (!("admit" in door))
     throw new OpensteerError({ code: "internal", message: "This door admits no agent" });
@@ -195,25 +220,35 @@ export async function dispatchCommand(
   // person types is left out by the agent, so a schema that requires it reads the rest without it.
   // Under a connection's grant (the scope just read says so) the own-agents-only kinds are absent.
   const parsed = parseHeld(row, command, holder.scope !== null);
-  if (!parsed.success)
+  if (!parsed.success) {
+    const customReason = parsed.error.issues.find(
+      (issue) =>
+        issue.code === "custom" &&
+        "params" in issue &&
+        typeof issue.params === "object" &&
+        issue.params !== null &&
+        typeof (issue.params as { readonly reason?: unknown }).reason === "string",
+    ) as { readonly params?: { readonly reason?: string } } | undefined;
     throw new OpensteerError({
       code: "bad_request",
+      ...(customReason?.params?.reason ? { reason: customReason.params.reason } : {}),
       message: `That ${command.type} command is not valid: ${parsed.error.issues
         .slice(0, 3)
         .map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`)
         .join("; ")}`.slice(0, 1_000),
     });
+  }
   command = parsed.data as HostApiCommand;
   const admission = await door.admit(actor, command, holder);
   if (admission.answer === "not_found") throw notFound();
-  assertNoSecretPaths(row, command);
   const handler = door.registry[command.type] as CommandHandler<HostApiCommand["type"]>;
-  if (
+  const runsNow =
     admission.answer === "now" &&
     handler.accepts === "any" &&
-    agentRunsNow(row, admission.face, handler, holder?.scope ?? null)
-  ) {
-    const authority = commandAuthority(actor, command);
+    agentRunsNow(row, admission.face, handler, holder?.scope ?? null);
+  assertNoSecretPaths(row, command, runsNow);
+  if (runsNow) {
+    const authority = commandAuthority(actor, command, row, door.secretDigestKey);
     const readmit = door.readmit;
     const effect = await runCommandEffect({
       row,
@@ -280,19 +315,32 @@ export interface CommandAuthority {
 }
 const authorities = new WeakSet<object>();
 
-function commandAuthority(caller: AgentCaller, command: HostApiCommand): CommandAuthority {
+function commandAuthority(
+  caller: AgentCaller,
+  command: HostApiCommand,
+  row: CommandRow,
+  secretDigestKey: Buffer,
+): CommandAuthority {
   const { type, idempotencyKey, ...request } = command as HostApiCommand & {
     readonly idempotencyKey?: string;
   };
   if (!idempotencyKey)
     throw new OpensteerError({ code: "bad_request", message: "A command needs its key" });
+  const sanitized = sanitizeCommandRequestWithSecretDigests({
+    commandType: type,
+    idempotencyKey,
+    key: secretDigestKey,
+    request: request as Record<string, unknown>,
+    secretFields: row.secretFields ?? [],
+    userId: caller.userId,
+  });
   const authority = Object.freeze({
     caller,
     identity: {
       requestedBy: caller.userId,
       idempotencyKey,
       type,
-      request: JSON.parse(JSON.stringify(request)) as Record<string, unknown>,
+      request: sanitized,
       authoritySource: { kind: "mcp", callerKind: caller.kind, callerKey: caller.key },
       ...commandAdmission({ ownerUserId: caller.userId, callerKey: caller.key, command }),
     },
@@ -306,25 +354,13 @@ export function isCommandAuthority(value: unknown): value is CommandAuthority {
   return typeof value === "object" && value !== null && authorities.has(value);
 }
 
-/** Each command type's own schemas (a type may have more than one variant). */
-const variants = (() => {
-  const byType = new Map<string, z.ZodObject[]>();
-  for (const option of (
-    hostApi["commands.dispatch"].payload as unknown as z.ZodUnion<z.ZodObject[]>
-  ).options) {
-    const type = (option.shape.type as z.ZodLiteral<string>).value;
-    byType.set(type, [...(byType.get(type) ?? []), option]);
-  }
-  return byType;
-})();
-
 const connectionVariants = new Map<string, readonly z.ZodObject[]>();
 /**
  * A command's schemas as a caller may send them: under a connection's grant, without the kinds
  * only your own agents send, so such a kind reads like one the schema does not know.
  */
 export function commandVariants(type: string, underConnection: boolean): readonly z.ZodObject[] {
-  const all = variants.get(type) ?? [];
+  const all = commandSchemaVariants(type);
   const hidden = Object.hasOwn(commandTable, type)
     ? ((commandRow(type as CommandType) as CommandRow).ownAgentsOnly ?? [])
     : [];
@@ -345,27 +381,26 @@ export function commandVariants(type: string, underConnection: boolean): readonl
   return narrowed;
 }
 
-/** Reads a command with its own schema, leaving out each top-level secret field it does not carry. */
-function parseHeld(row: CommandRow, command: HostApiCommand, underConnection: boolean) {
-  const input = command as unknown as Record<string, unknown>;
-  const absent = (row.secretFields ?? []).filter(
-    (path) => !path.includes(".") && input[path] === undefined,
-  );
-  let first: ReturnType<z.ZodObject["safeParse"]> | undefined;
-  for (const variant of commandVariants(command.type, underConnection)) {
-    const schema = absent.length
-      ? variant.omit(Object.fromEntries(absent.map((key) => [key, true])) as never)
-      : variant;
-    const result = schema.safeParse(command);
-    if (result.success) return result;
-    first ??= result;
-  }
-  return first ?? hostApi["commands.dispatch"].payload.safeParse(command);
+/**
+ * Reads a command with its own schema, leaving out each secret field it does not carry: the one
+ * rule, shared with the Home's reading of a stored proposal (`parseCommandArguments`).
+ */
+function parseHeld(_row: CommandRow, command: HostApiCommand, underConnection: boolean) {
+  return parseCommandArguments(command as never, {
+    variants: commandVariants(command.type, underConnection),
+  });
 }
 
-/** A value only the person types never passes through an agent: found by the table's paths. */
-function assertNoSecretPaths(row: CommandRow, command: HostApiCommand): void {
-  for (const path of row.secretFields ?? []) {
+/**
+ * A value only the person types never passes through an agent: found by the table's `secretFields`.
+ * Only paths explicitly listed in `row.agentMaySet` are allowed when the call runs now (S1).
+ */
+function assertNoSecretPaths(row: CommandRow, command: HostApiCommand, runsNow: boolean): void {
+  const secretFields = row.secretFields;
+  if (!secretFields || secretFields.length === 0) return;
+  const allowed = runsNow && row.agentMaySet?.length ? new Set(row.agentMaySet) : null;
+  for (const path of secretFields) {
+    if (allowed?.has(path)) continue;
     let at: unknown = command;
     for (const key of path.split(".")) {
       at = typeof at === "object" && at !== null ? (at as Record<string, unknown>)[key] : undefined;

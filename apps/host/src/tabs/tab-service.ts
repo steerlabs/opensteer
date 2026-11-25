@@ -1221,6 +1221,8 @@ export class TabService implements TabServicePort {
     groupId: TabGroupId,
     key: string,
     readmit?: TabReadmit,
+    /** The members the person was shown: only these close (`tab.group.close` `tabIds`). */
+    only?: readonly TabId[],
   ): Promise<TabCloseResult & { groupClosed: boolean; layout: TabLayout }> {
     const permitted = new Set<TabId>(),
       cleanup: { row: TabRecord; closePage: boolean }[] = [];
@@ -1255,6 +1257,7 @@ export class TabService implements TabServicePort {
         }
       }, readmit),
       (row) => permitted.has(row.id),
+      only,
     );
     // The members this close left in its group are the ones that could not close: read from the
     // mutation's own layout, a replay answers exactly what the first call answered.
@@ -1606,7 +1609,13 @@ export class TabService implements TabServicePort {
       case "tab.group.close":
         return {
           type: command.type,
-          ...(await this.closeGroup(actor, command.groupId, command.idempotencyKey, readmit)),
+          ...(await this.closeGroup(
+            actor,
+            command.groupId,
+            command.idempotencyKey,
+            readmit,
+            command.tabIds,
+          )),
         };
     }
   }

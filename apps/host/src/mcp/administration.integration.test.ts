@@ -111,6 +111,7 @@ async function mcp(
       registry: agentCommandRegistry(administration.service),
       requests: () => undefined,
       administration,
+      secretDigestKey: Buffer.alloc(32, 0x33),
     }),
   } as never);
   const service = new OpensteerMcpService({

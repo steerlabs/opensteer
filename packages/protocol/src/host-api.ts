@@ -187,6 +187,7 @@ import {
   DeviceComputerAppSetupRequestViewSchema,
   DeviceIntegrationConnectionSummaryViewSchema,
 } from "@opensteer/integration-core";
+import { MAX_AUTOMATION_SECRETS } from "@opensteer/triggers/bounds";
 import {
   CreateTriggerHttpBodySchema,
   TriggerOccurrenceViewSchema,
@@ -197,6 +198,7 @@ import {
   TriggerWebhookAddressViewSchema,
   UpdateTriggerHttpBodySchema,
 } from "@opensteer/triggers/models";
+import { AutomationSecretMapSchema, AutomationSecretNameSchema } from "@opensteer/triggers/script";
 import { z } from "zod";
 import { ReferenceResolveInputSchema, ReferenceResolveResultSchema } from "./references.js";
 import { AppIdSchema } from "@opensteer/core";
@@ -732,13 +734,12 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     requestId: RequestIdSchema,
-    /** The revision of the Request the person reviewed. */
-    expectedRevision: PersonalRevisionSchema,
     /**
-     * The command as the person approves it: as proposed, or changed on its screen, with the values
-     * only the person types. Its type and what it changes must be what was asked.
+     * The revision of the Request the person reviewed. The Home runs the proposal it stored,
+     * exactly; the approval carries no command of its own. A command that carries a value only
+     * the person types is never approved this way.
      */
-    command: z.record(z.string().max(200), z.unknown()),
+    expectedRevision: PersonalRevisionSchema,
     type: z.literal("request.command.approve"),
   }),
   z.strictObject({
@@ -1246,6 +1247,35 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     triggerId: TriggerIdSchema,
     type: z.literal("trigger.cancel"),
   }),
+  z
+    .strictObject({
+      clearAll: z.literal(true).optional(),
+      idempotencyKey: idempotencyKeySchema,
+      names: z.array(AutomationSecretNameSchema).min(1).max(MAX_AUTOMATION_SECRETS).optional(),
+      remove: z.array(AutomationSecretNameSchema).max(MAX_AUTOMATION_SECRETS).optional(),
+      set: AutomationSecretMapSchema.optional(),
+      triggerId: TriggerIdSchema,
+      type: z.literal("trigger.secrets.set"),
+    })
+    .superRefine((command, ctx) => {
+      const hasNames = command.names !== undefined;
+      const hasClearAll = command.clearAll === true;
+      const hasPatch = command.set !== undefined || command.remove !== undefined;
+      if (hasNames && (hasPatch || hasClearAll)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["names"],
+          message: "Pass either `names` (to ask the person) or a patch (`set`/`remove`), not both.",
+        });
+      }
+      if (hasClearAll && hasPatch) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["clearAll"],
+          message: "`clearAll` cannot be combined with `set` or `remove`.",
+        });
+      }
+    }),
 ]);
 
 const commandInputSchema = z.union([
@@ -1551,6 +1581,10 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({
     canceledOccurrenceIds: z.array(z.string().min(1)).max(100),
     type: z.literal("trigger.cancel"),
+  }),
+  z.object({
+    secretNames: z.array(AutomationSecretNameSchema).max(MAX_AUTOMATION_SECRETS),
+    type: z.literal("trigger.secrets.set"),
   }),
 ]);
 
@@ -2179,6 +2213,8 @@ const hostApiGroup4 = defineRpc({
       createdByThreadTitle: ThreadViewSchema.shape.title.nullable().default(null),
       occurrences: z.array(TriggerOccurrenceViewSchema).max(100),
       revision: TriggerRevisionViewSchema,
+      secretNames: z.array(AutomationSecretNameSchema).max(MAX_AUTOMATION_SECRETS).default([]),
+      secretsUnreadable: z.boolean().default(false),
       trigger: TriggerViewSchema,
       webhook: TriggerWebhookAddressViewSchema.nullable().optional(),
     }),

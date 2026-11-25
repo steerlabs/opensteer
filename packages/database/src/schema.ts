@@ -1194,6 +1194,7 @@ interface TriggerTable {
   overrunNotifiedAt: Generated<Date | null>;
   watchCrashNotifiedAt: Generated<Date | null>;
   encryptedSecrets: Generated<Buffer | null>;
+  secretNames: Generated<string[] | null>;
   secretsKeyVersion: Generated<number | null>;
   waitingReason: Generated<string | null>;
   webhookRouteKey: string | null;

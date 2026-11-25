@@ -5,6 +5,7 @@ import {
   withStoredImages,
 } from "@opensteer/harness";
 import type { RunFileExecution } from "@opensteer/protocol";
+import { redactToolArgumentsForStorage } from "@opensteer/protocol/command-table";
 import { RunFileError, type RunFileAccess } from "../attachments/run-files.js";
 import { AppServerManager } from "../apps/app-server-manager.js";
 import { VoiceCalls } from "../voice/voice-calls.js";
@@ -5006,7 +5007,8 @@ function fittedDurableEvent(
         : { ...event, data: { ...event.data, content } };
     }
     case "tool.started": {
-      const args = createToolArguments(event.data.arguments);
+      const redacted = redactToolArgumentsForStorage(event.data.arguments, event.data.tool);
+      const args = createToolArguments(redacted);
       return args === event.data.arguments
         ? event
         : { ...event, data: { ...event.data, arguments: args } };

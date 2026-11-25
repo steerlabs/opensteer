@@ -52,6 +52,7 @@ import {
   type HarnessGenerateTextResult,
   type SupervisedProcess,
   assertEngineMayRun,
+  opensteerToolIdentity,
 } from "@opensteer/harness";
 import { readPrivateFileText } from "@opensteer/shared/atomicPrivateFile";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -540,10 +541,16 @@ export function grokPermissionChoices(request: AcpPermissionRequest) {
  * Grok titles a call with its tool name, or with words about the step; only a
  * name names it, and structured MCP fields name it better still.
  */
-export function grokToolIdentity(call: import("@opensteer/harness-acp").AcpToolCall) {
-  return !acpMcpTool(call) && call.title && /^[\w.:-]+$/u.test(call.title)
-    ? validToolIdentity({ name: call.title, namespace: "acp" })
-    : undefined;
+export function grokToolIdentity(
+  call: import("@opensteer/harness-acp").AcpToolCall,
+  context?: Pick<HarnessSessionContext, "agentTools">,
+) {
+  if (acpMcpTool(call) || !call.title || !/^[\w.:-]+$/u.test(call.title)) return undefined;
+  return validToolIdentity(
+    context?.agentTools.tools.includes(call.title)
+      ? opensteerToolIdentity("opensteer", call.title)
+      : { name: call.title, namespace: "acp" },
+  );
 }
 
 // Adapted from T3 Code's xaiAcpExtension.ts (MIT).

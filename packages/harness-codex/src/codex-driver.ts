@@ -43,7 +43,6 @@ import {
   RequestFormAnswersSchema,
   canonicalModelReference,
   createId,
-  createToolArguments,
   harnessUsageLimitFailureCode,
   heldToolCallTimeoutMs,
   normalizeToolOutput,
@@ -2974,7 +2973,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
           );
           this.#publish({
             data: {
-              arguments: createToolArguments(descriptor.arguments),
+              arguments: descriptor.arguments,
               callId: descriptor.callId,
               nodeId,
               tool: descriptor.tool,
@@ -3279,7 +3278,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     }
     this.#publish({
       data: {
-        arguments: createToolArguments(descriptor.arguments),
+        arguments: descriptor.arguments,
         nodeId,
         callId: descriptor.callId,
         tool: descriptor.tool,

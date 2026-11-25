@@ -3,6 +3,17 @@ import type { ToolIdentity } from "./events.js";
 /** The namespace every tool the one Opensteer MCP server offers is reported under. */
 export const opensteerToolNamespace = "opensteer";
 
+/** The single Opensteer MCP tool that dispatches Home commands. */
+export const opensteerCommandToolName = "opensteer_command";
+
+export function isOpensteerCommandTool(tool: ToolIdentity | null | undefined): boolean {
+  return (
+    tool != null &&
+    tool.namespace === opensteerToolNamespace &&
+    tool.name === opensteerCommandToolName
+  );
+}
+
 /** Host-authored Computer use steps are separate from the agent's outer MCP call. */
 export const computerToolNamespace = "opensteer.integrations";
 
