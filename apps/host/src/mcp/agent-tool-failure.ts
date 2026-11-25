@@ -4,6 +4,7 @@ import { ToolBlockedError, OpensteerError } from "@opensteer/core";
 import { formatIssues } from "@opensteer/shared/validationIssues";
 import { z } from "zod";
 import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
+import { BrowserCdpConnectionEnded } from "../browser/browser-service.js";
 import { ComputerMcpSessionError } from "../computer-apps/computer-app-hub.js";
 import { ComputerUseError } from "../computer-use/computer-use-service.js";
 import { IntegrationAuthorizationRequiredError } from "../devices/integration-authorization-required.js";
@@ -127,6 +128,22 @@ export function agentToolFailure(
     error instanceof ComputerMcpSessionError ||
     error instanceof IntegrationAuthorizationRequiredError
   ) {
+    return { code: "conflict", message: error.message, retryable: false };
+  }
+  if (error instanceof BrowserCdpConnectionEnded) {
+    if (
+      error.message === "The browser task ended." ||
+      error.message === "This task's browser access has ended."
+    ) {
+      return {
+        code: "forbidden",
+        message: "Run tool authority has ended",
+        retryable: false,
+      };
+    }
+    if (error.message === "This device's browser access was turned off.") {
+      return { code: "forbidden", message: error.message, retryable: false };
+    }
     return { code: "conflict", message: error.message, retryable: false };
   }
   return {

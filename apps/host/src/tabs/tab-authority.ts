@@ -1,5 +1,6 @@
 import {
   OpensteerError,
+  agentGrantAllows,
   isPhoneDisplayDefinitionId,
   type ResourceAccessLevel,
   type DeviceId,
@@ -181,6 +182,12 @@ function tabTargetAuthority(
     if (actor.kind === "person" && "id" in target && required === "read") return true;
     let computerId = "computerId" in target ? target.computerId : undefined;
     const profileId = target.kind === "page" && "profileId" in target ? target.profileId : null;
+    if (
+      selected &&
+      profileId &&
+      !agentGrantAllows(selected.grant, { kind: "browser-profile", profileId }, required)
+    )
+      return false;
     if (target.kind === "app") {
       const app = (await (apps ??= appRows.execute())).find((app) => app.id === target.appId);
       if (!app || app.deleting) return false;

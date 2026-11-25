@@ -1014,7 +1014,10 @@ export class BrowserService {
   readonly #agentAdmissions = new KeyedMutationQueue();
   readonly #runnerAccessGeneration = new Map<RunnerId, number>();
   #accessGeneration = 0;
-  readonly #deviceAccessDisabled = new Error("This device's browser access was turned off.");
+  readonly #deviceAccessDisabled = new OpensteerError({
+    code: "forbidden",
+    message: "This device's browser access was turned off.",
+  });
   readonly #requireAgentAccess: (runnerId: RunnerId) => Promise<void>;
   readonly #requireAgentVisibility: (runnerId: RunnerId) => Promise<void>;
   readonly #detachRunnerAgents: BrowserServiceOptions["detachRunnerAgents"];
@@ -1098,9 +1101,13 @@ export class BrowserService {
     const opens = this.#agentOpens.get(runnerId) ?? new Set<(reason?: unknown) => void>();
     opens.add(abort);
     this.#agentOpens.set(runnerId, opens);
+    let removed = false;
     return () => {
+      if (removed) return;
+      removed = true;
       opens.delete(abort);
-      if (!opens.size) this.#agentOpens.delete(runnerId);
+      if (!opens.size && this.#agentOpens.get(runnerId) === opens)
+        this.#agentOpens.delete(runnerId);
     };
   }
   readonly #closing = new AbortController();
@@ -2574,7 +2581,8 @@ export class BrowserService {
             )?.catch(() => undefined);
           }
           if (settled?.outcome.kind === "failed")
-            throw error instanceof OpensteerError && error.code === "forbidden"
+            throw (error instanceof OpensteerError && error.code === "forbidden") ||
+              error instanceof BrowserCdpConnectionEnded
               ? error
               : this.#tabOpenFailure(settled);
         } catch (settlementError) {
@@ -3001,6 +3009,9 @@ export class BrowserService {
       if (agent && binding.outcome.kind === "opened")
         await this.admitAgentBrowser(agent, "read-write", [record]);
       if (binding.outcome.kind !== "opened") {
+        const opens = agent ? this.#beginTaskPageOpen(record.id) : undefined;
+        const untrackOpen =
+          agent && budget.abort ? this.#trackAgentOpen(record.runnerId, budget.abort) : undefined;
         // Admission and the page request share the computer's admission lane, so
         // turning browser access off cannot land between them.
         const send = async () => {
@@ -3031,7 +3042,6 @@ export class BrowserService {
             command.url && !agent
               ? broker.beginHistoryNavigation(ownerId, command.typed === true)
               : undefined;
-          if (!budget.pool) budget.pageRequested = true;
           const request = broker.requestCdp(
             {
               type: "cdp.command",
@@ -3065,59 +3075,62 @@ export class BrowserService {
               },
             },
             budget.confirmed || budget.pool ? budget.signal : undefined,
-            budget.pool
-              ? {
-                  recheck: async () => {
-                    const current = await this.#repository.getBrowserSessionForOwner(
-                      record.id,
-                      ownerId,
-                    );
-                    if (
-                      !current ||
-                      current.runnerId !== record.runnerId ||
-                      current.runtimeId !== record.runtimeId ||
-                      current.profileId !== record.profileId
-                    )
-                      throw unavailable("The browser session changed while waiting.");
-                    this.#requireOpenableSession(current);
-                    if (agent) {
-                      await this.admitAgentBrowser(agent, "read-write", [current]);
-                      await this.#requireAgentAccess(record.runnerId);
-                    }
-                    await budget.browserSend?.recheck();
-                    // Final synchronous switch fence immediately before the frame write (V2 / Opus M1):
-                    // disableAgentAccess bumps #runnerAccessGeneration synchronously even if the
-                    // Runner admission lane was released before #sendCommand's recheck ran.
-                    if (
-                      agent &&
-                      (this.#runnerAccessGeneration.get(record.runnerId) ?? 0) !== accessGeneration
-                    )
-                      throw new OpensteerError({
-                        code: "forbidden",
-                        message: "This device's browser access was turned off.",
-                      });
-                  },
-                  submitted: () => {
-                    budget.pageRequested = true;
-                    budget.browserSend?.submitted();
-                  },
-                  ...(budget.browserSend ? { acknowledged: budget.browserSend.acknowledged } : {}),
-                }
-              : undefined,
+            {
+              ...(budget.pool
+                ? {
+                    recheck: async () => {
+                      const current = await this.#repository.getBrowserSessionForOwner(
+                        record.id,
+                        ownerId,
+                      );
+                      if (
+                        !current ||
+                        current.runnerId !== record.runnerId ||
+                        current.runtimeId !== record.runtimeId ||
+                        current.profileId !== record.profileId
+                      )
+                        throw unavailable("The browser session changed while waiting.");
+                      this.#requireOpenableSession(current);
+                      if (agent) {
+                        await this.admitAgentBrowser(agent, "read-write", [current]);
+                        await this.#requireAgentAccess(record.runnerId);
+                      }
+                      await budget.browserSend?.recheck();
+                    },
+                  }
+                : {}),
+              ...(agent
+                ? {
+                    beforeWrite: () => {
+                      if (this.#endedBindings.has(agent.agentBindingId))
+                        throw new BrowserCdpConnectionEnded(
+                          "This task's browser access has ended.",
+                        );
+                      if (
+                        (this.#runnerAccessGeneration.get(record.runnerId) ?? 0) !==
+                        accessGeneration
+                      )
+                        throw this.#deviceAccessDisabled;
+                    },
+                  }
+                : {}),
+              submitted: () => {
+                untrackOpen?.();
+                budget.pageRequested = true;
+                budget.browserSend?.submitted();
+              },
+              ...(budget.browserSend ? { acknowledged: budget.browserSend.acknowledged } : {}),
+            },
           );
           // Awaited just after the lane releases; a rejection meanwhile is not unhandled.
           request.catch(() => undefined);
           return { broker, navigationId, request };
         };
-        const opens = agent ? this.#beginTaskPageOpen(record.id) : undefined;
-        const untrackOpen =
-          agent && budget.abort ? this.#trackAgentOpen(record.runnerId, budget.abort) : undefined;
         let tabId: BrowserSurfaceId;
         let broker: Awaited<ReturnType<typeof send>>["broker"];
         let navigationId: Awaited<ReturnType<typeof send>>["navigationId"];
         try {
           const sent = agent ? await this.withRunnerAdmission(record.runnerId, send) : await send();
-          untrackOpen?.();
           ({ broker, navigationId } = sent);
           const response = await sent.request;
           ({ tabId } = z.object({ tabId: BrowserSurfaceIdSchema }).parse(response.result));
@@ -6552,6 +6565,7 @@ export class BrowserService {
           (!bindingWasEnded ? await this.#actorToken(input, record.id) : undefined);
         if (lease && !(await fillAllowed())) return expired;
         assertAttached(bindingWasEnded);
+        let writeAccessGeneration = this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
         const admitted = await this.#admitAgentBackend(input, "cdp");
         if (admitted.record.id !== record.id)
           throw new BrowserCdpConnectionEnded(
@@ -6633,6 +6647,13 @@ export class BrowserService {
             browserSend.target.runtimeId !== record.runtimeId)
         )
           throw new BrowserCdpConnectionEnded("This page changed browser.");
+        const beforeWrite = () => {
+          if (!bindingWasEnded && this.#endedBindings.has(input.agentBindingId))
+            throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
+          if ((this.#runnerAccessGeneration.get(record.runnerId) ?? 0) !== writeAccessGeneration)
+            throw new BrowserCdpConnectionEnded("This device's browser access was turned off.");
+          assertAttached(bindingWasEnded);
+        };
         const answered = broker.requestCdp(
           {
             ...(replyBudget ? { replyBudget } : {}),
@@ -6653,7 +6674,7 @@ export class BrowserService {
           browserSend
             ? {
                 recheck: async () => {
-                  const accessGeneration = this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
+                  writeAccessGeneration = this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
                   await this.#requireAgentAccess(record.runnerId);
                   if (lease && !(await fillAllowed())) throw new BrowserCdpConnectionEnded();
                   await browserSend.recheck();
@@ -6662,26 +6683,28 @@ export class BrowserService {
                     (await readWitnesses(input.scriptTabId))?.tab !== expectedTab
                   )
                     throw new BrowserCdpConnectionEnded("This browser page is stale.");
-                  if ((this.#runnerAccessGeneration.get(record.runnerId) ?? 0) !== accessGeneration)
-                    throw new BrowserCdpConnectionEnded(
-                      "This device's browser access was turned off.",
-                    );
                   assertAttached(false);
                 },
+                beforeWrite,
                 submitted: browserSend.submitted,
                 acknowledged: browserSend.acknowledged,
               }
             : pooledRelay
               ? {
                   recheck: async () => {
+                    writeAccessGeneration = this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
                     await this.#requireAgentAccess(record.runnerId);
                     await this.admitAgentBrowser(input, "read-write", [record]);
                     assertAttached(false);
                   },
+                  beforeWrite,
                   submitted: () => pooledRelay.submitted(),
                   acknowledged: () => pooledRelay.acknowledged(),
                 }
-              : undefined,
+              : {
+                  beforeWrite,
+                  submitted: () => {},
+                },
         );
         pooledRelay?.track(command.method, command.parameters, answered);
         if (scriptAttachmentId && command.method === browserHostMethods.resumeTab)
@@ -10153,7 +10176,12 @@ export class HostedBrowserBroker {
   requestCdp(
     message: BrowserCdpRequest,
     signal?: AbortSignal,
-    admission?: { recheck(): Promise<void>; submitted(): void; acknowledged?(): void },
+    admission?: {
+      recheck?(): Promise<void>;
+      beforeWrite?(): void;
+      submitted(): void;
+      acknowledged?(): void;
+    },
   ): Promise<BrowserCdpResponse> {
     signal?.throwIfAborted();
     const parsed = BrowserClientMessageSchema.parse(message) as BrowserCdpRequest;
@@ -10224,6 +10252,8 @@ export class HostedBrowserBroker {
           admission?.submitted();
         },
         admission?.recheck,
+        undefined,
+        admission?.beforeWrite,
       ).catch((error) => {
         if (this.#pendingCdpRequests.get(parsed.requestId) !== pending) return;
         if (parsed.replyBudget && pending.submitted) {
@@ -11764,6 +11794,7 @@ export class HostedBrowserBroker {
     onSubmit?: () => void,
     recheck?: () => Promise<void>,
     shouldSend?: () => boolean,
+    beforeWrite?: () => void,
   ): Promise<void> {
     if (
       message.type === "navigation.reload" &&
@@ -11895,6 +11926,7 @@ export class HostedBrowserBroker {
             resolve();
             return;
           }
+          beforeWrite?.();
           onSubmit?.();
           this.#socket.send(frame, { binary: false }, (error) =>
             error ? reject(error) : resolve(),

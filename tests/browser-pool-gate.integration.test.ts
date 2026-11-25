@@ -51,6 +51,17 @@ import {
   BrowserService,
   HostedBrowserBroker,
 } from "../apps/host/src/browser/browser-service.js";
+import type { RunToolScope } from "../apps/host/src/agents/run-tool-tokens.js";
+import { agentToolFailure } from "../apps/host/src/mcp/agent-tool-failure.js";
+import { TabToolHandlers } from "../apps/host/src/mcp/handlers/tabs.js";
+import {
+  authorizeTabActor,
+  authorizeTabTarget,
+  canReadTab,
+  tabComputer,
+  tabReadAuthority,
+} from "../apps/host/src/tabs/tab-authority.js";
+import { TabService } from "../apps/host/src/tabs/tab-service.js";
 import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
 import { requireRunnerDeviceAccess } from "../apps/host/src/administration/device-access.js";
 import {
@@ -4764,7 +4775,7 @@ it("V4, V5 & V6 (Opus N2/N5/N7): Stop during reserve wait reports task ended, CO
       accessMode: "full-access",
       grant: {
         scope: "selected",
-        tasks: false,
+        tasks: true,
         resources: [{ kind: "browser-profile", profileId: j.profile!.id }],
       },
       resource: "https://pooled.test/mcp",
@@ -4865,6 +4876,293 @@ it("V4, V5 & V6 (Opus N2/N5/N7): Stop during reserve wait reports task ended, CO
     expect(home.coordinator.gate.held).toBe(0);
     resume.allow();
   } finally {
+    await j.close();
+  }
+});
+
+it("V7 (Sol Round 6): Stop during #resumeTabOpen's final device-access read blocks the write so no second page opens", async () => {
+  let home: Awaited<ReturnType<Awaited<ReturnType<typeof journey>>["startHome"]>> | undefined;
+  let runBindingId = "";
+  let queuedOpen = false;
+  let recheckAccessCalls = 0;
+  let stoppedDuringRecheck = false;
+  const j = await journey("v7-stop-during-recheck", {
+    chromium: false,
+    profile: true,
+    requireAgentAccess: async () => {
+      if (!queuedOpen) return;
+      recheckAccessCalls += 1;
+      // Call 1 is inside recheck's admitAgentBrowser; call 2 is the final device-access read
+      // after admitAgentBrowser's last #endedBindings check and before tail.then(write).
+      if (recheckAccessCalls === 2 && !stoppedDuringRecheck) {
+        stoppedDuringRecheck = true;
+        await home!.service.detachAgentSessionsForBinding(runBindingId);
+      }
+    },
+  });
+  const origRequestCdp = HostedBrowserBroker.prototype.requestCdp;
+  const requestSpy = vi.spyOn(HostedBrowserBroker.prototype, "requestCdp");
+  try {
+    home = await j.startHome();
+    const profile = j.profile!;
+    const personTab = await home.service.openTab(j.task.userId, {
+      type: "browser.tab.open",
+      identity: { kind: "profile", profileId: profile.id },
+      placement: { kind: "runner", runnerId: j.task.runnerId },
+      idempotencyKey: "v7-person-seed",
+    });
+
+    const run = {
+      agentBindingId: `run:${j.task.runId}`,
+      ownerId: j.task.userId,
+      environmentId: j.task.environmentId,
+      threadId: j.task.threadId,
+    };
+    runBindingId = run.agentBindingId;
+    requestSpy.mockImplementation(function (
+      this: HostedBrowserBroker,
+      ...args: Parameters<HostedBrowserBroker["requestCdp"]>
+    ) {
+      if (args[0].command.method === browserHostMethods.openTab) {
+        queuedOpen = true;
+        recheckAccessCalls = 0;
+      }
+      return origRequestCdp.apply(this, args);
+    });
+
+    const openErr = await home.service
+      .openTab(
+        j.task.userId,
+        {
+          type: "browser.tab.open",
+          identity: { kind: "profile", profileId: profile.id },
+          placement: { kind: "runner", runnerId: j.task.runnerId },
+          idempotencyKey: "v7-agent-second-tab",
+        },
+        run,
+      )
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+    expect(stoppedDuringRecheck).toBe(true);
+    expect(openErr).toBeInstanceOf(BrowserCdpConnectionEnded);
+    expect(agentToolFailure(openErr, "write")).toEqual({
+      code: "forbidden",
+      message: "Run tool authority has ended",
+      retryable: false,
+    });
+    const pages = [...(home.service.pageInventory(personTab.sessionId)?.records.keys() ?? [])];
+    expect(pages).toEqual([personTab.tabId]);
+  } finally {
+    requestSpy.mockRestore();
+    await j.close();
+  }
+});
+
+it("V8 & V9 (Sol Round 6): tab_open hides ungranted profiles with identical reads before profile/device lookup, and maps stopped-Run reserve wait to Run tool authority has ended", async () => {
+  const j = await journey("v8-v9-tool-boundary", { chromium: false, profile: true });
+  const unused = async (): Promise<never> => {
+    throw new Error("Unexpected native tab call");
+  };
+  let tabs: TabService | undefined;
+  try {
+    const home = await j.startHome();
+    const privateProfile = await j.store.createBrowserProfile({
+      name: "Private Vault",
+      ownerId: j.task.userId,
+      homeRunnerId: j.task.runnerId,
+      idempotencyKey: "v8-private-profile",
+    });
+
+    // Park the browser cleanly.
+    expect(await home.coordinator.tryPark()).toBe("parked");
+    expect(home.coordinator.gate.phase).toBe("parked");
+
+    // Put the Run in a connected agent's selected-grant lineage that grants ONLY j.profile!.id.
+    const connections = new AgentConnectionStore(j.database);
+    const connection = await connections.create({
+      userId: j.task.userId,
+      label: "Connected agent V8",
+      clientName: "Connected agent V8",
+      accessMode: "full-access",
+      grant: {
+        scope: "selected",
+        tasks: true,
+        resources: [{ kind: "browser-profile", profileId: j.profile!.id }],
+      },
+      resource: "https://pooled.test/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    expect(await connections.activate(connection.id, randomUUID())).toBe(true);
+    const { grantRevision } = await j.database
+      .selectFrom("agentConnections")
+      .select("grantRevision")
+      .where("id", "=", connection.id)
+      .executeTakeFirstOrThrow();
+    await j.database
+      .updateTable("threads")
+      .set({ originConnectionId: connection.id })
+      .where("id", "=", j.task.threadId)
+      .execute();
+    await j.database
+      .updateTable("runs")
+      .set({
+        connectionId: connection.id,
+        admittedGrantRevision: grantRevision,
+        admittedAccessMode: "full-access",
+      })
+      .where("id", "=", j.task.runId)
+      .execute();
+
+    tabs = new TabService({
+      store: new TabStore(j.database),
+      devices: j.store,
+      pages: home.service.pageTabs,
+      nativeTargets: {
+        resolveWindow: unused,
+        windowState: async () => ({ state: "asleep", usedBy: [] }),
+        phoneState: async () => ({ state: "asleep", usedBy: [] }),
+        openOwnerView: unused,
+        closeOwnerViews: async () => {},
+        onTargetAcquired: () => () => {},
+      },
+      apps: { get: unused },
+      computer: async (owner, id, db) => ({
+        ...(await tabComputer(owner, id, db)),
+        connected: false,
+      }),
+      canRead: canReadTab,
+      readAuthority: tabReadAuthority,
+      canReadTask: async () => true,
+      authorize: authorizeTabTarget,
+      authorizeMembership: authorizeTabActor,
+      onError: (error) => {
+        throw error;
+      },
+    });
+    const tabHandlers = new TabToolHandlers(tabs);
+    const claims: RunToolScope = {
+      aud: "opensteer-run-tools",
+      iss: "opensteer-host",
+      iat: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + 3600,
+      jti: randomUUID(),
+      requestedBy: j.task.userId,
+      threadId: j.task.threadId,
+      runId: j.task.runId,
+      environmentId: j.task.environmentId,
+      runnerId: j.task.runnerId,
+      runnerBootId: j.task.runnerBootId,
+      bindingGeneration: j.task.bindingGeneration,
+    };
+    const caller = {
+      kind: "run" as const,
+      userId: j.task.userId,
+      claims,
+      lineage: {
+        connectionId: connection.id,
+        grant: {
+          scope: "selected" as const,
+          tasks: true as const,
+          resources: [{ kind: "browser-profile" as const, profileId: j.profile!.id }],
+        },
+        accessMode: "full-access" as const,
+        grantRevision,
+      },
+    };
+
+    // V8: trace executed SQL statements for tab_open on an ungranted existing profile vs missing ID.
+    const executedSql: string[] = [];
+    const executorProto = Object.getPrototypeOf(j.database.getExecutor()) as {
+      executeQuery: (compiledQuery: { readonly sql: string }) => Promise<unknown>;
+    };
+    const origExecuteQuery = executorProto.executeQuery;
+    const executeSpy = vi.spyOn(executorProto, "executeQuery").mockImplementation(function (
+      this: unknown,
+      compiledQuery: { readonly sql: string },
+    ) {
+      executedSql.push(compiledQuery.sql);
+      return origExecuteQuery.call(this, compiledQuery);
+    });
+
+    let privateSql: string[] = [];
+    let missingSql: string[] = [];
+    let privateFailure: ReturnType<typeof agentToolFailure>;
+    let missingFailure: ReturnType<typeof agentToolFailure>;
+    try {
+      executedSql.length = 0;
+      const privateErr = await tabHandlers
+        .tab_open({
+          caller,
+          input: {
+            target: { kind: "page", profileId: privateProfile.id, url: "https://example.com/" },
+          },
+          operationKey: `v8-private-${randomUUID()}`,
+        })
+        .catch((error: unknown) => error);
+      privateSql = [...executedSql];
+      privateFailure = agentToolFailure(privateErr, "write", undefined, true);
+
+      executedSql.length = 0;
+      const missingErr = await tabHandlers
+        .tab_open({
+          caller,
+          input: {
+            target: {
+              kind: "page",
+              profileId: createId("browserProfile"),
+              url: "https://example.com/",
+            },
+          },
+          operationKey: `v8-missing-${randomUUID()}`,
+        })
+        .catch((error: unknown) => error);
+      missingSql = [...executedSql];
+      missingFailure = agentToolFailure(missingErr, "write", undefined, true);
+    } finally {
+      executeSpy.mockRestore();
+    }
+
+    expect(privateFailure).toMatchObject({
+      code: "not_found",
+      message: "Tab not found.",
+      retryable: false,
+    });
+    expect(privateFailure).toEqual(missingFailure);
+    expect(privateSql).toEqual(missingSql);
+    expect(privateSql.some((statement) => /browser_profiles|from "devices"/i.test(statement))).toBe(
+      false,
+    );
+    expect(home.coordinator.gate.phase).toBe("parked");
+
+    // V9: a Run stopped while tab_open waits to wake its granted pooled profile gets the
+    // stopped-Run tool refusal ("Run tool authority has ended", forbidden) with no advice.
+    const resume = holdResume(j.controller);
+    const waitingTabOpen = tabHandlers
+      .tab_open({
+        caller,
+        input: {
+          target: { kind: "page", profileId: j.profile!.id, url: "https://example.com/" },
+        },
+        operationKey: `v9-stop-wait-${randomUUID()}`,
+      })
+      .catch((error: unknown) => error);
+    await resume.seen;
+    await home.service.detachAgentSessionsForBinding(`run:${j.task.runId}`);
+    const stopErr = await waitingTabOpen;
+    const stopFailure = agentToolFailure(stopErr, "write");
+    expect(stopFailure).toEqual({
+      code: "forbidden",
+      message: "Run tool authority has ended",
+      retryable: false,
+    });
+    expect(stopFailure.next).toBeUndefined();
+    expect(home.coordinator.gate.held).toBe(0);
+    resume.allow();
+  } finally {
+    tabs?.dispose();
     await j.close();
   }
 });
