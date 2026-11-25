@@ -1522,28 +1522,17 @@ async function managedProof(directory, shipped) {
       exit 1`,
       { managed: true },
     );
-    // The Home asks the Account for its feed and the installer it pins, then fetches the feed:
-    // it trusts both fixtures' certificates.
-    const refusedFeed = vm(
+    // The Home asks the Account for its feed and the installer it pins, then fetches the feed: it
+    // trusts both fixtures' certificates. Asked without blocking, so the Account fixture, served
+    // by this process, can answer.
+    const refusedFeed = await vmAsync(
       `cat ${quote(certificate)} ${quote(feedCertificate)} > ${quote(`${feedDirectory}/both.pem`)}
       CURL_CA_BUNDLE=${quote(`${feedDirectory}/both.pem`)} operator update`,
-      { managed: true, allowFailure: true },
+      { managed: true },
     );
     assert.notEqual(refusedFeed.status, 0);
-    if (!/Managed Home releases require a digest/u.test(refusedFeed.stderr)) {
-      // What the Account fixture saw, and what the Home's own request gets from it.
-      const direct = vm(
-        `source "$OPENSTEER_HOME_DIR/current/common.sh"
-        answer=$(mktemp); CURL_CA_BUNDLE=${quote(`${feedDirectory}/both.pem`)} ask_account release-feed "$answer" && echo answered
-        cat "$answer"; rm -f "$answer"
-        sed -n 's/^OPENSTEER_HOME_ACCOUNT_ORIGIN=//p' "$OPENSTEER_HOME_DIR/config.env"
-        CURL_CA_BUNDLE=${quote(`${feedDirectory}/both.pem`)} curl -sS -o /dev/null -w '%{http_code}' "$(sed -n "s/^OPENSTEER_HOME_ACCOUNT_ORIGIN='\\([^']*\\)'$/\\1/p" "$OPENSTEER_HOME_DIR/config.env")/v1/cloud-computers/${cloudComputerId}/release-feed" 2>&1 || true`,
-        { managed: true, allowFailure: true },
-      );
-      throw new Error(
-        `${refusedFeed.stderr}\nrelease-feed requests seen: ${releaseFeedRequests}\n${direct.stdout}${direct.stderr}`,
-      );
-    }
+    assert.equal(releaseFeedRequests, 1, refusedFeed.stderr);
+    assert.match(refusedFeed.stderr, /Managed Home releases require a digest/u);
     assert.equal(
       vm(
         `load_compose
@@ -2831,6 +2820,20 @@ mv "$OPENSTEER_HOME_DIR/current/common.proof.sh" "$OPENSTEER_HOME_DIR/current/co
               systemctl daemon-reload
             fi`),
             ) && unitsStopped;
+        // Any unit that runs something of this run's Homes is a leak: removed, and said.
+        clean(() => {
+          const leaked = vm(
+            `grep -l -- ${quote(`${vmDirectory}/`)} /etc/systemd/system/*.service /etc/systemd/system/*.timer 2>/dev/null | xargs -r -n1 basename || true`,
+          )
+            .split("\n")
+            .filter(Boolean);
+          if (!leaked.length) return;
+          vm(`systemctl stop ${leaked.join(" ")} || true
+            systemctl disable ${leaked.join(" ")} || true
+            rm -f ${leaked.map((name) => `/etc/systemd/system/${name}`).join(" ")}
+            systemctl daemon-reload`);
+          throw new Error(`Units of this run outlived it: ${leaked.join(", ")}`);
+        });
         if (bundleServed)
           clean(() =>
             vm(`if systemctl show ${updatesProject}-bundle.service -p LoadState --value | grep -qx loaded; then
