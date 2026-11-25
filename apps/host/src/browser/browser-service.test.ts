@@ -13351,18 +13351,16 @@ describe("pooled identity open authority precheck and outage refusal words (pool
     const liveSessionId = createBrowserSessionId();
     await repository.createBrowserSession({
       id: liveSessionId,
-      ownerId,
       opener: { kind: "person", userId: ownerId },
       placementKey: `runner:${runnerId}`,
       runnerId,
       origin: "person",
       profileId: profile.id,
       runtimeId: "browser-main",
-      pooled: true,
     });
     await repository.transitionBrowserSession({ sessionId: liveSessionId, state: "ready" });
 
-    const liveTabId = createId("surface");
+    const liveTabId = BrowserSurfaceIdSchema.parse(`srf_${randomUUID()}`);
     const liveRow = {
       id: liveTabId,
       ownerId,
@@ -13397,7 +13395,7 @@ describe("pooled identity open authority precheck and outage refusal words (pool
     expect(Date.now() - startedActivate).toBeLessThan(2_000);
 
     // 2. Restoring a tab whose session ended refuses at once without promising saved state kept.
-    const endedTabId = createId("surface");
+    const endedTabId = BrowserSurfaceIdSchema.parse(`srf_${randomUUID()}`);
     const endedRow = {
       ...liveRow,
       id: endedTabId,
