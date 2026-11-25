@@ -69,6 +69,12 @@ describe("an HTTPS Home's session cookie stays off another site's requests (D)",
             response.end("<title>Signed in</title>");
             return;
           }
+          // The browser's own request for the icon of the Home's own page (its sign-in, loaded
+          // first), which can arrive late: no page of another site makes it.
+          if (url === "/favicon.ico") {
+            response.writeHead(404).end();
+            return;
+          }
           homeHits.push({
             path: url,
             cookie: String(request.headers.cookie ?? ""),
