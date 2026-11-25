@@ -194,6 +194,42 @@ integration("workspace tabs", () => {
     for (const id of closed.tabIds) expect(await tabs.get(ownerId, id)).toBeNull();
   });
 
+  it("closes only the members the person was shown, and none if one of them left the group (D4)", async () => {
+    const { tabs, ownerId, members, groupId, write } = await groupOf(2);
+    const shown = members.map((tab) => tab.id);
+    // A third tab joins after the person read the card: it is left open, in its group.
+    const late = write("app", { appId: `app_${randomUUID()}` });
+    await tabs.open(late, "late");
+    await tabs.organize(ownerId, { tabIds: [late.id], group: { groupId } }, "join");
+    const closed = await tabs.closeGroup(
+      ownerId,
+      groupId,
+      "close-shown",
+      undefined,
+      undefined,
+      shown,
+    );
+    expect([...closed.tabIds].sort()).toEqual([...shown].sort());
+    expect(await tabs.get(ownerId, late.id)).not.toBeNull();
+    expect(groupIn(closed.layout, groupId)).toMatchObject({ group: { tabIds: [late.id] } });
+  });
+
+  it("refuses a close of shown members when the group no longer holds them all", async () => {
+    const { tabs, ownerId, members, groupId } = await groupOf(2);
+    await tabs.organize(ownerId, { tabIds: [members[0]!.id], group: null } as never, "leave");
+    await expect(
+      tabs.closeGroup(
+        ownerId,
+        groupId,
+        "close-stale",
+        undefined,
+        undefined,
+        members.map((tab) => tab.id),
+      ),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(await tabs.get(ownerId, members[1]!.id)).not.toBeNull();
+  });
+
   it("removes a group that is already empty", async () => {
     const { tabs, ownerId, members, outside, groupId } = await groupOf(2);
     // Closing every member one by one keeps the empty group, for Undo.

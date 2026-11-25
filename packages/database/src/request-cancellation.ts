@@ -44,28 +44,27 @@ function pendingCancellationQuery(transaction: Transaction<DatabaseSchema>, inpu
     pending = pending.where("id", "in", [...input.requestIds]);
   }
   if (input.runId)
-    pending = pending
-      .where("originatingRunId", "=", input.runId)
-      .where((eb) =>
-        eb.or([
-          eb("mode", "=", "live"),
-          input.cancelProposals ? eb("command", "is not", null) : eb.val(false),
-          eb.and([
-            eb("kind", "in", ["plugin.approval", "plugin.input"]),
-            input.cancelHandedOffPlugins
-              ? eb.val(true)
-              : eb.not(
-                  eb.exists(
-                    eb
-                      .selectFrom("pluginExecutions")
-                      .select("id")
-                      .whereRef("pluginExecutions.requestId", "=", "requests.id")
-                      .where("handoff", "=", true),
-                  ),
+    pending = pending.where("originatingRunId", "=", input.runId).where((eb) =>
+      eb.or([
+        eb("mode", "=", "live"),
+        // Only when asked for: the statement is otherwise exactly as it was (rule 7).
+        ...(input.cancelProposals ? [eb("command", "is not", null)] : []),
+        eb.and([
+          eb("kind", "in", ["plugin.approval", "plugin.input"]),
+          input.cancelHandedOffPlugins
+            ? eb.val(true)
+            : eb.not(
+                eb.exists(
+                  eb
+                    .selectFrom("pluginExecutions")
+                    .select("id")
+                    .whereRef("pluginExecutions.requestId", "=", "requests.id")
+                    .where("handoff", "=", true),
                 ),
-          ]),
+              ),
         ]),
-      );
+      ]),
+    );
   if (input.originatingThreadId) {
     pending = pending.where("originatingThreadId", "=", input.originatingThreadId);
   }

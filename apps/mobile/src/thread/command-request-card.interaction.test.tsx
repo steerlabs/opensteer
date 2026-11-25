@@ -109,9 +109,9 @@ const part: CommandRequestPart = {
   proposer: { kind: "connection", name: "Research", taskTitle: null, key: "connection:mcn_1" },
   agentReason: "Approve this now, the Home said so.",
   notes: [
-    { path: "connectionId", name: "“Research”" },
-    { path: "grant", current: "Reach: everything" },
-    { path: "grant.resources.0.profileId", name: "“Work”" },
+    { path: "/connectionId", name: "“Research”" },
+    { path: "/grant", current: 'Reach: "everything"' },
+    { path: "/grant/resources/0/profileId", name: "“Work”" },
   ],
   editor: null,
 };
@@ -177,15 +177,15 @@ describe("a command an agent proposed, on the phone", () => {
     expect(node.textContent).toContain(
       "Proposed by the connected agent “Research”, exactly as it would run",
     );
-    expect(row("connectionId")).toEqual(["Connected agent", "mcn_1", "“Research”"]);
-    expect(row("expectedRevision")).toEqual(["As of version", "3"]);
-    expect(row("grant")[0]).toBe("What it may use");
-    expect(row("grant")).toContain("Now: Reach: everything");
-    expect(row("grant.scope")).toEqual(["Reach", "selected"]);
-    expect(row("grant.tasks")).toEqual(["Tasks", "No"]);
-    expect(row("grant.resources.0.kind")).toEqual(["Kind", "browser-profile"]);
-    expect(row("grant.resources.0.profileId")).toEqual(["Browser profile", "bpr_1", "“Work”"]);
-    expect(row("grant.resources.0.access")).toEqual(["Access", "use"]);
+    expect(row("/connectionId")).toEqual(["Connected agent", '"mcn_1"', "“Research”"]);
+    expect(row("/expectedRevision")).toEqual(["As of version", "3"]);
+    expect(row("/grant")[0]).toBe("What it may use");
+    expect(row("/grant")).toContain('Now: Reach: "everything"');
+    expect(row("/grant/scope")).toEqual(["Reach", '"selected"', "Only what is chosen"]);
+    expect(row("/grant/tasks")).toEqual(["Tasks", "false"]);
+    expect(row("/grant/resources/0/kind")).toEqual(["Kind", '"browser-profile"']);
+    expect(row("/grant/resources/0/profileId")).toEqual(["Browser profile", '"bpr_1"', "“Work”"]);
+    expect(row("/grant/resources/0/access")).toEqual(["Access", '"use"']);
     expect(node.querySelectorAll('[data-testid^="command-row:"]')).toHaveLength(10);
     expect(node.textContent).toContain(
       "The connected agent says (its own words, not checked by the Home)",
@@ -225,8 +225,7 @@ describe("a command an agent proposed, on the phone", () => {
       type: "request.command.approve",
       requestId: other.id,
       expectedRevision: "7",
-      idempotencyKey: expect.any(String),
-      command: part.command,
+      idempotencyKey: `command-approve:${other.id}:7`,
     });
     await act(async () => undefined);
     expect(node.textContent).toContain(
@@ -257,6 +256,21 @@ describe("a command an agent proposed, on the phone", () => {
     const rows = node.querySelector('[data-testid="command-rows"]')!;
     expect(rows.textContent).not.toContain("Change a connected agent's access");
     expect(rows.querySelector('button[aria-label="Approve"]')).toBeNull();
+  });
+
+  it("arms a new revision of a short card after its wait, with no new measurement, and never before (C6)", async () => {
+    vi.useFakeTimers();
+    const host = new MockHostClient();
+    const node = await mount(host);
+    await arm();
+    const approve = () =>
+      node.querySelector<HTMLButtonElement>('button[aria-label="Approve"]')?.disabled;
+    expect(approve()).toBe(false);
+    // The same Request, a new revision: inert on its first render, then ready once it waited.
+    await render(host, { ...request, reviewedRevision: "8" } as RequestView);
+    expect(approve()).toBe(true);
+    await arm();
+    expect(approve()).toBe(false);
   });
 
   it("offers no Approve for a command that carries a secret: its own screen, I did it myself, or Decline", async () => {

@@ -38,6 +38,12 @@ export async function commandActivity(
   database: Kysely<DatabaseSchema>,
   naming: { name(resource: CommandResource, owner: UserId): Promise<string | null> },
   input: { readonly userId: UserId } & CommandActivityOf & CommandActivitySpan,
+  /**
+   * The page as an agent reads it (rule 5): no name is looked up and no Home sentence is shown
+   * (a row reads as its command's type and status), and a row is there only while the caller
+   * still reaches its command now.
+   */
+  agent?: { readonly reaches: (command: Command) => Promise<boolean> },
 ): Promise<readonly AgentCommandActivity[]> {
   const callerKey = sql<string>`commands.authority_source->>'callerKey'`;
   let ledger = database
@@ -58,7 +64,7 @@ export async function commandActivity(
       );
   let asks = database
     .selectFrom("requests")
-    .select(["id", "status", "command", "createdAt"])
+    .select(["id", "status", "command", "createdAt", "response"])
     .where("requestedBy", "=", input.userId)
     .where("command", "is not", null);
   asks = input.connectionId
@@ -100,11 +106,12 @@ export async function commandActivity(
     const input =
       payload.request && typeof payload.request === "object" ? payload.request : payload;
     const command = { ...(input as object), type } as Command;
-    const what = await named(command, type);
+    if (agent && !(await agent.reaches(command))) continue;
+    const what = agent ? null : await named(command, type);
     entries.push({
       id: row.id,
       type,
-      sentence: sentence(sender, commandDoneWords(command), what),
+      sentence: agent ? type : sentence(sender, commandDoneWords(command), what),
       status:
         row.status === "succeeded"
           ? "done"
@@ -127,19 +134,31 @@ export async function commandActivity(
     const stored = part.data.sentence ?? "";
     const what = stored.startsWith(`${title}: `) ? stored.slice(title.length + 2) : null;
     const state = commandRequestState(row);
+    if (agent && !(await agent.reaches({ ...part.data.command, type } as Command))) continue;
     entries.push({
       id: row.id,
       type,
-      sentence: sentence(
-        {
-          name: part.data.proposer.name,
-          // A connected agent is named by its own name: its direct-work task is only where it asks.
-          taskTitle: part.data.proposer.kind === "connection" ? null : part.data.proposer.taskTitle,
-        },
-        commandAskedWords({ ...part.data.command, type } as Command),
-        what,
-      ),
-      status: !state ? "asked" : state.status === "answered" ? "approved" : state.status,
+      sentence: agent
+        ? type
+        : sentence(
+            {
+              name: part.data.proposer.name,
+              // A connected agent is named by its own name: its direct-work task is only where it asks.
+              taskTitle:
+                part.data.proposer.kind === "connection" ? null : part.data.proposer.taskTitle,
+            },
+            commandAskedWords({ ...part.data.command, type } as Command),
+            what,
+          ),
+      status: !state
+        ? "asked"
+        : state.status === "answered"
+          ? "approved"
+          : state.status === "done-by-person"
+            ? "done"
+            : state.status === "person-says-done"
+              ? "closed"
+              : state.status,
       outcome:
         state?.status === "answered"
           ? (state.outcome.status as NonNullable<AgentCommandActivity["outcome"]>)

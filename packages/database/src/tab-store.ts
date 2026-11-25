@@ -810,12 +810,17 @@ export class TabStore {
     key: string,
     authorize?: TabAuthorization,
     canClose?: (row: TabRecord) => boolean,
+    /**
+     * The members the person was shown: only these close, and none if one of them is no longer
+     * in the group (it changed since). A member that joined later is untouched.
+     */
+    only?: readonly TabId[],
   ): Promise<TabMutation> {
     return this.#mutate(
       ownerId,
       key,
       "tab.group.close",
-      { groupId },
+      { groupId, ...(only ? { tabIds: [...only] } : {}) },
       authorize,
       async (tx, { rows, layout }) => {
         const item = layout.items.find(
@@ -823,8 +828,15 @@ export class TabStore {
         );
         if (item?.kind !== "group") failure("not_found", "Tab group not found.");
         const members = new Set(item.group.tabIds);
+        if (only && only.some((tabId) => !members.has(tabId)))
+          failure("conflict", "This group changed since you read it. Look at it again.");
+        const shown = only ? new Set(only) : members;
         const open = rows.filter(
-          (row) => !row.closedAt && members.has(row.id) && (!canClose || canClose(row)),
+          (row) =>
+            !row.closedAt &&
+            members.has(row.id) &&
+            shown.has(row.id) &&
+            (!canClose || canClose(row)),
         );
         await this.#closeRows(tx, open, layout);
         const remaining = layout.items.find(

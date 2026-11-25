@@ -1,3 +1,5 @@
+import { closeAutomationProposals } from "./command-proposal-reach.js";
+import { lockRequestThreads } from "./request-persistence.js";
 import { outsideName } from "@opensteer/shared/outsideName";
 import { personalSettings, requirePersonalOwner } from "./personal-settings-store.js";
 import {
@@ -806,6 +808,17 @@ export class TriggerStore {
           : [];
         const heldOccurrences = new Set(observedActive.map(({ id }) => id));
         await lockWatchAnchorPlacementForTrigger(transaction, input.triggerId);
+        // Pausing or archiving closes what its runs proposed (D5): those Requests' task, its
+        // anchor, is taken here, in the order every lock is taken (occurrences, the watch's
+        // computer, threads, then the trigger).
+        if (ending) {
+          const anchor = await transaction
+            .selectFrom("triggers")
+            .select("anchorThreadId")
+            .where("id", "=", input.triggerId)
+            .executeTakeFirst();
+          if (anchor) await lockRequestThreads(transaction, [anchor.anchorThreadId]);
+        }
         const trigger = await lockTriggerForMutation(transaction, input);
         await requireTriggerExecutionAuthority(transaction, trigger);
         // Resumed, it would launch in the person's Agent home: refused now, in the launch's words.
@@ -1051,6 +1064,8 @@ export class TriggerStore {
             }
           }
         }
+        // Paused or archived, what its runs proposed closes with it (D5); resuming revives none.
+        if (ending) await closeAutomationProposals(transaction, updatedRow.id);
         return {
           canceledOccurrenceIds,
           runningFirings,

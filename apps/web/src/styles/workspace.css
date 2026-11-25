@@ -4314,11 +4314,17 @@ html[data-tab-sorting] * {
   font-size: var(--text-sm);
 }
 
+/* Everything but the sentence, who asked and the buttons scrolls, in one capped region. */
+.command-request__scroll {
+  display: grid;
+  gap: var(--space-8);
+  overflow-y: auto;
+  max-height: min(24rem, 50vh);
+}
+
 .command-request__rows {
   display: grid;
   gap: var(--space-4);
-  overflow-y: auto;
-  max-height: 24rem;
   margin: 0;
   padding: var(--space-8) var(--space-10);
   border-radius: var(--radius-sm);

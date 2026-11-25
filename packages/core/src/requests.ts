@@ -613,7 +613,10 @@ export const RequestAnswererViewSchema = z.union([
 export const commandRequestAnswers = {
   field: "decision",
   decline: "decline",
+  /** The person's statement that they did it: nothing claims it happened. */
   doneMyself: "done-myself",
+  /** Written by the Home alone, when the person's own command did what was asked. */
+  doneByPerson: "done-by-person",
 } as const;
 
 export const commandRequestOutcomeSchema = z.discriminatedUnion("status", [
@@ -687,18 +690,52 @@ export const CommandRequestPartSchema = z.object({
   /** The screen that performs it, filled in; null where only this card can. */
   editor: z.object({ screen: z.string().min(1).max(60) }).nullable(),
   outcome: commandRequestOutcomeSchema.optional(),
-  /** What the person approved and the Home ran, kept apart from what was proposed. */
-  approved: z
-    .object({
-      command: RequestJsonObjectSchema,
-      /** The person changed it before approving. */
-      changed: z.boolean(),
-    })
-    .optional(),
+  /** What the Home ran when the person approved: the stored proposal, exactly. */
+  approved: z.object({ command: RequestJsonObjectSchema }).optional(),
   /** The approving call's own key: the same approval again answers with its outcome. */
   approvalKey: z.string().min(1).max(200).optional(),
 });
 export type CommandRequestPart = z.infer<typeof CommandRequestPartSchema>;
+
+/**
+ * What became of a command Request, as an agent may read it: a status and nothing the Home
+ * looked up. `person-says-done` is the person's statement; `done-by-person` is the Home's own
+ * record that the person's command did what was asked.
+ */
+export type CommandAgentStatus =
+  | "pending"
+  | "approved-running"
+  | "approved-done"
+  | "approved-failed"
+  | "approved-unknown"
+  | "declined"
+  | "person-says-done"
+  | "done-by-person"
+  | "closed";
+
+export function commandAgentStatus(request: {
+  readonly status: string;
+  readonly response?: RequestResponse | null | undefined;
+  readonly command?: { readonly outcome?: CommandRequestOutcome | undefined } | null | undefined;
+}): CommandAgentStatus {
+  const answers =
+    request.response?.kind === "form" ? Object.values(request.response.answers).flat() : [];
+  if (request.status === "pending") return "pending";
+  if (answers.includes(commandRequestAnswers.doneByPerson)) return "done-by-person";
+  if (request.status === "declined")
+    return answers.includes(commandRequestAnswers.doneMyself) ? "person-says-done" : "declined";
+  if (request.status !== "fulfilled") return "closed";
+  switch (request.command?.outcome?.status) {
+    case "done":
+      return "approved-done";
+    case "failed":
+      return "approved-failed";
+    case "unknown":
+      return "approved-unknown";
+    default:
+      return "approved-running";
+  }
+}
 export type CommandRequestOutcome = z.infer<typeof commandRequestOutcomeSchema>;
 
 const requestBaseShape = {

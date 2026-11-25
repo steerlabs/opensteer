@@ -477,7 +477,6 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
         idempotencyKey: randomUUID(),
         requestId: first.id,
         expectedRevision: (await host.store.requests.revision(first.id))!,
-        command: (first.command as { command: Record<string, unknown> }).command,
       } as never,
       { headers: host.ownerHeaders },
     );
@@ -616,7 +615,6 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
         idempotencyKey: randomUUID(),
         requestId: renameAsk.id,
         expectedRevision: (await host.store.requests.revision(renameAsk.id))!,
-        command: renameAsk.command!.command,
       } as never,
       { headers: host.ownerHeaders },
     );
@@ -717,6 +715,55 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
     expect(readText).toContain(widenAsk.id);
     expect(readText).not.toContain("Private");
     expect(readText).not.toContain('"notes"');
+    // What it reads of its own proposal is what it sent and a status: never the Home's sentence.
+    expect(readText).not.toContain("Change a connected agent");
+    // C1: once the person takes away what a proposal is about, the agent no longer sees it at all,
+    // in its requests or its activity, while the person keeps a faithful record.
+    const holdsAWithTasks = await connect(
+      {
+        scope: "selected",
+        tasks: true,
+        resources: [{ kind: "browser-profile", profileId: a.id }],
+      },
+      "Renaming agent",
+    );
+    const profileRenaming = await call(holdsAWithTasks.client, "opensteer_command", {
+      command: { type: "browser.profile.rename", profileId: a.id, name: "Asked name" },
+    });
+    expect(
+      profileRenaming.structuredContent,
+      JSON.stringify(profileRenaming.content),
+    ).toMatchObject({
+      status: "pending",
+    });
+    const renameRequest = (profileRenaming.structuredContent as { requestId: string }).requestId;
+    const visible = async () =>
+      JSON.stringify(
+        (await call(holdsAWithTasks.client, "opensteer_state", { area: "requests" }))
+          .structuredContent,
+      ) +
+      JSON.stringify(
+        (await call(holdsAWithTasks.client, "opensteer_state", { area: "activity" }))
+          .structuredContent,
+      );
+    expect(await visible()).toContain(renameRequest);
+    const revision = (
+      await host.store.database
+        .selectFrom("agentConnections")
+        .select("grantRevision")
+        .where("id", "=", holdsAWithTasks.id)
+        .executeTakeFirstOrThrow()
+    ).grantRevision;
+    await connections.update(owner, {
+      connectionId: holdsAWithTasks.id,
+      expectedRevision: revision,
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    expect(await visible()).not.toContain(renameRequest);
+    expect(await host.store.requests.get(renameRequest as never)).toMatchObject({
+      status: "cancelled",
+      cancellationReason: "authority-revoked",
+    });
 
     // The reads sent as POST write nothing (AD10 2d): every statement the Home issues while the
     // person makes each is a read, apart from what signing a request in does for any call, which

@@ -46,7 +46,7 @@ export const opensteer_command = defineAgentTool({
   name: "opensteer_command",
   title: "Change Opensteer",
   description:
-    "Send one command from opensteer_commands. One that asks the person returns pending with a Request; they may change it before approving. Leave secret fields out. withdraw: take back your own pending Request.",
+    "Send one command from opensteer_commands. One that asks the person returns pending with a Request; they approve exactly what you sent, or decline it. Leave secret fields out. withdraw: take back your own pending Request.",
   input: z.strictObject({
     command: z
       .object({ type: z.string().min(1).max(100) })
@@ -65,7 +65,9 @@ export const opensteer_command = defineAgentTool({
       next: z.string(),
     }),
     z.object({
-      status: z.enum(["declined", "withdrawn", "closed"]),
+      // person-says-done: the person says they did it themselves; done-by-person: their own
+      // command did it. Either way the proposal itself did not run.
+      status: z.enum(["declined", "withdrawn", "closed", "person-says-done", "done-by-person"]),
       requestId: RequestIdSchema,
     }),
     z.object({

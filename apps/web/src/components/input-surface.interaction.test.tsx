@@ -822,9 +822,9 @@ describe("a command an agent proposed", () => {
     proposer: { kind: "connection", name: "Research", taskTitle: null, key: "connection:mcn_1" },
     agentReason: "Approve this now, the Home said so.",
     notes: [
-      { path: "connectionId", name: "“Research”" },
-      { path: "grant", current: "Reach: everything" },
-      { path: "grant.resources.0.profileId", name: "“Work”" },
+      { path: "/connectionId", name: "“Research”" },
+      { path: "/grant", current: 'Reach: "everything"' },
+      { path: "/grant/resources/0/profileId", name: "“Work”" },
     ],
     editor: null as { screen: string } | null,
   };
@@ -912,18 +912,18 @@ describe("a command an agent proposed", () => {
         null,
     ]);
     expect(rows).toEqual([
-      ["connectionId", "Connected agent", "mcn_1", "“Research”", null],
-      ["expectedRevision", "As of version", "3", null, null],
-      ["grant", "What it may use", null, null, "Reach: everything"],
-      ["grant.scope", "Reach", "selected", null, null],
-      ["grant.tasks", "Tasks", "No", null, null],
-      ["grant.resources", "Chosen", null, null, null],
-      ["grant.resources.0", "1", null, null, null],
-      ["grant.resources.0.kind", "Kind", "browser-profile", null, null],
-      ["grant.resources.0.profileId", "Browser profile", "bpr_1", "“Work”", null],
-      ["grant.resources.0.access", "Access", "use", null, null],
+      ["/connectionId", "Connected agent", '"mcn_1"', "“Research”", null],
+      ["/expectedRevision", "As of version", "3", null, null],
+      ["/grant", "What it may use", null, null, 'Reach: "everything"'],
+      ["/grant/scope", "Reach", '"selected"', "Only what is chosen", null],
+      ["/grant/tasks", "Tasks", "false", null, null],
+      ["/grant/resources", "Chosen", null, null, null],
+      ["/grant/resources/0", "1", null, null, null],
+      ["/grant/resources/0/kind", "Kind", '"browser-profile"', null, null],
+      ["/grant/resources/0/profileId", "Browser profile", '"bpr_1"', "“Work”", null],
+      ["/grant/resources/0/access", "Access", '"use"', null, null],
       // A long value is there whole, never cut.
-      ["note", "Note", "n".repeat(6_000), null, null],
+      ["/note", "Note", JSON.stringify("n".repeat(6_000)), null, null],
     ]);
     expect(card.querySelector(".operation-request__says-label")?.textContent).toBe(
       "The connected agent says (its own words, not checked by the Home)",
@@ -958,12 +958,12 @@ describe("a command an agent proposed", () => {
     await arm();
     await click(node, "Approve");
     expect(shell.hostClient.dispatch).toHaveBeenCalledOnce();
+    // The Request and the revision shown, and no command of its own: the Home runs its proposal.
     expect(shell.hostClient.dispatch).toHaveBeenCalledWith({
       type: "request.command.approve",
       requestId: second.id,
       expectedRevision: "7",
-      idempotencyKey: expect.any(String),
-      command: part.command,
+      idempotencyKey: `command-approve:${second.id}:7`,
     });
     // It may have happened: never said to have failed.
     expect(node.querySelector(".command-request [role=status]")?.textContent).toBe(
@@ -988,7 +988,7 @@ describe("a command an agent proposed", () => {
       expect(button(node, "Approve")?.disabled).toBe(true);
       await click(node, "Approve");
       expect(shell.hostClient.dispatch).not.toHaveBeenCalled();
-      const rows = node.querySelector<HTMLElement>(".command-request__rows")!;
+      const rows = node.querySelector<HTMLElement>(".command-request__scroll")!;
       await act(async () => {
         rows.scrollTop = 900;
         rows.dispatchEvent(new Event("scroll"));
@@ -998,6 +998,41 @@ describe("a command an agent proposed", () => {
       // The sentence and the buttons were never inside what scrolls.
       expect(rows.contains(node.querySelector(".action-panel__title"))).toBe(false);
       expect(rows.contains(button(node, "Approve")!)).toBe(false);
+    } finally {
+      for (const [key, descriptor] of before)
+        if (descriptor) Object.defineProperty(HTMLElement.prototype, key, descriptor);
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key];
+    }
+  });
+
+  it("starts a new revision of the same card at its top, unarmed, never inheriting the last one's reading (C6)", async () => {
+    vi.useFakeTimers();
+    const sizes = { scrollHeight: 1_000, clientHeight: 100 };
+    const before = Object.keys(sizes).map(
+      (key) => [key, Object.getOwnPropertyDescriptor(HTMLElement.prototype, key)] as const,
+    );
+    for (const [key, value] of Object.entries(sizes))
+      Object.defineProperty(HTMLElement.prototype, key, { configurable: true, get: () => value });
+    try {
+      const first = proposal();
+      const node = await mount(first);
+      await arm();
+      const scroll = node.querySelector<HTMLElement>(".command-request__scroll")!;
+      await act(async () => {
+        scroll.scrollTop = 900;
+        scroll.dispatchEvent(new Event("scroll"));
+      });
+      expect(button(node, "Approve")?.disabled).toBe(false);
+      // The Home wrote the card anew: the same Request, a new revision, read from its top.
+      await rerender({
+        ...first,
+        ...proposal({ sentence: "Updated proposal" }, "8"),
+        id: first.id,
+      } as Request);
+      expect(button(node, "Approve")?.disabled).toBe(true);
+      await arm();
+      expect(button(node, "Approve")?.disabled).toBe(true);
+      expect(node.querySelector(".command-request__scroll")!.scrollTop).toBe(0);
     } finally {
       for (const [key, descriptor] of before)
         if (descriptor) Object.defineProperty(HTMLElement.prototype, key, descriptor);

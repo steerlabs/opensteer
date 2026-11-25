@@ -5,22 +5,31 @@ import {
   commandDoneMyself,
   commandRequestView,
   commandRequestWords,
+  HostClientRequestError,
   mutationIdempotencyKey,
   type CommandRequestView,
   type RequestView,
 } from "@opensteer/client/host";
 import type { CommandRequestOutcome } from "@opensteer/core";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { ActionLine } from "./action-line.js";
 import { useShell } from "./app-shell.js";
-import { requestAnswer, useAction } from "./use-action.js";
+import { Refusal, requestAnswer, useAction } from "./use-action.js";
 
 const approveAction = {
   label: "approve it",
   done: "approved",
   happened: "your approval was sent",
 } as const;
+
+/** The Home's refusals of an approval that say why, in its own words. */
+const saidReasons = new Set([
+  "request-changed",
+  "command-changed",
+  "proposer-gone",
+  "command-needs-person-screen",
+]);
 
 /** Where each screen that performs a command is, in this app. */
 const screenPaths: Readonly<Record<string, string>> = {
@@ -42,10 +51,10 @@ const screenPaths: Readonly<Record<string, string>> = {
 /**
  * What an agent proposed, all of it: the Home's sentence, who asked, every argument of the
  * command whole with what the Home knows beside it, the agent's words kept as its own, then
- * Approve or Decline. The sentence and the buttons stay in view while the arguments scroll;
- * Approve waits until the arguments were seen to their end and for a moment after the card
- * appears, so a click meant for something else never approves it. After Approve it says what the
- * command came to.
+ * Approve or Decline. The sentence and the buttons stay in view while everything else scrolls
+ * inside the card. Approve waits until the arguments were seen to their end and for a moment
+ * after this revision of the card appears, so a click meant for something else never approves
+ * it; a new revision starts at its top, unarmed. After Approve it says what the command came to.
  */
 export function CommandRequestPanel({
   disabled,
@@ -58,42 +67,51 @@ export function CommandRequestPanel({
 }) {
   const { hostClient } = useShell();
   const navigate = useNavigate();
-  const [outcome, setOutcome] = useState<CommandRequestOutcome | null>(null);
-  const shownRevision = `${request.id}:${request.reviewedRevision ?? ""}`;
-  // One approval of this card as shown: a retry after a lost answer is the same approval.
-  const approvalKey = useMemo(
-    () => mutationIdempotencyKey(`command-approve:${shownRevision}`),
-    [shownRevision],
-  );
-  const [armed, setArmed] = useState(false);
+  const identity = view.identity;
+  const notesId = useId();
+  // Every local fact of the card is this revision's own: a new one reads none of the last.
+  const [result, setResult] = useState<{
+    readonly identity: string;
+    readonly outcome: CommandRequestOutcome;
+  } | null>(null);
+  const [armedFor, setArmedFor] = useState<string | null>(null);
   useEffect(() => {
-    setArmed(false);
-    const timer = setTimeout(() => setArmed(true), commandApproveArmMs);
+    const timer = setTimeout(() => setArmedFor(identity), commandApproveArmMs);
     return () => clearTimeout(timer);
-  }, [shownRevision]);
-  const rows = useRef<HTMLDListElement>(null);
-  const [seenEnd, setSeenEnd] = useState(false);
+  }, [identity]);
+  const armed = armedFor === identity;
+  const scroller = useRef<HTMLDivElement>(null);
+  const [seenFor, setSeenFor] = useState<string | null>(null);
   const check = useCallback(() => {
-    const list = rows.current;
-    if (list && list.scrollTop + list.clientHeight >= list.scrollHeight - 2) setSeenEnd(true);
-  }, []);
+    const list = scroller.current;
+    if (list && list.scrollTop + list.clientHeight >= list.scrollHeight - 2) setSeenFor(identity);
+  }, [identity]);
   useLayoutEffect(() => {
-    setSeenEnd(false);
+    // A new revision starts at its top; one short enough to show whole is seen at once.
+    if (scroller.current) scroller.current.scrollTop = 0;
     check();
-  }, [shownRevision, check]);
+  }, [identity, check]);
+  const seenEnd = seenFor === identity;
   const approve = useAction(
     hostClient,
     {
       ...approveAction,
       execute: async () => {
-        const result = (await hostClient.dispatch(commandApproval(request, approvalKey))) as {
-          readonly outcome?: CommandRequestOutcome;
-        };
-        if (result.outcome) setOutcome(result.outcome);
-        return result;
+        try {
+          const answered = (await hostClient.dispatch(commandApproval(request))) as {
+            readonly outcome?: CommandRequestOutcome;
+          };
+          if (answered.outcome) setResult({ identity, outcome: answered.outcome });
+          return answered;
+        } catch (error) {
+          // The Home's own reason, as it said it: changed since it was read, or no longer asked.
+          if (error instanceof HostClientRequestError && saidReasons.has(error.reason ?? ""))
+            throw new Refusal(error.message);
+          throw error;
+        }
       },
     },
-    `command-approve:${request.id}`,
+    `command-approve:${identity}`,
   );
   const answer = useAction(
     hostClient,
@@ -110,13 +128,14 @@ export function CommandRequestPanel({
     `request:${request.id}`,
   );
   // What the approval came to, as soon as the Home answers it, before the Request is read again.
-  const shown = outcome
-    ? commandRequestView({
-        ...request,
-        status: "fulfilled",
-        command: { ...request.command!, outcome },
-      })!
-    : view;
+  const shown =
+    result?.identity === identity
+      ? commandRequestView({
+          ...request,
+          status: "fulfilled",
+          command: { ...request.command!, outcome: result.outcome },
+        })!
+      : view;
   const busy = disabled || approve.running || answer.running;
   const ready = armed && seenEnd;
   const screen = shown.personOnly?.screen;
@@ -137,49 +156,65 @@ export function CommandRequestPanel({
     >
       <p className="action-panel__title">{shown.sentence}</p>
       <p className="operation-request__summary">{shown.askedBy}</p>
-      {shown.gives ? <p className="command-request__gives">{shown.gives}</p> : null}
-      <p className="command-request__heading">{shown.rowsHeading}</p>
-      <dl
-        aria-label={shown.rowsHeading}
-        className="command-request__rows"
+      <div
+        className="command-request__scroll"
         onScroll={check}
-        ref={rows}
+        ref={scroller}
+        role="region"
+        aria-label={shown.rowsHeading}
         tabIndex={0}
       >
-        {shown.rows.map((row, index) => (
-          <div
-            className="command-request__row"
-            data-depth={row.depth}
-            data-path={row.path}
-            key={`${index}:${row.path}`}
-            style={{ paddingInlineStart: `${row.depth * 12}px` }}
-          >
-            <dt className="command-request__label">{row.label}</dt>
-            {row.value === null ? null : (
-              <dd className="command-request__value">
-                <span className="command-request__proposed">{row.value}</span>
-                {row.name ? <span className="command-request__name">{row.name}</span> : null}
-              </dd>
-            )}
-            {row.current === null ? null : (
-              <dd className="command-request__current">
-                <span className="command-request__now">{commandRequestWords.now}</span>
-                <span className="command-request__proposed">{row.current}</span>
-              </dd>
-            )}
-          </div>
-        ))}
-      </dl>
-      {seenEnd ? null : (
-        <p className="command-request__more" role="note">
+        {shown.gives ? <p className="command-request__gives">{shown.gives}</p> : null}
+        {shown.personOnly ? (
+          <p className="command-request__gives">
+            {commandRequestWords.needs}: {shown.personOnly.needs}
+          </p>
+        ) : null}
+        {shown.agentWords ? (
+          <blockquote className="operation-request__says">
+            <span className="operation-request__says-label">{shown.agentWords.label}</span>
+            <span className="operation-request__says-text">{shown.agentWords.text}</span>
+          </blockquote>
+        ) : null}
+        <p className="command-request__heading">{shown.rowsHeading}</p>
+        <dl className="command-request__rows">
+          {shown.rows.map((row, index) => (
+            <div
+              className="command-request__row"
+              data-depth={row.depth}
+              data-path={row.path}
+              key={`${index}:${row.path}`}
+              style={{ paddingInlineStart: `${row.depth * 12}px` }}
+            >
+              <dt className="command-request__label">{row.label}</dt>
+              {row.value === null ? null : (
+                <dd className="command-request__value">
+                  <span className="command-request__proposed">{row.value}</span>
+                  {row.meaning ? (
+                    <span className="command-request__name">{row.meaning}</span>
+                  ) : null}
+                  {row.name ? <span className="command-request__name">{row.name}</span> : null}
+                </dd>
+              )}
+              {row.current === null ? null : (
+                <dd className="command-request__current">
+                  <span className="command-request__now">{commandRequestWords.now}</span>
+                  <span className="command-request__proposed">{row.current}</span>
+                </dd>
+              )}
+            </div>
+          ))}
+        </dl>
+      </div>
+      {shown.approve && !seenEnd ? (
+        <p className="command-request__more" id={`${notesId}-more`}>
           {commandRequestWords.more}
         </p>
-      )}
-      {shown.agentWords ? (
-        <blockquote className="operation-request__says">
-          <span className="operation-request__says-label">{shown.agentWords.label}</span>
-          <span className="operation-request__says-text">{shown.agentWords.text}</span>
-        </blockquote>
+      ) : null}
+      {shown.approve && !armed ? (
+        <p className="command-request__more" id={`${notesId}-arming`}>
+          {commandRequestWords.arming}
+        </p>
       ) : null}
       <p
         className="operation-request__after"
@@ -214,7 +249,11 @@ export function CommandRequestPanel({
           ) : null}
           {shown.approve ? (
             <button
-              aria-disabled={!ready}
+              aria-describedby={
+                [!seenEnd ? `${notesId}-more` : null, !armed ? `${notesId}-arming` : null]
+                  .filter(Boolean)
+                  .join(" ") || undefined
+              }
               className="btn btn--primary"
               disabled={busy || !ready}
               onClick={() => {

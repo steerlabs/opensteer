@@ -7,6 +7,7 @@ import { requireSession } from "./rpc-context.js";
 import {
   hostApi,
   rpcSuccess,
+  type HostApiCommand,
   type HostApiCommandOutput,
   type HostApiHandlers,
   type HostApiServerContext,
@@ -17,7 +18,7 @@ import type { DeviceRpcOptions } from "../devices/device-routes.js";
 import type { PluginOwnerApi } from "../plugins/plugin-owner-api.js";
 import type { ChannelService } from "../channels/channel-service.js";
 import type { BrowserSourceRpcOptions } from "./browser-source-registration.js";
-import { personActor, type CommandProposal } from "../commands/actor.js";
+import { personActor, type CommandProposal, type PersonActor } from "../commands/actor.js";
 import { dispatchCommand, type CommandDoor } from "../commands/dispatch.js";
 import type { CommandRequestService } from "../commands/requests.js";
 import { createCommandRegistry, type CoreCommand } from "../commands/registry.js";
@@ -130,7 +131,6 @@ export function createHostApiHandlers(
                 {
                   requestId: command.requestId,
                   expectedRevision: command.expectedRevision,
-                  command: command.command,
                   idempotencyKey: command.idempotencyKey,
                 },
                 (person, approved) => dispatchCommand(person, approved, door, context),
@@ -148,6 +148,12 @@ export function createHostApiHandlers(
       plugins,
       pluginOAuth,
     }),
+    ...(commandRequests
+      ? {
+          afterPerson: (actor: PersonActor, command: HostApiCommand) =>
+            commandRequests.settleDoneByPerson(actor.userId, command),
+        }
+      : {}),
   };
   return {
     ...pluginOAuthHandlers(pluginOAuth),

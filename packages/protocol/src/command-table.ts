@@ -1627,10 +1627,30 @@ export function commandEffect(row: Pick<CommandRow, "effect">): "database" | "ou
  * (a device's one-use token, a pairing code, a sign-in link, a chat's link code) returns only its
  * type to an agent: the value is for the person's screen.
  */
-export function commandAgentOutput(command: Command, output: unknown): unknown {
+export function commandAgentOutput(
+  command: Command,
+  output: unknown,
+  /**
+   * The caller works under a connection's grant (a connected agent, or a Run or an automation in
+   * its lineage): it reads only that the command ran, never what the person's command answered,
+   * which can name what lies outside its grant (rule 5).
+   */
+  grantBound = false,
+): unknown {
   const row = commandRow(command.type) as CommandRow;
   const sensitive = row.faces.some(
     (face) => face.class === "secret" || face.class === "identity" || face.also === "secret",
   );
-  return sensitive ? { type: command.type } : output;
+  if (grantBound || sensitive) return { type: command.type };
+  // A tab command answers with the person's whole layout: never an agent's to read.
+  if (
+    command.type.startsWith("tab.") &&
+    output &&
+    typeof output === "object" &&
+    "layout" in output
+  ) {
+    const { layout: _layout, ...rest } = output as Record<string, unknown>;
+    return rest;
+  }
+  return output;
 }

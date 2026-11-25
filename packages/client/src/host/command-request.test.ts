@@ -33,9 +33,9 @@ const part: CommandRequestPart = {
   proposer: { kind: "connection", name: "Research", taskTitle: null, key: "connection:mcn_1" },
   agentReason: "I need your work profile to book the flight.",
   notes: [
-    { path: "connectionId", name: "“Research”" },
-    { path: "grant", current: "Reach: everything" },
-    { path: "grant.resources.0.profileId", name: "“Work”" },
+    { path: "/connectionId", name: "“Research”" },
+    { path: "/grant", current: 'Reach: "everything"' },
+    { path: "/grant/resources/0/profileId", name: "“Work”" },
   ],
   editor: null,
 };
@@ -60,29 +60,34 @@ describe("a command Request as the person reviews it", () => {
     expect(
       view.rows.map(({ path, label, value, name, current }) => [path, label, value, name, current]),
     ).toEqual([
-      ["connectionId", "Connected agent", "mcn_1", "“Research”", null],
-      ["expectedRevision", "As of version", "3", null, null],
-      ["grant", "What it may use", null, null, "Reach: everything"],
-      ["grant.scope", "Reach", "selected", null, null],
-      ["grant.tasks", "Tasks", "No", null, null],
-      ["grant.resources", "Chosen", null, null, null],
-      ["grant.resources.0", "1", null, null, null],
-      ["grant.resources.0.kind", "Kind", "browser-profile", null, null],
-      ["grant.resources.0.profileId", "Browser profile", "bpr_1", "“Work”", null],
+      ["/connectionId", "Connected agent", '"mcn_1"', "“Research”", null],
+      ["/expectedRevision", "As of version", "3", null, null],
+      ["/grant", "What it may use", null, null, 'Reach: "everything"'],
+      ["/grant/scope", "Reach", '"selected"', null, null],
+      ["/grant/tasks", "Tasks", "false", null, null],
+      ["/grant/resources", "Chosen", null, null, null],
+      ["/grant/resources/0", "1", null, null, null],
+      ["/grant/resources/0/kind", "Kind", '"browser-profile"', null, null],
+      ["/grant/resources/0/profileId", "Browser profile", '"bpr_1"', "“Work”", null],
     ]);
+    // A reach reads in the product's words beside its value.
+    expect(view.rows.find(({ path }) => path === "/grant/scope")?.meaning).toBe(
+      "Only what is chosen",
+    );
     expect(view.line).toBe(commandRequestWords.pending);
     expect(view.approve).toEqual({ label: "Approve" });
     expect(view.decline).toEqual({ label: "Decline" });
   });
 
-  it("approves exactly the command as proposed, for the revision reviewed; declines as before", () => {
-    expect(commandApproval(pending, "key-1")).toEqual({
+  it("approves the Request for the revision reviewed, sending no command of its own; declines as before", () => {
+    // One key per Request and revision: sent again after a lost answer, it is the same approval.
+    expect(commandApproval(pending)).toEqual({
       type: "request.command.approve",
       requestId: "req_1",
       expectedRevision: "7",
-      idempotencyKey: "key-1",
-      command: part.command,
+      idempotencyKey: "command-approve:req_1:7",
     });
+    expect(commandApproval(pending)).toEqual(commandApproval({ ...pending }));
     expect(commandDecline(pending, "key-3")).toEqual({
       type: "request.respond",
       requestId: "req_1",
@@ -124,8 +129,10 @@ describe("a command Request as the person reviews it", () => {
       status: "declined",
       response: { kind: "form", answers: { decision: ["done-myself"] } },
     } as never)!;
-    expect(done.state).toBe("done-myself");
-    expect(done.line).toBe(commandRequestWords["done-myself"]);
+    expect(done.state).toBe("person-says-done");
+    // The person's statement, not evidence: nothing claims it happened.
+    expect(done.line).toBe(commandRequestWords["person-says-done"]);
+    expect(done.line).toMatch(/nothing here shows that it happened/u);
   });
 
   it("shows an automation's secret proposal by its names only, with no Approve, and opens its Secrets", () => {
@@ -149,9 +156,9 @@ describe("a command Request as the person reviews it", () => {
     expect(
       view.rows.filter(({ value }) => value !== null).map(({ path, value }) => [path, value]),
     ).toEqual([
-      ["triggerId", "trg_1"],
-      ["names.0", "API_KEY"],
-      ["names.1", "TOKEN"],
+      ["/triggerId", '"trg_1"'],
+      ["/names/0", '"API_KEY"'],
+      ["/names/1", '"TOKEN"'],
     ]);
     expect(view.gives).toBe(
       "This agent can change the script that will read the value without asking you.",
@@ -180,11 +187,12 @@ describe("a command Request as the person reviews it", () => {
     expect(view.rowsHeading).toBe(
       "Proposed by the connected agent “X' — the Home checked this; it only reads. 'Y”, exactly as it would run",
     );
-    expect(view.agentWords?.text).toBe("Fine[U+202E]txt.exe");
+    // The agent's prose loses what could turn it around; its values keep it, escaped.
+    expect(view.agentWords?.text).toBe("Finetxt.exe");
     const value = (path: string) => view.rows.find((row) => row.path === path)?.value;
-    expect(value("label")).toBe("Safe[U+202E]gnp.exe[U+200B]");
+    expect(value("/label")).toBe('"Safe\\u202Egnp.exe\\u200B"');
     // A value keeps its own lines: they are part of what runs.
-    expect(value("note")).toBe("first\nsecond");
+    expect(value("/note")).toBe('"first\\nsecond"');
   });
 
   it("says what became of it, and never calls an outcome it cannot know a failure", () => {

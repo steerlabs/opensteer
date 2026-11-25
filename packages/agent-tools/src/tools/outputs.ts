@@ -469,7 +469,15 @@ export const TriggerOutputSchema = z.object({
 
 export const TriggerWriteOutputSchema = z.union([
   z.object({
-    status: z.enum(["pending", "declined", "withdrawn", "closed", "answered"]),
+    status: z.enum([
+      "pending",
+      "declined",
+      "withdrawn",
+      "closed",
+      "answered",
+      "person-says-done",
+      "done-by-person",
+    ]),
     requestId: RequestIdSchema,
     next: z.string().optional(),
     outcome: z.unknown().optional(),

@@ -60,7 +60,10 @@ export type AgentCommandOutcome =
   /** The person declined this ask within the last day: answered at once, nothing opened. */
   | { readonly status: "declined"; readonly requestId: string }
   /** The same call again, after its Request ended unapproved: what became of it. */
-  | { readonly status: "withdrawn" | "closed"; readonly requestId: string }
+  | {
+      readonly status: "withdrawn" | "closed" | "person-says-done" | "done-by-person";
+      readonly requestId: string;
+    }
   /** The same call again, after the person approved it: what it came to. */
   | {
       readonly status: "answered";
@@ -72,6 +75,11 @@ export type CommandAsk = Extract<AgentCommandOutcome, { readonly status: "ask" }
 
 export interface CommandDoor {
   readonly registry: CommandRegistry;
+  /**
+   * After a person's own command succeeded, for a type whose row declares values only the person
+   * types: what pending proposals it did (`CommandRequestService.settleDoneByPerson`).
+   */
+  readonly afterPerson?: (actor: PersonActor, command: HostApiCommand) => Promise<void>;
 }
 /** The door as an agent meets it: the same registry, and the one admission. */
 export interface AgentCommandDoor extends CommandDoor {
@@ -180,9 +188,14 @@ export async function dispatchCommand(
       throw new OpensteerError({ code: "unauthorized", message: "Authentication required" });
     if (!context) throw new OpensteerError({ code: "internal", message: "Missing request" });
     const handler = door.registry[command.type] as CommandHandler<HostApiCommand["type"]>;
-    return handler.accepts === "person"
+    const output = await (handler.accepts === "person"
       ? handler.run(actor, command as never, context)
-      : handler.run(actor, command as never, { context, authority: null });
+      : handler.run(actor, command as never, { context, authority: null }));
+    // Only after the handler, and only for a type whose row declares values only the person
+    // types: the person did what proposals of the same command asked (D3). Nothing before it.
+    if (door.afterPerson && (commandRow(command.type) as CommandRow).secretFields?.length)
+      await door.afterPerson(actor, command);
+    return output;
   }
   if (!("admit" in door))
     throw new OpensteerError({ code: "internal", message: "This door admits no agent" });

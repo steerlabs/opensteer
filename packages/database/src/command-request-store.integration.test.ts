@@ -3,7 +3,11 @@ import type { CommandRequestPart, RequestId, RequestPresentation } from "@openst
 import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { beginAgentSession } from "./agent-session-store.js";
-import { CommandRequestStore, type CommandRequestOpened } from "./command-request-store.js";
+import {
+  CommandRequestStore,
+  commandAskLimits,
+  type CommandRequestOpened,
+} from "./command-request-store.js";
 import { connectionAttempts } from "./connection-disconnect.js";
 import { describeStore, type StoreFixture } from "./store.integration.test-support.js";
 
@@ -102,10 +106,15 @@ describeStore("command Requests in the store", (it) => {
     storeFixture,
   }) => {
     const { f, store, open, database } = await setup(storeFixture);
-    // No count holds an ask back, however many one proposer has open.
+    // At most five asks of one proposer wait at once; a sixth is refused, and opens nothing.
     const many = [];
-    for (let index = 0; index < 8; index++) many.push(await open({ askKey: `many${index}` }));
+    for (let index = 0; index < commandAskLimits.pendingPerProposer; index++)
+      many.push(await open({ askKey: `many${index}` }));
     for (const opened of many) expect(opened).toMatchObject({ status: "pending", replayed: false });
+    await expect(open({ askKey: "many-too-many" })).rejects.toMatchObject({
+      code: "conflict",
+      reason: "too-many-asks",
+    });
     // No lifetime ends one: days later it still waits, and the person may still approve it.
     await database
       .updateTable("requests")
@@ -158,7 +167,7 @@ describeStore("command Requests in the store", (it) => {
       resolvedBy: f.userId,
       accept: () => undefined,
       approvalKey: randomUUID(),
-      approved: { command: {}, changed: false },
+      approved: { command: {} },
     });
     expect(await storeFixture.store.requests.get(idOf(opened))).toMatchObject({
       status: "fulfilled",
@@ -213,7 +222,13 @@ describeStore("command Requests in the store", (it) => {
       expectedRevision: current.grantRevision,
       grant: { scope: "selected", tasks: false, resources: [] },
     });
-    expect(await connectionAttempts(database, connection.id)).toContainEqual(
+    // Losing reach ends the ask in the narrowing's own transaction (D5): closed, nothing left for
+    // the Disconnect set to wait on.
+    expect(await storeFixture.store.requests.get(idOf(opened))).toMatchObject({
+      status: "cancelled",
+      cancellationReason: "authority-revoked",
+    });
+    expect(await connectionAttempts(database, connection.id)).not.toContainEqual(
       expect.objectContaining({ kind: "request", id: idOf(opened) }),
     );
   });

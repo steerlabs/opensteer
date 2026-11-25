@@ -719,13 +719,12 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     requestId: RequestIdSchema,
-    /** The revision of the Request the person reviewed. */
-    expectedRevision: PersonalRevisionSchema,
     /**
-     * The command exactly as it was proposed and shown; anything else is refused. A command that
-     * carries a value only the person types is never approved this way.
+     * The revision of the Request the person reviewed. The Home runs the proposal it stored,
+     * exactly; the approval carries no command of its own. A command that carries a value only
+     * the person types is never approved this way.
      */
-    command: z.record(z.string().max(200), z.unknown()),
+    expectedRevision: PersonalRevisionSchema,
     type: z.literal("request.command.approve"),
   }),
   z.strictObject({

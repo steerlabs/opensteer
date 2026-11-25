@@ -9,7 +9,7 @@ import { outsideName as cleanOutsideName } from "@opensteer/shared/outsideName";
 
 /** A value the person approves, or a heading over the values inside it. */
 export interface CommandReviewField {
-  /** Where it is in the command: `grant.resources.0.profileId`. */
+  /** Where it is in the command, as a JSON Pointer: `/grant/resources/0/profileId`. */
   readonly path: string;
   /** How deep it sits: 0 for an argument of the command itself. */
   readonly depth: number;
@@ -59,29 +59,52 @@ const labels: Readonly<Record<string, string>> = {
   triggerId: "Automation",
 };
 
-/** A field's name as the Home says it: its own word, or its key in plain words. */
-export function commandFieldLabel(key: string): string {
-  if (/^\d+$/u.test(key)) return String(Number(key) + 1);
-  const known = labels[key];
-  if (known) return known;
-  const words = key
-    .replace(/([a-z0-9])([A-Z])/gu, "$1 $2")
-    .replace(/[_-]+/gu, " ")
-    .toLowerCase()
-    .trim();
-  return words ? `${words[0]!.toUpperCase()}${words.slice(1)}` : key;
+/** One step of a path, as a JSON Pointer writes it (RFC 6901): `~` and `/` escaped. */
+function pointerStep(key: string): string {
+  return key.replace(/~/gu, "~0").replace(/\//gu, "~1");
 }
 
-/** A proposed value as text, whole: what it is, never cut. */
+/** Where a value is in a command: a JSON Pointer, so no key can pass for nesting. */
+export function commandPath(keys: readonly string[]): string {
+  return keys.map((key) => `/${pointerStep(key)}`).join("");
+}
+
+/** A key the command's own schema could name: a plain identifier. */
+const identifier = /^[A-Za-z][A-Za-z0-9]*$/u;
+
+/**
+ * A field's name as the Home says it: its own word, or its identifier in plain words. A key that
+ * is not an identifier (one inside free-form data) is shown as the escaped data it is.
+ */
+export function commandFieldLabel(key: string): string {
+  if (/^\d+$/u.test(key)) return String(Number(key) + 1);
+  if (!identifier.test(key)) return commandValueText(key);
+  if (Object.hasOwn(labels, key)) return labels[key]!;
+  const words = key.replace(/([a-z0-9])([A-Z])/gu, "$1 $2").toLowerCase();
+  return `${words[0]!.toUpperCase()}${words.slice(1)}`;
+}
+
+/** What may not reach a card as itself: controls, format and invisible characters, separators. */
+const unseen = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
+
+const escaped = (character: string) => {
+  const code = character.codePointAt(0)!;
+  return code > 0xffff
+    ? `\\u{${code.toString(16).toUpperCase()}}`
+    : `\\u${code.toString(16).toUpperCase().padStart(4, "0")}`;
+};
+
+/**
+ * A proposed value as typed data, whole and never cut: a string in quotes with every unseen
+ * character escaped (so text can never pose as the escape for one), and `null`, `true`, `[]`,
+ * `{}` as themselves. No two different values read the same.
+ */
 export function commandValueText(value: unknown): string {
-  if (value === null || value === undefined) return "None";
-  if (typeof value === "boolean") return value ? "Yes" : "No";
-  if (typeof value === "string") return value;
-  if (typeof value === "number") return String(value);
-  if (Array.isArray(value)) return value.length === 0 ? "None" : JSON.stringify(value);
-  if (typeof value === "object")
-    return Object.keys(value).length === 0 ? "None" : JSON.stringify(value);
-  return String(value);
+  if (value === undefined) return "null";
+  if (typeof value === "string") return JSON.stringify(value).replace(unseen, escaped);
+  if (Array.isArray(value) && value.length === 0) return "[]";
+  if (value !== null && typeof value === "object" && Object.keys(value).length === 0) return "{}";
+  return JSON.stringify(value).replace(unseen, escaped);
 }
 
 /**
@@ -93,7 +116,7 @@ export function commandReviewFields(
   command: Readonly<Record<string, unknown>>,
 ): readonly CommandReviewField[] {
   const fields: CommandReviewField[] = [];
-  const walk = (value: unknown, path: string, key: string, depth: number) => {
+  const walk = (value: unknown, keys: readonly string[], depth: number) => {
     const entries =
       Array.isArray(value) && value.length > 0
         ? value.map((item, index) => [String(index), item] as const)
@@ -104,15 +127,14 @@ export function commandReviewFields(
           ? Object.entries(value as Record<string, unknown>)
           : null;
     fields.push({
-      path,
+      path: commandPath(keys),
       depth,
-      label: commandFieldLabel(key),
+      label: commandFieldLabel(keys.at(-1)!),
       value: entries ? null : commandValueText(value),
     });
-    if (entries)
-      for (const [child, item] of entries) walk(item, `${path}.${child}`, child, depth + 1);
+    if (entries) for (const [child, item] of entries) walk(item, [...keys, child], depth + 1);
   };
-  for (const [key, value] of Object.entries(command)) if (key !== "type") walk(value, key, key, 0);
+  for (const [key, value] of Object.entries(command)) if (key !== "type") walk(value, [key], 0);
   return fields;
 }
 
@@ -136,40 +158,21 @@ export function commandReviewText(value: unknown): string {
     (field) =>
       `${"  ".repeat(field.depth)}${field.label}${field.value === null ? "" : `: ${field.value}`}`,
   );
-  return lines.length ? lines.join("\n") : "None";
+  return lines.length ? lines.join("\n") : commandValueText(value);
 }
 
 /**
- * Characters that change how text reads without being seen: controls, bidirectional overrides
- * and isolates, zero-width marks. Tab, newline and carriage return are layout, handled apart.
+ * Prose from outside the Home (an agent's reason), as a card shows it, attributed to its writer:
+ * its lines kept, every control, format and invisible character removed, so nothing unseen turns
+ * it around or hides in it.
  */
-function hidden(code: number): boolean {
-  return (
-    code <= 0x08 ||
-    code === 0x0b ||
-    code === 0x0c ||
-    (code >= 0x0e && code <= 0x1f) ||
-    (code >= 0x7f && code <= 0x9f) ||
-    code === 0x061c ||
-    (code >= 0x200b && code <= 0x200f) ||
-    (code >= 0x202a && code <= 0x202e) ||
-    (code >= 0x2060 && code <= 0x2069) ||
-    code === 0xfeff
-  );
-}
-
-/**
- * Text from outside the Home (an agent's or a person's), as a card shows it: every hidden or
- * direction-changing character written out as its code, so what is shown is what is there.
- * On one line, line breaks and tabs read as spaces.
- */
-export function visibleText(value: string, lines: "keep" | "one" = "keep"): string {
-  let shown = "";
-  for (const character of value) {
-    const code = character.codePointAt(0)!;
-    shown += hidden(code) ? `[U+${code.toString(16).toUpperCase().padStart(4, "0")}]` : character;
-  }
-  return lines === "one" ? shown.replace(/[\r\n\t]+/gu, " ") : shown;
+export function outsideProse(value: string): string {
+  return value
+    .replace(/\r\n?/gu, "\n")
+    .split("\n")
+    .map((line) => line.replace(unseen, ""))
+    .join("\n")
+    .trim();
 }
 
 /**
@@ -178,6 +181,9 @@ export function visibleText(value: string, lines: "keep" | "one" = "keep"): stri
  * `@opensteer/shared`: one line, no control, format or direction character), bounded, and with no
  * quote mark that could close the Home's own.
  */
-export function outsideName(value: string, maximum = 240): string {
-  return cleanOutsideName(value, maximum).replace(/[“”„"«»]/gu, "'");
+/** How long a name inside the Home's “…” may be on a card or in its sentence: one limit for all. */
+export const commandNameLimit = 80;
+
+export function outsideName(value: string, maximum = commandNameLimit): string {
+  return cleanOutsideName(value, maximum).replace(/[“”„"«»]/gu, "'") || "(no name)";
 }

@@ -3691,6 +3691,7 @@
     "tab.group.update name": "same class; omitted: unchanged (schema only)",
     "tab.group.update color": "same class; omitted: unchanged (schema only)",
     "tab.group.update collapsed": "same class; omitted: unchanged (schema only)",
+    "tab.group.close tabIds": "same class: only the members the card listed close, and a group whose shown members changed is refused; omitted: every member now (tab-store.ts closeGroup)",
     "settings.plugin.enabled.set target.kind": "same class: which kind of thing is turned on or off",
     "settings.plugin.enabled.set enabled": "face: false narrow, true approve",
     "plugins.install source.kind": "same class (widen-self): a new plugin, catalog or by address; lead decision D10; folder: a folder inside Agent home, your own agents only, as today's tool reads it (the lead's ruling); under a connection's grant the kind is not in the schema",

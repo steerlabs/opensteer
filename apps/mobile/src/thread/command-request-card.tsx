@@ -5,19 +5,34 @@ import {
   commandDoneMyself,
   commandRequestView,
   commandRequestWords,
+  HostClientRequestError,
   mutationIdempotencyKey,
   type CommandRequestView,
   type HostClient,
   type RequestView,
 } from "@opensteer/client/host";
 import type { CommandRequestOutcome } from "@opensteer/core";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { ScrollView, StyleSheet, useWindowDimensions, View } from "react-native";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  ScrollView,
+  StyleSheet,
+  useWindowDimensions,
+  View,
+  type ScrollViewInstance,
+} from "react-native";
 import { color, material, radius, space } from "../theme.js";
 import { ActionLine } from "../ui/action-line.js";
-import { useScreenAction } from "../ui/client-feedback.js";
+import { refusal as homeRefusal, useScreenAction } from "../ui/client-feedback.js";
 import { AppText, monoFontFamily } from "../ui/primitives.js";
 import { AnswerPill } from "./answer-pill.js";
+
+/** The Home's refusals of an approval that say why, in its own words. */
+const saidReasons = new Set([
+  "request-changed",
+  "command-changed",
+  "proposer-gone",
+  "command-needs-person-screen",
+]);
 
 /** Where each screen that performs a command is, in this app. */
 const screenRoutes: Readonly<Record<string, string>> = {
@@ -50,39 +65,57 @@ export function CommandRequestCard(props: {
 }): ReactNode {
   const { hostClient, request } = props;
   const { height } = useWindowDimensions();
-  const [outcome, setOutcome] = useState<CommandRequestOutcome | null>(null);
-  const shownRevision = `${request.id}:${request.reviewedRevision ?? ""}`;
-  // One approval of this card as shown: a retry after a lost answer is the same approval.
-  const approvalKey = useMemo(
-    () => mutationIdempotencyKey(`command-approve:${shownRevision}`),
-    [shownRevision],
-  );
-  const [armed, setArmed] = useState(false);
+  const identity = props.view.identity;
+  // Every local fact of the card is this revision's own: a new one reads none of the last.
+  const [result, setResult] = useState<{
+    readonly identity: string;
+    readonly outcome: CommandRequestOutcome;
+  } | null>(null);
+  const [armedFor, setArmedFor] = useState<string | null>(null);
   useEffect(() => {
-    setArmed(false);
-    const timer = setTimeout(() => setArmed(true), commandApproveArmMs);
+    const timer = setTimeout(() => setArmedFor(identity), commandApproveArmMs);
     return () => clearTimeout(timer);
-  }, [shownRevision]);
-  const [scroll, setScroll] = useState({ box: 0, content: 0, offset: 0, seen: false });
-  useEffect(() => setScroll({ box: 0, content: 0, offset: 0, seen: false }), [shownRevision]);
+  }, [identity]);
+  const armed = armedFor === identity;
+  // The scroll surface keeps its measurements across revisions (its box and what is in it), and
+  // a new revision starts at its top: a short one is seen at once, a long one must be scrolled.
+  const scroller = useRef<ScrollViewInstance>(null);
+  const [scroll, setScroll] = useState({ box: 0, content: 0, offset: 0 });
+  const [seenFor, setSeenFor] = useState<string | null>(null);
+  const atEnd = (box: number, content: number, offset: number) =>
+    box > 0 && content > 0 && offset + box >= content - 2;
+  useEffect(() => {
+    scroller.current?.scrollTo({ y: 0, animated: false });
+    setScroll((now) => {
+      const reset = { ...now, offset: 0 };
+      if (atEnd(reset.box, reset.content, 0)) setSeenFor(identity);
+      return reset;
+    });
+  }, [identity]);
   const measured = (next: Partial<typeof scroll>) =>
     setScroll((now) => {
       const merged = { ...now, ...next };
-      // Seen to the end only once both the box and what is in it were measured.
-      const atEnd =
-        merged.box > 0 && merged.content > 0 && merged.offset + merged.box >= merged.content - 2;
-      return { ...merged, seen: merged.seen || atEnd };
+      if (atEnd(merged.box, merged.content, merged.offset)) setSeenFor(identity);
+      return merged;
     });
-  const approve = useScreenAction(hostClient, `command-approve:${request.id}`, {
+  const seen = seenFor === identity;
+  const approve = useScreenAction(hostClient, `command-approve:${identity}`, {
     label: "approve it",
     done: "approved",
     happened: "your approval was sent",
     execute: async () => {
-      const result = (await hostClient.dispatch(commandApproval(request, approvalKey))) as {
-        readonly outcome?: CommandRequestOutcome;
-      };
-      if (result.outcome) setOutcome(result.outcome);
-      return result;
+      try {
+        const answered = (await hostClient.dispatch(commandApproval(request))) as {
+          readonly outcome?: CommandRequestOutcome;
+        };
+        if (answered.outcome) setResult({ identity, outcome: answered.outcome });
+        return answered;
+      } catch (error) {
+        // The Home's own reason, as it said it: changed since it was read, or no longer asked.
+        if (error instanceof HostClientRequestError && saidReasons.has(error.reason ?? ""))
+          throw homeRefusal(error.reason!, error.message);
+        throw error;
+      }
     },
   });
   const answer = useScreenAction(hostClient, `request:${request.id}`, {
@@ -98,15 +131,16 @@ export function CommandRequestCard(props: {
       ),
   });
   // What the approval came to, as soon as the Home answers it.
-  const view = outcome
-    ? commandRequestView({
-        ...request,
-        status: "fulfilled",
-        command: { ...request.command!, outcome },
-      })!
-    : props.view;
+  const view =
+    result?.identity === identity
+      ? commandRequestView({
+          ...request,
+          status: "fulfilled",
+          command: { ...request.command!, outcome: result.outcome },
+        })!
+      : props.view;
   const busy = props.disabled || approve.running || answer.running;
-  const ready = armed && scroll.seen;
+  const ready = armed && seen;
   const line = approve.line ?? answer.line;
   const screen = view.personOnly?.screen;
   const triggerId = (request.command?.command as { readonly triggerId?: unknown } | undefined)
@@ -115,12 +149,15 @@ export function CommandRequestCard(props: {
   const opens =
     screen?.id === "automation-secrets" && typeof triggerId === "string"
       ? { route: "Schedule", params: { deploymentId: props.deploymentId, triggerId } }
-      : screen
-        ? {
-            route: screenRoutes[screen.id] ?? "Settings",
-            params: { deploymentId: props.deploymentId },
-          }
+      : screen && screenRoutes[screen.id]
+        ? { route: screenRoutes[screen.id]!, params: { deploymentId: props.deploymentId } }
         : null;
+  const approveHint = [
+    !seen ? commandRequestWords.more : null,
+    !armed ? commandRequestWords.arming : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
     <View
       accessibilityLabel={view.sentence}
@@ -130,25 +167,41 @@ export function CommandRequestCard(props: {
       <AppText role="caption" tone="soft">
         {view.askedBy}
       </AppText>
-      {view.gives ? (
-        <AppText role="caption" tone="soft">
-          {view.gives}
-        </AppText>
-      ) : null}
-      <AppText role="caption" tone="soft">
-        {view.rowsHeading}
-      </AppText>
       <ScrollView
         accessibilityLabel={view.rowsHeading}
         bounces={false}
         onContentSizeChange={(_, content) => measured({ content })}
         onLayout={(event) => measured({ box: event.nativeEvent.layout.height })}
         onScroll={(event) => measured({ offset: event.nativeEvent.contentOffset.y })}
+        ref={scroller}
         scrollEventThrottle={32}
-        style={{ maxHeight: Math.max(160, Math.min(height * 0.32, 320)) }}
+        style={{ maxHeight: Math.max(160, Math.min(height * 0.4, 360)) }}
         testID="command-rows"
       >
         <View style={styles.rows}>
+          {view.gives ? (
+            <AppText role="caption" tone="soft">
+              {view.gives}
+            </AppText>
+          ) : null}
+          {view.personOnly ? (
+            <AppText role="caption" tone="soft">
+              {`${commandRequestWords.needs}: ${view.personOnly.needs}`}
+            </AppText>
+          ) : null}
+          {view.agentWords ? (
+            <View style={styles.says}>
+              <AppText role="caption" tone="muted">
+                {view.agentWords.label}
+              </AppText>
+              <AppText role="caption" tone="soft">
+                {view.agentWords.text}
+              </AppText>
+            </View>
+          ) : null}
+          <AppText role="caption" tone="soft">
+            {view.rowsHeading}
+          </AppText>
           {view.rows.map((row, index) => (
             <View
               key={`${index}:${row.path}`}
@@ -163,6 +216,11 @@ export function CommandRequestCard(props: {
                   {row.value}
                 </AppText>
               )}
+              {row.meaning ? (
+                <AppText role="caption" tone="soft">
+                  {row.meaning}
+                </AppText>
+              ) : null}
               {row.name ? (
                 <AppText role="caption" tone="soft">
                   {row.name}
@@ -177,20 +235,15 @@ export function CommandRequestCard(props: {
           ))}
         </View>
       </ScrollView>
-      {scroll.seen ? null : (
+      {view.approve && !seen ? (
         <AppText role="caption" tone="soft">
           {commandRequestWords.more}
         </AppText>
-      )}
-      {view.agentWords ? (
-        <View style={styles.says}>
-          <AppText role="caption" tone="muted">
-            {view.agentWords.label}
-          </AppText>
-          <AppText role="caption" tone="soft">
-            {view.agentWords.text}
-          </AppText>
-        </View>
+      ) : null}
+      {view.approve && !armed ? (
+        <AppText role="caption" tone="soft">
+          {commandRequestWords.arming}
+        </AppText>
       ) : null}
       <AppText role="caption" tone="muted">
         {view.line}
@@ -233,6 +286,7 @@ export function CommandRequestCard(props: {
           ) : null}
           {view.approve ? (
             <AnswerPill
+              {...(approveHint ? { accessibilityHint: approveHint } : {})}
               busy={approve.running}
               disabled={busy || !ready}
               fill
