@@ -186,6 +186,27 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           () => undefined,
         );
         cleanups.push(async () => connection.close());
+        // The page session fills go to is one this relay opened (a relay names no other).
+        const count = runtime.receivedCommands().length;
+        const attaching = connection.request({
+          method: "Target.attachToTarget",
+          parameters: { targetId: "page-target", flatten: true },
+        });
+        const forwarded = await waitForValue(async () =>
+          runtime
+            .receivedCommands()
+            .slice(count)
+            .find(
+              (m) =>
+                m.type === "cdp.command" &&
+                (m.command as { method: string }).method === "Target.attachToTarget",
+            ),
+        );
+        runtime.sendServer(
+          { type: "cdp.result", requestId: forwarded.requestId, result: { sessionId: "page-cdp" } },
+          browserSessionId,
+        );
+        await attaching;
         return connection;
       };
       const fill = {
