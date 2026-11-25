@@ -10,6 +10,7 @@ import { personalWebBuildId } from "@opensteer/protocol";
 import { writeWebDistributionManifest } from "../../../scripts/write-web-distribution-manifest.mjs";
 import {
   stageDataTree,
+  pluginBridgeArtifacts,
   stageNativeFsHelper,
   stageNodeService,
   stagePluginRuntime,
@@ -151,6 +152,10 @@ for (const artifact of await stagePluginRuntime(
 }
 const pluginBridgePath = path.join(release, ...personalRuntimeLayout.pluginBridge.split("/"));
 await rm(pluginBridgePath, { force: true });
+await rm(`${pluginBridgePath}.modules`, { recursive: true, force: true });
+manifest.files = manifest.files.filter(
+  (file) => !file.path.startsWith(`${personalRuntimeLayout.pluginBridge}.modules/`),
+);
 await promisify(execFile)("pnpm", ["--filter", "apps", "build"], {
   cwd: repository,
   timeout: 120_000,
@@ -162,7 +167,7 @@ await promisify(execFile)(
   { cwd: repository, timeout: 120_000, maxBuffer: 8 * 1024 * 1024 },
 );
 await rm(`${pluginBridgePath}.map`, { force: true });
-await upsertArtifact({ mode: "data", path: personalRuntimeLayout.pluginBridge });
+for (const artifact of await pluginBridgeArtifacts(release)) await upsertArtifact(artifact);
 // Agents read the shipped skills from the release, so a seed's copy would test old guidance.
 const skills = path.join(release, personalRuntimeLayout.agentSkills);
 await rm(skills, { recursive: true, force: true });

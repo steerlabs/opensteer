@@ -42,6 +42,18 @@ index 0a1055d9afbb5fb5ba62be470390010b78d3ffbf..0878ea27595f771769193b9018be8993
  		registerImageEnv: (className, tag, env) => {
  			const alias = generateImageTag(className);
  			return Effect.acquireRelease(Effect.sync(() => {
+diff --git a/dist/core/node/Runtime.mjs b/dist/core/node/Runtime.mjs
+index 69fc918e0a3e48ae4b31239858260b1db9b38bdc..3ddbf6656d4ae59192b08daab99e0bc385fcc0e6 100644
+--- a/dist/core/node/Runtime.mjs
++++ b/dist/core/node/Runtime.mjs
+@@ -143,6 +143,7 @@ const RuntimeLive = Layer.effect(Runtime, Effect.gen(function* () {
+ 			...worker.logging?.verbose ? { verbose: true } : void 0
+ 		}, {
+ 			onOutput: worker.logging?.onOutput,
++			textConfig: worker.textConfig,
+ 			onExit: (exit) => {
+ 				Queue.offerUnsafe(exits, exit);
+ 			}
 diff --git a/dist/core/node/RuntimeServices.d.mts b/dist/core/node/RuntimeServices.d.mts
 index 4305e7a6120b96c2244cc3c2da8e6782e8d09624..81458753ad962f60b3ebf31341fd70835b4fdf49 100644
 --- a/dist/core/node/RuntimeServices.d.mts
@@ -72,6 +84,27 @@ index e4adc917fd63538d16df461f454ca182cbc7aae7..5909c3190ee42f0b1fc1e962d7160b11
  
  //# sourceMappingURL=RuntimeServices.mjs.map
 \ No newline at end of file
+diff --git a/dist/core/node/RuntimeWorker.d.mts b/dist/core/node/RuntimeWorker.d.mts
+index 29e69d68432f9bed8a812a61800ed76bd0c0d5e4..2cceedf0dcb412f8078fce9837996edeb2ad7316 100644
+--- a/dist/core/node/RuntimeWorker.d.mts
++++ b/dist/core/node/RuntimeWorker.d.mts
+@@ -2,7 +2,7 @@ import { Worker } from "./workerd/Config.mjs";
+ import { ContainerImage } from "./Docker.mjs";
+ import { HyperdriveOrigin } from "./bindings/hyperdrive/HyperdriveOrigin.shared.mjs";
+ import { QueueConsumer } from "./bindings/queue/QueueOptions.shared.mjs";
+-import { OutputSink, WorkerdExit } from "./workerd/Workerd.mjs";
++import { OutputSink, ServeOptions, WorkerdExit } from "./workerd/Workerd.mjs";
+ import { BindingHook } from "./PluginContext.mjs";
+ //#region src/core/RuntimeWorker.d.ts
+ interface RuntimeWorker<B extends BindingHooks = BindingHooks> {
+@@ -12,6 +12,7 @@ interface RuntimeWorker<B extends BindingHooks = BindingHooks> {
+   readonly compatibilityFlags: Array<string>;
+   readonly bindings: B;
+   readonly modules: ReadonlyArray<Module>;
++  readonly textConfig?: ServeOptions["textConfig"];
+   readonly assets?: Assets;
+   readonly hyperdrives?: Record<string, HyperdriveOrigin>;
+   readonly durableObjectNamespaces?: ReadonlyArray<DurableObjectNamespace>;
 diff --git a/dist/core/node/bindings/workflows/Workflows.mjs b/dist/core/node/bindings/workflows/Workflows.mjs
 index 873eb4b9eb5b3673552c09f882f71daf0ab98b8c..f329b358b4852185ce191c05701923ca922d0551 100644
 --- a/dist/core/node/bindings/workflows/Workflows.mjs
@@ -482,11 +515,82 @@ index beb1f94bcbba212a524df23f9dae4062820da9be..cfb0075b80b77e1f90eaba7e39994185
  		}
  		yield* Effect.never;
  	});
+diff --git a/dist/core/node/workerd/Workerd.d.mts b/dist/core/node/workerd/Workerd.d.mts
+index 5896af072ba016d5b61d2dd3ca769f44cfff0386..bcaec4bcadb6352f1ebf71ec16409df40dac63d4 100644
+--- a/dist/core/node/workerd/Workerd.d.mts
++++ b/dist/core/node/workerd/Workerd.d.mts
+@@ -23,6 +23,8 @@ interface WorkerdExit {
+   readonly stderr: string;
+ }
+ interface ServeOptions {
++  /** Write a text configuration whose raw modules remain in the installed artifact. */
++  readonly textConfig?: (config: Config) => { source: string; importPath: string };
+   /**
+    * Capture the workerd process's output instead of piping it to the parent
+    * process's stdout/stderr. Output produced before the process finishes
 diff --git a/dist/core/node/workerd/Workerd.mjs b/dist/core/node/workerd/Workerd.mjs
-index 3c74fb382403ee1a908216dfd7915c97e27725c7..c48e1561f42961dbeffd9616e798c4b7f8bb9ea6 100644
+index 3c74fb382403ee1a908216dfd7915c97e27725c7..4ed50fb6d01304ad81474f3fa1293403dd9e97db 100644
 --- a/dist/core/node/workerd/Workerd.mjs
 +++ b/dist/core/node/workerd/Workerd.mjs
-@@ -145,7 +145,8 @@
+@@ -6,6 +6,9 @@ import * as Context from "effect/Context";
+ import * as Effect from "effect/Effect";
+ import * as Layer from "effect/Layer";
+ import * as NodeChildProcess from "node:child_process";
++import { mkdtemp, rm, writeFile } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
+ import * as Predicate from "effect/Predicate";
+ import * as Schedule from "effect/Schedule";
+ //#region src/core/workerd/Workerd.ts
+@@ -62,14 +65,36 @@ const make = (spawn) => Workerd.of({
+ 			const address = args?.[key];
+ 			if (typeof address === "string" || typeof address === "number") configuredAddresses.push(String(address));
+ 		}
++		const text = options?.textConfig?.(config);
++		const file = text === undefined ? undefined : yield* Effect.acquireRelease(
++		  Effect.tryPromise({
++		    try: async () => {
++		      const directory = await mkdtemp(join(tmpdir(), "workerd-config-"));
++		      const path = join(directory, "config.capnp");
++		      try {
++		        await writeFile(path, text.source, { mode: 0o600 });
++		        return { directory, path, importPath: text.importPath };
++		      } catch (error) {
++		        await rm(directory, { recursive: true, force: true });
++		        throw error;
++		      }
++		    },
++		    catch: (cause) => new SystemError({
++		      subtag: "WorkerdStart",
++		      message: "Failed to write the Workers runtime configuration.",
++		      cause
++		    }),
++		  }),
++		  ({ directory }) => Effect.tryPromise(() => rm(directory, { recursive: true, force: true })).pipe(Effect.ignore),
++		);
+ 		const handle = yield* spawn(bin, [
+ 			"serve",
+-			"--binary",
++			...(file === undefined ? ["--binary"] : [`--import-path=${file.importPath}`]),
+ 			"--experimental",
+ 			"--control-fd=3",
+ 			...Object.entries(args ?? {}).map(([key, value]) => typeof value === "boolean" ? `--${key}` : `--${key}=${value}`),
+-			"-"
+-		], Buffer.from(serializeConfig(config)), configuredAddresses);
++			file?.path ?? "-"
++		], file === undefined ? Buffer.from(serializeConfig(config)) : Buffer.alloc(0), configuredAddresses);
+ 		let killed = false;
+ 		yield* Effect.addFinalizer(() => Effect.sync(() => {
+ 			killed = true;
+@@ -78,6 +103,7 @@ const make = (spawn) => Workerd.of({
+ 		if (handle.configure) yield* handle.configure();
+ 		const count = (config.sockets?.length ?? 0) + (typeof args?.["debug-port"] !== "undefined" ? 1 : 0) + (typeof args?.["inspector-addr"] !== "undefined" ? 1 : 0);
+ 		const control = yield* Effect.raceAllFirst([handle.control(count), handle.error()]);
++		if (file !== undefined) yield* Effect.tryPromise(() => rm(file.directory, { recursive: true, force: true })).pipe(Effect.ignore);
+ 		yield* handle.pipe(options?.onOutput);
+ 		const onExit = options?.onExit;
+ 		if (onExit) yield* handle.exited().pipe(Effect.map((exit) => {
+@@ -145,7 +171,8 @@ const makeBun = () => make((command, args, config, configuredAddresses) => Effec
  		"pipe",
  		"pipe"
  	],
@@ -496,7 +600,7 @@ index 3c74fb382403ee1a908216dfd7915c97e27725c7..c48e1561f42961dbeffd9616e798c4b7
  })).pipe(Effect.map((child) => {
  	const stdout = makeStreamPump(child.stdout, (chunk) => {
  		process.stdout.write(chunk);
-@@ -203,7 +204,8 @@
+@@ -203,7 +230,8 @@ const makeNode = () => make((command, args, config, configuredAddresses) => {
  				"pipe",
  				"pipe"
  			],
@@ -612,6 +716,18 @@ index 1d42bc36816f0c9bb1ee24b0f363e0c453f19bdb..3f87198c69b1908e2b23b9809a4f533d
        registerImageEnv: (className, tag, env) => {
          const alias = generateImageTag(className);
          return Effect.acquireRelease(
+diff --git a/src/core/Runtime.ts b/src/core/Runtime.ts
+index e336cd7cf335dd4124d3cf92aa604969ef28f323..0001cbdc8d1079e48ea82ea4d9cafc6285f93d38 100644
+--- a/src/core/Runtime.ts
++++ b/src/core/Runtime.ts
+@@ -278,6 +278,7 @@ export const RuntimeLive = Layer.effect(
+             },
+             {
+               onOutput: worker.logging?.onOutput,
++              textConfig: worker.textConfig,
+               onExit: (exit) => {
+                 Queue.offerUnsafe(exits, exit);
+               },
 diff --git a/src/core/RuntimeServices.ts b/src/core/RuntimeServices.ts
 index 9993a17a3a2be6b561ede2cb731a224772a8f712..38e0069a79ed6fd10fb64d27ddde2163e579ac2d 100644
 --- a/src/core/RuntimeServices.ts
@@ -635,6 +751,27 @@ index 9993a17a3a2be6b561ede2cb731a224772a8f712..38e0069a79ed6fd10fb64d27ddde2163
 +    Layer.provide(Docker.DockerLive),
 +    Layer.provide(Workerd.WorkerdLive),
 +  );
+diff --git a/src/core/RuntimeWorker.ts b/src/core/RuntimeWorker.ts
+index 7d2129f228cbbec01f989c530142d13f237d49b9..bd41d338d7562764fa172c88973c4cb55f91ca8e 100644
+--- a/src/core/RuntimeWorker.ts
++++ b/src/core/RuntimeWorker.ts
+@@ -3,7 +3,7 @@ import type { QueueConsumer } from "./bindings/queue/QueueOptions.shared.ts";
+ import type { ContainerImage } from "./Docker.ts";
+ import type { BindingHook } from "./PluginContext.ts";
+ import type * as WorkerdConfig from "./workerd/Config.ts";
+-import type { OutputSink, WorkerdExit } from "./workerd/Workerd.ts";
++import type { OutputSink, ServeOptions, WorkerdExit } from "./workerd/Workerd.ts";
+ 
+ export interface RuntimeWorker<B extends BindingHooks = BindingHooks> {
+   readonly name: string;
+@@ -12,6 +12,7 @@ export interface RuntimeWorker<B extends BindingHooks = BindingHooks> {
+   readonly compatibilityFlags: Array<string>;
+   readonly bindings: B;
+   readonly modules: ReadonlyArray<Module>;
++  readonly textConfig?: ServeOptions["textConfig"];
+   readonly assets?: Assets;
+   readonly hyperdrives?: Record<string, HyperdriveOrigin>;
+   readonly durableObjectNamespaces?: ReadonlyArray<DurableObjectNamespace>;
 diff --git a/src/core/bindings/workflows/Workflows.ts b/src/core/bindings/workflows/Workflows.ts
 index 0e5d93a1e1fa9888eb99a14046700dea6d8c41fc..e319db77152f7d8c2954e257d79652ca344b46a8 100644
 --- a/src/core/bindings/workflows/Workflows.ts
@@ -1165,10 +1302,82 @@ index 763f6b8b2414eb5caf19c2d64f7599a4f4b55b46..9716a72601a42568d39e4a924574092c
      // From here the socket does the talking; the client closing ends the
      // fiber (see `accept`), and the finalizers destroy both ends.
 diff --git a/src/core/workerd/Workerd.ts b/src/core/workerd/Workerd.ts
-index 065c7171802d3a22028f6d07280ea59144e11072..491b61ca3cf3aa264e4471e2b88dc6ff724ce01f 100644
+index 065c7171802d3a22028f6d07280ea59144e11072..b34917bbe393079b7759f6b943bba313a855e429 100644
 --- a/src/core/workerd/Workerd.ts
 +++ b/src/core/workerd/Workerd.ts
-@@ -294,6 +294,8 @@
+@@ -5,6 +5,9 @@ import * as Predicate from "effect/Predicate";
+ import * as Schedule from "effect/Schedule";
+ import type * as Scope from "effect/Scope";
+ import * as NodeChildProcess from "node:child_process";
++import { mkdtemp, rm, writeFile } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
+ import { ConfigError, SystemError } from "../RuntimeError.shared.ts";
+ import type { Config } from "./Config.ts";
+ import { serializeConfig } from "./internal/config.serialize.ts";
+@@ -29,6 +32,8 @@ export interface WorkerdExit {
+ }
+ 
+ export interface ServeOptions {
++  /** Write a text configuration whose raw modules remain in the installed artifact. */
++  readonly textConfig?: (config: Config) => { source: string; importPath: string };
+   /**
+    * Capture the workerd process's output instead of piping it to the parent
+    * process's stdout/stderr. Output produced before the process finishes
+@@ -167,19 +172,41 @@ const make = (
+             configuredAddresses.push(String(address));
+           }
+         }
++        const text = options?.textConfig?.(config);
++        const file = text === undefined ? undefined : yield* Effect.acquireRelease(
++          Effect.tryPromise({
++            try: async () => {
++              const directory = await mkdtemp(join(tmpdir(), "workerd-config-"));
++              const path = join(directory, "config.capnp");
++              try {
++                await writeFile(path, text.source, { mode: 0o600 });
++                return { directory, path, importPath: text.importPath };
++              } catch (error) {
++                await rm(directory, { recursive: true, force: true });
++                throw error;
++              }
++            },
++            catch: (cause) => new SystemError({
++              subtag: "WorkerdStart",
++              message: "Failed to write the Workers runtime configuration.",
++              cause
++            }),
++          }),
++          ({ directory }) => Effect.tryPromise(() => rm(directory, { recursive: true, force: true })).pipe(Effect.ignore),
++        );
+         const handle = yield* spawn(
+           workerd.bin,
+           [
+             "serve",
+-            "--binary",
++            ...(file === undefined ? ["--binary"] : [`--import-path=${file.importPath}`]),
+             "--experimental",
+             "--control-fd=3",
+             ...Object.entries(args ?? {}).map(([key, value]) =>
+               typeof value === "boolean" ? `--${key}` : `--${key}=${value}`,
+             ),
+-            "-",
++            file?.path ?? "-",
+           ],
+-          Buffer.from(serializeConfig(config)),
++          file === undefined ? Buffer.from(serializeConfig(config)) : Buffer.alloc(0),
+           configuredAddresses,
+         );
+         let killed = false;
+@@ -200,6 +227,7 @@ const make = (
+           handle.control(count),
+           handle.error(),
+         ]);
++        if (file !== undefined) yield* Effect.tryPromise(() => rm(file.directory, { recursive: true, force: true })).pipe(Effect.ignore);
+         yield* handle.pipe(options?.onOutput);
+         const onExit = options?.onExit;
+         if (onExit) {
+@@ -294,6 +322,8 @@ const makeBun = () =>
          env: externalEnv(),
          stdio: [config, "pipe", "pipe", "pipe"],
          killSignal: "SIGKILL",
@@ -1177,7 +1386,7 @@ index 065c7171802d3a22028f6d07280ea59144e11072..491b61ca3cf3aa264e4471e2b88dc6ff
        }),
      ).pipe(
        Effect.map((child) => {
-@@ -387,6 +389,9 @@
+@@ -387,6 +417,9 @@ const makeNode = () =>
            env: externalEnv(),
            stdio: ["pipe", "pipe", "pipe", "pipe"],
            killSignal: "SIGKILL",

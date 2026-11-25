@@ -6,6 +6,7 @@ import type {
   DurableObjectState,
   ExecutionContext,
   WorkerLoader,
+  WorkerLoaderModule,
   Workflow,
   Fetcher,
   WebSocket as NativeWebSocket,
@@ -28,6 +29,7 @@ import {
   type WorkflowDuration,
 } from "apps/contracts";
 import {
+  loadWorker,
   makeFacetSupervisor,
   FacetInvocation,
   type FacetBundle,
@@ -45,13 +47,13 @@ import {
   makeAppWorkerResidency,
   type AppWorkerResidency,
 } from "./app-worker-residency.ts";
-import { compileWorkerApp } from "../workerd-build.ts";
-import framework from "plugin-engine-framework";
-import apps from "apps/package.json" with { type: "json" };
+import type Compiler from "./workerd-compiler.ts";
+import type { ModuleFile } from "./workerd-artifact.ts";
 import { assembleWorkerBundle } from "./worker-build-storage.ts";
 import { declarationFailed } from "./worker-source-map.ts";
 import {
   CompileWorkerApp,
+  CompilerFailure,
   CompileWorkerResult,
   PreparedWorkflow,
   WorkerInvocation,
@@ -60,12 +62,7 @@ import {
 } from "../contracts/workerd-host.ts";
 import { LoadedWorkerBuild } from "../contracts/worker-build.ts";
 import { HostApiCheck } from "../contracts/host-api.ts";
-import {
-  describeBuildCause,
-  RuntimeAppsDependencyMissing,
-  RuntimeBuildFailed,
-  RuntimeProtocolUnsupported,
-} from "../contracts/runtime.ts";
+import { describeBuildCause, RuntimeBuildFailed } from "../contracts/runtime.ts";
 import {
   decodeWorkflowFailure,
   workflowFailureDetail,
@@ -128,6 +125,8 @@ interface Environment {
   readonly SELF?: HttpService;
   /** The npm registry builds resolve packages from, or empty for the public registry. */
   readonly NPM_REGISTRY: string;
+  readonly COMPILER_FILES: readonly ModuleFile[];
+  readonly COMPILER_ASSETS: HttpService;
   readonly LOADER: WorkerLoader;
   /** Most app Workers this process keeps loaded, or null for the default. */
   readonly APP_WORKERS?: number | null;
@@ -253,10 +252,28 @@ const runner = (env: Environment, context: Pick<ExecutionContext, "waitUntil" | 
     waitUntil: (task) => context.waitUntil(task.then(ignore, ignore)),
   });
 const ignore = () => undefined;
-/** The Host's framework package as every build installs it. */
-const frameworkFiles = {
-  "package.json": JSON.stringify({ name: "apps", version: apps.version, type: "module" }),
-  "runtime.json": framework,
+/** Only a build opens these release files. The app runtime has no build imports. */
+const compiler = (env: Environment) => {
+  const { worker } = loadWorker(env.LOADER, "pluginEngine:compiler", async () => {
+    const files = await Promise.all(
+      env.COMPILER_FILES.map(async ({ name, type }): Promise<[string, WorkerLoaderModule]> => {
+        const file = await env.COMPILER_ASSETS.fetch(new Request(`http://compiler/${name}`));
+        if (!file.ok) throw new Error("The packaged compiler module is unavailable.");
+        if (type === "Wasm") return [name, { wasm: await file.arrayBuffer() }];
+        const text = await file.text();
+        return [name, type === "Text" ? { text } : { js: text }];
+      }),
+    );
+    return {
+      mainModule: "main.js",
+      compatibilityDate: "2026-07-30",
+      compatibilityFlags: ["nodejs_compat", "no_brotli_content_encoding"],
+      modules: Object.fromEntries(files),
+      env: { PUBLIC_FETCH: env.PUBLIC_FETCH, NPM_REGISTRY: env.NPM_REGISTRY },
+    };
+  });
+  // The installed main.js exports Compiler as its default Workerd entrypoint.
+  return worker.getEntrypoint() as unknown as Pick<Compiler, "compile">;
 };
 const encodedJson = Schema.fromJsonString(Schema.Json);
 
@@ -302,15 +319,12 @@ class AppApi extends RpcTarget {
         const request = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(CompileWorkerApp))(
           input,
         ).pipe(Effect.mapError((cause) => buildFailed("source", cause)));
-        const compiled = yield* compileWorkerApp(
-          request.files,
-          {
-            ...(this.#env.NPM_REGISTRY === "" ? {} : { registry: this.#env.NPM_REGISTRY }),
-            publicFetch: (input, init) => this.#env.PUBLIC_FETCH.fetch(new Request(input, init)),
-            apps: { files: frameworkFiles },
-          },
-          request.public ?? [],
-        );
+        const result = yield* Effect.tryPromise({
+          try: () => compiler(this.#env).compile(request),
+          catch: (cause) => buildFailed("compile", cause),
+        });
+        if (!result.ok) return yield* Schema.decodeUnknownSync(CompilerFailure)(result.error);
+        const compiled = result.value;
         const { bundle, framework, ui, sourceMap } = compiled;
         const requirements = yield* runner(this.#env, this.#context)
           .declare({ ...assembleWorkerBundle(bundle, framework), protocol: compiled.protocol }, {})
@@ -345,12 +359,7 @@ class AppApi extends RpcTarget {
         Effect.catch((error) =>
           Effect.succeed({
             ok: false as const,
-            error:
-              Schema.is(RuntimeBuildFailed)(error) ||
-              Schema.is(RuntimeProtocolUnsupported)(error) ||
-              Schema.is(RuntimeAppsDependencyMissing)(error)
-                ? error
-                : buildFailed("compile", error),
+            error: Schema.is(CompilerFailure)(error) ? error : buildFailed("compile", error),
           }),
         ),
         Effect.flatMap(Schema.encodeEffect(Schema.fromJsonString(CompileWorkerResult))),

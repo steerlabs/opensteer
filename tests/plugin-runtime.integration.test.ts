@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { copyFile, mkdtemp, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, mkdtemp, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { createRequire } from "node:module";
@@ -69,6 +69,14 @@ test.skipIf(process.platform === "win32")(
       resolve("apps/host/dist/plugin-engine-bridge.json"),
       join(staged, layout.pluginBridge),
     );
+    const modules = join(staged, `${layout.pluginBridge}.modules`);
+    await cp(resolve("apps/host/dist/plugin-engine-bridge.json.modules"), modules, {
+      recursive: true,
+    });
+    const compiler = join(modules, "compiler");
+    const heldCompiler = join(directory, "compiler");
+    await rename(compiler, heldCompiler);
+    await mkdir(compiler);
     // Use Node's ESM loader for the staged bundle, bypassing Vitest's source transforms.
     const bundled = createRequire(import.meta.url)(join(staged, layout.hostScript)) as {
       createHostRuntime: typeof createHostRuntime;
@@ -125,11 +133,48 @@ test.skipIf(process.platform === "win32")(
     }
     const plugins = host.runtime.plugins;
     const caller = { caller: "personal", mode: "automatic" } as const;
-    const installed = await deadline(
-      plugins.install({ kind: "files", name: "Fixture", files: pluginFixtureFiles(1) }, caller),
-      "Packaged Host did not install the fixture",
+    const started = await deadline(
+      plugins.health({}, caller),
+      "Packaged Host needed the compiler at startup",
     );
-    expect(installed.status).toBe("installed");
+    const startedWorkerd = pluginFixtureProcesses(started.pid).find(
+      (child) => basename(child.command) === "workerd",
+    );
+    if (!startedWorkerd) throw new Error("Packaged workerd process was missing at startup");
+    const compilerEntry = join(heldCompiler, "main.js");
+    await cp(heldCompiler, compiler, {
+      recursive: true,
+      filter: (source) => source !== compilerEntry,
+    });
+    const install = () =>
+      plugins.install(
+        {
+          kind: "files",
+          name: "Fixture",
+          files: [
+            ...pluginFixtureFiles(1),
+            {
+              path: "ui/index.html",
+              content:
+                '<link rel="stylesheet" href="./style.css"><p class="text-fixture">Fixture</p>',
+            },
+            {
+              path: "ui/style.css",
+              content: "@theme { --color-fixture: #123456; } @tailwind utilities;",
+            },
+          ],
+        },
+        caller,
+      );
+    expect(
+      await deadline(install(), "Build with a missing compiler file did not settle"),
+    ).toMatchObject({
+      status: "build-error",
+      error: { message: expect.stringContaining("The packaged compiler module is unavailable.") },
+    });
+    await copyFile(compilerEntry, join(compiler, "main.js"));
+    const installed = await deadline(install(), "Packaged Host did not install the fixture");
+    expect(installed.status, JSON.stringify(installed)).toBe("installed");
     expect(
       (await plugins.call({ calls: { path: "tools.fixture.read", input: { amount: 2 } } }, caller))
         .result,
@@ -139,9 +184,11 @@ test.skipIf(process.platform === "win32")(
         .result,
     ).toMatchObject({ status: "completed", execution: { value: 5 } });
     const health = await plugins.health({}, caller);
+    expect(health.pid).toBe(started.pid);
     const children = pluginFixtureProcesses(health.pid);
     const workerd = children.find((child) => basename(child.command) === "workerd");
     if (!workerd) throw new Error("Packaged workerd process was missing");
+    expect(workerd.pid).toBe(startedWorkerd.pid);
     const binary = join(
       staged,
       layout.serviceModules,
