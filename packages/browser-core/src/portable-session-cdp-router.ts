@@ -1119,6 +1119,9 @@ export class SessionCdpRouter {
       case "Target.getTargets": {
         const response = await this.#ownedTargetInfos(state, parameters, connection);
         if (state.standard) return { targetInfos: response.targetInfos };
+        // A connection's script is told only its own root, never another of its session's pages.
+        if (state.connection && state.script)
+          return { ...response, rootTargetId: state.script.root };
         const root = state.script?.root ?? state.session.rootTargetId;
         const current = this.#ownerByTargetId.get(root);
         const rootTargetId =
