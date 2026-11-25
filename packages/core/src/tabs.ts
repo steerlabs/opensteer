@@ -47,8 +47,8 @@ export const TabOpenedBySchema = z.union([
   z.strictObject({ taskId: ThreadIdSchema }),
 ]);
 export type TabOpenedBy = z.infer<typeof TabOpenedBySchema>;
-/** The one test for an extension's address (see `@opensteer/browser-core/extension-url`). */
-export { isExtensionUrl } from "@opensteer/browser-core/extension-url";
+/** The one test for an extension's address (see `@opensteer/shared/extensionUrl`). */
+export { isExtensionUrl } from "@opensteer/shared/extensionUrl";
 
 /**
  * Whether a page-open URL is allowed for a connected agent (`about:blank` or credential-free

@@ -76,7 +76,8 @@
     "./fileHref": "./src/fileHref.ts",
     "./markdownLinks": "./src/markdownLinks.ts",
     "./stripRefs": "./src/stripRefs.ts",
-    "./personMarkdown": "./src/personMarkdown.ts"
+    "./personMarkdown": "./src/personMarkdown.ts",
+    "./extensionUrl": "./src/extensionUrl.ts"
   },
   "scripts": {
     "clean": "node ../../scripts/clean.mjs dist *.tsbuildinfo",

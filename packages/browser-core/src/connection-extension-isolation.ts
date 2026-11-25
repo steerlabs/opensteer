@@ -1,7 +1,7 @@
 import { remoteObjectContextId } from "./execution-contexts.js";
 import { SessionCdpRouterError, type CdpParameters } from "./portable-session-cdp-router.js";
 
-import { isExtensionUrl } from "./extension-url.js";
+import { isExtensionUrl } from "@opensteer/shared/extensionUrl";
 
 export { isExtensionUrl };
 

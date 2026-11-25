@@ -1,5 +1,5 @@
 import { boundedJsonSize } from "@opensteer/browser-core/bounded-json";
-import { isExtensionUrl } from "@opensteer/browser-core/extension-url";
+import { isExtensionUrl } from "@opensteer/shared/extensionUrl";
 import { DeploymentIdSchema } from "@opensteer/core";
 import {
   BrowserListTabsParametersSchema,
