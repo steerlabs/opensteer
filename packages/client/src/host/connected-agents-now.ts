@@ -5,7 +5,7 @@ import {
   sessionAgentPart,
   type SessionAgent,
 } from "./agent-work.js";
-import { workSentence, workWords } from "./agent-work-copy.js";
+import { workSentence, workWords, type SafeWorkCopyValues } from "./agent-work-copy.js";
 import type { ThreadSummary, WaitingRequestView } from "./client.js";
 import { plainSentence, type SentencePart } from "./sentence-parts.js";
 import { requestsWaitingOn } from "./waiting-requests.js";
@@ -99,13 +99,10 @@ function headlineFor(
   needsYou: readonly ConnectedAgentNow[],
   working: readonly (readonly ConnectedAgentNow[])[],
 ): readonly SentencePart[] {
-  const name = ({ agent }: ConnectedAgentNow) =>
-    agent.who?.verified ? agent.name : sessionAgentPart(agent);
-
   if (needsYou.length > 0) {
     const parts =
       needsYou.length === 1
-        ? workSentence("work.waiting", { agent: name(needsYou[0]!) })
+        ? singleAgentHeadline("work.waiting", needsYou[0]!.agent)
         : [workWords("now.needsYouCount", { count: needsYou.length })];
     return working.length
       ? [...parts, workWords("now.alsoWorking", { count: working.length })]
@@ -118,8 +115,17 @@ function headlineFor(
   if (!only) return [];
   const places = distinctPlaces(sessions.flatMap((entry) => entry.places));
   if (places.length > 1)
-    return workSentence("now.workingInPlaces", { agent: name(only) }, { count: places.length });
-  if (places[0])
-    return workSentence("now.workingIn", { agent: name(only) }, { place: places[0].name });
-  return workSentence("work.working", { agent: name(only) });
+    return singleAgentHeadline("now.workingInPlaces", only.agent, { count: places.length });
+  if (places[0]) return singleAgentHeadline("now.workingIn", only.agent, { place: places[0].name });
+  return singleAgentHeadline("work.working", only.agent);
+}
+
+/** Keep the name at its own boundary for the two-line sidebar, even when it is verified. */
+function singleAgentHeadline(
+  key: "work.waiting" | "work.working" | "now.workingInPlaces" | "now.workingIn",
+  agent: SessionAgent,
+  values?: SafeWorkCopyValues,
+): readonly SentencePart[] {
+  const [, ...detail] = workSentence(key, { agent: { name: agent.name } }, values);
+  return [agent.who?.verified ? agent.name : sessionAgentPart(agent), ...detail];
 }

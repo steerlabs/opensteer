@@ -26,26 +26,33 @@ async function showPanel(page: Page) {
   if (!fits) throw new Error("The connected agent panel exceeds the viewport.");
 }
 
-async function checkSoloLine(page: Page, { clipped }: { clipped: boolean }) {
+async function checkSoloLine(
+  page: Page,
+  expected: { nameClipped: boolean; detailClipped: boolean },
+) {
   const layout = await trigger(page).evaluate((button) => {
-    const text = button.querySelector<HTMLElement>(".agents-now__headline")!;
+    const name = button.querySelector<HTMLElement>(".agents-now__headline-name")!;
+    const detail = button.querySelector<HTMLElement>(".agents-now__headline-detail")!;
     const stop = button.parentElement!.querySelector<HTMLElement>(".agents-now__quick-stop")!;
     const line = button.getBoundingClientRect();
     const action = stop.getBoundingClientRect();
     return {
       title: button.getAttribute("title"),
       label: button.getAttribute("aria-label"),
-      height: text.clientHeight,
-      fullHeight: text.scrollHeight,
-      lineHeight: Number.parseFloat(getComputedStyle(text).lineHeight),
+      nameClipped: name.scrollWidth > name.clientWidth,
+      detailClipped: detail.scrollWidth > detail.clientWidth,
+      separate: name.getBoundingClientRect().bottom <= detail.getBoundingClientRect().top,
+      detailText: detail.textContent?.trim(),
       centreOffset: Math.abs((line.top + line.bottom - action.top - action.bottom) / 2),
     };
   });
   if (
     !layout.title ||
     layout.title !== layout.label ||
-    layout.height > 2 * layout.lineHeight + 1 ||
-    layout.fullHeight > layout.height + 1 !== clipped ||
+    !layout.separate ||
+    !layout.detailText?.startsWith("is working in ") ||
+    layout.nameClipped !== expected.nameClipped ||
+    layout.detailClipped !== expected.detailClipped ||
     layout.centreOffset > 1
   )
     throw new Error(`The single-agent line did not fit: ${JSON.stringify(layout)}`);
@@ -74,7 +81,7 @@ try {
   await open("one");
   await page.getByRole("button", { name: "ChatGPT is working in Shopping" }).waitFor();
   await page.evaluate(() => document.fonts.ready);
-  await checkSoloLine(page, { clipped: false });
+  await checkSoloLine(page, { nameClipped: false, detailClipped: false });
   await save(page, "one-dark");
 
   await open("three");
@@ -108,16 +115,25 @@ try {
   await open("long-one");
   await page
     .getByRole("button", {
-      name: /Grok research assistant.*Household shopping and weekly groceries shared with family/,
+      name: /Grok research assistant.*is working in Shopping/,
     })
     .waitFor();
-  await checkSoloLine(page, { clipped: true });
+  await checkSoloLine(page, { nameClipped: true, detailClipped: false });
   const resize = page.getByRole("separator", { name: "Resize navigation sidebar" });
   await resize.press("Home");
   if ((await resize.getAttribute("aria-valuenow")) !== (await resize.getAttribute("aria-valuemin")))
     throw new Error("The sidebar did not reach its minimum width.");
-  await checkSoloLine(page, { clipped: true });
+  await checkSoloLine(page, { nameClipped: true, detailClipped: false });
   await save(page, "one-long-dark");
+
+  await open("long-place");
+  await page
+    .getByRole("button", {
+      name: "ChatGPT is working in Household shopping and weekly groceries shared with family",
+    })
+    .waitFor();
+  await checkSoloLine(page, { nameClipped: false, detailClipped: true });
+  await save(page, "one-long-place-dark");
 
   await page.setViewportSize({ width: 728, height: 820 });
   await page.goto(`${web.origin}/?mock-agents&mock-agent-work=long-panel`);

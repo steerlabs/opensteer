@@ -57,6 +57,7 @@ export const mockAgentWorkLiveScenes = [
   "needs-you",
   "long-panel",
   "long-one",
+  "long-place",
 ] as const;
 export type MockAgentWorkLiveScene = (typeof mockAgentWorkLiveScenes)[number];
 
@@ -123,7 +124,8 @@ export function mockAgentWork(input: {
   const liveWaiting = livePanel === "needs-you";
   const longPanel = livePanel === "long-panel";
   const longSolo = livePanel === "long-one";
-  const solo = livePanel === "one" || longSolo;
+  const longSoloPlace = livePanel === "long-place";
+  const solo = livePanel === "one" || longSolo || longSoloPlace;
   const longAgent = { ...grok, label: "Grok research assistant for the entire household" };
   const longPlace = "Household shopping and weekly groceries shared with family";
   const workingAgent = liveWaiting ? grok : claude;
@@ -296,7 +298,7 @@ export function mockAgentWork(input: {
           shopperSession,
           {
             tool: "tab_open",
-            target: profile(longSolo ? longPlace : "Shopping"),
+            target: profile(longSoloPlace ? longPlace : "Shopping"),
             mode: "full-access",
             decision: { by: "full-access" },
           },
@@ -307,7 +309,7 @@ export function mockAgentWork(input: {
           shopperSession,
           {
             tool: "browser_use",
-            target: profile(longSolo ? longPlace : "Shopping"),
+            target: profile(longSoloPlace ? longPlace : "Shopping"),
             state: "handed-off",
             outcome: null,
             completedAt: null,

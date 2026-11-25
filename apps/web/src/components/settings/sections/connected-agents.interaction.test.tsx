@@ -205,12 +205,18 @@ describe("one connected agent", () => {
       configurable: true,
     });
     const page = await mount(client, `${base}/${claude}`);
-    const watch = () => page.querySelector<HTMLAnchorElement>(".connected-agent__header a");
-    expect(status(page)).toContain("Not doing anything");
+    const watch = () =>
+      page.querySelector<HTMLButtonElement>(
+        '[aria-labelledby="connected-agent-now"] button[aria-label="Watch Claude"]',
+      );
+    expect(status(page)).toBe("");
     expect(watch()).toBeNull();
     await act(async () => client.mockAgentWork());
-    expect(status(page)).toContain("Working now");
-    expect(status(page)).toContain("Find flights to Lisbon");
+    expect(status(page)).toBe("");
+    expect(page.querySelector(".connected-agent__header a")).toBeNull();
+    expect(page.querySelector(".connected-agent__session-title")?.textContent).toBe(
+      "Find flights to Lisbon",
+    );
     expect(activity).toHaveBeenCalledWith(
       { connectionId: claude },
       { signal: expect.any(AbortSignal) },
@@ -220,7 +226,7 @@ describe("one connected agent", () => {
       ?.thread.agentSessionId;
     expect(sessionId).toBeTruthy();
     await act(async () => expect(client.stopAgentSession(threadId, sessionId!)).toBe(true));
-    expect(status(page)).toContain("Not doing anything");
+    expect(status(page)).toBe("");
     expect(watch()).toBeNull();
     await act(async () => client.mockAgentWork());
     expect(watch()?.textContent).toBe("Watch");
@@ -276,7 +282,7 @@ describe("one connected agent", () => {
     host = seeded();
     const page = await mount(host, `${base}/${claude}`);
     await act(async () => host!.mockAgentWork({ livePanel: "needs-you" }));
-    expect(status(page)).toContain("Needs you");
+    expect(status(page)).toBe("");
     const now = page.querySelector<HTMLElement>('[aria-labelledby="connected-agent-now"]')!;
     expect(now.querySelector(".chip--warn")?.textContent).toBe("Needs you");
     const card = now.querySelector<HTMLElement>(".request-card .operation-request")!;
@@ -340,7 +346,7 @@ describe("one connected agent", () => {
     host = seeded();
     const page = await mount(host, `${base}/mcn_00000000-0000-4000-8000-000000000003`);
     await vi.waitFor(() => expect(page.textContent).toContain("Trip planner"));
-    expect(status(page)).toContain("Not doing anything");
+    expect(status(page)).toBe("");
     expect(page.textContent).toContain("Calls itself");
     expect(page.textContent).toContain("TravelBot Agent");
     expect(page.textContent).toContain("trips.example");

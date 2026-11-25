@@ -36,8 +36,13 @@ export function OutsideName({ value }: { readonly value: string }) {
  * else stands beside it, words or an address, so nothing can run into it; unquoted when drawn
  * alone as a heading or standalone label), each address an `Address`.
  */
-export function SentenceText({ parts }: { readonly parts: readonly SentencePart[] }) {
-  const inSentence = parts.length > 1;
+export function SentenceText({
+  parts,
+  quoteNames = parts.length > 1,
+}: {
+  readonly parts: readonly SentencePart[];
+  readonly quoteNames?: boolean;
+}) {
   return (
     <>
       {parts.map((part, index) =>
@@ -45,7 +50,7 @@ export function SentenceText({ parts }: { readonly parts: readonly SentencePart[
           part
         ) : "address" in part ? (
           <Address key={index} value={part.address} />
-        ) : inSentence ? (
+        ) : quoteNames ? (
           <Fragment key={index}>
             “<OutsideName value={part.name} />”
           </Fragment>

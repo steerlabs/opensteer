@@ -74,18 +74,23 @@ function ActiveSession({
   return (
     <div className="connected-agent__session">
       <div className="connected-agent__session-head">
-        <div className="connected-agent__session-place">
-          {entry.places.map(({ name, device }, index) => (
-            <div key={index}>
-              <OutsideName value={name} />
-              {device ? (
-                <>
-                  {" "}
-                  · <OutsideName value={device.name} />
-                </>
-              ) : null}
-            </div>
-          ))}
+        <div className="connected-agent__session-summary">
+          <h3 className="connected-agent__session-title">
+            <OutsideName value={thread.title} />
+          </h3>
+          <div className="connected-agent__session-place">
+            {entry.places.map(({ name, device }, index) => (
+              <div key={index}>
+                <OutsideName value={name} />
+                {device ? (
+                  <>
+                    {" "}
+                    · <OutsideName value={device.name} />
+                  </>
+                ) : null}
+              </div>
+            ))}
+          </div>
         </div>
         <div className="connected-agent__session-actions">
           <button

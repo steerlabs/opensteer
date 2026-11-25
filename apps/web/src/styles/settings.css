@@ -1570,10 +1570,18 @@ a.connected-agents__row:focus-visible {
   margin-block-end: var(--space-8);
 }
 
-.connected-agent__session-place {
+.connected-agent__session-summary {
   flex: 1;
   min-width: min(9rem, 100%);
   overflow-wrap: anywhere;
+}
+
+.connected-agent__session-title {
+  margin: 0;
+  font-size: var(--text-base);
+}
+
+.connected-agent__session-place {
   color: var(--muted);
   font-size: var(--text-sm);
 }

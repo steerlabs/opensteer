@@ -64,10 +64,11 @@ export function ConnectedAgentPage({
   // What this page sends is what the chat parity script covers.
   const chatHost = chatScreenHost(client);
   const work = useConnectedAgentWork(client, connectionId);
-  const first = work.view.agents[0];
-  const task = work.tasks.find(({ id }) => id === first?.threadId);
-  const live = first && task ? { what: task.title, threadId: task.id, state: first.state } : null;
-  const activity = useConnectedAgentActivity(client, connectionId, live?.threadId ?? null);
+  const activity = useConnectedAgentActivity(
+    client,
+    connectionId,
+    work.view.agents[0]?.threadId ?? null,
+  );
   const liveTasks = useLiveTasks(client);
   const chromeTabs = useChromeTabGrantCatalog(client, true);
   const { snapshot } = shell;
@@ -127,7 +128,6 @@ export function ConnectedAgentPage({
   const detail = connectedAgentDetail(connection, names, {
     revoked: agents.revoked,
     grantsAvailable: agents.grantsAvailable,
-    live,
     ...(activity ? { activity } : {}),
   });
   const who = detail.row.identity.who;
@@ -210,19 +210,15 @@ export function ConnectedAgentPage({
           <h1 className="settings-section__title">
             <SentenceText parts={[{ name: agent }]} />
           </h1>
-          {detail.live?.threadId ? (
-            <Link className="btn" to={`/tasks/${detail.live.threadId}`}>
-              <Icon name="eye" />
-              {agentWords("agent.watch")}
-            </Link>
-          ) : null}
         </div>
         {chat ? null : <AgentWhoLine nameShown={agent !== who.heading} who={who} />}
         <AgentWithdrawnNotice
           onDisconnect={withdrawn && !busy ? () => setConfirming("disconnect") : null}
           who={who}
         />
-        <StatusNotice status={detail.status} />
+        {detail.row.phase !== "active" || (chat && !work.view.agents.length) ? (
+          <StatusNotice status={detail.status} />
+        ) : null}
         {detail.uncertain ? (
           <p className="notice connected-agent__uncertain" role="alert">
             <Icon name="alert-circle" />

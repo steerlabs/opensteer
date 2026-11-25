@@ -135,14 +135,25 @@ function ActiveAgents({
             <AgentMark identity={agent} key={connectionId} />
           ))}
           {marks.size > 3 ? <span>+{marks.size - 3}</span> : null}
+          {oneWorking ? <span className="status-dot status-dot--running" /> : null}
         </span>
         {compact ? (
           <span aria-hidden>{connections.size}</span>
         ) : (
           <>
-            {oneWorking ? <span aria-hidden className="status-dot status-dot--running" /> : null}
             <span aria-hidden className="agents-now__headline">
-              <SentenceText parts={headlineParts} />
+              {connections.size === 1 ? (
+                <>
+                  <span className="agents-now__headline-line agents-now__headline-name">
+                    <SentenceText parts={headlineParts.slice(0, 1)} quoteNames />
+                  </span>
+                  <span className="agents-now__headline-line agents-now__headline-detail">
+                    <SentenceText parts={headlineParts.slice(1)} />
+                  </span>
+                </>
+              ) : (
+                <SentenceText parts={headlineParts} />
+              )}
             </span>
             {oneWorking ? null : <Icon name="chevron-down" />}
           </>
