@@ -9,7 +9,6 @@ import {
   requestDecision,
   requestsWaitingOn,
   sessionAgent,
-  sessionAgentPart,
   sessionTaskView,
   tabAgentLine,
   tabNeedsYouParts,
@@ -287,7 +286,9 @@ export function OperationRequestPanel({
     >
       <div className="operation-request__by">
         <AgentMark identity={view.agent} />
-        <strong>{view.agent.name}</strong>
+        <strong>
+          <SentenceText parts={[connectedAgentNamePart(view.agent)]} quoteNames />
+        </strong>
       </div>
       <p className="action-panel__title">{view.question}</p>
       {(view.context ?? view.summary) ? (

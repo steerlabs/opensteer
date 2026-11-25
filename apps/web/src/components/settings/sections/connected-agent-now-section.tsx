@@ -87,7 +87,7 @@ function ActiveSession({
             {entry.places.map(({ name, device }, index) => (
               <div key={index}>
                 <OutsideName value={name} />
-                {device ? (
+                {device && device.name !== name ? (
                   <>
                     {" "}
                     · <OutsideName value={device.name} />
@@ -98,15 +98,19 @@ function ActiveSession({
           </div>
         </div>
         <div className="connected-agent__session-actions">
-          <button
-            aria-label={sessionActionLabel("work.watch", entry.agent)}
-            className="btn btn--small"
-            onClick={() => open(entry.threadId)}
-            type="button"
-          >
-            <Icon name="eye" />
-            {agentWords("agent.watch")}
-          </button>
+          {entry.state === "needs-you" ? (
+            <span className="chip chip--warn">{agentWords("agent.status.needsYou")}</span>
+          ) : (
+            <button
+              aria-label={sessionActionLabel("work.watch", entry.agent)}
+              className="btn btn--small"
+              onClick={() => open(entry.threadId)}
+              type="button"
+            >
+              <Icon name="eye" />
+              {agentWords("agent.watch")}
+            </button>
+          )}
           <button
             aria-label={sessionActionLabel("work.stop", entry.agent)}
             className="btn btn--small"
@@ -119,9 +123,6 @@ function ActiveSession({
         </div>
       </div>
       {stop.line ? <ActionLine line={stop.line} wrap /> : null}
-      {entry.state === "needs-you" ? (
-        <span className="chip chip--warn">{agentWords("agent.status.needsYou")}</span>
-      ) : null}
       {surface ? (
         <RequestStack
           disabled={disabled}

@@ -287,6 +287,36 @@ describe("one connected agent", () => {
     expect(path).toBe(`/tasks/${mockAgentWorkThreads.shopping}`);
   });
 
+  it("names a device only once when it is the session's place", async () => {
+    const client = seeded();
+    host = client;
+    const read = client.rpc["threads.activity"];
+    Object.defineProperty(client.rpc, "threads.activity", {
+      value: async (...args: Parameters<typeof read>) => {
+        const result = await read(...args);
+        if (!result.ok) return result;
+        return {
+          ...result,
+          data: {
+            ...result.data,
+            operations: result.data.operations.map((operation) => ({
+              ...operation,
+              target: {
+                ...operation.target,
+                grant: { kind: "device" },
+                name: operation.target.device!.name,
+              },
+            })),
+          },
+        };
+      },
+      configurable: true,
+    });
+    const page = await mount(client, `${base}/${chatgpt}`);
+    await act(async () => client.mockAgentWork({ livePanel: "one" }));
+    expect(page.querySelector(".connected-agent__session-place")?.textContent).toBe("Studio Mac");
+  });
+
   it("quotes and isolates self-declared names in Now’s action labels", async () => {
     host = seeded();
     const page = await mount(host, `${base}/${grok}`);
@@ -305,7 +335,9 @@ describe("one connected agent", () => {
     await act(async () => host!.mockAgentWork({ livePanel: "needs-you" }));
     expect(status(page)).toBe("");
     const now = page.querySelector<HTMLElement>('[aria-labelledby="connected-agent-now"]')!;
-    expect(now.querySelector(".chip--warn")?.textContent).toBe("Needs you");
+    const heading = now.querySelector(".connected-agent__session-head")!;
+    expect(heading.querySelector(".chip--warn")?.textContent).toBe("Needs you");
+    expect(heading.querySelector('button[aria-label="Watch Claude"]')).toBeNull();
     const card = now.querySelector<HTMLElement>(".request-card .operation-request")!;
     expect(card.dataset.requestId).toBe(mockAgentOperationRequestId);
     expect(card.textContent).toContain("Run a script in Travel?");
@@ -379,6 +411,43 @@ describe("one connected agent", () => {
       earlier.querySelector<HTMLButtonElement>(".connected-agent__history-row")!.click(),
     );
     expect(path).toBe(`/tasks/${mockAgentWorkThreads.pastShopping}`);
+  });
+
+  it("puts Show earlier under its heading when the first page contains only current work", async () => {
+    const client = seeded();
+    host = client;
+    await client.load();
+    client.mockAgentWork({ livePanel: "one-history" });
+    const original = client.rpc["connections.activity"];
+    const all = unwrapRpcResult(await original({ connectionId: chatgpt }));
+    const activity = vi.fn(async ({ before }: Parameters<typeof original>[0]) => ({
+      ok: true as const,
+      data: before
+        ? { ...all, nextBefore: null }
+        : {
+            ...all,
+            operations: all.operations.filter(
+              ({ taskId }) => taskId === mockAgentWorkThreads.shopping,
+            ),
+            nextBefore: "past-sessions",
+          },
+    }));
+    Object.defineProperty(client.rpc, "connections.activity", {
+      value: activity,
+      configurable: true,
+    });
+    const page = await mount(client, `${base}/${chatgpt}`);
+    const earlier = page.querySelector<HTMLElement>(
+      'section[aria-labelledby="connected-agent-earlier"]',
+    )!;
+    expect(earlier.querySelector("h2")?.textContent).toBe("Earlier");
+    expect(earlier.querySelector(".connected-agent__history-row")).toBeNull();
+    expect(activity).toHaveBeenCalledTimes(1);
+    await act(async () =>
+      earlier.querySelector<HTMLButtonElement>(".connected-agent__show-earlier")!.click(),
+    );
+    expect(activity).toHaveBeenCalledTimes(2);
+    expect(earlier.querySelector(".connected-agent__history-row")).not.toBeNull();
   });
 
   it.each([390, 1440])("reads and saves the paired Chrome grant at %d px", async (width) => {

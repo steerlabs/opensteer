@@ -1590,6 +1590,7 @@ a.connected-agents__row:focus-visible {
 .connected-agent__session-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--space-6);
 }
 

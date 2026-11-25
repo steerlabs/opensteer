@@ -141,13 +141,7 @@ export function ConnectedAgentEarlierSection({
     </button>
   ) : null;
   const error = failed ? <SettingsError message="Couldn’t load earlier activity." /> : null;
-  if (!days.length)
-    return more || error ? (
-      <>
-        {more}
-        {error}
-      </>
-    ) : null;
+  if (!days.length && !more && !error) return null;
 
   return (
     <SettingsGroup heading="Earlier" headingId="connected-agent-earlier">

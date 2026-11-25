@@ -1,4 +1,6 @@
 // @vitest-environment happy-dom
+import { ClientOperationError } from "@opensteer/client/connections";
+import { placeList } from "@opensteer/client/host";
 import {
   mockAgentWorkThreads,
   mockConnectedAgents,
@@ -6,7 +8,13 @@ import {
 } from "@opensteer/client/mock";
 import { act } from "react";
 import { expect, it, vi } from "vitest";
-import { client, history, mount, resize } from "./workspace/workspace.interaction.test-support.js";
+import {
+  client,
+  goTo,
+  history,
+  mount,
+  resize,
+} from "./workspace/workspace.interaction.test-support.js";
 
 const options = (livePanel?: MockAgentWorkLiveScene) => ({
   mock: mockConnectedAgents("seeded"),
@@ -31,12 +39,32 @@ async function openPanel() {
 const stopCommands = (calls: readonly Parameters<typeof client.dispatch>[]) =>
   calls.map(([command]) => command).filter((command) => command.type === "agent.session.stop");
 
-it("reserves no row, panel or pill when connected agents are idle", async () => {
-  await mount("/", options());
+it("reserves no row, panel or pill and reads no activity while idle, even with the 728 px drawer closed", async () => {
+  const activity = vi.fn();
+  await mount("/", {
+    ...options(),
+    hostClient(source) {
+      const read = source.rpc["threads.activity"];
+      Object.defineProperty(source.rpc, "threads.activity", {
+        value: (...args: Parameters<typeof read>) => {
+          activity(...args);
+          return read(...args);
+        },
+        configurable: true,
+      });
+      return source;
+    },
+  });
   expect(document.querySelector(".agents-now")).toBeNull();
   expect(panel()).toBeNull();
   await act(async () => button("Collapse sidebar")!.click());
   expect(document.querySelector(".agents-now")).toBeNull();
+  await resize(728);
+  expect(document.querySelector('button.drawer-btn[aria-controls="app-sidebar"]')).not.toBeNull();
+  expect(document.querySelector("#app-sidebar")?.getAttribute("aria-hidden")).toBe("true");
+  expect(document.querySelector(".agents-now")).toBeNull();
+  expect(panel()).toBeNull();
+  expect(activity).not.toHaveBeenCalled();
 });
 
 it("names one agent’s place above Tasks and stops the session shown in the panel", async () => {
@@ -88,20 +116,82 @@ it("lists each active agent and sends Stop all once per session", async () => {
   await vi.waitFor(() => expect(panel()).toBeNull());
 });
 
-it("names only the agent whose Stop was not confirmed in a batch", async () => {
+it("keeps a server refusal and a lost Stop answer visible without retrying either", async () => {
   await mount("/", options("three"));
   const dialog = await openPanel();
   const send = client.dispatch.bind(client);
+  const dispatch = vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
+    if (command.type === "agent.session.stop") {
+      if (command.threadId === mockAgentWorkThreads.working)
+        throw new ClientOperationError("The Home refused Stop", "blocked", {
+          code: "forbidden",
+          kind: "rejection",
+          provenance: "host",
+        });
+      if (command.threadId === mockAgentWorkThreads.waiting)
+        throw new ClientOperationError("Lost the Stop answer", "transient", {
+          kind: "transport",
+          provenance: "transport",
+          retryable: true,
+        });
+    }
+    return send(command);
+  });
+  await act(async () => button("Stop all", dialog)!.click());
+  expect(dialog.querySelector('[role="status"]')?.textContent).toBe(
+    "Couldn’t confirm Stop for “Grok”, Claude.",
+  );
+  expect(dialog.querySelectorAll("li")).toHaveLength(2);
+  expect(
+    stopCommands(dispatch.mock.calls)
+      .map(({ threadId }) => threadId)
+      .sort(),
+  ).toEqual(
+    [
+      mockAgentWorkThreads.working,
+      mockAgentWorkThreads.waiting,
+      mockAgentWorkThreads.shopping,
+    ].sort(),
+  );
+});
+
+it("names a connection only once when two of its sessions have unconfirmed Stops", async () => {
+  await mount("/", {
+    ...options("three"),
+    hostClient: (source) => {
+      source.mockAgentWork({ livePanel: "three" });
+      const threads = source.getSnapshot().threads;
+      const other = threads.find(({ id }) => id === mockAgentWorkThreads.waiting)!.externalWork!;
+      const claude = threads.find(({ id }) => id === mockAgentWorkThreads.working)!.externalWork!;
+      (other as { connection: typeof other.connection }).connection = claude.connection;
+      return source;
+    },
+  });
+  const dialog = await openPanel();
+  const send = client.dispatch.bind(client);
   vi.spyOn(client, "dispatch").mockImplementation((command) =>
-    command.type === "agent.session.stop" && command.threadId === mockAgentWorkThreads.working
-      ? Promise.reject(new Error("Test command failure"))
+    command.type === "agent.session.stop" && command.threadId !== mockAgentWorkThreads.shopping
+      ? Promise.reject(new Error("Lost the Stop answer"))
       : send(command),
   );
   await act(async () => button("Stop all", dialog)!.click());
-  expect(dialog.querySelector('[role="status"]')?.textContent).toContain(
+  expect(dialog.querySelectorAll("li")).toHaveLength(2);
+  expect(dialog.querySelector('[role="status"]')?.textContent).toBe(
     "Couldn’t confirm Stop for Claude.",
   );
-  expect(dialog.querySelectorAll("li")).toHaveLength(1);
+});
+
+it("keeps the last operations for a task whose activity refresh fails", async () => {
+  await mount("/", options("one"));
+  expect(trigger()?.getAttribute("aria-label")).toBe("ChatGPT is working in Shopping");
+  const refresh = vi.fn(async () => {
+    throw new Error("Activity read did not answer");
+  });
+  Object.defineProperty(client.rpc, "threads.activity", { value: refresh, configurable: true });
+  const dialog = await openPanel();
+  expect(refresh).toHaveBeenCalledTimes(1);
+  expect(dialog.textContent).toContain("Run a script on Shopping");
+  expect(trigger()?.getAttribute("aria-label")).toBe("ChatGPT is working in Shopping");
 });
 
 it("quotes and isolates a self-declared product name on the row, its actions and Stop warning", async () => {
@@ -257,4 +347,19 @@ it("puts a single compact control in the header while the sidebar is closed", as
   await act(async () => drawerButton.click());
   await vi.waitFor(() => expect(compact()).toBeNull());
   expect(trigger()?.closest("#app-sidebar")).not.toBeNull();
+});
+
+it("mounts the active-agent pill only in the selected app tab’s header", async () => {
+  await mount("/", options("three"));
+  const tabs = placeList(client.getSnapshot()).filter(({ kind }) => kind === "app");
+  expect(tabs).toHaveLength(2);
+  await act(async () => button("Collapse sidebar")!.click());
+  for (const { key } of tabs)
+    await act(async () => goTo!(`/?panel=browser&tab=${encodeURIComponent(key)}`));
+  expect(document.querySelectorAll(".place--opensteer-app")).toHaveLength(2);
+  expect(document.querySelectorAll(".agents-now--compact")).toHaveLength(1);
+  expect(
+    document.querySelector(".place--opensteer-app:not([hidden]) header .agents-now--compact"),
+  ).not.toBeNull();
+  expect(document.querySelector(".place--opensteer-app[hidden] header")).toBeNull();
 });

@@ -351,9 +351,10 @@ function ActiveAgents({
 }
 
 function stopWarning(remaining: readonly ConnectedAgentNow[]): readonly SentencePart[] {
+  const agents = new Map(remaining.map(({ connectionId, agent }) => [connectionId, agent]));
   return [
     "Couldn’t confirm Stop for ",
-    ...remaining.flatMap(({ agent }, index) => [
+    ...[...agents.values()].flatMap((agent, index) => [
       ...(index ? [", "] : []),
       connectedAgentNamePart(agent),
     ]),

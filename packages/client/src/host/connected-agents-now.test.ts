@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mockAgentWork, mockAgentWorkThreads } from "../mock/mock-agent-work.js";
 import { mockConnectedAgents } from "../mock/mock-connected-agents.js";
 import type { ThreadSummary, WaitingRequestView } from "./client.js";
-import { connectedAgentsNow } from "./connected-agents-now.js";
+import { connectedAgentsNow, distinctAgentPlaces } from "./connected-agents-now.js";
 
 const now = new Date("2026-11-20T12:00:00.000Z");
 const { connections } = mockConnectedAgents("seeded", now);
@@ -108,6 +108,32 @@ describe("connected agents working now", () => {
     });
     expect(result.agents[0]?.action).toBe("Ran a script on Shopping");
     expect(result.headline).toBe("ChatGPT is working in Shopping");
+  });
+
+  it("names a place even when the operation has no device", () => {
+    const latest = operations.find(({ taskId }) => taskId === chatgpt.id)!;
+    const target = { ...latest.target, device: null };
+    const result = connectedAgentsNow({
+      tasks: [chatgpt],
+      waitingRequests: [],
+      operations: [{ ...latest, target }],
+    });
+    expect(result.headline).toBe("ChatGPT is working in Shopping");
+    expect(result.agents[0]?.places).toEqual([target]);
+  });
+
+  it("uses the resource and device IDs regardless of grant property order", () => {
+    const { target } = operations.find(({ taskId }) => taskId === chatgpt.id)!;
+    const first = {
+      ...target,
+      grant: { kind: "browser-profile" as const, profileId: "shopping" },
+    };
+    const same = {
+      ...target,
+      grant: { profileId: "shopping", kind: "browser-profile" as const },
+    };
+    const withoutDevice = { ...same, device: null };
+    expect(distinctAgentPlaces([first, same, withoutDevice])).toEqual([same, withoutDevice]);
   });
 
   it("ignores idle, ended, stopped and disconnected sessions", () => {

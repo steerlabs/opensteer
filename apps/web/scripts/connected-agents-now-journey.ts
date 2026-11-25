@@ -169,6 +169,10 @@ try {
 
   await openSettings("needs-you", claude);
   await now.getByText("Run a script in Travel?", { exact: true }).waitFor();
+  const waitingHead = now.locator(".connected-agent__session-head");
+  await waitingHead.getByText("Needs you", { exact: true }).waitFor();
+  if (await waitingHead.getByRole("button", { name: "Watch Claude" }).count())
+    throw new Error("Watch is visible beside a waiting Request.");
   await ready();
   await save(page, "page-needs-you-dark");
   await now.getByRole("button", { name: "Allow once" }).click();

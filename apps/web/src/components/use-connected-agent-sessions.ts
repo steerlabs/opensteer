@@ -114,9 +114,15 @@ export function useConnectedAgentWork(
       }),
     ).then((pages) => {
       if (controller.signal.aborted) return;
-      const byTask = new Map<string, readonly AgentOperationView[]>();
-      for (const [id, operations] of pages) if (operations) byTask.set(id, operations);
-      setRead({ client: hostClient, byTask });
+      setRead((previous) => {
+        const cached = previous?.client === hostClient ? previous.byTask : undefined;
+        const byTask = new Map<string, readonly AgentOperationView[]>();
+        for (const [id, operations] of pages) {
+          const activity = operations ?? cached?.get(id);
+          if (activity) byTask.set(id, activity);
+        }
+        return { client: hostClient, byTask };
+      });
     });
     return () => controller.abort();
   }, [hostClient, activeTasks, activityRead, readActivity]);

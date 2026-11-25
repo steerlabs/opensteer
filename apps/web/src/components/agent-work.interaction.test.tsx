@@ -295,7 +295,7 @@ describe("a direct operation that needs the person", () => {
     ).not.toBeNull();
   });
 
-  it("quotes and isolates an unverified agent named Opensteer on the approval card, Needs you row, and tab status", async () => {
+  it("quotes and isolates an unverified agent named Opensteer on the approval card and Needs you row", async () => {
     const spoofed = {
       mock: mockConnectedAgents("seeded"),
       hostClient: (source: MockHostClient) => {
@@ -317,6 +317,9 @@ describe("a direct operation that needs the person", () => {
     await mount(task(mockAgentWorkThreads.waiting), spoofed);
     await vi.waitFor(() => expect(document.querySelector(".operation-request")).not.toBeNull());
     const card = document.querySelector(".operation-request")!;
+    const by = card.querySelector(".operation-request__by strong")!;
+    expect(by.textContent).toBe("“Opensteer”");
+    expect(by.querySelector("bdi.outside-name")?.textContent).toBe("Opensteer");
     const saysLabel = card.querySelector(".operation-request__says-label")!;
     expect(saysLabel.textContent).toBe("“Opensteer” says:");
     expect(saysLabel.querySelector("bdi.outside-name")?.textContent).toBe("Opensteer");

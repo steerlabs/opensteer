@@ -118,7 +118,7 @@ function AppTabs({
       directory={directory}
       hostClient={hostClient}
       key={tabId}
-      leading={leading}
+      leading={tabId === selected ? leading : null}
       place={open.get(tabId)!}
       selected={tabId === selected}
       trailing={trailing}

@@ -1,4 +1,8 @@
-import type { AgentOperationTarget, AgentOperationView } from "@opensteer/core";
+import {
+  agentGrantPluginTargetKey,
+  type AgentOperationTarget,
+  type AgentOperationView,
+} from "@opensteer/core";
 import {
   connectedAgentNamePart,
   operationAction,
@@ -53,7 +57,7 @@ export function connectedAgentsNow(input: {
     let latestTime = -Infinity;
     for (const operation of operations) {
       const at = Date.parse(operationTime(operation));
-      if (!latest || at > latestTime) {
+      if (!latest || at > latestTime || (at === latestTime && operation.id > latest.id)) {
         latest = operation;
         latestTime = at;
       }
@@ -101,9 +105,27 @@ export function distinctAgentPlaces(
 ): AgentOperationTarget[] {
   return [
     ...new Map(
-      targets.map((target) => [JSON.stringify([target.grant, target.device?.id]), target]),
+      targets.map((target) => [
+        JSON.stringify([placeResourceKey(target.grant), target.device?.id ?? null]),
+        target,
+      ]),
     ).values(),
   ];
+}
+
+function placeResourceKey(grant: AgentOperationTarget["grant"]): string {
+  switch (grant.kind) {
+    case "browser-profile":
+      return `browser-profile:${grant.profileId}`;
+    case "chrome-tabs":
+      return `chrome-tabs:${grant.sourceId}`;
+    case "computer-app":
+      return `computer-app:${grant.approvalId}`;
+    case "plugin":
+      return `plugin:${agentGrantPluginTargetKey(grant.target)}`;
+    case "device":
+      return "device";
+  }
 }
 
 function headlineFor(

@@ -217,12 +217,17 @@ function AgentRows({
                 <AgentMark identity={row.identity} />
                 <span className="card__row-body">
                   <span className="card__row-title">
-                    <SentenceText
-                      parts={[
-                        connectedAgentNamePart({ name: row.identity.label, who: row.identity.who }),
-                      ]}
-                      quoteNames={!row.connection.bridge}
-                    />
+                    <span>
+                      <SentenceText
+                        parts={[
+                          connectedAgentNamePart({
+                            name: row.identity.label,
+                            who: row.identity.who,
+                          }),
+                        ]}
+                        quoteNames={!row.connection.bridge}
+                      />
+                    </span>
                   </span>
                   <span className={`card__row-detail connected-agents__line--${row.tone}`}>
                     <SentenceText parts={row.lineParts} />
