@@ -81,6 +81,8 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer
 		fmt.Fprintf(stderr, "opensteer-process-supervisor: target start failed: %v\n", err)
 		return drainedExitCode(71)
 	}
+	containment.target = command.Process.Pid
+	containment.ended = endedWithoutReaping
 	if err := containment.started(command); err != nil {
 		_ = command.Process.Kill()
 		_, _ = command.Process.Wait()
@@ -213,19 +215,32 @@ type sentStops struct {
 	force    bool
 }
 
-// A containment that notes each stop the supervisor sends through it, before sending it.
+// A containment that notes each stop the supervisor sends through it, before sending it. A stop
+// that finds the target already ended (a zombie not yet reaped) is sent to the rest of the tree
+// but not noted: it cannot be what ended the target, whose own end is then reported as it was.
 type stopRecordingContainment struct {
 	processContainment
 	sent sentStops
+	// The target's process ID once it started, and whether it has ended without being reaped.
+	target int
+	ended  func(processID int) bool
+}
+
+func (containment *stopRecordingContainment) targetAlive() bool {
+	return containment.target == 0 || containment.ended == nil || !containment.ended(containment.target)
 }
 
 func (containment *stopRecordingContainment) graceful() error {
-	containment.sent.graceful = true
+	if containment.targetAlive() {
+		containment.sent.graceful = true
+	}
 	return containment.processContainment.graceful()
 }
 
 func (containment *stopRecordingContainment) force() error {
-	containment.sent.force = true
+	if containment.targetAlive() {
+		containment.sent.force = true
+	}
 	return containment.processContainment.force()
 }
 

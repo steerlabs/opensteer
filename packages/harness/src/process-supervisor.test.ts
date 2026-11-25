@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   collectStreamText,
   killedSupervisedProcesses,
+  runningSupervisedProcesses,
   spawnSupervised,
 } from "./process-supervisor.js";
 
@@ -93,6 +95,46 @@ describe("spawnSupervised", () => {
       expect(recorded(marker)).toBe(false);
     });
   });
+
+  // Sol's sequence (X2): the kernel kills the target while its supervisor cannot run; a force
+  // queued for an already dead target must not count as what ended it.
+  it.skipIf(process.platform === "win32").each(Array.from({ length: 50 }, (_, run) => run))(
+    "reports a target the kernel killed while a force for it was queued, as its own end (run %i)",
+    async (run) => {
+      const marker = `zombie-${process.pid}-${run}-${Date.now()}`;
+      const child = node("console.log(process.pid); setInterval(() => {}, 1000)", {
+        environment: { OPENSTEER_TEST_MARKER: marker },
+        output: "raw",
+      });
+      const supervisorPid = child.child.pid!;
+      let printed = "";
+      for await (const chunk of child.stdout) {
+        printed += chunk.toString("utf8");
+        if (printed.includes("\n")) break;
+      }
+      const targetPid = Number(printed.trim());
+      process.kill(supervisorPid, "SIGSTOP");
+      try {
+        process.kill(targetPid, "SIGKILL");
+        await vi.waitFor(() =>
+          expect(
+            execFileSync("ps", ["-o", "stat=", "-p", String(targetPid)], { encoding: "utf8" }),
+          ).toMatch(/^Z/u),
+        );
+        runningSupervisedProcesses()
+          .find(({ pid }) => pid === supervisorPid)
+          ?.control("force");
+      } finally {
+        process.kill(supervisorPid, "SIGCONT");
+      }
+      await expect(child.exited).resolves.toMatchObject({ code: 137 });
+      expect(
+        killedSupervisedProcesses().some(
+          ({ environment }) => environment.OPENSTEER_TEST_MARKER === marker,
+        ),
+      ).toBe(true);
+    },
+  );
 
   it("refuses to start anything without the native supervisor", () => {
     vi.stubEnv(processSupervisorExecutableVariable, undefined);

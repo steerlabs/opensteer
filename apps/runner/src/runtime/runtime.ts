@@ -4010,6 +4010,10 @@ export class RunnerRuntime {
       // its engine's driver made of the loss. What it did until then stands. The
       // count is the whole Runner's: only a Run whose own engine a SIGKILL its
       // supervisor did not send ended may claim one of the kills counted since it started.
+      // Known limit: an engine SIGKILLed by anything else (nothing else kills one so) in a Run in
+      // which some other process was killed for memory is told it ran out of memory too; the
+      // exact evidence, a cgroup per engine, is far more machinery than these words are worth.
+      // A warm engine's reused scope is the same limit.
       if (
         terminal.type === "run.failed" &&
         this.#memoryKills &&
