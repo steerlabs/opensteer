@@ -404,8 +404,9 @@ one minute, and it runs whether or not the Home is up: a Home that is down still
 that fixes it. Nothing goes back by itself after a commit: a committed release that turns out bad
 (at a later start, say) has migrated the database, and going back on it is a person's decision.
 `sudo opensteer-home rollback` makes `previous` current by the same switch an update makes, once
-its images are found on the machine, and remembers the release it left as one that failed here,
-so no timer installs it again (a different release, or `update --retry`, moves on).
+its images are found on the machine, and remembers the release it left as one the person went
+back from (`went-back` in `update.failed`), so no timer installs it again and the next check says
+so (a different release, or `update --retry`, moves on).
 
 A rollback deliberately keeps the database as the new release's migrations left it (they are
 expand-only, so the previous Host runs on it; the dump stays in the failed release's directory, and
@@ -524,7 +525,11 @@ predecessor is off. Some secret mounts are readable by the receiving service use
 some service processes and backup helpers load credentials into their own environment.
 The task sandbox, separate mounts and PID isolation keep that state out of task shells.
 The pod checks both firewall families before admitting sibling services and repairs
-rule drift at maintenance time, not continuously. A manual root-level rule change
+rule drift at maintenance time, not continuously. The gateway, Runner and Channel Runtime join
+the Host's network namespace, and Docker binds each to the Host container that ran when it was
+created: a start that creates the Host anew (its limits, configuration or image changed) creates
+each of them anew in the same start, after the new Host's firewall; a start that keeps the Host
+touches none of them. A manual root-level rule change
 can therefore briefly leave an existing pod unprotected.
 
 Use Ubuntu 24.04 LTS with Bash, systemd, cloud-init, CA certificates, curl, and

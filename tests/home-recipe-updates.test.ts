@@ -1226,14 +1226,17 @@ it("finishes a managed boot without touching the Home's release, and keeps the o
 });
 
 /** B failed its gate here at 08:00: its directory and the dump taken before it, and the memory. */
-const failedBefore = (sha256: string) => {
+const failedBefore = (sha256: string, reason = "") => {
   const failed = join(home, "releases", "1.2.4-failed");
   mkdirSync(failed);
   writeFileSync(join(failed, "database.dump"), "pre-migration dump\n");
   const identity = createHash("sha256")
     .update(`${selection("1.2.4", "b")}${sha256}\n`)
     .digest("hex");
-  writeFileSync(join(home, "update.failed"), `1.2.4-failed ${identity} 2026-11-25T08:00:00Z\n`);
+  writeFileSync(
+    join(home, "update.failed"),
+    `1.2.4-failed ${identity} 2026-11-25T08:00:00Z${reason && ` ${reason}`}\n`,
+  );
   return failed;
 };
 
@@ -1252,6 +1255,18 @@ it("does not try again by itself a release that failed its gate here, and keeps 
     fromVersion: "1.2.3",
     toVersion: "1.2.4",
   });
+});
+
+it("says a person went back from a release, not that it did not start, when the next check offers it", () => {
+  failedBefore(pinned(release("B")).sha256, "went-back");
+  const again = update(newer);
+  expect(again.status, again.stderr).toBe(0);
+  expect(again.stdout).toContain(
+    "You went back from 1.2.4 on 2026-11-25: waiting for the next one (sudo opensteer-home update --retry installs it again).",
+  );
+  expect(again.stdout).not.toContain("did not start here");
+  expect(said()).not.toContain("release B");
+  expect(current()).toBe(`releases/${running}`);
 });
 
 it("tries another release, and forgets the failed one once that one is in", () => {
@@ -1501,9 +1516,12 @@ it("goes back to the previous release when the operator asks, and does not take 
   expect(said()).toContain("release P release-gate");
   expect(current()).toBe("releases/1.2.2-pppppp");
   expect(readlinkSync(join(home, "previous"))).toBe(`releases/${running}`);
-  // The release left is remembered: no timer installs it again.
+  // The release left is remembered, as one the person went back from: no timer installs it again.
   expect(readFileSync(join(home, "update.failed"), "utf8")).toMatch(
-    new RegExp(`^${running} [0-9a-f]{64} `, "u"),
+    new RegExp(
+      `^${running} [0-9a-f]{64} \\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:00Z went-back\\n$`,
+      "u",
+    ),
   );
 });
 
