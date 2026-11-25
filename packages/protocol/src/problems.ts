@@ -38,7 +38,17 @@ export const BackupFailureSchema = z.enum([
   "restart-failed",
   "report-refused",
 ]);
-export const UpdateResultSchema = z.enum(["updated", "rolled-back", "feed-older", "failed"]);
+/**
+ * How a Home's last update check ended. `waiting`: the release's two halves (its installer and its
+ * images) have named different releases at more than one check since the result's time.
+ */
+export const UpdateResultSchema = z.enum([
+  "updated",
+  "rolled-back",
+  "feed-older",
+  "waiting",
+  "failed",
+]);
 
 /** A Cloud Computer's setup failure, by its cause: the provisioner's and the claim's codes. */
 export const CloudComputerSetupFailureSchema = z.enum([

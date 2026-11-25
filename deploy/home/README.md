@@ -53,7 +53,8 @@ Opensteer account does not answer it uses the feed it has and logs so. Managed u
 require image digests. A release is its version and its image digests: the updater says
 "Already on this release", "Same version, different build: updating", "Updating from
 … to …", or, on a scheduled update, refuses an older version ("older: refused").
-The updater pulls before replacing services and keeps the prior image IDs and recipe for rollback.
+The updater prepares the whole release beside the running one before it stops anything, and
+keeps the running one as the way back.
 A release that migrates the database must remain compatible with the previous Host
 for image rollback to work.
 
@@ -65,9 +66,9 @@ account manages, another hostname, a different `--local` choice, or
 `--local-images` without `--manifest`. If it cannot tell whether a stopped Home
 was claimed, it asks you to start it with `sudo opensteer-home start`. On a Home
 that was never claimed it obtains the release's images (pulled, or found on the
-server and checked) before it stops anything, then replaces the Home's release
-and recipe and starts it. If that release does not start, the previous one is put
-back and started again. A first install writes the Home's recipe and the
+server and checked) before it stops anything, then switches the Home to that
+release the way an update does. If that release does not start, the previous one is
+current again and started again. A first install writes the Home's release and the
 `opensteer-home` command before its configuration and images, so an install that
 failed there is removed with `sudo opensteer-home uninstall --purge`.
 
@@ -300,45 +301,67 @@ already claimed. The old volume set survives until the replacement is healthy.
 If recovery finds inconsistent journal or selector evidence, it stops for an
 operator instead of deleting a volume set. Move DNS once the restored Home is ready.
 
-Before switching to a new release, the updater pulls its images, records both
-image sets, and saves `update-database.dump` in the root-only configuration
-directory. An interrupted or unhealthy candidate rolls back to the previous
-recipe, images and units. It deliberately keeps the database as the candidate's migrations
-left it (they are expand-only, so the previous Host runs on it; the dump is kept for manual
-recovery, never replayed) and a feed address its Opensteer account moved. Migrations are expand-only and must keep the preceding Host compatible.
-The dump is a consistent, last-resort copy for manual recovery. It does not include
-writes made after the dump. Managed updates take only digest-pinned images from
-the stored HTTPS feed from the Opensteer account and refuse a local manifest. Each fetch checks DNS
-again and connects only to the checked public addresses. PostgreSQL has its own
-fixed digest; inherited Compose variables cannot override images or volume selection.
-Set `OPENSTEER_HOME_RELEASE_MANIFEST_URL` in `config.env` for scheduled updates
-on a bring-your-own Home, or supply a manifest to `update` directly. The Opensteer
-account gives every Cloud Computer a `releaseManifestUrl` in its boot response and its current
-feed at each update check; a managed Home updates from the account's feed only.
+A Home keeps each release whole in its own directory, `releases/<id>`: the release's files (its
+scripts, Compose files and the units it writes), its image selector (`images.env`), its sandbox
+policies and the database dump taken before it. `current` is a link to the release the Home runs;
+the units and `/usr/local/bin/opensteer-home` run `current/opensteer-home`, so an ordinary release
+changes no unit. The Home's own state (`config.env`, `volumes.env`, `secrets/`, backups and
+results) lives beside `releases/`, never in it: no release can name, change or remove it.
 
-A release is one thing: an update also replaces the Home's recipe (its scripts and Compose
-files, so `home_limits`, the maintenance pass, the firewall and the units) when the release names
-one. A managed Home takes the recipe only from its account's release-feed answer, `recipe: {url,
-sha256}`, pinned in the account's own release config: the standalone installer and its SHA-256,
-never a manifest's. A bring-your-own Home takes it from the manifest its owner gives `update`,
+An update prepares the next release in a new directory and writes nothing anywhere else. It
+fetches the release manifest and the release's installer, checks the installer's SHA-256 and
+unpacks it there (exactly the files the release lists, and its `version`); writes the selector
+from the manifest; checks that the running release's images are all on this machine, which is the
+way back, and that there is room (one release's images take about 4.5 GB on a Cloud Computer and
+9.8 GB with the browser images; the dump about the database's size); lets the new release's own
+code ready it (`opensteer-home release-prepare`: every image its own Compose files name,
+PostgreSQL's too, its sandbox policies, and its units written into staging and read); and dumps
+the database into it. Any failure removes that directory and says `Nothing was changed`, which is
+then true.
+
+The switch writes `update.pending` (the two releases' names), stops the running release with its
+own files, starts the new one with the new release's own code and runs one maintenance check
+(`opensteer-home release-gate`: the Host's firewall and every service's health), and only then
+renames `current` to the new release. That rename is the commit. After it the release before is
+kept as `previous` (the way back until the next update commits), older releases and their images
+are removed, `update.pending` goes, and the units are compared with what the new release writes
+and rewritten only where they differ. None of these undoes the commit, and one that fails is
+tried again at the next start. A failed check stops the new release's containers with the running
+release's files, under the Home's own Compose project (`--remove-orphans`, volumes kept), and
+starts the running release again. Every start decides by `current` alone:
+
+| Where the update stopped                  | At the next start                                                          |
+| ----------------------------------------- | -------------------------------------------------------------------------- |
+| while preparing                           | nothing: the next update removes the unfinished directory                  |
+| after `update.pending`, before the rename | `current` is the running release: the new one's containers stop, it starts |
+| after the rename                          | `current` is the new release: what follows the switch is finished          |
+
+A rollback deliberately keeps the database as the new release's migrations left it (they are
+expand-only, so the previous Host runs on it; the dump stays in the new release's directory until
+the next update, and is never replayed) and a feed address the Opensteer account moved. The dump
+is a consistent, last-resort copy for manual recovery and does not include writes made after it.
+Managed updates take only digest-pinned images from the stored HTTPS feed from the Opensteer
+account and refuse a local manifest. Each fetch checks DNS again and connects only to the checked
+public addresses. PostgreSQL has its own fixed digest in each release's `compose.yaml`; inherited
+Compose variables cannot override images or volume selection. Set
+`OPENSTEER_HOME_RELEASE_MANIFEST_URL` in `config.env` for scheduled updates on a bring-your-own
+Home, or supply a manifest to `update` directly. The Opensteer account gives every Cloud Computer
+a `releaseManifestUrl` in its boot response and its current feed at each update check; a managed
+Home updates from the account's feed only.
+
+A managed Home takes a release's installer only from its account's release-feed answer, `recipe:
+{url, sha256}`, pinned in the account's own release config, never from a manifest, and does not
+update without it. A bring-your-own Home takes it from the manifest its owner gives `update`,
 `"recipe": {"url": "https://…/opensteer-home-installer.sh", "sha256": "…"}`; a manifest without
-one updates the images only and says the recipe was not updated. A claimed bring-your-own Home
-updates its recipe the same way. The updater downloads the installer, checks its SHA-256, unpacks
-the recipe without running it, and refuses the update if any of that fails, before anything
-stops. It journals the previous recipe beside the previous images (`update.pending`), replaces
-each file by a rename, and then runs the new recipe's own `opensteer-home update-gate`: the
-release starts with the new recipe's limits and must pass one maintenance check (the Host's
-firewall and every service's health). Only then does the update commit; the units, timers and
-`/usr/local/bin/opensteer-home` follow the committed recipe only. A failed gate puts the
-previous recipe and images back and starts them. An update interrupted before its commit is
-undone at the next start by `restore-recipe.sh`, which the units run first (`ExecStartPre`,
-under the Home's lock); it is written with the units, so an update never replaces it before it
-commits. The previous recipe's own recovery then rolls the images back. Volumes, `config.env`
-and secrets are never touched. A Cloud Computer installed before this updater gets it by one
-replace. A bring-your-own Home installed before it cannot take it in place: the installer refuses
-a claimed Home, and `uninstall --purge` deletes its data; it keeps updating its images only. Do
-not run services of your own under the Home's Compose project name: a rollback stops the
-candidate with `--remove-orphans`, which removes them (their volumes are kept).
+one keeps the running release's files with the new images and says the recipe was not updated.
+The installer's `version` must equal the manifest's version: until both are published the update
+changes nothing and says `The release is still being published`, and when the same mismatch is
+still there at a later check it is recorded as an update waiting since the first one, which the
+Home's problems show until an update goes through. A Cloud Computer installed before this layout
+is replaced once; a bring-your-own Home installed before it cannot take it in place (the
+installer refuses a claimed Home, and `uninstall --purge` deletes its data). Do not run services
+of your own under the Home's Compose project name: a rollback stops the new release with
+`--remove-orphans`, which removes them (their volumes are kept).
 
 ## Problems and reports
 

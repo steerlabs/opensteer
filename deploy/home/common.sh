@@ -5,8 +5,14 @@ home_dir=${OPENSTEER_HOME_DIR:-/etc/opensteer-home}
 unset release_env volume_env stage_project
 services=(host gateway runner browser-runtime browser-egress channel-runtime)
 default_home_dir=/etc/opensteer-home
-# The recipe a Home keeps in its directory and runs from.
-recipe_files=(compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml compose.browser-pool.yaml common.sh firewall.sh backup.sh update.sh machine-status.sh opensteer-home install-scheduler.sh)
+# A Home keeps each release whole in its own directory, releases/<id>: these files (the installer
+# bundles exactly these, beside its version), the release's image selector (images.env), its
+# sandbox policies and the database dump taken before it. `current` names the one the Home runs.
+# The Home's own state (config.env, volumes.env, secrets, backups, results) lives beside
+# releases/, never in it. The packager, the installer and an update all read this one list.
+release_files=(install.sh managed-boot.sh install-managed-unit.sh common.sh firewall.sh backup.sh update.sh machine-status.sh opensteer-home install-scheduler.sh compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml compose.browser-pool.yaml)
+# The release this code belongs to: its own directory.
+release_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 
 lock_home() {
@@ -18,17 +24,17 @@ compose() {
   local project
   project=$(sed -n "s/^COMPOSE_PROJECT_NAME='\([^']*\)'$/\1/p" "$home_dir/config.env") || return
   local args=(--project-directory "$home_dir" --env-file "$home_dir/config.env"
-    --env-file "${release_env:-$home_dir/images.env}" -f "$home_dir/compose.yaml")
+    --env-file "${release_env:-$release_dir/images.env}" -f "$release_dir/compose.yaml")
   local apparmor='' oidc_path=''
   if [[ -s "$home_dir/runner-apparmor.name" ]]; then
     apparmor=$(cat "$home_dir/runner-apparmor.name") || return
-    args+=(-f "$home_dir/compose.apparmor.yaml")
+    args+=(-f "$release_dir/compose.apparmor.yaml")
   fi
-  if [[ -f "$home_dir/ipv6.enabled" ]]; then args+=(-f "$home_dir/compose.ipv6.yaml"); fi
+  if [[ -f "$home_dir/ipv6.enabled" ]]; then args+=(-f "$release_dir/compose.ipv6.yaml"); fi
   # A Cloud Computer whose boot answer said browserPool: its browser runs on a pool host, and
   # its services' limits come from the machine it is on.
   local limits=() sized line
-  if [[ -f "$home_dir/browser-pool" ]]; then args+=(-f "$home_dir/compose.browser-pool.yaml"); fi
+  if [[ -f "$home_dir/browser-pool" ]]; then args+=(-f "$release_dir/compose.browser-pool.yaml"); fi
   if [[ -f "$home_dir/browser-pool" ]]; then
     # Only what creates or starts containers needs this machine's limits: an operator can stop,
     # inspect, back up or uninstall a Home on any machine, so the rest gets placeholders that
@@ -42,10 +48,10 @@ compose() {
     while IFS= read -r line; do limits+=("$line"); done <<< "$sized"
   fi
   if [[ -s "$home_dir/secrets/egress_url" ]]; then
-    args+=(-f "$home_dir/compose.egress.yaml")
+    args+=(-f "$release_dir/compose.egress.yaml")
   elif [[ -f "$home_dir/managed" && ! -f "$home_dir/browser-pool" ]]; then
     # A pooled Cloud Computer's browser leaves through its own address on the pool host.
-    args+=(-f "$home_dir/compose.egress-pending.yaml")
+    args+=(-f "$release_dir/compose.egress-pending.yaml")
   fi
   if [[ -s "$home_dir/secrets/oidc_client_secret" ]]; then
     oidc_path=/run/secrets/oidc_client_secret
@@ -55,6 +61,7 @@ compose() {
   if [[ -n ${stage_project:-$project} ]]; then args+=(--project-name "${stage_project:-$project}"); fi
   env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \
     OPENSTEER_HOME_RUNNER_APPARMOR="$apparmor" OPENSTEER_HOME_OIDC_CLIENT_SECRET_PATH="$oidc_path" \
+    OPENSTEER_HOME_RELEASE_DIR="$release_dir" \
     "${limits[@]}" docker compose "${args[@]}" "$@"
 }
 
@@ -311,11 +318,15 @@ managed_feed() {
 }
 
 set_configured_feed() {
-  local tmp
+  local tmp status=0
   tmp=$(mktemp "$home_dir/config.env.XXXXXX") || return
-  grep -v '^OPENSTEER_HOME_RELEASE_MANIFEST_URL=' "$home_dir/config.env" > "$tmp" || true
-  printf "OPENSTEER_HOME_RELEASE_MANIFEST_URL='%s'\n" "$1" >> "$tmp"
-  publish_file "$tmp" "$home_dir/config.env"
+  # grep finding no other line is fine (1); a failed read or write (2) never replaces config.env.
+  grep -v '^OPENSTEER_HOME_RELEASE_MANIFEST_URL=' "$home_dir/config.env" > "$tmp" || status=$?
+  if ((status > 1)) || ! printf "OPENSTEER_HOME_RELEASE_MANIFEST_URL='%s'\n" "$1" >> "$tmp" ||
+    ! publish_file "$tmp" "$home_dir/config.env"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
 }
 
 # release_change <active selection> <candidate selection>: same (this exact release), rebuild (the
@@ -348,8 +359,8 @@ release_to_env() {
     jq -e '.images | keys == ["browser-egress","browser-runtime","channel-runtime","gateway","host","runner"]' "$manifest" >/dev/null ||
       fail 'Managed Home releases require exactly six images.'
   fi
-  tmp=$(mktemp "${destination}.XXXXXX")
-  printf 'OPENSTEER_HOME_VERSION=%s\n' "$version" > "$tmp"
+  tmp=$(mktemp "${destination}.XXXXXX") || fail 'The release selector could not be written.'
+  printf 'OPENSTEER_HOME_VERSION=%s\n' "$version" > "$tmp" || fail 'The release selector could not be written.'
   for service in "${services[@]}"; do
     if ! ref=$(jq -er --arg service "$service" --arg version "$version" --argjson pinned "$pinned" '
       (if $pinned then .images[$service]
@@ -363,9 +374,10 @@ release_to_env() {
       if "$pinned"; then fail "Managed Home releases require a digest for $service."; fi
       fail "Invalid image reference for $service."
     fi
-    printf 'OPENSTEER_HOME_%s_IMAGE=%s\n' "$(printf %s "$service" | tr 'a-z-' 'A-Z_')" "$ref" >> "$tmp"
+    printf 'OPENSTEER_HOME_%s_IMAGE=%s\n' "$(printf %s "$service" | tr 'a-z-' 'A-Z_')" "$ref" >> "$tmp" ||
+      fail 'The release selector could not be written.'
   done
-  publish_file "$tmp" "$destination"
+  publish_file "$tmp" "$destination" || { rm -f -- "$tmp"; fail 'The release selector could not be written.'; }
 }
 
 compose_project() { compose config --format json | jq -er '.name'; }
@@ -384,7 +396,7 @@ check_release_stamps() {
 }
 
 install_sandbox_policies() {
-  local destination=${1:-$home_dir} service policy image tmp
+  local destination=${1:-$release_dir} service policy image tmp
   for service in browser-runtime runner; do
     # No Browser Runtime runs on a Cloud Computer: Compose needs no policy for a service it
     # never creates, and its image is never pulled there.
@@ -501,7 +513,7 @@ firewall() {
   if [[ -f "$home_dir/ipv6.enabled" ]]; then ipv6=true; fi
   listed=$(pool_network_args) || return
   if [[ -n $listed ]]; then while IFS= read -r line; do pool+=("$line"); done <<< "$listed"; fi
-  "$home_dir/firewall.sh" "$pid" "$action" "$ipv6" "${pool[@]}"
+  "$release_dir/firewall.sh" "$pid" "$action" "$ipv6" "${pool[@]}"
 }
 
 apply_firewall() { firewall "$1" apply; }
@@ -653,7 +665,7 @@ fetch_release_images() {
     fi
     return
   fi
-  release_env="$selector" compose pull --quiet postgres
+  release_env="$selector" compose pull --quiet postgres || return
   config=$(release_env="$selector" compose config --format json) || return
   for service in $(running_services); do
     image=$(jq -er --arg service "$service" '.services[$service].image' <<< "$config") || return
@@ -679,7 +691,7 @@ installed_claim_state() {
 
 # Stops the Home's containers even when its release selector is gone.
 compose_down_home() {
-  local selector="$home_dir/images.env" placeholder='' service status=0
+  local selector="$release_dir/images.env" placeholder='' service status=0
   if [[ ! -f $selector ]]; then
     placeholder=$(mktemp "$home_dir/images.placeholder.XXXXXX")
     {
@@ -697,9 +709,9 @@ compose_down_home() {
 
 # Everything an install, its operations and its interrupted ones leave in the Home directory.
 remove_home_files() {
-  rm -rf -- "${home_dir:?}/"{secrets,boot,identity,restore.pending,update.pending,restore.pending.retired,update.pending.retired}
-  rm -rf -- "$home_dir/"{install,backup,update,egress,images.placeholder,feed,config.env,pool-network}.??????
-  rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,compose.browser-pool.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,browser-pool,pool-network,pool-network-asked,restore-recipe.sh,recipe.sha256,recipe.files,units.stale,machine-status.sh,update-database.dump,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
+  rm -rf -- "${home_dir:?}/"{secrets,boot,identity,releases,restore.pending,restore.pending.retired}
+  rm -rf -- "$home_dir/"{install,backup,egress,images.placeholder,feed,config.env,pool-network}.??????
+  rm -f -- "$home_dir/"{current,current.new,previous,previous.new,update.pending,update.pending.new,update.waiting,config.env,volumes.env,tls.caddy,setup-link.pending,operation.lock,egress.pending,host.pid,managed,ipv6.enabled,browser-pool,pool-network,pool-network-asked,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
 }
 
 # Whether this Home was installed with --local-images.
@@ -719,104 +731,232 @@ owns_operator_command() {
   [[ $home_dir == "$default_home_dir" && ${OPENSTEER_HOME_UNIT_PREFIX:-opensteer-home} == opensteer-home ]]
 }
 
-# fetch_recipe URL SHA256 DIRECTORY PINNED: a release's recipe (its scripts and Compose files) from
-# its standalone installer, checked against its SHA-256 and unpacked into DIRECTORY without running
-# anything of it. PINNED (a managed Home) fetches only from public addresses, as the feed does.
+# fetch_recipe URL SHA256 DIRECTORY PINNED: a release from its standalone installer, checked against
+# its SHA-256 and unpacked into the new, empty DIRECTORY without running anything of it: exactly
+# the files its own list names and its version, each a regular file. PINNED (a managed Home)
+# fetches only from public addresses, as the feed does.
 fetch_recipe() {
-  local url=$1 sha=$2 directory=$3 pinned=$4 bundle archive name resolution listing list args=()
+  local url=$1 sha=$2 directory=$3 pinned=$4 bundle="$3/.bundle" archive="$3/.bundle.tgz" name list args=()
   [[ ${#url} -le 2048 && $url =~ ^https://[^@/?#[:space:]]+(/[^?#[:space:]]*)?$ && $sha =~ ^[0-9a-f]{64}$ ]] ||
     { echo 'The release names an invalid recipe.' >&2; return 1; }
   if $pinned; then
-    resolution=$(managed_feed_resolution "$url") ||
-      { echo 'The recipe must resolve only to public HTTPS addresses.' >&2; return 1; }
-    args=(--noproxy '*' --resolve "$resolution")
+    name=$(managed_feed_resolution "$url") || { echo 'The recipe must resolve only to public HTTPS addresses.' >&2; return 1; }
+    args=(--noproxy '*' --resolve "$name")
   fi
-  bundle="$directory.bundle" archive="$directory.tgz"
   curl -q --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 120 \
     --max-filesize 16777216 "${args[@]}" --output "$bundle" -- "$url" ||
     { echo 'The recipe could not be downloaded.' >&2; return 1; }
   [[ $(openssl dgst -sha256 -r "$bundle" | cut -d' ' -f1) == "$sha" ]] ||
     { echo 'The recipe does not match its SHA-256.' >&2; return 1; }
   sed -n "/^base64 -d <<'OPENSTEER_HOME_FILES'/,/^OPENSTEER_HOME_FILES\$/p" "$bundle" | sed '1d;$d' |
-    base64 -d > "$archive" 2>/dev/null || { echo 'The recipe is not an installer.' >&2; return 1; }
-  # Plain names only: nothing of it lands outside its directory.
-  listing=$(tar -tzf "$archive") || { echo 'The recipe is not an installer.' >&2; return 1; }
+    base64 -d > "$archive" 2>/dev/null && list=$(tar -tzf "$archive") || { echo 'The recipe is not an installer.' >&2; return 1; }
   while IFS= read -r name; do
     name=${name#./}
     [[ -z $name || $name =~ ^[a-z0-9][a-z0-9._-]*$ ]] || { echo 'The recipe holds an unexpected path.' >&2; return 1; }
-  done <<< "$listing"
-  mkdir -- "$directory" && tar -xzf "$archive" -C "$directory" || return 1
-  # The candidate is installed by its own list of recipe files (a release may add or drop one),
-  # and the installer holds exactly that list and the installer's own files.
-  list=$(sed -n 's/^recipe_files=(\(.*\))$/\1/p' "$directory/common.sh" 2>/dev/null)
-  [[ -n $list ]] || { echo 'The recipe names no recipe files.' >&2; return 1; }
-  : > "$directory/recipe.files" || return 1
+  done <<< "$list"
+  tar -xzf "$archive" -C "$directory" && rm -f -- "$bundle" "$archive" || return 1
+  list=" $(sed -n 's/^release_files=(\(.*\))$/\1/p' "$directory/common.sh" 2>/dev/null) version "
   for name in $list; do
-    [[ $name =~ ^[a-z0-9][a-z0-9._-]*$ && -f "$directory/$name" && ! -L "$directory/$name" ]] ||
-      { echo "The recipe lacks $name." >&2; return 1; }
-    printf '%s\n' "$name" >> "$directory/recipe.files" || return 1
+    [[ -f "$directory/$name" && ! -L "$directory/$name" ]] || { echo "The recipe lacks $name." >&2; return 1; }
   done
+  # Nothing else: the Home writes the rest of a release (its selector, policies and dump) itself.
   for name in "$directory"/*; do
-    name=${name##*/}
-    grep -qxF -- "$name" "$directory/recipe.files" && continue
-    case $name in install.sh | managed-boot.sh | install-managed-unit.sh | version | recipe.files) ;;
-      *) echo "The recipe holds $name, which it does not list." >&2; return 1 ;;
-    esac
+    [[ $list == *" ${name##*/} "* ]] || { echo "The recipe holds ${name##*/}, which it does not list." >&2; return 1; }
   done
 }
 
-# put_recipe DIRECTORY: the recipe files from DIRECTORY replace the Home's, each by a rename.
-put_recipe() {
-  # put_recipe DIRECTORY [OTHER_LIST]: DIRECTORY's recipe, by its own list (recipe.files), then
-  # removes the files only the other side listed, and records this side's list and identity.
-  local name list="$1/recipe.files" other=${2:-}
-  [[ -f $list ]] || { echo 'The recipe names no recipe files.' >&2; return 1; }
-  while IFS= read -r name; do
-    [[ $name =~ ^[a-z0-9][a-z0-9._-]*$ && -f "$1/$name" ]] || return 1
-    install -m 0600 "$1/$name" "$home_dir/.$name.new" && mv -f -- "$home_dir/.$name.new" "$home_dir/$name" || return
-  done < "$list"
-  if [[ -n $other && -f $other ]]; then
-    while IFS= read -r name; do
-      [[ $name =~ ^[a-z0-9][a-z0-9._-]*$ ]] || continue
-      grep -qxF -- "$name" "$list" || rm -f -- "${home_dir:?}/$name" || return
-    done < "$other"
+# The release the Home runs: the directory `current` names.
+current_release() {
+  local target
+  target=$(readlink -- "$home_dir/current") && [[ $target =~ ^releases/[a-zA-Z0-9._-]+$ && -d "$home_dir/$target" ]] ||
+    { echo 'This Home has no current release.' >&2; return 1; }
+  printf '%s\n' "$home_dir/$target"
+}
+
+# switch_link TARGET LINK: LINK names TARGET from one rename on, never a moment without it.
+switch_link() {
+  local keep=-T
+  if [[ $(uname -s) == Darwin ]]; then keep=-h; fi # macOS, where only the tests run
+  ln -sfn -- "$1" "$2.new" && mv -f "$keep" -- "$2.new" "$2" && sync "${2%/*}"
+}
+
+# new_release NAME: a new, empty release directory beside the others.
+new_release() { install -d -m 0700 "$home_dir/releases" && mktemp -d "$home_dir/releases/${1:-release}-XXXXXX"; }
+
+# install_release SOURCE: a new release holding the release files (and version) of SOURCE, an
+# unpacked installer or this checkout.
+install_release() {
+  local release name
+  release=$(new_release "$(cat "$1/version" 2>/dev/null)") || return
+  for name in "${release_files[@]}"; do install -m 0700 "$1/$name" "$release/$name" || return; done
+  if [[ -f "$1/version" ]]; then install -m 0600 "$1/version" "$release/version" || return; fi
+  printf '%s\n' "$release"
+}
+
+# images_present: every image this Home runs of this release, PostgreSQL's too, is on this machine.
+images_present() {
+  local config service image
+  config=$(compose config --format json) || return
+  for service in postgres $(running_services); do
+    image=$(jq -er --arg service "$service" '.services[$service].image' <<< "$config") || return
+    docker image inspect "$image" >/dev/null 2>&1 || { echo "The image $image is not on this machine." >&2; return 1; }
+  done
+}
+
+# One release's images where Docker keeps them, in MiB, as measured (docs/cloud-computer-operations.md,
+# Disk); a Cloud Computer runs no browser images.
+release_image_mib() { if [[ -f "$home_dir/browser-pool" ]]; then echo 4600; else echo 9900; fi; }
+
+# room_for_release [images]: room for one more release before anything of it is fetched: its images
+# where Docker keeps them (with `images`), and the database's dump beside the Home.
+room_for_release() {
+  local root database free need=256
+  if [[ ${1:-} == images ]]; then
+    root=$(docker info --format '{{.DockerRootDir}}') || return
+    free=$(df -Pm -- "$root" | awk 'NR == 2 { print $4 }')
+    ((free >= $(release_image_mib))) ||
+      { echo "Docker's disk has $free MiB free; a release's images take about $(release_image_mib)." >&2; return 1; }
   fi
-  for name in recipe.files recipe.sha256; do
-    if [[ -f "$1/$name" ]]; then
-      install -m 0600 "$1/$name" "$home_dir/.$name.new" && mv -f -- "$home_dir/.$name.new" "$home_dir/$name" || return
-    fi
-  done
-  for name in firewall.sh opensteer-home install-scheduler.sh; do
-    if [[ -f "$home_dir/$name" ]]; then chmod 0700 "$home_dir/$name" || return; fi
-  done
-  sync "$home_dir"
+  database=$(postgres_tool psql -tAc 'select pg_database_size(current_database())') && [[ $database =~ ^[0-9]+$ ]] || return
+  need=$((need + database / 1048576))
+  free=$(df -Pm -- "$home_dir" | awk 'NR == 2 { print $4 }')
+  ((free >= need)) || { echo "The Home's disk has $free MiB free; its database dump takes about $need." >&2; return 1; }
 }
 
-# The units, timers and the command on the path, from the recipe the Home now runs (after a commit).
-refresh_installed_units() {
+# run_release RELEASE STEP: RELEASE's own code runs a step of a switch to it, under its caller's lock.
+run_release() { OPENSTEER_HOME_SWITCHING=${1##*/} "$1/opensteer-home" "$2"; }
+
+# prepare_release (release-prepare): this release readied while another runs: every image its own
+# Compose files name obtained and here, its sandbox policies read from them, its units checked.
+prepare_release() {
+  fetch_release_images "$release_dir/images.env" "$(uses_local_images)" || fail "The release's images could not be obtained."
+  if [[ -f "$home_dir/managed" ]]; then
+    check_release_stamps "$release_dir/images.env" || fail "The release's images are not this release."
+  fi
+  images_present || fail "The release's images are not all on this machine."
+  install_sandbox_policies || fail "The release's sandbox policies could not be read."
+  check_units || fail "The release's units are incomplete."
+}
+
+# check_units: the units this release writes, in staging: the main service and each scheduled task's
+# service and timer, each running the Home's current command.
+check_units() {
+  local units="$release_dir/units.check" unit task command="$home_dir/current/opensteer-home"
+  unit=$(installed_unit_prefix)
+  rm -rf -- "$units" && mkdir -- "$units" &&
+    OPENSTEER_HOME_UNITS_CHECK="$units" "$release_dir/install-scheduler.sh" "$home_dir" "$unit" &&
+    grep -qxF "ExecStart=$command start" "$units/$unit.service" || return
+  for task in update backup maintain; do
+    grep -qF "ExecStart=$command " "$units/$unit-$task.service" && grep -qxF '[Timer]' "$units/$unit-$task.timer" || return
+  done
+  rm -rf -- "$units"
+}
+
+# gate_release (release-gate): this release started and checked once, as maintenance checks.
+gate_release() {
+  local pid
+  start_pod || fail 'The new release did not start.'
+  pid=$(host_pid) || fail 'The new release has no running Host.'
+  check_firewall "$pid" || fail "The new release's firewall check failed."
+  pod_healthy "$(pod_snapshot)" || fail "The new release's services are not all healthy."
+}
+
+# cutover FROM TO: the switch from the running release FROM to the prepared TO: update.pending is
+# written, FROM stops with its own files, TO starts with its own code and passes its gate, and
+# `current` is renamed to TO: the commit. Returns 0 when TO is current; 1 when FROM is, TO stopped
+# (the caller starts FROM); 2 when nothing changed; 3 when the next start must finish going back.
+cutover() {
+  local from=$1 to=$2 pending="$home_dir/update.pending"
+  if ! { printf '%s %s\n' "${from##*/}" "${to##*/}" > "$pending.new" && publish_file "$pending.new" "$pending"; }; then
+    rm -f -- "$pending.new" "$pending"
+    [[ -e $pending ]] && return 3
+    return 2
+  fi
+  if ! { release_dir=$from compose down && run_release "$to" release-gate &&
+    switch_link "releases/${to##*/}" "$home_dir/current"; } && [[ $(current_release) != "$to" ]]; then
+    release_dir=$from stop_switch || return 3
+    return 1
+  fi
+  # TO is current (the words follow the link, also when its sync failed).
+  finish_switch || echo 'The switch is made; what follows it is finished at the next start.' >&2
+}
+
+# stop_switch: a switch that did not commit is undone: the Home's whole Compose project stops with
+# the current release's files (--remove-orphans; volumes kept); the caller starts that release.
+stop_switch() { compose down --remove-orphans && rm -f -- "$home_dir/update.pending" && sync "$home_dir"; }
+
+# finish_switch: after a commit the release before stays as `previous`, the way back; older ones go
+# with their images. None of it undoes the commit; what fails is tried again at the next start.
+finish_switch() {
+  local pending="$home_dir/update.pending" from to
+  [[ -f $pending ]] || return 0
+  read -r from to < "$pending" && switch_link "releases/$from" "$home_dir/previous" || return
+  rm -f -- "$home_dir/releases/$from/database.dump"
+  prune_releases images
+  rm -f -- "$pending" && sync "$home_dir"
+}
+
+# recover_switch: a switch a stop left halfway, decided by `current` alone: FROM goes back, TO finishes.
+recover_switch() {
+  local pending="$home_dir/update.pending" from to current
+  [[ -e $pending || -L $pending ]] || return 0
+  current=$(current_release) || return
+  read -r from to < "$pending" || from=''
+  case ${current##*/} in
+    "$to") finish_switch || echo 'The last update is made; what follows it is finished at the next start.' >&2 ;;
+    "$from")
+      stop_switch || return
+      echo 'An update stopped before it switched releases: the Home runs its previous release.' ;;
+    *) recovery_needs_operator "$pending" ;;
+  esac
+}
+
+# prune_releases [images]: removes each release neither current nor previous and, with `images`, the
+# images it names that those two do not. A failure is said, never fatal, and tried again later.
+prune_releases() {
+  local keep='' kept='' link dir image
+  for link in current previous; do
+    if [[ -L "$home_dir/$link" ]]; then
+      keep+=" $(readlink -- "$home_dir/$link") "
+      kept+=$(release_named_images "$home_dir/$link")$'\n'
+    fi
+  done
+  rm -f -- "$home_dir/releases/".manifest.*
+  for dir in "$home_dir/releases"/*/; do
+    dir=${dir%/}
+    [[ $keep != *" releases/${dir##*/} "* ]] || continue
+    if [[ ${1:-} == images ]]; then
+      for image in $(release_named_images "$dir"); do
+        grep -qxF -- "$image" <<< "$kept" || docker image rm -- "$image" >/dev/null 2>&1 ||
+          echo "An earlier release's image could not be removed: $image" >&2
+      done
+    fi
+    rm -rf -- "$dir" || echo "An earlier release could not be removed: ${dir##*/}" >&2
+  done
+  return 0
+}
+
+# release_named_images RELEASE: its selector's images, and the fixed ones its Compose files name.
+release_named_images() {
+  sed -n 's/^OPENSTEER_HOME_[A-Z_]*_IMAGE=//p' "$1/images.env" 2>/dev/null
+  sed -n 's/^ *image: *\([a-z0-9][^${}[:space:]]*\) *$/\1/p' "$1"/compose*.yaml 2>/dev/null
+}
+
+# refresh_units: the installed units follow what the current release writes, where they differ.
+refresh_units() {
   [[ -d /run/systemd/system || -n ${OPENSTEER_HOME_UNIT_DIR:-} ]] || return 0
-  "$home_dir/install-scheduler.sh" "$home_dir" "$(installed_unit_prefix)"
+  "$(current_release)/install-scheduler.sh" "$home_dir" "$(installed_unit_prefix)"
 }
 
-install_recipe() {
-  local source=$1 destination=$2 name
-  for name in "${recipe_files[@]}"; do
-    if [[ "$source/$name" != "$destination/$name" ]]; then
-      install -m 0600 "$source/$name" "$destination/$name"
-    fi
-  done
-  chmod 0700 "$destination/"{firewall.sh,opensteer-home,install-scheduler.sh}
-}
-
-# The installer run again by hand on an installed Home. It first reads what is on the machine
-# and obtains the whole release, and changes nothing unless all of it is in hand: a managed
-# Home, a claimed Home, another name, a different TLS choice, or --local-images without a
-# manifest is refused. Only then does it stop the Home, replace its release and recipe and start
-# it; if that release does not start, the previous one is put back and started again.
+# The installer run again by hand on an installed Home: it changes nothing unless the whole release
+# is prepared beside the running one, and refuses a managed or claimed Home, another name, another
+# TLS choice, or --local-images without a manifest. Then the Home switches to it (cutover).
 rerun_installed_home() {
-  local hostname=$1 manifest=$2 local_images=$3 local_tls=$4 source=$5 staging=$6
-  local configured state selector local_mode tls installed_tls name running=false
+  local hostname=$1 manifest=$2 local_images=$3 local_tls=$4 source=$5
+  local configured state local_mode tls installed_tls from to='' running=false status=0 release_dir
   local unchanged='Nothing was changed.'
+  release_dir=$(current_release) || fail "This Home has no current release. $unchanged"
+  from=$release_dir
   configured=$(compose config --format json | jq -er .services.gateway.environment.OPENSTEER_HOME_HOSTNAME) ||
     fail "The installed Home's configuration could not be read. $unchanged"
   [[ $hostname == "$configured" ]] || fail "This installation already uses $configured. $unchanged"
@@ -835,44 +975,31 @@ rerun_installed_home() {
   [[ $state == required ]] ||
     fail "This Home is already claimed, so the installer will not change it. Change its release with: sudo opensteer-home update ${manifest:-MANIFEST.json}. Or remove it with: sudo opensteer-home uninstall --purge. $unchanged"
 
-  selector="$staging/images.env"
+  to=$(install_release "$source") || fail "The release could not be written. $unchanged"
+  # refuse MESSAGE: nothing of the new release stays.
+  refuse() { rm -rf -- "$to"; fail "$1 $unchanged"; }
   if [[ -n $manifest ]]; then
-    release_to_env "$manifest" "$selector" false
+    (release_to_env "$manifest" "$to/images.env" false) || refuse 'The release could not be written.'
     local_mode=$local_images
   else
-    cp -- "$home_dir/images.env" "$selector"
+    cp -- "$from/images.env" "$to/images.env" || refuse 'The release could not be written.'
     local_mode=$(uses_local_images)
   fi
-  fetch_release_images "$selector" "$local_mode" ||
-    fail "The release's images could not be obtained. $unchanged"
-  mkdir -- "$staging/recipe" "$staging/previous"
-  install_recipe "$source" "$staging/recipe"
-  release_env="$selector" install_sandbox_policies "$staging/recipe" ||
-    fail "The release's sandbox policies could not be read. $unchanged"
-
-  for name in "${recipe_files[@]}" images.env local-images chromium-oci.json runner-oci.json; do
-    if [[ -e "$home_dir/$name" ]]; then cp -p -- "$home_dir/$name" "$staging/previous/$name"; fi
-  done
+  release_dir=$to fetch_release_images "$to/images.env" "$local_mode" ||
+    refuse "The release's images could not be obtained."
+  release_dir=$to install_sandbox_policies || refuse "The release's sandbox policies could not be read."
   if [[ -n $(compose ps -q host 2>/dev/null) ]]; then running=true; fi
-  compose down
-  for name in "${recipe_files[@]}" chromium-oci.json runner-oci.json; do
-    cp -p -- "$staging/recipe/$name" "$home_dir/$name"
-  done
-  cp -- "$selector" "$home_dir/images.env"
-  if [[ $local_mode == true ]]; then touch "$home_dir/local-images"; else rm -f -- "$home_dir/local-images"; fi
-  sync "$home_dir"
-  if ! start_pod; then
+  cutover "$from" "$to" || status=$?
+  if ((status == 2)); then refuse 'The switch could not be recorded.'; fi
+  if ((status != 0)); then
     echo 'The new release did not start. Putting the previous one back.' >&2
-    rm -f -- "$home_dir/local-images"
-    for name in "$staging/previous/"*; do cp -p -- "$name" "$home_dir/${name##*/}"; done
-    sync "$home_dir"
-    if $running && ! start_pod; then
-      fail 'The previous release did not start again either. See: sudo opensteer-home logs host'
-    fi
+    ((status == 1)) || fail 'The previous one is not back yet: the next start puts it back.'
+    if $running && ! start_pod; then fail 'The previous release did not start again either. See: sudo opensteer-home logs host'; fi
     fail 'The Home is back on its previous release.'
   fi
-  if owns_operator_command; then install -m 0755 "$home_dir/opensteer-home" /usr/local/bin/opensteer-home; fi
-  echo "This Home was never claimed. It now runs release $(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$home_dir/images.env")."
+  release_dir=$to
+  if [[ $local_mode == true ]]; then touch "$home_dir/local-images"; else rm -f -- "$home_dir/local-images"; fi
+  echo "This Home was never claimed. It now runs release $(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$to/images.env")."
   if [[ -f "$home_dir/setup-link.pending" ]]; then
     print_setup_link "$(cat "$home_dir/setup-link.pending")"
     rm -f -- "$home_dir/setup-link.pending"

@@ -187,8 +187,8 @@ umask 077
 export OPENSTEER_HOME_DIR=${quote(`${vmDirectory}/${name}`)}
 export COMPOSE_PROJECT_NAME=${quote(name)}
 export OPENSTEER_HOME_BIND_IP=127.0.0.1 OPENSTEER_HOME_HTTP_PORT=${bind + (managed ? 2 : 0)} OPENSTEER_HOME_HTTPS_PORT=${bind + (managed ? 3 : 1)}
-operator() { "$OPENSTEER_HOME_DIR/opensteer-home" "$@"; }
-load_compose() { source "$OPENSTEER_HOME_DIR/common.sh"; }
+operator() { "$OPENSTEER_HOME_DIR/current/opensteer-home" "$@"; }
+load_compose() { source "$OPENSTEER_HOME_DIR/current/common.sh"; }
 ${command}
 `;
 }
@@ -749,9 +749,9 @@ async function verifyAuthenticatedUpstream(api, cookie, ca) {
     await probe("direct-control");
     vm(`load_compose
       cp "$home_dir/config.env" "$home_dir/config.egress.original"
-      cp "$home_dir/common.sh" "$home_dir/common.egress.original"
+      cp "$release_dir/common.sh" "$home_dir/common.egress.original"
       printf '%s\n' ${quote(override)} > "$home_dir/egress-upstream.proof.yaml"
-      sed -i '/local apparmor=/i\\  if [[ -s "$home_dir/secrets/egress_url" ]]; then args+=(-f "$home_dir/egress-upstream.proof.yaml"); fi' "$home_dir/common.sh"
+      sed -i '/local apparmor=/i\\  if [[ -s "$home_dir/secrets/egress_url" ]]; then args+=(-f "$home_dir/egress-upstream.proof.yaml"); fi' "$release_dir/common.sh"
       printf '%s\n' ${quote(`OPENSTEER_HOME_ACCOUNT_ORIGIN='${accountOrigin}'
 OPENSTEER_HOME_MANAGED_ID='${id}'
 OPENSTEER_HOME_OIDC_CLIENT_ID='${oidc.clientId}'`)} >> "$home_dir/config.env"
@@ -810,7 +810,7 @@ OPENSTEER_HOME_OIDC_CLIENT_ID='${oidc.clientId}'`)} >> "$home_dir/config.env"
         nsenter -t ${hostPid} -n ip address del ${originAddress}/32 dev lo 2>/dev/null || true
         if [[ -f "$OPENSTEER_HOME_DIR/common.egress.original" ]]; then
           load_compose
-          mv "$home_dir/common.egress.original" "$home_dir/common.sh"
+          mv "$home_dir/common.egress.original" "$release_dir/common.sh"
           mv "$home_dir/config.egress.original" "$home_dir/config.env"
           rm -f "$home_dir/egress-upstream.proof.yaml" "$home_dir/managed" "$home_dir/egress.pending" "$home_dir/secrets/"egress_{url,username,password}
           : | save_secret "$home_dir/secrets/oidc_client_secret"
@@ -1063,7 +1063,7 @@ function managedInstaller(directory, certificate, shipped) {
     { mode: 0o644 },
   );
   const common = readFileSync(resolve(home, "common.sh"), "utf8");
-  const anchor = '-f "$home_dir/compose.yaml")';
+  const anchor = '-f "$release_dir/compose.yaml")';
   assert.ok(common.includes(anchor), "The Compose recipe anchor moved");
   const layered = common.replace(anchor, `${anchor}\n  args+=(-f ${quote(layer)})`);
   writeFileSync(resolve(home, "common.sh"), layered);
@@ -1826,8 +1826,8 @@ OPENSTEER_HOME_PROOF
 awk '/^  local args=/{ recipe=1 } { print } recipe && /compose.yaml/ {
   print "  args+=(-f \\"$home_dir/compose.proof.yaml\\")"
   recipe=0
-}' "$OPENSTEER_HOME_DIR/common.sh" > "$OPENSTEER_HOME_DIR/common.proof.sh"
-mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
+}' "$OPENSTEER_HOME_DIR/current/common.sh" > "$OPENSTEER_HOME_DIR/current/common.proof.sh"
+mv "$OPENSTEER_HOME_DIR/current/common.proof.sh" "$OPENSTEER_HOME_DIR/current/common.sh"
 `);
   });
   const podHealthy = await check(
@@ -2200,7 +2200,7 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
         check_firewall ${pid}`);
       assert.equal(container("host"), id);
       vm(`unshare --net bash -euc '
-        firewall="$OPENSTEER_HOME_DIR/firewall.sh"
+        firewall="$OPENSTEER_HOME_DIR/current/firewall.sh"
         "$firewall" "$$" apply false
         "$firewall" "$$" check false
         iptables -w -D OPENSTEER-HOME -d 169.254.0.0/16 -j REJECT
@@ -2396,7 +2396,7 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
   await check(
     "an interrupted unhealthy candidate restores previous images without rolling back database writes",
     () => {
-      const previous = vm('cat "$OPENSTEER_HOME_DIR/images.env"');
+      const previous = vm('cat "$OPENSTEER_HOME_DIR/current/images.env"');
       const before = Object.fromEntries(
         components.map((service) => [
           service,
@@ -2412,25 +2412,26 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
       const candidateId = docker(["image", "inspect", "--format", "{{.Id}}", failedCandidate]);
       assert.notEqual(candidateId, before.host);
       vm(`load_compose
-      source "$home_dir/backup.sh"
-      journal="$home_dir/update.pending"
-      mkdir "$journal"
-      cp "$home_dir/images.env" "$journal/previous.env"
-      cp "$home_dir/images.env" "$journal/original.env"
-      sed 's|^OPENSTEER_HOME_HOST_IMAGE=.*|OPENSTEER_HOME_HOST_IMAGE=${failedCandidate}|' "$journal/previous.env" > "$journal/candidate.env"
-      postgres_tool pg_dump --format=custom > "$home_dir/update-database.dump"
+      source "$release_dir/backup.sh"
+      # A switch to a candidate release, stopped after the candidate started: as cutover leaves it.
+      candidate_release=$(install_release "$release_dir")
+      sed 's|^OPENSTEER_HOME_HOST_IMAGE=.*|OPENSTEER_HOME_HOST_IMAGE=${failedCandidate}|' "$release_dir/images.env" > "$candidate_release/images.env"
+      cp "$release_dir/"*-oci.json "$candidate_release/"
+      postgres_tool pg_dump --format=custom > "$candidate_release/database.dump"
+      printf '%s %s\n' "\${release_dir##*/}" "\${candidate_release##*/}" > "$home_dir/update.pending"
       compose down
-      release_env="$journal/candidate.env" compose up -d --pull never host
-      candidate=$(release_env="$journal/candidate.env" compose ps --all -q host)
+      release_dir=$candidate_release compose up -d --pull never host
+      candidate=$(release_dir=$candidate_release compose ps --all -q host)
       test "$(docker inspect --format '{{.Image}}' "$candidate")" = ${quote(candidateId)}
       test "$(timeout 20s docker wait "$candidate")" = 1
       postgres_tool psql -v ON_ERROR_STOP=1 -c 'CREATE TABLE home_proof_expand (value integer); INSERT INTO home_proof_expand VALUES (42)'
       operator start
-      test ! -e "$journal"
-      test -s "$home_dir/update-database.dump"
+      test ! -e "$home_dir/update.pending"
+      test "$(readlink "$home_dir/current")" = "releases/\${release_dir##*/}"
+      test -s "$candidate_release/database.dump"
       test "$(postgres_tool psql -Atc 'SELECT value FROM home_proof_expand')" = 42
       postgres_tool psql -v ON_ERROR_STOP=1 -c 'DROP TABLE home_proof_expand'`);
-      assert.equal(vm('cat "$OPENSTEER_HOME_DIR/images.env"'), previous);
+      assert.equal(vm('cat "$OPENSTEER_HOME_DIR/current/images.env"'), previous);
       for (const service of components)
         assert.equal(
           docker(["inspect", "--format", "{{.Image}}", container(service)]),
@@ -2570,7 +2571,7 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
           if (managed && !unitsStopped) continue;
           clean(() =>
             vm(
-              'if [[ -f "$OPENSTEER_HOME_DIR/common.sh" ]]; then load_compose; remove_runner_apparmor; fi',
+              'if [[ -f "$OPENSTEER_HOME_DIR/current/common.sh" ]]; then load_compose; remove_runner_apparmor; fi',
               { managed },
             ),
           );

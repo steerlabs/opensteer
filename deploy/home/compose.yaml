@@ -137,7 +137,7 @@ services:
     memswap_limit: ${OPENSTEER_HOME_RUNNER_MEMORY:-8g}
     security_opt:
       - no-new-privileges:true
-      - seccomp:./runner-oci.json
+      - seccomp:${OPENSTEER_HOME_RELEASE_DIR:?Release directory required}/runner-oci.json
     environment:
       HOME: /home/opensteer
       OPENSTEER_DEPLOYMENT_KIND: personal
@@ -177,7 +177,7 @@ services:
     image: ${OPENSTEER_HOME_BROWSER_RUNTIME_IMAGE:?Browser Runtime image required}
     security_opt:
       - no-new-privileges:true
-      - seccomp:./chromium-oci.json
+      - seccomp:${OPENSTEER_HOME_RELEASE_DIR:?Release directory required}/chromium-oci.json
     cpus: ${OPENSTEER_HOME_BROWSER_CPUS:-2}
     mem_limit: ${OPENSTEER_HOME_BROWSER_MEMORY:-4g}
     memswap_limit: ${OPENSTEER_HOME_BROWSER_MEMORY:-4g}

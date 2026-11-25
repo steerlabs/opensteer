@@ -66,7 +66,7 @@ if [[ -n $managed ]]; then
       rm -f -- "$token_path"
       exit 0
     fi
-    for file in install.sh managed-boot.sh common.sh firewall.sh backup.sh update.sh machine-status.sh opensteer-home install-scheduler.sh compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml compose.browser-pool.yaml; do
+    for file in "${release_files[@]}"; do
       install -m 0700 "$source_dir/$file" "$boot/$file"
     done
     install -m 0600 "$managed" "$boot/spec.json.new"
@@ -132,9 +132,7 @@ fi
 if [[ -z $managed && -f "$home_dir/config.env" ]]; then
   # An installed Home run again by hand: decided and checked in full before anything changes.
   lock_home
-  staging=$(mktemp -d "$home_dir/install.XXXXXX")
-  trap 'rm -rf -- "$staging"' EXIT
-  rerun_installed_home "$hostname" "$manifest" "$local_images" "$local_tls" "$source_dir" "$staging"
+  rerun_installed_home "$hostname" "$manifest" "$local_images" "$local_tls" "$source_dir"
   exit 0
 fi
 
@@ -142,12 +140,12 @@ install -d -m 0700 "$home_dir/secrets"
 lock_home
 staging=$(mktemp -d "$home_dir/install.XXXXXX")
 trap 'rm -rf -- "$staging"' EXIT
-# A managed boot that already finished (the bootstrap unit runs again at every boot) is decided
-# before anything of boot's own recipe is copied: an update may have committed another recipe
-# since, and an interrupted one is the installed recovery's to finish (restore-recipe.sh).
+# A finished managed boot (its unit runs at every boot) touches nothing of the Home's release; it
+# writes only the units a first boot was cut short before writing.
 setup_code=''
 finish_managed_boot() {
   local outcome=$1 original
+  if [[ -L "$home_dir/current" ]]; then release_dir=$(current_release); fi
   durable_marker "$home_dir/boot/$outcome"
   original=$(cat "$home_dir/boot/original-token-path")
   rm -f -- "$original" "$token_path" "$home_dir/boot/token.new" "$home_dir/boot/"{result.json,result.json.new}
@@ -156,10 +154,8 @@ finish_managed_boot() {
     if [[ -f "$home_dir/config.env" ]]; then compose down; fi
     exit 78
   fi
-  # While an update is pending its recovery owns the units (the main unit's restore step and
-  # update_recovery run next); only a Home with no update in flight has its units written here.
-  if [[ ! -e "$home_dir/update.pending" ]]; then
-    "$home_dir/install-scheduler.sh" "$home_dir" "$unit_prefix"
+  if [[ ! -f "${OPENSTEER_HOME_UNIT_DIR:-/etc/systemd/system}/$unit_prefix.service" ]]; then
+    "$release_dir/install-scheduler.sh" "$home_dir" "$unit_prefix"
   fi
   flock -u 9
   systemctl start "$unit_prefix.service"
@@ -170,13 +166,18 @@ if $resume_managed; then
     if [[ -f "$home_dir/boot/$outcome" ]]; then finish_managed_boot "$outcome"; fi
   done
 fi
-# The recipe and its command are in place before the configuration is written, so an install
-# that fails from here on is removed with `opensteer-home uninstall --purge`.
-install_recipe "$source_dir" "$home_dir"
+# The release and its command come before the configuration, so a failed install is removed with
+# `opensteer-home uninstall --purge`. A managed install that resumes keeps the release it made.
+if $resume_managed && [[ -L "$home_dir/current" ]]; then
+  release_dir=$(current_release)
+else
+  release_dir=$(install_release "$source_dir")
+  switch_link "releases/${release_dir##*/}" "$home_dir/current"
+fi
 # The units this Home is installed under, so its own command finds them to remove them.
 printf '%s\n' "$unit_prefix" > "$home_dir/unit-prefix"
 if ! $prepare && owns_operator_command; then
-  install -m 0755 "$home_dir/opensteer-home" /usr/local/bin/opensteer-home
+  ln -sfn -- "$home_dir/current/opensteer-home" /usr/local/bin/opensteer-home
 fi
 if [[ -n $managed ]]; then
   if $resume_managed; then result="$home_dir/boot/result.json"; else result="$staging/result.json"; fi
@@ -213,8 +214,8 @@ else
       fail "Invalid managed boot spec."
     fi
     # The recipe this Home runs: the installer cloud-init checked against this SHA-256.
-    jq -er '.installerSha256 | select(test("^[0-9a-f]{64}$"))' "$managed" > "$home_dir/recipe.sha256.new" &&
-      mv -f -- "$home_dir/recipe.sha256.new" "$home_dir/recipe.sha256" || fail "Invalid managed boot spec."
+    jq -er '.installerSha256 | select(test("^[0-9a-f]{64}$"))' "$managed" > "$release_dir/recipe.sha256" ||
+      fail "Invalid managed boot spec."
     manifest="$staging/release.json"
     jq -e .release "$result" > "$manifest"
     jq -er .setupCodeDigest "$result" | save_secret "$home_dir/secrets/setup_digest"
@@ -240,7 +241,7 @@ else
   valid_hostname "$hostname" || fail "Use a fully qualified lowercase DNS hostname."
   pinned=false
   if [[ -n $managed ]]; then pinned=true; fi
-  release_to_env "$manifest" "$home_dir/images.env" "$pinned"
+  release_to_env "$manifest" "$release_dir/images.env" "$pinned"
   db_password=$(random_secret)
   printf '%s\n' "$db_password" | save_secret "$home_dir/secrets/postgres_password"
   printf 'postgresql://opensteer:%s@localhost/opensteer?host=%%2Fvar%%2Frun%%2Fpostgresql\n' "$db_password" |
@@ -316,15 +317,15 @@ fi
 if $prepare; then
   install_sandbox_policies
 else
-  fetch_release_images "$home_dir/images.env" "$local_images"
+  fetch_release_images "$release_dir/images.env" "$local_images"
   if $local_images; then touch "$home_dir/local-images"; fi
-  if $resume_managed; then check_release_stamps "$home_dir/images.env"; fi
+  if $resume_managed; then check_release_stamps "$release_dir/images.env"; fi
   install_sandbox_policies
   if $resume_managed; then
     snapshot=$(jq -r '.restoreSnapshot // empty' "$result")
     if [[ -n $snapshot ]]; then
       # shellcheck source=deploy/home/backup.sh
-      source "$home_dir/backup.sh"
+      source "$release_dir/backup.sh"
       backup_command managed-restore "$snapshot"
     fi
     start_pod
@@ -344,7 +345,7 @@ else
     fi
     finish_managed_boot completed
   fi
-  "$home_dir/install-scheduler.sh" "$home_dir" "$unit_prefix"
+  "$release_dir/install-scheduler.sh" "$home_dir" "$unit_prefix"
   flock -u 9
   systemctl start "$unit_prefix.service"
 fi

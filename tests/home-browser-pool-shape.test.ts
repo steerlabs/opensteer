@@ -46,15 +46,16 @@ it("marks a Cloud Computer pooled only when its boot answer says browserPool: tr
 it("adds the pooled override only for a marked Home, and keeps the default recipe free of it", () => {
   const common = read("common.sh");
   expect(common).toContain(
-    'if [[ -f "$home_dir/browser-pool" ]]; then args+=(-f "$home_dir/compose.browser-pool.yaml"); fi',
+    'if [[ -f "$home_dir/browser-pool" ]]; then args+=(-f "$release_dir/compose.browser-pool.yaml"); fi',
   );
-  expect(common).toMatch(/recipe_files=\([^)]*compose\.browser-pool\.yaml/u);
+  expect(common).toMatch(/release_files=\([^)]*compose\.browser-pool\.yaml/u);
   expect(read("compose.yaml")).not.toMatch(/BROWSER_POOL|browser-pool/u);
   expect(parse(read("compose.browser-pool.yaml"))).toMatchObject({
     services: { host: { environment: { OPENSTEER_MANAGED_HOME_BROWSER_POOL: "true" } } },
   });
-  for (const installer of ["install.sh", "package-installer.sh"])
-    expect(read(installer)).toContain("compose.browser-pool.yaml");
+  // The installer's boot copy and the packager take that one list.
+  expect(read("install.sh")).toContain('for file in "${release_files[@]}"; do');
+  expect(read("package-installer.sh")).toContain("s/^release_files=(\\(.*\\))$/\\1/p");
 });
 
 /** The compose files `common.sh` names for a Home directory holding these markers. */
@@ -79,7 +80,7 @@ function composeFiles(markers: readonly string[]): string[] {
     );
     const lines = printed.split("\n");
     return lines.flatMap((line, index) =>
-      line === "-f" ? [lines[index + 1]!.slice(directory.length + 1)] : [],
+      line === "-f" ? [lines[index + 1]!.slice(home.length + 1)] : [],
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -311,7 +312,7 @@ it("starts no local browser and no local browser egress on a Cloud Computer", ()
   // down and restarted on every maintenance pass and could never update.
   expect(read("opensteer-home")).toContain('pod_healthy "$snapshot"');
   expect(read("common.sh")).toMatch(/^pod_healthy\(\) \{\n(?:.*\n)*?.*running_services/mu);
-  expect(read("update.sh")).toContain("running_services");
+  expect(read("common.sh")).toMatch(/^images_present\(\) \{\n(?:.*\n)*?.*running_services/mu);
 });
 
 /** `running_services` from `common.sh` for a Home directory holding these markers. */

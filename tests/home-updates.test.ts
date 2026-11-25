@@ -9,6 +9,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -206,7 +207,10 @@ it("runs a scheduled update from the account's feed and decides by the release's
     url: "https://releases.example.test/opensteer-home-installer.sh",
     sha256: "c".repeat(64),
   };
-  writeFileSync(join(home, "recipe.sha256"), `${pin.sha256}\n`);
+  // The release the Home runs, in its own directory.
+  mkdirSync(join(home, "releases", "running"), { recursive: true });
+  symlinkSync("releases/running", join(home, "current"));
+  writeFileSync(join(home, "releases", "running", "recipe.sha256"), `${pin.sha256}\n`);
   const images = (digit: string) =>
     Object.fromEntries(
       // In the order release_to_env writes them (common.sh's services).
@@ -226,7 +230,7 @@ it("runs a scheduled update from the account's feed and decides by the release's
   const update = (running: string, feedRelease: { version: string; digit: string }) => {
     // The account's pin names the release the feed offers: the two halves agree.
     account({ releaseManifestUrl: moved, recipe: pin });
-    writeFileSync(join(home, "images.env"), running);
+    writeFileSync(join(home, "releases", "running", "images.env"), running);
     writeFileSync(
       join(work, "release.json"),
       JSON.stringify({ version: feedRelease.version, images: images(feedRelease.digit) }),
@@ -235,7 +239,7 @@ it("runs a scheduled update from the account's feed and decides by the release's
     return run(
       `source "${join(recipe, "update.sh")}"
        fetch_manifest() { printf '%s\\n' "$1" > "${work}/fetched"; cp "${work}/release.json" "$2"; }
-       compose_project() { echo "went on to update" >&2; exit 42; }
+       room_for_release() { echo "went on to update" >&2; exit 42; }
        ${asOpensteerHomeCallsUpdate("scheduled-update")}`,
     );
   };

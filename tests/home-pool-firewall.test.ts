@@ -159,16 +159,19 @@ it("keeps the boot answer's pool network for the firewall, and refuses a malform
 
 it("passes the saved pool network to the firewall on both apply and check", () => {
   const directory = mkdtempSync(join(work, "home-"));
-  writeFileSync(join(directory, "firewall.sh"), '#!/usr/bin/env bash\nprintf "%s\\n" "$*"\n');
-  chmodSync(join(directory, "firewall.sh"), 0o755);
+  // The release's firewall.sh stood in for, in a release of its own.
+  const release = mkdtempSync(join(work, "release-"));
+  writeFileSync(join(release, "firewall.sh"), '#!/usr/bin/env bash\nprintf "%s\\n" "$*"\n');
+  chmodSync(join(release, "firewall.sh"), 0o755);
   const run = () =>
     execFileSync(
       "bash",
       [
         "-c",
-        'source "$1"; apply_firewall 1234; check_firewall 1234',
+        'source "$1"; release_dir=$2; apply_firewall 1234; check_firewall 1234',
         "fw",
         join(home, "common.sh"),
+        release,
       ],
       { encoding: "utf8", env: { ...process.env, OPENSTEER_HOME_DIR: directory } },
     );

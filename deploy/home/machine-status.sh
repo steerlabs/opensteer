@@ -35,17 +35,19 @@ record_backup_result() {
     > "$home_dir/last-backup.json.new" && mv -f -- "$home_dir/last-backup.json.new" "$home_dir/last-backup.json"
 }
 
-# record_update_result updated|rolled-back|feed-older|failed [FROM_VERSION] [TO_VERSION]
+# record_update_result updated|rolled-back|feed-older|waiting|failed [FROM_VERSION] [TO_VERSION] [SINCE]
+# SINCE, a time to the minute, is when the result began (an update waiting since then).
 record_update_result() {
-  local version='^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$' from=${2:-} to=${3:-}
+  local version='^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$' from=${2:-} to=${3:-} at=${4:-}
   [[ $from =~ $version ]] || from=''
   [[ $to =~ $version ]] || to=''
-  jq -nc --arg result "$1" --arg from "$from" --arg to "$to" --arg at "$(date -u +'%Y-%m-%dT%H:%M:00Z')" '
+  [[ $at =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:00Z$ ]] || at=$(date -u +'%Y-%m-%dT%H:%M:00Z')
+  jq -nc --arg result "$1" --arg from "$from" --arg to "$to" --arg at "$at" '
     {result: $result, at: $at}
     + (if $from == "" then {} else {fromVersion: $from} end)
     + (if $to == "" then {} else {toVersion: $to} end)' \
-    > "$home_dir/last-update.json.new" && mv -f -- "$home_dir/last-update.json.new" "$home_dir/last-update.json"
-  touch "$home_dir/update.recorded"
+    > "$home_dir/last-update.json.new" && mv -f -- "$home_dir/last-update.json.new" "$home_dir/last-update.json" &&
+    touch "$home_dir/update.recorded" || echo "The update's result could not be recorded." >&2
 }
 
 machine_status_json() {

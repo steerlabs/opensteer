@@ -3,42 +3,18 @@ set -euo pipefail
 home_dir=$1
 unit_dir=${OPENSTEER_HOME_UNIT_DIR:-/etc/systemd/system} # Set only by tests.
 unit=${2:-opensteer-home}
-# An update's gate writes the candidate's units into a staging directory only, to check them
-# before it commits: nothing installed, enabled or reloaded.
+# The units run the Home's current release (`current`), so an ordinary release changes none of
+# them. A release's own check writes them into a staging directory only, to read them.
 check=${OPENSTEER_HOME_UNITS_CHECK:-}
-helper_dir=$home_dir
-if [[ -n $check ]]; then unit_dir=$check helper_dir=$check; fi
-# Only the Home in the default directory owns the command on the path.
-if [[ -z $check && $unit == opensteer-home && $home_dir == /etc/opensteer-home ]]; then
-  install -m 0755 "$home_dir/opensteer-home" /usr/local/bin/opensteer-home
+staged=$check
+if [[ -z $check ]]; then
+  staged=$(mktemp -d)
+  trap 'rm -rf -- "$staged"' EXIT
 fi
-# Each unit (and the restore step) is written beside itself and renamed into place: an interruption leaves the old unit
-# or the new one, never an empty one a reboot would load.
-put_unit() { sync "$1.new" && mv -f -- "$1.new" "$1"; }
+command="$home_dir/current/opensteer-home"
 unit_env=''
 if [[ -f "$home_dir/boot/options.env" ]]; then unit_env="EnvironmentFile=$home_dir/boot/options.env"; fi
-# Written with the units, so it changes only once an update has committed: before any of the
-# Home's code runs, an update interrupted before its commit gets its previous recipe back, under
-# the Home's lock (never while an update still runs). That recipe's own update recovery then
-# rolls the images back. It reads only the journal, and nothing of the recipe being installed.
-cat > "$helper_dir/restore-recipe.sh.new" <<'RESTORE'
-#!/bin/sh
-home=$1
-journal="$home/update.pending"
-[ -d "$journal/recipe.previous" ] && [ ! -e "$journal/committed" ] || exit 0
-exec /usr/bin/flock "$home/operation.lock" /bin/sh -c '
-  journal="$1/update.pending"
-  [ -d "$journal/recipe.previous" ] && [ ! -e "$journal/committed" ] || exit 0
-  for file in "$journal"/recipe.previous/*; do
-    [ -f "$file" ] || continue
-    cp -p -- "$file" "$1/.restore.new" && mv -f -- "$1/.restore.new" "$1/${file##*/}" || exit 1
-  done
-  sync' restore "$home"
-RESTORE
-chmod 0700 "$helper_dir/restore-recipe.sh.new"
-put_unit "$helper_dir/restore-recipe.sh"
-restore="ExecStartPre=$home_dir/restore-recipe.sh $home_dir"
-cat > "$unit_dir/$unit.service.new" <<UNIT
+cat > "$staged/$unit.service" <<UNIT
 [Unit]
 Description=Opensteer Home
 PartOf=docker.service
@@ -55,14 +31,12 @@ TimeoutStartSec=0
 TimeoutStopSec=180
 Environment=OPENSTEER_HOME_DIR=$home_dir
 $unit_env
-$restore
-ExecStart=$home_dir/opensteer-home start
-ExecStop=$home_dir/opensteer-home stop
+ExecStart=$command start
+ExecStop=$command stop
 
 [Install]
 WantedBy=multi-user.target
 UNIT
-put_unit "$unit_dir/$unit.service"
 
 timers=()
 # Every Home has an update timer from install: a managed Home asks its account for its feed at each
@@ -74,9 +48,9 @@ for task in update backup maintain; do
     backup) calendar=daily ;;
     maintain) calendar='' ;;
   esac
-  command=scheduled-$task
-  if [[ $task == maintain ]]; then command=maintain; fi
-  cat > "$unit_dir/$unit-$task.service.new" <<UNIT
+  subcommand=scheduled-$task
+  if [[ $task == maintain ]]; then subcommand=maintain; fi
+  cat > "$staged/$unit-$task.service" <<UNIT
 [Unit]
 Description=Opensteer Home $task
 Requisite=$unit.service
@@ -86,10 +60,8 @@ After=$unit.service
 Type=oneshot
 Environment=OPENSTEER_HOME_DIR=$home_dir
 $unit_env
-$restore
-ExecStart=$home_dir/opensteer-home $command
+ExecStart=$command $subcommand
 UNIT
-  put_unit "$unit_dir/$unit-$task.service"
   timer="OnCalendar=$calendar
 Persistent=true"
   if [[ $task == maintain ]]; then
@@ -97,7 +69,7 @@ Persistent=true"
 OnUnitInactiveSec=15s
 AccuracySec=1s'
   fi
-  cat > "$unit_dir/$unit-$task.timer.new" <<UNIT
+  cat > "$staged/$unit-$task.timer" <<UNIT
 [Unit]
 Description=Schedule Opensteer Home $task
 
@@ -107,10 +79,31 @@ $timer
 [Install]
 WantedBy=timers.target
 UNIT
-  put_unit "$unit_dir/$unit-$task.timer"
 done
-sync "$unit_dir"
 [[ -z $check ]] || exit 0
+
+# Only the Home in the default directory owns the command on the path: a link to its current one.
+if [[ $unit == opensteer-home && $home_dir == /etc/opensteer-home && $(readlink /usr/local/bin/opensteer-home || true) != "$command" ]]; then
+  ln -sfn -- "$command" /usr/local/bin/opensteer-home.new
+  mv -fT -- /usr/local/bin/opensteer-home.new /usr/local/bin/opensteer-home
+fi
+# A unit is written only where it differs from the installed one, beside itself and renamed into
+# place: an interruption leaves the old unit or the new one, never an empty one a reboot would load.
+changed=false
+for file in "$staged"/*; do
+  name=${file##*/}
+  cmp -s -- "$file" "$unit_dir/$name" && continue
+  install -m 0644 -- "$file" "$unit_dir/$name.new"
+  sync "$unit_dir/$name.new"
+  mv -f -- "$unit_dir/$name.new" "$unit_dir/$name"
+  changed=true
+done
+# systemd is told when something changed, or when it has not loaded or enabled what is there yet.
+if ! $changed && systemctl is-enabled --quiet "$unit.service" "${timers[@]}" &&
+  [[ $(systemctl show --property NeedDaemonReload --value "$unit.service" "${timers[@]}") != *yes* ]]; then
+  exit 0
+fi
+sync "$unit_dir"
 systemctl daemon-reload
 systemctl enable "$unit.service"
 systemctl enable --now "${timers[@]}"
