@@ -1,4 +1,7 @@
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { access, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import {
   browserPoolControlBytes,
@@ -7,6 +10,7 @@ import {
 } from "./browser-pool.js";
 import { SessionFiles } from "./browser/session-files.js";
 import { BrowserRuntime, pooledSessionWithoutChannelMs } from "./runtime.js";
+import { Ed25519AttachTicketVerifier } from "./security/attach-ticket.js";
 import { BrowserSessionIdSchema } from "@opensteer/protocol/browser";
 import {
   FakeContext,
@@ -848,5 +852,108 @@ it("can refuse an install only in a runtime that already held an instance: a fre
     vi.useRealTimers();
     vi.restoreAllMocks();
     await shared.runtime.shutdown().catch(() => undefined);
+  }
+});
+
+it("drains in-flight replay ledger writes and refuses post-shutdown claims before shutdown() resolves", async () => {
+  const root = await mkdtemp(join(tmpdir(), "opensteer-pool-shutdown-ledger-"));
+  const privateDir = join(root, "private");
+  const ledgerPath = join(privateDir, "tickets.json");
+  const controllerKeys = generateKeyPairSync("ed25519");
+  const ticketKeys = generateKeyPairSync("ed25519");
+  const heldKeyEntered = Promise.withResolvers<void>();
+  const releaseHeldKey = Promise.withResolvers<void>();
+  let holdKey = false;
+  const verifier = await Ed25519AttachTicketVerifier.create({
+    pooled: true,
+    replayLedgerPath: ledgerPath,
+    resolvePublicKey: async (keyId) => {
+      if (keyId !== "test") return null;
+      if (holdKey) {
+        holdKey = false;
+        heldKeyEntered.resolve();
+        await releaseHeldKey.promise;
+      }
+      return ticketKeys.publicKey;
+    },
+  });
+  const runtime = new BrowserRuntime({
+    launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([new FakePage()]))),
+    runtimeId: "pool-runtime",
+    sessionFilesRoot: join(root, "sessions"),
+    ticketVerifier: verifier,
+    pool: {
+      controllerKey: controllerKeys.publicKey,
+      probePage: async () => [],
+    },
+  });
+  const fence: BrowserPoolRuntimeFence = {
+    slot: "slot-shutdown",
+    term: 1,
+    instance: randomUUID(),
+    epoch: 1,
+  };
+  const install: BrowserPoolControl = {
+    kind: "install",
+    fence,
+    sequence: 1,
+    expect: null,
+  };
+  const now = Date.now();
+  const signTicket = (nonce: string): string => {
+    const header = Buffer.from(
+      JSON.stringify({ alg: "EdDSA", kid: "test", typ: "opensteer-browser-attach+jwt" }),
+    ).toString("base64url");
+    const payload = Buffer.from(
+      JSON.stringify({
+        ...freshClaims({
+          runtimeId: "pool-runtime",
+          nonce,
+          issuedAt: new Date(now - 1_000).toISOString(),
+          expiresAt: new Date(now + 60_000).toISOString(),
+          operationExpiresAt: new Date(now + 60_000).toISOString(),
+          sessionId: BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`),
+        }),
+        pool: { ...fence, end: true },
+      }),
+    ).toString("base64url");
+    const signature = sign(
+      null,
+      Buffer.from(`${header}.${payload}`, "ascii"),
+      ticketKeys.privateKey,
+    ).toString("base64url");
+    return `${header}.${payload}.${signature}`;
+  };
+  try {
+    await runtime.controlPool(
+      install,
+      sign(null, browserPoolControlBytes(install), controllerKeys.privateKey),
+    );
+    // 1. Start a batch of concurrent endPoolSession calls that write into private/tickets.json,
+    // plus one call paused inside resolvePublicKey right before claiming on the ledger.
+    const inFlight = Array.from({ length: 12 }, (_, index) =>
+      runtime
+        .endPoolSession(signTicket(`nonce-batch-${String(index).padStart(16, "0")}`))
+        .catch(() => undefined),
+    );
+    holdKey = true;
+    const heldEnd = runtime
+      .endPoolSession(signTicket("nonce-held-key-000000000000"))
+      .catch(() => undefined);
+    await heldKeyEntered.promise;
+
+    // 2. Shutdown must drain every in-flight ledger write and block any further writes before resolving.
+    await runtime.shutdown();
+
+    // 3. Removing root right after shutdown() must not race any still-running ledger write,
+    // and releasing the paused resolvePublicKey must not recreate root/private/.
+    await rm(root, { recursive: true });
+    releaseHeldKey.resolve();
+    await Promise.allSettled([...inFlight, heldEnd]);
+    await expect(access(privateDir)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    releaseHeldKey.resolve();
+    await runtime.shutdown().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
   }
 });
