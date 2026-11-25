@@ -15,10 +15,10 @@ import { hostCommandPlatform } from "@opensteer/shared/command";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import {
   engineDiagnosticSecrets,
-  hasShortNamedSecret,
   networkEnvironmentNames,
   redactNetworkCredentials,
   safeMessage,
+  shortNamedSecrets,
 } from "@opensteer/shared/safeMessage";
 import { selectEnvironment } from "@opensteer/shared/userEnvironment";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -3899,7 +3899,7 @@ export class RunnerRuntime {
           ? { data: { status: "interrupted" }, type: "run.interrupted" }
           : error instanceof EngineUnavailableForTaskError
             ? failureEvent(
-                error.message,
+                this.#scrubRunText(active, error.message),
                 "forbidden",
                 this.#scrubRunText(active, error.ownerMessage),
               )
@@ -4320,7 +4320,7 @@ export class RunnerRuntime {
             data: { status: "interrupted", cause: active.interruptionCause },
           }
         : original;
-    const event = fittedDurableEvent(outcome, this.#safeMessageOptions.secrets);
+    const event = fittedDurableEvent(outcome, this.#runRedactionContext(active));
     const { context } = active.command;
     const pending = PendingAgentEventV2Schema.parse({
       bindingGeneration: context.bindingGeneration,
@@ -4528,20 +4528,20 @@ export class RunnerRuntime {
     }
   }
 
-  #runRedactionContext(active: ActiveRun): {
-    readonly hasShortSecret: boolean;
-    readonly secrets: readonly string[];
-  } {
+  #runRedactionContext(active: ActiveRun): RunDiagnosticRedaction {
     const environment = active.environment ?? process.env;
     const tokens = [
       active.proxiedSecret ?? "",
       active.credentials?.agentTools ?? "",
       active.command.context.agentTools.token,
     ].filter(Boolean);
-    const hasShortSecret =
-      hasShortNamedSecret(environment, 4) ||
-      hasShortNamedSecret(process.env, 4) ||
-      tokens.some((token) => token.length < 4);
+    const shortSecrets = [
+      ...new Set([
+        ...shortNamedSecrets(environment, 4),
+        ...shortNamedSecrets(process.env, 4),
+        ...tokens.filter((token) => token.length > 0 && token.length < 4),
+      ]),
+    ].sort((left, right) => right.length - left.length);
     const secrets = [
       ...new Set([
         ...this.#safeMessageOptions.secrets,
@@ -4550,19 +4550,23 @@ export class RunnerRuntime {
         ...tokens.filter((token) => token.length >= 4),
       ]),
     ].sort((left, right) => right.length - left.length);
-    return { hasShortSecret, secrets };
+    return { secrets, shortSecrets };
   }
 
-  #scrubRunText(active: ActiveRun, text: string): string {
-    const { hasShortSecret, secrets } = this.#runRedactionContext(active);
-    if (hasShortSecret) return suppressedRunnerDiagnosticMessage;
-    return redactNetworkCredentials(text, secrets);
+  #scrubRunText(
+    active: ActiveRun,
+    text: string,
+    suppressedMessage = suppressedRunFailureMessage,
+  ): string {
+    return sanitizeRunDiagnosticText(text, this.#runRedactionContext(active), suppressedMessage);
   }
 
   #safeRunError(active: ActiveRun, error: unknown): string {
-    const { hasShortSecret, secrets } = this.#runRedactionContext(active);
-    if (hasShortSecret) return suppressedRunnerDiagnosticMessage;
-    return safeMessage(error, { ...this.#safeMessageOptions, secrets });
+    const redaction = this.#runRedactionContext(active);
+    const message = safeMessage(error, { ...this.#safeMessageOptions, secrets: redaction.secrets });
+    return redaction.shortSecrets.some((secret) => message.includes(secret))
+      ? suppressedRunFailureMessage
+      : message;
   }
 
   async #steer(
@@ -4930,9 +4934,25 @@ const reasoningCompletedMaxLength = 300_000;
  * work, so the text is cut to fit, saying it was cut. Every engine's events
  * pass through here.
  */
+interface RunDiagnosticRedaction {
+  readonly secrets: readonly string[];
+  readonly shortSecrets: readonly string[];
+}
+
+function sanitizeRunDiagnosticText(
+  text: string,
+  redaction: RunDiagnosticRedaction,
+  suppressedMessage: string,
+): string {
+  const redacted = redactNetworkCredentials(text, redaction.secrets);
+  return redaction.shortSecrets.some((secret) => redacted.includes(secret))
+    ? suppressedMessage
+    : redacted;
+}
+
 function fittedDurableEvent(
   event: HarnessDurableEvent,
-  secrets: readonly string[],
+  redaction: RunDiagnosticRedaction,
 ): HarnessDurableEvent {
   switch (event.type) {
     case "node.message": {
@@ -4971,7 +4991,11 @@ function fittedDurableEvent(
       };
     }
     case "run.retry": {
-      const redacted = redactNetworkCredentials(event.data.message, secrets);
+      const redacted = sanitizeRunDiagnosticText(
+        event.data.message,
+        redaction,
+        suppressedRunRetryMessage,
+      );
       const message = utf8Prefix(redacted, runRetryMessageMaxLength);
       return message === event.data.message
         ? event
@@ -4982,15 +5006,19 @@ function fittedDurableEvent(
         ...event,
         data: {
           ...event.data,
-          // An engine's error can quote a proxy address, which can carry a password.
+          // An engine's error can quote a proxy address or Run-scoped secret.
           message: fittedText(
-            redactNetworkCredentials(event.data.message, secrets),
+            sanitizeRunDiagnosticText(event.data.message, redaction, suppressedRunFailureMessage),
             runFailureMessageMaxLength,
           ),
           ...(event.data.ownerMessage !== undefined
             ? {
                 ownerMessage: fittedText(
-                  redactNetworkCredentials(event.data.ownerMessage, secrets),
+                  sanitizeRunDiagnosticText(
+                    event.data.ownerMessage,
+                    redaction,
+                    suppressedRunFailureMessage,
+                  ),
                   runFailureMessageMaxLength,
                 ),
               }
@@ -5186,8 +5214,10 @@ function scrubbingLogger(logger: RunnerLogger, secrets: readonly string[]): Runn
   };
 }
 
-const suppressedRunnerDiagnosticMessage =
-  "Runner operation failed (diagnostic detail suppressed because a short credential value is configured)";
+const suppressedRunFailureMessage =
+  "This Run failed; details were withheld because the error contained a credential.";
+const suppressedRunRetryMessage =
+  "Retrying after an error; details were withheld because the message contained a credential.";
 
 const safeMessageOptions = {
   fallback: "Runner operation failed",

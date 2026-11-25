@@ -1,9 +1,10 @@
+import { StringDecoder } from "node:string_decoder";
 import { toolOutputWithImages } from "@opensteer/harness";
 import {
   engineDiagnosticSecrets,
-  hasShortNamedSecret,
   networkCredentialSecrets,
-  redactNetworkCredentials,
+  shortNamedSecrets,
+  urlCredentialRedaction,
 } from "@opensteer/shared/safeMessage";
 import {
   OpensteerError,
@@ -125,6 +126,7 @@ interface ActiveTurn {
   nextPromptSequence: number;
   pendingSteers: number;
   promptSequence: number;
+  started: boolean;
   terminal: boolean;
   stderrStart: number;
   usage?: NonNullable<Awaited<ReturnType<AcpProtocolClient["prompt"]>>["usage"]>;
@@ -201,6 +203,7 @@ class AcpHarnessSession implements HarnessSession {
   /** Calls earlier turns announced, so a frame an engine sends late cannot reopen them. */
   readonly #endedTools = new Set<string>();
   readonly #sanitizer: AcpDiagnosticSanitizer;
+  readonly #stderrDecoder = new StringDecoder("utf8");
   #stderr = "";
   #stderrDropped = 0;
   readonly #lifetime = new AbortController();
@@ -260,6 +263,7 @@ class AcpHarnessSession implements HarnessSession {
     this.#abortListener = () => void this.stop();
     context.signal.addEventListener("abort", this.#abortListener, { once: true });
     process.child.stderr.on("data", (chunk: Buffer | string) => this.#appendStderr(chunk));
+    process.child.stderr.on("end", () => this.#flushStderrDecoder());
     // Nothing awaits this chain: a spawn error surfaces through initialize,
     // and a publish overflow has already latched the session unusable and
     // closed its stream with that error.
@@ -354,6 +358,7 @@ class AcpHarnessSession implements HarnessSession {
       nextPromptSequence: 0,
       pendingSteers: 0,
       promptSequence: 0,
+      started: false,
       terminal: false,
       stderrStart: this.#stderrPosition(),
       tools: new Map(),
@@ -386,7 +391,6 @@ class AcpHarnessSession implements HarnessSession {
         this.#finish(active, "interrupted");
         return;
       }
-      this.#publish(runStartedEvent());
       const sequence = ++active.nextPromptSequence;
       const stderrStart = this.#stderrPosition();
       const entry: ActivePrompt = {
@@ -401,11 +405,14 @@ class AcpHarnessSession implements HarnessSession {
       active.livePrompts.add(sequence);
       // A Run abort is translated through the engine's cancel policy. In
       // particular, resume-based ACP engines keep this RPC alive until their
-      // post-cancel prompt outcome arrives.
+      // post-cancel prompt outcome arrives. Publish `run.started` only once the
+      // `session/prompt` request write to the engine's pipe resolves (or the
+      // engine sends a turn update/response), never before the write succeeds.
       const promptPromise = this.#client.prompt(
         this.providerSessionReference,
         prepared.blocks,
         this.#lifetime.signal,
+        { onWritten: () => this.#ensureRunStarted(active) },
       );
       void this.#followPrompt(active, entry, promptPromise);
       await active.completion.promise;
@@ -491,6 +498,7 @@ class AcpHarnessSession implements HarnessSession {
     const superseded = () => active.promptSequence !== entry.sequence;
     const interrupted = () => active.interruptRequested || active.runSignal.aborted || this.#closed;
     if (active.terminal || superseded()) return;
+    this.#ensureRunStarted(active);
     if (
       entry.steerMessageId &&
       !entry.acknowledged &&
@@ -1092,6 +1100,7 @@ class AcpHarnessSession implements HarnessSession {
     const foreign = sessionId !== this.#providerSessionReference;
     const sessionKey = active.childSessions.get(sessionId);
     if (foreign && !sessionKey) return;
+    this.#ensureRunStarted(active);
     for (const entry of normalized) {
       const nodeKey = foreign ? sessionKey : entry.nodeKey;
       if (nodeKey && !active.nodes.nodeId(nodeKey)) continue;
@@ -1395,6 +1404,7 @@ class AcpHarnessSession implements HarnessSession {
       return null;
     const nodeId = nodeKey ? active.nodes.nodeId(nodeKey) : undefined;
     if (nodeKey && !nodeId) return null;
+    this.#ensureRunStarted(active);
     const disposition =
       this.#options.hooks.permissionDisposition?.(request, this.#context) ?? "ask";
     if (disposition === "allow" || disposition === "deny") {
@@ -1441,6 +1451,7 @@ class AcpHarnessSession implements HarnessSession {
     if (!active || active.terminal || active.interruptRequested || request.mode !== "form") {
       return null;
     }
+    this.#ensureRunStarted(active);
     const fields = elicitationFields(request.requestedSchema);
     if (fields.length === 0) return null;
     const settlement = new Deferred<unknown>();
@@ -1543,14 +1554,36 @@ class AcpHarnessSession implements HarnessSession {
     this.#publisher.closeStream(error);
   }
 
+  #ensureRunStarted(active: ActiveTurn): void {
+    if (active.started || active.terminal) return;
+    active.started = true;
+    this.#publish(runStartedEvent());
+  }
+
   #appendStderr(chunk: Buffer | string): void {
-    // Redact the continuous stderr buffer BEFORE ring-buffer or prompt-offset
-    // slicing so a secret split across adjacent chunks or a slice boundary
-    // cannot survive half-matched.
-    this.#stderr = this.#sanitizer.redactText(this.#stderr + chunk.toString());
+    const decoded = typeof chunk === "string" ? chunk : this.#stderrDecoder.write(chunk);
+    if (!decoded) return;
+    this.#appendDecodedStderr(decoded);
+  }
+
+  #flushStderrDecoder(): void {
+    const trailing = this.#stderrDecoder.end();
+    if (!trailing) return;
+    this.#appendDecodedStderr(trailing);
+  }
+
+  #appendDecodedStderr(decoded: string): void {
+    // Store raw incrementally-decoded UTF-8 text so prompt boundaries stay
+    // exact and redaction always runs over complete text before any slice is
+    // exposed. When evicting the ring buffer past 16 KiB, advance past any
+    // secret crossing the eviction boundary so no partial tail can remain.
+    this.#stderr += decoded;
     this.#wakeStderrWaiters();
     if (this.#stderr.length <= 16_000) return;
-    const removed = this.#stderr.length - 16_000;
+    const removed = this.#sanitizer.advancePastCutSecret(
+      this.#stderr,
+      this.#stderr.length - 16_000,
+    );
     this.#stderr = this.#stderr.slice(removed);
     this.#stderrDropped += removed;
   }
@@ -1560,7 +1593,7 @@ class AcpHarnessSession implements HarnessSession {
   }
 
   #stderrTail(): string {
-    return this.#stderr;
+    return this.#sanitizer.redactText(this.#stderr);
   }
 
   #stderrPosition(): number {
@@ -1568,11 +1601,17 @@ class AcpHarnessSession implements HarnessSession {
   }
 
   #stderrSince(position: number): string {
-    return this.#stderr.slice(Math.max(0, position - this.#stderrDropped));
+    return this.#sanitizer.redactWithBoundary(
+      this.#stderr,
+      Math.max(0, position - this.#stderrDropped),
+    ).after;
   }
 
   #stderrBefore(position: number): string {
-    return this.#stderr.slice(0, Math.max(0, position - this.#stderrDropped));
+    return this.#sanitizer.redactWithBoundary(
+      this.#stderr,
+      Math.max(0, position - this.#stderrDropped),
+    ).before;
   }
 
   #redactSecrets(value: string): string {
@@ -1663,18 +1702,104 @@ function acpFailure(error: OpensteerError): {
 const steerAdmissionWindowMs = 50;
 const maxPublicDiagnosticLength = 2_000;
 const suppressedDiagnosticMessage =
-  "Engine diagnostic detail was suppressed because a short credential value is configured.";
+  "This Run failed; details were withheld because the error contained a credential.";
+
+interface RedactionSpan {
+  readonly start: number;
+  readonly end: number;
+  readonly replacement: string;
+}
+
+const diagnosticRegexPatterns: readonly {
+  readonly pattern: RegExp;
+  readonly replacement: (match: RegExpExecArray) => string;
+}[] = [
+  {
+    pattern: urlCredentialRedaction.pattern,
+    replacement: (match) => `${match[1] ?? ""}[REDACTED]@`,
+  },
+  {
+    pattern: /Bearer\s+\S+/giu,
+    replacement: () => "Bearer [REDACTED]",
+  },
+  {
+    pattern: /\bAIza[0-9A-Za-z_-]{20,}\b/gu,
+    replacement: () => "[REDACTED]",
+  },
+  {
+    pattern: /\b(api[ _-]?key|authorization|credential|password|secret|token)\s*[:=]\s*[^,\s]+/giu,
+    replacement: (match) => `${match[1] ?? "credential"}=[REDACTED]`,
+  },
+];
+
+function applyReplacementTrackingSplit(
+  text: string,
+  split: number,
+  spans: readonly RedactionSpan[],
+): { readonly text: string; readonly split: number } {
+  if (spans.length === 0) return { text, split };
+  let result = "";
+  let cursor = 0;
+  let nextSplit = split;
+  for (const span of spans) {
+    if (span.start < cursor) continue;
+    result += text.slice(cursor, span.start) + span.replacement;
+    if (span.end <= split) {
+      nextSplit += span.replacement.length - (span.end - span.start);
+    } else if (span.start < split && span.end > split) {
+      // Snap a secret straddling the prompt boundary cleanly to the start of
+      // its replacement so neither side ever exposes a prefix or suffix.
+      nextSplit = result.length - span.replacement.length;
+    }
+    cursor = span.end;
+  }
+  result += text.slice(cursor);
+  return { text: result, split: Math.max(0, Math.min(result.length, nextSplit)) };
+}
+
+function findLiteralSpans(text: string, literal: string): readonly RedactionSpan[] {
+  if (!literal) return [];
+  const spans: RedactionSpan[] = [];
+  let from = 0;
+  for (;;) {
+    const start = text.indexOf(literal, from);
+    if (start < 0) break;
+    const end = start + literal.length;
+    spans.push({ start, end, replacement: "[REDACTED]" });
+    from = end;
+  }
+  return spans;
+}
+
+function findRegexSpans(
+  text: string,
+  pattern: RegExp,
+  replacement: (match: RegExpExecArray) => string,
+): readonly RedactionSpan[] {
+  const regex = new RegExp(pattern.source, pattern.flags);
+  const spans: RedactionSpan[] = [];
+  for (;;) {
+    const match = regex.exec(text);
+    if (!match || match[0].length === 0) break;
+    spans.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      replacement: replacement(match),
+    });
+  }
+  return spans;
+}
 
 class AcpDiagnosticSanitizer {
   readonly #networkSecrets = new Set<string>();
   readonly #diagnosticSecrets = new Set<string>();
-  #hasShortSecret = false;
+  readonly #shortSecrets = new Set<string>();
 
   constructor(environment: Readonly<Record<string, string | undefined>>, agentToolsToken: string) {
     if (agentToolsToken.length >= 4) {
       this.#diagnosticSecrets.add(agentToolsToken);
     } else if (agentToolsToken.length > 0) {
-      this.#hasShortSecret = true;
+      this.#shortSecrets.add(agentToolsToken);
     }
     this.addEnvironment(environment);
   }
@@ -1687,32 +1812,83 @@ class AcpDiagnosticSanitizer {
     for (const secret of engineDiagnosticSecrets(environment, 4)) {
       this.#diagnosticSecrets.add(secret);
     }
-    if (hasShortNamedSecret(environment, 4)) {
-      this.#hasShortSecret = true;
+    for (const secret of shortNamedSecrets(environment, 4)) {
+      this.#shortSecrets.add(secret);
     }
+  }
+
+  #orderedLiterals(): readonly string[] {
+    const networkList = [...this.#networkSecrets].sort((left, right) => right.length - left.length);
+    const diagnosticList = [...this.#diagnosticSecrets]
+      .filter((secret) => !this.#networkSecrets.has(secret))
+      .sort((left, right) => right.length - left.length);
+    return [...networkList, ...diagnosticList];
+  }
+
+  advancePastCutSecret(raw: string, cutIndex: number): number {
+    let adjusted = cutIndex;
+    let advanced = true;
+    while (advanced && adjusted < raw.length) {
+      advanced = false;
+      for (const secret of this.#orderedLiterals()) {
+        for (const span of findLiteralSpans(raw, secret)) {
+          if (span.start < adjusted && span.end > adjusted) {
+            adjusted = span.end;
+            advanced = true;
+          }
+        }
+      }
+      for (const { pattern, replacement } of diagnosticRegexPatterns) {
+        for (const span of findRegexSpans(raw, pattern, replacement)) {
+          if (span.start < adjusted && span.end > adjusted) {
+            adjusted = span.end;
+            advanced = true;
+          }
+        }
+      }
+    }
+    return adjusted;
+  }
+
+  redactWithBoundary(
+    value: string,
+    splitIndex: number,
+  ): { readonly before: string; readonly after: string; readonly full: string } {
+    let state = {
+      text: value,
+      split: Math.max(0, Math.min(value.length, splitIndex)),
+    };
+    for (const secret of this.#orderedLiterals()) {
+      state = applyReplacementTrackingSplit(
+        state.text,
+        state.split,
+        findLiteralSpans(state.text, secret),
+      );
+    }
+    for (const { pattern, replacement } of diagnosticRegexPatterns) {
+      state = applyReplacementTrackingSplit(
+        state.text,
+        state.split,
+        findRegexSpans(state.text, pattern, replacement),
+      );
+    }
+    return {
+      before: state.text.slice(0, state.split),
+      after: state.text.slice(state.split),
+      full: state.text,
+    };
   }
 
   redactText(value: string): string {
-    const networkList = [...this.#networkSecrets].sort((left, right) => right.length - left.length);
-    const diagnosticList = [...this.#diagnosticSecrets].sort(
-      (left, right) => right.length - left.length,
-    );
-    let sanitized = redactNetworkCredentials(value, networkList);
-    for (const secret of diagnosticList) {
-      sanitized = sanitized.replaceAll(secret, "[REDACTED]");
-    }
-    return sanitized
-      .replace(/Bearer\s+\S+/giu, "Bearer [REDACTED]")
-      .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/gu, "[REDACTED]")
-      .replace(
-        /\b(api[ _-]?key|authorization|credential|password|secret|token)\s*[:=]\s*[^,\s]+/giu,
-        "$1=[REDACTED]",
-      );
+    return this.redactWithBoundary(value, 0).full;
   }
 
   sanitizePublicMessage(value: string): string {
-    if (this.#hasShortSecret) return suppressedDiagnosticMessage;
-    const cleaned = stripControlCharacters(this.redactText(value)).trim();
+    const redacted = this.redactText(value);
+    for (const secret of this.#shortSecrets) {
+      if (redacted.includes(secret)) return suppressedDiagnosticMessage;
+    }
+    const cleaned = stripControlCharacters(redacted).trim();
     return cleaned.length > maxPublicDiagnosticLength
       ? `${cleaned.slice(0, maxPublicDiagnosticLength - 1)}…`
       : cleaned;
@@ -1752,14 +1928,12 @@ function isExplicitAcpSteerRefusal(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const code = (error as { readonly code?: unknown }).code;
   if (typeof code !== "number" || !Number.isInteger(code)) return false;
-  // Only standard JSON-RPC protocol non-admission codes and ACP's documented
-  // session-not-found code (-32002) prove the prompt was never applied.
-  // Undocumented implementation-defined server errors (e.g. -32042, -32000),
+  // Only standard JSON-RPC protocol non-admission codes (-32700, -32600,
+  // -32601, -32602) prove the request could not run. ACP v1 -32002 ("Resource
+  // not found"), implementation-defined server errors (e.g. -32042, -32000),
   // -32800 (requestCancelled), -32603 (internalError), and plain transport
   // errors do not prove non-admission and stay unknown.
-  return (
-    code === -32700 || code === -32600 || code === -32601 || code === -32602 || code === -32002
-  );
+  return code === -32700 || code === -32600 || code === -32601 || code === -32602;
 }
 
 export function normalizeAcpUpdate(update: unknown): readonly AcpNormalizedUpdate[] {
