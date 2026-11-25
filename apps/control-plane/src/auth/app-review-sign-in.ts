@@ -9,16 +9,32 @@ import { z } from "zod";
 export interface AppReviewSignInConfig {
   readonly email: string;
   readonly password: string;
+  /**
+   * The synthetic purchase's own Account: it signs in only an Account it created itself, marked
+   * so (`users.synthetic_at`) by the very insert that made it, never an Account a person already
+   * has under that email. Nothing else signs in a marked Account (`auth.ts`).
+   */
+  readonly synthetic?: true;
 }
 
-export function appReviewSignIn(config: AppReviewSignInConfig) {
-  const email = normalizeIdentityEmail(config.email);
-  const passwordDigest = createHash("sha256").update(config.password).digest();
+/** The path of this sign-in, the only one that opens a session for a marked Account. */
+export const appReviewSignInPath = "/sign-in/app-review";
+
+/**
+ * Password sign-in for a fixed few configured accounts only: App Review's, and the synthetic
+ * purchase's own. Each signs in only as itself.
+ */
+export function appReviewSignIn(configs: AppReviewSignInConfig | readonly AppReviewSignInConfig[]) {
+  const accounts = (Array.isArray(configs) ? configs : [configs]).map((config) => ({
+    email: normalizeIdentityEmail(config.email),
+    passwordDigest: createHash("sha256").update(config.password).digest(),
+    synthetic: config.synthetic === true,
+  }));
   return {
     id: "app-review",
     endpoints: {
       signInAppReview: createAuthEndpoint(
-        "/sign-in/app-review",
+        appReviewSignInPath,
         {
           method: "POST",
           use: [formCsrfMiddleware],
@@ -33,23 +49,40 @@ export function appReviewSignIn(config: AppReviewSignInConfig) {
           if (ctx.headers?.get("origin") !== new URL(ctx.context.baseURL).origin) {
             throw new APIError("FORBIDDEN", { message: "Request origin is not allowed" });
           }
-          const passwordMatches = timingSafeEqual(
-            passwordDigest,
-            createHash("sha256").update(ctx.body.password).digest(),
+          const given = createHash("sha256").update(ctx.body.password).digest();
+          const named = ctx.body.email.normalize("NFKC").trim().toLowerCase();
+          // Every account's password is compared, so the time taken names none of them.
+          const matched = accounts.filter(
+            (account) => timingSafeEqual(account.passwordDigest, given) && account.email === named,
           );
-          if (ctx.body.email.normalize("NFKC").trim().toLowerCase() !== email || !passwordMatches) {
+          const email = matched[0]?.email;
+          const refuse = () => {
             ctx.context.logger.warn("App Review sign-in refused: invalid credentials");
-            throw new APIError("UNAUTHORIZED", { message: "Email or password is incorrect" });
-          }
+            return new APIError("UNAUTHORIZED", { message: "Email or password is incorrect" });
+          };
+          if (!email) throw refuse();
+          const synthetic = matched[0]!.synthetic;
           return runWithTransaction(ctx.context.adapter, async () => {
             const adapter = ctx.context.internalAdapter;
             const existing = await adapter.findUserByEmail(email);
+            // The synthetic purchase signs in only the Account it made, and App Review's never
+            // one so marked: either other reads as a wrong password, so a person's computers are
+            // never the synthetic purchase's to delete, nor its Account anyone else's.
+            const marked = (existing?.user as { syntheticAt?: Date | null } | undefined)
+              ?.syntheticAt;
+            if (existing && synthetic !== (marked != null)) throw refuse();
             const user = existing
               ? existing.user.emailVerified
                 ? existing.user
                 : await adapter.updateUser(existing.user.id, { emailVerified: true })
               : await adapter.createUser(
-                  { email, emailVerified: true, name: "App Review" },
+                  {
+                    email,
+                    emailVerified: true,
+                    name: synthetic ? "Synthetic purchase" : "App Review",
+                    // Marked by the insert itself: no sign-in ever sees it unmarked.
+                    ...(synthetic ? { syntheticAt: new Date() } : {}),
+                  },
                   { method: "app-review" },
                 );
             if (!user) throw new APIError("INTERNAL_SERVER_ERROR");

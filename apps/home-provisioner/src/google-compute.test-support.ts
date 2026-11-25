@@ -59,7 +59,7 @@ type Instance = {
   disks?: AttachedDisk[];
   networkInterfaces: NetworkInterface[];
 };
-type Address = { name: string; labels: Labels; address: string };
+type Address = { name: string; labels: Labels; address: string; labelFingerprint?: string };
 type Operation = {
   name: string;
   status: "PENDING" | "RUNNING" | "DONE";
@@ -125,9 +125,12 @@ export class ComputeFake {
   readonly #held = new Set<string>();
   /** Refuses the first Compute request that matches, once, for the rate quota. */
   rateLimitMatch: ((method: string, path: string) => boolean) | undefined;
+  /** Answers a plain 403 to every Compute request that matches while it is set (an IAM change). */
+  refuseMatch: ((method: string, path: string) => boolean) | undefined;
   #nextId = BigInt(computeInstanceId);
   #nextDiskId = 9000n;
   #nextAddress = 21;
+  #nextFingerprint = 1;
   #nextInternalIp = 10;
   #nextOperation = 0;
   #clock = 0;
@@ -188,6 +191,8 @@ export class ComputeFake {
         this.rateLimitStatus,
       );
     }
+    if (this.refuseMatch?.(method, path))
+      return json({ error: { code: 403, message: "Required permission is missing" } }, 403);
     // Compute ignores a repeated requestId "if it has already been completed" and answers with
     // the original operation. Google does not document a different request under the same id;
     // the fake refuses it so a reused id cannot pass unnoticed.
@@ -319,6 +324,23 @@ export class ComputeFake {
 
   #addressRequest(req: RecordedRequest) {
     const name = req.path.split("/").at(-1)!;
+    if (req.method === "POST" && name === "setLabels") {
+      const target = req.path.split("/").at(-2)!;
+      const entry = this.addresses.get(target);
+      if (!entry) return json({}, 404);
+      const body = req.body as { labels: Labels; labelFingerprint?: string };
+      if (body.labelFingerprint !== entry.labelFingerprint)
+        return json({ error: { code: 412, errors: [{ reason: "conditionNotMet" }] } }, 412);
+      return json(
+        this.#start(req, regionPath, () =>
+          this.addresses.set(target, {
+            ...entry,
+            labels: body.labels,
+            labelFingerprint: `fp-${this.#nextFingerprint++}`,
+          }),
+        ),
+      );
+    }
     const usersOf = (address: Address) =>
       [...this.instances.values()]
         .filter(({ networkInterfaces }) =>
@@ -352,7 +374,20 @@ export class ComputeFake {
       if (usersOf(entry).length) return json({}, 400);
       return json(this.#start(req, regionPath, () => this.addresses.delete(name)));
     }
-    const body = req.body as { name: string; labels: Labels };
+    const body = req.body as { name: string; labels: Labels; ipVersion?: string };
+    // Compute Engine, addresses.insert on a region (seen 2026-11-24): "IP Version is not
+    // supported for regional addresses." The field exists only for global addresses.
+    if (body.ipVersion !== undefined)
+      return json(
+        {
+          error: {
+            code: 400,
+            message: "IP Version is not supported for regional addresses.",
+            errors: [{ domain: "global", reason: "badRequest" }],
+          },
+        },
+        400,
+      );
     if (this.addresses.has(body.name)) return json({}, 409);
     if (this.nextAddressInsert === "quota") {
       this.nextAddressInsert = undefined;
@@ -361,9 +396,16 @@ export class ComputeFake {
         403,
       );
     }
+    // Compute keeps no labels from addresses.insert; only setLabels sets them (seen 2026-11-24).
+    const { labels: _ignored, ...stored } = body;
     return json(
       this.#start(req, regionPath, () =>
-        this.addresses.set(body.name, { ...body, address: `192.0.2.${this.#nextAddress++}` }),
+        this.addresses.set(body.name, {
+          ...stored,
+          labels: {},
+          labelFingerprint: `fp-${this.#nextFingerprint++}`,
+          address: `192.0.2.${this.#nextAddress++}`,
+        }),
       ),
     );
   }

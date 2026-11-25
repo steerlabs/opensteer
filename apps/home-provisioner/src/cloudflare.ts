@@ -44,15 +44,26 @@ type RecordEntry = z.infer<typeof recordSchema>;
 interface CloudflareOptions extends HttpOptions {
   readonly token: string;
   readonly zoneId: string;
+  /**
+   * The Cloud Computer domain (Account's `OPENSTEER_CLOUD_COMPUTER_DOMAIN`). A zone's token can
+   * edit every record in it, and another environment may keep its Cloud Computers in the same
+   * zone: only names under this domain are ever listed, written or deleted.
+   */
+  readonly domain: string;
   readonly baseUrl?: URL;
 }
 
 export class CloudflareDns implements DnsProvider {
   readonly #options: CloudflareOptions;
   readonly #records: URL;
+  readonly #suffix: string;
 
   constructor(options: CloudflareOptions) {
+    if (!CloudComputerHostnameSchema.safeParse(options.domain).success) {
+      throw refused("bad_request", "Invalid Cloud Computer DNS domain");
+    }
     this.#options = options;
+    this.#suffix = `.${options.domain}`;
     this.#records = new URL(
       `zones/${encodeURIComponent(options.zoneId)}/dns_records`,
       options.baseUrl ?? new URL("https://api.cloudflare.com/client/v4/"),
@@ -134,9 +145,17 @@ export class CloudflareDns implements DnsProvider {
     }
   }
 
+  /** A name under the domain, on a label boundary: `x.home.example.com`, never `xhome.example.com`. */
+  #owns(name: string) {
+    return name.length > this.#suffix.length && name.endsWith(this.#suffix);
+  }
+
   async #list(hostname: string, signal: AbortSignal) {
     if (!CloudComputerHostnameSchema.safeParse(hostname).success) {
       throw refused("bad_request", "Invalid Cloud Computer DNS name");
+    }
+    if (!this.#owns(hostname)) {
+      throw refused("bad_request", "The Cloud Computer DNS name is outside its domain");
     }
     return (await this.#lookup({ "name.exact": hostname }, signal)).filter(
       (entry) => entry.name === hostname,
@@ -148,7 +167,8 @@ export class CloudflareDns implements DnsProvider {
     return records.flatMap((record) => {
       const label = record.name.split(".")[0] ?? "";
       const id = CloudComputerIdSchema.safeParse(label.replace(/^cc-/u, "cc_"));
-      return managed(record.comment) &&
+      return this.#owns(record.name) &&
+        managed(record.comment) &&
         (record.type === "A" || record.type === "AAAA") &&
         id.success
         ? [{ id: id.data, hostname: record.name }]

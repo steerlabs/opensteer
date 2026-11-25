@@ -35,8 +35,6 @@ async function openPage(
   );
   await context.addInitScript(() => {
     Reflect.set(globalThis, "__name", (value: unknown) => value);
-    // Said once, elsewhere; the pictures are about the browser's own states.
-    localStorage.setItem("opensteer.web-tab-notice.v1", "dismissed");
   });
   const page = await context.newPage();
   await page.goto(web.origin);

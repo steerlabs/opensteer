@@ -255,6 +255,9 @@ function AiRow({
       />
     );
   }
+  if (action.kind === "attention") {
+    return <SetupRow detail={action.detail} icon={icon} title={plan.name} tone="missing" />;
+  }
   if (action.kind === "get") {
     return (
       <SetupRow

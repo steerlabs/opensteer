@@ -59,6 +59,14 @@ export interface CloudComputerTable {
   revision: Generated<number>;
   everReady: Generated<boolean>;
   generationReady: Generated<boolean>;
+  /** When it last became ready; see `report`. A computer with none has never been ready. */
+  readyAt: Generated<Date | null>;
+  /** When the current outage began; null while it is ready. See `report` and `watch`. */
+  downAt: Generated<Date | null>;
+  /** When the current run of outages began, kept across short ready spells. See `watch`. */
+  unstableSince: Generated<Date | null>;
+  /** When it last left active (a Suspend, billing that stopped); null while active. */
+  inactiveSince: Generated<Date | null>;
   dnsQuarantined: Generated<boolean>;
   createAttempted: Generated<boolean>;
   bootCompletedAt: NullableTimestamp;
@@ -87,6 +95,13 @@ export interface CloudComputerTable {
   reportedAt: NullableTimestamp;
   deletedAt: NullableTimestamp;
   tombstonedAt: NullableTimestamp;
+}
+
+/** The latest health report a Cloud Computer sent; see health-migration.ts. */
+export interface CloudComputerHealthTable {
+  computerId: CloudComputerId;
+  receivedAt: Timestamp;
+  report: ColumnType<import("@opensteer/protocol/problems").HomeHealthReport, string, string>;
 }
 
 export interface CloudComputerCheckoutTable {

@@ -213,6 +213,27 @@ const HostEnvironmentSchema = z.object({
   OPENSTEER_OIDC_CONFIG_PATH: optionalPath,
   OPENSTEER_PORT: positiveInteger(4310),
   OPENSTEER_PERSONAL_ACCOUNT_ISSUER: optionalUrl,
+  /**
+   * A self-hosted Home operator's own collector for this Home's health report; setting it is the
+   * consent. Unset, nothing is sent. Never read on a Cloud Computer.
+   */
+  OPENSTEER_PROBLEM_REPORTS_URL: optionalUrl,
+  /** Sent as a bearer token with each report to that collector, which should require it. */
+  OPENSTEER_PROBLEM_REPORTS_TOKEN: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z
+      .string()
+      .regex(/^[\x21-\x7e]{16,512}$/u)
+      .optional(),
+  ),
+  /**
+   * `root-maintenance`: this Home's root maintenance writes `machine-status.json` into the Host's
+   * data folder, where no agent's shell can write (deploy/home sets it). Unset, it is never read.
+   */
+  OPENSTEER_MACHINE_STATUS: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.literal("root-maintenance").optional(),
+  ),
   OPENSTEER_PORTAL_ORIGIN: optionalUrl,
   OPENSTEER_CANONICAL_ORIGIN: z.url(),
   OPENSTEER_RUNTIME_ORIGIN: optionalUrl,
@@ -329,6 +350,12 @@ export interface HostConfig {
    * separate from an Account adoption bundle because a Personal Host keeps
    * its own canonical authority. */
   readonly personalAccountIssuer?: URL;
+  /** A self-hoster's own address for problem reports; see `OPENSTEER_PROBLEM_REPORTS_URL`. */
+  readonly problemReportsOrigin?: URL;
+  /** The bearer token for that collector; see `OPENSTEER_PROBLEM_REPORTS_TOKEN`. */
+  readonly problemReportsToken?: string;
+  /** Whether root's maintenance writes the machine status; see `OPENSTEER_MACHINE_STATUS`. */
+  readonly machineStatus?: "root-maintenance";
   readonly exposure: HostExposure;
   /** Absent means the default for the exposure: see `hostTrustedProxy`. */
   readonly trustedProxy?: TrustedProxy;
@@ -466,6 +493,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     "OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST",
     "OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN",
     "OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET",
+    "OPENSTEER_PROBLEM_REPORTS_TOKEN",
   ] as const) {
     const file = environment[`${name}_FILE`];
     if (
@@ -661,6 +689,13 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
         ? { personalAccountIssuer: managedHome.accountOrigin }
         : {}),
     ...(managedHome ? { managedHome } : {}),
+    ...(parsed.OPENSTEER_PROBLEM_REPORTS_URL
+      ? { problemReportsOrigin: collectorOrigin(parsed.OPENSTEER_PROBLEM_REPORTS_URL) }
+      : {}),
+    ...(parsed.OPENSTEER_PROBLEM_REPORTS_TOKEN
+      ? { problemReportsToken: parsed.OPENSTEER_PROBLEM_REPORTS_TOKEN }
+      : {}),
+    ...(parsed.OPENSTEER_MACHINE_STATUS ? { machineStatus: parsed.OPENSTEER_MACHINE_STATUS } : {}),
     ...(portalOrigin ? { portalOrigin } : {}),
     exposure,
     ...(parsed.OPENSTEER_TRUSTED_PROXY === undefined
@@ -754,6 +789,23 @@ function readBoundedDescriptor(
     throw new Error("Opensteer Account provisioning bundle has an invalid size");
   }
   return Buffer.concat(chunks, total).toString("utf8");
+}
+
+/** A collector's address: `https:`, or `http:` only on this machine's own loopback. */
+/**
+ * A collector's origin: https, or plain http only to a numeric loopback address (127.0.0.0/8 or
+ * ::1). Never by the name `localhost` or `*.localhost`: a resolver or a hosts file can point a
+ * name anywhere, and the report and its token would go there in the clear.
+ */
+function collectorOrigin(value: string): URL {
+  const url = originUrl(value, "OPENSTEER_PROBLEM_REPORTS_URL");
+  const numericLoopback =
+    url.hostname === "[::1]" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/u.test(url.hostname);
+  if (url.protocol !== "https:" && !numericLoopback)
+    throw new Error(
+      "OPENSTEER_PROBLEM_REPORTS_URL must be https (http only to 127.0.0.0/8 or [::1]).",
+    );
+  return url;
 }
 
 function originUrl(value: string, name: string): URL {

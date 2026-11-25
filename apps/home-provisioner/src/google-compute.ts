@@ -17,6 +17,7 @@ import { z } from "zod";
 import { type ComputeAccessToken, googleMetadataAccessToken } from "./google-auth.js";
 import {
   json,
+  ObservationFailed,
   ProviderOutcomeUnknown,
   ProviderPlacementError,
   ProviderRateLimited,
@@ -119,6 +120,7 @@ const address = z.object({
   networkTier: z.string().optional(),
   status: z.enum(["RESERVING", "RESERVED", "IN_USE"]),
   labels: labels.default({}),
+  labelFingerprint: z.string().optional(),
   users: z.array(z.string()).default([]),
 });
 const subnetwork = z.object({
@@ -152,7 +154,7 @@ const instanceFields =
   "networkInterfaces(name,networkIP,accessConfigs(name,natIP),ipv6AccessConfigs(externalIpv6))),nextPageToken";
 const diskFields = "items(id,name,labels,users),nextPageToken";
 const addressFields =
-  "items(name,address,addressType,networkTier,status,labels,users),nextPageToken";
+  "items(name,address,addressType,networkTier,status,labels,labelFingerprint,users),nextPageToken";
 const operationFields =
   "items(name,status,clientOperationId,insertTime,creationTimestamp),nextPageToken";
 // "If your project exceeds a rate quota, you receive a 403 error with the reason
@@ -649,7 +651,8 @@ export class GoogleCompute implements VmProvider, PoolHostProvider {
             name,
             addressType: "EXTERNAL",
             networkTier: "PREMIUM",
-            ipVersion: "IPV4",
+            // A regional external address is IPv4; Compute refuses `ipVersion` here ("IP
+            // Version is not supported for regional addresses"), it exists for global ones.
             labels: managedLabels(target),
           },
         });
@@ -659,6 +662,32 @@ export class GoogleCompute implements VmProvider, PoolHostProvider {
       current = await this.#refreshAddress(name, signal);
     }
     if (!current?.address || current.status === "RESERVING") throw new ProviderOutcomeUnknown();
+    // Compute keeps no labels from addresses.insert: "These can only be added or modified by the
+    // setLabels method." Label this generation's own reservation (its name is derived from the
+    // Cloud Computer and generation), including one an earlier pass reserved but did not label.
+    // https://cloud.google.com/compute/docs/reference/rest/v1/addresses
+    if (
+      Object.keys(current.labels).length === 0 &&
+      current.status === "RESERVED" &&
+      current.users.length === 0 &&
+      current.addressType === "EXTERNAL" &&
+      current.networkTier === "PREMIUM"
+    ) {
+      if (!current.labelFingerprint)
+        throw refused("conflict", "The Google address has no label fingerprint");
+      try {
+        await this.#write(`${path}/${name}/setLabels`, "region", signal, {
+          method: "POST",
+          requestId: childRequestId(journalId, "address-labels", name),
+          check,
+          body: { labels: managedLabels(target), labelFingerprint: current.labelFingerprint },
+        });
+      } catch (error) {
+        if (!hasStatus(error, 412)) throw error;
+      }
+      current = await this.#refreshAddress(name, signal);
+      if (!current?.address) throw new ProviderOutcomeUnknown();
+    }
     if (!isManagedAddress(current, target))
       throw refused("conflict", "The Google Cloud Computer address name is already in use");
     return { ...current, address: current.address };
@@ -1443,13 +1472,14 @@ export class GoogleCompute implements VmProvider, PoolHostProvider {
       );
     } catch (error) {
       if (hasStatus(error, 401)) this.#accessToken.invalidate?.(token);
-      if (isRateLimited(error)) {
+      const failure = httpFailure(error);
+      if (isRateLimited(failure)) {
         this.#retryAt = Math.max(
           this.#retryAt,
-          error.retryAt ?? 0,
+          failure.retryAt ?? 0,
           Date.now() + rateLimitBackoffMs,
         );
-        throw new ProviderRateLimited(this.#retryAt, error);
+        throw new ProviderRateLimited(this.#retryAt, failure);
       }
       throw error;
     }
@@ -1477,8 +1507,14 @@ function matchesResource(resource: string, path: string) {
   return resource === path || resource.endsWith(`/compute/v1/${path}`);
 }
 
-function hasStatus(error: unknown, status: number): boolean {
+/** The HTTP failure under an error: a failed GET's comes inside an `ObservationFailed`. */
+function httpFailure(error: unknown): unknown {
   const cause = error instanceof ProviderWriteRejected ? error.original : error;
+  return cause instanceof ObservationFailed ? cause.cause : cause;
+}
+
+function hasStatus(error: unknown, status: number): boolean {
+  const cause = httpFailure(error);
   return (
     cause instanceof RemoteRequestError && cause.service === compute && cause.status === status
   );

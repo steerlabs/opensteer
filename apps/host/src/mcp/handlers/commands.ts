@@ -412,6 +412,14 @@ export class CommandTools {
           view: { requests: requests.filter(({ request }) => mine.has(request.id)) },
         };
       }
+      case "problems": {
+        // Home-wide, like settings: an everything grant or the person's own agents only.
+        if (scope === "selected") throw notFound();
+        // The person's own read, its problems only: what this Home would send is not an
+        // agent's to see or to shape, and nothing here sends it.
+        const view = await read("problems.get", {});
+        return { area: input.area, view: { problems: view.problems ?? [] } };
+      }
       case "activity":
         return {
           area: input.area,

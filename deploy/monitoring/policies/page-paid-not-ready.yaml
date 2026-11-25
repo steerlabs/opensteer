@@ -1,0 +1,26 @@
+# Someone paid and their Cloud Computer failed to set up, or is not ready 30 minutes after checkout. They are waiting now.
+# Runbook: docs/cloud-computer-operations.md, "Setup that never becomes ready".
+displayName: "Opensteer: A person paid and has no working Cloud Computer"
+severity: CRITICAL
+userLabels:
+  opensteer_alert: page
+documentation:
+  mimeType: text/markdown
+  subject: "Opensteer: A person paid and has no working Cloud Computer"
+  content: |-
+    Someone paid and their Cloud Computer failed to set up, or is not ready 30 minutes after checkout. They are waiting now.
+
+    Open the runbook, docs/cloud-computer-operations.md, section "Setup that never becomes ready".
+combiner: OR
+conditions:
+  - displayName: "A person paid and has no working Cloud Computer"
+    conditionMatchedLog:
+      filter: >-
+        resource.type="k8s_container" AND resource.labels.namespace_name="opensteer-system" AND jsonPayload.event="account.cloud_computer.not_ready"
+      labelExtractors:
+        computer_id: EXTRACT(jsonPayload.computerId)
+        event: EXTRACT(jsonPayload.event)
+alertStrategy:
+  notificationRateLimit:
+    period: 1800s
+  autoClose: 604800s

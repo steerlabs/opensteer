@@ -200,6 +200,15 @@
   overflow: hidden;
 }
 
+/* A settings page shown by itself, outside the app shell (a connected agent's
+   approval page): nothing around it has the window's height, so it takes it
+   itself, as `.app-shell` does. Without this the page grows as tall as its
+   content, `.settings-content` has nothing to scroll, and its
+   `overscroll-behavior` keeps the wheel from the document behind it. */
+.settings--alone {
+  height: 100dvh;
+}
+
 .settings-content {
   flex: 1;
   min-width: 0;
@@ -1533,4 +1542,31 @@ a.connected-agents__row:focus-visible {
   margin: 0;
   min-width: 0;
   padding: 0;
+}
+
+/* The problem report: what this Home sends, field by field, then exactly as sent. */
+.problem-report {
+  display: grid;
+  gap: 4px;
+  margin: 12px 0;
+}
+.problem-report > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+.problem-report dt {
+  color: var(--text-soft);
+}
+.problem-report dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.problem-report__exact {
+  max-height: 240px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

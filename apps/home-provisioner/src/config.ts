@@ -1,12 +1,18 @@
 import { createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
 import { openSync, closeSync, fstatSync, readFileSync, constants } from "node:fs";
 import { isBareOrigin, refused } from "@opensteer/core";
-import { defaultBrowserPoolAdminPort } from "@opensteer/control-plane-protocol";
+import {
+  CloudComputerHostnameSchema,
+  defaultBrowserPoolAdminPort,
+} from "@opensteer/control-plane-protocol";
+import { heartbeatUrl } from "@opensteer/shared/heartbeat";
 import { z } from "zod";
 
 const envSchema = z.object({
   OPENSTEER_ACCOUNT_URL: z.url({ protocol: /^https$/u }).refine(isBareOrigin),
   OPENSTEER_HOME_CLOUDFLARE_ZONE_ID: z.string().regex(/^[a-f0-9]{32}$/u),
+  // Account's OPENSTEER_CLOUD_COMPUTER_DOMAIN: the only names in the zone this provisioner touches.
+  OPENSTEER_HOME_CLOUD_COMPUTER_DOMAIN: CloudComputerHostnameSchema.max(214),
   OPENSTEER_HOME_INTERVAL_MS: integer(1_000, 300_000).default(10_000),
   OPENSTEER_HOME_REQUEST_TIMEOUT_MS: integer(100, 60_000).default(15_000),
   OPENSTEER_HOME_ACTION_TIMEOUT_MS: integer(1_000, 600_000).default(90_000),
@@ -99,13 +105,28 @@ function sharedConfig(parsed: z.infer<typeof envSchema>, env: NodeJS.ProcessEnv)
     accountOrigin: new URL(parsed.OPENSTEER_ACCOUNT_URL),
     cloudflareToken: readSecret(env, "OPENSTEER_HOME_CLOUDFLARE_TOKEN"),
     zoneId: parsed.OPENSTEER_HOME_CLOUDFLARE_ZONE_ID,
+    domain: parsed.OPENSTEER_HOME_CLOUD_COMPUTER_DOMAIN,
     intervalMs: parsed.OPENSTEER_HOME_INTERVAL_MS,
     timeoutMs: parsed.OPENSTEER_HOME_REQUEST_TIMEOUT_MS,
     actionTimeoutMs: parsed.OPENSTEER_HOME_ACTION_TIMEOUT_MS,
     readinessTimeoutMs: parsed.OPENSTEER_HOME_READINESS_TIMEOUT_MS,
     concurrency: parsed.OPENSTEER_HOME_CONCURRENCY,
     orphanGraceMs: parsed.OPENSTEER_HOME_ORPHAN_GRACE_MS,
+    /** Sent a GET after each tick in which nothing failed (deploy/monitoring). */
+    heartbeatUrl:
+      env.OPENSTEER_HOME_PROVISIONER_HEARTBEAT_URL === undefined &&
+      env.OPENSTEER_HOME_PROVISIONER_HEARTBEAT_URL_FILE === undefined
+        ? undefined
+        : provisionerHeartbeatUrl(readSecret(env, "OPENSTEER_HOME_PROVISIONER_HEARTBEAT_URL")),
   };
+}
+
+function provisionerHeartbeatUrl(value: string): URL | undefined {
+  try {
+    return heartbeatUrl(value);
+  } catch {
+    throw refused("bad_request", "Invalid OPENSTEER_HOME_PROVISIONER_HEARTBEAT_URL");
+  }
 }
 
 function readSecret(env: NodeJS.ProcessEnv, name: string): string {
