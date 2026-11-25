@@ -1554,6 +1554,13 @@ export class BrowserPoolStore {
   }
 
   /** W1 + S6/S7: Bumps host generation while preserving its durable profile disk. */
+  /**
+   * An operator's replace of a pool host. A host row's release is the release that host runs:
+   * the replace sets it to this account's current pool release in the same transaction as the
+   * new generation, so the replacement boots it on the same profile disk. This is how a pool
+   * release is rolled out, host by host. A replacement the reconciler makes on its own
+   * (`replaceUnenrolledHost`) keeps the row's release: a release never changes unasked.
+   */
   async operatorReplaceHost(id: BrowserPoolHostId) {
     return this.#db.transaction().execute(async (tx) => {
       const row = await lockedPoolHost(tx, id);
@@ -1567,6 +1574,7 @@ export class BrowserPoolStore {
         .set({
           ...clearBootToken,
           generation: row.generation + 1,
+          release: JSON.stringify(this.#config.browserPool.release),
           previousProviderServerRef: row.providerServerRef ?? row.previousProviderServerRef,
           providerServerRef: null,
           internalIp: null,
@@ -1693,6 +1701,8 @@ function poolHostOperatorView(row: PoolHost) {
     profileDiskName: row.profileDiskName,
     profileDiskSizeGb: row.profileDiskSizeGb,
     profileDiskRef: row.profileDiskRef,
+    /** The release this host runs, or boots next after a replace. */
+    release: row.release,
     providerServerRef: row.providerServerRef,
     previousProviderServerRef: row.previousProviderServerRef,
     internalIp: row.internalIp,

@@ -329,6 +329,14 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 
   Returns `{"removed":true}`.
 
+### Rolling out a pool release
+
+A pool host runs the pool release its row holds (`pool-host-list` and `pool-host-show` show it as `release`). A new `OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON` reaches only new host rows until each existing host is replaced by an operator; a replacement the reconciler makes on its own (an unenrolled host that missed its readiness window) keeps the release the host had.
+
+1. Set the new `OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON` and restart Account.
+2. For each host, one at a time: `node dist/cloud-computer-operator-main.js pool-host-replace <host-id>`. The answer's `release` is the release it will boot. Wait until `pool-host-show <host-id>` reports `phase: "ready"` on the new generation before the next host.
+3. **What a person on that host sees**: for the few minutes the replacement takes, their browser is unavailable (Opensteer says it is being prepared). Every browser on the host is stopped so the durable profile disk can move to the new instance; each starts again cold on the new release with its profile (sign-ins, cookies, saved data) intact. Open pages and anything only in memory are lost and reported lost, as after a host failure: a guest's saved memory state lives on the old instance's Local SSD and was made by the old release's guest, so it is never resumed.
+
 ## The life of one Cloud Computer
 
 ### Provisioning and first claim

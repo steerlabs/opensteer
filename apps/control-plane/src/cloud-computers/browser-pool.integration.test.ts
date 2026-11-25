@@ -962,6 +962,96 @@ integration("Browser pool Account service", () => {
     }
   });
 
+  it("rolls the account's current pool release onto a host only when an operator replaces it (P1)", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { hostId, slot } = await h.setupPooledHomeAndHost();
+      const before = (await h.getDesiredHosts()).find((host) => host.id === hostId)!;
+      expect(before.release).toEqual(poolRelease);
+      // The account now carries a newer pool release (its host agent, guest image and kernel).
+      const newer = { ...poolRelease, version: "1.1.0" };
+      const h2 = await buildHarness("2", database, {
+        OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON: JSON.stringify(newer),
+      });
+      try {
+        // Until someone asks, the running host keeps the release it runs.
+        expect((await h2.getDesiredHosts()).find((host) => host.id === hostId)?.release).toEqual(
+          poolRelease,
+        );
+        const replaced = await h2.cloudStore.operatorReplacePoolHost(hostId);
+        // The replace says which release the host will boot.
+        expect(replaced).toMatchObject({
+          id: hostId,
+          generation: before.generation + 1,
+          release: newer,
+          profileDiskName: before.profileDiskName,
+        });
+        const listed = (await h2.cloudStore.operatorListPoolHosts()).hosts.find(
+          (host) => host.id === hostId,
+        );
+        expect(listed?.release).toEqual(newer);
+        const desired = (await h2.getDesiredHosts()).find((host) => host.id === hostId)!;
+        expect(desired.release).toEqual(newer);
+        expect(desired.profileDiskName).toBe(before.profileDiskName);
+        // Its boot serves the new release, on the same profile disk.
+        const window = await h2.openHostBootWindow(hostId, "10.40.0.10");
+        const booted = await h2.app.inject({
+          method: "POST",
+          url: browserPoolHostBootPath(hostId),
+          payload: { generation: window.generation, bootstrapToken: window.bootstrapToken },
+        });
+        expect(booted.statusCode).toBe(200);
+        expect(BrowserPoolHostBootResponseSchema.parse(JSON.parse(booted.body)).release).toEqual(
+          newer,
+        );
+        // The slot stays on the host.
+        const slots = await database
+          .selectFrom("browserPoolSlots")
+          .select(["slotId", "hostId", "state"])
+          .where("slotId", "=", slot.slotId)
+          .execute();
+        expect(slots).toEqual([{ slotId: slot.slotId, hostId, state: "active" }]);
+      } finally {
+        await h2.app.close();
+      }
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("keeps a host's release when the reconciler replaces it on its own (P1)", async () => {
+    const h = await buildHarness("2");
+    try {
+      await h.acquireLease();
+      await h.provisionComputer(1);
+      const host = (await h.getDesiredHosts())[0]!;
+      expect(host.release).toEqual(poolRelease);
+      const h2 = await buildHarness("2", database, {
+        OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON: JSON.stringify({
+          ...poolRelease,
+          version: "1.1.0",
+        }),
+      });
+      try {
+        const answer = await h2.app.inject({
+          method: "POST",
+          url: browserPoolHostReplaceUnreadyPath(host.id),
+          headers: h2.leaseHeaders,
+          payload: { revision: host.revision, generation: host.generation },
+        });
+        expect(JSON.parse(answer.body)).toMatchObject({ replaced: true });
+        // A release never changes without someone asking.
+        expect((await h2.getDesiredHosts()).find((x) => x.id === host.id)?.release).toEqual(
+          poolRelease,
+        );
+      } finally {
+        await h2.app.close();
+      }
+    } finally {
+      await h.app.close();
+    }
+  });
+
   it("tells a booted Home its pool network now, and nobody else (S2)", async () => {
     const h = await buildHarness("2");
     try {
