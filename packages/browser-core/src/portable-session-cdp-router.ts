@@ -263,7 +263,7 @@ interface ConnectionState extends TargetRoot {
   pendingCount: number;
   readonly channels: Map<string, AttachedChannel>;
   readonly retiredTargets: Map<string, string>;
-  /** Target IDs hidden from this connection (e.g., chrome-extension:), so no-URL destroy/detach drops too (S4). */
+  /** Target IDs hidden from this connection (an extension's): never in `shownTargets` at once (S4, G1). */
   readonly hiddenTargets: Set<string>;
   /**
    * For a connection: target IDs this state has projected as visible to it (an event's or a
@@ -277,6 +277,15 @@ interface ConnectionState extends TargetRoot {
 }
 
 const standardJsonBudget = { maxBytes: Infinity, maxDepth: 32, maxEntries: 16_384 };
+
+/** Whether any string in a (bounded) CDP value is an extension's address. */
+function mentionsExtensionUrl(value: unknown, depth: number): boolean {
+  if (typeof value === "string") return isExtensionUrl(value);
+  if (depth > 16 || value === null || typeof value !== "object") return false;
+  for (const entry of Array.isArray(value) ? value : Object.values(value))
+    if (mentionsExtensionUrl(entry, depth + 1)) return true;
+  return false;
+}
 
 const defaultLimits: SessionCdpRouterLimits = {
   maxCommandBytes: 432 * 1_024,
@@ -571,6 +580,7 @@ export class SessionCdpRouter {
     state.discoveryReplay = undefined;
     state.discoveredTargets.clear();
     state.shownTargets.clear();
+    state.hiddenTargets.clear();
     state.eventListeners.clear();
     for (const aliasId of state.aliases.keys()) this.#detachRootAlias(state, aliasId);
     state.retiredTargets.clear();
@@ -1139,7 +1149,8 @@ export class SessionCdpRouter {
         return {};
       }
       case "Target.getBrowserContexts":
-        if (state.standard) return { browserContextIds: [] };
+        // A connection is told of no browser context: another profile's would be outside it.
+        if (state.standard || connection) return { browserContextIds: [] };
         return this.#backend.send(command.method, parameters);
       case "Target.getTargetInfo": {
         if (state.standard && !command.sessionId && parameters.targetId === undefined) {
@@ -1210,6 +1221,8 @@ export class SessionCdpRouter {
             throw error;
           }
         }
+        // S-1: a connection's own new page is shown to it by this reply.
+        if (state.connection) this.#setTargetVisibility(state, targetId, true);
         return response;
       }
       case "Target.attachToTarget": {
@@ -1435,14 +1448,22 @@ export class SessionCdpRouter {
   ): CdpParameters | undefined {
     const targetId = readString(info, "targetId");
     if (!targetId || !this.#canReach(state, targetId)) return;
-    if (connection && isExtensionUrl(info.url)) return;
+    if (connection && isExtensionUrl(info.url)) {
+      // An event's or a reply's projection is where a connection learns a target is an
+      // extension's: from here its id is named to this state nowhere (G2).
+      this.#setTargetVisibility(state, targetId, false);
+      return;
+    }
     const projected: Record<string, unknown> = {
       ...info,
       ...(state.standard ? { browserContextId: state.session.sessionId } : {}),
     };
+    // A connection is told the id of a related target only where it may be told of that target.
+    const related = (id: string) =>
+      this.#canReach(state, id) && (!state.connection || this.#mayName(state, id));
     for (const key of ["openerId", "parentId"]) {
       const relatedId = readString(info, key);
-      if (relatedId && !this.#canReach(state, relatedId)) {
+      if (relatedId && !related(relatedId)) {
         delete projected[key];
         if (key === "openerId") {
           delete projected.openerFrameId;
@@ -1453,23 +1474,51 @@ export class SessionCdpRouter {
       }
     }
     if (projected.openerId === undefined) delete projected.openerFrameId;
-    const parentFrameId = readString(projected, "parentFrameId");
-    if (parentFrameId) {
-      const frameClaim = this.#ownerByTargetId.get(parentFrameId);
-      if (frameClaim && frameClaim.sessionId !== state.session.sessionId)
-        delete projected.parentFrameId;
+    // A frame ID that is also a target's (a frame in its own process) follows that target's rule.
+    for (const key of ["openerFrameId", "parentFrameId"]) {
+      const frameId = readString(projected, key);
+      const frameClaim = frameId ? this.#ownerByTargetId.get(frameId) : undefined;
+      if (
+        frameId &&
+        ((frameClaim && frameClaim.sessionId !== state.session.sessionId) ||
+          (state.connection &&
+            (state.hiddenTargets.has(frameId) || (frameClaim && !this.#mayName(state, frameId)))))
+      )
+        delete projected[key];
     }
-    if (state.connection) this.#rememberShownTarget(state, targetId);
+    if (state.connection) this.#setTargetVisibility(state, targetId, true);
     return projected;
   }
 
-  #rememberShownTarget(state: ConnectionState, targetId: string): void {
-    if (state.shownTargets.has(targetId)) return;
-    if (state.shownTargets.size >= 4_096) {
-      const oldest = state.shownTargets.values().next().value;
-      if (oldest !== undefined) state.shownTargets.delete(oldest);
+  /**
+   * The one rule for what a connection state may be told of (M1, G2): a target it was shown and
+   * that is not hidden from it, its script's root, or a target one of its own channels is on.
+   * Terminal events, browser-level events naming a target or frame, and every target-valued
+   * field of a projected `targetInfo` go through it.
+   */
+  #mayName(state: ConnectionState, targetId: string): boolean {
+    if (state.hiddenTargets.has(targetId)) return false;
+    if (state.shownTargets.has(targetId) || state.script?.root === targetId) return true;
+    for (const channel of state.channels.values())
+      if (channel.physicalTargetId === targetId) return true;
+    return false;
+  }
+
+  /** Shown and hidden are exclusive: setting one always clears the other (G1). */
+  #setTargetVisibility(state: ConnectionState, targetId: string, visible: boolean): void {
+    const into = visible ? state.shownTargets : state.hiddenTargets;
+    (visible ? state.hiddenTargets : state.shownTargets).delete(targetId);
+    if (into.has(targetId)) return;
+    if (into.size >= 4_096) {
+      const oldest = into.values().next().value;
+      if (oldest !== undefined) into.delete(oldest);
     }
-    state.shownTargets.add(targetId);
+    into.add(targetId);
+  }
+
+  #forgetTargetVisibility(state: ConnectionState, targetId: string): void {
+    state.shownTargets.delete(targetId);
+    state.hiddenTargets.delete(targetId);
   }
 
   #autoAttachTarget(
@@ -2294,8 +2343,12 @@ export class SessionCdpRouter {
           !targetMatchesFilter(asRecord(parameters.targetInfo), root.discoveryFilter) ||
           (state.connection && isExtensionUrl(asRecord(parameters.targetInfo).url))
         ) {
-          if (state.connection && isExtensionUrl(asRecord(parameters.targetInfo).url)) {
-            this.#rememberHiddenTarget(state, targetId);
+          if (
+            state.connection &&
+            this.#canReach(state, targetId) &&
+            isExtensionUrl(asRecord(parameters.targetInfo).url)
+          ) {
+            this.#setTargetVisibility(state, targetId, false);
           }
           return;
         }
@@ -2536,15 +2589,8 @@ export class SessionCdpRouter {
         const connection =
           state.connection ||
           (sessionId !== undefined && state.channels.get(sessionId)?.connection === true);
-        const rawInfo = asRecord(parameters.targetInfo);
-        const info = this.#projectTargetInfo(state, rawInfo, connection);
-        if (!info) {
-          const hiddenId = readString(rawInfo, "targetId");
-          if (connection && hiddenId && isExtensionUrl(rawInfo.url)) {
-            this.#rememberHiddenTarget(state, hiddenId);
-          }
-          return;
-        }
+        const info = this.#projectTargetInfo(state, asRecord(parameters.targetInfo), connection);
+        if (!info) return;
         parameters = { ...parameters, targetInfo: info };
       } else {
         const targetId = readString(parameters, "targetId");
@@ -2555,7 +2601,7 @@ export class SessionCdpRouter {
         // allow-list below; the root's destroy still closes the attachment (`#discover`), so its
         // later commands answer as a missing session.
         if (targetId && state.hiddenTargets.has(targetId)) {
-          if (method === "Target.targetDestroyed") state.hiddenTargets.delete(targetId);
+          if (method === "Target.targetDestroyed") this.#forgetTargetVisibility(state, targetId);
           return;
         }
         if (
@@ -2566,16 +2612,16 @@ export class SessionCdpRouter {
           // M1: an allow-list, not a deny-list. A target claimed under this connection's pages
           // before it was opened was never projected to it, so its end is not this
           // connection's to hear unless it was shown, is its root, or one of its channels is on it.
-          if (
-            !state.shownTargets.has(targetId) &&
-            state.script?.root !== targetId &&
-            ![...state.channels.values()].some((channel) => channel.physicalTargetId === targetId)
-          )
-            return;
-          if (method === "Target.targetDestroyed") state.shownTargets.delete(targetId);
+          if (!this.#mayName(state, targetId)) return;
+          if (method === "Target.targetDestroyed") this.#forgetTargetVisibility(state, targetId);
         }
       }
-    }
+    } else if (
+      state.connection &&
+      (sessionId === undefined || state.aliases.has(sessionId)) &&
+      !this.#connectionMayHearBrowserEvent(state, parameters)
+    )
+      return;
     const event: CdpEvent = {
       method,
       parameters,
@@ -2606,13 +2652,15 @@ export class SessionCdpRouter {
     }
   }
 
-  #rememberHiddenTarget(state: ConnectionState, targetId: string): void {
-    state.shownTargets.delete(targetId);
-    if (state.hiddenTargets.size >= 1_024) {
-      const oldest = state.hiddenTargets.values().next().value;
-      if (oldest !== undefined) state.hiddenTargets.delete(oldest);
-    }
-    state.hiddenTargets.add(targetId);
+  /**
+   * A browser-level event (not `Target.*`, outside any page session) that names a target or a
+   * frame reaches a connection only when it may be told of that target, and never with an
+   * extension's address in it (G2).
+   */
+  #connectionMayHearBrowserEvent(state: ConnectionState, parameters: CdpParameters): boolean {
+    const subject = readString(parameters, "targetId") ?? readString(parameters, "frameId");
+    if (subject !== null && !this.#mayName(state, subject)) return false;
+    return !mentionsExtensionUrl(parameters, 0);
   }
 
   #nestedMethod(state: ConnectionState, method: string): string {
