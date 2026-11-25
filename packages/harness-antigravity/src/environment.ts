@@ -11,7 +11,10 @@ export const antigravityAuthStdoutPrefix =
   "Open the following link to authenticate the ACP server: ";
 
 const removedEnvironmentKeys = new Set([
+  "AGY_CLI_DISABLE_AUTO_UPDATE",
+  "ANTIGRAVITY_HARNESS_PATH",
   "BROWSER",
+  "CHROME_CRASHPAD_PIPE_NAME",
   "CLOUDSDK_CORE_PROJECT",
   "ELECTRON_RUN_AS_NODE",
   "GCLOUD_PROJECT",
@@ -23,7 +26,6 @@ const removedEnvironmentKeys = new Set([
   "GOOGLE_CLOUD_PROJECT",
   "GOOGLE_CLOUD_QUOTA_PROJECT",
   "GOOGLE_GENAI_USE_VERTEXAI",
-  "ANTIGRAVITY_HARNESS_PATH",
   "PYTHONUNBUFFERED",
 ]);
 
@@ -39,6 +41,7 @@ function quoteBrowserArgument(value: string): string {
 export interface AntigravityProfile {
   readonly acpDirectory: string;
   readonly browserCommand: string;
+  readonly cliTokenPath: string;
   readonly geminiHome: string;
   readonly tokenPath: string;
 }
@@ -78,7 +81,7 @@ export async function prepareAntigravityLaunch(input: {
   readonly config: AntigravityHarnessConfig;
   readonly nodeExecutable: string;
   readonly providerState: HarnessProviderState;
-  readonly runtime: Pick<PreparedAntigravityRuntime, "executable" | "harness">;
+  readonly runtime: Pick<PreparedAntigravityRuntime, "executable">;
 }): Promise<AntigravityLaunch> {
   if (input.providerState.kind !== "isolated" || !input.providerState.providerHomeDirectory) {
     throw new Error("Antigravity requires an isolated account profile");
@@ -115,23 +118,28 @@ export async function prepareAntigravityLaunch(input: {
   const browserCommand = [input.nodeExecutable, "-e", browserHelperSource, "--", "%s"]
     .map(quoteBrowserArgument)
     .join(" ");
+  // Antigravity 1.5 stores personal OAuth in the shared OS keyring unless it sees SSH_CONNECTION,
+  // in which case it isolates credentials per profile at `antigravity-acp/antigravity-oauth-token`.
+  if (input.authMethod === "oauth-personal") {
+    environment.SSH_CONNECTION = input.baseEnvironment.SSH_CONNECTION || "127.0.0.1 0 127.0.0.1 0";
+  }
   environment.AGY_ACP_FORCE_FILE_STORAGE = "1";
-  environment.ANTIGRAVITY_HARNESS_PATH = input.runtime.harness;
+  environment.AGY_CLI_DISABLE_AUTO_UPDATE = "1";
   environment.BROWSER = browserCommand;
   environment.ELECTRON_RUN_AS_NODE = "1";
   environment.GEMINI_HOME = geminiHome;
-  environment.PYTHONUNBUFFERED = "1";
   if (process.platform === "linux" && !environment.SSL_CERT_FILE && !environment.SSL_CERT_DIR) {
     const caBundle = await systemCaBundle(input.baseEnvironment);
     if (caBundle) environment.SSL_CERT_FILE = caBundle;
   }
   return {
-    args: process.platform === "linux" ? ["--uid="] : [],
+    args: ["acp", "--gemini-dir", geminiHome, "--app-data-dir", "antigravity-acp"],
     environment,
     executable: input.runtime.executable,
     profile: {
       acpDirectory,
       browserCommand,
+      cliTokenPath: join(acpDirectory, "antigravity-oauth-token"),
       geminiHome,
       tokenPath: join(acpDirectory, "acp_token.json"),
     },
@@ -158,21 +166,23 @@ export async function prepareAntigravityTitleLaunch(
       store: { directory: profileDirectory, id: input.providerState.store.id },
     },
   });
-  const authenticationFile =
+  const authenticationFiles =
     input.authMethod === "oauth-personal"
-      ? "acp_token.json"
+      ? ["antigravity-oauth-token", "acp_token.json"]
       : input.authMethod === "oauth-business"
-        ? "acp_business_token.json"
-        : undefined;
-  if (authenticationFile && input.providerState.providerHomeDirectory) {
-    try {
-      await copyFile(
-        join(input.providerState.providerHomeDirectory, "antigravity-acp", authenticationFile),
-        join(launch.profile.acpDirectory, authenticationFile),
-      );
-      await setFileMode(join(launch.profile.acpDirectory, authenticationFile), 0o600);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        ? ["acp_business_token.json", "antigravity-oauth-token"]
+        : [];
+  if (authenticationFiles.length > 0 && input.providerState.providerHomeDirectory) {
+    for (const authenticationFile of authenticationFiles) {
+      try {
+        await copyFile(
+          join(input.providerState.providerHomeDirectory, "antigravity-acp", authenticationFile),
+          join(launch.profile.acpDirectory, authenticationFile),
+        );
+        await setFileMode(join(launch.profile.acpDirectory, authenticationFile), 0o600);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
     }
   }
   return launch;

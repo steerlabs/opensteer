@@ -14,7 +14,8 @@ import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { hostCommandPlatform } from "@opensteer/shared/command";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import {
-  networkCredentialSecrets,
+  engineDiagnosticSecrets,
+  hasShortNamedSecret,
   networkEnvironmentNames,
   redactNetworkCredentials,
   safeMessage,
@@ -320,6 +321,8 @@ interface ActiveRun {
   shutdown?: boolean;
   readonly abort: AbortController;
   readonly command: Extract<RunnerCommand, { readonly type: "run.execute" }>;
+  environment?: Readonly<Record<string, string>>;
+  proxiedSecret?: string;
   readonly journal: RunJournal;
   /** Local time after which the Run stops unless the Host renews its lease. */
   leaseDeadline: number;
@@ -3379,6 +3382,7 @@ export class RunnerRuntime {
       }
       signal.throwIfAborted();
       const baseEnvironment = await this.#harnessEnvironment(context.harness.driverKind);
+      active.environment = baseEnvironment;
       // Before anything of the Run starts: an engine not shown to start
       // without the person's own configuration runs only their own tasks.
       assertEngineMayRun(context.harness.driverKind, {
@@ -3680,6 +3684,8 @@ export class RunnerRuntime {
           reason: "voice-engine-unsupported",
           message: "This engine does not support voice calls.",
         });
+      active.environment = environment;
+      active.proxiedSecret = proxied.secret;
       const sessionContext = {
         ...(active.voiceCall ? { voiceCall: active.voiceCall } : {}),
         ...attachmentContext,
@@ -3884,7 +3890,7 @@ export class RunnerRuntime {
       // Runner could not take broke the harness protocol.
       terminal = consumptionError
         ? failureEvent(
-            safeMessage(consumptionError, this.#safeMessageOptions),
+            this.#safeRunError(active, consumptionError),
             consumptionError instanceof EventBufferOverflowError
               ? "harness_event_budget_exceeded"
               : "harness_protocol_error",
@@ -3895,10 +3901,10 @@ export class RunnerRuntime {
             ? failureEvent(
                 error.message,
                 "forbidden",
-                redactNetworkCredentials(error.ownerMessage, this.#safeMessageOptions.secrets),
+                this.#scrubRunText(active, error.ownerMessage),
               )
             : failureEvent(
-                safeMessage(error, this.#safeMessageOptions),
+                this.#safeRunError(active, error),
                 error instanceof OpensteerError && error.reason === "previous-stop-unconfirmed"
                   ? runTerminationUnprovenCode
                   : // A refusal reaches the Home as one, not as an execution error.
@@ -4014,10 +4020,7 @@ export class RunnerRuntime {
         // The logger names the line `message`; the reason is `detail`.
         this.#logger?.error("run.failed", {
           code: terminal.data.code,
-          detail: redactNetworkCredentials(
-            terminal.data.ownerMessage ?? terminal.data.message,
-            this.#safeMessageOptions.secrets,
-          ),
+          detail: this.#scrubRunText(active, terminal.data.ownerMessage ?? terminal.data.message),
           driverKind: context.harness.driverKind,
           harnessInstanceId: context.harnessInstanceId,
           runId: context.runId,
@@ -4521,8 +4524,45 @@ export class RunnerRuntime {
       await session.resolveRequest(requestId, response);
       return { status: "accepted" };
     } catch (error) {
-      return reject("not_found", safeMessage(error, this.#safeMessageOptions), false);
+      return reject("not_found", this.#safeRunError(active, error), false);
     }
+  }
+
+  #runRedactionContext(active: ActiveRun): {
+    readonly hasShortSecret: boolean;
+    readonly secrets: readonly string[];
+  } {
+    const environment = active.environment ?? process.env;
+    const tokens = [
+      active.proxiedSecret ?? "",
+      active.credentials?.agentTools ?? "",
+      active.command.context.agentTools.token,
+    ].filter(Boolean);
+    const hasShortSecret =
+      hasShortNamedSecret(environment, 4) ||
+      hasShortNamedSecret(process.env, 4) ||
+      tokens.some((token) => token.length < 4);
+    const secrets = [
+      ...new Set([
+        ...this.#safeMessageOptions.secrets,
+        ...engineDiagnosticSecrets(process.env, 4),
+        ...engineDiagnosticSecrets(environment, 4),
+        ...tokens.filter((token) => token.length >= 4),
+      ]),
+    ].sort((left, right) => right.length - left.length);
+    return { hasShortSecret, secrets };
+  }
+
+  #scrubRunText(active: ActiveRun, text: string): string {
+    const { hasShortSecret, secrets } = this.#runRedactionContext(active);
+    if (hasShortSecret) return suppressedRunnerDiagnosticMessage;
+    return redactNetworkCredentials(text, secrets);
+  }
+
+  #safeRunError(active: ActiveRun, error: unknown): string {
+    const { hasShortSecret, secrets } = this.#runRedactionContext(active);
+    if (hasShortSecret) return suppressedRunnerDiagnosticMessage;
+    return safeMessage(error, { ...this.#safeMessageOptions, secrets });
   }
 
   async #steer(
@@ -4568,9 +4608,9 @@ export class RunnerRuntime {
       });
     } catch (error) {
       if (error instanceof HarnessSteerDeliveryUnknownError) {
-        return { message: safeMessage(error, this.#safeMessageOptions), status: "uncertain" };
+        return { message: this.#safeRunError(active, error), status: "uncertain" };
       }
-      return reject("conflict", safeMessage(error, this.#safeMessageOptions), false);
+      return reject("conflict", this.#safeRunError(active, error), false);
     }
     try {
       await this.#emit(active, {
@@ -4580,7 +4620,7 @@ export class RunnerRuntime {
     } catch (error) {
       // The provider already accepted the message. Losing the durable receipt
       // cannot be presented as a refusal or cause the input to run again.
-      return { message: safeMessage(error, this.#safeMessageOptions), status: "uncertain" };
+      return { message: this.#safeRunError(active, error), status: "uncertain" };
     }
     return { status: "accepted" };
   }
@@ -5146,10 +5186,13 @@ function scrubbingLogger(logger: RunnerLogger, secrets: readonly string[]): Runn
   };
 }
 
+const suppressedRunnerDiagnosticMessage =
+  "Runner operation failed (diagnostic detail suppressed because a short credential value is configured)";
+
 const safeMessageOptions = {
   fallback: "Runner operation failed",
   maximumLength: Number.MAX_SAFE_INTEGER,
-  secrets: networkCredentialSecrets(process.env),
+  secrets: engineDiagnosticSecrets(process.env, 4),
 } as const;
 
 function boundedPositiveInteger(

@@ -1,13 +1,16 @@
 import { toolOutputWithImages } from "@opensteer/harness";
 import {
   engineDiagnosticSecrets,
+  hasShortNamedSecret,
   networkCredentialSecrets,
   redactNetworkCredentials,
 } from "@opensteer/shared/safeMessage";
 import {
   OpensteerError,
   createId,
+  harnessSessionBrokenFailureCode,
   type HarnessInstanceId,
+  type MessageId,
   type PendingRequest,
   type RequestId,
   type RequestResponse,
@@ -16,6 +19,7 @@ import {
   Deferred,
   GuidanceDelivery,
   HarnessSessionRegistry,
+  HarnessSteerDeliveryUnknownError,
   SubagentNodes,
   TurnPublisher,
   assertFreshProviderSessionContext,
@@ -35,6 +39,7 @@ import {
   type HarnessRunInput,
   type HarnessSession,
   type HarnessSessionContext,
+  type HarnessSteerInput,
   type GuidanceTicket,
   type SupervisedProcess,
 } from "@opensteer/harness";
@@ -43,6 +48,7 @@ import type {
   AcpElicitationRequest,
   AcpMcpServer,
   AcpPromptBlock,
+  AcpPromptResult,
   AcpProtocolClient,
 } from "./protocol.js";
 import {
@@ -57,7 +63,9 @@ import type {
   AcpHarnessOptions,
   AcpNormalizedUpdate,
   AcpPermissionChoice,
+  AcpPermissionOption,
   AcpPermissionRequest,
+  AcpPromptOutcomeCheck,
   AcpSessionSnapshot,
   AcpToolCall,
 } from "./types.js";
@@ -70,6 +78,18 @@ interface AcpHarnessDependencies {
 
 type OpenMode =
   { readonly type: "start" } | { readonly type: "resume"; readonly reference: string };
+
+interface ActivePrompt {
+  readonly checkOutcome?: AcpPromptOutcomeCheck;
+  readonly sequence: number;
+  readonly stderrStart: number;
+  readonly steerMessageId?: MessageId;
+  acknowledged: boolean;
+  settled?:
+    | { readonly ok: true; readonly result: AcpPromptResult }
+    | { readonly ok: false; readonly error: unknown }
+    | undefined;
+}
 
 interface ActiveTurn {
   readonly nodeResults: Map<string, string>;
@@ -89,13 +109,22 @@ interface ActiveTurn {
   readonly reasoning: Map<string, string>;
   readonly requestedBy: HarnessRunInput["requestedBy"];
   readonly runId: HarnessRunInput["runId"];
+  readonly runSignal: AbortSignal;
   /** Calls this turn announced and has not finished, keyed by node scope and call id. */
   readonly tools: Map<string, AcpToolCall>;
   /** Calls this turn finished. A finished call absorbs every later frame for it. */
   readonly finishedTools: Set<string>;
+  /** Prompt sequences whose `session/prompt` RPC has not settled yet. */
+  readonly livePrompts: Set<number>;
+  /** Prompts tracked for this turn (live or preserved while a follow-up steer is unconfirmed). */
+  readonly prompts: Map<number, ActivePrompt>;
   assistantHoldActive: boolean;
+  guidanceTicket?: GuidanceTicket;
   heldAssistantCharacters: number;
   interruptRequested: boolean;
+  nextPromptSequence: number;
+  pendingSteers: number;
+  promptSequence: number;
   terminal: boolean;
   stderrStart: number;
   usage?: NonNullable<Awaited<ReturnType<AcpProtocolClient["prompt"]>>["usage"]>;
@@ -161,6 +190,7 @@ export class AcpHarnessAdapter implements HarnessAdapter {
 
 class AcpHarnessSession implements HarnessSession {
   readonly events: AsyncIterable<HarnessEvent>;
+  readonly steer?: (input: HarnessSteerInput) => Promise<void>;
   #context: HarnessSessionContext;
   readonly #client: AcpProtocolClient;
   readonly #onClose: (session: AcpHarnessSession) => void;
@@ -170,8 +200,7 @@ class AcpHarnessSession implements HarnessSession {
   readonly #pending = new Map<RequestId, PendingInteraction>();
   /** Calls earlier turns announced, so a frame an engine sends late cannot reopen them. */
   readonly #endedTools = new Set<string>();
-  readonly #stderrSecrets: readonly string[];
-  readonly #networkSecrets: readonly string[];
+  readonly #sanitizer: AcpDiagnosticSanitizer;
   #stderr = "";
   #stderrDropped = 0;
   readonly #lifetime = new AbortController();
@@ -194,23 +223,22 @@ class AcpHarnessSession implements HarnessSession {
     dependencies: Required<AcpHarnessDependencies>,
     context: HarnessSessionContext,
     process: SupervisedProcess,
-    networkSecrets: readonly string[],
+    sanitizer: AcpDiagnosticSanitizer,
     onClose: (session: AcpHarnessSession) => void,
   ) {
     this.#options = options;
     this.#context = context;
     this.#process = process;
-    this.#networkSecrets = networkSecrets;
+    this.#sanitizer = sanitizer;
     this.#onClose = onClose;
     this.#publisher = new TurnPublisher({
       maxBytes: options.maxEventBytes,
       maxItems: options.maxEventItems,
     });
-    this.#stderrSecrets = [
-      ...(context.agentTools.token.length >= 4 ? [context.agentTools.token] : []),
-      ...engineDiagnosticSecrets(context.environment, 4),
-    ];
     this.events = this.#publisher.events;
+    if (options.policy.steering === "prompt" && options.policy.protocolVersion === 1) {
+      this.steer = (input) => this.#steerWithPrompt(input);
+    }
     this.#client = dependencies.createClient({
       handlers: {
         elicitation: (request, signal) => this.#elicitation(request, signal),
@@ -246,19 +274,34 @@ class AcpHarnessSession implements HarnessSession {
     onClose: (session: AcpHarnessSession) => void,
   ): Promise<AcpHarnessSession> {
     context.signal.throwIfAborted();
-    const rawLaunch = await options.launch({ accessMode: context.accessMode, context });
-    const launch = context.wrapProcessLaunch(rawLaunch);
-    const process = dependencies.spawn({
-      ...launch,
-      maxOutputBytes: acpProtocolOutputBytes,
-      signal: context.signal,
-    });
+    const sanitizer = new AcpDiagnosticSanitizer(context.environment, context.agentTools.token);
+    let process: SupervisedProcess;
+    try {
+      const rawLaunch = await options.launch({ accessMode: context.accessMode, context });
+      sanitizer.addEnvironment(rawLaunch.environment);
+      const launch = context.wrapProcessLaunch(rawLaunch);
+      sanitizer.addEnvironment(launch.environment);
+      process = dependencies.spawn({
+        ...launch,
+        maxOutputBytes: acpProtocolOutputBytes,
+        signal: context.signal,
+      });
+    } catch (error) {
+      const classified =
+        error instanceof OpensteerError
+          ? error
+          : options.hooks.classifyError(error, {
+              operation: mode.type === "resume" ? "resume" : "new",
+              stderrTail: "",
+            });
+      throw sanitizer.sanitizeError(classified);
+    }
     const session = new AcpHarnessSession(
       options,
       dependencies,
       context,
       process,
-      networkCredentialSecrets(launch.environment),
+      sanitizer,
       onClose,
     );
     try {
@@ -305,6 +348,12 @@ class AcpHarnessSession implements HarnessSession {
       reasoning: new Map(),
       requestedBy: run.requestedBy,
       runId: run.runId,
+      runSignal: run.signal,
+      livePrompts: new Set(),
+      prompts: new Map(),
+      nextPromptSequence: 0,
+      pendingSteers: 0,
+      promptSequence: 0,
       terminal: false,
       stderrStart: this.#stderrPosition(),
       tools: new Map(),
@@ -327,59 +376,66 @@ class AcpHarnessSession implements HarnessSession {
         this.#finish(active, "interrupted");
         return;
       }
+      active.guidanceTicket = prepared.ticket;
+      const checkOutcome = await this.#options.hooks.watchPromptOutcome?.({
+        context: this.#context,
+        providerSessionReference: this.providerSessionReference,
+      });
+      if (active.terminal || this.#closed) return;
+      if (run.signal.aborted) {
+        this.#finish(active, "interrupted");
+        return;
+      }
       this.#publish(runStartedEvent());
-      active.stderrStart = this.#stderrPosition();
+      const sequence = ++active.nextPromptSequence;
+      const stderrStart = this.#stderrPosition();
+      const entry: ActivePrompt = {
+        acknowledged: true,
+        ...(checkOutcome ? { checkOutcome } : {}),
+        sequence,
+        stderrStart,
+      };
+      active.promptSequence = sequence;
+      active.stderrStart = stderrStart;
+      active.prompts.set(sequence, entry);
+      active.livePrompts.add(sequence);
       // A Run abort is translated through the engine's cancel policy. In
       // particular, resume-based ACP engines keep this RPC alive until their
       // post-cancel prompt outcome arrives.
-      const result = await this.#client.prompt(
+      const promptPromise = this.#client.prompt(
         this.providerSessionReference,
         prepared.blocks,
         this.#lifetime.signal,
       );
-      if (result.usage) active.usage = result.usage;
-      const heldDecision = await this.#settleHeldAssistant(active);
-      if (active.terminal) return;
-      if (heldDecision.status === "failed") {
-        if (heldDecision.discardAssistant) active.heldAssistant.length = 0;
-        else this.#flushHeldAssistant(active);
-        this.#fail(active, heldDecision.error);
-        await active.completion.promise;
-        return;
-      }
-      this.#flushHeldAssistant(active);
-      await this.#stopBackgroundChildren(active);
-      if (
-        !active.interruptRequested &&
-        !this.#closed &&
-        !this.#processEnded &&
-        !["cancelled", "refusal", "error"].includes(result.stopReason)
-      ) {
-        this.#guidance.acknowledge(prepared.ticket);
-      }
-      this.#finish(active, active.interruptRequested ? "interrupted" : "completed");
+      void this.#followPrompt(active, entry, promptPromise);
       await active.completion.promise;
     } catch (error) {
       if (!active.terminal) {
         const heldDecision = await this.#settleHeldAssistant(active);
         if (active.terminal) return;
-        if (heldDecision.status === "failed") {
+        if (active.interruptRequested || run.signal.aborted || this.#closed) {
+          this.#flushHeldAssistant(active);
+          this.#finish(active, "interrupted");
+        } else if (heldDecision.status === "failed") {
           if (heldDecision.discardAssistant) active.heldAssistant.length = 0;
           else this.#flushHeldAssistant(active);
-          this.#fail(active, heldDecision.error);
+          const failure = this.#sanitizeError(heldDecision.error);
+          if (failure.code === harnessSessionBrokenFailureCode) {
+            this.#publisher.latchUnusable(failure);
+          }
+          this.#fail(active, failure);
         } else {
           this.#flushHeldAssistant(active);
-          if (active.interruptRequested || run.signal.aborted || this.#closed) {
-            this.#finish(active, "interrupted");
-          } else {
-            const interpretation = this.#options.hooks.classifyError(error, {
-              operation: "prompt",
-              providerSessionReference: this.providerSessionReference,
-              stderrBeforePrompt: this.#stderrBefore(active.stderrStart),
-              stderrTail: this.#stderrSince(active.stderrStart),
-            });
-            this.#fail(active, interpretation);
+          const interpretation = this.#classifyError(error, {
+            operation: "prompt",
+            providerSessionReference: this.providerSessionReference,
+            stderrBeforePrompt: this.#stderrBefore(active.stderrStart),
+            stderrTail: this.#stderrSince(active.stderrStart),
+          });
+          if (interpretation.code === harnessSessionBrokenFailureCode) {
+            this.#publisher.latchUnusable(interpretation);
           }
+          this.#fail(active, interpretation);
         }
       }
     } finally {
@@ -389,6 +445,410 @@ class AcpHarnessSession implements HarnessSession {
       for (const key of [...active.tools.keys(), ...active.finishedTools])
         this.#endedTools.add(key);
     }
+  }
+
+  async #followPrompt(
+    active: ActiveTurn,
+    entry: ActivePrompt,
+    promptPromise: Promise<AcpPromptResult>,
+  ): Promise<void> {
+    try {
+      const result = await promptPromise;
+      active.livePrompts.delete(entry.sequence);
+      if (result.usage && !active.terminal) active.usage = result.usage;
+      if (active.terminal) return;
+      if (active.promptSequence !== entry.sequence) {
+        entry.settled = { ok: true, result };
+        return;
+      }
+      if (active.pendingSteers > 0) {
+        // Keep this prompt's outcome in reserve while a follow-up steer is awaiting
+        // admission or explicit refusal, so a busy refusal does not discard it.
+        entry.settled = { ok: true, result };
+        return;
+      }
+      await this.#completePromptResolution(active, entry, result);
+    } catch (error) {
+      active.livePrompts.delete(entry.sequence);
+      if (active.terminal) return;
+      if (active.promptSequence !== entry.sequence) {
+        entry.settled = { ok: false, error };
+        return;
+      }
+      if (active.pendingSteers > 0) {
+        entry.settled = { ok: false, error };
+        return;
+      }
+      await this.#completePromptRejection(active, entry, error);
+    }
+  }
+
+  async #completePromptResolution(
+    active: ActiveTurn,
+    entry: ActivePrompt,
+    result: AcpPromptResult,
+  ): Promise<void> {
+    const superseded = () => active.promptSequence !== entry.sequence;
+    const interrupted = () => active.interruptRequested || active.runSignal.aborted || this.#closed;
+    if (active.terminal || superseded()) return;
+    if (
+      entry.steerMessageId &&
+      !entry.acknowledged &&
+      !interrupted() &&
+      result.stopReason !== "cancelled"
+    ) {
+      entry.acknowledged = true;
+      this.#publish({
+        data: { messageId: entry.steerMessageId },
+        type: "message.injected",
+      });
+    }
+    const heldDecision = await this.#settleHeldAssistant(active);
+    if (active.terminal || superseded()) return;
+    if (interrupted()) {
+      this.#flushHeldAssistant(active);
+      this.#finish(active, "interrupted");
+      return;
+    }
+    if (heldDecision.status === "failed") {
+      if (heldDecision.discardAssistant) active.heldAssistant.length = 0;
+      else this.#flushHeldAssistant(active);
+      const failure = this.#sanitizeError(heldDecision.error);
+      if (failure.code === harnessSessionBrokenFailureCode) {
+        this.#publisher.latchUnusable(failure);
+      }
+      this.#fail(active, failure);
+      return;
+    }
+    const outcomeFailure =
+      entry.checkOutcome && !interrupted() && !this.#processEnded
+        ? await entry.checkOutcome(result, {
+            assistantText: this.#heldAssistantText(active),
+          })
+        : undefined;
+    if (active.terminal || superseded()) return;
+    if (interrupted()) {
+      this.#flushHeldAssistant(active);
+      this.#finish(active, "interrupted");
+      return;
+    }
+    if (outcomeFailure) {
+      if (outcomeFailure.discardAssistant) active.heldAssistant.length = 0;
+      else this.#flushHeldAssistant(active);
+      const failure = this.#sanitizeError(outcomeFailure.error);
+      this.#publisher.latchUnusable(failure);
+      this.#fail(active, failure);
+      return;
+    }
+    if (active.pendingSteers > 0) {
+      entry.settled = { ok: true, result };
+      return;
+    }
+    this.#flushHeldAssistant(active);
+    await this.#stopBackgroundChildren(active);
+    if (active.terminal || superseded()) return;
+    if (
+      active.guidanceTicket &&
+      !interrupted() &&
+      !this.#processEnded &&
+      !["cancelled", "refusal", "error"].includes(result.stopReason)
+    ) {
+      this.#guidance.acknowledge(active.guidanceTicket);
+    }
+    this.#finish(active, interrupted() ? "interrupted" : "completed");
+  }
+
+  async #completePromptRejection(
+    active: ActiveTurn,
+    entry: ActivePrompt,
+    error: unknown,
+  ): Promise<void> {
+    const superseded = () => active.promptSequence !== entry.sequence;
+    const interrupted = () => active.interruptRequested || active.runSignal.aborted || this.#closed;
+    if (active.terminal || superseded()) return;
+    // A late explicit JSON-RPC refusal on a follow-up steer rolls back to the
+    // previous prompt (live or preserved) instead of failing a healthy Run.
+    if (entry.steerMessageId && isExplicitAcpSteerRefusal(error) && !interrupted()) {
+      active.prompts.delete(entry.sequence);
+      const fallback = this.#latestEarlierPrompt(active, entry.sequence);
+      if (fallback) {
+        active.promptSequence = fallback.sequence;
+        active.stderrStart = fallback.stderrStart;
+        if (fallback.settled && active.pendingSteers === 0) {
+          await this.#resumeSettledPrompt(active, fallback);
+        }
+        return;
+      }
+    }
+    const heldDecision = await this.#settleHeldAssistant(active);
+    if (active.terminal || superseded()) return;
+    if (interrupted()) {
+      this.#flushHeldAssistant(active);
+      this.#finish(active, "interrupted");
+      return;
+    }
+    if (heldDecision.status === "failed") {
+      if (heldDecision.discardAssistant) active.heldAssistant.length = 0;
+      else this.#flushHeldAssistant(active);
+      const failure = this.#sanitizeError(heldDecision.error);
+      if (failure.code === harnessSessionBrokenFailureCode) {
+        this.#publisher.latchUnusable(failure);
+      }
+      this.#fail(active, failure);
+      return;
+    }
+    this.#flushHeldAssistant(active);
+    const interpretation = this.#classifyError(error, {
+      operation: "prompt",
+      providerSessionReference: this.providerSessionReference,
+      stderrBeforePrompt: this.#stderrBefore(entry.stderrStart),
+      stderrTail: this.#stderrSince(entry.stderrStart),
+    });
+    if (interpretation.code === harnessSessionBrokenFailureCode) {
+      this.#publisher.latchUnusable(interpretation);
+    }
+    this.#fail(active, interpretation);
+  }
+
+  async #resumeSettledPrompt(active: ActiveTurn, entry: ActivePrompt): Promise<void> {
+    const settled = entry.settled;
+    if (!settled || active.terminal || active.promptSequence !== entry.sequence) return;
+    entry.settled = undefined;
+    if (settled.ok) {
+      await this.#completePromptResolution(active, entry, settled.result);
+    } else {
+      await this.#completePromptRejection(active, entry, settled.error);
+    }
+  }
+
+  #latestEarlierPrompt(active: ActiveTurn, beforeSequence: number): ActivePrompt | undefined {
+    let latest: ActivePrompt | undefined;
+    for (const candidate of active.prompts.values()) {
+      if (candidate.sequence >= beforeSequence) continue;
+      if (!latest || candidate.sequence > latest.sequence) latest = candidate;
+    }
+    return latest;
+  }
+
+  async #steerWithPrompt(input: HarnessSteerInput): Promise<void> {
+    this.#assertUsable();
+    const active = this.#active;
+    if (
+      !active ||
+      active.terminal ||
+      active.interruptRequested ||
+      active.promptSequence === 0 ||
+      active.livePrompts.size === 0
+    ) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "ACP session has no active turn to steer",
+      });
+    }
+    if (input.signal?.aborted) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "ACP steer was cancelled before delivery",
+      });
+    }
+    const blocks = await this.#steerBlocks(input);
+    const checkOutcome = await this.#options.hooks.watchPromptOutcome?.({
+      context: this.#context,
+      providerSessionReference: this.providerSessionReference,
+    });
+    this.#assertUsable();
+    if (
+      this.#active !== active ||
+      active.terminal ||
+      active.interruptRequested ||
+      active.livePrompts.size === 0 ||
+      input.signal?.aborted
+    ) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "ACP turn ended before the steer could be delivered",
+      });
+    }
+    if (active.heldAssistant.length > 0) {
+      const heldDecision = this.#heldAssistantDecision(active);
+      if (heldDecision.status === "failed") {
+        if (heldDecision.discardAssistant) active.heldAssistant.length = 0;
+        else this.#flushHeldAssistant(active);
+        const failure = this.#sanitizeError(heldDecision.error);
+        if (failure.code === harnessSessionBrokenFailureCode) {
+          this.#publisher.latchUnusable(failure);
+        }
+        this.#fail(active, failure);
+        throw new OpensteerError({
+          code: "conflict",
+          message: "ACP turn failed before the steer could be delivered",
+        });
+      }
+      this.#flushHeldAssistant(active);
+    }
+    active.assistantHoldActive =
+      this.#options.hooks.holdAssistant !== undefined &&
+      active.assistant.size === 0 &&
+      active.reasoning.size === 0 &&
+      active.tools.size === 0 &&
+      active.finishedTools.size === 0;
+    const sequence = ++active.nextPromptSequence;
+    const stderrStart = this.#stderrPosition();
+    const entry: ActivePrompt = {
+      acknowledged: false,
+      ...(checkOutcome ? { checkOutcome } : {}),
+      sequence,
+      stderrStart,
+      steerMessageId: input.input.messageId,
+    };
+    active.prompts.set(sequence, entry);
+    active.livePrompts.add(sequence);
+    active.pendingSteers += 1;
+    const promptPromise = this.#client.prompt(
+      this.providerSessionReference,
+      blocks,
+      this.#lifetime.signal,
+    );
+    // ACP v1 `session/prompt` carries no intermediate delivery receipt tied to this
+    // request: neither silence nor unrelated `session/update` notifications nor an
+    // earlier prompt settling proves delivery. Only this RPC's own JSON-RPC result
+    // proves delivery, and only an explicit JSON-RPC non-admission error proves refusal.
+    type SteerWindowOutcome =
+      | { readonly kind: "resolved"; readonly result: AcpPromptResult }
+      | { readonly kind: "rejected"; readonly error: unknown }
+      | { readonly kind: "aborted" }
+      | { readonly kind: "timeout" };
+    const outcome = await new Promise<SteerWindowOutcome>((resolve) => {
+      let done = false;
+      const finish = (value: SteerWindowOutcome) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        input.signal?.removeEventListener("abort", onAbort);
+        resolve(value);
+      };
+      const onAbort = () => finish({ kind: "aborted" });
+      if (input.signal) {
+        if (input.signal.aborted) {
+          finish({ kind: "aborted" });
+          return;
+        }
+        input.signal.addEventListener("abort", onAbort, { once: true });
+      }
+      const timer = setTimeout(() => finish({ kind: "timeout" }), steerAdmissionWindowMs);
+      void promptPromise.then(
+        (result) => finish({ kind: "resolved", result }),
+        (error: unknown) => finish({ kind: "rejected", error }),
+      );
+    });
+    active.pendingSteers -= 1;
+
+    if (outcome.kind === "resolved") {
+      active.livePrompts.delete(sequence);
+      if (outcome.result.usage && !active.terminal) active.usage = outcome.result.usage;
+      active.promptSequence = sequence;
+      active.stderrStart = stderrStart;
+      const interrupted =
+        active.interruptRequested ||
+        active.runSignal.aborted ||
+        this.#closed ||
+        Boolean(input.signal?.aborted) ||
+        outcome.result.stopReason === "cancelled";
+      if (interrupted) {
+        void this.#completePromptResolution(active, entry, outcome.result);
+        throw new HarnessSteerDeliveryUnknownError(
+          "ACP follow-up steer was interrupted after delivery began",
+        );
+      }
+      entry.acknowledged = true;
+      void this.#completePromptResolution(active, entry, outcome.result);
+      return;
+    }
+
+    if (outcome.kind === "rejected") {
+      active.livePrompts.delete(sequence);
+      active.prompts.delete(sequence);
+      const interrupted =
+        active.interruptRequested ||
+        active.runSignal.aborted ||
+        this.#closed ||
+        Boolean(input.signal?.aborted);
+      if (isExplicitAcpSteerRefusal(outcome.error) && !interrupted) {
+        const current = active.prompts.get(active.promptSequence);
+        if (current?.settled && active.pendingSteers === 0 && !active.terminal) {
+          void this.#resumeSettledPrompt(active, current);
+        }
+        const detail =
+          outcome.error instanceof Error && outcome.error.message
+            ? `ACP rejected the follow-up steer: ${outcome.error.message}`
+            : "ACP rejected the follow-up steer";
+        throw new OpensteerError({
+          cause: outcome.error,
+          code: "conflict",
+          message: this.#sanitizePublicMessage(detail),
+        });
+      }
+      if (!active.terminal && active.livePrompts.size === 0) {
+        if (interrupted) {
+          this.#finish(active, "interrupted");
+        } else {
+          const interpretation = this.#classifyError(outcome.error, {
+            operation: "prompt",
+            providerSessionReference: this.providerSessionReference,
+            stderrBeforePrompt: this.#stderrBefore(stderrStart),
+            stderrTail: this.#stderrSince(stderrStart),
+          });
+          if (interpretation.code === harnessSessionBrokenFailureCode) {
+            this.#publisher.latchUnusable(interpretation);
+          }
+          this.#fail(active, interpretation);
+        }
+      }
+      const detail =
+        outcome.error instanceof Error && outcome.error.message
+          ? `ACP follow-up steer delivery could not be confirmed: ${outcome.error.message}`
+          : "ACP follow-up steer delivery could not be confirmed";
+      throw new HarnessSteerDeliveryUnknownError(this.#sanitizePublicMessage(detail), {
+        cause: outcome.error,
+      });
+    }
+
+    // Silence past the short window or post-send abort: bytes already left the wire,
+    // so delivery is unknown until this prompt's own JSON-RPC result arrives.
+    active.promptSequence = sequence;
+    active.stderrStart = stderrStart;
+    void this.#followPrompt(active, entry, promptPromise);
+    throw new HarnessSteerDeliveryUnknownError(
+      outcome.kind === "aborted"
+        ? "ACP follow-up steer was cancelled after delivery began"
+        : "ACP follow-up steer delivery could not be confirmed before the prompt settled",
+    );
+  }
+
+  async #steerBlocks(input: HarnessSteerInput): Promise<readonly AcpPromptBlock[]> {
+    const parts = resolvedInputSequence(input.input, input.attachments);
+    const blocks: AcpPromptBlock[] = [];
+    for (const part of parts) {
+      if (part.type === "text") {
+        blocks.push({ type: "text", text: part.text });
+      } else {
+        const bytes = await readVerifiedAttachmentBytes(part.attachment);
+        blocks.push({
+          data: bytes.toString("base64"),
+          mimeType: part.attachment.attachment.mediaType,
+          type: "image",
+        });
+      }
+    }
+    const rewrite = this.#options.hooks.rewritePromptText;
+    if (!rewrite) return blocks;
+    return Promise.all(
+      blocks.map(async (block) =>
+        block.type === "text"
+          ? { ...block, text: await rewrite(block.text, this.#context) }
+          : block,
+      ),
+    );
   }
 
   async interrupt(): Promise<void> {
@@ -846,13 +1306,15 @@ class AcpHarnessSession implements HarnessSession {
     return decision;
   }
 
+  #heldAssistantText(active: ActiveTurn): string {
+    return this.#redactSecrets(active.heldAssistant.map((update) => update.text).join("")).trim();
+  }
+
   #heldAssistantDecision(active: ActiveTurn): AcpHeldAssistantDecision {
     const hold = this.#options.hooks.holdAssistant;
     if (!hold) return { status: "succeeded" };
     return hold.settle({
-      assistantText: this.#sanitizeStderr(
-        active.heldAssistant.map((update) => update.text).join(""),
-      ).trim(),
+      assistantText: this.#heldAssistantText(active),
       providerSessionReference: this.providerSessionReference,
       stderrBeforePrompt: this.#stderrBefore(active.stderrStart),
       stderrTail: this.#stderrSince(active.stderrStart),
@@ -933,6 +1395,13 @@ class AcpHarnessSession implements HarnessSession {
       return null;
     const nodeId = nodeKey ? active.nodes.nodeId(nodeKey) : undefined;
     if (nodeKey && !nodeId) return null;
+    const disposition =
+      this.#options.hooks.permissionDisposition?.(request, this.#context) ?? "ask";
+    if (disposition === "allow" || disposition === "deny") {
+      const selected = selectAutoPermissionOption(request.options, disposition);
+      if (selected) return selected.id;
+      if (disposition === "deny") return null;
+    }
     const offered = new Set(request.options.map((option) => option.id));
     const choices = this.#options.hooks
       .permissionChoices(request)
@@ -1029,7 +1498,7 @@ class AcpHarnessSession implements HarnessSession {
     this.#publish(
       runFailedEvent({
         ...failure,
-        message: redactNetworkCredentials(failure.message, this.#networkSecrets),
+        message: this.#sanitizePublicMessage(failure.message),
       }),
     );
     active.completion.resolve();
@@ -1075,7 +1544,10 @@ class AcpHarnessSession implements HarnessSession {
   }
 
   #appendStderr(chunk: Buffer | string): void {
-    this.#stderr += chunk.toString();
+    // Redact the continuous stderr buffer BEFORE ring-buffer or prompt-offset
+    // slicing so a secret split across adjacent chunks or a slice boundary
+    // cannot survive half-matched.
+    this.#stderr = this.#sanitizer.redactText(this.#stderr + chunk.toString());
     this.#wakeStderrWaiters();
     if (this.#stderr.length <= 16_000) return;
     const removed = this.#stderr.length - 16_000;
@@ -1088,7 +1560,7 @@ class AcpHarnessSession implements HarnessSession {
   }
 
   #stderrTail(): string {
-    return this.#sanitizeStderr(this.#stderr);
+    return this.#stderr;
   }
 
   #stderrPosition(): number {
@@ -1096,39 +1568,27 @@ class AcpHarnessSession implements HarnessSession {
   }
 
   #stderrSince(position: number): string {
-    return this.#sanitizeStderr(this.#stderr.slice(Math.max(0, position - this.#stderrDropped)));
+    return this.#stderr.slice(Math.max(0, position - this.#stderrDropped));
   }
 
   #stderrBefore(position: number): string {
-    return this.#sanitizeStderr(this.#stderr.slice(0, Math.max(0, position - this.#stderrDropped)));
+    return this.#stderr.slice(0, Math.max(0, position - this.#stderrDropped));
   }
 
-  #sanitizeStderr(value: string): string {
-    let sanitized = redactNetworkCredentials(value, this.#networkSecrets);
-    for (const secret of this.#stderrSecrets)
-      sanitized = sanitized.replaceAll(secret, "[REDACTED]");
-    return sanitized
-      .replace(/Bearer\s+\S+/giu, "Bearer [REDACTED]")
-      .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/gu, "[REDACTED]")
-      .replace(
-        /\b(api[ _-]?key|authorization|credential|password|secret|token)\s*[:=]\s*[^,\s]+/giu,
-        "$1=[REDACTED]",
-      );
+  #redactSecrets(value: string): string {
+    return this.#sanitizer.redactText(value);
+  }
+
+  #sanitizePublicMessage(value: string): string {
+    return this.#sanitizer.sanitizePublicMessage(value);
+  }
+
+  #sanitizeError(error: OpensteerError): OpensteerError {
+    return this.#sanitizer.sanitizeError(error);
   }
 
   #classifyError(error: unknown, context: AcpErrorContext): OpensteerError {
-    const classified = this.#options.hooks.classifyError(error, context);
-    const message = redactNetworkCredentials(classified.message, this.#networkSecrets);
-    if (message === classified.message) return classified;
-    return new OpensteerError({
-      cause: classified.cause,
-      code: classified.code,
-      ...(classified.details === undefined ? {} : { details: classified.details }),
-      message,
-      ...(classified.next === undefined ? {} : { next: classified.next }),
-      ...(classified.reason === undefined ? {} : { reason: classified.reason }),
-      retryable: classified.retryable,
-    });
+    return this.#sanitizer.sanitizeError(this.#options.hooks.classifyError(error, context));
   }
 
   #publish(event: HarnessEvent): void {
@@ -1198,6 +1658,108 @@ function acpFailure(error: OpensteerError): {
     message: error.message,
     retryable: error.retryable,
   };
+}
+
+const steerAdmissionWindowMs = 50;
+const maxPublicDiagnosticLength = 2_000;
+const suppressedDiagnosticMessage =
+  "Engine diagnostic detail was suppressed because a short credential value is configured.";
+
+class AcpDiagnosticSanitizer {
+  readonly #networkSecrets = new Set<string>();
+  readonly #diagnosticSecrets = new Set<string>();
+  #hasShortSecret = false;
+
+  constructor(environment: Readonly<Record<string, string | undefined>>, agentToolsToken: string) {
+    if (agentToolsToken.length >= 4) {
+      this.#diagnosticSecrets.add(agentToolsToken);
+    } else if (agentToolsToken.length > 0) {
+      this.#hasShortSecret = true;
+    }
+    this.addEnvironment(environment);
+  }
+
+  addEnvironment(environment: Readonly<Record<string, string | undefined>> | undefined): void {
+    if (!environment) return;
+    for (const secret of networkCredentialSecrets(environment)) {
+      this.#networkSecrets.add(secret);
+    }
+    for (const secret of engineDiagnosticSecrets(environment, 4)) {
+      this.#diagnosticSecrets.add(secret);
+    }
+    if (hasShortNamedSecret(environment, 4)) {
+      this.#hasShortSecret = true;
+    }
+  }
+
+  redactText(value: string): string {
+    const networkList = [...this.#networkSecrets].sort((left, right) => right.length - left.length);
+    const diagnosticList = [...this.#diagnosticSecrets].sort(
+      (left, right) => right.length - left.length,
+    );
+    let sanitized = redactNetworkCredentials(value, networkList);
+    for (const secret of diagnosticList) {
+      sanitized = sanitized.replaceAll(secret, "[REDACTED]");
+    }
+    return sanitized
+      .replace(/Bearer\s+\S+/giu, "Bearer [REDACTED]")
+      .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/gu, "[REDACTED]")
+      .replace(
+        /\b(api[ _-]?key|authorization|credential|password|secret|token)\s*[:=]\s*[^,\s]+/giu,
+        "$1=[REDACTED]",
+      );
+  }
+
+  sanitizePublicMessage(value: string): string {
+    if (this.#hasShortSecret) return suppressedDiagnosticMessage;
+    const cleaned = stripControlCharacters(this.redactText(value)).trim();
+    return cleaned.length > maxPublicDiagnosticLength
+      ? `${cleaned.slice(0, maxPublicDiagnosticLength - 1)}…`
+      : cleaned;
+  }
+
+  sanitizeError(error: OpensteerError): OpensteerError {
+    const message = this.sanitizePublicMessage(error.message);
+    if (message === error.message) return error;
+    return new OpensteerError({
+      cause: error.cause,
+      code: error.code,
+      ...(error.details === undefined ? {} : { details: error.details }),
+      message,
+      ...(error.next === undefined ? {} : { next: error.next }),
+      ...(error.reason === undefined ? {} : { reason: error.reason }),
+      retryable: error.retryable,
+    });
+  }
+}
+
+function stripControlCharacters(value: string): string {
+  let result = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    const isDisallowedControl =
+      (code >= 0 && code <= 8) ||
+      code === 11 ||
+      code === 12 ||
+      (code >= 14 && code <= 31) ||
+      code === 127;
+    result += isDisallowedControl ? " " : value[index]!;
+  }
+  return result;
+}
+
+function isExplicitAcpSteerRefusal(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { readonly code?: unknown }).code;
+  if (typeof code !== "number" || !Number.isInteger(code)) return false;
+  // Only standard JSON-RPC protocol non-admission codes and ACP's documented
+  // session-not-found code (-32002) prove the prompt was never applied.
+  // Undocumented implementation-defined server errors (e.g. -32042, -32000),
+  // -32800 (requestCancelled), -32603 (internalError), and plain transport
+  // errors do not prove non-admission and stay unknown.
+  return (
+    code === -32700 || code === -32600 || code === -32601 || code === -32602 || code === -32002
+  );
 }
 
 export function normalizeAcpUpdate(update: unknown): readonly AcpNormalizedUpdate[] {
@@ -1369,6 +1931,14 @@ function assertSameEnvironment(
       message: "ACP Run environment changed after the native session opened",
     });
   }
+}
+
+function selectAutoPermissionOption(
+  options: readonly AcpPermissionOption[],
+  disposition: "allow" | "deny",
+): AcpPermissionOption | undefined {
+  const target = disposition === "allow" ? "allow_once" : "reject_once";
+  return options.find((option) => option.kind.toLowerCase() === target);
 }
 
 function invalidRequestResponse(): OpensteerError {

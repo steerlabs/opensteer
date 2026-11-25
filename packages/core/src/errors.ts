@@ -6,6 +6,7 @@ export const OpensteerErrorCodeSchema = z.enum([
   "conflict",
   "forbidden",
   "harness_error",
+  "harness_session_broken",
   "harness_usage_limit",
   "internal",
   "not_found",
