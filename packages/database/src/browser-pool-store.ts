@@ -960,6 +960,17 @@ export function listBrowserPoolRetiredTargets(
     .execute(databaseOperationOptions());
 }
 
+/** Every replaced target across any Runner (including earlier replaced Runners) still draining Stops. */
+export function listAllBrowserPoolRetiredTargets(
+  database: Kysely<DatabaseSchema>,
+): Promise<readonly BrowserPoolRetiredTarget[]> {
+  return database
+    .selectFrom("browserPoolRetiredTargets")
+    .selectAll()
+    .orderBy("retiredAt")
+    .execute(databaseOperationOptions());
+}
+
 /** A replaced target none of whose Stops waits any more: the Home stops asking it. */
 export async function forgetBrowserPoolRetiredTarget(
   database: Kysely<DatabaseSchema>,

@@ -71,13 +71,18 @@ export class BrowserModuleRelay {
     return this.#bridge.runtimeId;
   }
 
-  async attach(stream: RunnerModuleStream): Promise<void> {
+  async attach(stream: RunnerModuleStream, signal?: AbortSignal): Promise<void> {
     this.#stream = stream;
     this.#streamLifetime.abort();
     this.#streamLifetime = new AbortController();
+    const attachSignal = signal
+      ? AbortSignal.any([signal, this.#streamLifetime.signal])
+      : this.#streamLifetime.signal;
+    attachSignal.throwIfAborted();
     if (stream.browserWireVersion !== 2)
       throw new BrowserRelayError("Update this Host to use the current browser runtime contract.");
-    const capabilities = await this.#bridge.capabilities();
+    const capabilities = await this.#bridge.capabilities(attachSignal);
+    attachSignal.throwIfAborted();
     if (capabilities.wireVersion !== 2)
       throw new BrowserRelayError(
         "Update the Browser Runtime on this computer. The current native browser contract is required.",
@@ -90,8 +95,10 @@ export class BrowserModuleRelay {
     }
     this.#bridge.setAttachPublicKeys(stream.browserAttachPublicKeys);
     if (capabilities.localProfileStorage) {
-      const inventory = await this.#bridge.localProfileInventory();
+      const inventory = await this.#bridge.localProfileInventory(attachSignal);
+      attachSignal.throwIfAborted();
       for (let offset = 0; offset < inventory.profiles.length || offset === 0; offset += 128) {
+        attachSignal.throwIfAborted();
         if (this.#stream !== stream)
           throw new BrowserRelayError("The browser inventory stream was superseded.");
         await stream.send(
@@ -107,6 +114,7 @@ export class BrowserModuleRelay {
         );
       }
     }
+    attachSignal.throwIfAborted();
     if (this.#stream !== stream)
       throw new BrowserRelayError("The browser inventory stream was superseded.");
     this.#inventoryComplete = true;

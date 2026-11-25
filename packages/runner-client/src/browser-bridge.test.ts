@@ -1,7 +1,7 @@
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { BrowserChannelIdSchema } from "@opensteer/protocol/browser-relay";
@@ -194,6 +194,79 @@ describe("LocalBrowserRuntimeBridge", () => {
         detail: null,
       });
     } finally {
+      await f.close();
+    }
+  });
+
+  it("M5/S8: enforces raw ingress text and binary frame bounds before JSON parsing while accepting boundary frames", async () => {
+    const f = await fixture();
+    const address = f.sockets.options.server!.address();
+    if (!address || typeof address === "string") throw new Error("missing port");
+    const bounded = new LocalBrowserRuntimeBridge({
+      bridgeToken: "a".repeat(64),
+      runtimeId: "runtime_test",
+      url: new URL(`http://127.0.0.1:${address.port}`),
+      maxTextFrameBytes: 128,
+      maxBinaryFrameBytes: 64,
+    });
+    const keys = generateKeyPairSync("ed25519");
+    bounded.setAttachPublicKeys([
+      {
+        keyId: "test",
+        publicKeyPem: keys.publicKey.export({ format: "pem", type: "spki" }).toString(),
+      },
+    ]);
+    try {
+      const received: unknown[] = [];
+      const closed = Promise.withResolvers<number>();
+      let serverSocket: import("ws").WebSocket | undefined;
+      f.sockets.once("connection", (socket) => {
+        serverSocket = socket;
+        socket.send(JSON.stringify({ type: "browser.attached" }));
+      });
+      const ch = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+      await bounded.attach(ch, "abc.def.ghi", {
+        onClosed: (_id, code) => closed.resolve(code),
+        onFrame: (_id, frame) => received.push(frame),
+        onServerMessage: (_id, msg) => received.push(msg),
+      });
+      // Boundary text frame (<= 128 bytes) is accepted and delivered.
+      const okPayload = JSON.stringify({
+        type: "browser.session.state",
+        session: {
+          sessionId: `bsn_${randomUUID()}`,
+          state: "ready",
+        },
+      });
+      expect(Buffer.byteLength(okPayload, "utf8")).toBeLessThanOrEqual(128);
+      // Oversized text frame (> 128 bytes) must be rejected BEFORE JSON.parse is called.
+      const parseSpy = vi.spyOn(JSON, "parse");
+      try {
+        serverSocket!.send("not-json-" + "x".repeat(140));
+        expect(await closed.promise).toBe(1007);
+        expect(parseSpy).not.toHaveBeenCalled();
+      } finally {
+        parseSpy.mockRestore();
+      }
+
+      // Oversized binary frame (> 64 bytes) closes channel with 1007 before decode.
+      const closedBinary = Promise.withResolvers<number>();
+      let binSocket: import("ws").WebSocket | undefined;
+      f.sockets.once("connection", (socket) => {
+        binSocket = socket;
+        socket.send(JSON.stringify({ type: "browser.attached" }));
+      });
+      const ch2 = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+      await bounded.attach(ch2, "abc.def.ghi", {
+        onClosed: (_id, code) => closedBinary.resolve(code),
+        onFrame: (_id, frame) => received.push(frame),
+        onServerMessage: (_id, msg) => received.push(msg),
+      });
+      binSocket!.send(Buffer.alloc(65, 1), { binary: true });
+      expect(await closedBinary.promise).toBe(1007);
+      expect(received).toEqual([]);
+    } finally {
+      bounded.closeAll();
       await f.close();
     }
   });

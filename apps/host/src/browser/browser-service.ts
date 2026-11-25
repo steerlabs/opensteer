@@ -1084,7 +1084,6 @@ export class BrowserService {
   #pooledRunner: RunnerId | undefined;
   readonly #pooledOnly: boolean;
   #pooledUnavailableReason: (() => string | undefined) | undefined;
-  readonly #poolRequestHolds = new Map<string, Map<RunnerId, () => void>>();
   readonly #newSessionId: () => BrowserSessionId;
   readonly #poolWaiters = new Map<BrowserSessionId, Set<AbortController>>();
   readonly #poolAgentWaiters = new Map<
@@ -1307,7 +1306,6 @@ export class BrowserService {
   async retirePool(runnerId: RunnerId, reason: string): Promise<void> {
     const coordinator = this.#pools.get(runnerId);
     if (!coordinator) return;
-    this.#releasePoolRequestHoldsForRunner(runnerId);
     try {
       await coordinator.retire(reason);
     } finally {
@@ -2261,18 +2259,31 @@ export class BrowserService {
       (this.#targetResolver?.pendingAdmission?.(intended.runnerId) ||
         !this.#resolveTarget(intended))
     ) {
-      if (agent) {
-        await this.admitAgentBrowser(agent, "read-write", [], this.#repository, false, {
-          profileId,
-        });
-        await this.#requireAgentAccess(intended.runnerId);
-      }
+      const agentRecheck = agent
+        ? async () => {
+            await this.admitAgentBrowser(agent, "read-write", [], this.#repository, false, {
+              profileId,
+            });
+            await this.#requireAgentAccess(intended.runnerId);
+          }
+        : undefined;
+      if (agentRecheck) await agentRecheck();
       const wakeSignal = AbortSignal.any([
         this.#closing.signal,
         signal ?? AbortSignal.timeout(browserOpenWorkMs),
       ]);
-      const reservation = await this.#reservePool(intendedPool.gate, wakeSignal);
+      const reservation = agent
+        ? await this.#reserveAgentPool(
+            intendedPool.gate,
+            agent.agentBindingId,
+            undefined,
+            wakeSignal,
+            intended.runnerId,
+            agentRecheck,
+          )
+        : await this.#reservePool(intendedPool.gate, wakeSignal);
       try {
+        if (agentRecheck) await agentRecheck();
         if (this.#targetResolver?.pendingAdmission?.(intended.runnerId)) {
           await this.#targetResolver
             .waitForTarget?.(intended.runnerId, wakeSignal)
@@ -6896,60 +6907,10 @@ export class BrowserService {
     else this.#requestPins.delete(key);
     for (const id of new Set([...previous, ...pins].map((pin) => pin.sessionId)))
       this.#brokers.get(id)?.refreshSessionState();
-    const pooledRunners = new Set<RunnerId>();
-    for (const pin of pins) {
-      const broker = this.#brokers.get(pin.sessionId);
-      const runnerId =
-        broker?.computer?.runnerId ?? (broker?.pooled ? this.#pooledRunner : undefined);
-      if (runnerId && this.#pools.has(runnerId)) pooledRunners.add(runnerId);
-    }
-    this.#syncPoolRequestHold(key, pooledRunners);
-  }
-
-  #syncPoolRequestHold(key: string, nextRunners: ReadonlySet<RunnerId>): void {
-    const existing = this.#poolRequestHolds.get(key);
-    if (existing) {
-      for (const [runnerId, release] of existing) {
-        if (!nextRunners.has(runnerId)) {
-          release();
-          existing.delete(runnerId);
-        }
-      }
-      if (existing.size === 0) this.#poolRequestHolds.delete(key);
-    }
-    if (nextRunners.size === 0) return;
-    let holds = this.#poolRequestHolds.get(key);
-    for (const runnerId of nextRunners) {
-      if (holds?.has(runnerId)) continue;
-      const pool = this.#pools.get(runnerId);
-      if (!pool) continue;
-      if (!holds) {
-        holds = new Map();
-        this.#poolRequestHolds.set(key, holds);
-      }
-      holds.set(runnerId, pool.gate.holdIdle());
-    }
-  }
-
-  #releasePoolRequestHoldsForRunner(runnerId: RunnerId): void {
-    for (const [key, holds] of this.#poolRequestHolds) {
-      const release = holds.get(runnerId);
-      if (!release) continue;
-      release();
-      holds.delete(runnerId);
-      if (holds.size === 0) this.#poolRequestHolds.delete(key);
-    }
   }
 
   observeRequest(request: Request): void {
     const payload = request.payload;
-    if (payload.kind === "browser.access") {
-      this.#syncPoolRequestHold(
-        request.id,
-        request.status === "pending" ? new Set(this.#pools.keys()) : new Set(),
-      );
-      return;
-    }
     if (payload.kind !== "browser.sign-in" && payload.kind !== "browser.password-sign-in") return;
     const sessionId =
       "sessionId" in payload ? BrowserSessionIdSchema.parse(payload.sessionId) : null;
@@ -7449,10 +7410,6 @@ export class BrowserService {
     this.#draining.clear();
     for (const coordinator of this.#pools.values()) coordinator.close();
     this.#pools.clear();
-    for (const holds of this.#poolRequestHolds.values()) {
-      for (const release of holds.values()) release();
-    }
-    this.#poolRequestHolds.clear();
     this.#closePromise = (async () => {
       await this.#runPlaces.close();
       await Promise.allSettled(this.#sessionOperations.values());

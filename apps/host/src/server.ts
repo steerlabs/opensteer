@@ -3752,7 +3752,7 @@ function attachRunnerAuxiliarySocket(options: {
           await dispatch.send({
             error: {
               code: "forbidden",
-              message: "This Cloud Computer uses a managed pooled browser.",
+              message: "This Cloud Computer has its own browser.",
               retryable: false,
             },
             type: "host.auxiliary.rejected",

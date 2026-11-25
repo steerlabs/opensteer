@@ -15,9 +15,6 @@ import type {
  * admitted the socket; this hub only remembers which socket belongs to which
  * Runner and carries frames between it and the relay.
  */
-export const maxRunnerBrowserMessageBytes = 2 * 1024 * 1024;
-export const maxRunnerBrowserBinaryBytes = 10 * 1024 * 1024;
-
 export interface RunnerBrowserPeer {
   readonly id: string;
   close(code: number, reason: string): void;
@@ -148,12 +145,6 @@ export class RunnerBrowserHub implements RunnerBrowserRegistry {
 
   async handleMessage(peer: RunnerBrowserPeer, message: BrowserRelayEvent): Promise<void> {
     const entry = this.#requireEntry(peer);
-    if (Buffer.byteLength(JSON.stringify(message), "utf8") > maxRunnerBrowserMessageBytes) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "The browser relay message exceeds the size limit.",
-      });
-    }
     for (const hooks of this.#hooks) {
       if (hooks.onMessage) await hooks.onMessage(entry.stream, message);
     }
@@ -161,12 +152,6 @@ export class RunnerBrowserHub implements RunnerBrowserRegistry {
 
   async handleBinary(peer: RunnerBrowserPeer, value: Buffer): Promise<void> {
     const entry = this.#requireEntry(peer);
-    if (value.byteLength > maxRunnerBrowserBinaryBytes) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "The browser relay binary frame exceeds the size limit.",
-      });
-    }
     const decoded = decodeBrowserRelayFrame(value);
     for (const hooks of this.#hooks) {
       if (hooks.onFrame) await hooks.onFrame(entry.stream, decoded);

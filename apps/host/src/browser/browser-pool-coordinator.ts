@@ -323,9 +323,41 @@ export class BrowserPoolCoordinator {
   /** The controller's reason for the last start or wake it refused; cleared once one applies. */
   #refused: { readonly reason: string; readonly since: Date } | undefined;
   #idleTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Independent relay-attach lane: never stands ahead of status, Stop, deadlines, repair or park. */
+  readonly #relayAdapter:
+    | {
+        readonly attached: () => boolean;
+        readonly attach: (signal?: AbortSignal) => Promise<void>;
+      }
+    | undefined;
+  #onRunningAttachedInstance: string | undefined;
+  #relayRunning: Promise<void> | undefined;
+  #relayInFlight: Promise<void> | undefined;
+  #relayChanged = new AbortController();
+  #relayAbort: AbortController | undefined;
+  #relayUnknownSince: number | undefined;
+  #relayUnreachable = false;
+  #relayFailingSince: number | undefined;
+  #relaySuspectedAt: number | undefined;
+  #relayFailed = false;
 
   constructor(options: BrowserPoolCoordinatorOptions) {
     this.#options = options;
+    if (options.relay) {
+      this.#relayAdapter = options.relay;
+    } else if (options.onRunning) {
+      const onRunning = options.onRunning;
+      this.#relayAdapter = {
+        attached: () =>
+          this.#slot?.phase === "running" &&
+          this.#onRunningAttachedInstance === this.#slot.instanceId,
+        attach: async (signal) => {
+          const instanceId = this.#slot?.instanceId;
+          await onRunning(signal);
+          if (this.#slot?.instanceId === instanceId) this.#onRunningAttachedInstance = instanceId;
+        },
+      };
+    }
     this.#journal = new BrowserPoolControllerJournal(
       options.database,
       options.controller,
@@ -360,7 +392,6 @@ export class BrowserPoolCoordinator {
       !this.gate.admits ||
       this.gate.held > 0 ||
       this.gate.viewers > 0 ||
-      this.gate.idleHolds > 0 ||
       this.#parkWanted
     ) {
       this.#clearIdleTimer();
@@ -397,6 +428,7 @@ export class BrowserPoolCoordinator {
     this.#closed = true;
     clearInterval(this.#pruning);
     this.#clearIdleTimer();
+    this.#stopRelay();
     // A closed coordinator's step under way writes nothing more: its signal ends it, as a
     // removal's does (the search's fixed seed 1: a Home restarted, its old step's Start was
     // recorded after the next Home had released the device).
@@ -592,8 +624,7 @@ export class BrowserPoolCoordinator {
   /** Asks the loop to park; resolves with where the browser ended. Vetoed at once if it cannot. */
   tryPark(): Promise<"parked" | "vetoed"> {
     if (this.#parkWanted) return this.#parkWanted.promise;
-    if (!this.gate.admits || this.gate.held || this.gate.viewers || this.gate.idleHolds)
-      return Promise.resolve("vetoed");
+    if (!this.gate.admits || this.gate.held || this.gate.viewers) return Promise.resolve("vetoed");
     this.#parkWanted = Promise.withResolvers();
     this.#kick();
     return this.#parkWanted.promise;
@@ -602,35 +633,149 @@ export class BrowserPoolCoordinator {
   /** The in-process browser relay detached while the guest may still be running: re-attach it. */
   relayDetached(): void {
     if (this.#closed || this.#ended) return;
+    this.#onRunningAttachedInstance = undefined;
     this.#options.onStateChanged?.();
-    this.#kick();
+    this.#kickRelay();
   }
 
   /** Ensures the in-process browser relay is attached while the guest is open for traffic. */
   async ensureRelayAttached(signal?: AbortSignal): Promise<void> {
-    if (!this.#options.relay || this.#options.relay.attached()) return;
-    try {
-      await this.#attachRelay(signal);
-    } catch (error) {
-      this.#options.onError?.(error);
-      this.#options.onStateChanged?.();
-      this.#kick();
-      throw error;
+    const adapter = this.#relayAdapter;
+    if (!adapter || adapter.attached()) return;
+    this.#ensureRelayLane();
+    if (this.#relayInFlight) {
+      await untilSettledOrAborted(this.#relayInFlight, signal);
+      return;
+    }
+    // The background relay lane is in backoff sleep; run one caller-requested attempt without
+    // resetting or skipping the lane's own pacing.
+    await untilSettledOrAborted(adapter.attach(signal), signal);
+    this.#onRelayAttached();
+  }
+
+  #relayNeedsAttach(): boolean {
+    return (
+      !this.#closed &&
+      !this.#ended &&
+      !this.#released &&
+      !this.#over &&
+      !this.#options.drain &&
+      this.#slot?.phase === "running" &&
+      this.#relayAdapter !== undefined &&
+      !this.#relayAdapter.attached()
+    );
+  }
+
+  #ensureRelayLane(): void {
+    if (!this.#relayNeedsAttach() || this.#relayRunning) return;
+    this.#relayRunning = this.#runRelay().finally(() => {
+      this.#relayRunning = undefined;
+    });
+  }
+
+  #kickRelay(): void {
+    const previous = this.#relayChanged;
+    this.#relayChanged = new AbortController();
+    previous.abort();
+    if (this.#relayNeedsAttach()) {
+      this.#ensureRelayLane();
+    } else if (this.#relayAbort) {
+      this.#relayAbort.abort(new BrowserPoolAdmissionClosed("The pooled browser is not running."));
     }
   }
 
-  async #attachRelay(signal?: AbortSignal): Promise<void> {
-    const attach = this.#options.relay?.attach ?? this.#options.onRunning;
-    if (!attach) return;
-    try {
-      await attach(signal);
-      this.#options.onStateChanged?.();
-    } catch (error) {
-      if (signal?.aborted || this.#closed || this.#released) throw error;
-      if (error instanceof BrowserPoolRelayAttachError) throw error;
-      throw new BrowserPoolRelayAttachError("The pooled browser relay could not attach.", {
-        cause: error,
-      });
+  #stopRelay(): void {
+    const previous = this.#relayChanged;
+    this.#relayChanged = new AbortController();
+    previous.abort();
+    this.#relayAbort?.abort(new BrowserPoolAdmissionClosed("The pooled browser relay stopped."));
+  }
+
+  #onRelayAttached(): void {
+    this.#relayFailed = false;
+    this.#relayUnknownSince = undefined;
+    this.#relayFailingSince = undefined;
+    this.#relaySuspectedAt = undefined;
+    const wasUnreachable = this.#relayUnreachable;
+    this.#relayUnreachable = false;
+    this.#options.onStateChanged?.();
+    if (wasUnreachable && !this.#unreachable) void this.#announce(this.#changed.signal);
+    this.#kick();
+  }
+
+  /**
+   * Independent relay-attachment lane (M1): paced 100 ms doubling to 30 s, single-flight, never
+   * standing in front of status reads, Stop endings, session deadlines, repair, park, or removal.
+   * Persistent relay failure reports unreachability and consults the account without discarding
+   * the guest.
+   */
+  async #runRelay(): Promise<void> {
+    let attempts = 0;
+    while (!this.#closed && !this.#ended) {
+      if (!this.#relayNeedsAttach()) {
+        if (this.#relayAdapter?.attached()) this.#onRelayAttached();
+        return;
+      }
+      const changed = this.#relayChanged.signal;
+      const attemptAbort = new AbortController();
+      this.#relayAbort = attemptAbort;
+      const attemptSignal = AbortSignal.any([
+        attemptAbort.signal,
+        AbortSignal.timeout(defaultStepMs),
+      ]);
+      const run = this.#relayAdapter!.attach(attemptSignal);
+      this.#relayInFlight = run;
+      try {
+        await run;
+        if (this.#relayInFlight === run) this.#relayInFlight = undefined;
+        if (this.#relayAbort === attemptAbort) this.#relayAbort = undefined;
+        if (this.#closed || this.#ended || this.#released || this.#over) return;
+        attempts = 0;
+        this.#onRelayAttached();
+        return;
+      } catch (error) {
+        if (this.#relayInFlight === run) this.#relayInFlight = undefined;
+        if (this.#relayAbort === attemptAbort) this.#relayAbort = undefined;
+        if (
+          this.#closed ||
+          this.#ended ||
+          this.#released ||
+          this.#over ||
+          this.#slot?.phase !== "running"
+        ) {
+          return;
+        }
+        this.#relayFailed = true;
+        this.#options.onError?.(error);
+        const at = Date.now();
+        this.#relayUnknownSince ??= at;
+        this.#relayFailingSince ??= at;
+        const suspectBound = this.#options.unansweredMs ?? unansweredMs;
+        const sinceSuspect = at - (this.#relaySuspectedAt ?? this.#relayFailingSince);
+        let wait = Math.min(
+          (this.#options.retryMs ?? 100) * 2 ** Math.min(attempts++, 16),
+          this.#options.unansweredRetryMaxMs ?? unansweredRetryMaxMs,
+        );
+        if (sinceSuspect >= suspectBound) {
+          this.#relaySuspectedAt = at;
+          this.#options.onSuspect?.();
+        } else {
+          wait = Math.min(wait, suspectBound - sinceSuspect);
+        }
+        if (!this.#relayUnreachable) {
+          const left =
+            this.#relayUnknownSince + (this.#options.unreachableAfterMs ?? unreachableAfterMs) - at;
+          if (left <= 0) {
+            this.#relayUnreachable = true;
+            this.#options.onStateChanged?.();
+            await this.#announce(changed);
+          } else {
+            wait = Math.min(wait, left);
+          }
+        }
+        this.#options.onStateChanged?.();
+        await delay(Math.max(1, wait), undefined, { signal: changed }).catch(() => undefined);
+      }
     }
   }
 
@@ -669,6 +814,7 @@ export class BrowserPoolCoordinator {
     this.#released ??= { ended: new Set(), noted: Promise.withResolvers() };
     for (const sessionId of ended) this.#released.ended.add(sessionId);
     this.gate.set({ hold: "released" });
+    this.#stopRelay();
     // A removal goes first: the step under way stops awaiting, and the next turn is the release.
     if (this.#step && this.#step.name !== "release")
       this.#step.preempt.abort(new BrowserPoolAdmissionClosed("This device was removed."));
@@ -750,8 +896,17 @@ export class BrowserPoolCoordinator {
         }
         if (!step) {
           failures = 0;
-          // Nothing to do until something changes, or the next status read of a running guest.
-          await this.#sleep(this.#options.statusEveryMs ?? statusEveryMs, changed, "idle");
+          // Nothing to do until something changes, the next status read, or an active lost-channel
+          // session's deadline expires while the relay is detached.
+          let idleMs = this.#options.statusEveryMs ?? statusEveryMs;
+          if (this.#lost.size) {
+            const now = Date.now();
+            for (const { since } of this.#lost.values()) {
+              const left = since + this.#channelDeadlineMs - now;
+              idleMs = Math.min(idleMs, Math.max(10, left));
+            }
+          }
+          await this.#sleep(idleMs, changed, "idle");
           continue;
         }
         // Everything the step awaits takes its signal, or has its own bound, so a deadline or a
@@ -812,10 +967,7 @@ export class BrowserPoolCoordinator {
         this.#options.onError?.(error);
         // Unanswered, or refused unsigned, for long: the account may have a new target (a term
         // superseded is answered by the old host only with an unsigned refusal).
-        if (
-          !(error instanceof BrowserPoolNotStarted) &&
-          !(error instanceof BrowserPoolRelayAttachError)
-        ) {
+        if (!(error instanceof BrowserPoolNotStarted)) {
           const at = Date.now();
           failingSince ??= at;
           const bound = this.#options.unansweredMs ?? unansweredMs;
@@ -861,21 +1013,6 @@ export class BrowserPoolCoordinator {
         if (error instanceof BrowserPoolPending) {
           // An answer, not yet the one wanted: asked again, later each time, never counted.
           await this.#answered();
-          await this.#sleep(
-            Math.min(
-              (this.#options.retryMs ?? 100) * 2 ** Math.min(unanswered++, 16),
-              this.#options.unansweredRetryMaxMs ?? unansweredRetryMaxMs,
-            ),
-            changed,
-            "pending",
-          );
-          continue;
-        }
-        if (error instanceof BrowserPoolRelayAttachError) {
-          // Home-side relay attach failure: the guest itself answered and is running. Never
-          // count this toward discarding the person's live guest; retry with bounded backoff.
-          await this.#answered();
-          this.#options.onStateChanged?.();
           await this.#sleep(
             Math.min(
               (this.#options.retryMs ?? 100) * 2 ** Math.min(unanswered++, 16),
@@ -967,18 +1104,7 @@ export class BrowserPoolCoordinator {
         run: () => this.#recoverStep(),
         ...(slot ? { discards: true } : {}),
       };
-    if (slot.phase === "running" && this.#options.relay && !this.#options.relay.attached())
-      return { name: "attach-relay", run: (signal) => this.#attachRelay(signal) };
-    const withoutChannel = slot.phase === "running" ? await this.#withoutChannel() : [];
-    // A removal or a restart asked during that read is chosen first: selection runs again.
-    if (this.#released || this.#restartWanted) return this.#next();
-    if (withoutChannel.length)
-      return {
-        name: "reconnect",
-        // One attempt is a step like any other; the sessions' window decides when they end.
-        deadlineMs: Math.min(this.#channelDeadlineMs, defaultStepMs),
-        run: (signal) => this.#reconnectStep(slot, withoutChannel, signal),
-      };
+    // Stop endings use the control API directly and never wait on the relay or session reconnects.
     const ending =
       slot.phase === "running" ? ((await this.#adopter?.ending?.(this.#own)) ?? []) : [];
     if (this.#released || this.#restartWanted) return this.#next();
@@ -986,6 +1112,22 @@ export class BrowserPoolCoordinator {
       // A closing row blocks a park anyway: one asked now is vetoed rather than kept waiting.
       if (this.#parkWanted) this.#settlePark("vetoed");
       return { name: "end", run: (signal) => this.#endStep(fenceOf(slot), ending, signal) };
+    }
+    const withoutChannel = slot.phase === "running" ? await this.#withoutChannel() : [];
+    // A removal or a restart asked during that read is chosen first: selection runs again.
+    if (this.#released || this.#restartWanted) return this.#next();
+    if (withoutChannel.length) {
+      const now = Date.now();
+      const anyPastDeadline = withoutChannel.some(
+        (sessionId) => (this.#lost.get(sessionId)?.since ?? now) + this.#channelDeadlineMs <= now,
+      );
+      if (anyPastDeadline || !this.#relayAdapter || this.#relayAdapter.attached())
+        return {
+          name: "reconnect",
+          // One attempt is a step like any other; the sessions' window decides when they end.
+          deadlineMs: Math.min(this.#channelDeadlineMs, defaultStepMs),
+          run: (signal) => this.#reconnectStep(slot, withoutChannel, signal),
+        };
     }
     // A repair belongs to the instance it was decided for (W13): a fresh guest, or any other
     // instance in the slot, has none of it.
@@ -1062,6 +1204,11 @@ export class BrowserPoolCoordinator {
     // A park that failed after D ends where the browser settled.
     if (this.#parkSettling && slot?.phase === "parked") this.#settlePark("parked");
     if (this.#parkSettling && slot?.phase === "running") this.#settlePark("vetoed");
+    if (slot?.phase === "running" && this.#recovered && this.#relayNeedsAttach()) {
+      this.#ensureRelayLane();
+    } else if (slot?.phase !== "running" || this.#released || this.#over) {
+      this.#relayAbort?.abort(new BrowserPoolAdmissionClosed("The pooled browser is not running."));
+    }
     this.#options.onStateChanged?.();
   }
 
@@ -1166,6 +1313,7 @@ export class BrowserPoolCoordinator {
       this.#refused = { reason, since: new Date() };
       this.#display = { phase: "failed", since: new Date() };
     }
+    this.#stopRelay();
     this.#overEnd ??= { done: false, settle, ended: Promise.withResolvers() };
     this.#overEnd.settle ||= settle;
     this.#publish(this.#slot);
@@ -1430,9 +1578,9 @@ export class BrowserPoolCoordinator {
         restartWanted: [],
       });
     this.#restartWanted = undefined;
-    if (this.#slot?.phase === "running") await this.#attachRelay(this.#signal);
     this.#publish(this.#slot);
     wanted.done.resolve();
+    if (this.#slot?.phase === "running") this.#kickRelay();
   }
 
   /** A park intent whose commit reply was lost is read back before anything else admits. */
@@ -1469,28 +1617,31 @@ export class BrowserPoolCoordinator {
     await this.#recover();
     // Sessions a Home restart left without a channel are counted before admission opens.
     if (this.#slot?.phase === "running") {
-      await this.#attachRelay(this.#signal);
       await this.#withoutChannel();
     }
     this.#recovered = true;
     this.#publish(this.#slot);
     this.#recovering.resolve();
+    if (this.#slot?.phase === "running") this.#kickRelay();
   }
 
   async #wakeStep(): Promise<void> {
     await this.#wake();
-    if (this.#slot?.phase === "running") await this.#attachRelay(this.#signal);
+    this.#publish(this.#slot);
+    if (this.#slot?.phase === "running") this.#kickRelay();
   }
 
   async #discardRead(reason: string): Promise<void> {
     const slot = await this.#read();
     if (!slot) throw new BrowserPoolAdmissionClosed("The pooled browser has no slot yet.");
     await this.#discard(slot, reason);
-    if (this.#slot?.phase === "running") await this.#attachRelay(this.#signal);
+    // Clear discard intent once the fresh guest is durably installed, before and independent of
+    // relay attachment (M3).
     this.#discardWanted = undefined;
     this.#recovered = true;
     this.#publish(this.#slot);
     this.#recovering.resolve();
+    if (this.#slot?.phase === "running") this.#kickRelay();
   }
 
   async #parkStep(repair = false): Promise<void> {
@@ -1973,7 +2124,7 @@ export class BrowserPoolCoordinator {
       });
       const attempt = slot.attachmentGeneration;
       this.#signal?.throwIfAborted();
-      await this.#attachRelay(this.#signal);
+      await this.ensureRelayAttached(this.#signal);
       if (this.#adopter)
         tabLosses = await this.#adopter.reattach({
           sessions: state.adoption.sessions,
@@ -2106,6 +2257,7 @@ export class BrowserPoolCoordinator {
     this.#unknownSince = undefined;
     if (!this.#unreachable) return;
     this.#unreachable = false;
+    if (this.#relayUnreachable) return;
     this.#options.onStateChanged?.();
     await this.#announce(this.#changed.signal);
   }
@@ -2120,8 +2272,10 @@ export class BrowserPoolCoordinator {
         readonly phase: "starting" | "restarting" | "failed" | "waking" | "running" | "parked";
         readonly since: Date;
         readonly refused?: string;
-        /** Calls have gone unanswered past their bound: the browser cannot be reached now. */
+        /** Calls or relay attachment have gone unanswered past their bound: cannot be reached now. */
         readonly unreachable?: true;
+        /** The in-process relay failed to attach while the guest is running. */
+        readonly relayFailed?: true;
         /** The running guest's egress proxy is down: the browser cannot reach the internet. */
         readonly proxyDown?: true;
       }
@@ -2129,6 +2283,8 @@ export class BrowserPoolCoordinator {
     // A wake asked while nothing answers: the slot is still parked (its phase changes only on
     // the guest's word), and the person is shown it waking.
     const unknown = this.#unknownSince === undefined ? undefined : new Date(this.#unknownSince);
+    const relayUnknown =
+      this.#relayUnknownSince === undefined ? undefined : new Date(this.#relayUnknownSince);
     // A running guest not recovered yet while nothing answers (a Home restart against a host
     // that does not answer) is not ready either: shown waking from the first unanswered call,
     // never as running (W6).
@@ -2149,15 +2305,22 @@ export class BrowserPoolCoordinator {
         : undefined;
     const shown = this.#display ?? waking ?? repair;
     const proxyDown = this.#proxyDown && !repairing;
+    const isUnreachable = this.#unreachable || this.#relayUnreachable;
+    const relayFailed =
+      this.#relayFailed && this.#relayAdapter !== undefined && !this.#relayAdapter.attached();
     const unreachable = {
-      ...(this.#unreachable ? { unreachable: true as const } : {}),
+      ...(isUnreachable ? { unreachable: true as const } : {}),
+      ...(relayFailed ? { relayFailed: true as const } : {}),
       ...(proxyDown ? { proxyDown: true as const } : {}),
     };
     const refused = this.#refused;
     if (!refused) {
-      if (!this.#unreachable && !proxyDown) return shown;
+      if (!isUnreachable && !relayFailed && !proxyDown) return shown;
       const phase = this.#slot?.phase === "parked" ? ("parked" as const) : ("running" as const);
-      return { ...(shown ?? { phase, since: unknown ?? new Date() }), ...unreachable };
+      return {
+        ...(shown ?? { phase, since: unknown ?? relayUnknown ?? new Date() }),
+        ...unreachable,
+      };
     }
     return {
       ...(shown ?? { phase: "failed" as const, since: refused.since }),
@@ -2576,6 +2739,25 @@ function pendingRestart(slot: BrowserPoolSlot): string[] {
 function unrecorded(slot: BrowserPoolSlot | undefined, keys: ReadonlySet<string>): string[] {
   const handled = new Set(slot ? restartKeysOf(slot) : []);
   return [...keys].filter((key) => !handled.has(key));
+}
+
+function untilSettledOrAborted<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 /** Resolves when `signal` aborts. */

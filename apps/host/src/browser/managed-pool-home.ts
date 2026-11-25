@@ -8,6 +8,8 @@ import { createPublicKey, randomUUID, type KeyObject } from "node:crypto";
 import type { Kysely } from "kysely";
 import { OpensteerError, type EnvironmentId, type RunnerId } from "@opensteer/core";
 import {
+  BrowserPoolAdmissionClosed,
+  listAllBrowserPoolRetiredTargets,
   listBrowserPoolRetiredTargets,
   retireBrowserPoolTarget,
   type BrowserPoolRetiredTarget,
@@ -15,6 +17,7 @@ import {
 } from "@opensteer/database";
 import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
 import { RunnerAuxiliaryFrameFenceSchema, type RunnerDescriptor } from "@opensteer/protocol";
+import { maxBrowserRelayEnvelopeBytes } from "@opensteer/protocol/browser-relay";
 import {
   BrowserModuleRelay,
   LocalBrowserRuntimeBridge,
@@ -35,12 +38,7 @@ import {
   type ManagedBrowserPoolAccount,
   type ManagedBrowserPoolTarget,
 } from "./managed-pool-target.js";
-import {
-  maxRunnerBrowserBinaryBytes,
-  maxRunnerBrowserMessageBytes,
-  type RunnerBrowserHub,
-  type RunnerBrowserPeer,
-} from "./runner-browser-hub.js";
+import type { RunnerBrowserHub, RunnerBrowserPeer } from "./runner-browser-hub.js";
 import { BrowserRuntimeRelayToHostMessageSchema } from "./runner-browser-runtime.js";
 
 /** The runtime id the Cloud Computer's Runner reports for its browser (deploy/home/compose.yaml). */
@@ -48,6 +46,13 @@ export const pooledBrowserRuntimeId = "browser-main";
 
 /** How long a pooled browser sits open with nobody holding it before the Home parks it (5 min). */
 export const defaultManagedBrowserPoolIdleMs = 5 * 60_000;
+
+/**
+ * Raw ingress byte bounds at the pooled guest boundary (matching the Host's Runner WebSocket
+ * ingress bounds at `apps/host/src/server.ts`), enforced before parsing guest JSON or frames.
+ */
+const maxPooledGuestTextFrameBytes = 1 * 1_024 * 1_024;
+const maxPooledGuestBinaryFrameBytes = maxBrowserRelayEnvelopeBytes;
 
 /** Operator-facing status of a pooled Cloud Computer's browser target. */
 export type ManagedBrowserPoolStatus = "no-target" | "preparing" | "ready" | "unavailable";
@@ -65,7 +70,27 @@ export interface ManagedBrowserPoolHome {
 interface ManagedPooledRelay {
   isAttached(): boolean;
   ensureAttached(signal?: AbortSignal): Promise<void>;
-  detach(): void;
+  /** Permanently ends this target's relay, cancelling any in-flight attach and detaching its peer. */
+  retire(): void;
+}
+
+function untilSettledOrAborted<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 /**
@@ -102,6 +127,9 @@ export function pooledBrowserModuleDescriptor(
  * Attaches the Host's own `LocalBrowserRuntimeBridge({ transport })` + `BrowserModuleRelay`
  * directly to `RunnerBrowserHub` for the pooled Cloud Computer's Runner, so the Host drives the
  * pool guest over its mTLS relay tunnels without any local browser container or Runner relay.
+ *
+ * Every attach is fenced by this target's lifetime abort controller (M2): a retired target
+ * aborts any in-flight health/inventory read and can never publish a peer over a replacement.
  */
 function createManagedPooledRelay(input: {
   readonly browserRelay: RunnerBrowserHub;
@@ -114,6 +142,8 @@ function createManagedPooledRelay(input: {
   readonly isAgentsStopped?: (() => boolean) | undefined;
   readonly onDetached?: (() => void) | undefined;
 }): ManagedPooledRelay {
+  const targetLifetime = new AbortController();
+  let retired = false;
   let attached = false;
   let attaching: Promise<void> | undefined;
   let activePeer: RunnerBrowserPeer | undefined;
@@ -130,7 +160,24 @@ function createManagedPooledRelay(input: {
     renewalTimer = undefined;
   };
 
-  const detach = () => {
+  const cleanupPeer = (
+    peer: RunnerBrowserPeer | undefined,
+    relay: BrowserModuleRelay | undefined,
+  ) => {
+    if (peer && activePeer === peer) {
+      clearRenewal();
+      activePeer = undefined;
+      activeRelay = undefined;
+      attached = false;
+    }
+    if (peer) input.browserRelay.detach(peer, "superseded");
+    relay?.detach();
+  };
+
+  const retire = () => {
+    if (retired) return;
+    retired = true;
+    targetLifetime.abort(new BrowserPoolAdmissionClosed("This browser target was retired."));
     clearRenewal();
     const peer = activePeer;
     const relay = activeRelay;
@@ -142,16 +189,26 @@ function createManagedPooledRelay(input: {
   };
 
   const ensureAttached = async (signal?: AbortSignal): Promise<void> => {
+    signal?.throwIfAborted();
+    if (retired || targetLifetime.signal.aborted)
+      throw new BrowserPoolAdmissionClosed("This browser target was retired.");
     if (attached) return;
-    if (attaching) return attaching;
+    if (attaching) {
+      await untilSettledOrAborted(attaching, signal);
+      return;
+    }
     const run = (async () => {
-      signal?.throwIfAborted();
+      const targetSignal = targetLifetime.signal;
+      targetSignal.throwIfAborted();
       const bridge = new LocalBrowserRuntimeBridge({
         transport: input.transport,
         runtimeId: pooledBrowserRuntimeId,
+        maxTextFrameBytes: maxPooledGuestTextFrameBytes,
+        maxBinaryFrameBytes: maxPooledGuestBinaryFrameBytes,
       });
-      const capabilities = await bridge.capabilities();
-      signal?.throwIfAborted();
+      const capabilities = await bridge.capabilities(targetSignal);
+      if (retired || targetSignal.aborted)
+        throw new BrowserPoolAdmissionClosed("This browser target was retired.");
       const relay = new BrowserModuleRelay(bridge, input.isAgentsStopped ?? false);
       const fence = RunnerAuxiliaryFrameFenceSchema.parse({
         runnerId: input.runnerId,
@@ -172,13 +229,11 @@ function createManagedPooledRelay(input: {
             activePeer = undefined;
             activeRelay = undefined;
             attached = false;
-            input.onDetached?.();
+            if (!retired) input.onDetached?.();
           }
         },
         send: (message) => relay.handleFrame(Buffer.from(JSON.stringify(message), "utf8"), false),
       };
-      activePeer = peer;
-      activeRelay = relay;
       const browserModule = pooledBrowserModuleDescriptor(capabilities, {
         runtimeId: pooledBrowserRuntimeId,
         passkeys: input.passkeys,
@@ -212,7 +267,7 @@ function createManagedPooledRelay(input: {
         send: async (frame: Buffer | string, binary: boolean) => {
           if (binary) {
             const buffer = Buffer.isBuffer(frame) ? frame : Buffer.from(frame);
-            if (buffer.byteLength > maxRunnerBrowserBinaryBytes) {
+            if (buffer.byteLength > maxPooledGuestBinaryFrameBytes) {
               throw new OpensteerError({
                 code: "bad_request",
                 message: "The browser relay binary frame exceeds the size limit.",
@@ -224,7 +279,7 @@ function createManagedPooledRelay(input: {
           const textBytes = Buffer.isBuffer(frame)
             ? frame.byteLength
             : Buffer.byteLength(frame, "utf8");
-          if (textBytes > maxRunnerBrowserMessageBytes) {
+          if (textBytes > maxPooledGuestTextFrameBytes) {
             throw new OpensteerError({
               code: "bad_request",
               message: "The browser relay message exceeds the size limit.",
@@ -237,32 +292,50 @@ function createManagedPooledRelay(input: {
             await input.browserRelay.handleMessage(peer, parsed);
         },
       };
+      // Fence check immediately before publishing the peer to the hub.
+      if (retired || targetSignal.aborted)
+        throw new BrowserPoolAdmissionClosed("This browser target was retired.");
+      activePeer = peer;
+      activeRelay = relay;
       try {
         input.browserRelay.attach(peer, buildStream());
-        await relay.attach(relayStream);
+        await relay.attach(relayStream, targetSignal);
+        // Fence check again after inventory/reconciliation completes.
+        if (retired || targetSignal.aborted || activePeer !== peer) {
+          cleanupPeer(peer, relay);
+          throw new BrowserPoolAdmissionClosed("This browser target was retired.");
+        }
         attached = true;
         // Keep the synthetic stream lease well under Node's 32-bit setTimeout limit while never expiring.
         renewalTimer = setInterval(() => {
-          if (activePeer === peer) input.browserRelay.renew(peer, buildStream());
+          if (!retired && activePeer === peer) input.browserRelay.renew(peer, buildStream());
         }, streamLeaseMs / 4);
         renewalTimer.unref();
       } catch (error) {
-        if (activePeer === peer) detach();
+        cleanupPeer(peer, relay);
         throw error;
       }
     })();
     attaching = run;
+    // Prevent unhandled rejection when all caller signals abort before the single-flight run settles.
+    void run.catch(() => undefined);
     try {
-      await run;
+      await untilSettledOrAborted(run, signal);
     } finally {
-      if (attaching === run) attaching = undefined;
+      if (attaching === run) {
+        void run
+          .catch(() => undefined)
+          .finally(() => {
+            if (attaching === run) attaching = undefined;
+          });
+      }
     }
   };
 
   return {
-    isAttached: () => attached,
+    isAttached: () => attached && !retired,
     ensureAttached,
-    detach,
+    retire,
   };
 }
 
@@ -280,6 +353,8 @@ export function managedBrowserPoolCoordinator(input: {
   readonly statusEveryMs?: number;
   readonly retryMs?: number;
   readonly unansweredRetryMaxMs?: number;
+  readonly unreachableAfterMs?: number;
+  readonly unansweredMs?: number;
   readonly relay?: BrowserPoolCoordinatorOptions["relay"];
   readonly onRunning?: (signal?: AbortSignal) => Promise<void>;
   readonly parts?: ReturnType<typeof managedBrowserPool>;
@@ -305,16 +380,38 @@ export function managedBrowserPoolCoordinator(input: {
     ...(input.unansweredRetryMaxMs !== undefined
       ? { unansweredRetryMaxMs: input.unansweredRetryMaxMs }
       : {}),
+    ...(input.unreachableAfterMs !== undefined
+      ? { unreachableAfterMs: input.unreachableAfterMs }
+      : {}),
+    ...(input.unansweredMs !== undefined ? { unansweredMs: input.unansweredMs } : {}),
     ...(input.relay ? { relay: input.relay } : {}),
     ...(input.onRunning ? { onRunning: input.onRunning } : {}),
     ...(input.drain ? { drain: input.drain } : {}),
   });
 }
 
+interface AppliedPool {
+  readonly runnerId: RunnerId;
+  readonly target: ManagedBrowserPoolTarget;
+  readonly targetKey: string;
+  readonly coordinator: BrowserPoolCoordinator;
+  readonly relay: ManagedPooledRelay | undefined;
+}
+
+interface PendingRetirement {
+  readonly runnerId: RunnerId;
+  readonly target: ManagedBrowserPoolTarget;
+  readonly reason: "runner-replaced" | "browser-replaced";
+  poolRetired: boolean;
+  dbRetired: boolean;
+}
+
 /**
- * Starts a pooled Cloud Computer's Home's browser: a target it already read is chosen at once (its
- * sessions were kept by the startup sweep), and the target service reads the account for any
- * other. Call after `BrowserService.initialize` and `BrowserService.setPoolSigner`.
+ * Starts a pooled Cloud Computer's Home's browser: a target it already read is placed as desired
+ * at once (its sessions were kept by the startup sweep), and the target service reads the account
+ * for any other. One level-triggered reconciliation loop (M4) compares desired `{ runnerId,
+ * target }` against what is applied, retires what differs durably, and adopts what is desired.
+ * Call after `BrowserService.initialize` and `BrowserService.setPoolSigner`.
  */
 export async function startManagedBrowserPool(input: {
   readonly database: Kysely<DatabaseSchema>;
@@ -347,22 +444,32 @@ export async function startManagedBrowserPool(input: {
 }): Promise<ManagedBrowserPoolHome> {
   const keys = input.keys ?? (await loadOrCreateManagedBrowserPoolKeys(input.dataDirectory));
   const record = databaseManagedBrowserPoolTargetRecord(input.database, input.cloudComputerId);
-  let activeRunnerId: RunnerId | undefined = input.runnerId;
-  let current: string | undefined;
-  let currentRunnerId: RunnerId | undefined;
-  let currentTarget: ManagedBrowserPoolTarget | undefined;
-  let currentCoordinator: BrowserPoolCoordinator | undefined;
-  let currentRelay: ManagedPooledRelay | undefined;
+  let desiredRunnerId: RunnerId | undefined = input.runnerId;
+  let desiredTarget: ManagedBrowserPoolTarget | undefined;
+  let desiredTargetKey: string | undefined;
+  let applied: AppliedPool | undefined;
+  let pendingRetirement: PendingRetirement | undefined;
+  let reconcileError: unknown;
+  let startupDrained = false;
   let notReadyStatus: "no-target" | "preparing" = "no-target";
   let lastStatus: ManagedBrowserPoolStatus = "no-target";
   let closed = false;
 
   const computeStatus = (): ManagedBrowserPoolStatus => {
-    if (!currentCoordinator) return notReadyStatus;
-    const phase = currentCoordinator.gate.phase;
-    const report = currentCoordinator.report();
-    const relayReady = currentRelay ? currentRelay.isAttached() : true;
-    if (phase === "released" || phase === "unavailable" || report?.unreachable || report?.refused)
+    if (!applied) {
+      if (reconcileError !== undefined || pendingRetirement !== undefined) return "unavailable";
+      return notReadyStatus;
+    }
+    const phase = applied.coordinator.gate.phase;
+    const report = applied.coordinator.report();
+    const relayReady = applied.relay ? applied.relay.isAttached() : true;
+    if (
+      phase === "released" ||
+      phase === "unavailable" ||
+      report?.unreachable ||
+      report?.refused ||
+      report?.relayFailed
+    )
       return "unavailable";
     if (phase === "open") return relayReady ? "ready" : "unavailable";
     if (phase === "parked") return "ready";
@@ -377,42 +484,34 @@ export async function startManagedBrowserPool(input: {
   };
 
   const unavailableReason = (): string => {
-    if (!currentCoordinator) return "Setting up your browser… This can take a few minutes.";
-    const phase = currentCoordinator.gate.phase;
-    const report = currentCoordinator.report();
+    if (!applied) {
+      if (reconcileError !== undefined)
+        return "Your Cloud Computer’s browser couldn’t be set up right now. Try again in a moment.";
+      return "Setting up your browser… This can take a few minutes.";
+    }
+    const phase = applied.coordinator.gate.phase;
+    const report = applied.coordinator.report();
     if (phase === "released") return "This device was removed.";
-    if (report?.refused)
-      return "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.";
-    if (report?.unreachable || phase === "unavailable")
-      return "Your browser couldn’t start. Your tabs and sign-ins are kept. Try again in a moment.";
-    if (phase === "open" && currentRelay && !currentRelay.isAttached())
-      return "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.";
+    if (report?.refused) return "Your Cloud Computer’s browser can’t start right now.";
+    if (report?.unreachable || report?.relayFailed || phase === "unavailable")
+      return "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.";
+    if (phase === "open" && applied.relay && !applied.relay.isAttached())
+      return "Your Cloud Computer’s browser isn’t connected right now. Try again in a moment.";
     return "Setting up your browser… This can take a few minutes.";
   };
 
   const resolveRunner = async (): Promise<RunnerId | undefined> => {
-    if (activeRunnerId) return activeRunnerId;
+    if (desiredRunnerId) return desiredRunnerId;
     const found = await input.resolveRunnerId?.();
     if (found) {
-      activeRunnerId = found;
+      desiredRunnerId = found;
       input.onRunnerBound?.(found);
     }
-    return activeRunnerId;
+    return desiredRunnerId;
   };
+
   /** Replaced targets being drained now, by slot and term. */
   const draining = new Set<string>();
-  // W8: each replaced target a Stop still waits on is asked until it has answered for each.
-  const drainRetired = async (runnerId: RunnerId) => {
-    for (const retired of await listBrowserPoolRetiredTargets(input.database, runnerId)) {
-      const key = `${retired.slotId}:${retired.term}`;
-      if (draining.has(key)) continue;
-      draining.add(key);
-      void input.browser
-        .drainPool(runnerId, drainCoordinator(runnerId, retired))
-        .catch((error: unknown) => input.onError?.(error))
-        .finally(() => draining.delete(key));
-    }
-  };
   const drainCoordinator = (runnerId: RunnerId, retired: BrowserPoolRetiredTarget) =>
     managedBrowserPoolCoordinator({
       database: input.database,
@@ -423,128 +522,237 @@ export async function startManagedBrowserPool(input: {
       ...(input.onError ? { onError: input.onError } : {}),
       drain: { instanceId: retired.instanceId, epoch: retired.epoch },
     });
-  // One target change at a time: the old coordinator retires before the new one is adopted.
-  // Always chain from a settled predecessor so one failed choose() never blocks later adoptions (W4).
-  let changing: Promise<void> = Promise.resolve();
-  const choose = (target: ManagedBrowserPoolTarget): Promise<void> => {
-    const next = changing
-      .catch(() => undefined)
-      .then(async () => {
-        if (closed) return;
-        const runnerId = await resolveRunner();
-        if (!runnerId)
-          throw new Error(
-            "Waiting for this Cloud Computer's main Runner before adopting its browser.",
-          );
-        // Canonical: a target read back from the database has its keys in another order.
-        const key = canonicalJson(target);
-        if (key === current && currentRunnerId === runnerId) return;
-        const previousKey = current;
-        const previousTarget = currentTarget;
-        const previousRunnerId = currentRunnerId;
-        if (previousKey !== undefined && previousTarget && previousRunnerId) {
-          const reason = previousRunnerId !== runnerId ? "runner-replaced" : "browser-replaced";
-          await input.browser.retirePool(previousRunnerId, reason);
-          currentRelay?.detach();
-          current = undefined;
-          currentRunnerId = undefined;
-          currentTarget = undefined;
-          currentCoordinator = undefined;
-          currentRelay = undefined;
-          syncStatus();
-          // Nothing of the old target (or replaced Runner's slot row, S7) is ever carried to the
-          // new one. A Stop it held that its own runtime has not ended yet keeps the old target
-          // recorded, and asked (W8).
-          await retireBrowserPoolTarget(input.database, previousRunnerId, {
-            target: previousTarget as unknown as Readonly<Record<string, unknown>>,
-          });
-          await drainRetired(previousRunnerId);
-        }
-        if (closed) return;
-        // Across a Home restart after a main Runner replacement (S7), a revoked Runner can still
-        // hold the unique `slot_id` row in `browser_pool_slots`; retire it before adopting the
-        // replacement Runner on the same slot.
-        const staleSlot = await input.database
-          .selectFrom("browserPoolSlots")
-          .select("runnerId")
-          .where("slotId", "=", target.slotId)
-          .where("runnerId", "!=", runnerId)
-          .executeTakeFirst();
-        if (staleSlot) {
-          await retireBrowserPoolTarget(input.database, staleSlot.runnerId, {
-            target: target as unknown as Readonly<Record<string, unknown>>,
-          });
-          await drainRetired(staleSlot.runnerId);
-        }
-        if (closed) return;
-        const parts = managedBrowserPool(target, keys);
-        let coordinator: BrowserPoolCoordinator | undefined;
-        const relay = input.browserRelay
-          ? createManagedPooledRelay({
-              browserRelay: input.browserRelay,
-              runnerId,
-              runnerName: input.runnerName ?? "Cloud Computer",
-              environmentIds: input.environmentIds ?? [],
-              transport: parts.transport,
-              ticketKey: keys.ticketKey,
-              passkeys: input.passkeys === true,
-              ...(input.isAgentsStopped
-                ? { isAgentsStopped: () => input.isAgentsStopped!(runnerId) }
-                : {}),
-              onDetached: () => {
-                if (currentRelay === relay) {
-                  coordinator?.relayDetached();
-                  syncStatus();
-                }
-              },
-            })
-          : undefined;
-        coordinator = managedBrowserPoolCoordinator({
-          database: input.database,
-          runnerId,
-          target,
-          keys,
-          parts,
-          idleParkMs:
-            input.idleParkMs === undefined ? defaultManagedBrowserPoolIdleMs : input.idleParkMs,
-          ...(input.statusEveryMs !== undefined ? { statusEveryMs: input.statusEveryMs } : {}),
-          ...(relay
-            ? {
-                relay: {
-                  attached: () => relay.isAttached(),
-                  attach: (signal) => relay.ensureAttached(signal),
-                },
-              }
-            : {}),
-          onStateChanged: syncStatus,
-          onSuspect: (reason) => targets.suspect(reason === "over" ? { over: true } : {}),
-          ...(input.onError ? { onError: input.onError } : {}),
-        });
-        current = key;
-        currentRunnerId = runnerId;
-        currentTarget = target;
-        currentCoordinator = coordinator;
-        currentRelay = relay;
-        try {
-          await input.browser.adoptPool(runnerId, coordinator);
-        } catch (error) {
-          coordinator.close();
-          relay?.detach();
-          if (currentCoordinator === coordinator) {
-            current = undefined;
-            currentRunnerId = undefined;
-            currentTarget = undefined;
-            currentCoordinator = undefined;
-            currentRelay = undefined;
-          }
-          syncStatus();
-          throw error;
-        }
-        syncStatus();
-      });
-    changing = next;
-    return next;
+  const startDrains = (retiredRows: readonly BrowserPoolRetiredTarget[]) => {
+    for (const retired of retiredRows) {
+      const key = `${retired.slotId}:${retired.term}`;
+      if (draining.has(key)) continue;
+      draining.add(key);
+      void input.browser
+        .drainPool(retired.runnerId, drainCoordinator(retired.runnerId, retired))
+        .catch((error: unknown) => input.onError?.(error))
+        .finally(() => draining.delete(key));
+    }
   };
+  // W8: each replaced target a Stop still waits on is asked until it has answered for each.
+  const drainRetired = async (runnerId: RunnerId) => {
+    startDrains(await listBrowserPoolRetiredTargets(input.database, runnerId));
+  };
+  // Startup scan (M4): find retired targets stored under any Runner, including earlier replaced ones.
+  const drainAllRetired = async () => {
+    startDrains(await listAllBrowserPoolRetiredTargets(input.database));
+  };
+
+  const finishPendingRetirement = async () => {
+    if (!pendingRetirement) return;
+    const pending = pendingRetirement;
+    if (!pending.poolRetired) {
+      await input.browser.retirePool(pending.runnerId, pending.reason);
+      pending.poolRetired = true;
+    }
+    if (!pending.dbRetired) {
+      await retireBrowserPoolTarget(input.database, pending.runnerId, {
+        target: pending.target as unknown as Readonly<Record<string, unknown>>,
+      });
+      pending.dbRetired = true;
+    }
+    await drainRetired(pending.runnerId);
+    pendingRetirement = undefined;
+  };
+
+  const reconcileOnce = async (): Promise<void> => {
+    if (closed) return;
+    if (!startupDrained) {
+      await drainAllRetired();
+      startupDrained = true;
+    }
+    if (closed) return;
+    if (pendingRetirement) {
+      await finishPendingRetirement();
+      if (closed) return;
+    }
+    const runnerId = await resolveRunner();
+    const target = desiredTarget;
+    const targetKey = desiredTargetKey;
+
+    // If what is applied differs from the latest desired pair, retire it first and keep the
+    // retirement pending until both DB retirement and drain registration succeed.
+    if (
+      applied &&
+      (!runnerId || !target || applied.runnerId !== runnerId || applied.targetKey !== targetKey)
+    ) {
+      const retiring = applied;
+      retiring.relay?.retire();
+      pendingRetirement = {
+        runnerId: retiring.runnerId,
+        target: retiring.target,
+        reason: retiring.runnerId !== runnerId ? "runner-replaced" : "browser-replaced",
+        poolRetired: false,
+        dbRetired: false,
+      };
+      applied = undefined;
+      syncStatus();
+      await finishPendingRetirement();
+      if (closed) return;
+    }
+
+    if (applied || !target || !targetKey) return;
+    if (!runnerId)
+      throw new Error("Waiting for this Cloud Computer's main Runner before adopting its browser.");
+
+    // Clean any stale `browser_pool_slots` row left behind by a replaced Runner holding this slot
+    // or by an earlier crashed retirement leaving another slot/term under this Runner key (M4, S7).
+    const staleBySlot = await input.database
+      .selectFrom("browserPoolSlots")
+      .select(["runnerId", "slotId", "term"])
+      .where("slotId", "=", target.slotId)
+      .where("runnerId", "!=", runnerId)
+      .execute();
+    for (const stale of staleBySlot) {
+      await retireBrowserPoolTarget(input.database, stale.runnerId, {
+        target: target as unknown as Readonly<Record<string, unknown>>,
+      });
+      await drainRetired(stale.runnerId);
+    }
+    const staleByRunner = await input.database
+      .selectFrom("browserPoolSlots")
+      .select(["runnerId", "slotId", "term"])
+      .where("runnerId", "=", runnerId)
+      .executeTakeFirst();
+    if (
+      staleByRunner &&
+      (staleByRunner.slotId !== target.slotId || staleByRunner.term !== target.term)
+    ) {
+      await retireBrowserPoolTarget(input.database, staleByRunner.runnerId);
+      await drainRetired(staleByRunner.runnerId);
+    }
+    if (closed) return;
+
+    const parts = managedBrowserPool(target, keys);
+    let coordinator: BrowserPoolCoordinator | undefined;
+    const relay = input.browserRelay
+      ? createManagedPooledRelay({
+          browserRelay: input.browserRelay,
+          runnerId,
+          runnerName: input.runnerName ?? "Cloud Computer",
+          environmentIds: input.environmentIds ?? [],
+          transport: parts.transport,
+          ticketKey: keys.ticketKey,
+          passkeys: input.passkeys === true,
+          ...(input.isAgentsStopped
+            ? { isAgentsStopped: () => input.isAgentsStopped!(runnerId) }
+            : {}),
+          onDetached: () => {
+            if (applied?.relay === relay) {
+              coordinator?.relayDetached();
+              syncStatus();
+            }
+          },
+        })
+      : undefined;
+    coordinator = managedBrowserPoolCoordinator({
+      database: input.database,
+      runnerId,
+      target,
+      keys,
+      parts,
+      idleParkMs:
+        input.idleParkMs === undefined ? defaultManagedBrowserPoolIdleMs : input.idleParkMs,
+      ...(input.statusEveryMs !== undefined ? { statusEveryMs: input.statusEveryMs } : {}),
+      ...(relay
+        ? {
+            relay: {
+              attached: () => relay.isAttached(),
+              attach: (signal) => relay.ensureAttached(signal),
+            },
+          }
+        : {}),
+      onStateChanged: syncStatus,
+      onSuspect: (reason) => targets.suspect(reason === "over" ? { over: true } : {}),
+      ...(input.onError ? { onError: input.onError } : {}),
+    });
+    const candidate: AppliedPool = {
+      runnerId,
+      target,
+      targetKey,
+      coordinator,
+      relay,
+    };
+    applied = candidate;
+    try {
+      await input.browser.adoptPool(runnerId, coordinator);
+    } catch (error) {
+      coordinator.close();
+      relay?.retire();
+      if (applied === candidate) applied = undefined;
+      syncStatus();
+      throw error;
+    }
+    syncStatus();
+    // If a newer desired runner or target arrived while adoptPool was in flight, run another pass.
+    if (desiredRunnerId !== candidate.runnerId || desiredTargetKey !== candidate.targetKey)
+      reconcileNeeded = true;
+  };
+
+  let reconciling: Promise<void> | undefined;
+  let reconcileNeeded = false;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let retryAttempt = 0;
+
+  const clearRetryTimer = () => {
+    if (!retryTimer) return;
+    clearTimeout(retryTimer);
+    retryTimer = undefined;
+  };
+
+  const scheduleRetry = () => {
+    if (closed || retryTimer) return;
+    const first = input.firstDelayMs ?? 200;
+    const max = input.maxDelayMs ?? 15_000;
+    const delayMs = Math.min(first * 2 ** Math.min(retryAttempt++, 16), max);
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      if (closed) return;
+      scheduleReconcile(false);
+    }, delayMs);
+    retryTimer.unref();
+  };
+
+  const runReconcileLoop = async () => {
+    while (!closed && reconcileNeeded) {
+      reconcileNeeded = false;
+      try {
+        await reconcileOnce();
+        reconcileError = undefined;
+        retryAttempt = 0;
+        syncStatus();
+      } catch (error) {
+        reconcileError = error;
+        input.onError?.(error);
+        syncStatus();
+        scheduleRetry();
+        return;
+      }
+    }
+  };
+
+  const scheduleReconcile = (immediate = true): Promise<void> => {
+    if (closed) return Promise.resolve();
+    reconcileNeeded = true;
+    if (immediate) {
+      clearRetryTimer();
+      retryAttempt = 0;
+    }
+    if (!reconciling) {
+      reconciling = runReconcileLoop().finally(() => {
+        reconciling = undefined;
+        if (!closed && reconcileNeeded && !retryTimer) {
+          void scheduleReconcile(false);
+        }
+      });
+    }
+    return reconciling;
+  };
+
   const account =
     "register" in input.account
       ? input.account
@@ -559,7 +767,12 @@ export async function startManagedBrowserPool(input: {
     hostKey: input.hostKey,
     account,
     record,
-    onTarget: choose,
+    onTarget: async (target) => {
+      if (closed) return;
+      desiredTarget = target;
+      desiredTargetKey = canonicalJson(target);
+      scheduleReconcile(true);
+    },
     onNotReady: (answer) => {
       notReadyStatus = answer === "preparing" ? "preparing" : "no-target";
       syncStatus();
@@ -573,43 +786,39 @@ export async function startManagedBrowserPool(input: {
     notReadyStatus = "preparing";
     syncStatus();
   }
-  if (activeRunnerId) {
-    // Replaced targets a Stop still waits on, from before this Home started (W8).
-    await drainRetired(activeRunnerId);
-    if (stored?.status === "ready" && stored.target)
-      await choose(stored.target as unknown as ManagedBrowserPoolTarget);
+  if (stored?.status === "ready" && stored.target) {
+    desiredTarget = stored.target as unknown as ManagedBrowserPoolTarget;
+    desiredTargetKey = canonicalJson(desiredTarget);
   }
+  // Kick the level-triggered reconciliation loop (including startup drain of all stored retired
+  // targets and adoption of any stored ready target) without letting an adoption rejection stop
+  // `targets.start()` from running (M4).
+  scheduleReconcile(true);
   targets.start();
   return {
     get runnerId() {
-      return activeRunnerId;
+      return desiredRunnerId;
     },
     keys,
     targets,
     status: () => computeStatus(),
     unavailableReason,
     bindRunner: (runnerId) => {
-      if (closed || activeRunnerId === runnerId) return;
-      activeRunnerId = runnerId;
+      if (closed || desiredRunnerId === runnerId) return;
+      desiredRunnerId = runnerId;
       input.onRunnerBound?.(runnerId);
-      void drainRetired(runnerId).catch((error: unknown) => input.onError?.(error));
-      if (currentTarget) {
-        void choose(currentTarget).catch((error: unknown) => input.onError?.(error));
-      } else {
-        targets.suspect();
-      }
+      scheduleReconcile(true);
+      if (!desiredTarget) targets.suspect();
     },
     close: async () => {
       closed = true;
+      clearRetryTimer();
       await targets.close();
-      await changing.catch(() => undefined);
-      currentCoordinator?.close();
-      currentCoordinator = undefined;
-      currentRelay?.detach();
-      currentRelay = undefined;
-      current = undefined;
-      currentRunnerId = undefined;
-      currentTarget = undefined;
+      await reconciling?.catch(() => undefined);
+      applied?.coordinator.close();
+      applied?.relay?.retire();
+      applied = undefined;
+      pendingRetirement = undefined;
       syncStatus();
     },
   };

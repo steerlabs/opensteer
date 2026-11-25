@@ -4,6 +4,7 @@ import {
   PageOwnership,
   SurfaceLedger,
   TabSleeper,
+  poolPageRetireBlockers,
   standardCdpPath,
   type BrowserRuntime,
   type StandardCdpAttachment,
@@ -2598,3 +2599,193 @@ it("never puts a tab to sleep that desktop Chrome would not discard, nor one tha
   expect(await pdf.page.keepAwake?.()).toBe("pdf");
   expect(await ledger.sleep(pdf.tab.id, () => null)).toBe(false);
 }, 90_000);
+
+it("M7: bounds pooled download and upload retire holds by progress, crash, and page close while leaving ordinary Homes untouched", async () => {
+  const stalledRes: import("node:http").ServerResponse[] = [];
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    if (url.pathname === "/page") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end("<!doctype html><html><body>transfer test</body></html>");
+      return;
+    }
+    if (url.pathname === "/stalled.bin") {
+      response.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-length": String(10 * 1024 * 1024),
+        "content-disposition": 'attachment; filename="stalled.bin"',
+      });
+      response.write(Buffer.alloc(64 * 1024, 0x41));
+      stalledRes.push(response);
+      return;
+    }
+    if (url.pathname === "/upload") {
+      stalledRes.push(response);
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as import("node:net").AddressInfo).port;
+  const origin = `http://127.0.0.1:${port}`;
+  cleanup.push(async () => {
+    for (const res of stalledRes) res.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  // 1. Pooled launcher with short stallMs and maxUnobservedMs for fast real-Chromium testing.
+  const pooledDir = await mkdtemp(path.join(tmpdir(), "os-m7-pooled-"));
+  const downloadsDir = await mkdtemp(path.join(tmpdir(), "os-m7-downloads-"));
+  cleanup.push(() => rm(pooledDir, { recursive: true, force: true }));
+  cleanup.push(() => rm(downloadsDir, { recursive: true, force: true }));
+  const pooledLauncher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+    ...({ pooledTransfers: { stallMs: 300, maxUnobservedMs: 350 } } as Record<string, unknown>),
+  });
+  const pooled = await launchReady(pooledLauncher, nativeProfileRequest(pooledDir));
+  cleanup.push(() => pooled.close());
+  const browserCdp = (
+    pooled as unknown as {
+      browserCdp: { send(method: string, params?: Record<string, unknown>): Promise<unknown> };
+    }
+  ).browserCdp;
+  await browserCdp.send("Browser.setDownloadBehavior", {
+    behavior: "allowAndName",
+    downloadPath: downloadsDir,
+    eventsEnabled: true,
+  });
+
+  // 1a. Browser-process download holds while progressing, survives renderer crash inside bound,
+  // and releases once stalled for stallMs.
+  const dlPage = await pooled.context.createPage();
+  const dlCdp = await dlPage.cdp();
+  await dlCdp.send("Page.navigate", { url: `${origin}/page` });
+  await vi.waitFor(async () => {
+    const r = (await dlCdp.send("Runtime.evaluate", {
+      expression: "document.readyState",
+      returnByValue: true,
+    })) as { result?: { value?: string } };
+    expect(r.result?.value).toBe("complete");
+  });
+  await dlCdp.send("Runtime.evaluate", {
+    expression: `(() => { const a = document.createElement("a"); a.href = "/stalled.bin"; a.download = "stalled.bin"; document.body.append(a); a.click(); })()`,
+  });
+  await vi.waitFor(
+    async () => {
+      expect(await poolPageRetireBlockers(dlPage, "active")).toContain("download");
+    },
+    { timeout: 5_000, interval: 25 },
+  );
+  // Write a chunk to keep progress moving and crash the renderer: download hold survives crash.
+  stalledRes[0]?.write(Buffer.alloc(32 * 1024, 0x42));
+  const dlCrashed = Promise.withResolvers<void>();
+  const offDlCrash = dlPage.onRendererGone?.(() => dlCrashed.resolve());
+  void dlCdp.send("Page.crash").catch(() => undefined);
+  await dlCrashed.promise;
+  offDlCrash?.();
+  expect(await poolPageRetireBlockers(dlPage, "active")).toContain("download");
+  // Stop sending bytes: after stallMs elapses with no byte movement, the hold ends so park proceeds.
+  await vi.waitFor(
+    async () => {
+      expect(await poolPageRetireBlockers(dlPage, "active")).toEqual([]);
+    },
+    { timeout: 3_000, interval: 40 },
+  );
+
+  // 1b. Closing a page immediately ends its active download hold.
+  const dlClosePage = await pooled.context.createPage();
+  const dlCloseCdp = await dlClosePage.cdp();
+  await dlCloseCdp.send("Page.navigate", { url: `${origin}/page` });
+  await vi.waitFor(async () => {
+    const r = (await dlCloseCdp.send("Runtime.evaluate", {
+      expression: "document.readyState",
+      returnByValue: true,
+    })) as { result?: { value?: string } };
+    expect(r.result?.value).toBe("complete");
+  });
+  await dlCloseCdp.send("Runtime.evaluate", {
+    expression: `(() => { const a = document.createElement("a"); a.href = "/stalled.bin"; a.download = "stalled2.bin"; document.body.append(a); a.click(); })()`,
+  });
+  await vi.waitFor(
+    async () => {
+      expect(await poolPageRetireBlockers(dlClosePage, "active")).toContain("download");
+    },
+    { timeout: 5_000, interval: 25 },
+  );
+  await dlClosePage.close();
+  expect(await poolPageRetireBlockers(dlClosePage, "active")).toEqual([]);
+
+  // 1c. Upload (unobserved progress) holds initially, clears on maxUnobservedMs, and clears on crash.
+  const upPage = await pooled.context.createPage();
+  const upCdp = await upPage.cdp();
+  await upCdp.send("Page.navigate", { url: `${origin}/page` });
+  await vi.waitFor(async () => {
+    const r = (await upCdp.send("Runtime.evaluate", {
+      expression: "document.readyState",
+      returnByValue: true,
+    })) as { result?: { value?: string } };
+    expect(r.result?.value).toBe("complete");
+  });
+  await upCdp.send("Runtime.evaluate", {
+    expression: `void fetch("/upload", { method: "POST", body: "hello" }).catch(() => {});`,
+  });
+  await vi.waitFor(
+    async () => {
+      expect(await poolPageRetireBlockers(upPage, "active")).toContain("upload");
+    },
+    { timeout: 5_000, interval: 25 },
+  );
+  await vi.waitFor(
+    async () => {
+      expect(await poolPageRetireBlockers(upPage, "active")).toEqual([]);
+    },
+    { timeout: 3_000, interval: 40 },
+  );
+
+  const upCrashPage = await pooled.context.createPage();
+  const upCrashCdp = await upCrashPage.cdp();
+  await upCrashCdp.send("Page.navigate", { url: `${origin}/page` });
+  await vi.waitFor(async () => {
+    const r = (await upCrashCdp.send("Runtime.evaluate", {
+      expression: "document.readyState",
+      returnByValue: true,
+    })) as { result?: { value?: string } };
+    expect(r.result?.value).toBe("complete");
+  });
+  await upCrashCdp.send("Runtime.evaluate", {
+    expression: `void fetch("/upload", { method: "POST", body: "hello-crash" }).catch(() => {});`,
+  });
+  await vi.waitFor(
+    async () => {
+      expect(await poolPageRetireBlockers(upCrashPage, "active")).toContain("upload");
+    },
+    { timeout: 5_000, interval: 25 },
+  );
+  const upCrashed = Promise.withResolvers<void>();
+  const offUpCrash = upCrashPage.onRendererGone?.(() => upCrashed.resolve());
+  void upCrashCdp.send("Page.crash").catch(() => undefined);
+  await upCrashed.promise;
+  offUpCrash?.();
+  await vi.waitFor(
+    async () => {
+      expect(await poolPageRetireBlockers(upCrashPage, "active")).toEqual([]);
+    },
+    { timeout: 3_000, interval: 40 },
+  );
+
+  // 2. Ordinary (non-pooled) launcher: no pooled activeTransfers method on pages.
+  const ordinaryDir = await mkdtemp(path.join(tmpdir(), "os-m7-ordinary-"));
+  cleanup.push(() => rm(ordinaryDir, { recursive: true, force: true }));
+  const ordinaryLauncher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const ordinary = await launchReady(ordinaryLauncher, nativeProfileRequest(ordinaryDir));
+  cleanup.push(() => ordinary.close());
+  const ordinaryPage = await ordinary.context.createPage();
+  expect(ordinaryPage.activeTransfers).toBeUndefined();
+}, 60_000);

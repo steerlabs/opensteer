@@ -56,6 +56,9 @@ async function start(config: ReturnType<typeof readBrowserRuntimeConfig>): Promi
     executablePath: config.executablePath,
     headless: config.headless,
     ...(config.proxyUrl ? { proxyUrl: config.proxyUrl } : {}),
+    // Pooled guest only (M5/M7): track progress-bounded transfer holds for idle park retirement;
+    // ordinary self-hosted and Mac Homes leave this unset so their launcher behavior is unchanged.
+    ...(config.pool ? { pooledTransfers: true } : {}),
     // A pool guest's pages reach nothing in the guest itself: only its slot's proxy.
     preserveLoopbackBypass:
       config.bridgeToken !== undefined && config.relay === undefined && config.pool === undefined,
