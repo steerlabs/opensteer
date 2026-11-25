@@ -10978,7 +10978,11 @@ describe("work under a connection's authority never uses the clipboard or change
     });
     const opened = await service.openAgentSession({ ...binding, profileId: profile.id });
     const attach = async () => {
-      const events: { method: string; parameters: Record<string, unknown> }[] = [];
+      const events: {
+        method: string;
+        parameters: Record<string, unknown>;
+        sessionId?: string;
+      }[] = [];
       const attached = await service.attachCdpForAgent(
         { ...binding, sessionId: opened.session.id },
         (event) => events.push(event as (typeof events)[number]),
