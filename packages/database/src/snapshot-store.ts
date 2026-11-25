@@ -35,6 +35,7 @@ export function readPersonalDetailSnapshot(
     viewerId: UserId;
     scope: Exclude<PersonalReadScope, { kind: "shell" }>;
     anchorItemId?: string;
+    acceptDeferredWork?: boolean;
     cursor?: PersonalResumeCursor;
   },
 ) {
@@ -43,7 +44,14 @@ export function readPersonalDetailSnapshot(
     scope: input.scope,
     ...(input.cursor ? { cursor: input.cursor } : {}),
     snapshot: (tx, state) =>
-      buildPersonalDetailSnapshot(tx, state, input.viewerId, input.scope, input.anchorItemId),
+      buildPersonalDetailSnapshot(
+        tx,
+        state,
+        input.viewerId,
+        input.scope,
+        input.anchorItemId,
+        input.acceptDeferredWork,
+      ),
     resume: (tx, state, after) =>
       resumedThreadValue(tx, state, input.viewerId, input.scope.threadId, after),
   });

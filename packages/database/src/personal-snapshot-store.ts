@@ -177,6 +177,7 @@ export async function buildPersonalDetailSnapshot(
   viewerId: UserId,
   scope: Exclude<PersonalReadScope, { kind: "shell" }>,
   anchorItemId?: string,
+  acceptDeferredWork?: boolean,
 ) {
   const detailThread = await detailThreadValue(tx, viewerId, scope.threadId);
   if (!detailThread) throw new Error("The selected task changed in its read cut");
@@ -190,6 +191,7 @@ export async function buildPersonalDetailSnapshot(
     maxBytes: 768 * 1024,
     maxTurns: 10,
     ...(anchorItemId ? { anchorItemId } : {}),
+    ...(acceptDeferredWork ? { acceptDeferredWork: true } : {}),
   });
   if (page.kind !== "page") throw new Error("The selected transcript changed in its read cut");
   const root = scope.kind === "thread";

@@ -35,27 +35,11 @@ type Pending =
     };
 
 /**
- * How many history items live rows may grow a window to. Live rows are the only growth nobody asked
- * for: a reader following the latest keeps this many as more arrive, and one reading elsewhere
- * keeps all they loaded while what arrives past it waits a page away. Pages the reader asks for
- * are theirs, and are never given up (a jump or Return to latest replaces the window whole).
+ * What a page read was for. A page that extends the window backward names the edge cursor it was
+ * read from: it installs only while that is still the window's top edge, so it can never leave a
+ * gap.
  */
-export const transcriptWindowItems = 250;
-
-/**
- * Whether the reader follows the live latest, as the view reports it when live rows must be
- * bounded. A store no view reads follows.
- */
-export type TranscriptFollowReader = () => boolean;
-
-/**
- * What a page read was for. A page that extends the window names the edge cursor it was read
- * from: it installs only while that is still the window's edge, so it can never leave a gap or
- * restore rows the window has since given up. Around and latest pages replace the window.
- */
-export type TranscriptPageAsk =
-  | { readonly mode: "earlier" | "newer"; readonly from: TranscriptOrderCursor }
-  | { readonly mode: "around" | "latest" };
+export type TranscriptPageAsk = { readonly mode: "earlier"; readonly from: TranscriptOrderCursor };
 
 /**
  * How a page install ended. `stale`: the read raced a change it could not account for, and is
@@ -81,10 +65,15 @@ export interface TranscriptState {
   readonly queueEntries: ReadonlyMap<string, WaitingInputView>;
   readonly inputQueue: PersonalInputQueue | null;
   readonly assignments: ReadonlyMap<string, AssignmentSummary | null>;
-  readonly newest: boolean;
+  /**
+   * True once the reader has extended history beyond the initial bounded tail (loaded earlier pages
+   * or hydrated deferred work). Expanded transcripts keep full live sync in memory but do not
+   * overwrite the bounded tail disk checkpoint.
+   */
+  readonly expanded: boolean;
   /**
    * Counts the Host's inline repairs on this generation. A repair replaces the scope, so what a
-   * reader read on top of the old state (pages, overlay pages, queue entries) is read again.
+   * reader read on top of the old state (overlay pages, queue entries) is read again.
    */
   readonly repairs: number;
   /**
@@ -111,7 +100,7 @@ const emptyState: TranscriptState = {
   queueEntries: new Map(),
   inputQueue: null,
   assignments: new Map(),
-  newest: true,
+  expanded: false,
   cuts: 0,
   repairs: 0,
 };
@@ -128,10 +117,36 @@ function newer(held: { readonly revision: string } | undefined, revision: string
   return !held || BigInt(held.revision) < BigInt(revision);
 }
 
+/**
+ * Live `host.changes` updates never carry `deferredWork` (which is synthesized on folded snapshots
+ * and pages). Preserve an anchor's `deferredWork` metadata until `installDeferredWorkPage` clears
+ * it.
+ */
+function preserveDeferredWork(
+  previous: TranscriptItem | undefined,
+  next: TranscriptItem,
+): TranscriptItem {
+  if (
+    previous &&
+    (previous.kind === "tool" || previous.kind === "reasoning") &&
+    previous.deferredWork !== undefined &&
+    next.kind === previous.kind &&
+    next.deferredWork === undefined
+  )
+    return { ...next, deferredWork: previous.deferredWork };
+  return next;
+}
+
+function clearDeferredWork(item: TranscriptItem): TranscriptItem {
+  if ((item.kind !== "tool" && item.kind !== "reasoning") || item.deferredWork === undefined)
+    return item;
+  const { deferredWork: _cleared, ...rest } = item;
+  return rest;
+}
+
 export function displayedItemIds(state: TranscriptState): readonly string[] {
   const placed = placeRunCards(state);
-  // A provisional card belongs at the tail: a window of history never shows one.
-  if (!state.liveItems.size || !state.newest) return placed;
+  if (!state.liveItems.size) return placed;
   const ids = [...placed];
   const items = { get: (id: string) => state.items.get(id) ?? state.liveItems.get(id) };
   for (const item of state.liveItems.values()) insertId(ids, item, items);
@@ -260,18 +275,8 @@ export class ThreadTranscriptStore {
   readonly #reads = new Set<number>();
   #readCount = 0;
   #lostReads = 0;
-  #follows: TranscriptFollowReader | undefined;
 
   getSnapshot = () => this.#state;
-
-  /** The view's report of whether the reader follows the live latest. Undefined releases it. */
-  setFollowing(read: TranscriptFollowReader | undefined) {
-    this.#follows = read;
-  }
-
-  #following() {
-    return this.#follows?.() ?? true;
-  }
 
   subscribe = (listener: Listener) => {
     this.#listeners.add(listener);
@@ -450,17 +455,18 @@ export class ThreadTranscriptStore {
                 }
                 break;
               }
-              const next = change.value;
+              const next = preserveDeferredWork(previous, change.value);
               if (previous && !newer(previous, next.revision)) break;
               const history = historyIds ?? state.historyIds;
               const first = (items ?? state.items).get(history[0] ?? "");
-              const last = (items ?? state.items).get(history.at(-1) ?? "");
-              // A provisional card lands where it was shown: at the foot of a window that reaches
-              // the latest. A window short of it never showed one, and takes the row by its place.
+              // The store is always tail-anchored: every new item at or past the loaded top
+              // boundary lands directly in history. Updates to unloaded older history are ignored
+              // unless they are active work or belong to a held Run card.
               const inHistory =
-                (provisional && state.newest) ||
-                ((!snapshot?.nextBefore || !first || comparePosition(next, first) >= 0) &&
-                  (state.newest || !last || comparePosition(next, last) <= 0));
+                provisional ||
+                !snapshot?.nextBefore ||
+                !first ||
+                comparePosition(next, first) >= 0;
               const wasActive = (activeIds ?? state.activeIds).has(id);
               const active = openWork(next);
               if (wasActive !== active) {
@@ -495,27 +501,9 @@ export class ThreadTranscriptStore {
             }
           }
         }
-        // Live rows grow the window where they land: at the foot while it reaches the latest,
-        // otherwise inside it. Only growth is bounded, and only by what arrived.
-        let newest = state.newest;
         if (items && historyIds) {
           sweepRunCards(items, historyIds, activeIds ?? state.activeIds);
           if (ids) ids = ids.filter((id) => items!.has(id));
-        }
-        if (items && historyIds && historyIds.length > state.historyIds.length) {
-          ids ??= [...state.ids];
-          const bounded = boundLiveRows(
-            historyIds,
-            items,
-            activeIds ?? state.activeIds,
-            snapshot,
-            this.#following() && state.newest,
-            historyFoot(state),
-            state.cursorScope,
-          );
-          snapshot = bounded.snapshot;
-          if (bounded.detached) newest = false;
-          ids = ids.filter((id) => items!.has(id));
         }
         if (snapshot?.queue && (queueEntries || snapshot.queue !== state.snapshot?.queue)) {
           const listed = new Set<string>(snapshot.queue.inputs);
@@ -526,7 +514,6 @@ export class ThreadTranscriptStore {
         this.#set(
           {
             ...state,
-            newest,
             through: frame.throughSequence,
             snapshot,
             liveItems: liveItems ?? state.liveItems,
@@ -550,8 +537,8 @@ export class ThreadTranscriptStore {
     }
   }
 
-  // A snapshot before `host.synchronized` is the subscription's cut; after it, the Host's inline
-  // repair. A repair keeps earlier pages the reader loaded when they still meet the new window.
+  // A snapshot before `host.synchronized` is the subscription's tail cut; after it, the Host's
+  // inline repair. Both install the latest tail window.
   #snapshot(
     next: DetailSnapshot,
     through: string,
@@ -566,7 +553,10 @@ export class ThreadTranscriptStore {
       const previous = items.get(item.id);
       if (previous && !newer(previous, item.revision)) continue;
       const held = state.items.get(item.id);
-      items.set(item.id, held?.revision === item.revision ? held : item);
+      items.set(
+        item.id,
+        held?.revision === item.revision && sameDeferredWork(held, item) ? held : item,
+      );
     }
     const historyIds = next.items.map(({ id }) => id);
     sweepRunCards(items, historyIds, new Set(next.activeItems.map(({ id }) => id)));
@@ -581,7 +571,7 @@ export class ThreadTranscriptStore {
     const queueEntries = new Map(
       (next.inputQueue ?? []).map((entry) => [entry.message.id as string, entry]),
     );
-    const snapshot = next;
+    const snapshot: DetailSnapshot = { ...next, nextAfter: null };
     this.#set(
       {
         ...state,
@@ -604,12 +594,11 @@ export class ThreadTranscriptStore {
               threadId: scope.threadId,
               nodeId: scope.kind === "node" ? scope.nodeId : null,
             }
-          : (next.nextBefore ?? next.nextAfter ?? state.cursorScope ?? undefined),
+          : (next.nextBefore ?? state.cursorScope ?? undefined),
         queueEntries,
         inputQueue: inputQueueOf(scope.threadId, next.queue, queueEntries, state.inputQueue),
         assignments: emptyState.assignments,
-        // An anchor in the newest window still reaches the tail: only a later page makes it history.
-        newest: next.nextAfter == null,
+        expanded: false,
         repairs: repair ? state.repairs + 1 : 0,
         cuts: state.cuts + 1,
         snapshotThrough: through,
@@ -674,57 +663,34 @@ export class ThreadTranscriptStore {
       !this.#readable(read)
     )
       return "stale";
-    const { mode } = ask;
-    const merge = ask.mode === "earlier" || ask.mode === "newer";
-    if (
-      (ask.mode === "earlier" || ask.mode === "newer") &&
-      !sameBoundary(
-        ask.mode === "earlier" ? state.snapshot.nextBefore : state.snapshot.nextAfter,
-        ask.from,
-      )
-    )
-      return "moved";
-    const items = new Map(
-      [...state.items].filter(
-        ([id, item]) => merge || state.activeIds.has(id) || item.kind === "run",
-      ),
-    );
+    if (!sameBoundary(state.snapshot.nextBefore, ask.from)) return "moved";
+    const items = new Map(state.items);
     // The page's rows, and beside them the Run cards they read from.
     for (const item of [...(page.runs ?? []), ...page.items]) {
       const previous = state.items.get(item.id);
-      items.set(item.id, previous && !newer(previous, item.revision) ? previous : item);
+      const candidate = preserveDeferredWork(previous, item);
+      items.set(item.id, previous && !newer(previous, candidate.revision) ? previous : candidate);
     }
-    const historyIds = [
-      ...new Set([...(merge ? state.historyIds : []), ...page.items.map(({ id }) => id)]),
-    ];
-    const nextBefore = mode === "newer" ? state.snapshot.nextBefore : page.nextBefore;
-    // The window reaches the latest exactly when it has no cursor past its foot, whatever read
-    // made it: a jump that lands at the foot follows live rows from then on.
-    const nextAfter =
-      mode === "earlier" ? (state.snapshot.nextAfter ?? null) : (page.nextAfter ?? null);
-    this.#replay(items, historyIds, nextBefore != null, nextAfter == null);
-    historyIds.sort((a, b) => comparePosition(items.get(a)!, items.get(b)!));
-    // A page the reader asked for gives nothing up: what they load is theirs, so paging one way
-    // never undoes paging the other, and nothing on screen leaves under them. Rows that arrived
-    // live while it was read are live rows, bounded as any (see `apply`): past the page and what
-    // was shown they wait a page away, but for a reader returning to the latest, who follows.
-    const pageFoot = page.items.at(-1);
-    const shownFoot = merge ? historyFoot(state) : undefined;
-    const foot =
-      pageFoot && shownFoot
-        ? comparePosition(pageFoot, shownFoot) > 0
-          ? pageFoot
-          : shownFoot
-        : (pageFoot ?? shownFoot);
-    const { snapshot } = boundLiveRows(
-      historyIds,
-      items,
-      state.activeIds,
-      { ...state.snapshot, nextBefore, nextAfter },
-      mode === "latest",
-      foot,
-      state.cursorScope,
-    );
+    const nextBefore = page.nextBefore;
+    const existingFirst = state.historyIds.length ? items.get(state.historyIds[0]!) : undefined;
+    const pageLast = page.items.at(-1);
+    let historyIds: string[];
+    let needsSort = false;
+    if (
+      !this.#pending.size &&
+      (!existingFirst || !pageLast || comparePosition(pageLast, existingFirst) < 0)
+    ) {
+      // Common backward-extension fast path: strictly older sorted page prepended with no overlap.
+      historyIds = [...page.items.map(({ id }) => id), ...state.historyIds];
+    } else {
+      historyIds = [...new Set([...state.historyIds, ...page.items.map(({ id }) => id)])];
+      needsSort = true;
+    }
+    if (this.#pending.size) {
+      this.#replay(items, historyIds, nextBefore != null);
+      needsSort = true;
+    }
+    if (needsSort) historyIds.sort((a, b) => comparePosition(items.get(a)!, items.get(b)!));
     sweepRunCards(items, historyIds, state.activeIds);
     let liveItems: Map<string, TranscriptItem> | undefined;
     for (const { id } of page.items) {
@@ -733,13 +699,65 @@ export class ThreadTranscriptStore {
     }
     this.#set({
       ...state,
-      snapshot,
+      snapshot: { ...state.snapshot, nextBefore, nextAfter: null },
       historyIds,
       ids: stableIds(state.ids, sortedIds(items)),
       items,
       liveItems: liveItems ?? state.liveItems,
       readRevision: maxRevision(state.readRevision, page.revision),
-      newest: snapshot?.nextAfter == null,
+      expanded: true,
+    });
+    return "installed";
+  }
+
+  /**
+   * Splices one page of hydrated deferred work items into place after `workAnchorId`. Clears
+   * `deferredWork` on the anchor once `page.hasMore` is false.
+   */
+  installDeferredWorkPage(
+    page: Page,
+    generation: number,
+    workAnchorId: string,
+    read?: number,
+  ): TranscriptPageInstall {
+    const state = this.#state;
+    if (
+      state.generation !== generation ||
+      !state.synchronized ||
+      !state.snapshot ||
+      state.through === null ||
+      !this.#readable(read)
+    )
+      return "stale";
+    const anchor = state.items.get(workAnchorId);
+    if (!anchor) return "moved";
+    const items = new Map(state.items);
+    for (const item of [...(page.runs ?? []), ...page.items]) {
+      const previous = items.get(item.id);
+      const candidate = preserveDeferredWork(previous, item);
+      items.set(item.id, previous && !newer(previous, candidate.revision) ? previous : candidate);
+    }
+    if (!page.hasMore) {
+      const currentAnchor = items.get(workAnchorId);
+      if (currentAnchor) items.set(workAnchorId, clearDeferredWork(currentAnchor));
+    }
+    const historyIds = [...new Set([...state.historyIds, ...page.items.map(({ id }) => id)])];
+    this.#replay(items, historyIds, state.snapshot.nextBefore != null);
+    historyIds.sort((a, b) => comparePosition(items.get(a)!, items.get(b)!));
+    sweepRunCards(items, historyIds, state.activeIds);
+    let liveItems: Map<string, TranscriptItem> | undefined;
+    for (const { id } of page.items) {
+      if (!state.liveItems.has(id)) continue;
+      (liveItems ??= new Map(state.liveItems)).delete(id);
+    }
+    this.#set({
+      ...state,
+      historyIds,
+      ids: stableIds(state.ids, sortedIds(items)),
+      items,
+      liveItems: liveItems ?? state.liveItems,
+      readRevision: maxRevision(state.readRevision, page.revision),
+      expanded: true,
     });
     return "installed";
   }
@@ -791,13 +809,14 @@ export class ThreadTranscriptStore {
       for (const entry of page.entries) {
         if (!("position" in entry)) continue;
         const held = items.get(entry.id);
-        if (newer(held, entry.revision)) items.set(entry.id, entry);
+        if (newer(held, entry.revision)) items.set(entry.id, preserveDeferredWork(held, entry));
         if (openWork(items.get(entry.id)!)) activeIds.add(entry.id);
       }
       for (const change of this.#pending.values()) {
         if (change.kind !== "item" || !activeIds.has(change.id)) continue;
         const held = items.get(change.id)!;
-        if (change.value && newer(held, change.value.revision)) items.set(change.id, change.value);
+        if (change.value && newer(held, change.value.revision))
+          items.set(change.id, preserveDeferredWork(held, change.value));
         else if (!change.value && BigInt(held.revision) <= BigInt(change.sequence))
           items.delete(change.id);
         const current = items.get(change.id);
@@ -818,16 +837,10 @@ export class ThreadTranscriptStore {
   }
 
   // Applies the changes recorded during a page read on top of the page.
-  #replay(
-    items: Map<string, TranscriptItem>,
-    historyIds: string[],
-    hasEarlier: boolean,
-    newest: boolean,
-  ) {
+  #replay(items: Map<string, TranscriptItem>, historyIds: string[], hasEarlier: boolean) {
     if (!this.#pending.size) return;
     const window = historyIds.map((id) => items.get(id)!).sort(comparePosition);
     const first = window[0];
-    const last = window.at(-1);
     const removed = new Set<string>();
     for (const change of this.#pending.values()) {
       if (change.kind !== "item") continue;
@@ -837,13 +850,11 @@ export class ThreadTranscriptStore {
         continue;
       }
       if (held) {
-        if (newer(held, change.value.revision)) items.set(change.id, change.value);
+        if (newer(held, change.value.revision))
+          items.set(change.id, preserveDeferredWork(held, change.value));
         continue;
       }
-      if (
-        (!hasEarlier || !first || comparePosition(change.value, first) >= 0) &&
-        (newest || !last || comparePosition(change.value, last) <= 0)
-      ) {
+      if (!hasEarlier || !first || comparePosition(change.value, first) >= 0) {
         items.set(change.id, change.value);
         historyIds.push(change.id);
       }
@@ -854,15 +865,23 @@ export class ThreadTranscriptStore {
     }
   }
 
-  canCheckpoint(state = this.#state) {
+  /** Whether this in-memory store can delta-resume from its cursor on reconnect or re-open. */
+  canResume(state = this.#state) {
     return (
       state.snapshot !== null &&
       state.through !== null &&
-      state.newest &&
-      BigInt(state.through) >= BigInt(state.readRevision) &&
+      BigInt(state.through) >= BigInt(state.readRevision)
+    );
+  }
+
+  /** Whether this store's bounded tail cut can be persisted as a cold-start disk checkpoint. */
+  canCheckpoint(state = this.#state) {
+    return (
+      !state.expanded &&
+      this.canResume(state) &&
       (state.historyIds.length <= 50 || state.cursorScope !== undefined) &&
       state.activeIds.size <= 20 &&
-      state.snapshot.pendingRequests.length <= 20
+      state.snapshot!.pendingRequests.length <= 20
     );
   }
 
@@ -874,6 +893,7 @@ export class ThreadTranscriptStore {
     const baseSnapshot = {
       ...rest,
       nextBefore: snapshot.nextBefore,
+      nextAfter: null,
       items: [] as TranscriptItem[],
       activeItems,
       ...(state.inputQueue ? { inputQueue: state.inputQueue.items } : {}),
@@ -924,6 +944,7 @@ export class ThreadTranscriptStore {
     const checkpointSnapshot: DetailSnapshot = {
       ...baseSnapshot,
       nextBefore,
+      nextAfter: null,
       items: history,
       ...(runs.length ? { runs } : {}),
     };
@@ -937,6 +958,19 @@ export class ThreadTranscriptStore {
     this.#published = state;
     for (const listener of this.#listeners) listener();
   }
+}
+
+function sameDeferredWork(a: TranscriptItem, b: TranscriptItem) {
+  const da = a.kind === "tool" || a.kind === "reasoning" ? a.deferredWork : undefined;
+  const db = b.kind === "tool" || b.kind === "reasoning" ? b.deferredWork : undefined;
+  if (da === db) return true;
+  if (!da || !db) return false;
+  return (
+    da.itemCount === db.itemCount &&
+    da.startedAt === db.startedAt &&
+    da.endedAt === db.endedAt &&
+    da.onlyThinking === db.onlyThinking
+  );
 }
 
 function stableIds(previous: readonly string[], next: string[]) {
@@ -988,63 +1022,9 @@ function lowerBound(
   return first;
 }
 
-/**
- * The last durable row `state` holds. A reader not following the latest keeps everything to it;
- * provisional cards past it are the live tail, which a window that must stop leaves behind.
- */
-function historyFoot(state: TranscriptState) {
-  return state.items.get(state.historyIds.at(-1) ?? "");
-}
-
 function sameBoundary(
   held: Pick<TranscriptOrderCursor, "beforeId" | "beforePosition"> | null | undefined,
   from: Pick<TranscriptOrderCursor, "beforeId" | "beforePosition">,
 ) {
   return held?.beforeId === from.beforeId && held.beforePosition === from.beforePosition;
-}
-
-/**
- * Bounds live rows in a sorted window, in place, once it holds more than `transcriptWindowItems`.
- * A reader `following` the latest keeps the newest of them: the window gives way at its head. A
- * reader elsewhere keeps all they were shown up to `foot`, and what arrived past it waits a page
- * away, so nothing they read leaves under them. Each edge that gave way gets its cursor.
- * `detached` says the foot gave way: the window no longer reaches the latest.
- */
-function boundLiveRows(
-  historyIds: string[],
-  items: Map<string, TranscriptItem>,
-  activeIds: ReadonlySet<string>,
-  snapshot: DetailSnapshot | null,
-  following: boolean,
-  foot: Pick<TranscriptItem, "id" | "position"> | undefined,
-  fallback?: TranscriptState["cursorScope"],
-): { snapshot: DetailSnapshot | null; detached: boolean } {
-  const extra = historyIds.length - transcriptWindowItems;
-  const template = snapshot?.nextBefore ?? snapshot?.nextAfter ?? fallback;
-  if (!snapshot || !template || extra <= 0) return { snapshot, detached: false };
-  const head = following ? extra : 0;
-  const arrived =
-    following || !foot ? 0 : historyIds.length - lowerBound(historyIds, items, foot, true);
-  if (!head && !arrived) return { snapshot, detached: false };
-  const removed = [
-    ...historyIds.splice(historyIds.length - arrived, arrived),
-    ...historyIds.splice(0, head),
-  ];
-  // A Run's card stays while the window holds any of its rows: they read the Run from it.
-  for (const id of removed)
-    if (!activeIds.has(id) && items.get(id)?.kind !== "run") items.delete(id);
-  sweepRunCards(items, historyIds, activeIds);
-  const cursor = (boundary: TranscriptItem) => ({
-    ...template,
-    beforeId: boundary.id,
-    beforePosition: boundary.position,
-  });
-  return {
-    snapshot: {
-      ...snapshot,
-      ...(head ? { nextBefore: cursor(items.get(historyIds[0]!)!) } : {}),
-      ...(arrived ? { nextAfter: cursor(items.get(historyIds.at(-1)!)!) } : {}),
-    },
-    detached: arrived > 0,
-  };
 }

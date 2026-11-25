@@ -198,6 +198,12 @@ export const HostCapabilitySchema = z.enum([
   "snapshot-messages-omit-v1",
   /** `thread.events.list` takes `turns`: a page of whole turns rather than a count of events. */
   "history-turns-v1",
+  /**
+   * The Host accepts `acceptDeferredWork` on detail subscriptions/snapshots/pages, `throughItemId`
+   * for backward targeted paging, and `view: "work"` + `workAnchorId` for on-demand hydration of
+   * folded tool/reasoning stretches.
+   */
+  "transcript-deferred-work-v1",
   "node-detail-v1",
   "tool-output-detail-v1",
   "place-events-v1",

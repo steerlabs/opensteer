@@ -401,7 +401,6 @@ import {
   type MockPlacesWorld,
 } from "./mock-places.js";
 import { mockGeneratedTaskIcon, seedMockTaskMarks } from "./mock-task-marks.js";
-import type { TranscriptFollowReader } from "../host/thread-transcript-store.js";
 
 async function* binaryChunks(body: Blob, signal?: AbortSignal): AsyncIterable<Uint8Array> {
   const reader = body.stream().getReader();
@@ -2028,6 +2027,15 @@ function mockItemsPage(
   )
     return rpcSuccess({ kind: "history-reset" as const });
   const all = mockScopedItems(snapshot, threadId, nodeId, revision, client.nodeEvents);
+  if (input.throughItemId) {
+    const exists = all.some(
+      (row) =>
+        row.id === input.throughItemId ||
+        (row.kind === "message" && row.messageId === input.throughItemId),
+    );
+    if (!exists)
+      return rpcSuccess({ kind: "history-reset" as const, anchorUnavailable: true as const });
+  }
   const anchor = input.anchorItemId ?? input.aroundMessageId;
   const index = anchor
     ? all.findIndex(
@@ -4749,7 +4757,6 @@ export class MockHostClient implements HostClient {
         const hasMore = window
           ? window.before !== null
           : (value.transcriptWindows[threadId]?.hasMore ?? false);
-        const hasNewer = window?.after != null;
         const moreRequests = overlay === undefined ? requests.length > 20 : overlay !== null;
         if (
           data &&
@@ -4758,7 +4765,6 @@ export class MockHostClient implements HostClient {
           inputQueue === data.inputQueue &&
           synchronized === data.synchronized &&
           hasMore === data.hasMore &&
-          hasNewer === data.hasNewer &&
           moreRequests === data.moreRequests &&
           runQueue.length === data.runQueue.length &&
           runQueue.every((row, i) => row === data!.runQueue[i])
@@ -4772,7 +4778,6 @@ export class MockHostClient implements HostClient {
           synchronized,
           hasMore,
           moreRequests,
-          hasNewer,
         };
         return data;
       },
@@ -4841,15 +4846,6 @@ export class MockHostClient implements HostClient {
     return result.ok ? result.data : undefined;
   }
 
-  setTranscriptPosition(_threadId: string, _measure: () => string | undefined | null) {
-    return () => undefined;
-  }
-
-  setTranscriptFollowing(_threadId: string, _following: TranscriptFollowReader) {
-    return () => undefined;
-  }
-
-  revealedTranscriptMove(_threadId: string) {}
   async loadMoreOverlays(threadId: string, kind: "requests" | "tools" | "nodes") {
     const key = `${threadId}:${kind}`;
     const cursor =
@@ -4860,10 +4856,6 @@ export class MockHostClient implements HostClient {
     );
     this.#mockOverlays.set(key, page.next);
     this.#state.refreshBrowserView();
-  }
-  async loadNewerTranscript(threadId: string) {
-    const window = this.#mockHistory.get(threadId);
-    if (window?.after) await this.#readMockHistory(threadId, { after: window.after });
   }
   watchPersonalResource() {
     return () => {};
@@ -5096,37 +5088,32 @@ export class MockHostClient implements HostClient {
     return result.data;
   }
 
-  async loadTranscriptAround(threadId: string, messageId: string): Promise<boolean> {
-    await this.#readMockHistory(threadId, { anchorItemId: messageId });
-    return true;
-  }
-
-  async loadLatestTranscript(threadId: string): Promise<boolean> {
-    if (!this.#state.getSnapshot().threads.some((thread) => thread.id === threadId))
-      throw new Error("Thread not found.");
-    await this.#readMockHistory(threadId, {});
-    return true;
-  }
-
   async #readMockHistory(
     threadId: string,
     query: Omit<Parameters<HostApiClient["thread.items.page"]>[0], "threadId">,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const page = unwrapRpcResult(await this.rpc["thread.items.page"]({ threadId, ...query }));
     if (page.kind === "history-reset") {
+      if (page.anchorUnavailable && query.throughItemId)
+        throw new HostClientRequestError({
+          code: "not_found",
+          message: "The requested message is unavailable.",
+          status: 404,
+        });
       this.#mockHistory.delete(threadId);
       this.#state.refreshBrowserView();
-      return;
+      return false;
     }
     const held = this.#mockHistory.get(threadId);
-    const ids = new Set(query.before || query.after ? held?.ids : []);
+    const ids = new Set(held?.ids ?? []);
     for (const { id } of page.items) ids.add(id);
     this.#mockHistory.set(threadId, {
       ids,
-      before: query.after ? (held?.before ?? page.nextBefore) : page.nextBefore,
-      after: query.before ? (held?.after ?? page.nextAfter ?? null) : (page.nextAfter ?? null),
+      before: page.nextBefore,
+      after: null,
     });
     this.#state.refreshBrowserView();
+    return true;
   }
 
   subscribePersonalRemoteAccess(listener: () => void): () => void {
@@ -5337,9 +5324,51 @@ export class MockHostClient implements HostClient {
     return this.#state.load();
   }
 
-  async loadEarlierTranscript(threadId: string): Promise<void> {
+  async loadEarlierTranscript(
+    threadId: string,
+    options?: { readonly throughItemId?: string | undefined },
+  ): Promise<boolean> {
+    const throughItemId = options?.throughItemId;
+    if (throughItemId) {
+      const entries = this.getThreadTranscript(threadId)?.getSnapshot().entries ?? [];
+      if (
+        entries.some(
+          (entry) =>
+            entry.id === throughItemId || ("itemId" in entry && entry.itemId === throughItemId),
+        )
+      )
+        return true;
+      const before = this.#mockHistory.get(threadId)?.before;
+      if (!before) {
+        const all = mockScopedItems(
+          this.#state.getSnapshot(),
+          threadId,
+          undefined,
+          String(this.#state.getSnapshot().revision),
+          this.#state.nodeEvents,
+        );
+        if (
+          !all.some(
+            (row) =>
+              row.id === throughItemId || (row.kind === "message" && row.messageId === throughItemId),
+          )
+        )
+          throw new HostClientRequestError({
+            code: "not_found",
+            message: "The requested message is unavailable.",
+            status: 404,
+          });
+        return true;
+      }
+      return this.#readMockHistory(threadId, { before, throughItemId, acceptDeferredWork: true });
+    }
     const before = this.#mockHistory.get(threadId)?.before;
-    if (before) await this.#readMockHistory(threadId, { before });
+    if (!before) return false;
+    return this.#readMockHistory(threadId, { before, acceptDeferredWork: true });
+  }
+
+  async loadDeferredWork(_threadId: string, _workAnchorId: string): Promise<boolean> {
+    return true;
   }
 
   async loadThreadInputQueue(threadId: string) {

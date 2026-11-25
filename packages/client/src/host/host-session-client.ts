@@ -22,8 +22,7 @@ import { needsYouEntryKey, settleTeamAsk } from "./needs-you.js";
 import { withThreadState } from "./optimistic-command-patches.js";
 import { ScopedThreadReader, TranscriptBodies, transcriptBodyKey } from "./scoped-thread-reader.js";
 import { nodeTranscriptCard, transcriptCard } from "./transcript-item-view.js";
-import { displayedItemIds, type TranscriptFollowReader } from "./thread-transcript-store.js";
-import { ViewRegistry } from "./view-registry.js";
+import { displayedItemIds } from "./thread-transcript-store.js";
 import {
   scopedPersonalApiVersion,
   personalDetailFrameMaxBytes,
@@ -375,10 +374,6 @@ export class HttpHostClient {
   /** A task's assignment reads, fenced by the viewer; and the tasks whose list is read. */
   readonly #assignmentReads = new FencedReads({ epoch: () => String(this.#viewerGeneration) });
   readonly #assignmentsRead = new Set<string>();
-  /** Each task view's one-shot measurement of the row in view, for its reader. */
-  // Each Thread's views, oldest first: the newest is the one asked.
-  readonly #positionMeasures = new ViewRegistry<() => string | undefined | null>();
-  readonly #transcriptFollowing = new ViewRegistry<TranscriptFollowReader>();
   /** When each assignment was last pushed, by a counter a read notes as it begins. */
   readonly #assignmentPushes = new Map<string, number>();
   /** Every task whose assignments were asked for under this viewer. */
@@ -751,6 +746,7 @@ export class HttpHostClient {
       this.#resources,
       options.cacheDeploymentId,
       () => this.#sweepSoon(),
+      () => this.#capabilities?.includes("transcript-deferred-work-v1") === true,
     );
     this.browserPasskeys = new BrowserPasskeys(options.passkeys);
     this.iphoneSetup = options.iphoneSetup
@@ -1397,42 +1393,19 @@ export class HttpHostClient {
     }
   }
 
-  revealedTranscriptMove(threadId: string) {
-    this.#reader(threadId)?.revealed();
-  }
-
-  setTranscriptPosition(threadId: string, measure: () => string | undefined | null) {
-    // Kept for the task's reader, which may be made after the view mounts.
-    return this.#positionMeasures.register(threadId, measure, (current) =>
-      this.#reader(threadId)?.setMeasure(current),
-    );
-  }
-
-  setTranscriptFollowing(threadId: string, following: TranscriptFollowReader) {
-    // Kept for the task's reader, which may be made after the view mounts.
-    return this.#transcriptFollowing.register(threadId, following, (current) =>
-      this.#reader(threadId)?.setFollowing(current),
-    );
-  }
-
   async loadMoreOverlays(threadId: string, kind: "requests" | "tools" | "nodes") {
     await this.#reader(threadId)?.loadMoreOverlays(kind);
   }
 
-  async loadEarlierTranscript(threadId: string): Promise<void> {
-    await this.#reader(threadId)?.history("earlier");
+  loadEarlierTranscript(
+    threadId: string,
+    options?: { readonly throughItemId?: string | undefined },
+  ): Promise<boolean> {
+    return this.#reader(threadId)?.loadEarlier(options) ?? Promise.resolve(false);
   }
 
-  async loadNewerTranscript(threadId: string): Promise<void> {
-    await this.#reader(threadId)?.history("newer");
-  }
-
-  loadTranscriptAround(threadId: string, messageId: string): Promise<boolean> {
-    return this.#reader(threadId)?.history("around", messageId) ?? Promise.resolve(true);
-  }
-
-  loadLatestTranscript(threadId: string): Promise<boolean> {
-    return this.#reader(threadId)?.history("latest") ?? Promise.resolve(true);
+  loadDeferredWork(threadId: string, workAnchorId: string): Promise<boolean> {
+    return this.#reader(threadId)?.loadDeferredWork(workAnchorId) ?? Promise.resolve(false);
   }
 
   loadThreadInputQueue(threadId: string) {
@@ -1501,8 +1474,6 @@ export class HttpHostClient {
       reader = new ScopedThreadReader(detail, this.rpc, this.#bodies);
       this.#scopeReaders.set(threadId, reader);
     }
-    reader.setMeasure(this.#positionMeasures.current(threadId));
-    reader.setFollowing(this.#transcriptFollowing.current(threadId));
     let placeItems: ReturnType<typeof detail.transcript.getSnapshot>["items"] | undefined;
     let placeQueue: NonNullable<
       ReturnType<typeof detail.transcript.getSnapshot>["snapshot"]
@@ -1793,7 +1764,7 @@ export class HttpHostClient {
       loadingOlder: false,
     };
     const closed = { ...view, status: "closed" as const };
-    const readHistory = async (mode: "earlier" | "latest") => {
+    const readEarlier = async () => {
       const { generation, synchronized } = detail.transcript.getSnapshot();
       if (
         released ||
@@ -1801,11 +1772,11 @@ export class HttpHostClient {
         (read?.generation === generation && read.status === "loading")
       )
         return;
-      const pending = { generation, mode, status: "loading" as const, error: null };
+      const pending = { generation, mode: "earlier" as const, status: "loading" as const, error: null };
       read = pending;
       notify();
       try {
-        await reader.history(mode);
+        await reader.loadEarlier();
         if (read === pending) read = undefined;
       } catch (error) {
         if (read === pending && generation === detail.transcript.getSnapshot().generation) {
@@ -1814,7 +1785,7 @@ export class HttpHostClient {
             (error.status === 403 || error.status === 404);
           read = {
             generation,
-            mode,
+            mode: "earlier",
             status: unavailable ? "missing" : "error",
             error: unavailable ? null : "Could not load this subagent’s work.",
           };
@@ -1841,7 +1812,6 @@ export class HttpHostClient {
         const structureChanged =
           previous?.items !== state.items ||
           previous.liveItems !== state.liveItems ||
-          previous.newest !== state.newest ||
           (view.status === "missing") !== (status === "missing");
         const subject = state.snapshot?.nodeSubject;
         const node =
@@ -1897,9 +1867,10 @@ export class HttpHostClient {
         listeners.add(listener);
         return () => listeners.delete(listener);
       },
-      loadOlder: () => readHistory("earlier"),
+      loadOlder: () => readEarlier(),
       retry: () => {
-        void readHistory(read?.mode ?? "latest");
+        if (read?.mode === "earlier") void readEarlier();
+        else detail.recut();
       },
       release: () => {
         if (released) return;

@@ -2878,6 +2878,7 @@ export function advertisedCapabilities(
     "task-family-v1",
     "snapshot-messages-omit-v1",
     "history-turns-v1",
+    "transcript-deferred-work-v1",
     "node-detail-v1",
     "tool-output-detail-v1",
     "place-events-v1",

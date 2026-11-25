@@ -173,7 +173,7 @@ describe("a cold message link on the web", () => {
         };
       },
     });
-    const around = vi.spyOn(client, "loadTranscriptAround").mockResolvedValue(true);
+    const loadEarlier = vi.spyOn(client, "loadEarlierTranscript").mockResolvedValue(true);
     const messageId = "msg_00000000-0000-4000-8000-0000000000aa";
     const node = document.createElement("div");
     document.body.append(node);
@@ -192,9 +192,9 @@ describe("a cold message link on the web", () => {
         </ToastProvider>,
       ),
     );
-    expect(around).not.toHaveBeenCalled();
+    expect(loadEarlier).not.toHaveBeenCalled();
     synchronized = true;
     await act(async () => listeners.forEach((listener) => listener()));
-    expect(around).toHaveBeenCalledWith(thread.id, messageId);
+    expect(loadEarlier).toHaveBeenCalledWith(thread.id, { throughItemId: messageId });
   });
 });

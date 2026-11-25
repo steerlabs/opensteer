@@ -94,8 +94,18 @@ const cursor: TranscriptOrderCursor = {
   beforePosition: item.position,
 };
 
-function fixture(cache?: PersonalStreamCache, resources?: PersonalResourcePort) {
-  const stream = new ScopedPersonalStream(cache, resources);
+function fixture(
+  cache?: PersonalStreamCache,
+  resources?: PersonalResourcePort,
+  acceptDeferredWork: () => boolean = () => true,
+) {
+  const stream = new ScopedPersonalStream(
+    cache,
+    resources,
+    undefined,
+    undefined,
+    acceptDeferredWork,
+  );
   const sent: ScopedClientMessage[] = [];
   const detail = stream.detail(threadScope);
   stream.select(threadScope);
@@ -106,7 +116,11 @@ function fixture(cache?: PersonalStreamCache, resources?: PersonalResourcePort) 
     subscriptionId: "shell" as const,
     generation: attach.generation,
   };
-  const { cursor: _cursor, ...address } = attach.selected!;
+  const address = {
+    scope: attach.selected!.scope,
+    subscriptionId: attach.selected!.subscriptionId,
+    generation: attach.selected!.generation,
+  };
   const shellSnapshot = (throughSequence = "1", replacementEpoch = epoch) => ({
     ...shell,
     type: "host.snapshot" as const,
@@ -465,154 +479,44 @@ test("a failed Request read tries again while the Request stays pending, and sto
   expect(vi.getTimerCount()).toBe(0);
 });
 
-test("the scope's anchor follows the reader: set by a jump, cleared on return to latest", async () => {
+test("subscriptions opt into deferred work and never send anchors or client.anchor", async () => {
   const f = fixture();
   f.syncShell();
   f.syncDetail();
-  const old = { ...item, id: "old", messageId: createId("message"), position: "0" };
-  const page = (items: TranscriptItem[], newest: boolean) => ({
-    ok: true,
-    data: {
-      kind: "page",
-      threadId,
-      nodeId: null,
-      revision: "1",
-      hasMore: false,
-      nextBefore: null,
-      nextAfter: newest ? null : { ...cursor, beforeId: items.at(-1)!.id, beforePosition: "0" },
-      items,
-    },
-  });
-  const read = vi
-    .fn()
-    .mockResolvedValueOnce(page([old], false))
-    .mockResolvedValueOnce(page([item], true));
-  const reader = new ScopedThreadReader(
-    f.detail,
-    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
-    new TranscriptBodies(),
-  );
-  const resubscribe = () => {
-    f.stream.setBackground(true);
-    f.stream.setBackground(false);
-    return f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
+  const initialAttach = f.sent[0] as Extract<ScopedClientMessage, { type: "client.attach" }>;
+  expect(initialAttach.type).toBe("client.attach");
+  expect(initialAttach.selected?.acceptDeferredWork).toBe(true);
+  expect(initialAttach.selected?.anchorItemId).toBeUndefined();
+
+  f.stream.setBackground(true);
+  f.stream.setBackground(false);
+  const resubscribe = f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
+  expect(resubscribe.type).toBe("client.subscribe");
+  expect(resubscribe.acceptDeferredWork).toBe(true);
+  expect(resubscribe.anchorItemId).toBeUndefined();
+  expect(f.sent.some((frame) => frame.type === "client.anchor")).toBe(false);
+});
+
+test("omits deferred-work and throughItemId wire fields when the Host lacks transcript-deferred-work-v1", async () => {
+  const f = fixture(undefined, undefined, () => false);
+  f.syncShell();
+  f.syncDetail();
+  const initialAttach = f.sent[0] as Extract<ScopedClientMessage, { type: "client.attach" }>;
+  expect(initialAttach.selected && "acceptDeferredWork" in initialAttach.selected).toBe(false);
+
+  f.stream.setBackground(true);
+  f.stream.setBackground(false);
+  const resubscribe = f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
+  expect("acceptDeferredWork" in resubscribe).toBe(false);
+  const address = {
+    scope: resubscribe.scope,
+    subscriptionId: resubscribe.subscriptionId,
+    generation: resubscribe.generation,
   };
-  const anchors = () =>
-    f.sent.flatMap((frame) =>
-      frame.type === "client.anchor" ? [frame.anchorItemId ?? "latest"] : [],
-    );
-  await reader.history("around", old.messageId);
-  expect(f.detail.anchor).toBe(old.id);
-  await reader.history("latest");
-  expect(f.detail.anchor).toBeUndefined();
-  // The open subscription heard each move, so a repair centres where the reader is.
-  expect(anchors()).toEqual([old.messageId, old.id, "latest"]);
-  expect(resubscribe().anchorItemId).toBeUndefined();
-  reader.dispose();
-});
+  f.stream.receive({ ...f.detailSnapshot(), ...address });
+  f.stream.receive({ ...address, type: "host.synchronized", throughSequence: "1" });
 
-test("scrolling tells nobody; a jump is told at once, and paging keeps the reader's row", async () => {
-  const f = fixture();
-  f.syncShell();
-  f.syncDetail();
-  const earlier = { ...item, id: "earlier", messageId: createId("message"), position: "0" };
-  const linked = { ...item, id: "linked", messageId: createId("message"), position: "0" };
-  const page = (items: TranscriptItem[]) => ({
-    ok: true,
-    data: {
-      kind: "page",
-      threadId,
-      nodeId: null,
-      revision: "1",
-      hasMore: false,
-      nextBefore: null,
-      nextAfter: null,
-      items,
-    },
-  });
-  const read = vi
-    .fn()
-    .mockResolvedValueOnce(page([earlier]))
-    .mockResolvedValueOnce(page([linked, item]));
-  const reader = new ScopedThreadReader(
-    f.detail,
-    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
-    new TranscriptBodies(),
-  );
-  const anchors = () =>
-    f.sent.flatMap((frame) =>
-      frame.type === "client.anchor" ? [frame.anchorItemId ?? "latest"] : [],
-    );
-  // The view can be asked where the reader is; it is never told so as they scroll.
-  let inView: string | undefined = earlier.id;
-  reader.setMeasure(() => inView);
-  await reader.history("earlier");
-  expect(anchors()).toEqual([]);
-  // A jump is the reader's move: the Host hears its target at once, then the row it landed on.
-  await reader.history("around", linked.messageId);
-  expect(anchors()).toEqual([linked.messageId, linked.id]);
-  // Once the view has revealed the jump, a repair measures the row in view and centres there.
-  reader.revealed();
-  inView = linked.id;
-  const repair = f.detailSnapshot();
-  f.stream.receive({ ...repair, snapshot: { ...repair.snapshot, anchorItemId: linked.id } });
-  expect(f.detail.anchor).toBe(linked.id);
-  expect(reader.getSnapshot().repairs).toBe(1);
-  reader.dispose();
-});
-
-test("earlier and newer pages fly together: neither cancels the other, and both land", async () => {
-  const f = fixture();
-  f.syncShell();
-  // A window in the middle of history: rows before it and after it are a page away.
-  const cut = f.detailSnapshot();
-  f.stream.receive({ ...cut, snapshot: { ...cut.snapshot, nextAfter: cursor } });
-  f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
-  const before = { ...item, id: "before", messageId: createId("message"), position: "0" };
-  const after = { ...item, id: "after", messageId: createId("message"), position: "2" };
-  const pages = new Map<string, () => void>();
-  const read = vi.fn(
-    (query: { before?: unknown; after?: unknown }) =>
-      new Promise((resolve) => {
-        const items = query.before ? [before] : [after];
-        pages.set(query.before ? "earlier" : "newer", () =>
-          resolve({
-            ok: true,
-            data: {
-              kind: "page",
-              threadId,
-              nodeId: null,
-              revision: "1",
-              hasMore: false,
-              nextBefore: null,
-              nextAfter: null,
-              items,
-            },
-          }),
-        );
-      }),
-  );
-  const reader = new ScopedThreadReader(
-    f.detail,
-    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
-    new TranscriptBodies(),
-  );
-  const newer = reader.history("newer");
-  const earlier = reader.history("earlier");
-  expect(read).toHaveBeenCalledTimes(2);
-  pages.get("earlier")!();
-  pages.get("newer")!();
-  await Promise.all([newer, earlier]);
-  expect(f.detail.transcript.getSnapshot().historyIds).toEqual([before.id, item.id, after.id]);
-  expect(reader.getSnapshot()).toMatchObject({ hasMore: false, hasNewer: false });
-  reader.dispose();
-});
-
-test("a jump the view reveals while its page is still landing ends there, so no later cut returns to it", async () => {
-  const f = fixture();
-  f.syncShell();
-  f.syncDetail();
-  const linked = { ...item, id: "linked", messageId: createId("message"), position: "0" };
+  const earlier = { ...item, id: "older", messageId: createId("message"), position: "0" };
   const read = vi.fn().mockResolvedValue({
     ok: true,
     data: {
@@ -622,8 +526,7 @@ test("a jump the view reveals while its page is still landing ends there, so no 
       revision: "1",
       hasMore: false,
       nextBefore: null,
-      nextAfter: null,
-      items: [linked, item],
+      items: [earlier],
     },
   });
   const reader = new ScopedThreadReader(
@@ -631,127 +534,24 @@ test("a jump the view reveals while its page is still landing ends there, so no 
     { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
     new TranscriptBodies(),
   );
-  reader.setMeasure(() => undefined);
-  // The view draws the linked message as the page lands and says so at once, before the read
-  // settles, as a React effect run on the store's notification does.
-  reader.subscribe(() => {
-    if (f.detail.transcript.getSnapshot().items.has(linked.id)) reader.revealed();
-  });
-  await expect(reader.history("around", linked.messageId)).resolves.toBe(true);
-  expect(f.detail.moving).toBeUndefined();
-  // A repair now centres where the reader is, not back on the link.
-  reader.setMeasure(() => item.id);
-  f.stream.receive(f.detailSnapshot());
-  expect(f.detail.anchor).toBe(item.id);
+  await expect(reader.loadEarlier({ throughItemId: earlier.messageId })).resolves.toBe(true);
+  expect(read).toHaveBeenCalledTimes(1);
+  expect("acceptDeferredWork" in read.mock.calls[0]![0]).toBe(false);
+  expect("throughItemId" in read.mock.calls[0]![0]).toBe(false);
   reader.dispose();
 });
 
-test("a jump the view revealed before its page landed ends as the page lands", async () => {
+test("a page read across a new history epoch cuts the scope again and reads on from the new cut", async () => {
   const f = fixture();
   f.syncShell();
   f.syncDetail();
-  const linked = { ...item, id: "linked", messageId: createId("message"), position: "0" };
-  let land!: () => void;
-  const read = vi.fn(
-    () =>
-      new Promise((resolve) => {
-        land = () =>
-          resolve({
-            ok: true,
-            data: {
-              kind: "page",
-              threadId,
-              nodeId: null,
-              revision: "1",
-              hasMore: false,
-              nextBefore: null,
-              nextAfter: null,
-              items: [linked, item],
-            },
-          });
-      }),
-  );
-  const reader = new ScopedThreadReader(
-    f.detail,
-    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
-    new TranscriptBodies(),
-  );
-  reader.setMeasure(() => undefined);
-  const jump = reader.history("around", linked.messageId);
-  // The linked message was already on screen: the view reveals it before the page arrives.
-  reader.revealed();
-  expect(f.detail.moving).toMatchObject({ revealed: true });
-  land();
-  await expect(jump).resolves.toBe(true);
-  expect(f.detail.moving).toBeUndefined();
-  reader.dispose();
-});
-
-test("a Load newer begun before a repair continues the window the repair's reread restores", async () => {
-  vi.useFakeTimers();
-  const f = fixture();
-  f.syncShell();
-  const cut = f.detailSnapshot();
-  f.stream.receive({ ...cut, snapshot: { ...cut.snapshot, nextAfter: cursor } });
-  f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
-  const after = { ...item, id: "after", messageId: createId("message"), position: "2" };
-  const tail = { ...item, id: "tail", messageId: createId("message"), position: "5" };
-  const page = (items: TranscriptItem[], nextAfter: TranscriptOrderCursor | null) => ({
-    ok: true,
-    data: {
-      kind: "page",
-      threadId,
-      nodeId: null,
-      revision: "1",
-      hasMore: false,
-      nextBefore: null,
-      nextAfter,
-      items,
-    },
-  });
-  const held: (() => void)[] = [];
-  const read = vi.fn(
-    (query: { after?: unknown; anchorItemId?: string }) =>
-      new Promise((resolve) =>
-        held.push(() => resolve(query.anchorItemId ? page([item], cursor) : page([after], null))),
-      ),
-  );
-  const reader = new ScopedThreadReader(
-    f.detail,
-    { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
-    new TranscriptBodies(),
-  );
-  reader.setMeasure(() => item.id);
-  const newer = reader.history("newer");
-  // A repair cuts at the latest; the reader was on a row it lacks, so that row is read again.
-  f.stream.receive({
-    ...f.detailSnapshot([tail]),
-    snapshot: {
-      ...f.detailSnapshot([tail]).snapshot,
-      nextBefore: { ...cursor, beforeId: tail.id, beforePosition: tail.position },
-    },
-  });
-  expect(read).toHaveBeenCalledTimes(2);
-  // The newer page answers the window the repair replaced: it is read again, once the reread
-  // has settled where the reader is.
-  held[0]!();
-  await vi.advanceTimersByTimeAsync(1_000);
-  expect(read).toHaveBeenCalledTimes(2);
-  // The anchor's window lands, with rows after it: the newer page is read from there.
-  held[1]!();
-  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(3));
-  expect(read.mock.calls[2]![0]).toMatchObject({ after: { beforeId: item.id } });
-  held[2]!();
-  await newer;
-  expect(f.detail.transcript.getSnapshot().historyIds).toEqual([item.id, after.id]);
-  reader.dispose();
-});
-
-test("a page read across a new history epoch cuts the scope again where the reader is, and reads on from the new cut", async () => {
-  const f = fixture();
-  f.syncShell();
-  f.syncDetail();
-  const earlier = { ...item, id: "earlier", messageId: createId("message"), position: "0" };
+  const earlier = {
+    ...item,
+    id: "earlier",
+    messageId: createId("message"),
+    position: "0",
+    isTurnStart: true,
+  };
   const read = vi
     .fn()
     .mockResolvedValueOnce({ ok: true, data: { kind: "history-reset" } })
@@ -773,10 +573,8 @@ test("a page read across a new history epoch cuts the scope again where the read
     { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
     new TranscriptBodies(),
   );
-  // The reader is on a row: the new cut centres there, as a repair's would.
-  f.detail.anchorTo(item.id);
   const subscribed = f.sent.length;
-  const paging = reader.history("earlier");
+  const paging = reader.loadEarlier();
   await vi.waitFor(() =>
     expect(f.sent.slice(subscribed).some((frame) => frame.type === "client.subscribe")).toBe(true),
   );
@@ -784,7 +582,8 @@ test("a page read across a new history epoch cuts the scope again where the read
     ScopedClientMessage,
     { type: "client.subscribe" }
   >;
-  expect(subscribe.anchorItemId).toBe(item.id);
+  expect(subscribe.anchorItemId).toBeUndefined();
+  expect(subscribe.acceptDeferredWork).toBe(true);
   const address = {
     scope: subscribe.scope,
     subscriptionId: subscribe.subscriptionId,
@@ -792,13 +591,13 @@ test("a page read across a new history epoch cuts the scope again where the read
   };
   f.stream.receive({ ...f.detailSnapshot(), ...address });
   f.stream.receive({ ...address, type: "host.synchronized", throughSequence: "1" });
-  await paging;
+  await expect(paging).resolves.toBe(true);
   expect(read).toHaveBeenCalledTimes(2);
   expect(f.detail.transcript.getSnapshot().historyIds).toEqual([earlier.id, item.id]);
   reader.dispose();
 });
 
-test("a link opened while the scope resubscribes waits for its cut and lands, rather than reporting the message missing", async () => {
+test("a link opened while the scope resubscribes waits for its cut and extends backward to the target", async () => {
   const f = fixture();
   f.syncShell();
   f.syncDetail();
@@ -813,7 +612,7 @@ test("a link opened while the scope resubscribes waits for its cut and lands, ra
       hasMore: false,
       nextBefore: null,
       nextAfter: null,
-      items: [linked, item],
+      items: [linked],
     },
   });
   const reader = new ScopedThreadReader(
@@ -822,7 +621,7 @@ test("a link opened while the scope resubscribes waits for its cut and lands, ra
     new TranscriptBodies(),
   );
   f.stream.setBackground(true);
-  const jump = reader.history("around", linked.messageId);
+  const jump = reader.loadEarlier({ throughItemId: linked.messageId });
   f.stream.setBackground(false);
   const subscribe = f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
   const address = {
@@ -833,10 +632,13 @@ test("a link opened while the scope resubscribes waits for its cut and lands, ra
   expect(read).not.toHaveBeenCalled();
   f.stream.receive({ ...f.detailSnapshot(), ...address });
   f.stream.receive({ ...address, type: "host.synchronized", throughSequence: "1" });
-  await jump;
+  await expect(jump).resolves.toBe(true);
   expect(read).toHaveBeenCalledTimes(1);
-  expect(f.detail.transcript.getSnapshot().items.has(linked.id)).toBe(true);
-  expect(f.detail.anchor).toBe(linked.id);
+  expect(read.mock.calls[0]?.[0]).toMatchObject({
+    throughItemId: linked.messageId,
+    acceptDeferredWork: true,
+  });
+  expect(f.detail.transcript.getSnapshot().historyIds).toEqual([linked.id, item.id]);
   reader.dispose();
 });
 
@@ -906,7 +708,9 @@ test("a history page the store refused (its change journal overflowed) is read a
     },
   };
   let settled = false;
-  const jump = reader.history("around", linked.messageId).then(() => (settled = true));
+  const jump = reader
+    .loadEarlier({ throughItemId: linked.messageId })
+    .then(() => (settled = true));
   await vi.waitFor(() => expect(answers).toHaveLength(1));
   // More changes land while the page flies than the store keeps for it.
   for (let frame = 0; frame < 16; frame++) {
@@ -940,303 +744,191 @@ test("a history page the store refused (its change journal overflowed) is read a
   reader.dispose();
 });
 
-describe("the reader's intended position", () => {
-  /** A synced detail and a reader whose page reads the test answers by hand, in any order. */
-  function positioned() {
+describe("backward history extension and deferred work", () => {
+  it("extends backward across multiple pages until a turn boundary arrives", async () => {
     const f = fixture();
     f.syncShell();
     f.syncDetail();
-    const targets = Array.from({ length: 4 }, (_, index) => ({
+    const middle = {
       ...item,
-      id: `target-${index}`,
+      id: "middle",
       messageId: createId("message"),
-      position: String(index - 10),
-    }));
-    // Each target's page holds only it and the latest row, so a page for one omits the others.
+      position: "0",
+      isTurnStart: false,
+    };
+    const start = {
+      ...item,
+      id: "start",
+      messageId: createId("message"),
+      position: "-1",
+      isTurnStart: true,
+    };
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        data: {
+          kind: "page",
+          threadId,
+          nodeId: null,
+          revision: "1",
+          hasMore: true,
+          nextBefore: { ...cursor, beforeId: middle.id, beforePosition: middle.position },
+          items: [middle],
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        data: {
+          kind: "page",
+          threadId,
+          nodeId: null,
+          revision: "1",
+          hasMore: false,
+          nextBefore: null,
+          items: [start],
+        },
+      });
+    const reader = new ScopedThreadReader(
+      f.detail,
+      { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+      new TranscriptBodies(),
+    );
+    await expect(reader.loadEarlier()).resolves.toBe(true);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(f.detail.transcript.getSnapshot().historyIds).toEqual([start.id, middle.id, item.id]);
+    expect(f.detail.transcript.getSnapshot().expanded).toBe(true);
+    expect(f.detail.transcript.canResume()).toBe(true);
+    expect(f.detail.transcript.canCheckpoint()).toBe(false);
+    reader.dispose();
+  });
+
+  it("extends backward through a target message, rejects when missing, and lets a newer call supersede", async () => {
+    const f = fixture();
+    f.syncShell();
+    f.syncDetail();
+    const targetA = { ...item, id: "target-a", messageId: createId("message"), position: "-1" };
+    const targetB = { ...item, id: "target-b", messageId: createId("message"), position: "-2" };
     const pending: {
-      query: { aroundMessageId?: string; anchorItemId?: string };
-      answer: () => void;
-      fail: () => void;
+      query: { throughItemId?: string };
+      resolve: (value: unknown) => void;
+      reject: (error: unknown) => void;
     }[] = [];
     const read = vi.fn(
-      (query: { aroundMessageId?: string; anchorItemId?: string }) =>
-        new Promise((resolve, reject) => {
-          // The Host places an anchor by its row or by the message it names.
-          const anchor = query.anchorItemId ?? query.aroundMessageId;
-          const target = targets.find(({ messageId, id }) => messageId === anchor || id === anchor);
-          const items = target ? [target, item] : [item];
-          pending.push({
-            query,
-            fail: () => reject(new TypeError("The connection was lost.")),
-            answer: () =>
-              resolve({
-                ok: true,
-                data: {
-                  kind: "page",
-                  threadId,
-                  nodeId: null,
-                  revision: "1",
-                  hasMore: false,
-                  nextBefore: null,
-                  nextAfter: null,
-                  items,
-                },
-              }),
-          });
-        }),
+      (query: { throughItemId?: string }) =>
+        new Promise((resolve, reject) => pending.push({ query, resolve, reject })),
     );
     const reader = new ScopedThreadReader(
       f.detail,
       { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
       new TranscriptBodies(),
     );
-    const settle = async () => {
-      for (let turn = 0; turn < 10; turn++) await Promise.resolve();
-    };
-    return { f, targets, pending, reader, settle };
-  }
-
-  it("a jump overtaken by a newer one lands nothing and says so, so no route reports it missing", async () => {
-    const { f, targets, pending, reader, settle } = positioned();
-    const first = reader.history("around", targets[0]!.messageId);
-    const second = reader.history("around", targets[1]!.messageId);
+    const first = reader.loadEarlier({ throughItemId: targetA.messageId });
     await vi.waitFor(() => expect(pending).toHaveLength(1));
-    // The older page answers first: it is for a move the reader no longer wants.
-    pending[0]!.answer();
+    const second = reader.loadEarlier({ throughItemId: targetB.messageId });
+    pending[0]!.reject(new TypeError("connection lost"));
     await vi.waitFor(() => expect(pending).toHaveLength(2));
-    pending[1]!.answer();
+    expect(pending[1]!.query.throughItemId).toBe(targetB.messageId);
+    pending[1]!.resolve({
+      ok: true,
+      data: {
+        kind: "page",
+        threadId,
+        nodeId: null,
+        revision: "1",
+        hasMore: false,
+        nextBefore: null,
+        items: [targetB, targetA],
+      },
+    });
     await expect(first).resolves.toBe(false);
     await expect(second).resolves.toBe(true);
-    await settle();
-    expect(f.detail.anchor).toBe(targets[1]!.id);
-    expect(f.detail.transcript.getSnapshot().items.has(targets[0]!.id)).toBe(false);
-    reader.dispose();
-  });
+    expect(f.detail.transcript.getSnapshot().historyIds).toEqual([targetB.id, targetA.id, item.id]);
 
-  it("a jump whose read fails after the reader scrolled away reports nothing; one still current reports its failure", async () => {
-    const { f, targets, pending, reader } = positioned();
-    const jump = reader.history("around", targets[0]!.messageId);
-    await vi.waitFor(() => expect(pending).toHaveLength(1));
-    // A newer move (a link to another message) is asked for while the first read is out.
-    const newer = reader.history("around", targets[2]!.messageId);
-    pending[0]!.fail();
-    await vi.waitFor(() => expect(pending).toHaveLength(2));
-    pending[1]!.answer();
-    await expect(newer).resolves.toBe(true);
-    await expect(jump, "a superseded jump's failure reached its caller").resolves.toBe(false);
-    expect(f.detail.anchor).toBe(targets[2]!.id);
-    // A jump stays the reader's position through scrolling: nothing a scroll does supersedes it.
-    const latest = reader.history("latest");
-    await vi.waitFor(() => expect(pending).toHaveLength(3));
-    pending[2]!.answer();
-    await expect(latest).resolves.toBe(true);
-    expect(f.detail.anchor).toBeUndefined();
-    // A failure of the move still current is the caller's to show.
-    const current = reader.history("around", targets[3]!.messageId);
-    await vi.waitFor(() => expect(pending).toHaveLength(4));
-    pending[3]!.fail();
-    await expect(current).rejects.toThrow("connection was lost");
-    reader.dispose();
-  });
-
-  it("a jump to a waiting message is a move: an older history jump answering after it lands nothing", async () => {
-    const { f, targets, pending, reader } = positioned();
-    const older = reader.history("around", targets[0]!.messageId);
-    await vi.waitFor(() => expect(pending).toHaveLength(1));
-    // The waiting message stands at the foot: the web jumps to it by returning to the latest.
-    const waiting = reader.history("latest");
-    // The older jump's page answers first; it is for a move the reader no longer wants.
-    pending[0]!.answer();
-    await vi.waitFor(() => expect(pending).toHaveLength(2));
-    pending[1]!.answer();
-    await expect(waiting).resolves.toBe(true);
-    await expect(older, "the older jump spoke after the waiting-message jump").resolves.toBe(false);
-    expect(f.detail.anchor).toBeUndefined();
-    expect(f.detail.transcript.getSnapshot().items.has(targets[0]!.id)).toBe(false);
-    reader.dispose();
-  });
-
-  it("a resubscription's first cut does not erase a jump made after it subscribed", async () => {
-    const { f, targets, pending, reader } = positioned();
-    f.stream.setBackground(true);
-    f.stream.setBackground(false);
-    const subscribe = f.sent.at(-1) as Extract<ScopedClientMessage, { type: "client.subscribe" }>;
-    expect(subscribe.anchorItemId).toBeUndefined();
-    // A link is opened while that cut is in flight.
-    void reader.history("around", targets[2]!.messageId);
-    const address = {
-      scope: subscribe.scope,
-      subscriptionId: subscribe.subscriptionId,
-      generation: subscribe.generation,
-    };
-    const cut = f.detailSnapshot();
-    f.stream.receive({ ...cut, ...address, snapshot: { ...cut.snapshot, anchorItemId: null } });
-    expect(f.detail.anchor, "the cut erased the newer jump").toBe(targets[2]!.messageId);
-    expect(pending).toHaveLength(0);
-    reader.dispose();
-  });
-
-  it("a jump owns the position through scrolling and a repair: the repair centres on its target, and it lands", async () => {
-    const { f, targets, pending, reader } = positioned();
-    // The view, asked, would say the reader is on targets[1]; they scrolled there after linking.
-    reader.setMeasure(() => targets[1]!.id);
-    const jump = reader.history("around", targets[3]!.messageId);
-    await vi.waitFor(() => expect(pending).toHaveLength(1));
-    const repair = f.detailSnapshot();
-    f.stream.receive({ ...repair, snapshot: { ...repair.snapshot, anchorItemId: null } });
-    expect(f.detail.anchor, "the repair took a measurement over the jump").toBe(
-      targets[3]!.messageId,
-    );
-    // The page asked for before the repair is read again in the new cut, for the same jump.
-    pending.shift()!.answer();
-    await vi.waitFor(() => expect(pending).toHaveLength(1));
-    expect(pending[0]!.query.anchorItemId).toBe(targets[3]!.messageId);
-    pending.shift()!.answer();
-    await expect(jump).resolves.toBe(true);
-    expect(f.detail.anchor).toBe(targets[3]!.id);
-    reader.dispose();
-  });
-
-  it("a jump read but not yet revealed keeps the position: a repair rereads its target, and only the reveal ends it", async () => {
-    const { f, targets, pending, reader } = positioned();
-    // The view, asked, would name the row the reader was on before the jump.
-    reader.setMeasure(() => targets[0]!.id);
-    const jump = reader.history("around", targets[3]!.messageId);
-    await vi.waitFor(() => expect(pending).toHaveLength(1));
-    pending.shift()!.answer();
-    await expect(jump).resolves.toBe(true);
-    // Before the view has scrolled to it, a repair prepared around the old place replaces the page.
-    const repair = f.detailSnapshot();
-    f.stream.receive({ ...repair, snapshot: { ...repair.snapshot, anchorItemId: null } });
-    expect(f.detail.anchor, "the repair measured over the jump").toBe(targets[3]!.messageId);
-    // The jump's target is read again, and installs, so the view can still reveal it.
-    await vi.waitFor(() => expect(pending).toHaveLength(1));
-    expect(pending[0]!.query.anchorItemId).toBe(targets[3]!.messageId);
-    pending.shift()!.answer();
-    await vi.waitFor(() =>
-      expect(f.detail.transcript.getSnapshot().items.has(targets[3]!.id)).toBe(true),
-    );
-    // The view reveals it: the move has landed, and the next repair measures again.
-    reader.revealed();
-    const later = f.detailSnapshot();
-    f.stream.receive({ ...later, snapshot: { ...later.snapshot, anchorItemId: null } });
-    expect(f.detail.anchor).toBe(targets[0]!.id);
-    reader.dispose();
-  });
-
-  it("a view that cannot tell where the reader is (mid-layout) keeps the last place, not the latest", async () => {
-    const { f, targets, reader } = positioned();
-    f.detail.anchorTo(targets[1]!.id);
-    reader.setMeasure(() => null);
-    const repair = f.detailSnapshot();
-    f.stream.receive({ ...repair, snapshot: { ...repair.snapshot, anchorItemId: null } });
-    expect(f.detail.anchor, "a measurement that could not tell was taken for the latest").toBe(
-      targets[1]!.id,
-    );
-    reader.dispose();
-  });
-
-  it("a repair with no jump under way rereads around the row in view, measured once at the repair", async () => {
-    const { f, targets, pending, reader } = positioned();
-    let measured = 0;
-    reader.setMeasure(() => {
-      measured++;
-      return targets[1]!.id;
+    // Missing target rejects with not_found when history is already exhausted.
+    await expect(reader.loadEarlier({ throughItemId: createId("message") })).rejects.toMatchObject({
+      code: "not_found",
     });
-    const repair = f.detailSnapshot();
-    f.stream.receive({ ...repair, snapshot: { ...repair.snapshot, anchorItemId: null } });
-    expect(measured).toBe(1);
-    await vi.waitFor(() => expect(pending).toHaveLength(1));
-    expect(pending[0]!.query.anchorItemId).toBe(targets[1]!.id);
-    pending[0]!.answer();
-    await vi.waitFor(() =>
-      expect(f.detail.transcript.getSnapshot().items.has(targets[1]!.id)).toBe(true),
-    );
-    expect(f.detail.anchor).toBe(targets[1]!.id);
     reader.dispose();
   });
 
-  it("under any interleaving of jumps, returns to latest, scrolls, failures, repairs and resubscribes, only the latest move speaks, and a repair outside a move uses the row in view", async () => {
-    let seed = 11;
-    const next = (limit: number) => {
-      seed = (seed * 1103515245 + 12345) % 2 ** 31;
-      return seed % limit;
+  it("hydrates multi-page deferred work independently without detaching the live tail", async () => {
+    const f = fixture();
+    f.syncShell();
+    const { messageId: _messageId, ...base } = item;
+    const anchor: TranscriptItem = {
+      ...base,
+      kind: "tool",
+      id: "tool:1",
+      position: "1",
+      toolCallId: "call-1",
+      view: { status: "done" },
+      deferredWork: { itemCount: 2, startedAt: time, endedAt: time },
     };
-    for (let run = 0; run < 80; run++) {
-      const { f, targets, pending, reader, settle } = positioned();
-      const asked: { promise: Promise<boolean>; move: number }[] = [];
-      let moves = 0;
-      let last: { kind: "jump" | "latest"; target: number } | null = null;
-      // Where the view says the reader is, if asked: scrolling changes it and tells nobody.
-      let inView: number | undefined;
-      reader.setMeasure(() => (inView === undefined ? undefined : targets[inView]!.id));
-      for (let step = 0; step < 14; step++) {
-        const action = next(8);
-        if (action <= 1) {
-          const target = next(targets.length);
-          moves++;
-          last = { kind: "jump", target };
-          asked.push({
-            promise: reader.history("around", targets[target]!.messageId),
-            move: moves,
-          });
-        } else if (action === 2) {
-          moves++;
-          last = { kind: "latest", target: -1 };
-          // Expo's and web's Return to latest: the same call, judged by what it resolves.
-          asked.push({ promise: reader.history("latest"), move: moves });
-        } else if (action === 3) {
-          inView = next(targets.length);
-        } else if (action === 4) {
-          f.stream.receive(f.detailSnapshot());
-        } else if (action === 5) {
-          f.stream.setBackground(true);
-          f.stream.setBackground(false);
-          const subscribe = f.sent.at(-1) as Extract<
-            ScopedClientMessage,
-            { type: "client.subscribe" }
-          >;
-          const address = {
-            scope: subscribe.scope,
-            subscriptionId: subscribe.subscriptionId,
-            generation: subscribe.generation,
-          };
-          const cut = f.detailSnapshot();
-          f.stream.receive({
-            ...cut,
-            ...address,
-            snapshot: { ...cut.snapshot, anchorItemId: subscribe.anchorItemId ?? null },
-          });
-          f.stream.receive({ ...address, type: "host.synchronized", throughSequence: "1" });
-        } else if (pending.length) {
-          // Some reads fail: a failure, too, may speak only for the latest move.
-          const read = pending.splice(next(pending.length), 1)[0]!;
-          if (action === 6) read.answer();
-          else read.fail();
-        }
-        await settle();
-      }
-      for (let guard = 0; guard < 50 && pending.length; guard++) {
-        pending.shift()!.answer();
-        await settle();
-      }
-      const outcomes = await Promise.allSettled(asked.map(({ promise }) => promise));
-      const label = `run ${run}`;
-      for (const [index, { move }] of asked.entries()) {
-        const outcome = outcomes[index]!;
-        const latest = move === moves;
-        if (outcome.status === "rejected")
-          expect(latest, `${label}: a superseded move ${index} reported a failure`).toBe(true);
-        else if (outcome.value)
-          expect(latest, `${label}: a superseded move ${index} landed`).toBe(true);
-      }
-      const final = outcomes.at(-1);
-      const landed = final?.status === "fulfilled" && final.value === true;
-      if (last?.kind === "jump" && landed)
-        expect(f.detail.anchor, label).toBe(targets[last.target]!.id);
-      if (last?.kind === "latest" && landed) expect(f.detail.anchor, label).toBeUndefined();
-      reader.dispose();
-    }
+    const hidden2: TranscriptItem = {
+      ...base,
+      kind: "tool",
+      id: "tool:2",
+      position: "2",
+      toolCallId: "call-2",
+      view: { status: "done" },
+    };
+    const hidden3: TranscriptItem = {
+      ...base,
+      kind: "tool",
+      id: "tool:3",
+      position: "3",
+      toolCallId: "call-3",
+      view: { status: "done" },
+    };
+    const reply: TranscriptItem = { ...item, id: "reply", position: "4" };
+    f.stream.receive(f.detailSnapshot([anchor, reply]));
+    f.stream.receive({ ...f.address, type: "host.synchronized", throughSequence: "1" });
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        data: {
+          kind: "page",
+          threadId,
+          nodeId: null,
+          revision: "1",
+          hasMore: true,
+          nextBefore: { ...cursor, beforeId: hidden3.id, beforePosition: hidden3.position },
+          items: [hidden3],
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        data: {
+          kind: "page",
+          threadId,
+          nodeId: null,
+          revision: "1",
+          hasMore: false,
+          nextBefore: null,
+          items: [anchor, hidden2],
+        },
+      });
+    const reader = new ScopedThreadReader(
+      f.detail,
+      { "thread.items.page": read } as unknown as import("@opensteer/protocol").HostApiClient,
+      new TranscriptBodies(),
+    );
+    await expect(reader.loadDeferredWork(anchor.id)).resolves.toBe(true);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(read.mock.calls[0]?.[0]).toMatchObject({ view: "work", workAnchorId: anchor.id });
+    expect(read.mock.calls[1]?.[0]).toMatchObject({
+      view: "work",
+      workAnchorId: anchor.id,
+      before: { beforeId: hidden3.id, beforePosition: hidden3.position },
+    });
+    const state = f.detail.transcript.getSnapshot();
+    expect(state.historyIds).toEqual([anchor.id, hidden2.id, hidden3.id, reply.id]);
+    const hydratedAnchor = state.items.get(anchor.id);
+    expect(hydratedAnchor?.kind === "tool" && hydratedAnchor.deferredWork).toBeUndefined();
+    expect(state.expanded).toBe(true);
+    reader.dispose();
   });
 });
 
@@ -1927,7 +1619,7 @@ test.each(["message", "reasoning"] as const)(
       expect(f.detail.text.get(face.id)?.text).toBe("🦊!");
       expect(reader.getSnapshot().entries).toBe(draft);
       if (kind === "message") upsert(final, "2");
-      else await reader.history("latest");
+      else await reader.loadEarlier();
       const settled = reader.getSnapshot().entries;
       expect(settled.map(({ id }) => id)).toEqual([face.id, tool.id]);
       expect(settled[0]).toMatchObject(
@@ -2431,7 +2123,7 @@ test("does not install a history page that contains another node's item", async 
     false,
   );
   try {
-    await expect(reader.history("latest")).rejects.toThrow("scope");
+    await expect(reader.loadEarlier()).rejects.toThrow("scope");
     expect(f.detail.transcript.getSnapshot().items.get(item.id)?.view.preview).toBe("A");
   } finally {
     reader.dispose();
@@ -2459,6 +2151,7 @@ test("pages a node across a missed window and ignores a released holder's earlie
     id: `line:${index + 1}`,
     position: String(index + 1),
     nodeId,
+    ...(index === 6 ? { isTurnStart: true } : {}),
     view: { preview: `Message ${index + 1}` },
   }));
   const boundary = (row: (typeof lines)[number]) => ({
@@ -2500,14 +2193,14 @@ test("pages a node across a missed window and ignores a released holder's earlie
   const previous = new ScopedThreadReader(detail, rpc, new TranscriptBodies(), false);
   const current = new ScopedThreadReader(detail, rpc, new TranscriptBodies(), false);
   try {
-    const pending = previous.history("earlier");
+    const pending = previous.loadEarlier();
     previous.dispose();
     held.resolve(page(6, 106));
     await pending;
     expect(detail.transcript.getSnapshot().ids).toEqual([lines.at(-1)!.id]);
-    await current.history("earlier");
+    await current.loadEarlier();
     expect(detail.transcript.getSnapshot().snapshot?.nextBefore).toEqual(boundary(lines[6]!));
-    await current.history("earlier");
+    await current.loadEarlier();
     const state = detail.transcript.getSnapshot();
     expect(state.snapshot?.nextBefore).toBeNull();
     expect(state.ids.map((id) => nodeTranscriptCard(state.items.get(id)!))).toEqual(
@@ -4440,15 +4133,13 @@ test("after a repair the reader reads again the latest page, its loaded overlay 
     expect(f.detail.transcript.getSnapshot().snapshot?.pendingRequests.map(({ id }) => id)).toEqual(
       [extra],
     );
-    // The Host's repair is centred on an older position and its queue had no room for one entry.
+    // The Host's repair replaces the tail cut and its queue had no room for one entry.
     f.stream.receive({
       ...base,
       throughSequence: "2",
       snapshot: {
         ...base.snapshot,
         nextBefore: null,
-        nextAfter: { ...cursor, beforeId: item.id },
-        anchorItemId: item.id,
         overlayCursors: { requests: "more" },
         queue: { revision: "2", runs: [], paused: false, steerRunId: null, inputs: [missing] },
         inputQueue: [],
@@ -4456,11 +4147,10 @@ test("after a repair the reader reads again the latest page, its loaded overlay 
     });
     expect(f.detail.transcript.getSnapshot().snapshot?.pendingRequests).toEqual([]);
     await vi.waitFor(() => {
-      expect(rpc["thread.items.page"]).toHaveBeenCalledWith({ threadId }, expect.anything());
       expect(rpc["thread.overlays.page"]).toHaveBeenCalledTimes(2);
       expect(rpc["thread.inputQueue.get"]).toHaveBeenCalledTimes(1);
-      expect(f.detail.transcript.getSnapshot().newest).toBe(true);
     });
+    expect(rpc["thread.items.page"]).not.toHaveBeenCalled();
   } finally {
     reader.dispose();
   }
@@ -4765,8 +4455,9 @@ describe("reads that race a repair", () => {
     }
   });
 
-  it("a jump overtaken by a repair lands in the new cut, and a newer jump wins", async () => {
+  it("a targeted earlier load overtaken by a repair lands in the new cut, and a newer load wins", async () => {
     const f = racing([], []);
+    f.stream.receive(f.cut("1", { nextBefore: cursor }));
     const pages = held<unknown>();
     const reader = new ScopedThreadReader(
       f.detail,
@@ -4775,7 +4466,7 @@ describe("reads that race a repair", () => {
     );
     const target = { ...item, id: createId("message"), position: "0" };
     target.messageId = target.id as never;
-    const later = { ...item, id: createId("message"), position: "0" };
+    const later = { ...item, id: createId("message"), position: "-1" };
     later.messageId = later.id as never;
     const page = (found: TranscriptItem) => ({
       ok: true,
@@ -4787,29 +4478,29 @@ describe("reads that race a repair", () => {
         items: [found],
         hasMore: false,
         nextBefore: null,
-        nextAfter: { ...cursor, beforeId: found.id, beforePosition: found.position },
       },
     });
     try {
-      const jump = reader.history("around", target.messageId);
+      const jump = reader.loadEarlier({ throughItemId: target.messageId });
       await vi.waitFor(() => expect(pages.fn).toHaveBeenCalledTimes(1));
-      f.stream.receive(f.cut("2"));
+      f.stream.receive(f.cut("2", { nextBefore: cursor }));
       pages.answers[0]!(page(target));
       await vi.waitFor(() => expect(pages.fn).toHaveBeenCalledTimes(2));
       pages.answers[1]!(page(target));
-      await jump;
+      await expect(jump).resolves.toBe(true);
       expect(f.detail.transcript.getSnapshot().items.has(target.id)).toBe(true);
-      expect(f.detail.anchor).toBe(target.id);
 
-      // A second jump while a repair's reread flies: the jump is what lands.
-      f.stream.receive(f.cut("3"));
+      // A repair resets to the tail; starting a load and superseding it lets only the newer call win.
+      f.stream.receive(f.cut("3", { nextBefore: cursor }));
+      const first = reader.loadEarlier({ throughItemId: target.messageId });
       await vi.waitFor(() => expect(pages.fn).toHaveBeenCalledTimes(3));
-      const second = reader.history("around", later.messageId);
+      const second = reader.loadEarlier({ throughItemId: later.messageId });
       pages.answers[2]!(page(target));
       await vi.waitFor(() => expect(pages.fn).toHaveBeenCalledTimes(4));
       pages.answers[3]!(page(later));
-      await second;
-      expect(f.detail.anchor).toBe(later.id);
+      await expect(first).resolves.toBe(false);
+      await expect(second).resolves.toBe(true);
+      expect(f.detail.transcript.getSnapshot().items.has(later.id)).toBe(true);
       expect(f.detail.transcript.getSnapshot().items.has(target.id)).toBe(false);
     } finally {
       reader.dispose();
