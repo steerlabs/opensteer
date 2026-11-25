@@ -224,6 +224,13 @@ export type ComputerUseOutcome =
  * unknown outcome.
  */
 export const computerUseAnswerGraceMs = 6_000;
+/**
+ * What a view request comes to: the computer's answer, or no answer before its
+ * time and grace ran out, which is the Home's own finding and never a frame.
+ */
+export type ComputerViewOutcome =
+  | RunnerIntegrationsComputerViewResult["result"]
+  | { readonly kind: "error"; readonly code: "no-answer"; readonly message: string };
 
 export type ComputerTargetId = DeviceId | RunnerId;
 
@@ -385,7 +392,7 @@ interface AttachedIntegrations {
     RunnerAuxiliaryRequestId,
     {
       readonly route?: DeviceDriverRoute | undefined;
-      settle(result: RunnerIntegrationsComputerViewResult["result"]): void;
+      settle(result: ComputerViewOutcome): void;
     }
   >;
   readonly mcpSessions: Map<string, McpSessionEntry>;
@@ -1355,7 +1362,7 @@ export class ComputerAppHub {
       "viewId" | "generation" | "leaseDurationMs" | "target" | "operation" | "timeoutMs"
     >;
     readonly signal?: AbortSignal;
-  }): Promise<RunnerIntegrationsComputerViewResult["result"]> {
+  }): Promise<ComputerViewOutcome> {
     const route = input.route ?? (await this.captureRoute(input.runnerId, undefined));
     const entry = this.#targetEntry(input.runnerId);
     if (
@@ -1378,13 +1385,13 @@ export class ComputerAppHub {
     const requestId = RunnerAuxiliaryRequestIdSchema.parse(`cai:${randomUUID()}`);
     return new Promise((resolve) => {
       let answered = false;
-      const answer = (result: RunnerIntegrationsComputerViewResult["result"]) => {
+      const answer = (result: ComputerViewOutcome) => {
         if (answered) return;
         answered = true;
         input.signal?.removeEventListener("abort", abort);
         resolve(result);
       };
-      const finish = (result: RunnerIntegrationsComputerViewResult["result"]) => {
+      const finish = (result: ComputerViewOutcome) => {
         clearTimeout(timer);
         entry.pendingViews.delete(requestId);
         answer(result);
@@ -1397,7 +1404,7 @@ export class ComputerAppHub {
         () =>
           finish({
             kind: "error",
-            code: "unavailable",
+            code: "no-answer",
             message: "That computer did not answer in time.",
           }),
         input.request.timeoutMs + computerUseAnswerGraceMs,

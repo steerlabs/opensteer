@@ -19,6 +19,8 @@ export const ComputerViewUnavailableReasonSchema = z.enum([
   "accessibility-error",
   "capture-failed",
   "capture-timeout",
+  /** The computer did not answer the open in time; opening it again asks again. */
+  "no-answer",
   "capacity",
   "offline",
   "unsupported",

@@ -3007,6 +3007,36 @@ describe("LocalRunnerService", () => {
     expect(status.runner.detail).not.toContain("abcdefghijklmnop");
   });
 
+  it("keeps the worker's own log in runner.log next to its data, without its credentials", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://runner-log.opensteer.test");
+    const running = fixture(await configuration(directory), targets, () => 10_000);
+
+    const start = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    connect(child);
+    await start;
+
+    const enrollmentToken = startInput(target.deploymentId).enrollmentToken;
+    child.stdout.write(
+      `${JSON.stringify({ level: "info", message: "Computer app inspection failed" })}\n`,
+    );
+    child.stderr.write(`enrolling with ${enrollmentToken} and Bearer abcdefghijklmnop\n`);
+    const logPath = path.join(child.dataDirectory, "runner.log");
+    await eventually(
+      () => existsSync(logPath) && readFileSync(logPath, "utf8").includes("enrolling"),
+    );
+    const written = readFileSync(logPath, "utf8");
+    expect(written).toMatch(
+      / stdout \{"level":"info","message":"Computer app inspection failed"\}\n/u,
+    );
+    expect(written).toContain(" stderr enrolling with [redacted] and Bearer [redacted]");
+    expect(written).not.toContain(enrollmentToken);
+    expect(written).not.toContain("abcdefghijklmnop");
+  });
+
   it("scrubs the worker's own proxy credentials from its last output", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();

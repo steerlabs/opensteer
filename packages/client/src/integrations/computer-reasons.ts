@@ -288,6 +288,8 @@ export function computerReasonWords(
       return `${names.target} is minimized on ${names.machine}.`;
     case "window-closed":
       return `${names.target} has no open window on ${names.machine}.`;
+    case "no-answer":
+      return `${names.machine} didn’t answer in time. Open ${names.target} again.`;
     case "window-identity-lost":
       return `${names.machine} no longer knows which ${names.target} window this was. Choose the window again.`;
     case "target-unavailable":
