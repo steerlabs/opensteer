@@ -1482,6 +1482,11 @@ export class BrowserPoolCoordinator {
           },
         );
       } catch (error) {
+        if (endUnconfirmed(error))
+          throw new BrowserPoolEndUnconfirmed(
+            "The runtime could not confirm a stopped session's pages gone.",
+            { cause: error },
+          );
         refusal = error;
       }
       const outcome = await browserPoolEndOutcome({

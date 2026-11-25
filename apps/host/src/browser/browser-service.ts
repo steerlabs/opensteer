@@ -3117,6 +3117,7 @@ export class BrowserService {
         let navigationId: Awaited<ReturnType<typeof send>>["navigationId"];
         try {
           const sent = agent ? await this.withRunnerAdmission(record.runnerId, send) : await send();
+          untrackOpen?.();
           ({ broker, navigationId } = sent);
           const response = await sent.request;
           ({ tabId } = z.object({ tabId: BrowserSurfaceIdSchema }).parse(response.result));

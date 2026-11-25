@@ -9495,7 +9495,11 @@ describe("a connected agent's selected grant admits the exact profile before any
         },
         { ownerId, agentBindingId: "run:selected-open", threadId: createId("thread") },
       ),
-    ).rejects.toMatchObject(refusal);
+    ).rejects.toMatchObject(
+      which === "withdrawn"
+        ? { code: "not_found", message: "Browser profile not found." }
+        : refusal,
+    );
     nothingStarted();
   });
 
