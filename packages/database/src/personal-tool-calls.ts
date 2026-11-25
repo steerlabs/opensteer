@@ -270,7 +270,7 @@ export async function startPersonalToolCall(
     : null;
   const id = toolCallId(input);
   const existing = await currentCall(tx, id);
-  const normalized = storableJson(redactToolArgumentsForStorage(input.arguments ?? null));
+  const normalized = storableJson(redactToolArgumentsForStorage(input.arguments ?? null, tool));
   const args = JSON.stringify(normalized);
   if (Buffer.byteLength(args) > 480 * 1024)
     throw new OpensteerError({

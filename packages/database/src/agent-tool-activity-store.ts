@@ -1,6 +1,7 @@
 import { redactToolArgumentsForStorage } from "@opensteer/protocol/command-table";
 import {
   OpensteerError,
+  opensteerToolNamespace,
   type RunId,
   type ThreadId,
   type EnvironmentId,
@@ -66,14 +67,15 @@ export class AgentToolActivityStore {
       if (!attempt)
         throw new OpensteerError({ code: "forbidden", message: "Run tool attempt has ended." });
       const origin = "host-harness";
+      const tool = { namespace: opensteerToolNamespace, name };
       const result = await startPersonalToolCall(tx, mutation, {
         ...context,
         attemptId: attempt.id,
         nodeId: null,
         callId,
         origin,
-        tool: { namespace: "opensteer", name },
-        arguments: redactToolArgumentsForStorage(args),
+        tool,
+        arguments: redactToolArgumentsForStorage(args, tool),
         ...(argumentDigest ? { argumentDigest } : {}),
       });
       return {

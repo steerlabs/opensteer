@@ -5593,25 +5593,49 @@ describe("Codex provider retry visibility and budget", () => {
       // redact-then-format produces byte-identical arguments to the old
       // driver-side createToolArguments(rawArgs).
       const smallAfter = createToolArguments(
-        redactToolArgumentsForStorage(started[0]!.data.arguments),
+        redactToolArgumentsForStorage(started[0]!.data.arguments, started[0]!.data.tool),
       );
       const smallBefore = createToolArguments(smallExpectedRaw);
       expect(JSON.stringify(smallAfter)).toBe(JSON.stringify(smallBefore));
 
       const largeAfter = createToolArguments(
-        redactToolArgumentsForStorage(started[1]!.data.arguments),
+        redactToolArgumentsForStorage(started[1]!.data.arguments, started[1]!.data.tool),
       );
       const largeBefore = createToolArguments(largeExpectedRaw);
       expect(JSON.stringify(largeAfter)).toBe(JSON.stringify(largeBefore));
       // Confirm the oversized ordinary call actually exercised the >64 KiB formatter path.
       expect(typeof (largeAfter as Record<string, unknown>).items).toBe("string");
 
+      // Reviewer regression check: ordinary non-command tool strings starting with `{` and
+      // containing `\uXXXX` stay byte-identical through redact + createToolArguments.
+      const editRaw = {
+        file_path: "/repo/a.ts",
+        old_string: '{\n  const dash = "\\u2014";\n  return dash;\n}',
+      };
+      const bashRaw = { command: '{ printf "\\u00e9"; echo done; } > out.txt' };
+      expect(
+        JSON.stringify(
+          createToolArguments(
+            redactToolArgumentsForStorage(editRaw, { namespace: "codex", name: "apply_patch" }),
+          ),
+        ),
+      ).toBe(JSON.stringify(createToolArguments(editRaw)));
+      expect(
+        JSON.stringify(
+          createToolArguments(
+            redactToolArgumentsForStorage(bashRaw, { namespace: "codex", name: "shell" }),
+          ),
+        ),
+      ).toBe(JSON.stringify(createToolArguments(bashRaw)));
+
       // Oversized trigger.secrets.set (>64 KiB): driver passes raw object (not
       // pre-formatted to a string), so Runner redacts secrets and undeclared pad
       // BEFORE createToolArguments runs — zero secret markers survive.
       const secretRaw = started[2]!.data.arguments as Record<string, unknown>;
       expect(typeof secretRaw.command).toBe("object");
-      const secretStored = createToolArguments(redactToolArgumentsForStorage(secretRaw));
+      const secretStored = createToolArguments(
+        redactToolArgumentsForStorage(secretRaw, started[2]!.data.tool),
+      );
       expect(JSON.stringify(secretStored)).not.toContain("CODEX_OVERSIZED_SECRET_MARKER");
       expect(secretStored).toEqual({
         command: {

@@ -1485,7 +1485,14 @@ describeStore("automation secrets through the one door", (it) => {
         .where("status", "=", "current")
         .executeTakeFirstOrThrow();
       let nextOrdinal = runRow.nextRunnerOrdinal;
-      const commitToolStarted = async (args: unknown) => {
+      const commitToolStarted = async (
+        args: unknown,
+        tool: { readonly namespace: string; readonly name: string } = {
+          namespace: "opensteer",
+          name: "opensteer_command",
+        },
+        callId = `runner-call-${randomUUID()}`,
+      ) => {
         await store.commitRunnerEvent({
           environmentId: f.environmentId,
           runnerId: attemptRow.runnerId ?? f.runnerId,
@@ -1499,8 +1506,8 @@ describeStore("automation secrets through the one door", (it) => {
             ordinal: nextOrdinal++,
             emittedAt: new Date().toISOString(),
             data: {
-              callId: `runner-call-${randomUUID()}`,
-              tool: { namespace: "opensteer", name: "opensteer_command" },
+              callId,
+              tool,
               arguments: args,
             },
           },
@@ -1521,6 +1528,15 @@ describeStore("automation secrets through the one door", (it) => {
       const truncCmdMarker = `${m1Prefix}_TRUNCCMD`;
       const misKeyMarker = `${m1Prefix}_MISKEY`;
       const nestedMarker = `${m1Prefix}_NESTED`;
+      const typoTypeMarker = `${m1Prefix}_TYPOTYPE`;
+      const missingTypeMarker = `${m1Prefix}_MISSINGTYPE`;
+      const bomMarker = `${m1Prefix}_BOM`;
+      const nbspMarker = `${m1Prefix}_NBSP`;
+      const arrStrMarker = `${m1Prefix}_ARRSTR`;
+      const dblEncMarker = `${m1Prefix}_DBLENC`;
+      const topArrMarker = `${m1Prefix}_TOPARR`;
+      const deepMarker = `${m1Prefix}_DEEP`;
+      const setFirstMarker = `${m1Prefix}_SETFIRST`;
 
       // Variant 1 (codexPad): oversized >64 KiB arguments that `createToolArguments` turns into
       // JSON text (`withParametersAsText`) if formatted before redaction.
@@ -1571,6 +1587,74 @@ describeStore("automation secrets through the one door", (it) => {
       expect(misKeyRes.body).not.toContain(misKeyMarker);
       expect(misKeyRes.body).not.toContain(nestedMarker);
 
+      // Variant 4 (TYPOTYPE through the REAL relay route + MISSINGTYPE through Runner event store).
+      const typoTypeRes = await app.inject({
+        method: "POST",
+        url: agentToolHostRoutePath,
+        headers: { authorization: "Bearer run-token" },
+        payload: {
+          callId: randomUUID(),
+          name: "opensteer_command",
+          input: {
+            command: {
+              type: "trigger.secret.set",
+              triggerId,
+              set: { TYPO: typoTypeMarker },
+            },
+          },
+        },
+      });
+      expect(typoTypeRes.statusCode).toBe(200);
+      expect(typoTypeRes.body).not.toContain(typoTypeMarker);
+      await commitToolStarted({ command: { set: { MISSING: missingTypeMarker } } });
+
+      // Variant 5 (item-4 Runner evasions: BOM, NBSP, array string, double encoding, top-level array
+      // string, depth > 6 wrapper, truncated JSON with `set` before `type`).
+      await commitToolStarted({
+        command: `\uFEFF{"type":"trigger.secrets.set","triggerId":"${triggerId}","set":{"K":"${bomMarker}"}}`,
+      });
+      await commitToolStarted({
+        command: `\u00A0{"type":"trigger.secrets.set","triggerId":"${triggerId}","set":{"K":"${nbspMarker}"}}`,
+      });
+      await commitToolStarted({
+        command: `[{"type":"trigger.secrets.set","triggerId":"${triggerId}","set":{"K":"${arrStrMarker}"}}]`,
+      });
+      await commitToolStarted({
+        command: JSON.stringify(
+          JSON.stringify({ type: "trigger.secrets.set", triggerId, set: { K: dblEncMarker } }),
+        ),
+      });
+      await commitToolStarted(
+        `[{"command":{"type":"trigger.secrets.set","triggerId":"${triggerId}","set":{"K":"${topArrMarker}"}}}]`,
+      );
+      await commitToolStarted({
+        command: {
+          a: {
+            b: {
+              c: {
+                d: {
+                  e: { f: { g: { type: "trigger.secrets.set", set: { K: deepMarker } } } },
+                },
+              },
+            },
+          },
+        },
+      });
+      await commitToolStarted({
+        command: `{"set":{"K":"${setFirstMarker}"},"triggerId":"${triggerId}","ty`,
+      });
+
+      // Ordinary non-command tools (Edit + Bash with `{` and `\uXXXX`) stay byte-identical in PostgreSQL.
+      const editCallId = `ordinary-edit-${randomUUID()}`;
+      const bashCallId = `ordinary-bash-${randomUUID()}`;
+      const editArgs = {
+        file_path: "/repo/a.ts",
+        old_string: '{\n  const dash = "\\u2014";\n  return dash;\n}',
+      };
+      const bashArgs = { command: '{ printf "\\u00e9"; echo done; } > out.txt' };
+      await commitToolStarted(editArgs, { namespace: "claude", name: "Edit" }, editCallId);
+      await commitToolStarted(bashArgs, { namespace: "claude", name: "Bash" }, bashCallId);
+
       // Scan ALL base tables in PostgreSQL (text + hex for bytea): zero plaintext markers anywhere.
       const allMarkers = [
         admittedMarker,
@@ -1581,6 +1665,15 @@ describeStore("automation secrets through the one door", (it) => {
         truncCmdMarker,
         misKeyMarker,
         nestedMarker,
+        typoTypeMarker,
+        missingTypeMarker,
+        bomMarker,
+        nbspMarker,
+        arrStrMarker,
+        dblEncMarker,
+        topArrMarker,
+        deepMarker,
+        setFirstMarker,
       ];
       const baseTables = await sql<{ tableSchema: string; tableName: string }>`
         select table_schema, table_name
@@ -1612,8 +1705,10 @@ describeStore("automation secrets through the one door", (it) => {
       }
       expect([...new Set(hits)]).toEqual([]);
 
-      // Also verify well-formed tool_calls rows kept their redacted command shape.
+      // Verify ordinary non-command Edit and Bash calls were stored byte-identical.
       const toolCallRows = await database.selectFrom("toolCalls").selectAll().execute();
+      expect(toolCallRows.find((row) => row.callId === editCallId)?.arguments).toEqual(editArgs);
+      expect(toolCallRows.find((row) => row.callId === bashCallId)?.arguments).toEqual(bashArgs);
       expect(toolCallRows.length).toBeGreaterThanOrEqual(7);
       expect(
         toolCallRows.filter(

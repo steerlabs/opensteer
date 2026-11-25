@@ -1,4 +1,4 @@
-import { isLoopbackHostname } from "@opensteer/core";
+import { isLoopbackHostname, isOpensteerCommandTool, type ToolIdentity } from "@opensteer/core";
 import { parseHttpEndpointBaseUrl } from "@opensteer/shared/httpEndpoint";
 import type { z } from "zod";
 import { hostApi, type HostApiCommand } from "./host-api.js";
@@ -1700,12 +1700,18 @@ const secretCommandTypes: ReadonlySet<string> = new Set(
   ),
 );
 
-/** Matches any secret-bearing command type name or a JSON unicode escape that could spell one. */
-const secretTypeOrEscapePattern = new RegExp(
-  `${[...secretCommandTypes].map((t) => t.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("|")}|\\\\u[0-9a-fA-F]{4}`,
-);
+/** Non-command top-level arguments declared by `opensteer_command` (recorded as they are). */
+const opensteerCommandPassthroughKeys: ReadonlySet<string> = new Set([
+  "reason",
+  "withdraw",
+  "taskId",
+]);
 
 let cachedSecretShapes: Map<string, AllowedShape> | null = null;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 function collectObjectSchemas(schema: unknown, out: z.ZodObject[]): void {
   if (!schema || typeof schema !== "object") return;
@@ -1796,16 +1802,6 @@ function getSecretCommandShape(type: string): AllowedShape | undefined {
   return cachedSecretShapes.get(type);
 }
 
-/** O(1) check for whether a string's first non-whitespace byte is `{`. */
-function startsWithJsonObject(text: string): boolean {
-  for (let i = 0; i < text.length; i++) {
-    const ch = text.charCodeAt(i);
-    if (ch === 0x20 || ch === 0x09 || ch === 0x0a || ch === 0x0d) continue;
-    return ch === 0x7b; // '{'
-  }
-  return false;
-}
-
 /**
  * Redacts an object against a secret-bearing command's derived allow-list: only schema-declared
  * non-secret keys are preserved; every secret leaf and every undeclared/misspelled key is replaced
@@ -1813,103 +1809,99 @@ function startsWithJsonObject(text: string): boolean {
  */
 function redactByAllowedShape(value: unknown, shape: AllowedShape): unknown {
   if (typeof value === "string") {
-    if (startsWithJsonObject(value)) {
-      try {
-        const parsed = JSON.parse(value) as unknown;
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (isPlainObject(parsed)) {
         const redacted = redactByAllowedShape(parsed, shape);
         return redacted === parsed ? value : JSON.stringify(redacted);
-      } catch {
-        return REDACTED_SECRET_MARKER;
       }
+    } catch {
+      // Unparseable string in a secret-bearing nested parent: fail closed.
     }
     return REDACTED_SECRET_MARKER;
   }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  if (!isPlainObject(value)) {
     return REDACTED_SECRET_MARKER;
   }
-  const record = value as Record<string, unknown>;
   let cloned: Record<string, unknown> | null = null;
-  for (const key in record) {
-    if (!Object.hasOwn(record, key)) continue;
-    const child = record[key];
+  for (const key in value) {
+    if (!Object.hasOwn(value, key)) continue;
+    const child = value[key];
     if (child === undefined) continue;
     if (shape.allowedKeys.has(key)) continue;
     const nestedShape = shape.nested.get(key);
     const next = nestedShape ? redactByAllowedShape(child, nestedShape) : REDACTED_SECRET_MARKER;
     if (next !== child) {
-      cloned ??= { ...record };
+      cloned ??= { ...value };
       cloned[key] = next;
     }
   }
-  return cloned ?? record;
-}
-
-function redactPossibleJsonString(text: string): string {
-  if (!startsWithJsonObject(text)) return text;
-  if (!secretTypeOrEscapePattern.test(text)) return text;
-  try {
-    const parsed = JSON.parse(text) as unknown;
-    const redacted = redactToolArgumentsValue(parsed, 0);
-    return redacted === parsed ? text : JSON.stringify(redacted);
-  } catch {
-    // Unparseable (e.g. truncated) JSON object string naming or possibly naming a secret-bearing type.
-    return REDACTED_SECRET_MARKER;
-  }
+  return cloned ?? value;
 }
 
 /**
- * Returns `command` with every secret field and every undeclared/misspelled key on a
- * secret-bearing command type replaced by `REDACTED_SECRET_MARKER`. Also parses and redacts a
- * JSON-encoded command string (falling back to `REDACTED_SECRET_MARKER` if unparseable and naming
- * a secret-bearing type). Never mutates the caller's object.
+ * Redacts a `command` argument of `opensteer_command` strictly:
+ * - known command type with `secretFields` -> schema-derived allow-list;
+ * - known command type without `secretFields` -> untouched;
+ * - anything else (missing/unknown `type`, string that does not parse to an object with a known
+ *   type, array, deeper wrapper) -> keep `type` if it is a string on an object, and replace
+ *   everything else with `REDACTED_SECRET_MARKER`.
  */
-export function redactCommandSecrets(command: unknown): unknown {
+function redactOpensteerCommandValue(command: unknown): unknown {
+  if (command === null || command === undefined) return command;
   if (typeof command === "string") {
-    return redactPossibleJsonString(command);
+    try {
+      const parsed = JSON.parse(command) as unknown;
+      if (isPlainObject(parsed)) {
+        const type = parsed.type;
+        if (typeof type === "string" && Object.hasOwn(commandTable, type)) {
+          const shape = getSecretCommandShape(type);
+          if (!shape) return command;
+          const redacted = redactByAllowedShape(parsed, shape);
+          return redacted === parsed ? command : JSON.stringify(redacted);
+        }
+      }
+    } catch {
+      // Unparseable (e.g. truncated, BOM/NBSP, invalid) string command: fail closed.
+    }
+    return REDACTED_SECRET_MARKER;
   }
-  if (typeof command !== "object" || command === null || Array.isArray(command)) return command;
-  const record = command as Record<string, unknown>;
-  const type = record.type;
-  if (typeof type !== "string") return command;
-  const shape = getSecretCommandShape(type);
-  if (!shape) return command;
-  return redactByAllowedShape(record, shape);
+  if (!isPlainObject(command)) return REDACTED_SECRET_MARKER;
+  const type = command.type;
+  if (typeof type === "string" && Object.hasOwn(commandTable, type)) {
+    const shape = getSecretCommandShape(type);
+    if (!shape) return command;
+    return redactByAllowedShape(command, shape);
+  }
+  let cloned: Record<string, unknown> | null = null;
+  for (const key in command) {
+    if (!Object.hasOwn(command, key)) continue;
+    const child = command[key];
+    if (child === undefined) continue;
+    if (key === "type" && typeof child === "string") continue;
+    if (child !== REDACTED_SECRET_MARKER) {
+      cloned ??= { ...command };
+      cloned[key] = REDACTED_SECRET_MARKER;
+    }
+  }
+  return cloned ?? command;
 }
 
-const MAX_REDACTION_DEPTH = 6;
-
-function redactToolArgumentsValue(args: unknown, depth: number): unknown {
-  if (typeof args === "string") {
-    return redactPossibleJsonString(args);
-  }
-  if (typeof args !== "object" || args === null) return args;
-  if (Array.isArray(args)) {
-    if (depth >= MAX_REDACTION_DEPTH) return args;
-    let cloned: unknown[] | null = null;
-    for (let i = 0; i < args.length; i++) {
-      const item = args[i];
-      const next = redactToolArgumentsValue(item, depth + 1);
-      if (next !== item) {
-        cloned ??= args.slice();
-        cloned[i] = next;
-      }
-    }
-    return cloned ?? args;
-  }
-  const record = args as Record<string, unknown>;
-  if (typeof record.type === "string" && secretCommandTypes.has(record.type)) {
-    return redactByAllowedShape(record, getSecretCommandShape(record.type)!);
-  }
-  if (depth >= MAX_REDACTION_DEPTH) return args;
+function redactOpensteerCommandArgsObject(
+  record: Record<string, unknown>,
+): Record<string, unknown> {
   let cloned: Record<string, unknown> | null = null;
   for (const key in record) {
     if (!Object.hasOwn(record, key)) continue;
     const child = record[key];
-    let next: unknown = child;
-    if (typeof child === "string") {
-      next = redactPossibleJsonString(child);
-    } else if (typeof child === "object" && child !== null) {
-      next = redactToolArgumentsValue(child, depth + 1);
+    if (child === undefined) continue;
+    let next: unknown;
+    if (key === "command") {
+      next = redactOpensteerCommandValue(child);
+    } else if (opensteerCommandPassthroughKeys.has(key)) {
+      continue;
+    } else {
+      next = REDACTED_SECRET_MARKER;
     }
     if (next !== child) {
       cloned ??= { ...record };
@@ -1920,13 +1912,36 @@ function redactToolArgumentsValue(args: unknown, depth: number): unknown {
 }
 
 /**
- * Redacts secret-bearing commands inside tool arguments before they are written to durable records
- * (Host relay `tool_calls.arguments`, Runner `tool.started` events, `runner-event-store`,
- * `personal-tool-calls`, and `agent-tool-activity-store`). Handles object commands, JSON-encoded
- * string commands, truncated JSON naming a secret-bearing type, misspelled/undeclared keys via
- * schema-derived allow-lists, and nested wrappers. Returns the input reference unchanged when no
- * secret-bearing command is present.
+ * Redacts `command` for a single `opensteer_command` payload. Never mutates the caller's object.
  */
-export function redactToolArgumentsForStorage(args: unknown): unknown {
-  return redactToolArgumentsValue(args, 0);
+export function redactCommandSecrets(command: unknown): unknown {
+  return redactOpensteerCommandValue(command);
+}
+
+/**
+ * Redacts tool arguments before durable storage, keyed solely by the tool's canonical identity:
+ * - For any tool other than `{ namespace: "opensteer", name: "opensteer_command" }`, returns
+ *   `args` immediately without parsing, pattern matching, or traversal (byte-for-byte identical).
+ * - For `opensteer_command`, applies the strict command rule to `command` (schema-derived
+ *   allow-list for secret-bearing types, untouched for known non-secret types, keep only string
+ *   `type` and `[redacted]` for everything else) while leaving declared non-command top-level
+ *   fields (`reason`, `withdraw`, `taskId`) as they are.
+ */
+export function redactToolArgumentsForStorage(args: unknown, tool: ToolIdentity): unknown {
+  if (!isOpensteerCommandTool(tool)) return args;
+  if (args === null || args === undefined) return args;
+  if (typeof args === "string") {
+    try {
+      const parsed = JSON.parse(args) as unknown;
+      if (isPlainObject(parsed)) {
+        const redacted = redactOpensteerCommandArgsObject(parsed);
+        return redacted === parsed ? args : JSON.stringify(redacted);
+      }
+    } catch {
+      // Unparseable top-level string arguments to `opensteer_command`: fail closed.
+    }
+    return REDACTED_SECRET_MARKER;
+  }
+  if (!isPlainObject(args)) return REDACTED_SECRET_MARKER;
+  return redactOpensteerCommandArgsObject(args);
 }

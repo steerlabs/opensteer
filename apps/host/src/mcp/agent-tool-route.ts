@@ -1,5 +1,5 @@
 import { agentToolFailureResult } from "@opensteer/agent-tools";
-import { createToolOutput, type RunId } from "@opensteer/core";
+import { createToolOutput, opensteerToolNamespace, type RunId } from "@opensteer/core";
 import {
   AgentToolRelayRequestSchema,
   agentToolHostRoutePath,
@@ -159,7 +159,10 @@ export function registerAgentToolRoute(
       let started: Awaited<ReturnType<AgentToolActivityStore["start"]>>["handle"] | undefined;
       try {
         controller.signal.throwIfAborted();
-        const recordedArgs = redactToolArgumentsForStorage(args);
+        const recordedArgs = redactToolArgumentsForStorage(args, {
+          namespace: opensteerToolNamespace,
+          name,
+        });
         const argumentDigest =
           recordedArgs !== args
             ? digestToolArgumentsWithSecrets(options.secretDigestKey, { toolName: name, args })

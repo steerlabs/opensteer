@@ -321,7 +321,8 @@ describe("the command table", () => {
     ).toBe(0);
   });
 
-  it("redacts malformed secret-bearing commands: string command, truncated JSON, misspelled keys, and nested wrappers (M1)", () => {
+  it("redacts malformed opensteer_command payloads while leaving every non-command tool byte-identical (M1, R4)", () => {
+    const commandTool = { namespace: "opensteer", name: "opensteer_command" } as const;
     const triggerId = "trg_00000000-0000-4000-8000-000000000001";
     const mStr = "M1_STR_CMD_MARKER";
     const mTrunc = "M1_TRUNC_CMD_MARKER";
@@ -330,31 +331,50 @@ describe("the command table", () => {
     const mNestedInCmd = "M1_NESTED_IN_CMD_MARKER";
     const mNestedWrap = "M1_NESTED_WRAP_MARKER";
     const mNestedOAuth = "M1_NESTED_OAUTH_MARKER";
+    const mTypoType = "M5_TYPOTYPE_MARKER";
+    const mMissingType = "M5_MISSINGTYPE_MARKER";
+    const mBom = "M5_BOM_MARKER";
+    const mNbsp = "M5_NBSP_MARKER";
+    const mArrStr = "M5_ARRSTR_MARKER";
+    const mDblEnc = "M5_DBLENC_MARKER";
+    const mTopArr = "M5_TOPARR_MARKER";
+    const mDeep = "M5_DEEP_MARKER";
+    const mSetFirst = "M5_SETFIRST_MARKER";
 
-    // Variant (b): `command` sent as a JSON string, and unparseable/truncated JSON naming a secret type.
-    const fromJsonString = redactToolArgumentsForStorage({
-      command: JSON.stringify({ type: "trigger.secrets.set", triggerId, set: { A: mStr } }),
-    });
+    // Variant (b): `command` sent as a JSON string, and unparseable/truncated JSON.
+    const fromJsonString = redactToolArgumentsForStorage(
+      {
+        command: JSON.stringify({ type: "trigger.secrets.set", triggerId, set: { A: mStr } }),
+      },
+      commandTool,
+    );
     expect(JSON.stringify(fromJsonString)).not.toContain(mStr);
     expect(JSON.stringify(fromJsonString)).toContain("[redacted]");
 
-    const fromTruncated = redactToolArgumentsForStorage({
-      command: `{"type":"trigger.secrets.set","triggerId":"${triggerId}","set":{"A":"${mTrunc}"`,
-    });
+    const fromTruncated = redactToolArgumentsForStorage(
+      {
+        command: `{"type":"trigger.secrets.set","triggerId":"${triggerId}","set":{"A":"${mTrunc}"`,
+      },
+      commandTool,
+    );
     expect(JSON.stringify(fromTruncated)).not.toContain(mTrunc);
     expect(fromTruncated).toEqual({ command: "[redacted]" });
 
     // Variant (c): allow-list redacts misspelled/cased/invented keys on any secret-bearing command.
-    const fromMisspelled = redactToolArgumentsForStorage({
-      command: {
-        type: "trigger.secrets.set",
-        triggerId,
-        Set: { A: mCase },
-        sett: { B: mTypo },
-        input: { set: { C: mNestedInCmd } },
-        names: ["SAFE_NAME"],
+    const fromMisspelled = redactToolArgumentsForStorage(
+      {
+        command: {
+          type: "trigger.secrets.set",
+          triggerId,
+          Set: { A: mCase },
+          sett: { B: mTypo },
+          input: { set: { C: mNestedInCmd } },
+          names: ["SAFE_NAME"],
+        },
+        reason: "rotate api key",
       },
-    });
+      commandTool,
+    );
     expect(JSON.stringify(fromMisspelled)).not.toContain(mCase);
     expect(JSON.stringify(fromMisspelled)).not.toContain(mTypo);
     expect(JSON.stringify(fromMisspelled)).not.toContain(mNestedInCmd);
@@ -367,25 +387,32 @@ describe("the command table", () => {
         input: "[redacted]",
         names: ["SAFE_NAME"],
       },
+      reason: "rotate api key",
     });
 
-    // Nested wrapper holding a secret-bearing command and nested secret parent allow-list.
-    const fromNestedWrapper = redactToolArgumentsForStorage({
-      input: { command: { type: "trigger.secrets.set", triggerId, set: { A: mNestedWrap } } },
-    });
+    // Nested undeclared top-level wrapper on opensteer_command.
+    const fromNestedWrapper = redactToolArgumentsForStorage(
+      {
+        input: { command: { type: "trigger.secrets.set", triggerId, set: { A: mNestedWrap } } },
+      },
+      commandTool,
+    );
     expect(JSON.stringify(fromNestedWrapper)).not.toContain(mNestedWrap);
 
-    const fromNestedOAuth = redactToolArgumentsForStorage({
-      command: {
-        type: "plugin.oauthApp.save",
-        input: {
-          pluginId: "plg_1",
-          clientId: "cid_1",
-          clientSecret: mNestedOAuth,
-          ClientSecret: mNestedOAuth,
+    const fromNestedOAuth = redactToolArgumentsForStorage(
+      {
+        command: {
+          type: "plugin.oauthApp.save",
+          input: {
+            pluginId: "plg_1",
+            clientId: "cid_1",
+            clientSecret: mNestedOAuth,
+            ClientSecret: mNestedOAuth,
+          },
         },
       },
-    });
+      commandTool,
+    );
     expect(JSON.stringify(fromNestedOAuth)).not.toContain(mNestedOAuth);
     expect(fromNestedOAuth).toMatchObject({
       command: {
@@ -394,9 +421,134 @@ describe("the command table", () => {
       },
     });
 
-    // Ordinary shell tool command string stays untouched.
-    const shellArgs = { command: "pnpm test", cwd: "/workspace" };
-    expect(redactToolArgumentsForStorage(shellArgs)).toBe(shellArgs);
+    // Known non-secret command type on opensteer_command: kept byte-identical (same reference).
+    const knownNonSecret = {
+      command: { type: "thread.rename", threadId: "thr_1", title: "New title" },
+      reason: "rename",
+    };
+    expect(redactToolArgumentsForStorage(knownNonSecret, commandTool)).toBe(knownNonSecret);
+
+    // Unknown/misspelled or missing `type` on opensteer_command: keep string `type`, redact the rest.
+    const fromTypoType = redactToolArgumentsForStorage(
+      { command: { type: "trigger.secret.set", set: { K: mTypoType } }, reason: "typo" },
+      commandTool,
+    );
+    expect(JSON.stringify(fromTypoType)).not.toContain(mTypoType);
+    expect(fromTypoType).toEqual({
+      command: { type: "trigger.secret.set", set: "[redacted]" },
+      reason: "typo",
+    });
+
+    const fromMissingType = redactToolArgumentsForStorage(
+      { command: { set: { K: mMissingType } } },
+      commandTool,
+    );
+    expect(JSON.stringify(fromMissingType)).not.toContain(mMissingType);
+    expect(fromMissingType).toEqual({ command: { set: "[redacted]" } });
+
+    // Item-4 string/nesting evasions on opensteer_command: every one leaves zero markers.
+    const evasionCases: ReadonlyArray<readonly [string, unknown, string]> = [
+      [
+        "BOM",
+        {
+          command: `\uFEFF{"type":"trigger.secrets.set","triggerId":"${triggerId}","set":{"K":"${mBom}"}}`,
+        },
+        mBom,
+      ],
+      [
+        "NBSP",
+        {
+          command: `\u00A0{"type":"trigger.secrets.set","triggerId":"${triggerId}","set":{"K":"${mNbsp}"}}`,
+        },
+        mNbsp,
+      ],
+      [
+        "ARRSTR",
+        {
+          command: `[{"type":"trigger.secrets.set","triggerId":"${triggerId}","set":{"K":"${mArrStr}"}}]`,
+        },
+        mArrStr,
+      ],
+      [
+        "DBLENC",
+        {
+          command: JSON.stringify(
+            JSON.stringify({ type: "trigger.secrets.set", triggerId, set: { K: mDblEnc } }),
+          ),
+        },
+        mDblEnc,
+      ],
+      [
+        "TOPARR",
+        `[{"command":{"type":"trigger.secrets.set","triggerId":"${triggerId}","set":{"K":"${mTopArr}"}}}]`,
+        mTopArr,
+      ],
+      [
+        "DEEP",
+        {
+          command: {
+            a: {
+              b: {
+                c: { d: { e: { f: { g: { type: "trigger.secrets.set", set: { K: mDeep } } } } } },
+              },
+            },
+          },
+        },
+        mDeep,
+      ],
+      [
+        "SETFIRST",
+        { command: `{"set":{"K":"${mSetFirst}"},"triggerId":"${triggerId}","ty` },
+        mSetFirst,
+      ],
+    ];
+    for (const [label, payload, marker] of evasionCases) {
+      const redacted = redactToolArgumentsForStorage(payload, commandTool);
+      expect(JSON.stringify(redacted), label).not.toContain(marker);
+    }
+
+    // Reviewer's two ordinary-tool regression cases: recorded byte-identical.
+    const editArgs = {
+      file_path: "/repo/a.ts",
+      old_string: '{\n  const dash = "\\u2014";\n  return dash;\n}',
+    };
+    expect(redactToolArgumentsForStorage(editArgs, { namespace: "claude", name: "Edit" })).toBe(
+      editArgs,
+    );
+    const bashArgs = { command: '{ printf "\\u00e9"; echo done; } > out.txt' };
+    expect(redactToolArgumentsForStorage(bashArgs, { namespace: "claude", name: "Bash" })).toBe(
+      bashArgs,
+    );
+
+    // Property check: for every non-command tool, redact(args) returns args untouched (deep-equal & same ref).
+    const nonCommandTools = [
+      { namespace: "claude", name: "Bash" },
+      { namespace: "claude", name: "Edit" },
+      { namespace: "codex", name: "shell" },
+      { namespace: "cursor", name: "edit_file" },
+      { namespace: "opencode", name: "bash" },
+      { namespace: "pi", name: "bash" },
+      { namespace: "antigravity", name: "run_command" },
+      { namespace: "muse", name: "shell" },
+      { namespace: "opensteer", name: "opensteer_task_read" },
+      { namespace: "opensteer", name: "plugin_call" },
+    ] as const;
+    const variedInputs: readonly unknown[] = [
+      editArgs,
+      bashArgs,
+      { command: '{"type":"trigger.secrets.set","set":{"K":"v"}}' },
+      { command: '{"type":"trigger.secrets.set","set":{"K":"truncated' },
+      { text: `{ "${"x".repeat(80_000)}": "\\u2014", "type": "trigger.secrets.set"` },
+      { payload: '\uFEFF{"type":"trigger.secrets.set"}' },
+      { items: ['{"type":"trigger.secrets.set","set":{"K":"v"}', "{ \\u00e9 }"] },
+    ];
+    for (const tool of nonCommandTools) {
+      for (const input of variedInputs) {
+        const result = redactToolArgumentsForStorage(input, tool);
+        expect(result, `${tool.namespace}/${tool.name}`).toBe(input);
+        expect(result, `${tool.namespace}/${tool.name}`).toEqual(input);
+      }
+    }
   });
 
   it("has a verdict for every input that could decide a command, and none for a gone one (D0b)", () => {

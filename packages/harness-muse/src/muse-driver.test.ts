@@ -13,7 +13,7 @@ import {
 } from "@opensteer/harness";
 import { afterEach, describe, expect, it } from "vitest";
 import { museModelDescriptors } from "./model-catalog.js";
-import { MuseHarnessDriver } from "./muse-driver.js";
+import { MuseHarnessDriver, museToolIdentity } from "./muse-driver.js";
 
 const fakeMuse = fileURLToPath(new URL("./test-fixtures/fake-muse.mjs", import.meta.url));
 const temporaryDirectories: string[] = [];
@@ -919,4 +919,23 @@ it("delivers distinct full names for two plugins and a loose review skill", asyn
     expect(payload).toContain(skill.path);
   }
   await adapter.close();
+});
+
+describe("Muse tool identity", () => {
+  it("normalizes Opensteer MCP tool names to the canonical opensteer namespace", () => {
+    const tools = ["opensteer_command", "opensteer_task_read"];
+    for (const raw of [
+      "opensteer_command",
+      "mcp__opensteer__opensteer_command",
+      "opensteer__opensteer_command",
+      "opensteer:opensteer_command",
+      "opensteer/opensteer_command",
+    ]) {
+      expect(museToolIdentity(raw, tools), raw).toEqual({
+        namespace: "opensteer",
+        name: "opensteer_command",
+      });
+    }
+    expect(museToolIdentity("shell", tools)).toEqual({ namespace: "muse", name: "shell" });
+  });
 });

@@ -4919,7 +4919,7 @@ function fittedDurableEvent(
         : { ...event, data: { ...event.data, content } };
     }
     case "tool.started": {
-      const redacted = redactToolArgumentsForStorage(event.data.arguments);
+      const redacted = redactToolArgumentsForStorage(event.data.arguments, event.data.tool);
       const args = createToolArguments(redacted);
       return args === event.data.arguments
         ? event

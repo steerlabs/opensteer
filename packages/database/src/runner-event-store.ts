@@ -725,7 +725,7 @@ async function applyEventProjection(
           {
             ...key,
             tool: event.data.tool,
-            arguments: redactToolArgumentsForStorage(event.data.arguments),
+            arguments: redactToolArgumentsForStorage(event.data.arguments, event.data.tool),
             ...(integration ? { integration } : {}),
             ...(event.data.provisional ? { provisional: true } : {}),
           },
