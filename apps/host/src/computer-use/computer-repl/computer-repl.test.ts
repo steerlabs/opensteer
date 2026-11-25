@@ -21,6 +21,13 @@ const runId = () => {
   started.push(id);
   return id;
 };
+// The length of a sleep argument whose request is one UTF-16 unit over the bridge limit.
+const sleepArgument = {
+  over:
+    computerReplLimits.bridgeBytes +
+    1 -
+    JSON.stringify({ operation: "sleep", target: null, args: { ms: "" } }).length,
+};
 const output = (result: Awaited<ReturnType<ComputerReplService["execute"]>>) =>
   result.content
     .filter((block) => block.type === "text")
@@ -588,8 +595,74 @@ describe("computer REPL worker boundary", () => {
   });
   it("refuses oversized arguments by their length, before the Host copies them", async () => {
     const { run } = setup();
-    expect(output(await run('await sleep("x".repeat(4 * 1024 * 1024))'))).toBe(
-      "failed: Computer arguments exceed 1 MiB.",
-    );
+    // Built before an await: the slice that calls sleep spends only the guest
+    // library's serialization of an argument one unit over the limit.
+    expect(
+      output(await run(`const big = "x".repeat(${sleepArgument.over}); await 0; await sleep(big)`)),
+    ).toBe("failed: Computer arguments exceed 1 MiB.");
+  });
+  describe("on a slow worker", () => {
+    // Its CPU counts four times, as on a machine four times slower. A hosted
+    // runner at least 2.8 times slower than a Mac ran out of slice before this
+    // refusal: on the Mac the old case's slice took 36 ms, 14 of them the test's own
+    // "x".repeat of 4 MiB, 21 the guest library's JSON.stringify of it, 0.06 the
+    // Host's length check. Its Host also spends two slices' CPU parsing a large
+    // argument, which is the Host's work and never the guest's slice.
+    let worker: Worker;
+    const messages: Record<string, unknown>[] = [];
+    const execute = (context: string, code: string) =>
+      new Promise<Record<string, unknown>>((resolve, reject) => {
+        const listen = (message: Record<string, unknown>) => {
+          if (message.context !== context) return;
+          messages.push(message);
+          if (message.type === "request")
+            worker.postMessage({
+              type: "reply",
+              context,
+              callId: context,
+              id: message.id,
+              value: null,
+            });
+          if (message.type === "done") {
+            worker.off("message", listen);
+            resolve(message);
+          }
+        };
+        worker.on("message", listen);
+        worker.once("error", reject);
+        worker.postMessage({ type: "execute", context, callId: context, code });
+      });
+    beforeAll(async () => {
+      worker = new Worker(new URL("./computer-repl-worker.ts", import.meta.url), {
+        execArgv: [
+          "--import",
+          "tsx",
+          "--import",
+          new URL("./computer-repl-worker.test-support.ts", import.meta.url).href,
+        ],
+        workerData: { slowed: { cpuScale: 4, hostParseMs: 2 * computerReplLimits.sliceMs } },
+      });
+      await execute("slow-warm", "return 1");
+    });
+    afterAll(() => worker.terminate());
+    it("refuses an oversized argument by its length and admits one at the limit", async () => {
+      messages.length = 0;
+      const refused = await execute(
+        "slow-over",
+        `const big = "x".repeat(${sleepArgument.over}); await 0; await sleep(big)`,
+      );
+      expect(refused.error).toMatchObject({ message: "Computer arguments exceed 1 MiB." });
+      expect(messages.some((m) => m.type === "request")).toBe(false);
+      // Its Host copy and parse are the Host's work, not the guest's slice.
+      const admitted = await execute(
+        "slow-limit",
+        `const big = "x".repeat(${sleepArgument.over - 1}); await 0; await sleep(big)`,
+      );
+      expect(admitted.error).toBeUndefined();
+      const request = messages.find((m) => m.type === "request")?.request as {
+        args: { ms: string };
+      };
+      expect(request.args.ms).toHaveLength(sleepArgument.over - 1);
+    });
   });
 });
