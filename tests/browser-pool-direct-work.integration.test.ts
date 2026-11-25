@@ -16,7 +16,7 @@ import {
   connection,
   serveMcp,
 } from "../apps/host/src/mcp/connection-caller.test-support.js";
-import type { RequestId, ThreadId } from "../packages/core/src/index.js";
+import { OpensteerError, type RequestId, type ThreadId } from "../packages/core/src/index.js";
 import { type TabRecord } from "../packages/database/src/index.js";
 import { listBrowserPoolDocumentLosses } from "./browser-pool-journey.test-support.js";
 import { TabSleeper } from "../packages/browser-runtime-core/src/browser/tab-sleeper.js";
@@ -1336,5 +1336,65 @@ it("keeps a person's own Run's paste chord as before, and refuses its clipboard 
   } finally {
     await j.close();
     site.close();
+  }
+});
+
+it("V2 (Opus M1): turning off the device Browser switch during browserSend.recheck refuses newPage without opening a page", async () => {
+  let browserSwitchOn = true;
+  let accessChecks = 0;
+  const j = await journey("direct-v2-switch-off", {
+    profile: true,
+    chromium: false,
+    requireAgentAccess: async () => {
+      accessChecks += 1;
+      if (!browserSwitchOn) {
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Browser access is turned off on this device.",
+        });
+      }
+    },
+  });
+  try {
+    const home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const pagesBefore = home.service.pageInventory(session.id)?.records.size ?? 0;
+    expect(pagesBefore).toBe(1);
+    const work = await directWork(j, () => home);
+
+    // Flip the device Browser switch OFF and run disableAgentAccess inside browserSend.recheck()'s
+    // requireSelfDeviceId read — after #resumeTabOpen's #requireAgentAccess check already passed
+    // and after send() released the Runner admission lane.
+    const originalRequireDevice = j.store.requireSelfDeviceId.bind(j.store);
+    let flipped = false;
+    const deviceSpy = vi
+      .spyOn(j.store, "requireSelfDeviceId")
+      .mockImplementation(async (runnerId) => {
+        const id = await originalRequireDevice(runnerId);
+        // Once #resumeTabOpen's recheck has run its #requireAgentAccess check (accessChecks >= 2
+        // during the openTab flow), simulate server.ts turning Browser off for this device.
+        if (!flipped && accessChecks >= 2) {
+          flipped = true;
+          await home.service.withRunnerAdmission(j.task.runnerId, async () => {
+            browserSwitchOn = false;
+            await home.service.disableAgentAccess(j.task.runnerId);
+          });
+        }
+        return id;
+      });
+    try {
+      const result = await work.use(`await newPage("https://example.test/"); return "opened";`);
+      expect(flipped).toBe(true);
+      expect(result.isError).toBe(true);
+      const pagesAfter = home.service.pageInventory(session.id)?.records.size ?? 0;
+      expect(pagesAfter).toBe(pagesBefore);
+    } finally {
+      deviceSpy.mockRestore();
+    }
+  } finally {
+    await j.close();
   }
 });

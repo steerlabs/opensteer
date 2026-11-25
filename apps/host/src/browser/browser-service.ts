@@ -1056,6 +1056,8 @@ export class BrowserService {
     for (const waiters of this.#poolAgentWaiters.values())
       for (const waiter of waiters)
         if (waiter.runnerId === runnerId) waiter.controller.abort(this.#deviceAccessDisabled);
+    for (const abortOpen of this.#agentOpens.get(runnerId) ?? [])
+      abortOpen(this.#deviceAccessDisabled);
     for (const attachment of this.#deviceAttachments.values())
       if (attachment.runnerId === runnerId) attachment.close();
     const detached = await this.#detachRunnerAgents?.(runnerId);
@@ -1090,6 +1092,17 @@ export class BrowserService {
     string,
     Set<{ readonly controller: AbortController; readonly runnerId?: RunnerId }>
   >();
+  readonly #agentOpens = new Map<RunnerId, Set<(reason?: unknown) => void>>();
+
+  #trackAgentOpen(runnerId: RunnerId, abort: (reason?: unknown) => void): () => void {
+    const opens = this.#agentOpens.get(runnerId) ?? new Set<(reason?: unknown) => void>();
+    opens.add(abort);
+    this.#agentOpens.set(runnerId, opens);
+    return () => {
+      opens.delete(abort);
+      if (!opens.size) this.#agentOpens.delete(runnerId);
+    };
+  }
   readonly #closing = new AbortController();
   #closed = false;
   #closePromise: Promise<void> | null = null;
@@ -3046,6 +3059,17 @@ export class BrowserService {
                       await this.#requireAgentAccess(record.runnerId);
                     }
                     await budget.browserSend?.recheck();
+                    // Final synchronous switch fence immediately before the frame write (V2 / Opus M1):
+                    // disableAgentAccess bumps #runnerAccessGeneration synchronously even if the
+                    // Runner admission lane was released before #sendCommand's recheck ran.
+                    if (
+                      agent &&
+                      (this.#runnerAccessGeneration.get(record.runnerId) ?? 0) !== accessGeneration
+                    )
+                      throw new OpensteerError({
+                        code: "forbidden",
+                        message: "This device's browser access was turned off.",
+                      });
                   },
                   submitted: () => {
                     budget.pageRequested = true;
@@ -3060,6 +3084,8 @@ export class BrowserService {
           return { broker, navigationId, request };
         };
         const opens = agent ? this.#beginTaskPageOpen(record.id) : undefined;
+        const untrackOpen =
+          agent && budget.abort ? this.#trackAgentOpen(record.runnerId, budget.abort) : undefined;
         let tabId: BrowserSurfaceId;
         let broker: Awaited<ReturnType<typeof send>>["broker"];
         let navigationId: Awaited<ReturnType<typeof send>>["navigationId"];
@@ -3069,7 +3095,21 @@ export class BrowserService {
           const response = await sent.request;
           ({ tabId } = z.object({ tabId: BrowserSurfaceIdSchema }).parse(response.result));
           if (opens && agent) opens.openers.set(tabId, { taskId: agent.threadId });
+        } catch (error) {
+          if (
+            agent &&
+            !budget.pageRequested &&
+            (error === this.#deviceAccessDisabled ||
+              (budget.signal.aborted && budget.signal.reason === this.#deviceAccessDisabled))
+          ) {
+            throw new OpensteerError({
+              code: "forbidden",
+              message: "This device's browser access was turned off.",
+            });
+          }
+          throw error;
         } finally {
+          untrackOpen?.();
           if (opens) {
             opens.inFlight--;
             if (!opens.inFlight && !opens.openers.size) this.#taskPageOpens.delete(record.id);
@@ -6579,6 +6619,7 @@ export class BrowserService {
           browserSend
             ? {
                 recheck: async () => {
+                  const accessGeneration = this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
                   await this.#requireAgentAccess(record.runnerId);
                   if (lease && !(await fillAllowed())) throw new BrowserCdpConnectionEnded();
                   await browserSend.recheck();
@@ -6587,6 +6628,10 @@ export class BrowserService {
                     (await readWitnesses(input.scriptTabId))?.tab !== expectedTab
                   )
                     throw new BrowserCdpConnectionEnded("This browser page is stale.");
+                  if ((this.#runnerAccessGeneration.get(record.runnerId) ?? 0) !== accessGeneration)
+                    throw new BrowserCdpConnectionEnded(
+                      "This device's browser access was turned off.",
+                    );
                   assertAttached(false);
                 },
                 submitted: browserSend.submitted,
