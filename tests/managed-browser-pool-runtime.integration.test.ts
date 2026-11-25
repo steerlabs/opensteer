@@ -251,6 +251,7 @@ interface LoopbackPoolHost {
   readonly slotId: string;
   readonly term: number;
   readonly pagesOpened: () => number;
+  stopAgent(): Promise<void>;
   restartAgent(): Promise<void>;
   close(): Promise<void>;
 }
@@ -272,7 +273,12 @@ async function startLoopbackPoolHost(input: {
   const agent = await startTestPoolAgent({ saveAfterMs: null, hostKeys });
   let liveAgent: PoolAgent = agent.agent;
   let restartedServer: import("node:http").Server | undefined;
-  let closeAgent: () => Promise<void> = () => agent.close();
+  let agentRunning = true;
+  let closeAgent: () => Promise<void> = async () => {
+    if (!agentRunning) return;
+    agentRunning = false;
+    await agent.close();
+  };
   const agentPort = Number(new URL(agent.url).port);
   const summary = await liveAgent.createSlot({
     slotId: input.slotId,
@@ -362,6 +368,10 @@ async function startLoopbackPoolHost(input: {
     slotId: input.slotId,
     term: input.term,
     pagesOpened: () => launcher.launchCount,
+    stopAgent: async () => {
+      for (const socket of relaySockets) socket.destroy();
+      await closeAgent();
+    },
     restartAgent: async () => {
       for (const socket of relaySockets) socket.destroy();
       await closeAgent();
@@ -379,7 +389,10 @@ async function startLoopbackPoolHost(input: {
       await listen(nextServer, { host: "127.0.0.1", port: agentPort });
       liveAgent = nextAgent;
       restartedServer = nextServer;
+      agentRunning = true;
       closeAgent = async () => {
+        if (!agentRunning) return;
+        agentRunning = false;
         nextAgent.close();
         nextServer.closeAllConnections();
         await new Promise<void>((resolve) => nextServer.close(() => resolve()));
@@ -3284,9 +3297,9 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
     }
   });
 
-  it("Rule 3: keeps a ready pooled slot available across Home restarts while parked (0 sessions or with sessions, memory or disk) and after a pool-agent restart, and wakes on person and connected-agent opens", async () => {
+  it("a ready pool is always offered across Home restarts while parked (0 sessions or with sessions, memory or disk) and after a pool-agent restart, wakes on person and connected-agent opens, and reports pool reasons on outage/refusal", async () => {
     const database = await cloneTestDatabase("host");
-    const directory = await mkdtemp(join(tmpdir(), "opensteer-pool-rule3-"));
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-pool-offered-"));
     const port = await freePort();
     const config = managedConfig(database.url, directory, port, { browserPool: true });
     let registeredKeys:
@@ -3440,11 +3453,11 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
         { timeout: 10_000 },
       );
 
-      // Create an unbound browser profile for person and agent opens.
+      // Create a browser profile for person and agent opens.
       const profile = await home1.browser.createProfile({
         ownerId,
-        name: "Rule 3 Profile",
-        idempotencyKey: `profile-rule3-${randomUUID()}`,
+        name: "Ready Pool Profile",
+        idempotencyKey: `profile-ready-pool-${randomUUID()}`,
       });
       // Enable device browser access for agent/Run opens.
       await home1.store.database
@@ -3590,23 +3603,79 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
       );
       await home4.browser.detachAgentSessionsForBinding(agentBinding.agentBindingId);
 
-      // 4) Park to DISK tier, restart the Home with no live stream attached, drop the pool host,
-      // and verify openTab's wake loop ends promptly with its signal (never spinning when the
-      // pool cannot wake).
-      await waitForDiskPark("step4-home4");
+      // 4a) Park to DISK tier, restart the Home, make the controller refuse the next resume:
+      // an ordinary person open (18s budget, no confirmedSignal) ends at once with the pool's
+      // start-refusal words while keeping the placement offered, and the next open wakes and
+      // clears the refusal.
+      await waitForDiskPark("step4a-home4");
       primary?.terminate();
       await home4.close();
       host = undefined;
-      await poolHost.close();
-      poolHost = undefined;
       const home5 = await startHome(120);
       await vi.waitFor(
+        async () => {
+          expect((await home5.app.inject({ method: "GET", url: "/ready" })).json()).toEqual({
+            ok: true,
+            browserPool: "ready",
+          });
+        },
+        { timeout: 10_000 },
+      );
+      poolHost.agent.driver.fail("ensureHost", new Error("resume refused"), 1);
+      const refusedAt = Date.now();
+      await expect(
+        home5.browser.openTab(ownerId, {
+          type: "browser.tab.open",
+          idempotencyKey: `controller-refused-${randomUUID()}`,
+          identity: { kind: "profile", profileId: profile.id },
+          url: "https://example.test/refused-wake",
+        }),
+      ).rejects.toMatchObject({
+        code: "conflict",
+        reason: "browser-placement-unavailable",
+        message: "Your Cloud Computer’s browser can’t start right now.",
+      });
+      // Ended at once on the controller refusal, not at the 18s deadline.
+      expect(Date.now() - refusedAt).toBeLessThan(5_000);
+      // Placement stays offered so asking is the retry.
+      expect(home5.browser.resourcePlacements()).toMatchObject([{ runnerId, available: true }]);
+      // Next open tries again immediately, succeeds, and clears the refusal.
+      const recoveredFromRefusal = await home5.browser.openTab(ownerId, {
+        type: "browser.tab.open",
+        idempotencyKey: `retry-after-refusal-${randomUUID()}`,
+        identity: { kind: "profile", profileId: profile.id },
+        url: "https://example.test/recovered-refusal",
+      });
+      expect(recoveredFromRefusal.tabId).toBeTruthy();
+      expect((await poolHost.currentAgent().status(poolHost.slotId, poolHost.term)).phase).toBe(
+        "running",
+      );
+      await vi.waitFor(
+        async () => {
+          expect((await home5.app.inject({ method: "GET", url: "/ready" })).json()).toEqual({
+            ok: true,
+            browserPool: "ready",
+          });
+        },
+        { timeout: 10_000 },
+      );
+
+      // 4b) Park to DISK tier, stop the pool agent so nothing answers, restart the Home with no
+      // live stream attached: openTab rejects at its deadline with the pool's unreachable reason
+      // (not the generic timeout), placement stays offered, and once the pool agent is back a
+      // later open succeeds.
+      await waitForDiskPark("step4b-home5");
+      await home5.close();
+      host = undefined;
+      await poolHost.stopAgent();
+      const home6 = await startHome(120);
+      await vi.waitFor(
         () =>
-          expect(home5.browser.resourcePlacements()).toMatchObject([{ runnerId, available: true }]),
+          expect(home6.browser.resourcePlacements()).toMatchObject([{ runnerId, available: true }]),
         { timeout: 10_000 },
       );
       await expect(
-        home5.browser.openTab(
+        home6.browser.openTab(
           ownerId,
           {
             type: "browser.tab.open",
@@ -3615,14 +3684,40 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
             url: "https://example.test/never-wakes",
           },
           undefined,
-          AbortSignal.timeout(150),
+          AbortSignal.timeout(400),
         ),
-      ).rejects.toThrow();
+      ).rejects.toMatchObject({
+        code: "conflict",
+        reason: "browser-placement-unavailable",
+        message: "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
+      });
+      expect(home6.browser.resourcePlacements()).toMatchObject([{ runnerId, available: true }]);
+      await poolHost.restartAgent();
+      const recoveredFromOutage = await home6.browser.openTab(ownerId, {
+        type: "browser.tab.open",
+        idempotencyKey: `retry-after-outage-${randomUUID()}`,
+        identity: { kind: "profile", profileId: profile.id },
+        url: "https://example.test/recovered-outage",
+      });
+      expect(recoveredFromOutage.tabId).toBeTruthy();
+      expect((await poolHost.currentAgent().status(poolHost.slotId, poolHost.term)).phase).toBe(
+        "running",
+      );
 
-      // 5) Once the slot is gone/retired, placement disappears (Rule 3 negative boundary).
-      await home5.browser.retirePool(runnerId, "slot-gone");
-      expect(home5.browser.resourcePlacements()).toEqual([]);
-      expect((await home5.browser.workspaceBootstrap(ownerId)).available).toBe(false);
+      // 5) Park to disk, restart with no live stream attached, then retire the slot: placement
+      // disappears once the slot is gone (negative boundary).
+      await waitForDiskPark("step5-home6");
+      await home6.close();
+      host = undefined;
+      const home7 = await startHome(120);
+      await vi.waitFor(
+        () =>
+          expect(home7.browser.resourcePlacements()).toMatchObject([{ runnerId, available: true }]),
+        { timeout: 10_000 },
+      );
+      await home7.browser.retirePool(runnerId, "slot-gone");
+      expect(home7.browser.resourcePlacements()).toEqual([]);
+      expect((await home7.browser.workspaceBootstrap(ownerId)).available).toBe(false);
     } finally {
       primary?.terminate();
       await host?.close();
@@ -3630,11 +3725,11 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
       await database.drop();
       await rm(directory, { recursive: true, force: true });
     }
-  }, 45_000);
+  }, 60_000);
 
-  it("Rule 3 (Run): wakes a disk-parked pooled slot after a Home restart on a Run's first open", async () => {
+  it("a ready pool is always offered (Run): wakes a disk-parked pooled slot after a Home restart on a Run's first open", async () => {
     const database = await cloneTestDatabase("host");
-    const directory = await mkdtemp(join(tmpdir(), "opensteer-pool-rule3-run-"));
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-pool-offered-run-"));
     const port = await freePort();
     const config = managedConfig(database.url, directory, port, { browserPool: true });
     let registeredKeys:
@@ -3786,8 +3881,8 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
 
       const profile = await home1.browser.createProfile({
         ownerId,
-        name: "Rule 3 Run Profile",
-        idempotencyKey: `profile-rule3-run-${randomUUID()}`,
+        name: "Ready Pool Run Profile",
+        idempotencyKey: `profile-ready-pool-run-${randomUUID()}`,
       });
       await home1.store.database
         .updateTable("devices")
@@ -3852,7 +3947,7 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
         .onConflict((conflict) => conflict.column("id").doNothing())
         .execute();
       const personalRuns = createPersonalRunFixturePort(home2.store);
-      const task = await personalRuns.createTask({ ownerId, suffix: "rule3-run" });
+      const task = await personalRuns.createTask({ ownerId, suffix: "ready-pool-run" });
       await home2.store.updateThreadAccessMode({
         threadId: task.threadId,
         requestedBy: ownerId,

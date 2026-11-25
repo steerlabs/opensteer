@@ -1010,6 +1010,7 @@ export class BrowserPoolCoordinator {
           const announce = this.#refused?.reason !== error.reason;
           this.#refused = { reason: error.reason, since: this.#refused?.since ?? new Date() };
           this.#options.onStateChanged?.();
+          this.gate.noteAttemptRefused(error.reason);
           // Subscribed clients learn of a refusal when it begins or its reason changes; the
           // announcement has its own bound, and a removal ends it.
           if (announce) await this.#announce(changed);
@@ -2300,6 +2301,11 @@ export class BrowserPoolCoordinator {
     if (this.#relayUnreachable) return;
     this.#options.onStateChanged?.();
     await this.#announce(this.#changed.signal);
+  }
+
+  /** True while calls to the pool host or relay have gone unanswered with no reply since. */
+  get unanswered(): boolean {
+    return this.#unknownSince !== undefined || this.#relayUnknownSince !== undefined;
   }
 
   /**

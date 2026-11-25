@@ -208,7 +208,11 @@ import WebSocket from "ws";
 import { z } from "zod";
 import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import type { BrowserAttachTicketSigner } from "./browser-ticket.js";
-import type { BrowserPoolGate, BrowserPoolReservation } from "./browser-pool-gate.js";
+import {
+  BrowserPoolAttemptRefused,
+  type BrowserPoolGate,
+  type BrowserPoolReservation,
+} from "./browser-pool-gate.js";
 import type { BrowserPoolAdopter, BrowserPoolCoordinator } from "./browser-pool-coordinator.js";
 import { PooledBrowserRelay } from "./browser-pool-relay.js";
 import type { BrowserPoolDocument, BrowserPoolRuntimeFence } from "@opensteer/browser-runtime-core";
@@ -1262,6 +1266,25 @@ export class BrowserService {
     return this.#pooledUnavailableReason() ?? fallback;
   }
 
+  #pooledWakeRefusalMessage(
+    pool: BrowserPoolCoordinator | undefined,
+    homes: readonly { readonly id: RunnerId; readonly kind: string }[],
+    runnerId: RunnerId,
+  ): string {
+    if (pool?.gate.phase === "released") return "This device was removed.";
+    if (pool?.report()?.refused)
+      return this.#pooledRefusalMessage(
+        homes,
+        runnerId,
+        "Your Cloud Computer’s browser can’t start right now.",
+      );
+    return this.#pooledRefusalMessage(
+      homes,
+      runnerId,
+      "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
+    );
+  }
+
   get available(): boolean {
     return Boolean(this.#targetResolver) && !this.#closed;
   }
@@ -1338,8 +1361,8 @@ export class BrowserService {
     if (placement) this.#poolPlacements.set(runnerId, placement);
     else this.#poolPlacements.delete(runnerId);
     coordinator.setAdopter(this.#poolAdopter(runnerId));
-    // Rule 3: a pooled Home has a browser placement from the moment its ready slot is adopted,
-    // whatever the guest's phase and whether or not a relay is attached yet.
+    // A ready pooled slot is always offered from adoption on, whatever the guest's phase and
+    // whether or not a relay is attached yet.
     this.#onSessionsChanged([]);
     // Its first recovery is not awaited here: a pool host that does not answer holds this
     // browser's gate closed, never the Home's start.
@@ -2275,6 +2298,7 @@ export class BrowserService {
     },
     signal: AbortSignal,
     agent?: BrowserTabOpenAgent,
+    onPoolWait?: (runnerId: RunnerId | undefined) => void,
   ): Promise<{
     profileId: BrowserProfileId | null;
     placement: BrowserPlacementSelector;
@@ -2334,7 +2358,7 @@ export class BrowserService {
             ? { kind: "runner" as const, runnerId: remembered }
             : null);
     if (await this.#waitForBrowser(homes, intended?.runnerId, signal))
-      return this.#resolveIdentityOpen(ownerId, command, signal, agent);
+      return this.#resolveIdentityOpen(ownerId, command, signal, agent, onPoolWait);
     // Reserve the pooled browser's gate before checking target availability and keep that
     // reservation into `select()`: a parked (memory or disk) slot, Home restart, or relay
     // reconnect wakes here on demand instead of refusing as unavailable or selecting a stale
@@ -2345,12 +2369,7 @@ export class BrowserService {
         const available = this.#eligiblePlacements(homes).filter(
           (candidate) => candidate.available,
         );
-        if (available.length === 1) return available[0]!.runnerId;
-        if (available.length === 0) {
-          const pooledHomes = homes.filter((home) => this.#pool(home.id) !== undefined);
-          if (pooledHomes.length === 1) return pooledHomes[0]!.id;
-        }
-        return undefined;
+        return available.length === 1 ? available[0]!.runnerId : undefined;
       })();
     const wakeSignal = AbortSignal.any([
       this.#closing.signal,
@@ -2359,6 +2378,8 @@ export class BrowserService {
     let heldPool:
       { target: BrowserPoolCoordinator; reservation: BrowserPoolReservation } | undefined;
     try {
+      // Loops only if a running gate transitions to reconnecting while `pendingChannelLoss`
+      // drains (so the stale hold is released and the caller waits at the gate once).
       for (;;) {
         const pool = candidateRunnerId ? this.#pool(candidateRunnerId) : undefined;
         if (!pool || !candidateRunnerId) break;
@@ -2371,8 +2392,7 @@ export class BrowserService {
               await this.#requireAgentAccess(candidateRunnerId);
             }
           : undefined;
-        // Never wake a parked or reconnecting browser for an unauthorized agent (S2/X1).
-        if (agentRecheck && !pool.gate.admits) await agentRecheck();
+        onPoolWait?.(candidateRunnerId);
         const reservation = agent
           ? await this.#reserveAgentPool(
               pool.gate,
@@ -2381,8 +2401,10 @@ export class BrowserService {
               wakeSignal,
               candidateRunnerId,
               agentRecheck,
+              { failOnRefusal: true, ...(agentRecheck ? { precheck: agentRecheck } : {}) },
             )
-          : await this.#reservePool(pool.gate, wakeSignal);
+          : await this.#reservePool(pool.gate, wakeSignal, undefined, { failOnRefusal: true });
+        onPoolWait?.(undefined);
         heldPool = { target: pool, reservation };
         if (agentRecheck && reservation.waited) await agentRecheck();
         if (this.#targetResolver?.pendingAdmission?.(candidateRunnerId)) {
@@ -2396,6 +2418,7 @@ export class BrowserService {
               .waitForTarget?.(candidateRunnerId, wakeSignal)
               .catch(() => undefined);
         }
+        if (agentRecheck && !this.#resolveTarget(selector)) await agentRecheck();
         // If the Runner dropped and a pooled broker on it has already left OPEN while its
         // channel-loss notification is still draining to the coordinator, wait for that loss to
         // land so `pool.gate` reflects the reconnect before deciding unavailability.
@@ -2480,7 +2503,28 @@ export class BrowserService {
         ...(heldPool ? { pool: heldPool } : {}),
       };
     } catch (error) {
+      onPoolWait?.(undefined);
       heldPool?.reservation.release();
+      const pool = candidateRunnerId ? this.#pool(candidateRunnerId) : undefined;
+      const explicitAbort =
+        signal.aborted &&
+        (signal.reason instanceof BrowserCdpConnectionEnded ||
+          (signal.reason instanceof Error && signal.reason.name === "AbortError"));
+      if (
+        pool &&
+        candidateRunnerId &&
+        !this.#closing.signal.aborted &&
+        !explicitAbort &&
+        (error instanceof BrowserPoolAttemptRefused ||
+          error instanceof BrowserPoolAdmissionClosed ||
+          (error instanceof OpensteerError && error.reason === "browser-open.timeout"))
+      ) {
+        throw this.#tabOpenRefusal(
+          "browser-placement-unavailable",
+          this.#pooledWakeRefusalMessage(pool, homes, candidateRunnerId),
+          this.#eligiblePlacements(homes),
+        );
+      }
       throw error;
     }
   }
@@ -2561,12 +2605,21 @@ export class BrowserService {
       ...(confirmedSignal ? { confirmed: true } : {}),
       ...(agent?.browserSend ? { browserSend: agent.browserSend } : {}),
     };
-    const timeout = () =>
-      new OpensteerError({
+    const timeout = () => {
+      if (budget.poolWaitingRunnerId && !budget.admitted && !budget.pageRequested) {
+        const waitingRunner = budget.poolWaitingRunnerId;
+        return this.#tabOpenRefusal(
+          "browser-placement-unavailable",
+          this.#pooledWakeRefusalMessage(this.#pool(waitingRunner), [], waitingRunner),
+          this.resourcePlacements(),
+        );
+      }
+      return new OpensteerError({
         code: "conflict",
         message: "Opening this browser timed out. Retry to open a new page.",
         reason: "browser-open.timeout",
       });
+    };
     const timer = setTimeout(() => cancellation.abort(timeout()), browserOpenWorkMs);
     timer.unref?.();
     try {
@@ -2738,6 +2791,10 @@ export class BrowserService {
               },
               budget.signal,
               agent,
+              (waitingRunnerId) => {
+                if (waitingRunnerId) budget.poolWaitingRunnerId = waitingRunnerId;
+                else delete budget.poolWaitingRunnerId;
+              },
             );
             if (resolved.pool) {
               attachPoolReservation(resolved.pool.target, resolved.pool.reservation);
@@ -8654,15 +8711,20 @@ export class BrowserService {
     };
   }
 
-  async #reservePool(gate: BrowserPoolGate, signal: AbortSignal, sessionId?: BrowserSessionId) {
+  async #reservePool(
+    gate: BrowserPoolGate,
+    signal: AbortSignal,
+    sessionId?: BrowserSessionId,
+    options?: { readonly failOnRefusal?: boolean },
+  ) {
     const reserveSignal = AbortSignal.any([signal, this.#closing.signal]);
-    if (!sessionId) return gate.reserve(reserveSignal);
+    if (!sessionId) return gate.reserve(reserveSignal, options);
     const waiters = this.#poolWaiters.get(sessionId) ?? new Set<AbortController>();
     const waiter = new AbortController();
     waiters.add(waiter);
     this.#poolWaiters.set(sessionId, waiters);
     try {
-      return await gate.reserve(AbortSignal.any([reserveSignal, waiter.signal]));
+      return await gate.reserve(AbortSignal.any([reserveSignal, waiter.signal]), options);
     } finally {
       waiters.delete(waiter);
       if (!waiters.size) this.#poolWaiters.delete(sessionId);
@@ -8676,6 +8738,10 @@ export class BrowserService {
     upstream?: AbortSignal,
     runnerId?: RunnerId,
     onDisabled?: () => Promise<unknown>,
+    options?: {
+      readonly failOnRefusal?: boolean;
+      readonly precheck?: () => Promise<void>;
+    },
   ) {
     if (this.browserBindingEnded(binding)) throw new BrowserCdpConnectionEnded();
     const waiters =
@@ -8686,6 +8752,18 @@ export class BrowserService {
     waiters.add(entry);
     this.#poolAgentWaiters.set(binding, waiters);
     try {
+      if (options?.precheck) {
+        const precheck = options.precheck;
+        const runPrecheck = async () => {
+          const genBefore = runnerId ? (this.#runnerAccessGeneration.get(runnerId) ?? 0) : 0;
+          await precheck();
+          if (waiter.signal.aborted) throw waiter.signal.reason;
+          if (runnerId && (this.#runnerAccessGeneration.get(runnerId) ?? 0) !== genBefore)
+            await precheck();
+        };
+        if (runnerId) await this.withRunnerAdmission(runnerId, runPrecheck);
+        else await runPrecheck();
+      }
       return await this.#reservePool(
         gate,
         AbortSignal.any([
@@ -8694,6 +8772,7 @@ export class BrowserService {
           upstream ?? AbortSignal.timeout(browserOpenWorkMs),
         ]),
         sessionId,
+        options?.failOnRefusal ? { failOnRefusal: true } : undefined,
       );
     } catch (error) {
       if (
@@ -9570,9 +9649,9 @@ export class BrowserService {
       const synthesized: BrowserRuntimePlacement = {
         available: true,
         agents: false,
-        environmentIds: [...(meta?.environmentIds ?? existing?.environmentIds ?? [])],
+        environmentIds: [...(meta?.environmentIds ?? [])],
         kind: "runner",
-        label: meta?.label ?? homeNames?.get(runnerId) ?? existing?.label ?? "Cloud Computer",
+        label: meta?.label ?? homeNames?.get(runnerId) ?? "Cloud Computer",
         runnerId,
         runtimeId: pool.runtimeId,
       };
@@ -13161,6 +13240,7 @@ interface BrowserTabOpenBudget {
   openAccessGeneration?: number;
   admitted?: BrowserTabOpenBinding;
   pageRequested?: boolean;
+  poolWaitingRunnerId?: RunnerId;
   cleanupPoolAbort?: () => void;
   pool?: {
     target: BrowserPoolCoordinator;

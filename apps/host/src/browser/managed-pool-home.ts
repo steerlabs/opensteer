@@ -513,7 +513,12 @@ export async function startManagedBrowserPool(input: {
     const report = applied.coordinator.report();
     if (phase === "released") return "This device was removed.";
     if (report?.refused) return "Your Cloud Computer’s browser can’t start right now.";
-    if (report?.unreachable || report?.relayFailed || phase === "unavailable")
+    if (
+      report?.unreachable ||
+      report?.relayFailed ||
+      applied.coordinator.unanswered ||
+      phase === "unavailable"
+    )
       return "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.";
     if (phase === "open" && applied.relay && !applied.relay.isAttached())
       return "Your Cloud Computer’s browser isn’t connected right now. Try again in a moment.";

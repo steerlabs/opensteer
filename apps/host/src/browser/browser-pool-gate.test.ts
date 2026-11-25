@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { OpensteerError } from "@opensteer/core";
 import { BrowserPoolAdmissionClosed } from "@opensteer/database";
-import { BrowserPoolGate } from "./browser-pool-gate.js";
+import { BrowserPoolAttemptRefused, BrowserPoolGate } from "./browser-pool-gate.js";
 
 function gate() {
   const inD = Promise.withResolvers<void>();
@@ -252,4 +252,41 @@ it("signals idle-state changes whenever admission, reservations, or viewers chan
   stopViewing();
   expect(changes).toBe(5);
   expect(subject.viewers).toBe(0);
+});
+
+it("ends failOnRefusal waiters at once on noteAttemptRefused while default waiters keep waiting", async () => {
+  const subject = new BrowserPoolGate();
+  subject.set({ recovered: true, away: "parked", hold: null });
+  let asks = 0;
+  subject.onChange = () => {
+    asks++;
+  };
+
+  const defaultWaiter = subject.reserve(new AbortController().signal);
+  const optInWaiter = subject.reserve(new AbortController().signal, { failOnRefusal: true });
+  await Promise.resolve();
+  expect(asks).toBe(2);
+
+  subject.noteAttemptRefused("egress-proxy-down");
+  await expect(optInWaiter).rejects.toBeInstanceOf(BrowserPoolAttemptRefused);
+  expect(subject.demand).toBe(true);
+
+  // Synchronous refusal inside onChange() must also wake the caller without missing the notify.
+  subject.onChange = () => {
+    asks++;
+    subject.noteAttemptRefused("profile-disk-missing");
+  };
+  await expect(
+    subject.reserve(new AbortController().signal, { failOnRefusal: true }),
+  ).rejects.toMatchObject({
+    name: "BrowserPoolAttemptRefused",
+    refusedReason: "profile-disk-missing",
+  });
+
+  // Opening admission resolves the default waiter that stayed waiting across both refusals.
+  subject.set({ away: null });
+  const held = await defaultWaiter;
+  expect(held.waited).toBe(true);
+  held.release();
+  expect(subject.demand).toBe(false);
 });
