@@ -25,14 +25,15 @@ release_waiting() {
 # release_identity SELECTOR RECIPE_SHA: a release named by its images and its installer.
 release_identity() { { cat "$1"; printf '%s\n' "$2"; } | digest; }
 
-# remember_failed RELEASE: a release that failed its gate here, or that the operator rolled back
-# from, is not tried again by itself, until another release commits. One line each ("ID
-# IDENTITY SINCE"): the directory of its first failure stays, with the dump taken before it.
+# remember_failed RELEASE [went-back]: a release that failed its gate here, or that the operator
+# rolled back from (went-back), is not tried again by itself, until another release commits. One
+# line each ("ID IDENTITY SINCE [went-back]"): the directory of its first failure stays, with the
+# dump taken before it.
 remember_failed() {
   local memory="$home_dir/update.failed" identity
   identity=$(release_identity "$(release_named "$1")" "$(cat "$1/recipe.sha256" 2>/dev/null)")
   [[ -z $(failed_release "$identity") ]] || return 0
-  { cat "$memory" 2>/dev/null; printf '%s %s %s\n' "${1##*/}" "$identity" "$(date -u +'%Y-%m-%dT%H:%M:00Z')"; } > "$memory.new" &&
+  { cat "$memory" 2>/dev/null; printf '%s %s %s%s\n' "${1##*/}" "$identity" "$(date -u +'%Y-%m-%dT%H:%M:00Z')" "${2:+ $2}"; } > "$memory.new" &&
     publish_file "$memory.new" "$memory" ||
     echo 'The failed release could not be remembered: the next check tries it again.' >&2
 }
@@ -60,7 +61,7 @@ settled() {
 # the running one (nothing outside it is written), then switched to by cutover.
 update_home() (
   [[ $# -le 2 ]] || fail "Usage: opensteer-home update [MANIFEST.json]"
-  local feed old_version new_version bundle_version change identity remembered since first unit pod pinned=false unwritten='The release could not be written. Nothing was changed.'
+  local feed old_version new_version bundle_version change identity remembered since why first unit pod pinned=false unwritten='The release could not be written. Nothing was changed.'
   if [[ -f "$home_dir/managed" ]]; then
     pinned=true
     [[ $# == 1 ]] || fail 'Managed Homes update only from the Account feed.'
@@ -132,8 +133,12 @@ update_home() (
   identity=$(release_identity "$manifest.env" "$(if [[ -s "$manifest.recipe" ]]; then jq -r .sha256 "$manifest.recipe"; else cat "$from/recipe.sha256" 2>/dev/null; fi)")
   remembered=$(failed_release "$identity")
   if [[ ${retry_failed:-false} != true && -n $remembered ]]; then
-    read -r _ _ since <<< "$remembered"
-    echo "Release $new_version did not start here: waiting for the next one (sudo opensteer-home update --retry tries it again)."
+    read -r _ _ since why <<< "$remembered"
+    if [[ $why == went-back ]]; then
+      echo "You went back from $new_version on ${since%%T*}: waiting for the next one (sudo opensteer-home update --retry installs it again)."
+    else
+      echo "Release $new_version did not start here: waiting for the next one (sudo opensteer-home update --retry tries it again)."
+    fi
     record_update_result not-retried "$old_version" "$new_version" "$since"
     return 0
   fi
@@ -243,7 +248,7 @@ rollback_home() (
   case $status in
     0 | 4)
       echo "Back on the previous release ($(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$home_dir/$back/images.env"))."
-      remember_failed "$from"
+      remember_failed "$from" went-back
       own_home "$unit" || echo 'The previous release is current but did not start: the next start starts it.' >&2
       ((status == 0)) || fail 'What follows the switch could not be finished; the next start finishes it.'
       refresh_units || echo "This Home's units could not be refreshed; the next start tries again." >&2

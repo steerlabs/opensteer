@@ -656,8 +656,36 @@ refresh_pool_network() {
   echo "This Home now reaches the pool network its Opensteer account gives: $network" >&2
 }
 
+# host_container: the id of the Host's container, while one exists; fails when none does.
+host_container() {
+  local project id
+  project=$(pod_project) || return
+  id=$(docker ps -aq --no-trunc --filter "label=com.docker.compose.project=$project" \
+    --filter label=com.docker.compose.service=host --filter label=com.docker.compose.oneoff=False) || return
+  [[ -n $id && $id != *$'\n'* ]] || return 1
+  printf '%s\n' "$id"
+}
+
+# stranded_services HOST: the services whose containers join the network namespace of a container
+# other than HOST (`network_mode: service:host`, as Docker holds it), one per line. A Host created
+# anew leaves every container that joined the old one where nothing listens any more.
+stranded_services() {
+  local project ids
+  project=$(pod_project) || return
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$project" \
+    --filter label=com.docker.compose.oneoff=False) || return
+  [[ -n $ids ]] || return 0
+  # shellcheck disable=SC2086 # One container ID per word.
+  docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}} {{.HostConfig.NetworkMode}}' $ids |
+    awk -v host="container:$1" '$2 ~ /^container:/ && $2 != host { print $1 }' | sort -u
+}
+
+# start_pod: PostgreSQL and the Host, the Host's firewall, then every other service. When the Host
+# was created anew (its configuration, limits or image changed, or none ran), each service that
+# joins its network namespace and still joins the old one is created anew in the same start, after
+# the firewall; a Host that stayed leaves every other container as it is.
 start_pod() {
-  local pid namespace
+  local pid namespace host stranded joined=()
   # The next maintenance pass asks for the pool network again.
   rm -f -- "$home_dir/pool-network-asked"
   prepare_runner_apparmor || return
@@ -665,6 +693,9 @@ start_pod() {
     pid=$(host_pid) && namespace=$(readlink "/proc/$pid/ns/net") &&
     apply_firewall "$pid" && check_firewall "$pid" &&
     [[ $(host_pid) == "$pid" && $(readlink "/proc/$pid/ns/net") == "$namespace" ]] &&
+    host=$(host_container) && stranded=$(stranded_services "$host") &&
+    { [[ -z $stranded ]] || { mapfile -t joined <<< "$stranded" &&
+      compose up -d --wait --wait-timeout 240 --force-recreate --no-deps --pull never "${joined[@]}"; }; } &&
     compose up -d --wait --wait-timeout 240 --no-recreate --pull never &&
     [[ $(host_pid) == "$pid" && $(readlink "/proc/$pid/ns/net") == "$namespace" ]] &&
     check_firewall "$pid" && printf '%s\n' "$pid" > "$home_dir/host.pid"; then
