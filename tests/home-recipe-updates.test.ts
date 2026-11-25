@@ -242,6 +242,8 @@ beforeEach(() => {
   log = join(work, "log");
   mkdirSync(join(home, "secrets"), { recursive: true });
   mkdirSync(join(work, "units"));
+  // The Home was installed with its units: an update refreshes them.
+  writeFileSync(join(work, "units", "opensteer-home.service"), "[Service]\nExecStart=installed\n");
   writeFileSync(join(home, "managed"), "");
   writeFileSync(join(home, "secrets", "oidc_client_secret"), `ocs_${"A".repeat(43)}`);
   writeFileSync(join(home, "secrets", "postgres_password"), "kept\n");
@@ -346,7 +348,7 @@ it.each([
   expect(said()).not.toContain("units from release B");
   expect(existsSync(join(home, "update.pending"))).toBe(false);
   // B's directory stays until the next update, with the dump taken before it.
-  const b = releases().find((name) => name.startsWith("1.2.4-"));
+  const b = releases().find((name) => name.startsWith("1.2.4-") && name !== "1.2.4-stray0");
   expect(readFileSync(join(home, "releases", b!, "database.dump"), "utf8")).toBe(
     "dump of the database\n",
   );
@@ -1288,6 +1290,7 @@ it("tells a feed line it cannot read, or a config.env it cannot read, from no fe
 });
 
 it("gives a Home installed without units (--prepare) none from a start", () => {
+  rmSync(join(work, "units", "opensteer-home.service"));
   const started = spawnSync(
     "bash",
     ["-c", 'source "$1/common.sh"; refresh_units', "start", join(home, "current")],
