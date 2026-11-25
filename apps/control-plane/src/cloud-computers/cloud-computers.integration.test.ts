@@ -829,6 +829,9 @@ integration("Cloud Computer Account service", () => {
     let newerGeneration = false;
     // The next report is delivered twice: a retried request whose first copy landed.
     let duplicate = false;
+    // Every report the provisioner sent, and the provider's answer to the next create.
+    const sent: CloudComputerReport[] = [];
+    let createRefusal: Error | undefined;
     let bootCount = 0;
     let booted: CloudComputerBootResponse | undefined;
     const provider = {
@@ -845,6 +848,9 @@ integration("Cloud Computer Account service", () => {
           : [server];
       },
       create: async ({ generation, userData }: { generation: number; userData: string }) => {
+        const refusal = createRefusal;
+        createRefusal = undefined;
+        if (refusal) throw refusal;
         expect(first?.bootstrapToken).toBeTruthy();
         expect(userData).toContain(first!.bootstrapToken!);
         server = { id: 7, generation, status: "off", ipv4: "192.0.2.7", ipv6: null, firewalls: [] };
@@ -897,8 +903,9 @@ integration("Cloud Computer Account service", () => {
         report: (report: CloudComputerReport, signal: AbortSignal) => Promise<boolean>;
       };
     }>("../../../home-provisioner/src/account.js");
-    const { RemoteRequestError } = await vi.importActual<{
+    const { RemoteRequestError, ProviderWriteRejected } = await vi.importActual<{
       RemoteRequestError: new (service: string, status: number) => Error;
+      ProviderWriteRejected: new (original: Error) => Error;
     }>("../../../home-provisioner/src/http.js");
     const client = accountClient(
       listener,
@@ -910,6 +917,7 @@ integration("Cloud Computer Account service", () => {
       account: {
         ...client,
         report: async (report: CloudComputerReport, signal: AbortSignal) => {
+          sent.push(report);
           const recorded = await client.report(report, signal);
           if (duplicate) {
             duplicate = false;
@@ -939,6 +947,18 @@ integration("Cloud Computer Account service", () => {
     const mutation = (action: string) =>
       http({ method: "POST", url: `${path}/${action}`, headers: account.headers });
     expect((await read()).json()).toMatchObject({ status: "preparing" });
+    // A create the provider refused (a 400) fails the computer, and pages at once (Q2); the next
+    // pass creates it.
+    createRefusal = new ProviderWriteRejected(new RemoteRequestError("Google Compute Engine", 400));
+    await pass();
+    expect(createRefusal).toBeUndefined();
+    expect(
+      (await cloud.watch(30 * 60_000)).filter(
+        (finding) => finding.event === "account.cloud_computer.not_ready",
+      ),
+    ).toEqual([
+      expect.objectContaining({ computerId: id, phase: "failed", code: "provider-failed" }),
+    ]);
     await pass();
     expect(records).toBe(true);
     expect(kickBootstrap).not.toHaveBeenCalled();
@@ -996,6 +1016,7 @@ integration("Cloud Computer Account service", () => {
         .select(["phase", "lastError", "readinessStartedAt", "downAt"])
         .where("id", "=", id)
         .executeTakeFirstOrThrow();
+    const logged = logs.length;
     now = new Date(now.getTime() + 23 * 60_000);
     discovers = false;
     // And that first report is delivered twice: the second copy, judged against the attempt
@@ -1018,10 +1039,23 @@ integration("Cloud Computer Account service", () => {
     expect(await clocks()).toMatchObject({ phase: "ready", downAt: null });
     expect(await notReady()).toEqual([]);
     expect(
-      logs.filter(
-        (line) => line.includes("account.cloud_computer.setup_failed") && line.includes(id),
-      ),
+      logs
+        .slice(logged)
+        .filter(
+          (line) => line.includes("account.cloud_computer.setup_failed") && line.includes(id),
+        ),
     ).toEqual([]);
+    // A copy of that first report arriving now, after the computer is ready again: it names an
+    // attempt that is over and changes nothing, and nothing pages thirty minutes on (Q1).
+    const firstNews = sent.find(
+      ({ lastError }) =>
+        lastError === "The Cloud Computer did not become ready before its deadline.",
+    )!;
+    expect(firstNews.judgedReadinessStartedAt).toBeDefined();
+    expect(await client.report(firstNews, new AbortController().signal)).toBe(true);
+    expect(await clocks()).toMatchObject({ phase: "ready", downAt: null });
+    now = new Date(now.getTime() + 30 * 60_000);
+    expect(await notReady()).toEqual([]);
     expect((await read()).json()).toMatchObject({ status: "ready" });
     // A second outage, and no pass between its first report and ten real minutes in: the deadline
     // then names this outage's attempt, so it is sent though it reads like the stale one before,

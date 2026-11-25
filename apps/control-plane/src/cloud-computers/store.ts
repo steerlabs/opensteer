@@ -1581,23 +1581,21 @@ export class CloudComputerStore {
         throw new ControlPlaneError("conflict", "Cloud Computer Home identity changed");
       }
       const now = this.#now();
-      // A deadline failure counts only for the attempt it judged (`judgedReadinessStartedAt`, the
-      // clock the provisioner read in the desired state), and only while that attempt is the row's
-      // current one and still under way: an attempt that became ready is over, and the outage
-      // after it is a new one. Any other is stale and never makes the row failed. For a row still
-      // ready it is the first report of an outage: recorded as booting, the outage begins. For a
-      // row already in an outage (a retried copy of that report, one judged before a Resume or a
-      // replacement) nothing changes. The account owns the clock, so this is decided here, under
-      // the row lock; the provisioner reads the restarted clock on its next pass.
+      // A deadline failure is about the attempt it judged (`judgedReadinessStartedAt`, the clock
+      // the provisioner read in the desired state). One that names any attempt but the row's
+      // current one is about an attempt that is over: it changes nothing, whatever the row's phase
+      // (a retried copy, one judged before a Resume, a replacement or the outage after it). One
+      // that names the current attempt of a row still ready is the first news of an outage: the
+      // provisioner read the clock while the row was ready, so it is recorded as booting, and the
+      // outage and a new attempt begin; any later copy of it names a past attempt. One that names
+      // the current attempt of a row already down is accepted: failed. The account owns the
+      // clock, so this is decided here, under the row lock.
       const deadline = report.lastError === cloudComputerReadinessDeadline;
       const judged = report.judgedReadinessStartedAt;
-      const stale =
-        deadline &&
-        (row.phase === "ready" ||
-          judged === undefined ||
-          Date.parse(judged) !== row.readinessStartedAt.getTime());
-      if (stale && row.phase !== "ready")
-        return { recorded: true, kick: false, newlyFailed: false };
+      const current =
+        judged !== undefined && Date.parse(judged) === row.readinessStartedAt.getTime();
+      if (deadline && !current) return { recorded: true, kick: false, newlyFailed: false };
+      const stale = deadline && row.phase === "ready";
       const phase = stale ? "booting" : report.phase;
       const lastError = stale ? null : report.lastError;
       const ready = phase === "ready";

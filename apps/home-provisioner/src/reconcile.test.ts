@@ -11,6 +11,7 @@ import {
   BootstrapScrubFailure,
   ProviderOutcomeUnknown,
   ProviderRateLimited,
+  ProviderWriteRejected,
   provisionerFailure,
   RemoteRequestError,
 } from "./http.js";
@@ -458,7 +459,9 @@ describe("Cloud Computer reconciliation", () => {
         expect(h.reports).toContainEqual(
           expect.objectContaining({ id: second.id, phase: "booting" }),
         );
-        expect(h.onError).toHaveBeenCalledWith(new Error("provider secret"));
+        expect(h.onError).toHaveBeenCalledWith(
+          expect.objectContaining({ cause: new Error("provider secret") }),
+        );
       },
     },
     {
@@ -1173,5 +1176,78 @@ describe("a DNS zone another environment shares", () => {
     await h.pass();
     expect(zone.deleted).toEqual([test.id]);
     expect(zone.names()).toEqual([production.name, lookalike.name]);
+  });
+});
+
+describe("an observation that failed (Q2)", () => {
+  /** A Cloudflare zone that keeps the records written to it, and can refuse every read. */
+  function zone() {
+    const records: { id: string; name: string; type: string; content: string; comment: string }[] =
+      [];
+    const state = { refuseReads: false };
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      const method = init?.method ?? "GET";
+      if (method === "GET") {
+        // A token being rotated: Cloudflare answers 403 to the read of existing records.
+        if (state.refuseReads) return Response.json({ success: false }, { status: 403 });
+        const exact = url.searchParams.get("name.exact");
+        return Response.json({
+          success: true,
+          result: records.filter((record) => exact === null || record.name === exact),
+          result_info: { total_pages: 1 },
+        });
+      }
+      const body = JSON.parse(String(init?.body)) as Omit<(typeof records)[number], "id">;
+      const record = { ...body, id: String(records.length + 1).padStart(32, "a") };
+      records.push(record);
+      return Response.json({ success: true, result: { ...record, proxied: false } });
+    };
+    return { records, state, fetch };
+  }
+
+  it("reports nothing when the DNS record read is refused and the Home answers as itself", async () => {
+    const cloudflare = zone();
+    const h = harness({
+      zone: new CloudflareDns({
+        token: "cloudflare-test-token",
+        zoneId: "0".repeat(32),
+        domain: "example.com",
+        timeoutMs: 2000,
+        baseUrl: new URL("https://cloudflare.test/client/v4/"),
+        fetch: cloudflare.fetch,
+      }),
+    });
+    await h.pass();
+    expect(cloudflare.records.map(({ name, type }) => `${type} ${name}`)).toEqual([
+      `A ${home.hostname}`,
+    ]);
+    h.pin();
+    await h.pass();
+    expect(h.last()).toMatchObject({ id: home.id, phase: "ready" });
+    const reported = h.reports.length;
+    cloudflare.state.refuseReads = true;
+    await h.pass();
+    // Discovery answered with the pinned identity; the 403 on the read said nothing of the Home.
+    expect(h.reports.slice(reported)).toEqual([]);
+    expect(h.onError.mock.calls.map(([error]) => provisionerFailure(error))).toContainEqual(
+      expect.objectContaining({
+        event: "home-provisioner.pass.failed",
+        service: "Cloudflare",
+        status: 403,
+      }),
+    );
+  });
+
+  it("still fails a computer whose create the provider refused", async () => {
+    const h = harness();
+    h.provider.create.mockRejectedValueOnce(
+      new ProviderWriteRejected(new RemoteRequestError("Google Compute Engine", 400)),
+    );
+    await h.pass();
+    expect(h.last()).toMatchObject({
+      phase: "failed",
+      lastError: "The Cloud Computer provider operation failed.",
+    });
   });
 });

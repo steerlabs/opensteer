@@ -182,6 +182,35 @@ export class BootstrapScrubFailure extends Error {
 
 export class ProviderPlacementError extends Error {}
 
+/**
+ * A read of the provider, DNS or the Home that failed. It observed nothing of the computer,
+ * whatever its status code: the reconciler reports nothing new for that computer, and the error
+ * is the operator's (`home-provisioner.pass.failed`).
+ */
+export class ObservationFailed extends Error {
+  constructor(cause: unknown) {
+    super("A read of the provider or DNS failed", { cause });
+  }
+}
+
+/**
+ * Tags a read where it is made: whatever it fails with is an `ObservationFailed`. A rate limit
+ * and a machine in another zone keep their own meaning.
+ */
+export async function observed<T>(read: Promise<T>): Promise<T> {
+  try {
+    return await read;
+  } catch (error) {
+    if (
+      error instanceof ObservationFailed ||
+      error instanceof ProviderRateLimited ||
+      error instanceof ProviderPlacementError
+    )
+      throw error;
+    throw new ObservationFailed(error);
+  }
+}
+
 export class UntrackedPoolProfileDiskError extends Error {
   readonly diskName: string;
   readonly hostId: string;
@@ -205,6 +234,7 @@ export class PoolConfigMismatchError extends Error {
 }
 
 export function provisionerFailure(error: unknown) {
+  if (error instanceof ObservationFailed) return provisionerFailure(error.cause);
   if (error instanceof ProviderPlacementError)
     return { event: "home-provisioner.provider.wrong-zone", message: error.message };
   if (error instanceof UntrackedPoolProfileDiskError)

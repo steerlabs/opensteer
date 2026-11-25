@@ -7,6 +7,7 @@ import { z } from "zod";
 import {
   confirmProviderAcceptance,
   json,
+  observed,
   RemoteRequestError,
   request,
   type HttpOptions,
@@ -186,7 +187,8 @@ export class CloudflareDns implements DnsProvider {
         page: String(page),
         per_page: String(perPage),
       }).toString();
-      const response = await this.#request(url, listResponse, signal);
+      // A read, also inside a write (`ensureRecords`, `removeRecords`): it observes nothing if it fails.
+      const response = await observed(this.#request(url, listResponse, signal));
       result.push(...response.result);
       if (
         response.result_info?.total_pages !== undefined

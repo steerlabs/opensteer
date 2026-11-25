@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
   BootstrapScrubFailure,
+  ObservationFailed,
+  observed,
   ProviderOutcomeUnknown,
   ProviderPlacementError,
   ProviderRateLimited,
@@ -117,9 +119,9 @@ export class Reconciler {
   async #sweep(active: ReadonlySet<CloudComputerId>, signal: AbortSignal) {
     const { provider, dns, orphanGraceMs = 5 * 60_000 } = this.#options;
     const [servers, records, addresses] = await Promise.all([
-      provider.listManaged(signal),
-      dns.listManaged(signal),
-      provider.listManagedAddresses?.(signal) ?? [],
+      observed(provider.listManaged(signal)),
+      observed(dns.listManaged(signal)),
+      observed(Promise.resolve(provider.listManagedAddresses?.(signal) ?? [])),
     ]);
     const present = new Set<string>();
     const clean = async (
@@ -211,7 +213,7 @@ export class Reconciler {
       if (
         (write.kind === "create" || write.kind === "power-on") &&
         provider.canRecoverWrite &&
-        !(await provider.canRecoverWrite(write, signal))
+        !(await observed(provider.canRecoverWrite(write, signal)))
       )
         return;
       await this.#check(
@@ -273,7 +275,7 @@ export class Reconciler {
     const releaseAddresses = async (beforeGeneration?: number) => {
       if (!provider.listManagedAddresses || !provider.releaseAddress) return true;
       let settled = true;
-      for (const address of await provider.listManagedAddresses(signal)) {
+      for (const address of await observed(provider.listManagedAddresses(signal))) {
         if (
           address.id !== id ||
           (beforeGeneration !== undefined && address.generation >= beforeGeneration)
@@ -309,7 +311,7 @@ export class Reconciler {
     let failure: Failure = "The Cloud Computer provider operation failed.";
 
     try {
-      const servers = await provider.find(id, signal, computer);
+      const servers = await observed(provider.find(id, signal, computer));
       if (servers.some((server) => server.generation > generation)) {
         return report("failed", "The provider has a newer Cloud Computer generation.");
       }
@@ -359,9 +361,9 @@ export class Reconciler {
                 await act((job, check) => provider.delete(server.id, job, check));
               else await act((job, check) => provider.powerOff(server.id, job, check));
             }
-            const observed = await provider.describe(server.id, signal, server.generation);
-            if (current?.id === server.id) current = observed;
-            if (observed && (state === "deleted" || observed.status !== "off")) settled = false;
+            const seen = await observed(provider.describe(server.id, signal, server.generation));
+            if (current?.id === server.id) current = seen;
+            if (seen && (state === "deleted" || seen.status !== "off")) settled = false;
           }
           return settled;
         })();
@@ -391,7 +393,8 @@ export class Reconciler {
       if ([...pending.values()].some(({ kind }) => kind === "dns-a" || kind === "dns-aaaa")) {
         failure = "The Cloud Computer DNS operation failed.";
         if (dns.observeWrites) {
-          for (const token of await dns.observeWrites(hostname, signal)) await observe(token);
+          for (const token of await observed(dns.observeWrites(hostname, signal)))
+            await observe(token);
           for (const write of pending.values()) {
             if (write.kind === "dns-a" || write.kind === "dns-aaaa") await recover(write);
           }
@@ -417,8 +420,8 @@ export class Reconciler {
           if (old.status === "deleting") return unready("provisioning");
           if (old.status !== "off") {
             await act((job, check) => provider.powerOff(old.id, job, check));
-            const observed = await provider.describe(old.id, signal, old.generation);
-            if (observed && observed.status !== "off") return unready("provisioning");
+            const seen = await observed(provider.describe(old.id, signal, old.generation));
+            if (seen && seen.status !== "off") return unready("provisioning");
           }
         }
         failure = "The Cloud Computer DNS operation failed.";
@@ -489,7 +492,7 @@ export class Reconciler {
             server.id,
           ),
         );
-        current = await provider.describe(server.id, signal, server.generation);
+        current = await observed(provider.describe(server.id, signal, server.generation));
       }
       if (current?.status !== "running") return unready("provisioning");
       const addresses = { ipv4: current.ipv4, ipv6: computer.ipv6Enabled ? current.ipv6 : null };
@@ -500,7 +503,7 @@ export class Reconciler {
         ? await Promise.all(
             [addresses.ipv4, addresses.ipv6]
               .filter((ip) => ip !== null)
-              .map((ip) => discover(hostname, ip, signal)),
+              .map((ip) => observed(discover(hostname, ip, signal))),
           )
         : [];
       const invalid =
@@ -543,7 +546,8 @@ export class Reconciler {
         for (const old of previous) {
           if (old.status !== "deleting")
             await act((job, check) => provider.delete(old.id, job, check));
-          if (await provider.describe(old.id, signal, old.generation)) return unready("booting");
+          if (await observed(provider.describe(old.id, signal, old.generation)))
+            return unready("booting");
         }
         // Old generations' addresses are released once their machines are gone. This is
         // cleanup of a verified Home: it is retried on the next pass and never holds it back.
@@ -580,21 +584,23 @@ export class Reconciler {
         // confirmed this pass, never as a Home that missed its deadline.
         return report("booting");
       }
-      // A refusal is evidence of the computer's state; any other failure (a 5xx, a timeout, a
-      // network error, an answer that could not be read) says nothing of it. Unknown stays
-      // unknown: nothing new is reported, the error is the operator's, the next pass looks again.
-      if (!evidenceOfFailure(error)) return undefined;
+      // A read that failed observed nothing, whatever its status: unknown stays unknown, nothing
+      // new is reported, the error is the operator's (onError, the failing-pass digest), and the
+      // next pass looks again. Every read is tagged where it is made (`observed`), so what is left
+      // came from a write: failed only when the provider or DNS refused it for this computer, or
+      // when the provider holds a machine of it in another zone.
+      if (error instanceof ObservationFailed || !refusedWrite(error)) return undefined;
       return report("failed", failure);
     }
   }
 }
 
 /**
- * Whether an error is evidence of the computer's state, so a failed computer rather than an
- * unknown one: a provider or DNS service said no (an HTTP 4xx other than a rate limit, on a read
- * or a write), or the provider holds a machine of it where an operator must act (in another zone).
+ * A write the provider or DNS refused for this computer (an HTTP 4xx other than a rate limit), or
+ * the provider's machine of it in another zone, where an operator must act. Not a read: those are
+ * `ObservationFailed` before they get here.
  */
-function evidenceOfFailure(error: unknown): boolean {
+function refusedWrite(error: unknown): boolean {
   const original = error instanceof ProviderWriteRejected ? error.original : error;
   if (original instanceof ProviderPlacementError) return true;
   return (
