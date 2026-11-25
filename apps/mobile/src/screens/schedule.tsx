@@ -842,7 +842,9 @@ function AutomationSecretsCard(props: {
           setValueInput("");
           return { kind: "confirmed", value: undefined };
         }
-        return notDone("saved");
+        // Rule 4: absence of the name is not evidence that the save did not happen (the lost
+        // request may still be running at the Home); stay unknown rather than saying "Not saved."
+        return null;
       } catch {
         return null;
       }
@@ -890,7 +892,7 @@ function AutomationSecretsCard(props: {
             setConfirmingRemove(null);
             return { kind: "confirmed", value: undefined };
           }
-          return notDone("removed");
+          return null;
         } catch {
           return null;
         }
@@ -928,7 +930,7 @@ function AutomationSecretsCard(props: {
             setUnreadableDetected(false);
             return { kind: "confirmed", value: undefined };
           }
-          return notDone("cleared");
+          return null;
         } catch {
           return null;
         }

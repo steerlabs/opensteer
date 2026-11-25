@@ -4,6 +4,7 @@ import {
   AutomationOutcomeSchema,
   AutomationPausedBySchema,
   AutomationScriptSchema,
+  AutomationSecretMapSchema,
   AutomationSecretNameSchema,
   AutomationSecretValueSchema,
   normalizeScriptText,
@@ -132,6 +133,16 @@ describe("AutomationSecretNameSchema (Z10)", () => {
       expect(
         (oversized.error.issues[0] as { params?: { reason?: string } } | undefined)?.params?.reason,
       ).toBe("automation-secret-invalid-value");
+    }
+
+    const protoParsed = AutomationSecretMapSchema.safeParse(JSON.parse('{"__proto__":"secret"}'));
+    expect(protoParsed.success).toBe(false);
+    if (!protoParsed.success) {
+      expect(protoParsed.error.issues[0]).toMatchObject({
+        code: "custom",
+        path: ["__proto__"],
+        params: { reason: "automation-secret-invalid-name" },
+      });
     }
   });
 });

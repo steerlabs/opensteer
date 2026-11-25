@@ -92,7 +92,7 @@ export interface CommandFamilies {
   readonly computerViews?: ComputerViewService | undefined;
   readonly plugins?: PluginOwnerApi | undefined;
   readonly pluginOAuth?: PluginOAuthService | undefined;
-  readonly secretDigestKey?: Buffer | undefined;
+  readonly secretDigestKey: Buffer;
 }
 
 /** One entry per command type: the family handler the person's `commands.dispatch` used. */

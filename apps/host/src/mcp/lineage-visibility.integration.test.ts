@@ -867,6 +867,7 @@ describeStore("a selected connection reads only its own lineage", (it) => {
       registry: {} as never,
       requests: () => undefined,
       administration: {} as never,
+      secretDigestKey: Buffer.alloc(32, 0x33),
       reads: () => ({
         "requests.list": async () => ({
           ok: true,

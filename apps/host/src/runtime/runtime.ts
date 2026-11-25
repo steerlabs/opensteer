@@ -3396,6 +3396,7 @@ export async function createHostRuntime(
     onSessionRequestClosed = (requestId) => agentSessions.requestClosed(requestId);
     const triggerTools = new TriggerToolHandlers(triggers, store, {
       requests: () => commandRequestsForTools,
+      secretDigestKey: commandSecretDigestKey,
     });
     const agentTools = (bridgeToolService = new OpensteerMcpService({
       connectionPasswords: () => {

@@ -1,6 +1,7 @@
 import { isLoopbackHostname } from "@opensteer/core";
 import { parseHttpEndpointBaseUrl } from "@opensteer/shared/httpEndpoint";
-import type { HostApiCommand } from "./host-api.js";
+import type { z } from "zod";
+import { hostApi, type HostApiCommand } from "./host-api.js";
 
 /**
  * What every Home command governs and what it does, as data. One row per command type of
@@ -1686,78 +1687,246 @@ export function commandAgentOutput(command: Command, output: unknown): unknown {
 
 export const REDACTED_SECRET_MARKER = "[redacted]";
 
-/**
- * Returns `command` with every path listed in its command-table `secretFields` replaced by
- * `REDACTED_SECRET_MARKER`. Returns the input reference unchanged when no secret field is present,
- * and never mutates the caller's object so live inputs reach the command door untouched.
- */
-export function redactCommandSecrets(command: unknown): unknown {
-  if (typeof command !== "object" || command === null || Array.isArray(command)) return command;
-  const record = command as Record<string, unknown>;
-  const type = record.type;
-  if (typeof type !== "string" || !Object.hasOwn(commandTable, type)) return command;
-  const secretFields = commandTable[type as CommandType].secretFields;
-  if (!secretFields || secretFields.length === 0) return command;
+interface AllowedShape {
+  /** Schema-declared keys that are not secret leaves and contain no nested secret paths. */
+  readonly allowedKeys: ReadonlySet<string>;
+  /** Schema-declared keys that contain nested secret paths (e.g. `input` -> `client` -> `clientSecret`). */
+  readonly nested: ReadonlyMap<string, AllowedShape>;
+}
 
-  let changed = false;
-  let cloned: Record<string, unknown> | null = null;
-  for (const path of secretFields) {
-    const keys = path.split(".");
-    let probe: unknown = record;
-    let found = true;
-    for (const key of keys) {
-      if (
-        typeof probe !== "object" ||
-        probe === null ||
-        Array.isArray(probe) ||
-        !Object.hasOwn(probe, key)
-      ) {
-        found = false;
-        break;
-      }
-      probe = (probe as Record<string, unknown>)[key];
-    }
-    if (!found || probe === undefined) continue;
-    if (!cloned) cloned = structuredClone(record);
-    let target: Record<string, unknown> = cloned;
-    for (const key of keys.slice(0, -1)) {
-      target = target[key] as Record<string, unknown>;
-    }
-    target[keys.at(-1)!] = REDACTED_SECRET_MARKER;
-    changed = true;
+const secretCommandTypes: ReadonlySet<string> = new Set(
+  (Object.keys(commandTable) as CommandType[]).filter(
+    (type) => (commandTable[type].secretFields?.length ?? 0) > 0,
+  ),
+);
+
+/** Matches any secret-bearing command type name or a JSON unicode escape that could spell one. */
+const secretTypeOrEscapePattern = new RegExp(
+  `${[...secretCommandTypes].map((t) => t.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("|")}|\\\\u[0-9a-fA-F]{4}`,
+);
+
+let cachedSecretShapes: Map<string, AllowedShape> | null = null;
+
+function collectObjectSchemas(schema: unknown, out: z.ZodObject[]): void {
+  if (!schema || typeof schema !== "object") return;
+  const def = (schema as { readonly def?: Record<string, unknown> }).def;
+  if (!def || typeof def.type !== "string") return;
+  if (def.type === "object" && "shape" in schema) {
+    out.push(schema as z.ZodObject);
+    return;
   }
-  return changed && cloned ? cloned : command;
+  if ((def.type === "union" || def.type === "discriminatedUnion") && Array.isArray(def.options)) {
+    for (const option of def.options) collectObjectSchemas(option, out);
+    return;
+  }
+  if (def.type === "pipe" && def.out) {
+    collectObjectSchemas(def.out, out);
+    return;
+  }
+  if (def.innerType) {
+    collectObjectSchemas(def.innerType, out);
+  }
+}
+
+function buildAllowedShape(
+  schemas: readonly z.ZodObject[],
+  secretPaths: readonly (readonly string[])[],
+): AllowedShape {
+  const declared = new Set<string>();
+  const childSchemas = new Map<string, z.ZodObject[]>();
+  for (const obj of schemas) {
+    for (const [key, fieldSchema] of Object.entries(obj.shape)) {
+      declared.add(key);
+      const list = childSchemas.get(key) ?? [];
+      collectObjectSchemas(fieldSchema, list);
+      if (list.length > 0) childSchemas.set(key, list);
+    }
+  }
+  const secretLeaves = new Set<string>();
+  const nestedPaths = new Map<string, string[][]>();
+  for (const path of secretPaths) {
+    if (path.length === 1) {
+      secretLeaves.add(path[0]!);
+    } else if (path.length > 1) {
+      const parent = path[0]!;
+      const rest = nestedPaths.get(parent) ?? [];
+      rest.push(path.slice(1));
+      nestedPaths.set(parent, rest);
+    }
+  }
+  const allowedKeys = new Set<string>();
+  for (const key of declared) {
+    if (!secretLeaves.has(key) && !nestedPaths.has(key)) {
+      allowedKeys.add(key);
+    }
+  }
+  const nested = new Map<string, AllowedShape>();
+  for (const [parent, paths] of nestedPaths) {
+    nested.set(parent, buildAllowedShape(childSchemas.get(parent) ?? [], paths));
+  }
+  return { allowedKeys, nested };
+}
+
+function getSecretCommandShape(type: string): AllowedShape | undefined {
+  if (!secretCommandTypes.has(type)) return undefined;
+  if (!cachedSecretShapes) {
+    cachedSecretShapes = new Map();
+    const byType = new Map<string, z.ZodObject[]>();
+    const members: z.ZodObject[] = [];
+    collectObjectSchemas(hostApi["commands.dispatch"].payload, members);
+    for (const member of members) {
+      const literal = (member.shape.type as { readonly value?: unknown } | undefined)?.value;
+      if (typeof literal === "string" && secretCommandTypes.has(literal)) {
+        const list = byType.get(literal) ?? [];
+        list.push(member);
+        byType.set(literal, list);
+      }
+    }
+    for (const secretType of secretCommandTypes) {
+      const secretFields = commandTable[secretType as CommandType].secretFields ?? [];
+      cachedSecretShapes.set(
+        secretType,
+        buildAllowedShape(
+          byType.get(secretType) ?? [],
+          secretFields.map((path) => path.split(".")),
+        ),
+      );
+    }
+  }
+  return cachedSecretShapes.get(type);
+}
+
+/** O(1) check for whether a string's first non-whitespace byte is `{`. */
+function startsWithJsonObject(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    if (ch === 0x20 || ch === 0x09 || ch === 0x0a || ch === 0x0d) continue;
+    return ch === 0x7b; // '{'
+  }
+  return false;
 }
 
 /**
- * Redacts command secret fields inside tool arguments before they are written to durable records
- * (Host relay `tool_calls.arguments` and Runner `tool.started` events) for `opensteer_command` and
- * any tool carrying a command object whose `type` declares `secretFields` in the command table.
+ * Redacts an object against a secret-bearing command's derived allow-list: only schema-declared
+ * non-secret keys are preserved; every secret leaf and every undeclared/misspelled key is replaced
+ * with `REDACTED_SECRET_MARKER`. Returns the original reference unchanged when nothing needed redaction.
+ */
+function redactByAllowedShape(value: unknown, shape: AllowedShape): unknown {
+  if (typeof value === "string") {
+    if (startsWithJsonObject(value)) {
+      try {
+        const parsed = JSON.parse(value) as unknown;
+        const redacted = redactByAllowedShape(parsed, shape);
+        return redacted === parsed ? value : JSON.stringify(redacted);
+      } catch {
+        return REDACTED_SECRET_MARKER;
+      }
+    }
+    return REDACTED_SECRET_MARKER;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return REDACTED_SECRET_MARKER;
+  }
+  const record = value as Record<string, unknown>;
+  let cloned: Record<string, unknown> | null = null;
+  for (const key in record) {
+    if (!Object.hasOwn(record, key)) continue;
+    const child = record[key];
+    if (child === undefined) continue;
+    if (shape.allowedKeys.has(key)) continue;
+    const nestedShape = shape.nested.get(key);
+    const next = nestedShape ? redactByAllowedShape(child, nestedShape) : REDACTED_SECRET_MARKER;
+    if (next !== child) {
+      cloned ??= { ...record };
+      cloned[key] = next;
+    }
+  }
+  return cloned ?? record;
+}
+
+function redactPossibleJsonString(text: string): string {
+  if (!startsWithJsonObject(text)) return text;
+  if (!secretTypeOrEscapePattern.test(text)) return text;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    const redacted = redactToolArgumentsValue(parsed, 0);
+    return redacted === parsed ? text : JSON.stringify(redacted);
+  } catch {
+    // Unparseable (e.g. truncated) JSON object string naming or possibly naming a secret-bearing type.
+    return REDACTED_SECRET_MARKER;
+  }
+}
+
+/**
+ * Returns `command` with every secret field and every undeclared/misspelled key on a
+ * secret-bearing command type replaced by `REDACTED_SECRET_MARKER`. Also parses and redacts a
+ * JSON-encoded command string (falling back to `REDACTED_SECRET_MARKER` if unparseable and naming
+ * a secret-bearing type). Never mutates the caller's object.
+ */
+export function redactCommandSecrets(command: unknown): unknown {
+  if (typeof command === "string") {
+    return redactPossibleJsonString(command);
+  }
+  if (typeof command !== "object" || command === null || Array.isArray(command)) return command;
+  const record = command as Record<string, unknown>;
+  const type = record.type;
+  if (typeof type !== "string") return command;
+  const shape = getSecretCommandShape(type);
+  if (!shape) return command;
+  return redactByAllowedShape(record, shape);
+}
+
+const MAX_REDACTION_DEPTH = 6;
+
+function redactToolArgumentsValue(args: unknown, depth: number): unknown {
+  if (typeof args === "string") {
+    return redactPossibleJsonString(args);
+  }
+  if (typeof args !== "object" || args === null) return args;
+  if (Array.isArray(args)) {
+    if (depth >= MAX_REDACTION_DEPTH) return args;
+    let cloned: unknown[] | null = null;
+    for (let i = 0; i < args.length; i++) {
+      const item = args[i];
+      const next = redactToolArgumentsValue(item, depth + 1);
+      if (next !== item) {
+        cloned ??= args.slice();
+        cloned[i] = next;
+      }
+    }
+    return cloned ?? args;
+  }
+  const record = args as Record<string, unknown>;
+  if (typeof record.type === "string" && secretCommandTypes.has(record.type)) {
+    return redactByAllowedShape(record, getSecretCommandShape(record.type)!);
+  }
+  if (depth >= MAX_REDACTION_DEPTH) return args;
+  let cloned: Record<string, unknown> | null = null;
+  for (const key in record) {
+    if (!Object.hasOwn(record, key)) continue;
+    const child = record[key];
+    let next: unknown = child;
+    if (typeof child === "string") {
+      next = redactPossibleJsonString(child);
+    } else if (typeof child === "object" && child !== null) {
+      next = redactToolArgumentsValue(child, depth + 1);
+    }
+    if (next !== child) {
+      cloned ??= { ...record };
+      cloned[key] = next;
+    }
+  }
+  return cloned ?? record;
+}
+
+/**
+ * Redacts secret-bearing commands inside tool arguments before they are written to durable records
+ * (Host relay `tool_calls.arguments`, Runner `tool.started` events, `runner-event-store`,
+ * `personal-tool-calls`, and `agent-tool-activity-store`). Handles object commands, JSON-encoded
+ * string commands, truncated JSON naming a secret-bearing type, misspelled/undeclared keys via
+ * schema-derived allow-lists, and nested wrappers. Returns the input reference unchanged when no
+ * secret-bearing command is present.
  */
 export function redactToolArgumentsForStorage(args: unknown): unknown {
-  if (typeof args === "string") {
-    try {
-      const parsed = JSON.parse(args) as unknown;
-      const redacted = redactToolArgumentsForStorage(parsed);
-      return redacted === parsed ? args : JSON.stringify(redacted);
-    } catch {
-      return args;
-    }
-  }
-  if (typeof args !== "object" || args === null || Array.isArray(args)) return args;
-  const record = args as Record<string, unknown>;
-  if (Object.hasOwn(record, "command")) {
-    const redactedCommand = redactCommandSecrets(record.command);
-    if (redactedCommand !== record.command) {
-      return { ...record, command: redactedCommand };
-    }
-  }
-  if (
-    Object.hasOwn(record, "type") &&
-    typeof record.type === "string" &&
-    Object.hasOwn(commandTable, record.type)
-  ) {
-    return redactCommandSecrets(record);
-  }
-  return args;
+  return redactToolArgumentsValue(args, 0);
 }

@@ -1,21 +1,10 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import type { CommandType } from "@opensteer/protocol/command-table";
 
 const DIGEST_KEY_DOMAIN = "opensteer:command-secret-digest:v1";
 const COMMAND_FIELD_DOMAIN = "opensteer:command-secret-field:v1";
 const TOOL_ARGUMENTS_DOMAIN = "opensteer:tool-arguments:v1";
-
-/**
- * Process-local fallback key used only by tests that construct a command door or tool relay
- * without a full Host runtime. Production always derives the key from the Home's credential key
- * via `deriveCommandSecretDigestKey(credentialKey)` so replays survive restarts.
- */
-const processFallbackKey = randomBytes(32);
-
-export function defaultCommandSecretDigestKey(): Buffer {
-  return processFallbackKey;
-}
 
 /**
  * Derives a dedicated 32-byte HMAC key from the Home's private credential key with a fixed domain
@@ -65,6 +54,9 @@ export function digestToolArgumentsWithSecrets(
     readonly toolName: string;
   },
 ): Buffer {
+  if (key.byteLength === 0) {
+    throw new Error("Tool argument secret digest key must be non-empty.");
+  }
   return createHmac("sha256", key)
     .update(canonicalJson([TOOL_ARGUMENTS_DOMAIN, input.toolName, input.args]))
     .digest();
@@ -78,13 +70,16 @@ export function digestToolArgumentsWithSecrets(
 export function sanitizeCommandRequestWithSecretDigests(input: {
   readonly commandType: CommandType;
   readonly idempotencyKey: string;
-  readonly key?: Buffer | undefined;
+  readonly key: Buffer;
   readonly request: Readonly<Record<string, unknown>>;
   readonly secretFields: readonly string[];
   readonly userId: string;
 }): Record<string, unknown> {
   const sanitized = JSON.parse(JSON.stringify(input.request)) as Record<string, unknown>;
-  const digestKey = input.key ?? processFallbackKey;
+  const digestKey = input.key;
+  if (input.secretFields.length > 0 && digestKey.byteLength === 0) {
+    throw new Error("Command secret digest key is required for secret-bearing commands.");
+  }
   const secretDigests: Record<string, string> = {};
   for (const path of input.secretFields) {
     const keys = path.split(".");

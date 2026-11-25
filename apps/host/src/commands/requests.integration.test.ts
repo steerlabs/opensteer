@@ -101,6 +101,7 @@ describeStore("command Requests at the Home", (it) => {
       registry,
       admit: agentCommandAdmission(database),
       scope: agentCommandScope(database),
+      secretDigestKey: Buffer.alloc(32, 0x33),
       propose: (_agent, command, ask, face) =>
         service.propose({
           ownerUserId: f.userId,

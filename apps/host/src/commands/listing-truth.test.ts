@@ -104,6 +104,7 @@ function door(agent: AgentCaller, own: boolean): AgentCommandDoor {
       return { ...rule, face, execution: null } as never;
     },
     propose: async () => ({ status: "pending", requestId: "req_1", existing: false }) as never,
+    secretDigestKey: Buffer.alloc(32, 0x33),
   };
 }
 

@@ -2041,6 +2041,52 @@ function handleTurnStart(message) {
     sendTurnCompleted("completed");
     return;
   }
+  if (scenario === "oversized-mcp-tool-args") {
+    const smallArgs = { query: "status", limit: 10, nested: { ok: true } };
+    const oversizedOrdinaryArgs = {
+      query: "bulk-read",
+      items: Array.from({ length: 5000 }, (_, i) => `item-${i}-0123456789abcdef`),
+    };
+    const oversizedSecretCommandArgs = {
+      command: {
+        type: "trigger.secrets.set",
+        triggerId: "trg_00000000-0000-4000-8000-000000000001",
+        pad: Array.from({ length: 5000 }, (_, i) => `pad-${i}-0123456789abcdef`),
+        set: { API_TOKEN: "CODEX_OVERSIZED_SECRET_MARKER" },
+      },
+    };
+    for (const [id, tool, args] of [
+      ["small-ordinary-1", "opensteer_task_list", smallArgs],
+      ["large-ordinary-1", "opensteer_task_list", oversizedOrdinaryArgs],
+      ["large-secret-1", "opensteer_command", oversizedSecretCommandArgs],
+    ]) {
+      const item = {
+        arguments: args,
+        id,
+        server: "opensteer",
+        tool,
+        type: "mcpToolCall",
+      };
+      send({
+        method: "item/started",
+        params: { threadId, turnId, item: { ...item, status: "inProgress" } },
+      });
+      send({
+        method: "item/completed",
+        params: {
+          threadId,
+          turnId,
+          item: {
+            ...item,
+            status: "completed",
+            result: { content: [{ type: "text", text: "ok" }] },
+          },
+        },
+      });
+    }
+    finishTurnWith("Done.");
+    return;
+  }
   if (scenario === "conversation") {
     conversationTurn(message.params?.input ?? []);
     return;

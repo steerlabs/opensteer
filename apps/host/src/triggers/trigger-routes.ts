@@ -77,8 +77,8 @@ export async function handleTriggerCommand(
   triggers: TriggerService,
   command: TriggerCommand,
   context: HostApiServerContext,
-  actor?: PersonActor,
-  secretDigestKey?: Buffer,
+  actor: PersonActor | undefined,
+  secretDigestKey: Buffer,
 ): Promise<HostApiCommandOutput> {
   const ownerId = requireUserId(context);
   // Brief T11: approving an agent's proposal runs the command in the proposing lineage,

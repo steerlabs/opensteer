@@ -27,6 +27,7 @@ import { proposedCommand } from "./requests.js";
 const userId = "usr_owner" as UserId;
 const session = { id: "ses_1", user: { id: userId } } as unknown as AuthenticatedSession;
 const context = { session } as unknown as HostApiServerContext;
+const secretDigestKey = Buffer.alloc(32, 0x33);
 const types = Object.keys(commandTable) as CommandType[];
 
 /** A command of each type its own schema accepts, where its JSON Schema can say how. */
@@ -219,7 +220,12 @@ describe("dispatchCommand", () => {
           const admitted = await admit(agent, command);
           const held = holds(agent, type);
           const answer = held ? admitted.answer : "not_found";
-          const outcome = dispatchCommand(agent, command, { registry, admit, scope: signedIn });
+          const outcome = dispatchCommand(agent, command, {
+            registry,
+            admit,
+            scope: signedIn,
+            secretDigestKey,
+          });
           if (held && !parses(type))
             await expect(outcome, type).rejects.toMatchObject({ code: "bad_request" });
           else if (answer === "not_found")
@@ -250,7 +256,12 @@ describe("dispatchCommand", () => {
       for (const type of types)
         if ((commandTable[type] as CommandRow).faces.every((f) => f.class === "person-view"))
           await expect(
-            dispatchCommand(agent, sample(type), { registry, admit: byRule, scope: signedIn }),
+            dispatchCommand(agent, sample(type), {
+              registry,
+              admit: byRule,
+              scope: signedIn,
+              secretDigestKey,
+            }),
             type,
           ).rejects.toThrow("That item is unavailable.");
     });
@@ -272,6 +283,7 @@ describe("dispatchCommand", () => {
       registry,
       admit: async () => ({ answer: "now" as const, face: 0, execution: null }),
       scope: signedIn,
+      secretDigestKey,
       attempts: {
         begin: async () => ({ kind: "begun" as const, id: "cat_1" }),
         settle: async (_id: string, state: string) => {
@@ -294,9 +306,12 @@ describe("dispatchCommand", () => {
         source,
       }) as unknown as HostApiCommand;
     const refusal = (caller: AgentCaller, source: Record<string, unknown>) =>
-      dispatchCommand(caller, install(source), { registry, admit: asked, scope: signedIn }).catch(
-        (error: unknown) => error,
-      );
+      dispatchCommand(caller, install(source), {
+        registry,
+        admit: asked,
+        scope: signedIn,
+        secretDigestKey,
+      }).catch((error: unknown) => error);
     for (const caller of [connection("full-access", everything), run("full-access", everything)]) {
       const folder = await refusal(caller, { kind: "folder", directory: "draft" });
       const unknown = await refusal(caller, { kind: "unheard-of", directory: "draft" });
@@ -309,6 +324,7 @@ describe("dispatchCommand", () => {
         registry,
         admit: asked,
         scope: signedIn,
+        secretDigestKey,
       }),
     ).resolves.toMatchObject({ status: "ask" });
   });
@@ -324,6 +340,7 @@ describe("dispatchCommand", () => {
             registry,
             admit: admitted,
             scope: signedIn,
+            secretDigestKey,
           }),
           `${type}.${path}`,
         ).rejects.toMatchObject({ code: "bad_request" });
@@ -337,7 +354,7 @@ describe("dispatchCommand", () => {
           idempotencyKey: "k",
           input: { issuer: "https://issuer.example", clientId: "client" },
         } as HostApiCommand,
-        { registry, admit: admitted, scope: signedIn },
+        { registry, admit: admitted, scope: signedIn, secretDigestKey },
       ),
     ).resolves.toMatchObject({ status: "ask" });
     expect(calls).toEqual([]);
@@ -350,6 +367,7 @@ describe("dispatchCommand", () => {
     const door = {
       registry,
       scope: signedIn,
+      secretDigestKey,
       admit: async () => ({
         answer: "ask" as const,
         face: 0,
@@ -408,11 +426,13 @@ describe("dispatchCommand", () => {
           registry,
           admit,
           scope: signedIn,
+          secretDigestKey,
         }).catch(said);
         const wellFormed = dispatchCommand(agent, sample(type), {
           registry,
           admit,
           scope: signedIn,
+          secretDigestKey,
         }).catch(said);
         const [left, right] = await Promise.all([malformed, wellFormed]);
         expect(left, `${name} ${type}`).toBe(right);
@@ -428,6 +448,7 @@ describe("dispatchCommand", () => {
         registry,
         admit,
         scope: signedIn,
+        secretDigestKey,
       }),
     ).rejects.toMatchObject({ code: "bad_request" });
   });
@@ -441,7 +462,7 @@ describe("dispatchCommand", () => {
       dispatchCommand(
         connection("full-access", selected),
         { type: "no.such.command", idempotencyKey: "k" } as unknown as HostApiCommand,
-        { registry, admit: outside, scope: signedIn },
+        { registry, admit: outside, scope: signedIn, secretDigestKey },
       ),
     ).rejects.toMatchObject(fixed);
     // Outside the grant with a secret in it: the same not found, not "leave it out".
@@ -453,7 +474,7 @@ describe("dispatchCommand", () => {
           dispatchCommand(
             connection("full-access", selected),
             withPath(sample(type), path, validSecret(type, path)),
-            { registry, admit: outside, scope: signedIn },
+            { registry, admit: outside, scope: signedIn, secretDigestKey },
           ),
           `${type}.${path}`,
         ).rejects.toMatchObject(fixed);
@@ -488,6 +509,7 @@ describe("dispatchCommand", () => {
             registry: anyRegistry as never,
             admit: async () => ({ answer: "now", face: 0, execution: null }),
             scope: signedIn,
+            secretDigestKey,
           },
         ),
       ).rejects.toMatchObject({ code: "bad_request", message: /Leave secrets out/u });
@@ -531,6 +553,7 @@ describe("dispatchCommand", () => {
         registry: anyRegistry as never,
         admit: async () => ({ answer: "now", face: 1, execution: null }),
         scope: signedIn,
+        secretDigestKey,
       },
     );
     expect(capturedRequest).toBeDefined();
@@ -554,7 +577,12 @@ describe("dispatchCommand", () => {
     const narrowed = { scope: "selected" as const, grant: selected, mode: "full-access" as const };
     for (const now of [narrowed, "gone" as const])
       await expect(
-        dispatchCommand(agent, bad, { registry, admit: admitNothing, scope: async () => now }),
+        dispatchCommand(agent, bad, {
+          registry,
+          admit: admitNothing,
+          scope: async () => now,
+          secretDigestKey,
+        }),
         String(now),
       ).rejects.toMatchObject({ code: "not_found", message: "That item is unavailable." });
     expect(calls).toEqual([]);
@@ -595,6 +623,7 @@ describe("dispatchCommand", () => {
         registry: spyRegistry().registry,
         admit: async () => ({ answer: "now" as const, face: 0, execution: null }),
         scope: async () => ({ scope: grant.scope, grant, mode: "full-access" as const }),
+        secretDigestKey,
       };
       for (const type of types) {
         const listed = commandHolds(type, { scope: grant.scope, grant, mode: "full-access" });
@@ -654,6 +683,7 @@ describe("dispatchCommand", () => {
         registry: spyRegistry().registry,
         admit: admitNothing,
         scope: signedIn,
+        secretDigestKey,
       });
     // An agent's dispatch never hands back a handler's raw output: what it may read, or what waits.
     expectTypeOf<ReturnType<typeof dispatchAsAgent>>().toEqualTypeOf<

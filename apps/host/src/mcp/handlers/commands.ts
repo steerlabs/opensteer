@@ -64,7 +64,7 @@ export class CommandTools {
   readonly #requests: () => CommandRequestService | undefined;
   readonly #administration: AdministrationToolHandlers;
   readonly #reads: () => Readonly<Record<string, unknown>> | undefined;
-  readonly #secretDigestKey: Buffer | undefined;
+  readonly #secretDigestKey: Buffer;
   constructor(options: {
     /** The person's read handlers, as the Host registered them. */
     readonly reads?: () => Readonly<Record<string, unknown>> | undefined;
@@ -73,7 +73,7 @@ export class CommandTools {
     readonly requests: () => CommandRequestService | undefined;
     readonly sessions?: unknown;
     readonly administration: AdministrationToolHandlers;
-    readonly secretDigestKey?: Buffer | undefined;
+    readonly secretDigestKey: Buffer;
   }) {
     this.#database = options.database;
     this.#registry = options.registry;
@@ -291,7 +291,7 @@ export class CommandTools {
     return agentCommandDoor({
       database: this.#database,
       registry,
-      ...(this.#secretDigestKey ? { secretDigestKey: this.#secretDigestKey } : {}),
+      secretDigestKey: this.#secretDigestKey,
       ...(taskId ? { taskId } : {}),
       ...(requests
         ? {
@@ -464,7 +464,7 @@ export class CommandTools {
     return agentCommandDoor({
       database: this.#database,
       registry,
-      ...(this.#secretDigestKey ? { secretDigestKey: this.#secretDigestKey } : {}),
+      secretDigestKey: this.#secretDigestKey,
       ...(requests
         ? {
             propose: async (agent, command, ask, face) =>

@@ -9,10 +9,7 @@ import { redactToolArgumentsForStorage } from "@opensteer/protocol/command-table
 import type { FastifyInstance } from "fastify";
 import type { AgentToolActivityStore } from "@opensteer/database";
 import type { RealtimeHub } from "@opensteer/orchestration";
-import {
-  defaultCommandSecretDigestKey,
-  digestToolArgumentsWithSecrets,
-} from "../commands/secret-digest.js";
+import { digestToolArgumentsWithSecrets } from "../commands/secret-digest.js";
 import type { AgentCallerResolver, RunCaller } from "./agent-caller.js";
 import type { OpensteerMcpService } from "./opensteer-mcp-service.js";
 import { fingerprint } from "./operations.js";
@@ -39,9 +36,12 @@ export function registerAgentToolRoute(
     >;
     readonly activity: Pick<AgentToolActivityStore, "start" | "complete">;
     readonly realtime: Pick<RealtimeHub, "observeScopes">;
-    readonly secretDigestKey?: Buffer | undefined;
+    readonly secretDigestKey: Buffer;
   },
 ): void {
+  if (options.secretDigestKey.byteLength === 0) {
+    throw new Error("Agent tool relay route requires a non-empty secretDigestKey.");
+  }
   const active = new Map<
     string,
     {
@@ -162,10 +162,7 @@ export function registerAgentToolRoute(
         const recordedArgs = redactToolArgumentsForStorage(args);
         const argumentDigest =
           recordedArgs !== args
-            ? digestToolArgumentsWithSecrets(
-                options.secretDigestKey ?? defaultCommandSecretDigestKey(),
-                { toolName: name, args },
-              )
+            ? digestToolArgumentsWithSecrets(options.secretDigestKey, { toolName: name, args })
             : undefined;
         const activity = await options.activity.start(
           context,

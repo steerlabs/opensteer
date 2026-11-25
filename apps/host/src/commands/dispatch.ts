@@ -73,11 +73,11 @@ export type CommandAsk = Extract<AgentCommandOutcome, { readonly status: "ask" }
 
 export interface CommandDoor {
   readonly registry: CommandRegistry;
-  /** Private Host HMAC key (derived from credentialKey) for secret-field idempotency digests. */
-  readonly secretDigestKey?: Buffer | undefined;
 }
 /** The door as an agent meets it: the same registry, and the one admission. */
 export interface AgentCommandDoor extends CommandDoor {
+  /** Private Host HMAC key (derived from credentialKey) for secret-field idempotency digests. */
+  readonly secretDigestKey: Buffer;
   readonly admit: (
     caller: AgentCaller,
     command: HostApiCommand,
@@ -297,7 +297,7 @@ function commandAuthority(
   caller: AgentCaller,
   command: HostApiCommand,
   row: CommandRow,
-  secretDigestKey?: Buffer,
+  secretDigestKey: Buffer,
 ): CommandAuthority {
   const { type, idempotencyKey, ...request } = command as HostApiCommand & {
     readonly idempotencyKey?: string;

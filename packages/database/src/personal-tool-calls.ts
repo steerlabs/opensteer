@@ -1,3 +1,4 @@
+import { redactToolArgumentsForStorage } from "@opensteer/protocol/command-table";
 import { outsideName } from "@opensteer/shared/outsideName";
 import { assignmentWasCancelled } from "./execution-authority.js";
 import {
@@ -269,7 +270,7 @@ export async function startPersonalToolCall(
     : null;
   const id = toolCallId(input);
   const existing = await currentCall(tx, id);
-  const normalized = storableJson(input.arguments ?? null);
+  const normalized = storableJson(redactToolArgumentsForStorage(input.arguments ?? null));
   const args = JSON.stringify(normalized);
   if (Buffer.byteLength(args) > 480 * 1024)
     throw new OpensteerError({

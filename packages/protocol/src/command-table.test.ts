@@ -8,6 +8,7 @@ import {
   commandResourceKey,
   commandTable,
   effectClasses,
+  redactToolArgumentsForStorage,
   type CommandResource,
   type CommandStep,
   type CommandType,
@@ -318,6 +319,84 @@ describe("the command table", () => {
         set: {},
       }),
     ).toBe(0);
+  });
+
+  it("redacts malformed secret-bearing commands: string command, truncated JSON, misspelled keys, and nested wrappers (M1)", () => {
+    const triggerId = "trg_00000000-0000-4000-8000-000000000001";
+    const mStr = "M1_STR_CMD_MARKER";
+    const mTrunc = "M1_TRUNC_CMD_MARKER";
+    const mCase = "M1_CASE_KEY_MARKER";
+    const mTypo = "M1_TYPO_KEY_MARKER";
+    const mNestedInCmd = "M1_NESTED_IN_CMD_MARKER";
+    const mNestedWrap = "M1_NESTED_WRAP_MARKER";
+    const mNestedOAuth = "M1_NESTED_OAUTH_MARKER";
+
+    // Variant (b): `command` sent as a JSON string, and unparseable/truncated JSON naming a secret type.
+    const fromJsonString = redactToolArgumentsForStorage({
+      command: JSON.stringify({ type: "trigger.secrets.set", triggerId, set: { A: mStr } }),
+    });
+    expect(JSON.stringify(fromJsonString)).not.toContain(mStr);
+    expect(JSON.stringify(fromJsonString)).toContain("[redacted]");
+
+    const fromTruncated = redactToolArgumentsForStorage({
+      command: `{"type":"trigger.secrets.set","triggerId":"${triggerId}","set":{"A":"${mTrunc}"`,
+    });
+    expect(JSON.stringify(fromTruncated)).not.toContain(mTrunc);
+    expect(fromTruncated).toEqual({ command: "[redacted]" });
+
+    // Variant (c): allow-list redacts misspelled/cased/invented keys on any secret-bearing command.
+    const fromMisspelled = redactToolArgumentsForStorage({
+      command: {
+        type: "trigger.secrets.set",
+        triggerId,
+        Set: { A: mCase },
+        sett: { B: mTypo },
+        input: { set: { C: mNestedInCmd } },
+        names: ["SAFE_NAME"],
+      },
+    });
+    expect(JSON.stringify(fromMisspelled)).not.toContain(mCase);
+    expect(JSON.stringify(fromMisspelled)).not.toContain(mTypo);
+    expect(JSON.stringify(fromMisspelled)).not.toContain(mNestedInCmd);
+    expect(fromMisspelled).toEqual({
+      command: {
+        type: "trigger.secrets.set",
+        triggerId,
+        Set: "[redacted]",
+        sett: "[redacted]",
+        input: "[redacted]",
+        names: ["SAFE_NAME"],
+      },
+    });
+
+    // Nested wrapper holding a secret-bearing command and nested secret parent allow-list.
+    const fromNestedWrapper = redactToolArgumentsForStorage({
+      input: { command: { type: "trigger.secrets.set", triggerId, set: { A: mNestedWrap } } },
+    });
+    expect(JSON.stringify(fromNestedWrapper)).not.toContain(mNestedWrap);
+
+    const fromNestedOAuth = redactToolArgumentsForStorage({
+      command: {
+        type: "plugin.oauthApp.save",
+        input: {
+          pluginId: "plg_1",
+          clientId: "cid_1",
+          clientSecret: mNestedOAuth,
+          ClientSecret: mNestedOAuth,
+        },
+      },
+    });
+    expect(JSON.stringify(fromNestedOAuth)).not.toContain(mNestedOAuth);
+    expect(fromNestedOAuth).toMatchObject({
+      command: {
+        type: "plugin.oauthApp.save",
+        input: { clientId: "cid_1", clientSecret: "[redacted]", ClientSecret: "[redacted]" },
+      },
+    });
+
+    // Ordinary shell tool command string stays untouched.
+    const shellArgs = { command: "pnpm test", cwd: "/workspace" };
+    expect(redactToolArgumentsForStorage(shellArgs)).toBe(shellArgs);
   });
 
   it("has a verdict for every input that could decide a command, and none for a gone one (D0b)", () => {

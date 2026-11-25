@@ -135,6 +135,7 @@ function fixture(grant?: AgentGrant) {
     callers,
     service,
     activity,
+    secretDigestKey: Buffer.alloc(32, 0x33),
     realtime: {
       observeScopes: (_scopes, listener) => {
         changed = listener;
@@ -451,6 +452,7 @@ it("redacts secret fields before recording relay activity for admitted and refus
       },
       complete: f.activity.complete,
     },
+    secretDigestKey: Buffer.alloc(32, 0x33),
     realtime: { observeScopes: () => () => true },
   });
 
@@ -489,11 +491,25 @@ it("redacts secret fields before recording relay activity for admitted and refus
     },
   });
 
+  // 4. M1: Agent-chosen / misspelled keys (`Set`, `sett`, `input`) on a secret-bearing command.
+  const misKeyMarker = `relay-miskey-${crypto.randomUUID()}`;
+  const nestedInputMarker = `relay-nested-${crypto.randomUUID()}`;
+  await post({
+    command: {
+      type: "trigger.secrets.set",
+      triggerId: "trg_miskey",
+      Set: { TOKEN: misKeyMarker },
+      input: { set: { TOKEN: nestedInputMarker } },
+    },
+  });
+
   expect(JSON.stringify(received[0])).toContain(admittedMarker);
   const allSaved = JSON.stringify(savedArgs);
   expect(allSaved).not.toContain(admittedMarker);
   expect(allSaved).not.toContain(refusedMarker);
   expect(allSaved).not.toContain(otherCmdMarker);
+  expect(allSaved).not.toContain(misKeyMarker);
+  expect(allSaved).not.toContain(nestedInputMarker);
   expect(savedArgs[0]).toMatchObject({
     command: { type: "trigger.secrets.set", triggerId: "trg_ok", set: "[redacted]" },
   });
@@ -507,4 +523,27 @@ it("redacts secret fields before recording relay activity for admitted and refus
       secrets: "[redacted]",
     },
   });
+  expect(savedArgs[3]).toMatchObject({
+    command: {
+      type: "trigger.secrets.set",
+      triggerId: "trg_miskey",
+      Set: "[redacted]",
+      input: "[redacted]",
+    },
+  });
+});
+
+it("refuses to register the agent tool relay without a non-empty secretDigestKey", () => {
+  const f = fixture();
+  const app = Fastify();
+  apps.push(app);
+  expect(() =>
+    registerAgentToolRoute(app, {
+      callers: { authenticate: async () => f.caller },
+      service: f.service,
+      activity: f.activity,
+      secretDigestKey: Buffer.alloc(0),
+      realtime: { observeScopes: () => () => true },
+    }),
+  ).toThrow("Agent tool relay route requires a non-empty secretDigestKey.");
 });

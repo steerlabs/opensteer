@@ -848,6 +848,22 @@ describe("Managed memory passes", () => {
     );
     expect(screen.textContent).not.toContain("SOL_R7_FIXTURE_TOKEN");
 
+    // R7 / Rule 4: Lost answer on Add where name is still ABSENT on Check -> absence is NOT
+    // evidence it failed (the request may still be running); stay unknown, never say "Not saved."
+    f.dispatch.mockRejectedValueOnce(new Error("Lost answer while still in flight"));
+    press(button(screen, "Add"));
+    setInput("Secret name", "IN_FLIGHT_TOKEN");
+    setInput("Secret value", "SOL_R7_INFLIGHT_TOKEN");
+    press(button(screen, "Save"));
+    await shown(screen, "Couldn't confirm the secret was saved.", "expected in-flight uncertainty");
+    press(button(screen, "Check"));
+    await vi.waitFor(() => expect(f.get).toHaveBeenCalled(), { timeout: 2000 });
+    await act(async () => undefined);
+    expect(screen.textContent).toContain("Couldn't confirm the secret was saved.");
+    expect(screen.textContent).not.toContain("Not saved.");
+    expect(screen.textContent).not.toContain("SOL_R7_INFLIGHT_TOKEN");
+    press(button(screen, "Cancel"));
+
     // R7: Lost answer on Replace has no name-level evidence -> Check does NOT falsely say "Not saved."
     f.dispatch.mockImplementationOnce(async (command) => {
       await f.mock.dispatch(command);

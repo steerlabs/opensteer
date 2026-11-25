@@ -97,7 +97,7 @@ export function agentCommandDoor(input: {
   readonly propose?: AgentCommandDoor["propose"];
   /** A connection's direct-session task it named: what it does there is its own work. */
   readonly taskId?: string;
-  readonly secretDigestKey?: Buffer | undefined;
+  readonly secretDigestKey: Buffer;
 }): AgentCommandDoor {
   return {
     registry: input.registry,
@@ -106,6 +106,6 @@ export function agentCommandDoor(input: {
     attempts: commandAttempts(input.database),
     readmit: agentCommandReadmission(input.taskId),
     ...(input.propose ? { propose: input.propose } : {}),
-    ...(input.secretDigestKey ? { secretDigestKey: input.secretDigestKey } : {}),
+    secretDigestKey: input.secretDigestKey,
   };
 }

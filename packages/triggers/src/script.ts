@@ -155,14 +155,20 @@ export const AutomationSecretValueSchema = z
  * rejection rather than silently dropping it to `{}`.
  */
 export const AutomationSecretMapSchema = z.preprocess(
-  (value) => {
+  (value, ctx) => {
     if (
       typeof value === "object" &&
       value !== null &&
       !Array.isArray(value) &&
       Object.hasOwn(value, "__proto__")
     ) {
-      return { ...(value as Record<string, unknown>), prototype: "" };
+      ctx.addIssue({
+        code: "custom",
+        path: ["__proto__"],
+        message: "Secret name cannot use a reserved property name.",
+        params: { reason: "automation-secret-invalid-name" },
+      });
+      return z.NEVER;
     }
     return value;
   },

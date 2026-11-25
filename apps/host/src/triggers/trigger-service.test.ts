@@ -37,6 +37,7 @@ describe("TriggerService", () => {
           registry,
           scope: async () => ({ scope: null, grant: null, mode: "full-access" }),
           admit: async () => ({ answer: "now", face: 0, execution: null }),
+          secretDigestKey: Buffer.alloc(32, 0x33),
         }),
       },
     );
@@ -357,6 +358,7 @@ describe("TriggerService", () => {
                 ? { answer: "now", face: 0, execution: null }
                 : { answer: "ask", face: 0, reason: "mode", execution: null }
               : { answer: "now", face: 0, execution: null },
+          secretDigestKey: Buffer.alloc(32, 0x33),
         }),
       },
     );
@@ -437,6 +439,7 @@ describe("TriggerService", () => {
           registry,
           scope: async () => ({ scope: null, grant: null, mode: "full-access" }),
           admit: async () => ({ answer: "now", face: 0, execution: null }),
+          secretDigestKey: Buffer.alloc(32, 0x33),
         }),
       },
     );
@@ -532,6 +535,7 @@ describe("TriggerService", () => {
           registry,
           scope: async () => ({ scope: null, grant: null, mode: "auto" }),
           admit,
+          secretDigestKey: Buffer.alloc(32, 0x33),
         }),
       },
     );

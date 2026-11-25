@@ -20,6 +20,7 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PassThrough } from "node:stream";
 import {
+  createToolArguments,
   heldToolCallTimeoutMs,
   ModelSelectionSchema,
   createId,
@@ -46,6 +47,7 @@ import {
   type SupervisedProcess,
 } from "@opensteer/harness";
 import { accountWideLimitActive } from "@opensteer/protocol";
+import { redactToolArgumentsForStorage } from "@opensteer/protocol/command-table";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CodexHarnessDriver,
@@ -5568,6 +5570,59 @@ describe("Codex provider retry visibility and budget", () => {
       expect(ownObserver.events.some((e) => e.type === "run.failed")).toBe(false);
     } finally {
       await ownSession.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("defers tool argument formatting to Runner so ordinary calls stay byte-identical and oversized secret commands redact before truncation (M1)", async () => {
+    const fixture = await setup("oversized-mcp-tool-args");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      await session.execute(fixture.turn("Run oversized tool calls"));
+      await observer.waitFor("run.completed");
+      const started = observer.events.filter((e) => e.type === "tool.started");
+      expect(started).toHaveLength(3);
+
+      const smallExpectedRaw = { query: "status", limit: 10, nested: { ok: true } };
+      const largeExpectedRaw = {
+        query: "bulk-read",
+        items: Array.from({ length: 5000 }, (_, i) => `item-${i}-0123456789abcdef`),
+      };
+      // Ordinary calls (both under and over the 64 KiB cap): Runner's
+      // redact-then-format produces byte-identical arguments to the old
+      // driver-side createToolArguments(rawArgs).
+      const smallAfter = createToolArguments(
+        redactToolArgumentsForStorage(started[0]!.data.arguments),
+      );
+      const smallBefore = createToolArguments(smallExpectedRaw);
+      expect(JSON.stringify(smallAfter)).toBe(JSON.stringify(smallBefore));
+
+      const largeAfter = createToolArguments(
+        redactToolArgumentsForStorage(started[1]!.data.arguments),
+      );
+      const largeBefore = createToolArguments(largeExpectedRaw);
+      expect(JSON.stringify(largeAfter)).toBe(JSON.stringify(largeBefore));
+      // Confirm the oversized ordinary call actually exercised the >64 KiB formatter path.
+      expect(typeof (largeAfter as Record<string, unknown>).items).toBe("string");
+
+      // Oversized trigger.secrets.set (>64 KiB): driver passes raw object (not
+      // pre-formatted to a string), so Runner redacts secrets and undeclared pad
+      // BEFORE createToolArguments runs — zero secret markers survive.
+      const secretRaw = started[2]!.data.arguments as Record<string, unknown>;
+      expect(typeof secretRaw.command).toBe("object");
+      const secretStored = createToolArguments(redactToolArgumentsForStorage(secretRaw));
+      expect(JSON.stringify(secretStored)).not.toContain("CODEX_OVERSIZED_SECRET_MARKER");
+      expect(secretStored).toEqual({
+        command: {
+          type: "trigger.secrets.set",
+          triggerId: "trg_00000000-0000-4000-8000-000000000001",
+          pad: "[redacted]",
+          set: "[redacted]",
+        },
+      });
+    } finally {
+      await session.stop();
       await fixture.adapter.close();
     }
   });

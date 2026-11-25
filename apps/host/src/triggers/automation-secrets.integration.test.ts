@@ -119,6 +119,7 @@ describeStore("automation secrets through the one door", (it) => {
       registry: agentCommandRegistry({} as AdministrationService, handlers),
       requests: () => commandRequests,
       administration: {} as AdministrationToolHandlers,
+      secretDigestKey: Buffer.alloc(32, 0x33),
     });
     const sessionId = `ses_${randomUUID()}`;
     await database
@@ -162,6 +163,7 @@ describeStore("automation secrets through the one door", (it) => {
             (proposal) => personActor(ctx, proposal),
           ),
         }),
+        secretDigestKey: Buffer.alloc(32, 0x33),
       }),
     };
     const rpc = createTriggerRpcHandlers(triggers);
@@ -1482,46 +1484,147 @@ describeStore("automation secrets through the one door", (it) => {
         .where("runId", "=", f.run.id)
         .where("status", "=", "current")
         .executeTakeFirstOrThrow();
-      await store.commitRunnerEvent({
-        environmentId: f.environmentId,
-        runnerId: attemptRow.runnerId ?? f.runnerId,
-        runnerBootId: attemptRow.runnerBootId ?? "boot_r1",
-        event: {
-          type: "tool.started",
-          runId: f.run.id,
-          threadId: f.threadId,
+      let nextOrdinal = runRow.nextRunnerOrdinal;
+      const commitToolStarted = async (args: unknown) => {
+        await store.commitRunnerEvent({
           environmentId: f.environmentId,
-          bindingGeneration: runRow.bindingGeneration ?? 1,
-          ordinal: runRow.nextRunnerOrdinal,
-          emittedAt: new Date().toISOString(),
-          data: {
-            callId: `runner-call-${randomUUID()}`,
-            tool: { namespace: "opensteer", name: "opensteer_command" },
-            arguments: {
-              command: {
-                type: "trigger.secrets.set",
-                triggerId,
-                set: { RUNNER_KEY: runnerMarker },
-              },
+          runnerId: attemptRow.runnerId ?? f.runnerId,
+          runnerBootId: attemptRow.runnerBootId ?? "boot_r1",
+          event: {
+            type: "tool.started",
+            runId: f.run.id,
+            threadId: f.threadId,
+            environmentId: f.environmentId,
+            bindingGeneration: runRow.bindingGeneration ?? 1,
+            ordinal: nextOrdinal++,
+            emittedAt: new Date().toISOString(),
+            data: {
+              callId: `runner-call-${randomUUID()}`,
+              tool: { namespace: "opensteer", name: "opensteer_command" },
+              arguments: args,
+            },
+          },
+        });
+      };
+      await commitToolStarted({
+        command: {
+          type: "trigger.secrets.set",
+          triggerId,
+          set: { RUNNER_KEY: runnerMarker },
+        },
+      });
+
+      // M1 variants through real relay route + real Runner event store + PostgreSQL all-table scan:
+      const m1Prefix = `M1_AUDIT_${randomUUID().slice(0, 8)}`;
+      const codexPadMarker = `${m1Prefix}_CODEXPAD`;
+      const strCmdMarker = `${m1Prefix}_STRCMD`;
+      const truncCmdMarker = `${m1Prefix}_TRUNCCMD`;
+      const misKeyMarker = `${m1Prefix}_MISKEY`;
+      const nestedMarker = `${m1Prefix}_NESTED`;
+
+      // Variant 1 (codexPad): oversized >64 KiB arguments that `createToolArguments` turns into
+      // JSON text (`withParametersAsText`) if formatted before redaction.
+      const { createToolArguments } = await import("@opensteer/core");
+      const codexOversized = createToolArguments({
+        command: {
+          type: "trigger.secrets.set",
+          triggerId,
+          set: { PAD: codexPadMarker },
+          pad: Array.from({ length: 5_000 }, (_, i) => `padding-entry-${i}`),
+        },
+      });
+      expect(typeof (codexOversized as { readonly command?: unknown }).command).toBe("string");
+      await commitToolStarted(codexOversized);
+
+      // Variant 2 (strCmd): `command` sent as a JSON string, plus truncated JSON naming the type.
+      await commitToolStarted({
+        command: JSON.stringify({
+          type: "trigger.secrets.set",
+          triggerId,
+          set: { STR: strCmdMarker },
+        }),
+      });
+      await commitToolStarted({
+        command: `{"type":"trigger.secrets.set","triggerId":"${triggerId}","set":{"TRUNC":"${truncCmdMarker}"`,
+      });
+
+      // Variant 3 (misKey + nestedInput): agent-chosen/misspelled keys through the REAL relay route.
+      const misKeyRes = await app.inject({
+        method: "POST",
+        url: agentToolHostRoutePath,
+        headers: { authorization: "Bearer run-token" },
+        payload: {
+          callId: randomUUID(),
+          name: "opensteer_command",
+          input: {
+            command: {
+              type: "trigger.secrets.set",
+              triggerId,
+              Set: { LOWER: misKeyMarker },
+              sett: { TYPO: misKeyMarker },
+              input: { set: { NESTED: nestedMarker } },
             },
           },
         },
       });
+      expect(misKeyRes.statusCode).toBe(200);
+      expect(misKeyRes.body).not.toContain(misKeyMarker);
+      expect(misKeyRes.body).not.toContain(nestedMarker);
 
-      // Scan ALL tool_calls rows in PostgreSQL: zero plaintext markers, all redacted.
-      const toolCallRows = await database.selectFrom("toolCalls").selectAll().execute();
-      expect(toolCallRows.length).toBeGreaterThanOrEqual(3);
-      const serializedToolCalls = JSON.stringify(toolCallRows);
-      expect(serializedToolCalls).not.toContain(admittedMarker);
-      expect(serializedToolCalls).not.toContain(refusedMarker);
-      expect(serializedToolCalls).not.toContain(runnerMarker);
-      for (const row of toolCallRows) {
-        if (row.tool?.name === "opensteer_command") {
-          expect(row.arguments).toMatchObject({
-            command: { type: "trigger.secrets.set", set: "[redacted]" },
-          });
+      // Scan ALL base tables in PostgreSQL (text + hex for bytea): zero plaintext markers anywhere.
+      const allMarkers = [
+        admittedMarker,
+        refusedMarker,
+        runnerMarker,
+        codexPadMarker,
+        strCmdMarker,
+        truncCmdMarker,
+        misKeyMarker,
+        nestedMarker,
+      ];
+      const baseTables = await sql<{ tableSchema: string; tableName: string }>`
+        select table_schema, table_name
+        from information_schema.tables
+        where table_type = 'BASE TABLE'
+          and table_schema not in ('pg_catalog', 'information_schema')
+      `.execute(database);
+      expect(baseTables.rows.length).toBeGreaterThan(50);
+      const patterns = allMarkers.flatMap((marker) => [
+        `%${marker}%`,
+        `%${Buffer.from(marker, "utf8").toString("hex")}%`,
+      ]);
+      const hits: string[] = [];
+      for (const { tableSchema, tableName } of baseTables.rows) {
+        const quoted = sql.raw(`"${tableSchema}"."${tableName}"`);
+        const found = await sql<{ hit: string }>`
+          select x::text as hit from ${quoted} x
+          where x::text like any(${patterns})
+          limit 20
+        `.execute(database);
+        for (const row of found.rows) {
+          for (const marker of allMarkers) {
+            const hex = Buffer.from(marker, "utf8").toString("hex");
+            if (row.hit.includes(marker) || row.hit.includes(hex)) {
+              hits.push(`${tableSchema}.${tableName}: ${marker}`);
+            }
+          }
         }
       }
+      expect([...new Set(hits)]).toEqual([]);
+
+      // Also verify well-formed tool_calls rows kept their redacted command shape.
+      const toolCallRows = await database.selectFrom("toolCalls").selectAll().execute();
+      expect(toolCallRows.length).toBeGreaterThanOrEqual(7);
+      expect(
+        toolCallRows.filter(
+          (row) =>
+            row.tool?.name === "opensteer_command" &&
+            typeof row.arguments === "object" &&
+            row.arguments !== null &&
+            typeof (row.arguments as { command?: unknown }).command === "object" &&
+            (row.arguments as { command?: { set?: unknown } }).command?.set === "[redacted]",
+        ).length,
+      ).toBeGreaterThanOrEqual(3);
 
       // 4. R2: Person command ledger digest cannot be matched offline with requestedBy:idempotencyKey.
       await personDispatch({
@@ -1724,6 +1827,7 @@ describe("0119_automation_secret_names upgrade from an already-applied 0113 data
             approveCommand: async () => {
               throw new Error("unexpected approve command");
             },
+            secretDigestKey: Buffer.alloc(32, 0x33),
           }),
         };
 

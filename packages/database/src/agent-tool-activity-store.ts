@@ -1,3 +1,4 @@
+import { redactToolArgumentsForStorage } from "@opensteer/protocol/command-table";
 import {
   OpensteerError,
   type RunId,
@@ -72,7 +73,7 @@ export class AgentToolActivityStore {
         callId,
         origin,
         tool: { namespace: "opensteer", name },
-        arguments: args,
+        arguments: redactToolArgumentsForStorage(args),
         ...(argumentDigest ? { argumentDigest } : {}),
       });
       return {

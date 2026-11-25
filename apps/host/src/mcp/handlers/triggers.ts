@@ -79,6 +79,7 @@ export interface TriggerLineage {
 export interface TriggerToolHandlerOptions {
   readonly database?: Kysely<DatabaseSchema>;
   readonly requests?: () => CommandRequestService | undefined;
+  readonly secretDigestKey?: Buffer;
   /** Unit-test seam when no PostgreSQL database is wired. */
   readonly door?: (caller: AgentCaller, registry: CommandRegistry) => AgentCommandDoor;
 }
@@ -98,6 +99,7 @@ export class TriggerToolHandlers implements AgentAutomationExecutor {
   readonly lineage: TriggerLineage;
   readonly #database: Kysely<DatabaseSchema> | undefined;
   readonly #requests: () => CommandRequestService | undefined;
+  readonly #secretDigestKey: Buffer | undefined;
   readonly #customDoor: TriggerToolHandlerOptions["door"];
 
   constructor(
@@ -109,6 +111,7 @@ export class TriggerToolHandlers implements AgentAutomationExecutor {
     this.lineage = lineage;
     this.#database = options?.database ?? lineage.database;
     this.#requests = options?.requests ?? (() => undefined);
+    this.#secretDigestKey = options?.secretDigestKey;
     this.#customDoor = options?.door;
   }
 
@@ -124,6 +127,7 @@ export class TriggerToolHandlers implements AgentAutomationExecutor {
     return agentCommandDoor({
       database,
       registry,
+      secretDigestKey: this.#secretDigestKey ?? Buffer.alloc(0),
       ...(requests
         ? {
             propose: async (agent, command, ask, face) => {

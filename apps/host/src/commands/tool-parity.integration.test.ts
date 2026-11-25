@@ -1459,6 +1459,7 @@ export default defineApp({}, { tools: router({ tick }),
       registry: standIn,
       admit: agentCommandAdmission(host.store.database),
       scope: agentCommandScope(host.store.database),
+      secretDigestKey: Buffer.alloc(32, 0x33),
     };
     const run = (threadId: ThreadId, runId: string, mode: ThreadAccessMode, key: string) =>
       ({
