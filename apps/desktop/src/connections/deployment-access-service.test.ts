@@ -2401,6 +2401,25 @@ describe("DeploymentAccessService", () => {
       service.dispose();
     });
 
+    it("reopens a Cloud Computer the person is in without the Account: it signs in at its own address", async () => {
+      const cloud = deployment({
+        accountAccess: "owner",
+        name: "Cloud Computer",
+        source: "account",
+      });
+      const fixture = fakePorts({
+        deployments: [{ ...cloud, lastUsedAt: "2026-10-19T10:00:00.000Z" }],
+        selectedDeploymentId: cloud.id,
+      });
+      fixture.currentState.mockResolvedValueOnce(expiredAccount());
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+      await settle();
+
+      expect(fixture.establish).toHaveBeenCalledExactlyOnceWith(cloud.id, false);
+      service.dispose();
+    });
+
     it("re-reads the place list when a different Account signs in, never when a token is merely refreshed", async () => {
       const fixture = fakePorts();
       const service = new DeploymentAccessService(fixture.ports, fixture.options);

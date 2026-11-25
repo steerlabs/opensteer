@@ -544,8 +544,7 @@ export class DeploymentAccessService {
       }
     }
     for (const deployment of this.#catalog.deployments) {
-      if (deployment.key === null) continue;
-      if (deployment.source !== "manual" && !reachedNatively(deployment)) continue;
+      if (!reachedAtItsOwnAddress(deployment)) continue;
       const running = this.#probing.get(deployment.id);
       if (running) {
         checks.push(running.done);
@@ -1035,7 +1034,7 @@ export class DeploymentAccessService {
     const status = this.#statusInfo(only, this.#personalSetup()).status;
     // One reached at its own address is ready only once it answered: reach it
     // once, then decide again on what it said.
-    if (status === "checking" && reachedNatively(only) && only.key !== null) {
+    if (status === "checking" && reachedAtItsOwnAddress(only)) {
       const reaching = this.#probing.get(only.id)?.done ?? this.#probe(only.id);
       void reaching.then(() => {
         const probed = this.#probes.get(only.id);
@@ -1127,9 +1126,10 @@ export class DeploymentAccessService {
   #attachSelectedReturningDeployment(): void {
     const selected = this.#selectedDeployment();
     if (!selected?.lastUsedAt) return;
-    // An Account place needs the Account to open; until sign-in it stays on
-    // screen asking for it, rather than failing an attempt nobody asked for.
-    if (selected.source === "account" && this.#account.status !== "signed-in") return;
+    // A place reached through the Account's Connect route needs the Account to
+    // open; until sign-in it stays on screen asking for it, rather than
+    // failing an attempt nobody asked for.
+    if (selected.hasAccountConnectRoute && this.#account.status !== "signed-in") return;
     const status = this.#attachment?.snapshot().status;
     if (status === "connected" || status === "connecting" || status === "authorizing") return;
     this.#requestSelectedAttachment(false);
@@ -1145,8 +1145,8 @@ export class DeploymentAccessService {
     this.#interactiveAttachment = interactive;
     const selected = this.#selectedDeployment();
     if (!selected || !this.#attachment) return;
-    // An Account place opens through the Account; its sign-in reopens it.
-    if (selected.source === "account" && this.#account.status !== "signed-in") return;
+    // A place reached through the Account opens through it; its sign-in reopens it.
+    if (selected.hasAccountConnectRoute && this.#account.status !== "signed-in") return;
     if (!this.#selectedAttachmentIsReady()) {
       this.#pendingAttachmentDeploymentId = selected.id;
       this.#publish();
@@ -1311,27 +1311,23 @@ export class DeploymentAccessService {
         ({ deploymentId }) => deploymentId === deployment.id,
       );
       if (unavailable) return placeStatus.unavailable(unavailable.reason, name);
-      // Reached at its own address (a Cloud Computer, a Linux Home): it has no
-      // Connect route or Account lease to judge, so reaching it is the answer.
-      // Remote access and sleep are only a routed Mac's.
-      if (reachedNatively(deployment)) return this.#probeStatus(deployment.id, name);
-      if (!deployment.hasAccountConnectRoute) return placeStatus.remoteAccessOff(name);
+    }
+    // How a place is reached decides the rest, never who listed it. A Mac
+    // reached through its Connect route is as awake as its lease says.
+    if (deployment.hasAccountConnectRoute) {
       const lease = deployment.hasVerifiedAccountRoute ? deployment.accountLivenessExpiresAt : null;
-      return lease !== null && Date.parse(lease) > now
+      return lease !== null && Date.parse(lease) > this.#now()
         ? placeStatus.ready()
         : placeStatus.asleep(name);
     }
     if (deployment.key === null) {
-      // Known only by the loopback origin of the computer that runs it, which
-      // this app is not: the repair lives over there, so the sentence says so.
+      // No route and known only by the loopback origin of the computer that
+      // runs it, which this app is not: the repair lives over there.
       return placeStatus.remoteAccessOff(name);
     }
-    return this.#probeStatus(deployment.id, name);
-  }
-
-  /** What the last check that reached for the place found, while it is fresh. */
-  #probeStatus(deploymentId: string, name: string): DeploymentStatusInfo {
-    const probe = this.#probes.get(deploymentId);
+    // Reached at its own address (added by hand, a Cloud Computer, a Linux
+    // Home): what reaching it found.
+    const probe = this.#probes.get(deployment.id);
     if (!probe || this.#now() - probe.at >= checkedAnswerLifetimeMilliseconds) {
       return placeStatus.checking();
     }
@@ -1587,11 +1583,7 @@ function sameIds(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean
   return left.size === right.size && [...left].every((id) => right.has(id));
 }
 
-/**
- * An Account place this app reaches at its own address, with no Connect route:
- * a Cloud Computer or a Linux Home. A Mac's Home, listed by the Account, is
- * reached only through its Connect route.
- */
-function reachedNatively(deployment: DeploymentAccessCatalogDeployment): boolean {
-  return deployment.source === "account" && deployment.access === "native";
+/** A place with a key and no Connect route: reached, and checked, at its own address. */
+function reachedAtItsOwnAddress(deployment: DeploymentAccessCatalogDeployment): boolean {
+  return deployment.key !== null && !deployment.hasAccountConnectRoute;
 }
