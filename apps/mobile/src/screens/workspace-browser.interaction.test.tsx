@@ -93,7 +93,7 @@ const state = vi.hoisted(() => ({
   hereId: null as string | null,
   conversationMounts: 0,
   /** How the conversation beside the page shows one of its tabs there, as its live card does. */
-  besideShowTab: null as ((tab: { sessionId: string; tabId: string }) => void) | null,
+  besideShowTab: null as ((tabId: string) => void) | null,
   pageMounts: 0,
   /** Every claim of the active Thread a pane beside the page made. */
   conversationClaims: [] as string[],
@@ -599,7 +599,7 @@ vi.mock("../thread/thread-pane.js", async () => {
       onHeader?: (header: { title: string }) => void;
       withPage?: {
         page: { title: string } | null;
-        showTab: ((tab: { sessionId: string; tabId: string }) => void) | null;
+        showTab: ((tabId: string) => void) | null;
       };
     }) => {
       const insets = useContentInsets();
@@ -2310,7 +2310,7 @@ describe("a page beside its agent's thread", () => {
     expect(headerShown()).toBe(true);
   });
 
-  it("follows the agent in place, stops for the person, and picks up again from the live card", async () => {
+  it("keeps the person on their tab when the beside agent moves, and jumps in place from the live card", async () => {
     vi.useFakeTimers();
     try {
       state.pair = { height: 1000, width: 744 };
@@ -2342,59 +2342,26 @@ describe("a page beside its agent's thread", () => {
       };
       state.snapshot = agentOn("page-1");
       await render();
-      expect(element(container, "Address, example.com. Following the agent")).not.toBeNull();
+      expect(element(container, "Address, example.com")).not.toBeNull();
 
-      // The agent moves on; the page keeps up in place.
+      // The agent moves to another tab; the person's page stays put.
       state.snapshot = agentOn("page-2");
       await render();
       act(() => {
-        vi.advanceTimersByTime(1000);
+        vi.advanceTimersByTime(5000);
       });
+      expect(state.setParams).not.toHaveBeenCalled();
+
+      // Tapping the conversation's live card switches the page in place without remounting the thread.
+      act(() => state.besideShowTab?.("page-2"));
       expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
         editAddress: false,
         popup: false,
         tabId: "page-2",
       });
       await showTab("page-2");
-      expect(element(container, "Address, example.com. Following the agent")).not.toBeNull();
-
-      // The person goes back to the first tab: following stops, and the page stays theirs.
-      state.setParams.mockClear();
-      await showTab("page-1");
       expect(element(container, "Address, example.com")).not.toBeNull();
-      act(() => {
-        vi.advanceTimersByTime(5000);
-      });
-      expect(state.setParams).not.toHaveBeenCalled();
-
-      // The conversation's live card shows the agent's tab in place, and following picks up there.
-      act(() => state.besideShowTab?.({ sessionId: "browser-child", tabId: "page-2" }));
-      expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
-        editAddress: false,
-        popup: false,
-        tabId: "page-2",
-      });
-      await showTab("page-2");
-      expect(element(container, "Address, example.com. Following the agent")).not.toBeNull();
       expect(state.conversationMounts).toBe(1);
-
-      // The tab sheet holds the page under it, and following catches up once it closes.
-      state.setParams.mockClear();
-      press(container, "Tabs, 2");
-      state.focused = false;
-      state.snapshot = agentOn("page-1");
-      await render();
-      act(() => {
-        vi.advanceTimersByTime(5000);
-      });
-      expect(state.setParams).not.toHaveBeenCalled();
-      state.focused = true;
-      await render();
-      expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
-        editAddress: false,
-        popup: false,
-        tabId: "page-1",
-      });
     } finally {
       vi.useRealTimers();
     }
