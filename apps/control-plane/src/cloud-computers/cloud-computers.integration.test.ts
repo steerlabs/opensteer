@@ -1669,9 +1669,11 @@ integration("Cloud Computer Account service", () => {
     const answer = await read(credentials(oidc.clientSecret));
     expect(answer.statusCode).toBe(200);
     expect(answer.headers["cache-control"]).toBe("no-store");
-    // The account's feed as it is configured now, not the one the Home was born with.
+    // The account's feed as it is configured now, not the one the Home was born with, and the
+    // recipe of its release: the installer and SHA-256 pinned in the account's own config.
     expect(CloudComputerReleaseFeedResponseSchema.parse(answer.json())).toEqual({
       releaseManifestUrl,
+      recipe: { url: "https://releases.example.test/install.sh", sha256: digest },
     });
     expect((await read()).statusCode).toBe(401);
     expect((await read(credentials("ocs_" + "A".repeat(43)))).statusCode).toBe(401);
