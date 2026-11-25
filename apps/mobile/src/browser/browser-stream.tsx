@@ -10,6 +10,7 @@ import {
   useBrowserPresentationWait,
   useBrowserSleep,
   useBrowserTabAwake,
+  useViewerGrace,
 } from "@opensteer/client/react";
 import type {
   BrowserCommand,
@@ -271,16 +272,19 @@ function BrowserStreamView({
       return;
     }
   }, [active, attempt, awake, hostClient, interactive, native, session.id, sharedWatch, tabId]);
-  // Held apart from the picture, so the picture coming and going reuses this socket.
+  // Held apart from the picture, so the picture coming and going reuses this socket. Off screen
+  // it is still a viewer to the Home, which keeps the browser awake for it, so it is let go once
+  // nobody has seen the page for the grace; the last picture stays for its return.
+  const seenRecently = useViewerGrace(active);
   useEffect(() => {
-    if (!kept) return;
+    if (!kept || !seenRecently) return;
     try {
       return hostClient.retainBrowserViewer(session.id, tabId, { picture: false });
     } catch {
       // A Host without pictureless control reconnects when the picture returns.
       return;
     }
-  }, [hostClient, kept, session.id, tabId]);
+  }, [hostClient, kept, seenRecently, session.id, tabId]);
 
   const finish = useCallback(
     (delivery: BrowserFrameView) => {

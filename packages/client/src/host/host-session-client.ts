@@ -12,7 +12,11 @@ import {
   type ConnectionPresentation,
   probeAnsweredByFrames,
 } from "../connections/connection-controller.js";
-import { classifyClientFailure, ClientOperationError } from "../connections/operation-error.js";
+import {
+  classifyClientFailure,
+  ClientOperationError,
+  unrefTimer,
+} from "../connections/operation-error.js";
 import { HostTransportError } from "../connections/host-transport-error.js";
 import { assertMessageLogin, disposeMessageOutbox } from "./message-outbox.js";
 import { nameConnectionFromHost } from "./host-connection.js";
@@ -151,6 +155,7 @@ import { threadInDirectory } from "./host-snapshot-selectors.js";
 import { RunPlaceStore } from "./run-place.js";
 import { heldThread } from "./task-list.js";
 import {
+  browserViewerGraceMs,
   type ClientLifecycle,
   type ClientNetworkState,
   type ClientVisibility,
@@ -716,6 +721,12 @@ export class HttpHostClient {
   readonly #lifecycleDisposers: (() => void)[] = [];
   #network: ClientNetworkState;
   #visibility: ClientVisibility;
+  /**
+   * The person cannot see this client and has not for `browserViewerGraceMs`: it is no longer a
+   * browser viewer. Set only by the grace's timer; cleared the moment it is seen again.
+   */
+  #unseen = false;
+  #unseenTimer: ReturnType<typeof setTimeout> | null = null;
 
   #disposed = false;
   #snapshot: HostSnapshot = emptySnapshot(this.#tabs);
@@ -941,8 +952,9 @@ export class HttpHostClient {
     this.#visibility = lifecycle?.visibility ?? "foreground";
     this.#stream.setBackground(this.#visibility === "background");
     this.#stream.shell.subscribe(() => this.#publishShell());
-    this.#targetedControl.suspend(this.#reconnectSuspended(), this.#network !== "offline");
-    this.#targetedWatch.suspend(this.#reconnectSuspended());
+    // A client that starts hidden has shown no picture to keep: it is unseen from the start.
+    this.#unseen = this.#visibility === "background";
+    this.#seen(this.#visibility === "foreground");
     let observed = this.connection.getSnapshot();
     this.#lifecycleDisposers.push(
       this.connection.subscribe(() => {
@@ -3872,6 +3884,8 @@ export class HttpHostClient {
     this.#scopeReaders.clear();
     this.#clearViewerReads();
     for (const release of this.#lifecycleDisposers) release();
+    if (this.#unseenTimer) clearTimeout(this.#unseenTimer);
+    this.#unseenTimer = null;
     clearRunPageViews(this);
     clearRunPlacePictures(this);
     this.#clearAttachmentReads();
@@ -4515,8 +4529,7 @@ export class HttpHostClient {
       this.#invalidateAttention();
       this.#resources.abort();
     }
-    this.#targetedControl.suspend(this.#reconnectSuspended(), state.network !== "offline");
-    this.#targetedWatch.suspend(this.#reconnectSuspended());
+    this.#seen(state.visibility === "foreground");
     if (state.pathRevision !== old.pathRevision) {
       this.#targetedControl.reconnect();
       this.#targetedWatch.reconnect();
@@ -4546,8 +4559,34 @@ export class HttpHostClient {
       for (const listener of this.#lifecycleListeners) listener("network");
   }
 
-  #reconnectSuspended() {
-    return this.#visibility === "background" || this.#network === "offline";
+  /**
+   * A client is a browser viewer only while the person can see the picture. Hidden, it keeps its
+   * viewer sockets for `browserViewerGraceMs`, so flipping between tabs does not reconnect, then
+   * lets go of every one, a control socket without a picture too: the Home counts each as a
+   * viewer, which keeps the browser awake. Seen again, it takes them at once. Only the viewers:
+   * the realtime connection, the tab list and the task stream follow the lifecycle as before.
+   * Offline, every socket is gone already, so they are let go at once.
+   */
+  #seen(seen: boolean): void {
+    if (seen) {
+      if (this.#unseenTimer) clearTimeout(this.#unseenTimer);
+      this.#unseenTimer = null;
+      this.#unseen = false;
+    } else if (!this.#unseen && !this.#unseenTimer && !this.#disposed) {
+      this.#unseenTimer = setTimeout(() => {
+        this.#unseenTimer = null;
+        this.#unseen = true;
+        this.#suspendViewers();
+      }, browserViewerGraceMs);
+      unrefTimer(this.#unseenTimer);
+    }
+    this.#suspendViewers();
+  }
+
+  #suspendViewers(): void {
+    const suspended = this.#unseen || this.#network === "offline";
+    this.#targetedControl.suspend(suspended);
+    this.#targetedWatch.suspend(suspended);
   }
 
   openConnection(attempt: ConnectionAttempt): Promise<ConnectionLease> {

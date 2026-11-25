@@ -93,7 +93,6 @@ export class BrowserWatchStore {
   readonly #authorityDenied = new Set<string>();
   #authorized: (sessionId: string, surfaceId: string) => boolean = () => true;
   #suspended = false;
-  #keepControlOnly = false;
   #allowed: (sessionId: string, surfaceId: string, asleep: boolean) => boolean = () => true;
   #isAllowed(target: Watch): boolean {
     return this.#allowed(target.sessionId, target.surfaceId, target.asleepHolds > 0);
@@ -267,7 +266,7 @@ export class BrowserWatchStore {
       this.#subscribeTarget(target);
     this.#diagnose({ stage: "retain", holds: target.holds });
     if (picture) this.#scheduleDemand(key);
-    if (!this.#paused(target) && this.#isAllowed(target) && !target.socket && !target.timer)
+    if (!this.#suspended && this.#isAllowed(target) && !target.socket && !target.timer)
       this.#open(target);
     const current = target;
     let released = false;
@@ -387,16 +386,10 @@ export class BrowserWatchStore {
         ),
       );
   }
-  suspend(suspended: boolean, keepControlOnly = false): void {
+  /** No socket while suspended: the client is offline, or nobody can see it. */
+  suspend(suspended: boolean): void {
     this.#suspended = suspended;
-    this.#keepControlOnly = keepControlOnly;
     this.reconcile(this.#allowed, this.#authorized);
-  }
-  #paused(target: Watch): boolean {
-    return (
-      this.#suspended &&
-      !(this.#keepControlOnly && this.mode === "control" && target.pictureHolds === 0)
-    );
   }
   reconcile(
     allowed: (sessionId: string, surfaceId: string, asleep: boolean) => boolean = this.#allowed,
@@ -425,7 +418,7 @@ export class BrowserWatchStore {
       if (!this.#isAllowed(target)) {
         this.#close(target);
         this.#set(target, this.#kept(target));
-      } else if (this.#paused(target)) {
+      } else if (this.#suspended) {
         if (!target.socket && !target.timer) continue;
         this.#close(target);
         this.#set(target, this.#kept(target));
@@ -449,7 +442,7 @@ export class BrowserWatchStore {
       if (
         target.synchronized &&
         target.socket?.readyState === 1 &&
-        !this.#paused(target) &&
+        !this.#suspended &&
         this.#isAllowed(target)
       )
         this.#subscribeTarget(target);
@@ -476,7 +469,7 @@ export class BrowserWatchStore {
   }
   #open(target: Watch): void {
     if (
-      this.#paused(target) ||
+      this.#suspended ||
       !this.#isAllowed(target) ||
       !this.#authorized(target.sessionId, target.surfaceId)
     )
@@ -733,7 +726,7 @@ export class BrowserWatchStore {
     });
   }
   #retry(target: Watch): void {
-    if (this.#paused(target) || !target.holds) return;
+    if (this.#suspended || !target.holds) return;
     const delay = this.retryDelay(target.attempt++, target.unreadableFrames);
     if (target.unreadableFrames > 0) target.unreadableRetryAt = Date.now() + delay;
     target.timer = setTimeout(() => {

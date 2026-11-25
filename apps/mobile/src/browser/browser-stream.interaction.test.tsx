@@ -16,7 +16,11 @@ import type {
   HostClient,
   HostSnapshot,
 } from "@opensteer/client/host";
-import { BrowserCursorStore, browserTabPicture } from "@opensteer/client/host";
+import {
+  BrowserCursorStore,
+  browserTabPicture,
+  browserViewerGraceMs,
+} from "@opensteer/client/host";
 import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
 import { mockBrowserPoolReport } from "@opensteer/client/mock";
 import {
@@ -589,6 +593,43 @@ describe.each(["image", "picture"] as const)(
       render("synchronized", false);
       expect(shown()).toBe(false);
       expect(viewerRelease).toHaveBeenCalledTimes(3);
+    });
+
+    it("lets go of its kept viewer once off screen past the grace, keeping the last picture, and takes it again when shown", async () => {
+      vi.useFakeTimers();
+      try {
+        const { container, decode, emit, hostClient, render, viewerRelease } = setup();
+        const shown = () => container.querySelector('img[alt="A page, example.com"]') !== null;
+        render("synchronized", true, { held: true });
+        emit();
+        await decode();
+        const holds = vi.mocked(hostClient.retainBrowserViewer).mock.calls.length;
+
+        // Another screen goes over the page: its picture goes, its pictureless viewer stays.
+        render("synchronized", false, { held: true });
+        expect(viewerRelease).toHaveBeenCalledTimes(1);
+        act(() => {
+          vi.advanceTimersByTime(browserViewerGraceMs - 1);
+        });
+        expect(viewerRelease, "a quick look at another screen reconnects nothing").toBeCalledTimes(
+          1,
+        );
+        // Past the grace nobody can see it: the Home must not count it as a viewer any more.
+        act(() => {
+          vi.advanceTimersByTime(1);
+        });
+        expect(viewerRelease).toHaveBeenCalledTimes(2);
+        expect(shown(), "the last picture stays for its return").toBe(true);
+
+        // Shown again, it takes its viewer at once.
+        render("synchronized", true, { held: true });
+        expect(hostClient.retainBrowserViewer).toHaveBeenCalledTimes(holds + 2);
+        expect(hostClient.retainBrowserViewer).toHaveBeenCalledWith(sessionId, surfaceId, {
+          picture: false,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("drops a touch begun before the picture changed size, rather than aiming it at the old geometry", async () => {
