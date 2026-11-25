@@ -82,6 +82,7 @@ import {
   type RunnerWorkerRun,
   runnerWorkerSecretsMessage,
 } from "./runner-worker-secrets.js";
+import { BoundedPersonalLog, RotatingPersonalLog } from "./personal-process-port.js";
 import {
   LocalRunnerDeploymentUnavailableError,
   type DesktopLocalRunnerTarget,
@@ -1854,6 +1855,11 @@ export class LocalRunnerService {
       { environmentInputs: "drop" },
     );
     const networkSecrets = networkCredentialSecrets(environment);
+    const workerSecrets = runnerSecrets({
+      ...(browser ? { browser } : {}),
+      ...(computerUse ? { computerUse } : {}),
+      enrollmentToken,
+    });
     this.#assertCurrentIntent(slot, intentGeneration);
     const stoppedSince = this.#agentsStoppedSince?.();
     if (stoppedSince !== undefined)
@@ -1945,6 +1951,10 @@ export class LocalRunnerService {
         try {
           child.on("exit", () => exit.resolve());
           logTail = boundedLogTail([child.stdout, child.stderr]);
+          keepRunnerLog(child, path.join(runnerDataDirectory, "runner.log"), [
+            ...networkSecrets,
+            ...Object.values(workerSecrets),
+          ]);
           child.on("message", (value) => {
             void (async () => {
               const parsed = WorkerMessageSchema.safeParse(value);
@@ -2136,15 +2146,7 @@ export class LocalRunnerService {
           });
           // Credentials are the first message the worker receives, after its
           // entire lifecycle (including failure cleanup) has an owner.
-          child.postMessage(
-            runnerWorkerSecretsMessage(
-              runnerSecrets({
-                ...(browser ? { browser } : {}),
-                ...(computerUse ? { computerUse } : {}),
-                enrollmentToken,
-              }),
-            ),
-          );
+          child.postMessage(runnerWorkerSecretsMessage(workerSecrets));
           if (!this.#intentIsCurrent(slot, intentGeneration)) {
             cancel();
             return;
@@ -2971,6 +2973,38 @@ async function assertRegularExecutable(filePath: string, label: string): Promise
  * a crash can say what the worker printed last instead of only its exit code.
  * The output is never stored on disk and never grows without bound.
  */
+/**
+ * The worker's own output on disk: `runner.log` in its data folder, beside
+ * `browser.log`, rotated at 256 KB into `runner.log.1` as desktop.log is. A
+ * released app has no terminal, so without it a device's Runner says nothing
+ * anyone can read. Every line is redacted of the credentials this app hands the
+ * worker (its enrollment and bridge tokens, its network credentials) and of
+ * bearer tokens, URL passwords and `token=` values before it is written. The
+ * Runner's own lines carry no person's content: its children's output never
+ * reaches its stdout or stderr.
+ */
+function keepRunnerLog(
+  child: Pick<UtilityProcessLike, "stdout" | "stderr">,
+  logPath: string,
+  secrets: readonly string[],
+): void {
+  const log = new RotatingPersonalLog(logPath, false);
+  let open = 0;
+  for (const [name, stream] of [
+    ["stdout", child.stdout],
+    ["stderr", child.stderr],
+  ] as const) {
+    if (!stream) continue;
+    open += 1;
+    new BoundedPersonalLog(16 * 1_024, secrets, (line) => log.append(name, line)).attach(stream);
+    stream.once("close", () => {
+      open -= 1;
+      if (open === 0) log.close();
+    });
+  }
+  if (open === 0) log.close();
+}
+
 function boundedLogTail(streams: readonly (NodeJS.ReadableStream | null)[]): () => string {
   let retained = "";
   for (const stream of streams) {
