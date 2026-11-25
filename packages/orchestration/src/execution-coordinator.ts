@@ -70,7 +70,7 @@ interface ExecutionCoordinatorOptions {
 }
 interface QueueEntry {
   readonly bytes: number;
-  readonly command: PendingCommandRow;
+  command: PendingCommandRow;
 }
 interface DispatchBackoff {
   attempts: number;
@@ -220,7 +220,12 @@ export class ExecutionCoordinator {
       }
     }
     for (const command of commands) {
-      if (this.#queuedIds.has(command.id)) continue;
+      if (this.#queuedIds.has(command.id)) {
+        // A queued command keeps its place, with the row as this listing read it.
+        const queued = this.#queue.find((entry) => entry.command.id === command.id);
+        if (queued) queued.command = command;
+        continue;
+      }
       const bytes = Buffer.byteLength(JSON.stringify(command.payload), "utf8");
       if (
         this.#queue.length >= this.#maxQueuedCommands ||

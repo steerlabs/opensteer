@@ -1539,6 +1539,7 @@ export async function listPendingCommands(
       .leftJoin("runs", "runs.id", "commands.runId")
       .selectAll("commands")
       .select("runs.harnessInstanceId as runHarnessInstanceId")
+      .select("runs.startHoldReason as runStartHoldReason")
       .where("commands.status", "=", "pending")
       .where("runs.finishIntent", "is", null)
       .where((expression) =>

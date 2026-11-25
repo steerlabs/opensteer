@@ -429,11 +429,37 @@ describeStore("a connected agent's authority at the send", (it) => {
         status: "queued",
       }),
     );
-    // Each later pass while the slot stays taken writes nothing more.
+    // Each later pass while the slot stays taken writes nothing more, on the row it read or on
+    // the row a new listing reads.
     expect(host.isAvailable(pending, 0)).toBe(false);
-    expect(host.isAvailable(pending, 0)).toBe(false);
+    const listed = async () =>
+      (await store.listPendingCommands()).find(({ id }) => id === queued.command!.id)!;
+    expect(host.isAvailable(await listed(), 0)).toBe(false);
+    expect(host.isAvailable(await listed(), 0)).toBe(false);
     expect(holds).toHaveBeenCalledTimes(1);
     expect(sent).toEqual([]);
+    // A ends; its Runner refuses B once for no stated reason (as while an engine profile is
+    // maintained), which returns B to the queue with no hold; C then takes the slot.
+    await store.claimCommand(queued.command.id, "waiting-for-run-slot");
+    await store.retryCommand(
+      queued.command.id,
+      Object.assign(new Error("Engine profile maintenance"), {
+        cause: { code: "conflict", message: "Engine profile maintenance", retryable: true },
+      }),
+    );
+    expect((await held()).startHoldReason).toBeNull();
+    // The Home sees the computer full again and reads B's row: it says B waits, once more.
+    expect(host.isAvailable(await listed(), 0)).toBe(false);
+    await vi.waitFor(async () =>
+      expect(await held()).toEqual({
+        command: "pending",
+        runStartHoldReason: "waiting-for-run",
+        startHoldReason: "waiting-for-run",
+        status: "queued",
+      }),
+    );
+    expect(host.isAvailable(await listed(), 0)).toBe(false);
+    expect(holds).toHaveBeenCalledTimes(2);
   });
 
   it("holds a chat's queued Run while the chat is paused, and never fails it for that", async ({

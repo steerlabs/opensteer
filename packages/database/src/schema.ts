@@ -2451,6 +2451,11 @@ export type CommandRow = Omit<Selectable<CommandTable>, "frameSentAt">;
 /** A command awaiting dispatch, with the AI account of the Run it names. */
 export type PendingCommandRow = CommandRow & {
   readonly runHarnessInstanceId: HarnessInstanceId | null;
+  /**
+   * Why the Run it names is held back, as this listing read it. A dispatcher that holds the Run
+   * marks it here too, until the next listing reads the row again.
+   */
+  runStartHoldReason: RunStartHoldReason | null;
 };
 
 export interface PersonalSettingsTable {
