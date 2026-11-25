@@ -35,6 +35,8 @@ import { createDeviceLeaveSignature } from "../packages/runner-auth/src/index.js
 import { desktopDeploymentPaths } from "../apps/desktop/src/app/application-paths.js";
 import { readDesktopConfiguration } from "../apps/desktop/src/config.js";
 import { DesktopLocalRunnerTargetResolver } from "../apps/desktop/src/supervisor/local-runner-authority.js";
+import { DesktopAccessProjection } from "../apps/desktop/src/connections/access-projection.js";
+import { DesktopDeploymentProbe } from "../apps/desktop/src/connections/deployment-probe.js";
 import {
   LocalRunnerService,
   type UtilityProcessLike,
@@ -816,6 +818,216 @@ it.each(["before", "after"] as const)(
     }
   },
 );
+
+// The road a person walks to a Cloud Computer from the Mac app, against a real Home listed
+// exactly as the Account lists one: source account, reached at its canonical origin.
+it("walks a Mac app to a Home its Account lists at a canonical origin, and joins it as a device", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "devices-cloud-"));
+  const database = await createMachineAccessDatabase(process.env.OPENSTEER_TEST_DATABASE_URL!);
+  const workers: ReturnType<typeof fork>[] = [];
+  const exits: Promise<unknown>[] = [];
+  let service: LocalRunnerService | undefined;
+  let host: Awaited<ReturnType<typeof startPersonalMachineHost>> | undefined;
+  try {
+    // A Cloud Computer has no Remote access: no Connect route, ever.
+    host = await startPersonalMachineHost({ databaseUrl: database.url });
+    const home = host;
+    const deploymentId = home.runtime.deployment.id;
+    const descriptor = HostDescriptorSchema.parse(
+      await (await fetch(new URL("/.well-known/opensteer", home.origin))).json(),
+    );
+    const now = new Date().toISOString();
+    const catalog = DeploymentCatalogSchema.parse({
+      deployments: [
+        {
+          accountAccess: "owner",
+          authority: descriptor.authority,
+          bootstrapMethods: descriptor.bootstrapMethods,
+          capabilities: descriptor.capabilities,
+          createdAt: now,
+          endpoints: [{ kind: "canonical", origin: home.origin.origin, verifiedAt: now }],
+          kind: "personal",
+          lastUsedAt: null,
+          name: "Cloud Computer",
+          reachability: "canonical",
+          source: {
+            issuer: "https://accounts.example.test",
+            kind: "account",
+            subject: ControlPlaneAccountIdSchema.parse(`acct_${randomUUID()}`),
+          },
+          updatedAt: now,
+        },
+      ],
+      revision: 1,
+      schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
+      // The person chose it in the list (step 3): a catalog with a place always has one chosen.
+      selectedDeploymentId: deploymentId,
+      updatedAt: now,
+    });
+
+    // 1. Listed: the place list reads it as reached at its own address, with no Connect route.
+    const [row] = (
+      await new DesktopAccessProjection({
+        catalog: { load: async () => catalog },
+        localRuntime: { current: async () => null },
+        supervisedDeploymentId: async () => null,
+      }).read()
+    ).deployments;
+    expect(row).toMatchObject({
+      access: "native",
+      hasAccountConnectRoute: false,
+      id: deploymentId,
+      source: "account",
+    });
+    expect(row?.key).not.toBeNull();
+    // 2. Ready after the probe: the check reaches it and finds the same Home.
+    const probe = new DesktopDeploymentProbe({
+      catalog: { load: async () => catalog, recordVerifiedCapabilities: async () => catalog },
+      fetch,
+      localRuntime: { current: async () => null },
+    });
+    expect(await probe.probe(deploymentId, new AbortController().signal)).toBe("reachable");
+    // 3. Selected and attached natively, at its canonical origin.
+    const [connection] = catalog.deployments;
+    const attached = resolveConnection(connection!, null, { authorization: null });
+    expect(attached).toMatchObject({ access: "native", origin: home.origin.origin, route: null });
+    console.info("CHAIN 1-3: account-listed canonical Home is native, reachable, attached");
+
+    // 4. The Home's sign-in: here the session it would hand back (the owner's own).
+    const sessionHeaders = home.ownerHeaders;
+
+    // 5-6. "Connect this Mac": main prepares this Mac's key, mints the enrollment under the
+    // person's session, and starts the Runner, which dials the address the catalog holds.
+    const targets = new DesktopLocalRunnerTargetResolver({
+      catalog: { load: async () => catalog, subscribe: () => () => undefined },
+      supervisedDeploymentId: async () => null,
+    });
+    const target = await targets.resolve(deploymentId);
+    expect(target).toMatchObject({ hostUrl: home.origin.origin, mayRunAgents: false });
+    const workerPath = integrationBundleEntrySync(path.resolve("."), "desktop");
+    const { config } = readDesktopConfiguration({
+      appDataDirectory: root,
+      defaultMode: "development",
+      packaged: false,
+      environment: {
+        OPENSTEER_DESKTOP_DATA_DIR: root,
+        OPENSTEER_DESKTOP_NATIVE_FS_HELPER: nativeFsHelperBinary,
+        OPENSTEER_DESKTOP_RUNNER_WORKER: workerPath,
+      },
+    });
+    await mkdir(path.join(root, "skills"));
+    service = new LocalRunnerService(config, {
+      computerName: async () => "Owner's Mac",
+      hostApi: (_id, origin) =>
+        createDesktopHostApi({
+          origin,
+          fetch: (input, init) =>
+            fetch(input, {
+              ...init,
+              headers: { ...(init.headers as Record<string, string>), ...sessionHeaders },
+            }),
+        }),
+      homeDirectory: root,
+      targets,
+      runtimeRelease: async () => ({
+        agentSkillsDirectory: path.join(root, "skills"),
+        browserHarnessExecutable: process.execPath,
+        harnessExecutables: shippedHarnessKindRecord(() => process.execPath),
+        nodeExecutable: process.execPath,
+      }),
+      userEnvironment: { resolve: async () => ({ HOME: root, PATH: "/usr/bin:/bin" }) },
+      fork: (_module, _args, options) => {
+        const child = fork(
+          path.resolve("tests/runner-utility-process.test-support.ts"),
+          [pathToFileURL(workerPath).href],
+          { cwd: options.cwd, env: options.env, execArgv: [], silent: true },
+        );
+        workers.push(child);
+        exits.push(once(child, "exit"));
+        const utility: UtilityProcessLike = {
+          stdout: child.stdout,
+          stderr: child.stderr,
+          kill: () => child.kill("SIGKILL"),
+          on: (event, listener) => {
+            child.on(event, listener);
+            return utility;
+          },
+          once: (event, listener) => {
+            child.once(event, listener);
+            return utility;
+          },
+          postMessage: (value) => {
+            child.send(value as Serializable);
+          },
+        };
+        return utility;
+      },
+    });
+    const setup = { deploymentId, runnerName: "Owner's Mac", runAgents: false } as const;
+    await service.setUpDevice(setup);
+    console.info("CHAIN 5a: set up");
+    const preparedIdentity = await service.prepareDeviceSetup(setup);
+    console.info("CHAIN 5b: prepared this Mac's key");
+    const mint: Parameters<typeof testRpcData<"commands.dispatch">>[2] = {
+      type: "runner.enrollment.createLocal",
+      preparedIdentity,
+      name: "Owner's Mac",
+      allowedModules: ["browser", "integrations", "messaging", "shell"],
+      access: { browser: true, apps: false, files: false },
+      idempotencyKey: "connect-this-mac",
+    };
+    const receipt = await service.withPreparedEnrollment(deploymentId, mint, async () => {
+      const result = await testRpcData(home.origin, "commands.dispatch", mint, {
+        headers: sessionHeaders,
+      });
+      await service!.observeHostCommand(deploymentId, mint, result);
+      return result;
+    });
+    if (receipt.type !== "runner.enrollment.createLocal")
+      throw new Error("Wrong enrollment receipt");
+    console.info("CHAIN 5c: enrollment minted under the person's session");
+    const started = await service.start({ ...setup, enrollmentToken: receipt.token });
+    expect(started.runner.state).toBe("running");
+    expect(started.mayRunAgents).toBe(false);
+    console.info("CHAIN 6: Runner started");
+    const runnerId = started.runner.runnerId!;
+
+    // 7. The Home lists this Mac as a device, connected, and never as a place agents run.
+    await vi.waitFor(
+      async () => {
+        const runner = await home.runtime.store.database
+          .selectFrom("runners")
+          .selectAll()
+          .where("id", "=", runnerId)
+          .executeTakeFirstOrThrow();
+        expect(runner.lastSeenAt).not.toBeNull();
+        expect(Object.keys(runner.moduleDescriptors)).not.toContain("agents");
+        expect(runner.maxConcurrentRuns).toBeNull();
+      },
+      { timeout: 10_000 },
+    );
+    expect(
+      await home.runtime.store.database
+        .selectFrom("devices")
+        .select(["id", "accessPolicy"])
+        .where("id", "=", DeviceIdSchema.parse(runnerId))
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ accessPolicy: { browser: true, apps: false } });
+    expect(await service.bindDeviceSession(deploymentId)).toBe("bound");
+    console.info("CHAIN 5-7: this Mac joined the canonical Home as a device; no agents run here");
+  } finally {
+    await service?.shutdown();
+    service?.dispose();
+    for (const child of workers)
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await withTimeout(Promise.all(exits), 5000, {
+      timeoutError: () => new Error("Runner child did not exit during cleanup"),
+    });
+    await host?.close();
+    await database.drop();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 60000);
 
 it("keeps person and Guest placement while Browser is off and continues a pending access Request", async () => {
   const database = await createMachineAccessDatabase(process.env.OPENSTEER_TEST_DATABASE_URL!);
