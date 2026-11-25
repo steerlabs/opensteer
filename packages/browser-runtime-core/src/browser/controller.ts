@@ -3833,6 +3833,7 @@ export class BrowserController {
       throw new BrowserRuntimeError(
         "bad_message",
         "Full-page capture would resize the page a person is watching. Scroll and capture each part, or read the page as text.",
+        { reason: "browser-full-page-capture", unsent: true },
       );
     if (fromSurface !== undefined && fromSurface !== true)
       throw new BrowserRuntimeError("bad_message", "A screenshot always comes from the surface.");
