@@ -225,7 +225,13 @@ export class ComputerUseService {
       helper: this.#helperPort(),
       ...(iphone ? { iphone } : {}),
       ...(passwords ? { passwords } : {}),
-      ...(this.#options.log === undefined ? {} : { log: this.#options.log }),
+      // Every slot's Runner shares one helper: each line says which Home's Runner asked.
+      ...(this.#options.log === undefined
+        ? {}
+        : {
+            log: (event: string, fields?: Readonly<Record<string, string>>) =>
+              this.#options.log?.(event, { ...fields, deploymentId }),
+          }),
       now: this.#now,
       onDataPermissionRequired: (input) => this.#dataPermissionRequired?.(input),
       ownership: this.#ownership,

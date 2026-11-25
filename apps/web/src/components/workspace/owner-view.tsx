@@ -1,5 +1,6 @@
 import { act, failureWords, refusalReason } from "../use-action.js";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { DeviceIdSchema, type BrowserSurfaceId } from "@opensteer/core";
 import {
   type HostClient,
   type HostSnapshot,
@@ -11,7 +12,7 @@ import {
   useOwnerViewRemoval,
   type useOwnerViewReconnect,
 } from "@opensteer/client/react";
-import type { ComputerView } from "@opensteer/protocol";
+import type { ComputerAppIdentity, ComputerView, OwnerWindowInfo } from "@opensteer/protocol";
 import { usePageVisible } from "../../ui-utils.js";
 import { AppMark } from "../computer-apps/app-icons.js";
 import { ComputerStopButton } from "../computer-watch.js";
@@ -22,9 +23,10 @@ import {
   ownerViewComputerReadiness,
 } from "@opensteer/client/integrations";
 import { Icon } from "../icon.js";
+import { Popover } from "../popover.js";
 import { SurfaceMenu, type SurfaceMenuItem } from "../surface-menu.js";
 import { useToast, useToastToolbar } from "../toast.js";
-import { ownerViewReadiness } from "./owner-views.js";
+import { ownerViewReadiness, ownerViewRecovery } from "./owner-views.js";
 import { useTabCloser } from "./tab-closer.js";
 import { useWorkspace } from "./workspace-context.js";
 
@@ -69,7 +71,7 @@ export function OwnerView({
   const viewId = source?.viewId ?? "";
   const generation = source?.generation ?? 0;
   useOwnerViewRemoval(hostClient, viewId, generation, reconnect?.removed);
-  const { localMachine } = useWorkspace();
+  const { localMachine, nav } = useWorkspace();
   const toast = useToast();
   const toolbarRef = useToastToolbar();
   const requestClose = useTabCloser();
@@ -227,6 +229,8 @@ export function OwnerView({
   ];
 
   const computer = ownerViewComputerReadiness(machine, phone);
+  const chooseWindow =
+    appIdentity !== null && ownerViewRecovery(readiness, phone) === "choose-window";
   const reopenEligible = hostConnected && computer === null;
   const resting = phone && source === null;
   const ordinaryState: {
@@ -358,7 +362,16 @@ export function OwnerView({
           >
             {state.busy ? <span aria-hidden className="spinner" /> : null}
             <span>{state.words}</span>
-            {state.reopen ? (
+            {state.reopen && chooseWindow ? (
+              <ChooseWindowAgain
+                app={appIdentity}
+                hostClient={hostClient}
+                machineId={machineId}
+                onChosen={(tabId) =>
+                  nav.beginPlaceOperation({ replace: true })({ kind: "tab", tabId })
+                }
+              />
+            ) : state.reopen ? (
               <button
                 className="btn btn--small"
                 disabled={reopening}
@@ -386,4 +399,94 @@ function sameOwnerView(
   right: { readonly machine: unknown; readonly view: ComputerView | null },
 ): boolean {
   return left.machine === right.machine && left.view === right.view;
+}
+
+/**
+ * The app's windows on that Mac, as the start page lists them, for a tab whose window
+ * the Mac no longer knows. The chosen one opens as a tab of its own, in this place.
+ */
+function ChooseWindowAgain({
+  app,
+  hostClient,
+  machineId,
+  onChosen,
+}: {
+  readonly app: ComputerAppIdentity;
+  readonly hostClient: HostClient;
+  readonly machineId: string;
+  readonly onChosen: (tabId: BrowserSurfaceId) => void;
+}) {
+  const [windows, setWindows] = useState<readonly OwnerWindowInfo[] | null>(null);
+  const [opening, setOpening] = useState(false);
+  const toggleRef = useRef<HTMLButtonElement | null>(null);
+  const popupId = useId();
+  const toast = useToast();
+  const choose = async () => {
+    setWindows(await hostClient.listComputerAppWindows(machineId, app).catch(() => []));
+  };
+  const open = async (windowId: OwnerWindowInfo["windowId"]) => {
+    setOpening(true);
+    try {
+      const tab = await hostClient.openTab({
+        kind: "window",
+        computerId: DeviceIdSchema.parse(machineId),
+        windowId,
+      });
+      onChosen(tab.tabId);
+    } catch (error) {
+      const words = failureWords(error);
+      if (words) toast.error(words);
+    } finally {
+      setOpening(false);
+      setWindows(null);
+    }
+  };
+  return (
+    <>
+      <button
+        ref={toggleRef}
+        aria-controls={windows ? popupId : undefined}
+        aria-expanded={windows !== null}
+        aria-haspopup="dialog"
+        className="btn btn--small"
+        disabled={opening}
+        onClick={() => void choose()}
+        type="button"
+      >
+        {opening ? "Opening…" : "Choose the window again"}
+      </button>
+      {windows && toggleRef.current ? (
+        <Popover
+          anchor={toggleRef.current}
+          className="start-app-windows"
+          id={popupId}
+          label={`Windows of ${app.displayName}`}
+          onClose={() => setWindows(null)}
+        >
+          {windows.length === 0 ? (
+            <p>{`${app.displayName} has no open window right now.`}</p>
+          ) : (
+            <ul>
+              {windows.map((window) => (
+                <li key={window.windowId}>
+                  <button
+                    aria-label={`${app.displayName} — ${window.title || "Untitled window"}`}
+                    onClick={() => void open(window.windowId)}
+                    type="button"
+                  >
+                    <span>{window.title || "Untitled window"}</span>
+                    {window.minimized ? (
+                      <small>Minimized</small>
+                    ) : window.onScreen === false ? (
+                      <small>Other Space</small>
+                    ) : null}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Popover>
+      ) : null}
+    </>
+  );
 }

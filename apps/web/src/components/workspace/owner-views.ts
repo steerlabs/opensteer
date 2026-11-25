@@ -25,3 +25,15 @@ export function ownerViewReadiness(
   if (view.state !== "ready") return view.unavailableReason ?? view.state;
   return null;
 }
+
+/**
+ * What a view that stopped offers. A window the Mac no longer knows (its Opensteer
+ * restarted since the tab chose it) is chosen again from the app's windows: opening
+ * it again would ask for the same lost window. Everything else opens again.
+ */
+export function ownerViewRecovery(
+  readiness: string | null,
+  phone: boolean,
+): "choose-window" | "open-again" {
+  return !phone && readiness === "window-identity-lost" ? "choose-window" : "open-again";
+}
