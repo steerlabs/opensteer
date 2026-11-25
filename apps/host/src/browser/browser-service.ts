@@ -10350,6 +10350,7 @@ export class HostedBrowserBroker {
       readonly removeAbort: () => void;
       readonly acknowledge: (() => void) | undefined;
       readonly bounded: boolean;
+      readonly screenshot: boolean;
       submitted: boolean;
       readonly reject: (error: unknown) => void;
       readonly resolve: (response: BrowserCdpResponse) => void;
@@ -11123,6 +11124,7 @@ export class HostedBrowserBroker {
         resolve,
         timeout,
         bounded: parsed.replyBudget !== undefined,
+        screenshot: parsed.command.method === "Page.captureScreenshot",
         removeAbort: () => signal?.removeEventListener("abort", cancel),
         acknowledge: admission?.acknowledged,
       };
@@ -12046,6 +12048,17 @@ export class HostedBrowserBroker {
       if (pending.submitted) pending.acknowledge?.();
       const cause = agentProtocolError(message.error);
       if (pending.bounded) {
+        // These correlated screenshot replies report a known refusal or a
+        // measured observation that exceeded its result budget.
+        if (
+          pending.screenshot &&
+          (cause.reason === "browser-full-page-capture" ||
+            cause.reason === "browser-screenshot-limit" ||
+            cause.reason === "browser-reply-limit")
+        ) {
+          pending.reject(new BrowserCdpRefusal(cause));
+          return;
+        }
         // A7: an agent's command. Only an error the runtime says came before the command reached
         // the page is a refusal; any other (or one that does not say) may have come after its
         // effect, and its outcome is unknown: never failed, never retried here.

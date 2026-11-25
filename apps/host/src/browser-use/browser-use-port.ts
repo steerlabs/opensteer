@@ -376,15 +376,15 @@ export function createBrowserUsePort({
         checkReply(value, call);
         return JSON.stringify(value);
       } catch (error) {
-        if (
-          method === "Page.captureScreenshot" &&
-          error instanceof OpensteerError &&
-          error.reason === "browser-reply-limit"
-        )
-          throw refused(
-            "resource_exhausted",
-            "Screenshot exceeds its image budget (up to 323 KiB per capture). Use a smaller viewport clip or JPEG via CDP.",
-          );
+        if (method === "Page.captureScreenshot" && error instanceof OpensteerError) {
+          if (error.reason === "browser-screenshot-limit")
+            throw refused("resource_exhausted", error.message);
+          if (error.reason === "browser-reply-limit")
+            throw refused(
+              "resource_exhausted",
+              `Screenshot exceeded the ${call.maxBytes / 1024} KiB reply limit. Use a smaller viewport clip or JPEG via CDP.`,
+            );
+        }
         translate(error, {
           tabId: target.tabId,
           sessionId: target.relay.session.id,
