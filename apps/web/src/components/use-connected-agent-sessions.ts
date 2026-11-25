@@ -2,8 +2,9 @@ import {
   connectedAgentsNow,
   readTaskActivity,
   threadInDirectory,
-  type HostClient,
+  type ChatScreenHost,
   type HostSnapshot,
+  type HostSnapshotSource,
   type ThreadSummary,
   type WaitingRequestView,
 } from "@opensteer/client/host";
@@ -52,7 +53,10 @@ function sameWaiting(a: readonly WaitingRequestView[], b: readonly WaitingReques
 }
 
 /** The directory alone has enough to name and count sessions and show their state. */
-export function useActiveConnectedAgentSessions(hostClient: HostClient, connectionId?: string) {
+export function useActiveConnectedAgentSessions(
+  hostClient: HostSnapshotSource,
+  connectionId?: string,
+) {
   const select = useCallback(
     (snapshot: HostSnapshot) => selectTasks(snapshot, connectionId),
     [connectionId],
@@ -76,7 +80,12 @@ export function useActiveConnectedAgentSessions(hostClient: HostClient, connecti
 }
 
 /** Reuse the task's existing activity read when a surface also needs places and actions. */
-export function useConnectedAgentWork(hostClient: HostClient, connectionId?: string) {
+export function useConnectedAgentWork(
+  hostClient: HostSnapshotSource & {
+    readonly rpc: Pick<ChatScreenHost["rpc"], "threads.activity">;
+  },
+  connectionId?: string,
+) {
   const {
     tasks,
     waitingRequests,
@@ -88,7 +97,7 @@ export function useConnectedAgentWork(hostClient: HostClient, connectionId?: str
   }, [base, tasks]);
   const [activityRead, setActivityRead] = useState(0);
   const [read, setRead] = useState<{
-    client: HostClient;
+    client: typeof hostClient;
     byTask: ReadonlyMap<string, readonly AgentOperationView[]>;
   }>();
   useEffect(() => {

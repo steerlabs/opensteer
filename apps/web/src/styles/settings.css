@@ -1579,7 +1579,7 @@ a.connected-agents__row:focus-visible {
 
 .connected-agent__session-title {
   margin: 0;
-  font-size: var(--text-base);
+  font-size: var(--text-lg);
 }
 
 .connected-agent__session-place {

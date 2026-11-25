@@ -3,7 +3,7 @@ import {
   agentWords,
   connectedAgentEarlier,
   unwrapRpcResult,
-  type HostClient,
+  type ChatScreenHost,
 } from "@opensteer/client/host";
 import type { AgentCommandActivity, AgentOperationView } from "@opensteer/core";
 import { OutsideName } from "../../../ui/address-text.js";
@@ -18,7 +18,7 @@ interface ActivityPage {
 }
 
 async function readActivityPage(
-  client: HostClient,
+  client: Pick<ChatScreenHost, "rpc">,
   connectionId: string,
   before: string | null,
   signal: AbortSignal,
@@ -31,7 +31,10 @@ async function readActivityPage(
 }
 
 /** One initial read and one more only when Show earlier is pressed. */
-export function useConnectedAgentHistory(client: HostClient, connectionId: string) {
+export function useConnectedAgentHistory(
+  client: Pick<ChatScreenHost, "rpc">,
+  connectionId: string,
+) {
   const scope = useMemo(() => ({ client, connectionId }), [client, connectionId]);
   const lifetime = useRef<{ scope: typeof scope; controller: AbortController; busy: boolean }>(
     null,

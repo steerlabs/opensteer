@@ -67,8 +67,8 @@ export function ConnectedAgentPage({
   const agents = useConnectedAgents(client);
   // What this page sends is what the chat parity script covers.
   const chatHost = chatScreenHost(client);
-  const work = useConnectedAgentWork(client, connectionId);
-  const history = useConnectedAgentHistory(client, connectionId);
+  const work = useConnectedAgentWork(chatHost, connectionId);
+  const history = useConnectedAgentHistory(chatHost, connectionId);
   const activeSessionIds = useMemo(
     () => new Set(work.view.agents.map(({ sessionId }) => sessionId)),
     [work.view.agents],

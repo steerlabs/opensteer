@@ -4448,7 +4448,7 @@ html[data-tab-sorting] * {
 
 .agents-now-panel__header h2 {
   margin: 0;
-  font-size: var(--text-base);
+  font-size: var(--text-lg);
 }
 
 .agents-now-panel__header > .outside-name {

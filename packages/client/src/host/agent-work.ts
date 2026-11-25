@@ -74,7 +74,7 @@ export function agentSessionSlot(
 
 /** A connected agent's task's operations, newest first, as `threads.activity` lists them. */
 export async function readTaskActivity(
-  client: Pick<HostClient, "rpc">,
+  client: { readonly rpc: Pick<HostClient["rpc"], "threads.activity"> },
   threadId: string,
   signal?: AbortSignal,
 ): Promise<readonly AgentOperationView[]> {

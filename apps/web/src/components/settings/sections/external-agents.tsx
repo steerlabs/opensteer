@@ -5,6 +5,7 @@ import {
   agentText,
   agentWords,
   arrivedConnection,
+  chatScreenHost,
   connectedAgentsView,
   externalAgentAddresses,
   externalAgentGuides,
@@ -69,7 +70,8 @@ function ConnectedAgentsList({
 }) {
   const shell = useShell();
   const agents = useConnectedAgents(client);
-  const { view: active } = useActiveConnectedAgentSessions(client);
+  const chatHost = chatScreenHost(client);
+  const { view: active } = useActiveConnectedAgentSessions(chatHost);
   const work = new Map<string, ConnectedAgentNow["state"]>();
   for (const entry of active.agents) {
     if (!work.has(entry.connectionId)) work.set(entry.connectionId, entry.state);
