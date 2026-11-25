@@ -813,7 +813,12 @@ export class OpensteerMcpService {
                   ...(name === "browser_connect" ? { next: browserConnectCompletedNext } : {}),
                 }
               : {
-                  next: status === "unknown" ? unknownNext : "It failed. Check the current state.",
+                  next:
+                    status !== "unknown"
+                      ? "It failed. Check the current state."
+                      : name === "computer_use" && row.effect === "read"
+                        ? "Opensteer lost the result of this read, which could not send input to the device."
+                        : unknownNext,
                 }),
           };
           if (tool.output === ComputerUseOutputSchema)

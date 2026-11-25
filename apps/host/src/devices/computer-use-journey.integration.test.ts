@@ -6512,6 +6512,57 @@ integration.sequential("Computer use for a connected agent, through its session"
     }
   });
 
+  it("explains an orphaned computer read without suggesting that it sent input", async () => {
+    const s = await connectedAgent("full-access");
+    const gate = Promise.withResolvers<void>();
+    const invoke = vi.fn((call: Parameters<DeviceToolHandlers["computer_use"]>[0]) =>
+      s.handlers.computer_use(call),
+    );
+    const mcp = new OpensteerMcpService({
+      callers: { authenticate: async () => s.caller },
+      handlers: { computer_use: invoke },
+      store: s.world.store,
+      publicUrl: new URL("https://home.test"),
+    });
+    const code = 'await (await phone("Pixel 8")).observe()';
+    const operationKey = "orphaned-read";
+    s.fake.gate = gate.promise;
+    const inFlight = s.call({ code, readOnly: true }, operationKey);
+    void inFlight.catch(() => undefined);
+    try {
+      await Promise.race([s.fake.reached("observe"), inFlight]);
+      expect(await s.operation(operationKey)).toMatchObject({
+        state: "handed-off",
+        effect: "read",
+      });
+      const recovered = new AgentSessionService({ store: s.world.store, holdMs: 0 });
+      await recovered.start();
+      recovered.stop();
+      const reply = computerUseTool.output.parse(
+        await mcp.callToolResult(
+          "token",
+          "computer_use",
+          { code, computerId: s.computerId, readOnly: true },
+          { operationKey },
+        ),
+      );
+      expect(reply.structuredContent).toMatchObject({
+        status: "unknown",
+        next: "Opensteer lost the result of this read, which could not send input to the device.",
+      });
+      expect(invoke).not.toHaveBeenCalled();
+      expect(await s.operation(operationKey)).toMatchObject({
+        state: "unknown",
+        outcome: "unknown",
+      });
+    } finally {
+      gate.resolve();
+      await inFlight.catch(() => undefined);
+      await mcp.close();
+      await s.world.close();
+    }
+  });
+
   it("asks in approval-required, completes the same call once allowed, and refuses a decline", async () => {
     const s = await connectedAgent("approval-required");
     try {
