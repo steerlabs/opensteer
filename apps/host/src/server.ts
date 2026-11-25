@@ -432,6 +432,8 @@ export interface HostServerDependencies {
   readonly apps: AppService;
   readonly appOriginSigningKey: Uint8Array;
   readonly appRealOrigins: boolean;
+  /** This Home's own origins (canonical, current route): the only ones its web app runs at. */
+  readonly homeOrigins?: () => readonly string[];
   /** Which forwarding headers to believe; absent keeps the loopback tunnel connector's. */
   readonly trustedProxy?: import("@opensteer/config").TrustedProxy;
   readonly requestResponseVault: RequestResponseVault;
@@ -696,7 +698,12 @@ export async function createHostServer(
       else socketServer.options.maxPayload = limit;
     }
   };
-  registerAppRoutes(app, dependencies.apps, dependencies.plugins?.pages);
+  registerAppRoutes(
+    app,
+    dependencies.apps,
+    dependencies.plugins?.pages,
+    () => dependencies.homeOrigins?.() ?? [dependencies.discovery.document.canonicalOrigin],
+  );
   if (dependencies.plugins?.webhooks)
     registerPluginWebhookRoutes(app, {
       ...dependencies.plugins.webhooks,

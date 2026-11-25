@@ -16,6 +16,15 @@ export const appFrameContentSecurityPolicy = [
   "form-action 'none'",
 ].join("; ");
 
+/**
+ * Who may frame an app the Home serves from its own address: the Home's own web app there
+ * (`'self'`) and at the Home's other origins, and nothing else. Set where those routes are served:
+ * no response of the Home renders in a frame of an origin that is not the Home's own app (M3).
+ */
+export function appFrameAncestors(origins: readonly string[]): string {
+  return ["frame-ancestors", "'self'", ...new Set(origins)].join(" ");
+}
+
 /** An app with a real origin is isolated by that origin, so its frame keeps it. */
 export const appOriginFrameSandbox =
   "allow-same-origin allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads";

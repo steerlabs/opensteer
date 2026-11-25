@@ -902,7 +902,7 @@ export async function createHostRuntime(
             // A new set is published from the committed route; agents attached under the old
             // one end their attachments and attach again with it (B1).
             if (!homeAddresses.publish(routeOrigin)) return;
-            browser.endAgentAttachments("This Home's addresses changed. Attach again.");
+            browser.endAgentAttachments("This browser attachment has ended.");
             chromeTabs.endAgentAttachments();
           },
         })
@@ -3690,6 +3690,7 @@ export async function createHostRuntime(
           .update("opensteer-app-cookie-v1")
           .digest(),
         appRealOrigins: hostAppRealOrigins(config.exposure),
+        homeOrigins: () => homeAddresses.current().origins,
         trustedProxy: hostTrustedProxy(config),
         liveText,
         resourceRevisions,

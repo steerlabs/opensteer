@@ -24,6 +24,17 @@ it("frames no response of a real Home: its pages, its API, its errors (D2)", asy
         "frame-ancestors 'none'",
       );
     }
+    // The Home's own apps and plugin pages are framed by the Home's own web app, and by nothing
+    // else: an explicit list, set where they are served, and no X-Frame-Options (M3).
+    for (const route of ["/v1/apps", "/v1/plugin-pages"]) {
+      const path = `${route}/app_${crypto.randomUUID()}/dark/${"a".repeat(43)}/`;
+      const response = await fetch(`${origin}${path}`, { redirect: "manual" });
+      const policy = response.headers.get("content-security-policy") ?? "";
+      expect(policy, path).toContain(`frame-ancestors 'self' ${origin}`);
+      expect(policy.match(/frame-ancestors/gu), path).toHaveLength(1);
+      expect(policy, path).not.toContain("frame-ancestors 'none'");
+      expect(response.headers.get("x-frame-options"), path).toBeNull();
+    }
   } finally {
     await host.close();
   }

@@ -158,13 +158,16 @@ it.each([
       headers: { host, "x-forwarded-proto": "https" },
     });
     expect(response.statusCode).toBe(200);
+    // Framed only by the Home's own web app (M3).
     expect(response.headers["content-security-policy"]).toBe(
-      ["localhost:1234", "example.test", "[::1]:1234"].includes(host)
-        ? appFrameContentSecurityPolicy.replace(
-            "connect-src 'self'",
-            `connect-src 'self' http://${host}`,
-          )
-        : appFrameContentSecurityPolicy,
+      `${
+        ["localhost:1234", "example.test", "[::1]:1234"].includes(host)
+          ? appFrameContentSecurityPolicy.replace(
+              "connect-src 'self'",
+              `connect-src 'self' http://${host}`,
+            )
+          : appFrameContentSecurityPolicy
+      }; frame-ancestors 'self'`,
     );
   } finally {
     await server.close();

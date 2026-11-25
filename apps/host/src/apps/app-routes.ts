@@ -13,7 +13,11 @@ import {
 import type { UserId } from "@opensteer/core";
 import type { AppTheme } from "@opensteer/shared/appFrame";
 import type { AppsListInputSchema } from "@opensteer/protocol";
-import { appFrameContentSecurityPolicy, appFrameHeaders } from "@opensteer/shared/appFrame";
+import {
+  appFrameAncestors,
+  appFrameContentSecurityPolicy,
+  appFrameHeaders,
+} from "@opensteer/shared/appFrame";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireSession } from "../server/rpc-context.js";
@@ -74,6 +78,8 @@ export function registerAppRoutes(
   app: FastifyInstance,
   apps: Pick<AppService, "authorizeView" | "response" | "acceptTunnel">,
   pages?: import("../plugins/plugin-pages.js").PluginPages,
+  /** The Home's own origins its web app frames these from, besides the one serving them. */
+  framingOrigins: () => readonly string[] = () => [],
 ): void {
   void app.register(async (proxy) => {
     proxy.removeAllContentTypeParsers();
@@ -90,6 +96,9 @@ export function registerAppRoutes(
         async (request, reply) => {
           for (const [name, value] of Object.entries({ ...appFrameHeaders(), ...appCorsHeaders }))
             reply.header(name, value);
+          // Framed by the Home's own web app and nothing else (M3).
+          const ancestors = appFrameAncestors(framingOrigins());
+          reply.header("content-security-policy", `${appFrameContentSecurityPolicy}; ${ancestors}`);
           const parsed = z
             .object({
               appId: AppIdSchema,
@@ -106,10 +115,10 @@ export function registerAppRoutes(
           if (host && /^[A-Za-z0-9.[\]:_-]+$/u.test(host))
             reply.header(
               "content-security-policy",
-              appFrameContentSecurityPolicy.replace(
+              `${appFrameContentSecurityPolicy.replace(
                 "connect-src 'self'",
                 `connect-src 'self' http://${host}`,
-              ),
+              )}; ${ancestors}`,
             );
           const controller = new AbortController();
           const abort = () => controller.abort(new Error("App viewer disconnected"));
