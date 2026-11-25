@@ -317,6 +317,7 @@ export function browserSignInReceipt(request: Request): string {
   );
   if (!response.success || response.data.outcome === "session-closed") return "Allowed";
   if (response.data.outcome === "not-signed-in") return "Chrome not signed in";
+  if (response.data.outcome === "unconfirmed") return "Sign-in unconfirmed";
   const site = request.payload.kind === "browser.sign-in" ? request.payload.site : null;
   return site ? `Copied Chrome sign-in for ${browserSiteLabel(site)}` : "Copied Chrome sign-in";
 }

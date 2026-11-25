@@ -1497,6 +1497,49 @@ export async function retireBrowserPoolTarget(
         .where("runnerId", "=", runnerId)
         .returningAll()
         .executeTakeFirst(databaseOperationOptions());
+      if (slot) {
+        // End any non-closing sessions still bound to the retiring slot with their tab loss notes
+        // in this same transaction (Sol 4: covers crash between target write and retirement).
+        // Closing Stops keep state='closing' without fabricated close evidence (Rule 4 / W14).
+        const staleReady = await tx
+          .selectFrom("browserSessions")
+          .select("id")
+          .where("runnerId", "=", runnerId)
+          .where("runtimeId", "=", slot.runtimeId)
+          .where("state", "in", ["starting", "ready"])
+          .where(ownedBy(slot))
+          .orderBy("id")
+          .execute(databaseOperationOptions());
+        if (staleReady.length) {
+          const staleIds = staleReady.map(({ id }) => id);
+          const tabRows = await tx
+            .selectFrom("personalTabs")
+            .select(["id", sql<BrowserSessionId>`page_binding->>'sessionId'`.as("sessionId")])
+            .where(sql<string>`page_binding->>'sessionId'`, "in", staleIds)
+            .where("closedAt", "is", null)
+            .orderBy("id")
+            .execute(databaseOperationOptions());
+          const tabsBySession = new Map<BrowserSessionId, string[]>();
+          for (const row of tabRows) {
+            const list = tabsBySession.get(row.sessionId) ?? [];
+            list.push(row.id);
+            tabsBySession.set(row.sessionId, list);
+          }
+          await recordBrowserPoolLosses(
+            tx,
+            slot,
+            staleIds.map((sessionId) => ({
+              sessionId,
+              reason: "browser-replaced",
+              surfaces: (tabsBySession.get(sessionId) ?? []).map((surfaceId) => ({
+                surfaceId,
+                documentId: null,
+              })),
+            })),
+            null,
+          );
+        }
+      }
       if (slot && retired) {
         const waiting = await tx
           .selectFrom("browserSessions")

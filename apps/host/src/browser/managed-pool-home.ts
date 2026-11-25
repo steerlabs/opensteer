@@ -131,7 +131,7 @@ export function pooledBrowserModuleDescriptor(
  * Every attach is fenced by this target's lifetime abort controller (M2): a retired target
  * aborts any in-flight health/inventory read and can never publish a peer over a replacement.
  */
-function createManagedPooledRelay(input: {
+export function createManagedPooledRelay(input: {
   readonly browserRelay: RunnerBrowserHub;
   readonly runnerId: RunnerId;
   readonly runnerName: string;
@@ -139,6 +139,8 @@ function createManagedPooledRelay(input: {
   readonly transport: ReturnType<typeof managedBrowserPool>["transport"];
   readonly ticketKey: ManagedBrowserPoolHomeKeys["ticketKey"];
   readonly passkeys: boolean;
+  readonly currentGuest?:
+    (() => { readonly instanceId: string; readonly epoch: number } | null) | undefined;
   readonly isAgentsStopped?: (() => boolean) | undefined;
   readonly onDetached?: (() => void) | undefined;
 }): ManagedPooledRelay {
@@ -200,6 +202,20 @@ function createManagedPooledRelay(input: {
     const run = (async () => {
       const targetSignal = targetLifetime.signal;
       targetSignal.throwIfAborted();
+      // Capture the slot's active guest `(instanceId, epoch)` at attach start (Sol 2).
+      const startedGuest = input.currentGuest?.();
+      if (input.currentGuest && !startedGuest)
+        throw new BrowserPoolAdmissionClosed("The pooled browser is not running.");
+      const guestChanged = (): boolean => {
+        if (!input.currentGuest) return false;
+        const current = input.currentGuest();
+        return (
+          !current ||
+          !startedGuest ||
+          current.instanceId !== startedGuest.instanceId ||
+          current.epoch !== startedGuest.epoch
+        );
+      };
       const bridge = new LocalBrowserRuntimeBridge({
         transport: input.transport,
         runtimeId: pooledBrowserRuntimeId,
@@ -292,16 +308,16 @@ function createManagedPooledRelay(input: {
             await input.browserRelay.handleMessage(peer, parsed);
         },
       };
-      // Fence check immediately before publishing the peer to the hub.
-      if (retired || targetSignal.aborted)
+      // Fence check immediately before publishing the peer to the hub (target + guest fence).
+      if (retired || targetSignal.aborted || guestChanged())
         throw new BrowserPoolAdmissionClosed("This browser target was retired.");
       activePeer = peer;
       activeRelay = relay;
       try {
         input.browserRelay.attach(peer, buildStream());
         await relay.attach(relayStream, targetSignal);
-        // Fence check again after inventory/reconciliation completes.
-        if (retired || targetSignal.aborted || activePeer !== peer) {
+        // Fence check again after inventory/reconciliation completes (target + guest fence).
+        if (retired || targetSignal.aborted || activePeer !== peer || guestChanged()) {
           cleanupPeer(peer, relay);
           throw new BrowserPoolAdmissionClosed("This browser target was retired.");
         }
@@ -480,7 +496,11 @@ export async function startManagedBrowserPool(input: {
     const next = computeStatus();
     if (next === lastStatus) return;
     lastStatus = next;
-    input.onStatusChanged?.(next);
+    try {
+      input.onStatusChanged?.(next);
+    } catch {
+      // Diagnostic callbacks must never interrupt pool reconciliation or retries.
+    }
   };
 
   const unavailableReason = (): string => {
@@ -638,6 +658,7 @@ export async function startManagedBrowserPool(input: {
           transport: parts.transport,
           ticketKey: keys.ticketKey,
           passkeys: input.passkeys === true,
+          currentGuest: () => coordinator?.activeGuest() ?? null,
           ...(input.isAgentsStopped
             ? { isAgentsStopped: () => input.isAgentsStopped!(runnerId) }
             : {}),
@@ -712,7 +733,7 @@ export async function startManagedBrowserPool(input: {
     retryTimer = setTimeout(() => {
       retryTimer = undefined;
       if (closed) return;
-      scheduleReconcile(false);
+      void scheduleReconcile(false);
     }, delayMs);
     retryTimer.unref();
   };
@@ -727,7 +748,11 @@ export async function startManagedBrowserPool(input: {
         syncStatus();
       } catch (error) {
         reconcileError = error;
-        input.onError?.(error);
+        try {
+          input.onError?.(error);
+        } catch {
+          // Diagnostic callbacks must never stop reconciliation retries.
+        }
         syncStatus();
         scheduleRetry();
         return;
@@ -771,7 +796,7 @@ export async function startManagedBrowserPool(input: {
       if (closed) return;
       desiredTarget = target;
       desiredTargetKey = canonicalJson(target);
-      scheduleReconcile(true);
+      void scheduleReconcile(true);
     },
     onNotReady: (answer) => {
       notReadyStatus = answer === "preparing" ? "preparing" : "no-target";
@@ -793,7 +818,7 @@ export async function startManagedBrowserPool(input: {
   // Kick the level-triggered reconciliation loop (including startup drain of all stored retired
   // targets and adoption of any stored ready target) without letting an adoption rejection stop
   // `targets.start()` from running (M4).
-  scheduleReconcile(true);
+  void scheduleReconcile(true);
   targets.start();
   return {
     get runnerId() {
@@ -807,7 +832,7 @@ export async function startManagedBrowserPool(input: {
       if (closed || desiredRunnerId === runnerId) return;
       desiredRunnerId = runnerId;
       input.onRunnerBound?.(runnerId);
-      scheduleReconcile(true);
+      void scheduleReconcile(true);
       if (!desiredTarget) targets.suspect();
     },
     close: async () => {

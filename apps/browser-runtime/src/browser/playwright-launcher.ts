@@ -48,7 +48,6 @@ import path from "node:path";
 import {
   chromium,
   type Dialog,
-  type Download,
   type Frame,
   type Page,
   type Request,
@@ -154,14 +153,11 @@ export interface NativeProfileOpenTiming {
 }
 
 interface PooledTransferPolicy {
-  /** Idle period without byte progress after which a stalled download stops vetoing park. */
-  readonly stallMs: number;
-  /** Maximum lifetime for transfers whose byte progress cannot be observed (e.g. uploads). */
+  /** Maximum lifetime for pooled uploads whose byte progress cannot be observed. */
   readonly maxUnobservedMs: number;
 }
 
 const defaultPooledTransferPolicy: PooledTransferPolicy = {
-  stallMs: 5 * 60_000,
   maxUnobservedMs: 60 * 60_000,
 };
 
@@ -180,7 +176,7 @@ interface PlaywrightChromiumLauncherOptions {
   platform?: NodeJS.Platform;
   proxyUrl?: string;
   preserveLoopbackBypass?: boolean;
-  /** Pooled runtime only (M5/M7): progress- and lifetime-bounded download/upload retire holds. */
+  /** Pooled runtime only (M7): lifetime-bounded upload retire holds (downloads are disabled in pooled guests). */
   pooledTransfers?: boolean | Partial<PooledTransferPolicy>;
 }
 
@@ -356,7 +352,6 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         ? defaultPooledTransferPolicy
         : options.pooledTransfers
           ? {
-              stallMs: options.pooledTransfers.stallMs ?? defaultPooledTransferPolicy.stallMs,
               maxUnobservedMs:
                 options.pooledTransfers.maxUnobservedMs ??
                 defaultPooledTransferPolicy.maxUnobservedMs,
@@ -1020,7 +1015,6 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
       lifecycle,
       dedicatedContext,
       pooledTransfers,
-      pooledTransfers ? browserCdp : undefined,
     );
     if (authenticator) {
       for (const page of context.pages())
@@ -1445,21 +1439,6 @@ class PlaywrightContextHandle implements BrowserContext {
   private readonly pageTitles = new WeakMap<Page, string>();
   private readonly laneTails = new Map<string, Promise<void>>();
   readonly pooledTransfers: PooledTransferPolicy | undefined;
-  /**
-   * Pooled runtime only (M7): browser-process downloads observed on `browserCdp`, keyed by
-   * Chromium download GUID. Tracks actual `receivedBytes` progress so stalled downloads expire
-   * after `stallMs`, surviving renderer crashes inside that bound and clearing on page close.
-   */
-  private readonly pooledDownloads = new Map<
-    string,
-    {
-      readonly frameId: string;
-      page: PlaywrightPageHandle | undefined;
-      receivedBytes: number;
-      lastProgressAt: number;
-      readonly startedAt: number;
-    }
-  >();
 
   constructor(
     context: PlaywrightBrowserContext,
@@ -1470,7 +1449,6 @@ class PlaywrightContextHandle implements BrowserContext {
     lifecycle?: ChromiumTabLifecycleBridge,
     nativeProfile = false,
     pooledTransfers?: PooledTransferPolicy,
-    browserCdp?: PlaywrightCdpSession,
   ) {
     this.privatePage = privatePage;
     this.lifecycleCandidate = lifecycle;
@@ -1480,89 +1458,18 @@ class PlaywrightContextHandle implements BrowserContext {
     this.openDialogs = openDialogs;
     this.nativeProfile = nativeProfile;
     this.pooledTransfers = pooledTransfers;
-    if (pooledTransfers && browserCdp) {
-      const cdp = untypedCdp(browserCdp);
-      cdp.on("Browser.downloadWillBegin", (raw: unknown) => {
-        if (!isRecord(raw) || typeof raw.guid !== "string") return;
-        const frameId = typeof raw.frameId === "string" ? raw.frameId : "";
-        const now = Date.now();
-        const page = frameId ? this.handleByTarget.get(frameId)?.deref() : undefined;
-        this.pooledDownloads.set(raw.guid, {
-          frameId,
-          page,
-          receivedBytes: 0,
-          lastProgressAt: now,
-          startedAt: now,
-        });
-      });
-      cdp.on("Browser.downloadProgress", (raw: unknown) => {
-        if (!isRecord(raw) || typeof raw.guid !== "string") return;
-        const state = typeof raw.state === "string" ? raw.state : "";
-        if (state === "completed" || state === "canceled") {
-          this.pooledDownloads.delete(raw.guid);
-          return;
-        }
-        const now = Date.now();
-        const receivedBytes =
-          typeof raw.receivedBytes === "number" && Number.isFinite(raw.receivedBytes)
-            ? raw.receivedBytes
-            : 0;
-        const existing = this.pooledDownloads.get(raw.guid);
-        if (!existing) {
-          this.pooledDownloads.set(raw.guid, {
-            frameId: "",
-            page: undefined,
-            receivedBytes,
-            lastProgressAt: now,
-            startedAt: now,
-          });
-          return;
-        }
-        if (receivedBytes > existing.receivedBytes) {
-          existing.receivedBytes = receivedBytes;
-          existing.lastProgressAt = now;
-        }
-      });
-    }
     for (const page of context.pages()) {
       if (this.isHiddenPage(page)) continue;
       if (nativeProfile) this.arrive(page);
       else this.published.add(page);
     }
     context.on("close", () => {
-      this.pooledDownloads.clear();
       this.markClosed();
       this.pendingLinkOpens.length = 0;
       // A context's end ends its pages even when Playwright reports no page close.
       for (const handle of this.pagesByPlaywrightPage.values()) handle.confirmGone("context");
     });
     context.on("page", (page) => this.arrive(page));
-  }
-
-  hasActivePooledDownload(
-    page: PlaywrightPageHandle,
-    targetId: string | undefined,
-    now: number,
-  ): boolean {
-    const policy = this.pooledTransfers;
-    if (!policy) return false;
-    for (const entry of this.pooledDownloads.values()) {
-      const belongs =
-        entry.page === page ||
-        (targetId !== undefined && entry.frameId === targetId) ||
-        (entry.page === undefined && entry.frameId === "" && this.pagesByPlaywrightPage.size === 1);
-      if (!belongs) continue;
-      if (now - entry.lastProgressAt < policy.stallMs) return true;
-    }
-    return false;
-  }
-
-  clearPooledDownloadsForPage(page: PlaywrightPageHandle, targetId: string | undefined): void {
-    for (const [guid, entry] of this.pooledDownloads) {
-      if (entry.page === page || (targetId !== undefined && entry.frameId === targetId)) {
-        this.pooledDownloads.delete(guid);
-      }
-    }
   }
 
   /**
@@ -2836,8 +2743,6 @@ class PlaywrightPageHandle implements BrowserPage {
   private readonly uploads = new Set<Request>();
   /** Pooled runtime only: start time of each in-flight upload (unobserved progress, 60 min cap). */
   private readonly pooledUploadStarts: Map<Request, number> | undefined;
-  /** Pooled runtime only: Playwright download fallback when CDP progress events are absent. */
-  private readonly pooledUnobservedDownloads: Map<Download, number> | undefined;
   private captureSession: Promise<PlaywrightCdpSession> | undefined;
   private captureWorld: number | undefined;
   private cdpPromise: Promise<CdpSession> | null = null;
@@ -2909,50 +2814,42 @@ class PlaywrightPageHandle implements BrowserPage {
       return () => lifecycle("active");
     };
     page.on("request", (request) => {
-      if (!["GET", "HEAD"].includes(request.method())) {
-        this.uploads.add(request);
-        this.pooledUploadStarts?.set(request, Date.now());
-      }
+      if (!["GET", "HEAD"].includes(request.method())) this.uploads.add(request);
       if (request.isNavigationRequest() && request.frame() === page.mainFrame())
         this.requestMethod = request.method();
     });
     page.on("requestfinished", (request) => {
       this.uploads.delete(request);
-      this.pooledUploadStarts?.delete(request);
     });
     page.on("requestfailed", (request) => {
       this.uploads.delete(request);
-      this.pooledUploadStarts?.delete(request);
+    });
+    page.once("close", () => {
+      this.uploads.clear();
     });
     const pooledTransfers = contextHandle.pooledTransfers;
     if (pooledTransfers) {
-      this.pooledUploadStarts = new Map();
-      this.pooledUnobservedDownloads = new Map();
-      page.on("download", (download) => {
-        const downloads = this.pooledUnobservedDownloads!;
-        downloads.set(download, Date.now());
-        const done = () => downloads.delete(download);
-        void download.path().then(done, done);
+      const uploadStarts = new Map<Request, number>();
+      this.pooledUploadStarts = uploadStarts;
+      page.on("request", (request) => {
+        if (!["GET", "HEAD"].includes(request.method())) uploadStarts.set(request, Date.now());
       });
-      // A renderer crash ends renderer-bound uploads at once, while browser-process downloads
-      // continue inside their progress/lifetime bound (M7).
+      page.on("requestfinished", (request) => {
+        uploadStarts.delete(request);
+      });
+      page.on("requestfailed", (request) => {
+        uploadStarts.delete(request);
+      });
+      // A renderer crash or page close ends renderer-bound uploads at once (M7).
       page.on("crash", () => {
         this.uploads.clear();
-        this.pooledUploadStarts?.clear();
+        uploadStarts.clear();
+      });
+      page.once("close", () => {
+        uploadStarts.clear();
       });
       this.activeTransfers = () => this.readActivePooledTransfers(pooledTransfers);
     }
-    page.once("close", () => {
-      this.uploads.clear();
-      this.pooledUploadStarts?.clear();
-      this.pooledUnobservedDownloads?.clear();
-      if (pooledTransfers) {
-        this.contextHandle.clearPooledDownloadsForPage(
-          this,
-          this.knownTargetId ?? syncTargetIdOfPage(this.page) ?? undefined,
-        );
-      }
-    });
     page.once("close", () => void this.endedBy().then((cause) => this.confirmGone(cause)));
     page.on("popup", (popup) => {
       contextHandle.wrap(popup).openerHandle = this;
@@ -2963,40 +2860,20 @@ class PlaywrightPageHandle implements BrowserPage {
   }
 
   /**
-   * Pooled runtime only (M7): returns active transfers that should veto idle parking.
-   * - Browser-process downloads observed via CDP `Browser.downloadProgress` hold while bytes move
-   *   and expire after `policy.stallMs` (one idle period) with no byte progress.
-   * - Transfers whose byte progress cannot be observed (Playwright uploads, or Playwright download
-   *   events without CDP progress) are bounded in total by `policy.maxUnobservedMs` (60 minutes).
-   * Once a stalled transfer's hold expires and the park proceeds, freezing the Firecracker guest
-   * stops its network and TCP ACKs, so the upstream server drops the stalled transfer.
+   * Pooled runtime only (M7): returns active uploads that should veto idle parking, bounded in
+   * total by `policy.maxUnobservedMs` (60 minutes). Shipped pooled guests disable downloads
+   * (`acceptDownloads: false` and `PortableSessionCdpRouter` blocks/no-ops `Browser.setDownloadBehavior`),
+   * so only uploads can run.
    */
   private readActivePooledTransfers(
     policy: PooledTransferPolicy,
   ): readonly ("download" | "upload")[] {
-    if (this.gone) return [];
+    if (this.gone || !this.pooledUploadStarts) return [];
     const now = Date.now();
-    const targetId = this.knownTargetId ?? syncTargetIdOfPage(this.page) ?? undefined;
-    const active: ("download" | "upload")[] = [];
-    let hasDownload = this.contextHandle.hasActivePooledDownload(this, targetId, now);
-    if (!hasDownload && this.pooledUnobservedDownloads) {
-      for (const startedAt of this.pooledUnobservedDownloads.values()) {
-        if (now - startedAt < policy.maxUnobservedMs) {
-          hasDownload = true;
-          break;
-        }
-      }
+    for (const startedAt of this.pooledUploadStarts.values()) {
+      if (now - startedAt < policy.maxUnobservedMs) return ["upload"];
     }
-    if (hasDownload) active.push("download");
-    if (this.pooledUploadStarts) {
-      for (const startedAt of this.pooledUploadStarts.values()) {
-        if (now - startedAt < policy.maxUnobservedMs) {
-          active.push("upload");
-          break;
-        }
-      }
-    }
-    return active;
+    return [];
   }
 
   async keepAwake(): Promise<"tab-helper" | PageKeepAwake | "upload" | "post" | "media" | null> {

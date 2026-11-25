@@ -189,9 +189,12 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
   onStateImport: (
     message: Extract<BrowserClientMessage, { type: "state.import" }>,
   ) => "reply" | "drop" | "drop-and-close" = () => "reply";
+  /** Optional hook to delay a send callback (blocks `#commandTail` for queued-timeout tests). */
+  onSend?: (message: BrowserClientMessage, callback: (error?: Error) => void) => boolean;
   send(data: string, _options: { readonly binary: false }, callback: (error?: Error) => void) {
     const message = JSON.parse(data) as BrowserClientMessage;
     this.received.push(message);
+    if (this.onSend?.(message, callback)) return;
     if (!this.holdStartAck || message.type !== "login.authorize") callback();
     if (message.type === "state.import") {
       const mode = this.onStateImport(message);
@@ -3510,9 +3513,10 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         );
       expect(err).toBeInstanceOf(OperationOutcomeUnknown);
 
-      // The Request must NOT have been settled as session-closed.
+      // The Request must NOT have been settled as session-closed; it settles durably as unconfirmed (Sol 8).
       const after = await store.requests.get(asked.requestId);
-      expect(after?.status).toBe("pending");
+      expect(after?.status).toBe("fulfilled");
+      expect(after?.response).toEqual({ kind: "external", value: { outcome: "unconfirmed" } });
 
       // HTTP normalization carries the uncertain-outcome contract.
       const normalized = normalizeHostError(err);
@@ -3614,6 +3618,133 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         vi.useRealTimers();
       }
     } finally {
+      await chrome.close();
+    }
+  });
+
+  it("B (Sol 7): a state.import that times out while queued is never sent after the queue clears", async () => {
+    const ready = await scene();
+    let releaseBlockedSend: (() => void) | undefined;
+    const blockedSent = Promise.withResolvers<void>();
+    ready.connection.onSend = (message, callback) => {
+      if (message.type === "cdp.command") {
+        blockedSent.resolve();
+        releaseBlockedSend = () => callback();
+        return true;
+      }
+      return false;
+    };
+    // Queue a command whose socket write stays pending, blocking `#commandTail`.
+    const cdpClient = await browser.attachCdpForAgent(
+      {
+        agentBindingId: `run:${ready.agent.runId}`,
+        ownerId: ready.ownerId,
+        sessionId: ready.sessionId,
+      },
+      () => {},
+    );
+    try {
+      const blocked = cdpClient.request({ method: "Target.getTargets" }).catch(() => undefined);
+      await blockedSent.promise;
+
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const importPromise = browser
+          .applySiteCookies(ready.sessionId, "https://queued-timeout.test", [
+            {
+              domain: "queued-timeout.test",
+              expires: Math.floor(Date.now() / 1000) + 3600,
+              httpOnly: true,
+              name: "sid",
+              path: "/",
+              secure: true,
+              value: "secret-cookie",
+            },
+          ])
+          .then(
+            (value) => value,
+            (error: unknown) => error,
+          );
+        await vi.advanceTimersByTimeAsync(35_000);
+        const outcome = await importPromise;
+        // Timed out BEFORE crossing the submit edge -> retryable timeout, NOT OperationOutcomeUnknown.
+        expect(outcome).toBeInstanceOf(OpensteerError);
+        expect(outcome).not.toBeInstanceOf(OperationOutcomeUnknown);
+        expect(outcome).toMatchObject({ code: "timeout", retryable: true });
+      } finally {
+        vi.useRealTimers();
+      }
+
+      // Now unblock `#commandTail` and drain microtasks: the timed-out `state.import` must NEVER be sent.
+      releaseBlockedSend?.();
+      await blocked;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(ready.connection.imports()).toHaveLength(0);
+    } finally {
+      releaseBlockedSend?.();
+      cdpClient.close();
+    }
+  });
+
+  it("C (Sol 8): unknown sign-in outcome durably settles the Request as unconfirmed so cards clear and restarts never replay", async () => {
+    const ready = await scene();
+    const paired = await pairChrome(ready.ownerId, "Chrome on Mac");
+    const chrome = await connectChrome(paired);
+    let restartedService: BrowserSourceService | undefined;
+    try {
+      const asked = await service.agentCopyChromeCookies({
+        ...ready.agent,
+        callId: `c-unconfirmed-${randomUUID()}`,
+        site: "https://unconfirmed.test",
+      });
+      expect(asked.status).toBe("pending");
+      if (asked.status !== "pending") throw new Error("Expected pending Request");
+
+      // Drop the reply after state.import is written to the runtime socket.
+      ready.connection.onStateImport = () => "drop-and-close";
+      const err = await service
+        .respond({
+          decision: { decision: "allow", sourceId: paired.sourceId },
+          expectedRevision: (await store.requests.revision(asked.requestId))!,
+          ownerId: ready.ownerId,
+          requestId: asked.requestId,
+        })
+        .then(
+          (value) => value,
+          (error: unknown) => error,
+        );
+      expect(err).toBeInstanceOf(OperationOutcomeUnknown);
+
+      // The Request is durably fulfilled as `unconfirmed` so cards clear on phone/web and Check
+      // sees it as settled rather than stuck pending.
+      const settled = await store.requests.get(asked.requestId);
+      expect(settled?.status).toBe("fulfilled");
+      expect(settled?.response).toEqual({ kind: "external", value: { outcome: "unconfirmed" } });
+
+      // Simulate a Home restart with a brand-new BrowserSourceService (empty in-memory set).
+      await chrome.close();
+      restartedService = new BrowserSourceService({
+        browser,
+        canonicalOrigin: sourceOrigin,
+        currentRoute: async () => currentRoute,
+        deploymentId: ready.deploymentId,
+        onError: () => {},
+        requests: store.requests,
+        sign: (bytes) => sign(null, bytes, hostKey.privateKey).toString("base64url"),
+        store: sourceStore,
+      });
+      // Re-calling respond after restart still refuses as OperationOutcomeUnknown and never replays.
+      await expect(
+        restartedService.respond({
+          decision: { decision: "allow", sourceId: paired.sourceId },
+          expectedRevision: (await store.requests.revision(asked.requestId))!,
+          ownerId: ready.ownerId,
+          requestId: asked.requestId,
+        }),
+      ).rejects.toBeInstanceOf(OperationOutcomeUnknown);
+      expect(ready.connection.imports()).toHaveLength(1);
+    } finally {
+      restartedService?.close();
       await chrome.close();
     }
   });

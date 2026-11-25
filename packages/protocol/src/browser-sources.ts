@@ -141,6 +141,7 @@ export const ChromeCookiesUnavailableReasonSchema = z.union([
     "chrome-signed-out",
     "needs-approval",
     "session-closed",
+    "unconfirmed",
     "runtime-outdated",
     "unsupported-operation",
     "rate-limited",
@@ -192,6 +193,8 @@ export const BrowserSignInRequestResponseSchema = z.discriminatedUnion("outcome"
   z.strictObject({ outcome: z.literal("session-closed") }),
   /** Chrome connected after the Request opened, and no Chrome has a sign-in to the site. */
   z.strictObject({ outcome: z.literal("not-signed-in") }),
+  /** The sign-in crossed to the browser runtime, but the reply did not return. */
+  z.strictObject({ outcome: z.literal("unconfirmed") }),
 ]);
 export type BrowserSignInRequestResponse = z.infer<typeof BrowserSignInRequestResponseSchema>;
 

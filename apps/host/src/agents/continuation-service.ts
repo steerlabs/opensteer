@@ -362,6 +362,8 @@ export async function continuationMessage(
           return `Request ${request.id} ended: no connected Chrome is signed in to ${site}, so nothing was copied. The user did not decline.`;
         case "session-closed":
           return `Request ${request.id} was allowed, but the browser tab had closed. Call chrome_cookies_request again with your current tabId.`;
+        case "unconfirmed":
+          return `Request ${request.id} ended without confirmation: the sign-in for ${site} may have been applied. Reload and check the page before calling chrome_cookies_request again.`;
       }
     }
     case "browser.password-sign-in": {

@@ -638,6 +638,21 @@ export class BrowserPoolCoordinator {
     this.#kickRelay();
   }
 
+  /** Current guest fence eligible to serve or readopt on the relay, or null when not active. */
+  activeGuest(): { readonly instanceId: string; readonly epoch: number } | null {
+    const slot = this.#slot;
+    if (
+      !slot ||
+      this.#closed ||
+      this.#ended ||
+      this.#released ||
+      this.#over ||
+      (slot.phase !== "running" && slot.phase !== "waking")
+    )
+      return null;
+    return { instanceId: slot.instanceId, epoch: slot.epoch };
+  }
+
   /** Ensures the in-process browser relay is attached while the guest is open for traffic. */
   async ensureRelayAttached(signal?: AbortSignal): Promise<void> {
     const adapter = this.#relayAdapter;
@@ -2120,13 +2135,22 @@ export class BrowserPoolCoordinator {
     };
     let tabLosses: readonly BrowserPoolSessionLoss[] = [];
     if (state.phase === "adopting" && state.adoption && !state.adoption.outcome) {
+      this.#signal?.throwIfAborted();
+      try {
+        await this.ensureRelayAttached(this.#signal);
+      } catch (error) {
+        if (this.#signal?.aborted || error instanceof BrowserPoolAdmissionClosed) throw error;
+        // Relay attach failures never count toward discarding a healthy guest (Sol 1);
+        // classify as unanswered so the loop retries inside the adoption window.
+        throw unknownAnswer(error)
+          ? error
+          : new BrowserPoolUnanswered("The pooled browser relay did not attach.", { cause: error });
+      }
       slot = await this.#advance(slot, {
         phase: slot.phase,
         attachmentGeneration: slot.attachmentGeneration + 1,
       });
       const attempt = slot.attachmentGeneration;
-      this.#signal?.throwIfAborted();
-      await this.ensureRelayAttached(this.#signal);
       if (this.#adopter)
         tabLosses = await this.#adopter.reattach({
           sessions: state.adoption.sessions,

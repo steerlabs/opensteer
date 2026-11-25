@@ -42,6 +42,8 @@ import {
 } from "../packages/protocol/src/index.js";
 import { AgentConnectionStore, beginAgentSession } from "../packages/database/src/index.js";
 import {
+  BrowserPoolAdmissionClosed,
+  listBrowserPoolUnconfirmedClosings,
   recordBrowserPoolTargetAnswer,
   stopBrowserPoolSession,
 } from "../packages/database/src/browser-pool-store.js";
@@ -71,6 +73,7 @@ import {
 } from "../apps/pool-agent/src/test-support.js";
 import { BrowserPoolCoordinator } from "../apps/host/src/browser/browser-pool-coordinator.js";
 import {
+  createManagedPooledRelay,
   defaultManagedBrowserPoolIdleMs,
   managedBrowserPoolCoordinator,
   pooledBrowserRuntimeId,
@@ -698,7 +701,6 @@ describe("Managed browser pool wired into createHostRuntime", () => {
           managedBrowserPoolTiming: { firstDelayMs: 50, maxDelayMs: 150 },
         });
         if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
-        await runtime.listen();
         return { host: runtime, close: () => runtime.close() };
       });
       host = started.host;
@@ -1657,7 +1659,6 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
           managedBrowserPoolTiming: { firstDelayMs: 50, maxDelayMs: 150, idleParkMs: 60_000 },
         });
         if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
-        await runtime.listen();
         return { host: runtime, close: () => runtime.close() };
       });
       host = started.host;
@@ -2648,6 +2649,428 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
       await host?.close();
       await poolHost1?.close();
       await poolHost2?.close();
+      await database.drop();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("A (Sol 1): relay attach failures during wake never discard a healthy guest", async () => {
+    const database = await cloneTestDatabase("host");
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-pool-a-sol1-"));
+    const config = managedConfig(database.url, directory, await freePort(), { browserPool: false });
+    let host: PersonalHostRuntime | undefined;
+    let poolHost: LoopbackPoolHost | undefined;
+    try {
+      const started = await ownTestDatabaseProducer(database.url, async () => {
+        const runtime = await createHostRuntime(config, { personalAccountGrantFetch: jwksFetch() });
+        if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
+        return { host: runtime, close: () => runtime.close() };
+      });
+      host = started.host;
+      await claimHome(host);
+      const runnerId = await enrollMainRunner(host, config);
+      const keys = await loadOrCreateManagedBrowserPoolKeys(join(directory, "host"));
+      poolHost = await startLoopbackPoolHost({
+        directory,
+        slotId: `bps_${randomUUID()}`,
+        term: 1,
+        registered: managedBrowserPoolRegistration(keys),
+      });
+      const parts = managedBrowserPool(poolHost.target, keys);
+      let relayAttached = false;
+      let failRelayDuringWake = false;
+      let wakeRelayFailures = 0;
+      const coordinator = managedBrowserPoolCoordinator({
+        database: host.store.database,
+        runnerId,
+        target: poolHost.target,
+        keys,
+        parts,
+        idleParkMs: null,
+        retryMs: 25,
+        unansweredRetryMaxMs: 50,
+        relay: {
+          attached: () => relayAttached,
+          attach: async () => {
+            if (failRelayDuringWake) {
+              wakeRelayFailures += 1;
+              throw new Error("Simulated non-network relay attach refusal during wake");
+            }
+            relayAttached = true;
+          },
+        },
+        onSuspect: () => {},
+        onError: () => {},
+      });
+      try {
+        await host.browser.adoptPool(runnerId, coordinator);
+        await vi.waitFor(
+          async () => {
+            const st = await poolHost!.agent.agent.status(poolHost!.slotId, poolHost!.term);
+            expect(st.phase).toBe("running");
+            expect(relayAttached).toBe(true);
+          },
+          { timeout: 10_000 },
+        );
+        const instanceBeforePark = (
+          await poolHost.agent.agent.status(poolHost.slotId, poolHost.term)
+        ).instance;
+
+        // Park the running guest cleanly.
+        expect(await coordinator.tryPark()).toBe("parked");
+        relayAttached = false;
+
+        // Fail relay attach > 6 times (discardAfterAttempts = 6) during wake.
+        failRelayDuringWake = true;
+        const wakeAbort = new AbortController();
+        const wakeHold = coordinator.gate.reserve(wakeAbort.signal);
+        wakeHold.catch(() => undefined);
+        await vi.waitFor(() => expect(wakeRelayFailures).toBeGreaterThanOrEqual(8), {
+          timeout: 10_000,
+        });
+
+        // The healthy guest must NOT have been discarded/replaced!
+        const statusWhileFailing = await poolHost.agent.agent.status(
+          poolHost.slotId,
+          poolHost.term,
+        );
+        expect(statusWhileFailing.instance).toBe(instanceBeforePark);
+
+        // Once the relay recovers, wake completes on the SAME guest instance.
+        failRelayDuringWake = false;
+        const lease = await wakeHold;
+        lease.release();
+        expect((await poolHost.agent.agent.status(poolHost.slotId, poolHost.term)).instance).toBe(
+          instanceBeforePark,
+        );
+      } finally {
+        coordinator.close();
+      }
+    } finally {
+      await host?.close();
+      await poolHost?.close();
+      await database.drop();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("I (Sol 4): Home restart between durable target B write and A retirement cleans stale slot A ready sessions and surfaces unconfirmed Stops", async () => {
+    const database = await cloneTestDatabase("host");
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-pool-i-sol4-"));
+    let host1: PersonalHostRuntime | undefined;
+    let host2: PersonalHostRuntime | undefined;
+    let poolHostA: LoopbackPoolHost | undefined;
+    let poolHostB: LoopbackPoolHost | undefined;
+    try {
+      let registeredKeys:
+        | {
+            readonly homeKey: string;
+            readonly relayKey: string;
+            readonly ticketKey: { readonly keyId: string; readonly spki: string };
+          }
+        | undefined;
+      let targetResponse: ManagedBrowserPoolTargetResponse = { status: "preparing" };
+      const accountControlFetch: typeof globalThis.fetch = async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname === managedBrowserPoolRegistrationPath && init?.method === "PUT") {
+          const parsed = ManagedBrowserPoolRegistrationRequestSchema.parse(
+            JSON.parse(String(init.body)),
+          );
+          registeredKeys = parsed.document.keys;
+          return Response.json(targetResponse);
+        }
+        if (url.pathname === managedBrowserPoolTargetPath) {
+          return Response.json(registeredKeys ? targetResponse : { status: "unregistered" });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      const config1 = managedConfig(database.url, directory, await freePort(), {
+        browserPool: true,
+      });
+      const started1 = await ownTestDatabaseProducer(database.url, async () => {
+        const runtime = await createHostRuntime(config1, {
+          personalAccountGrantFetch: jwksFetch(),
+          accountControlFetch,
+          managedBrowserPoolTiming: { firstDelayMs: 30, maxDelayMs: 60, idleParkMs: 60_000 },
+        });
+        if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
+        await runtime.listen();
+        return { host: runtime, close: () => runtime.close() };
+      });
+      host1 = started1.host;
+      const { ownerId } = await claimHome(host1);
+      const runnerId = await enrollMainRunner(host1, config1);
+      await vi.waitFor(() => expect(registeredKeys).toBeDefined(), { timeout: 5_000 });
+      poolHostA = await startLoopbackPoolHost({
+        directory,
+        slotId: `bps_${randomUUID()}`,
+        term: 1,
+        registered: registeredKeys!,
+      });
+      poolHostB = await startLoopbackPoolHost({
+        directory,
+        slotId: `bps_${randomUUID()}`,
+        term: 1,
+        registered: registeredKeys!,
+      });
+      targetResponse = { status: "ready", target: poolHostA.target };
+      // Wait for Home #1 to adopt slot A and open its pool relay.
+      await vi.waitFor(
+        async () => {
+          const row = await host1!.store.database
+            .selectFrom("browserPoolSlots")
+            .select(["slotId", "phase"])
+            .where("runnerId", "=", runnerId)
+            .executeTakeFirst();
+          expect(row).toEqual({ slotId: poolHostA!.slotId, phase: "running" });
+          expect(host1!.browser.usesPoolAdmission).toBe(true);
+        },
+        { timeout: 10_000 },
+      );
+
+      const profileA = await host1.browser.createProfile({
+        ownerId,
+        name: "Sol 4 Ready Profile",
+        idempotencyKey: `sol4-profile-${randomUUID()}`,
+      });
+      const readyTab = await host1.browser.openTab(ownerId, {
+        type: "browser.tab.open",
+        idempotencyKey: `sol4-ready-${randomUUID()}`,
+        identity: { kind: "profile", profileId: profileA.id },
+        url: "https://example.test/ready-on-a",
+      });
+      const stoppingTab = await host1.browser.openTab(ownerId, {
+        type: "browser.tab.open",
+        idempotencyKey: `sol4-stopping-${randomUUID()}`,
+        identity: { kind: "guest" },
+        url: "https://example.test/stopping-on-a",
+      });
+      expect(readyTab.sessionId).not.toBe(stoppingTab.sessionId);
+      // Leave stoppingTab in `closing` on slot A (as a Stop whose runtime confirmation has not arrived).
+      await host1.store.database
+        .updateTable("browserSessions")
+        .set({ state: "closing", updatedAt: new Date() })
+        .where("id", "=", stoppingTab.sessionId)
+        .execute();
+
+      // Simulate Home crash right after recording target B in browser_pool_targets, BEFORE retiring slot A.
+      targetResponse = { status: "ready", target: poolHostB.target };
+      await recordBrowserPoolTargetAnswer(host1.store.database, {
+        cloudComputerId,
+        status: "ready",
+        target: poolHostB.target as unknown as Readonly<Record<string, unknown>>,
+      });
+      await host1.close();
+      host1 = undefined;
+
+      // Start Home #2 against the same DB: browser_pool_slots still holds A while browser_pool_targets holds B.
+      const config2 = managedConfig(database.url, directory, await freePort(), {
+        browserPool: true,
+      });
+      const started2 = await ownTestDatabaseProducer(database.url, async () => {
+        const runtime = await createHostRuntime(config2, {
+          personalAccountGrantFetch: jwksFetch(),
+          accountControlFetch,
+          managedBrowserPoolTiming: { firstDelayMs: 30, maxDelayMs: 60, idleParkMs: 60_000 },
+        });
+        if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
+        await runtime.listen();
+        return { host: runtime, close: () => runtime.close() };
+      });
+      host2 = started2.host;
+      await vi.waitFor(
+        async () => {
+          const row = await host2!.store.database
+            .selectFrom("browserPoolSlots")
+            .select(["slotId", "phase"])
+            .where("runnerId", "=", runnerId)
+            .executeTakeFirst();
+          expect(row).toEqual({ slotId: poolHostB!.slotId, phase: "running" });
+        },
+        { timeout: 10_000 },
+      );
+
+      const readySession = await host2.store.database
+        .selectFrom("browserSessions")
+        .select(["id", "state", "closedAt"])
+        .where("id", "=", readyTab.sessionId)
+        .executeTakeFirst();
+      const stoppingSession = await host2.store.database
+        .selectFrom("browserSessions")
+        .select(["id", "state", "closedAt"])
+        .where("id", "=", stoppingTab.sessionId)
+        .executeTakeFirst();
+      const losses = await host2.store.database
+        .selectFrom("browserPoolDocumentLosses")
+        .select(["sessionId", "reason", "surfaceId"])
+        .where("sessionId", "=", readyTab.sessionId)
+        .execute();
+      const unconfirmed = await listBrowserPoolUnconfirmedClosings(host2.store.database, runnerId);
+
+      // Ready session on A must have ended with a loss note (NOT stranded as ready forever).
+      expect(readySession?.state).toBe("failed");
+      expect(losses.length).toBeGreaterThanOrEqual(1);
+      // Unconfirmed Stop on A stays closing (no evidence from A) and surfaces as an unconfirmed closing.
+      expect(stoppingSession?.state).toBe("closing");
+      expect(unconfirmed.map((u) => u.sessionId)).toContain(stoppingTab.sessionId);
+    } finally {
+      await host1?.close();
+      await host2?.close();
+      await poolHostA?.close();
+      await poolHostB?.close();
+      await database.drop();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("D & F (Sol 2 & diagnostic containment): drops stale-guest attach results on epoch change and keeps retrying when diagnostic callbacks throw", async () => {
+    const database = await cloneTestDatabase("host");
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-pool-df-"));
+    const config = managedConfig(database.url, directory, await freePort(), { browserPool: false });
+    let host: PersonalHostRuntime | undefined;
+    let poolHost: LoopbackPoolHost | undefined;
+    try {
+      const started = await ownTestDatabaseProducer(database.url, async () => {
+        const runtime = await createHostRuntime(config, { personalAccountGrantFetch: jwksFetch() });
+        if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
+        return { host: runtime, close: () => runtime.close() };
+      });
+      host = started.host;
+      await claimHome(host);
+      const runnerId = await enrollMainRunner(host, config);
+      const keys = await loadOrCreateManagedBrowserPoolKeys(join(directory, "host"));
+      poolHost = await startLoopbackPoolHost({
+        directory,
+        slotId: `bps_${randomUUID()}`,
+        term: 1,
+        registered: managedBrowserPoolRegistration(keys),
+      });
+
+      // F: throwing onError and onStatusChanged during a transient adopt failure must not kill retry.
+      let failOnce = true;
+      let adopted = false;
+      let errorThrows = 0;
+      let statusThrows = 0;
+      const pool = await startManagedBrowserPool({
+        database: host.store.database,
+        dataDirectory: join(directory, "host"),
+        cloudComputerId,
+        runnerId,
+        hostKey: generateKeyPairSync("ed25519").privateKey,
+        firstDelayMs: 30,
+        maxDelayMs: 60,
+        idleParkMs: null,
+        browser: {
+          adoptPool: async (id, coordinator) => {
+            if (failOnce) {
+              failOnce = false;
+              throw new Error("Transient adopt failure");
+            }
+            await host!.browser.adoptPool(id, coordinator);
+            adopted = true;
+          },
+          retirePool: (id, reason) => host!.browser.retirePool(id, reason),
+          drainPool: (id, coordinator) => host!.browser.drainPool(id, coordinator),
+        },
+        account: {
+          register: async () => ({ status: "ready", target: poolHost!.target }),
+          target: async () => ({ status: "ready", target: poolHost!.target }),
+        },
+        onError: () => {
+          errorThrows += 1;
+          throw new Error("Simulated throwing onError diagnostic callback");
+        },
+        onStatusChanged: () => {
+          statusThrows += 1;
+          throw new Error("Simulated throwing onStatusChanged diagnostic callback");
+        },
+      });
+      try {
+        await vi.waitFor(() => expect(adopted && pool.status() === "ready").toBe(true), {
+          timeout: 10_000,
+        });
+        expect(errorThrows).toBeGreaterThanOrEqual(1);
+        expect(statusThrows).toBeGreaterThanOrEqual(1);
+
+        // D (Sol 2): if the slot's active guest `(instanceId, epoch)` changes while the relay
+        // attach is in flight (either during capabilities or during relay.attach), the attach is
+        // rejected with BrowserPoolAdmissionClosed and no stale peer is published on RunnerBrowserHub.
+        const baseTransport = managedBrowserPool(poolHost.target, keys).transport;
+        const hub = new RunnerBrowserHub();
+        try {
+          let activeGuest: { readonly instanceId: string; readonly epoch: number } | null = {
+            instanceId: "guest-a",
+            epoch: 1,
+          };
+          const capabilitiesEntered = Promise.withResolvers<void>();
+          const releaseCapabilities = Promise.withResolvers<void>();
+          let pauseFirstCapabilities = true;
+          const gatedTransport: typeof baseTransport = {
+            open: async () => {
+              if (pauseFirstCapabilities) {
+                pauseFirstCapabilities = false;
+                capabilitiesEntered.resolve();
+                await releaseCapabilities.promise;
+              }
+              return baseTransport.open();
+            },
+          };
+          const relay1 = createManagedPooledRelay({
+            browserRelay: hub,
+            runnerId,
+            runnerName: "Cloud Computer",
+            environmentIds: [],
+            transport: gatedTransport,
+            ticketKey: keys.ticketKey,
+            passkeys: false,
+            currentGuest: () => activeGuest,
+          });
+          const attach1 = relay1.ensureAttached();
+          await capabilitiesEntered.promise;
+          // Guest epoch advances while /health is still in flight.
+          activeGuest = { instanceId: "guest-a", epoch: 2 };
+          releaseCapabilities.resolve();
+          await expect(attach1).rejects.toBeInstanceOf(BrowserPoolAdmissionClosed);
+          expect(relay1.isAttached()).toBe(false);
+          expect(hub.stream(runnerId)).toBeNull();
+          relay1.retire();
+
+          // Second fence: guest instance changes right after hub.attach(), while relay.attach() runs.
+          const relay2 = createManagedPooledRelay({
+            browserRelay: hub,
+            runnerId,
+            runnerName: "Cloud Computer",
+            environmentIds: [],
+            transport: baseTransport,
+            ticketKey: keys.ticketKey,
+            passkeys: false,
+            currentGuest: () => activeGuest,
+          });
+          const unsub = hub.subscribe({
+            onAttached: () => {
+              activeGuest = { instanceId: "guest-b", epoch: 1 };
+            },
+          });
+          try {
+            await expect(relay2.ensureAttached()).rejects.toBeInstanceOf(
+              BrowserPoolAdmissionClosed,
+            );
+            expect(relay2.isAttached()).toBe(false);
+            expect(hub.stream(runnerId)).toBeNull();
+          } finally {
+            unsub();
+            relay2.retire();
+          }
+        } finally {
+          hub.close();
+        }
+      } finally {
+        await pool.close();
+      }
+    } finally {
+      await host?.close();
+      await poolHost?.close();
       await database.drop();
       await rm(directory, { recursive: true, force: true });
     }

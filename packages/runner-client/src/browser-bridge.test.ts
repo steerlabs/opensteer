@@ -207,7 +207,7 @@ describe("LocalBrowserRuntimeBridge", () => {
       runtimeId: "runtime_test",
       url: new URL(`http://127.0.0.1:${address.port}`),
       maxTextFrameBytes: 128,
-      maxBinaryFrameBytes: 64,
+      maxBinaryFrameBytes: 256,
     });
     const keys = generateKeyPairSync("ed25519");
     bounded.setAttachPublicKeys([
@@ -217,7 +217,9 @@ describe("LocalBrowserRuntimeBridge", () => {
       },
     ]);
     try {
-      const received: unknown[] = [];
+      const receivedText: unknown[] = [];
+      const receivedBinary: Buffer[] = [];
+      const textDelivered = Promise.withResolvers<unknown>();
       const closed = Promise.withResolvers<number>();
       let serverSocket: import("ws").WebSocket | undefined;
       f.sockets.once("connection", (socket) => {
@@ -227,18 +229,24 @@ describe("LocalBrowserRuntimeBridge", () => {
       const ch = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
       await bounded.attach(ch, "abc.def.ghi", {
         onClosed: (_id, code) => closed.resolve(code),
-        onFrame: (_id, frame) => received.push(frame),
-        onServerMessage: (_id, msg) => received.push(msg),
-      });
-      // Boundary text frame (<= 128 bytes) is accepted and delivered.
-      const okPayload = JSON.stringify({
-        type: "browser.session.state",
-        session: {
-          sessionId: `bsn_${randomUUID()}`,
-          state: "ready",
+        onFrame: (_id, frame) => receivedBinary.push(frame),
+        onServerMessage: (_id, msg) => {
+          receivedText.push(msg);
+          textDelivered.resolve(msg);
         },
       });
+      // Boundary text frame (<= 128 bytes) is actually sent, accepted, and delivered.
+      const okPayload = JSON.stringify({
+        type: "cdp.event",
+        event: { method: "Page.loadEventFired", parameters: {}, sequence: 1 },
+      });
       expect(Buffer.byteLength(okPayload, "utf8")).toBeLessThanOrEqual(128);
+      serverSocket!.send(okPayload);
+      expect(await textDelivered.promise).toMatchObject({
+        type: "cdp.event",
+        event: { method: "Page.loadEventFired", parameters: {}, sequence: 1 },
+      });
+      expect(receivedText).toHaveLength(1);
       // Oversized text frame (> 128 bytes) must be rejected BEFORE JSON.parse is called.
       const parseSpy = vi.spyOn(JSON, "parse");
       try {
@@ -249,7 +257,9 @@ describe("LocalBrowserRuntimeBridge", () => {
         parseSpy.mockRestore();
       }
 
-      // Oversized binary frame (> 64 bytes) closes channel with 1007 before decode.
+      // Valid small binary frame (<= 256 bytes) is accepted and delivered, then an oversized
+      // binary frame (> 256 bytes) closes the channel with 1007 before decode.
+      const binaryDelivered = Promise.withResolvers<Buffer>();
       const closedBinary = Promise.withResolvers<number>();
       let binSocket: import("ws").WebSocket | undefined;
       f.sockets.once("connection", (socket) => {
@@ -259,12 +269,39 @@ describe("LocalBrowserRuntimeBridge", () => {
       const ch2 = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
       await bounded.attach(ch2, "abc.def.ghi", {
         onClosed: (_id, code) => closedBinary.resolve(code),
-        onFrame: (_id, frame) => received.push(frame),
-        onServerMessage: (_id, msg) => received.push(msg),
+        onFrame: (_id, frame) => {
+          receivedBinary.push(frame);
+          binaryDelivered.resolve(frame);
+        },
+        onServerMessage: (_id, msg) => receivedText.push(msg),
       });
-      binSocket!.send(Buffer.alloc(65, 1), { binary: true });
+      const headerJson = Buffer.from(
+        JSON.stringify({
+          encoding: "jpeg",
+          frameId: 1,
+          rasterHeight: 100,
+          rasterWidth: 100,
+          surfaceId: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
+          viewportHeight: 100,
+          viewportWidth: 100,
+        }),
+        "utf8",
+      );
+      const headerLen = Buffer.alloc(4);
+      headerLen.writeUInt32BE(headerJson.byteLength, 0);
+      const okBinary = Buffer.concat([
+        headerLen,
+        headerJson,
+        Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      ]);
+      expect(okBinary.byteLength).toBeLessThanOrEqual(256);
+      binSocket!.send(okBinary, { binary: true });
+      expect((await binaryDelivered.promise).equals(okBinary)).toBe(true);
+      expect(receivedBinary).toHaveLength(1);
+
+      binSocket!.send(Buffer.alloc(257, 1), { binary: true });
       expect(await closedBinary.promise).toBe(1007);
-      expect(received).toEqual([]);
+      expect(receivedBinary).toHaveLength(1);
     } finally {
       bounded.closeAll();
       await f.close();

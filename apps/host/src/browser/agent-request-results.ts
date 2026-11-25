@@ -57,7 +57,9 @@ export function chromeCookiesAgentResult(result: ChromeCookiesResult, request: R
       ? requestPendingGuidance
       : result.status === "copied"
         ? "Cookies were copied; reload the tab and check the account."
-        : "No cookies were copied. Continue without them and report the reason.";
+        : result.status === "unavailable" && result.reason === "unconfirmed"
+          ? "The sign-in may have been applied; check the page before asking again."
+          : "No cookies were copied. Continue without them and report the reason.";
   return {
     ...(request
       ? requestResult(request, next, "replayed" in result && result.replayed === true)

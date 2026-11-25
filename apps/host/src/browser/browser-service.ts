@@ -1729,6 +1729,7 @@ export class BrowserService {
   ): PoolBrokerAdmission {
     const pass: BrowserPoolReservation = { release: () => {} };
     return {
+      runnerId: pool.identity().runnerId,
       now: () => (adopting?.active ? pass : pool.gate.backgroundNow()),
       wait: (signal) => (adopting?.active ? Promise.resolve(pass) : pool.gate.background(signal)),
       retiring: () => pool.gate.retiringOrAdopting,
@@ -2318,10 +2319,16 @@ export class BrowserService {
               .waitForTarget?.(candidateRunnerId, wakeSignal)
               .catch(() => undefined);
         }
-        // If the Runner dropped right before its channel-close microtask moved gate.phase to
-        // "reconnecting", yield once so the gate reflects the drop before deciding unavailability.
+        // If the Runner dropped and a pooled broker on it has already left OPEN while its
+        // channel-loss notification is still draining to the coordinator, wait for that loss to
+        // land so `pool.gate` reflects the reconnect before deciding unavailability.
         if (!this.#resolveTarget(selector) && pool.gate.admits) {
-          await new Promise<void>((resolve) => setImmediate(resolve));
+          const pendingLosses = [...this.#brokers.values()].filter(
+            (broker) => broker.poolRunnerId === candidateRunnerId && broker.pendingChannelLoss,
+          );
+          if (pendingLosses.length > 0) {
+            await Promise.all(pendingLosses.map((broker) => broker.waitForChannelLoss(wakeSignal)));
+          }
         }
         if (
           !this.#resolveTarget(selector) &&
@@ -2711,7 +2718,7 @@ export class BrowserService {
                       opening && "profileId" in opening ? (opening.profileId ?? null) : null,
                   },
             );
-            if (!record) await this.#requireAgentAccess(runnerId);
+            if (!record || budget.pool) await this.#requireAgentAccess(runnerId);
           }
           const pooled = this.#pool(runnerId);
           if (
@@ -9076,6 +9083,7 @@ interface PendingStateImport {
 
 /** How a pooled broker's sends pass the gate. */
 interface PoolBrokerAdmission {
+  readonly runnerId: RunnerId;
   now(): BrowserPoolReservation | undefined;
   wait(signal: AbortSignal): Promise<BrowserPoolReservation>;
   retiring(): boolean;
@@ -9142,6 +9150,8 @@ interface HostedBrowserBrokerOptions {
 export class HostedBrowserBroker {
   readonly #poolAdmission: PoolBrokerAdmission | undefined;
   readonly #onChannelLost: ((documents: ReadonlyMap<string, string>) => void) | undefined;
+  readonly #channelLossSettled = Promise.withResolvers<void>();
+  #channelLossDone = false;
   /** The runtime announced this session's end: its close is not a lost channel. */
   /** The runtime said `closed`: its own word that the session and its pages ended. */
   #runtimeEnded = false;
@@ -9691,6 +9701,39 @@ export class HostedBrowserBroker {
     return this.#poolAdmission !== undefined;
   }
 
+  get poolRunnerId(): RunnerId | undefined {
+    return this.#poolAdmission?.runnerId;
+  }
+
+  /** True once a pooled broker's socket has left OPEN while its channel-loss notice is still in flight. */
+  get pendingChannelLoss(): boolean {
+    return (
+      this.#poolAdmission !== undefined &&
+      !this.#channelLossDone &&
+      this.#socket.readyState !== WebSocket.OPEN
+    );
+  }
+
+  waitForChannelLoss(signal?: AbortSignal): Promise<void> {
+    if (!this.pendingChannelLoss) return Promise.resolve();
+    if (!signal) return this.#channelLossSettled.promise;
+    if (signal.aborted) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const done = () => {
+        signal.removeEventListener("abort", done);
+        resolve();
+      };
+      signal.addEventListener("abort", done, { once: true });
+      void this.#channelLossSettled.promise.finally(done);
+    });
+  }
+
+  #finishChannelLoss(): void {
+    if (this.#channelLossDone) return;
+    this.#channelLossDone = true;
+    this.#channelLossSettled.resolve();
+  }
+
   get groupId(): BrowserSessionId {
     return this.#groupId;
   }
@@ -10131,6 +10174,7 @@ export class HostedBrowserBroker {
       );
     }
     const operationId = randomUUID();
+    const timeoutAbort = new AbortController();
     return new Promise<void>((resolve, reject) => {
       const pending: PendingStateImport = {
         reject,
@@ -10138,6 +10182,7 @@ export class HostedBrowserBroker {
         submitted: false,
         timeout: setTimeout(() => {
           if (!this.#pendingStateImports.delete(operationId)) return;
+          timeoutAbort.abort();
           // Rule 4: once `state.import` crossed the submit edge, a missing reply may mean the
           // cookies were already applied in the browser context; never classify as retryable timeout.
           reject(
@@ -10160,10 +10205,12 @@ export class HostedBrowserBroker {
           site,
           type: "state.import",
         },
-        undefined,
+        timeoutAbort.signal,
         () => {
           pending.submitted = true;
         },
+        undefined,
+        () => this.#pendingStateImports.get(operationId) === pending,
       ).catch((error: unknown) => {
         if (this.#pendingStateImports.get(operationId) !== pending) return;
         clearTimeout(pending.timeout);
@@ -10424,7 +10471,15 @@ export class HostedBrowserBroker {
           const documents = new Map(
             [...this.#tabs.rows].map(([surfaceId, row]) => [surfaceId, row.documentId]),
           );
-          queueMicrotask(() => this.#onChannelLost?.(documents));
+          queueMicrotask(() => {
+            try {
+              this.#onChannelLost?.(documents);
+            } finally {
+              this.#finishChannelLoss();
+            }
+          });
+        } else {
+          this.#finishChannelLoss();
         }
         void this.#runtimeFrameTail
           .then(async () => {
@@ -10958,7 +11013,13 @@ export class HostedBrowserBroker {
         const documents = new Map(
           [...this.#tabs.rows].map(([surfaceId, row]) => [surfaceId, row.documentId]),
         );
-        queueMicrotask(() => this.#onChannelLost?.(documents));
+        queueMicrotask(() => {
+          try {
+            this.#onChannelLost?.(documents);
+          } finally {
+            this.#finishChannelLoss();
+          }
+        });
         if (this.#socket.readyState === WebSocket.OPEN)
           this.#socket.close(1000, "Browser Runtime closed session");
         await this.#finish("pooled", 1011, "Browser Runtime disconnected");
@@ -11619,6 +11680,7 @@ export class HostedBrowserBroker {
     signal?: AbortSignal,
     onSubmit?: () => void,
     recheck?: () => Promise<void>,
+    shouldSend?: () => boolean,
   ): Promise<void> {
     if (
       message.type === "navigation.reload" &&
@@ -11744,6 +11806,10 @@ export class HostedBrowserBroker {
           // The pool's admission is checked here, where the bytes leave, after the last await.
           if (admission?.refusesWrite(poolHold)) {
             reject(new BrowserPoolAdmissionClosed("This browser is restarting or was removed."));
+            return;
+          }
+          if (shouldSend && !shouldSend()) {
+            resolve();
             return;
           }
           onSubmit?.();

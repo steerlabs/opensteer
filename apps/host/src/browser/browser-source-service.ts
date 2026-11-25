@@ -828,6 +828,10 @@ export class BrowserSourceService {
             return problem("no-state", site, null);
           case "session-closed":
             return problem("session-closed", site, null);
+          case "unconfirmed":
+            throw new OperationOutcomeUnknown(
+              "The sign-in may have been applied. Check the page before trying again.",
+            );
         }
       }
       throw new OpensteerError({ code: "conflict", message: "The sign-in Request is closed." });
@@ -1047,8 +1051,12 @@ export class BrowserSourceService {
       request.payload.kind === "browser.sign-in" && request.payload.sessionId === sessionId;
     const chosen = grant && sameSession ? await this.#standingSource(grant, sources, site) : null;
     if (!chosen) return { status: "pending", site, requestId: request.id, replayed: true };
-    const delivered = await this.#deliverRequest(request, chosen);
-    if (delivered.status === "applied") return copiedResult(delivered);
+    try {
+      const delivered = await this.#deliverRequest(request, chosen);
+      if (delivered.status === "applied") return copiedResult(delivered);
+    } catch (error) {
+      if (!(error instanceof OperationOutcomeUnknown)) throw error;
+    }
     const current = (await this.#requests.get(request.id)) ?? request;
     return this.#requestResult(current, sessionId, site);
   }
@@ -1067,11 +1075,6 @@ export class BrowserSourceService {
   ): Promise<RequestDelivery> {
     if (request.payload.kind !== "browser.sign-in") throw new Error("Not a sign-in Request");
     const invocationId = invocationUuid(`request:${request.id}`);
-    if (this.#uncertainInvocations.has(invocationId)) {
-      throw new OperationOutcomeUnknown(
-        "The sign-in may have been applied. Check the page before trying again.",
-      );
-    }
     const { site } = request.payload;
     const sessionId = parseSignInSessionId(request.payload.sessionId);
     const target = await this.#browser.signInTarget({
@@ -1091,19 +1094,33 @@ export class BrowserSourceService {
     if (!target?.live || target.deploymentId !== this.#deploymentId) return closed();
     if (!target.stateImport) return problem(stateImportRefusal(target), site, null);
     if (!this.#isConnected(source.id)) return problem("chrome-offline", site, source.name);
-    const delivered = await this.#deliver({
-      actor: "request",
-      ...(review?.settlementSessionId ? { settlementSessionId: review.settlementSessionId } : {}),
-      ...(review ? { expectedRequestRevision: review.expectedRevision } : {}),
-      invocationId,
-      ownerId: request.requestedBy,
-      rememberSite: false,
-      requestId: request.id,
-      requireGrant: true,
-      site,
-      source,
-      target,
-    });
+    let delivered: Delivery;
+    try {
+      delivered = await this.#deliver({
+        actor: "request",
+        ...(review?.settlementSessionId ? { settlementSessionId: review.settlementSessionId } : {}),
+        ...(review ? { expectedRequestRevision: review.expectedRevision } : {}),
+        invocationId,
+        ownerId: request.requestedBy,
+        rememberSite: false,
+        requestId: request.id,
+        requireGrant: true,
+        site,
+        source,
+        target,
+      });
+    } catch (error) {
+      if (error instanceof OperationOutcomeUnknown) {
+        // Durably settle the Request as unconfirmed (Sol 8) so cards clear on phone/web and
+        // a Home restart cannot replay the import.
+        await this.#requests.fulfilBrowserSignInRequest({
+          ownerId: request.requestedBy,
+          requestId: request.id,
+          response: { outcome: "unconfirmed" },
+        });
+      }
+      throw error;
+    }
     if (delivered.status === "grant-removed") return problem("site-removed", site, null);
     if (delivered.status === "problem" && delivered.problem === "session-closed") return closed();
     return delivered;
@@ -1338,7 +1355,7 @@ export class BrowserSourceService {
     try {
       applied = await this.#browser.applySiteCookies(target.sessionId, site, cookies);
     } catch (error) {
-      if (error instanceof OperationOutcomeUnknown) {
+      if (error instanceof OperationOutcomeUnknown && input.requestId === null) {
         this.#uncertainInvocations.add(input.invocationId);
       }
       throw error;
@@ -1762,6 +1779,8 @@ export function chromeCookiesResult(request: Request, replayed = true): ChromeCo
           return unavailable(site, "chrome-signed-out");
         case "session-closed":
           return unavailable(site, "session-closed");
+        case "unconfirmed":
+          return unavailable(site, "unconfirmed");
       }
     }
     case "cancelled":
