@@ -8,6 +8,7 @@ import {
 } from "@opensteer/client/mock";
 import { act } from "react";
 import { expect, it, vi } from "vitest";
+import { testUnsentSessionStops } from "../../../../tests/session-stop-feedback.test-support.js";
 import {
   client,
   goTo,
@@ -90,6 +91,29 @@ it("names one agent’s place above Tasks and stops the session shown in the pan
   ]);
   await vi.waitFor(() => expect(trigger()).toBeNull());
 });
+
+testUnsentSessionStops(
+  async (stop) => {
+    await act(async () => stop.click());
+  },
+  {
+    "web line": async () => {
+      await mount("/", options("one"));
+      const shown = document.querySelector<HTMLElement>(".agents-now")!;
+      return { client, shown, stop: button("Stop ChatGPT", shown) };
+    },
+    "web panel": async () => {
+      await mount("/", options("one"));
+      const shown = await openPanel();
+      return { client, shown, stop: button("Stop ChatGPT", shown) };
+    },
+    "web task": async () => {
+      await mount(`/tasks/${mockAgentWorkThreads.shopping}`, options("one"));
+      const shown = document.querySelector<HTMLElement>(".session-bar")!;
+      return { client, shown, stop: button("Stop “ChatGPT”", shown) };
+    },
+  },
+);
 
 it("lists each active agent and sends Stop all once per session", async () => {
   await mount("/", options("three"));
