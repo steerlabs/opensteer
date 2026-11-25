@@ -1620,10 +1620,7 @@ export class BrowserService {
           return [];
         const owner = await readBrowserPoolOwner(this.#repository.database);
         if (!owner) return [];
-        const results = Array.from<readonly BrowserPoolSessionLoss[]>(
-          { length: sessions.length },
-          () => [],
-        );
+        const results: (readonly BrowserPoolSessionLoss[])[] = sessions.map(() => []);
         let cursor = 0;
         const workerCount = Math.min(4, sessions.length);
         await Promise.all(
