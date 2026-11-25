@@ -11,6 +11,13 @@ On Ubuntu 24.04:
 sudo apt-get update && sudo apt-get install docker.io docker-compose-v2 docker-buildx jq git curl ca-certificates openssl util-linux iptables apparmor
 ```
 
+Ubuntu's `docker.io` does not bring Compose: a server with `docker.io` alone has `docker` but no
+`docker compose`, and the installer stops there, having created only the empty Home directory:
+`Docker Engine with Compose v2 is required. On Ubuntu 24.04 run: apt-get update && apt-get install
+docker.io docker-compose-v2`. The installer checks only that `docker compose` runs and names no
+oldest version. The VM journey (`scripts/verify-home-deployment.mjs`) ran on Ubuntu 24.04's own
+packages, Docker Engine 29.1.3 and Compose 2.40.3 (Nov 25); older releases are not tested.
+
 Install from a release checkout (`git clone` of the release tag), with the Home's
 six images taken one of two ways.
 
