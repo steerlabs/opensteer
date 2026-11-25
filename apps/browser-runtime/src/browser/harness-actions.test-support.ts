@@ -305,10 +305,18 @@ export function acceptance(
           });
         }
         try {
+          // A harness-driven resumeTab does not pass `loaded: true`; wait for the woken document
+          // and capture under `withGeometry`, matching the product's own callers, before reading
+          // final evidence.
+          if (kit.ledger.wakeUnfinished(kit.surfaceId)) {
+            await kit.ledger.documentLoaded(kit.surfaceId, 10_000, browserTestSignal());
+          }
           report.finalState = await kit.state();
-          const screenshot = await kit.platform.send<{ data: string }>("Page.captureScreenshot", {
-            format: "png",
-          });
+          const screenshot = await kit.ledger.withGeometry(kit.surfaceId, (cdp) =>
+            cdp.send<{ data: string }>("Page.captureScreenshot", {
+              format: "png",
+            }),
+          );
           await writeFile(join(directory, "page.png"), Buffer.from(screenshot.data, "base64"));
           report.screenshot = join(directory, "page.png");
         } catch (error) {
