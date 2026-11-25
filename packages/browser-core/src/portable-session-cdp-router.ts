@@ -282,6 +282,10 @@ interface ConnectionState extends TargetRoot {
   nextSequence: number;
 }
 
+/** On a session's root, the browser's and the profile's own domains, which need no page (G6). */
+const sessionRootDomains =
+  /^(?:Browser|SystemInfo|Storage|Extensions|Tracing|IO|Tethering|Memory)\./u;
+
 const standardJsonBudget = { maxBytes: Infinity, maxDepth: 32, maxEntries: 16_384 };
 
 /** Whether any string in a (bounded) CDP value is an extension's address. */
@@ -921,12 +925,18 @@ export class SessionCdpRouter {
       command = { ...command, parameters };
     }
     this.#backend.assertScope?.(command.method, command.parameters ?? {});
+    // A command that needs a page names a page session (G6): neither a script nor a Run's relay on
+    // the session's root has its root command run in whatever page a browser would pick (Electron's
+    // first page: the person's own tab, or another task's). On a session's root the browser's and
+    // the profile's own domains go without one; a script keeps its narrower list.
     if (
-      state.script &&
+      !state.standard &&
       !command.sessionId &&
       !command.method.startsWith("Target.") &&
       command.method !== "Browser.getVersion" &&
-      !(this.#backend.dedicatedContext && contextScopedCdpMethods.has(command.method))
+      (state.script
+        ? !(this.#backend.dedicatedContext && contextScopedCdpMethods.has(command.method))
+        : !sessionRootDomains.test(command.method))
     )
       throw new SessionCdpRouterError(
         "forbidden",
