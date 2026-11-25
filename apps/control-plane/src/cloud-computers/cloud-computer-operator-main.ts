@@ -23,6 +23,7 @@ async function main(args: readonly string[]): Promise<void> {
   const store = new CloudComputerStore(db, {
     config: cloud,
     accountOrigin: config.publicOrigin,
+    portalOrigin: config.portalOrigin,
     cipher: new CloudComputerSecretCipher(config.adoptionOperationKey),
     stripe,
   });

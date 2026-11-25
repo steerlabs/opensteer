@@ -89,6 +89,18 @@ it("does not prescribe an on-phone update for an unsupported iPhone view", () =>
   ).toBe("Live view isn’t available for Work iPhone yet.");
 });
 
+it("tells a Mac that cannot show a window why, never that it will come", () => {
+  const names = { machine: "Studio Mac", target: "Safari", phone: false };
+  // Its Opensteer said it cannot show windows: updating it is the move.
+  expect(computerReasonWords("computer-view-unsupported", names)).toBe(
+    "Update Opensteer on Studio Mac to see Safari.",
+  );
+  // This Mac cannot capture the window itself: nothing to wait for.
+  expect(computerReasonWords("unsupported", names)).toBe(
+    "Live view isn’t available for Safari on Studio Mac.",
+  );
+});
+
 it("keeps owner viewing independent of the agent Apps switch", () => {
   expect(newOwnerViewReadiness(mockIphoneScreenDevice("apps-off"), true)).toBeNull();
 });

@@ -92,6 +92,7 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0118_problem_reports",
     "0119_automation_secret_names",
     "0120_run_waiting_for_run",
+    "0121_one_device_switch_record_contract",
   ]);
   // Kysely runs migrations in name order, so names must be unique and ascending (gaps are allowed).
   expect(new Set(names).size).toBe(names.length);

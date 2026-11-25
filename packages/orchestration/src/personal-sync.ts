@@ -51,6 +51,7 @@ interface PersonalSyncPort {
     anchorItemId: string | undefined,
     selectedThreadId: string | undefined,
     atLeast: string,
+    acceptDeferredWork?: boolean,
   ): Promise<ScopeCut>;
   send(encoded: string, dispatchGuard: () => boolean, signal: AbortSignal): Promise<boolean>;
   /** Current revisions, from memory; a detail read checks access. */
@@ -615,6 +616,7 @@ export class PersonalSyncSocket {
       current.anchorItemId,
       this.#selectedThreadId,
       current.pendingHead.toString(),
+      request.acceptDeferredWork === true,
     );
     if (!this.#matches(current)) return;
     for (const frame of cut.frames) {

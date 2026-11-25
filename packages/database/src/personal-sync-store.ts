@@ -22,6 +22,7 @@ import {
   fitsInlineTranscriptText,
   transcriptInlineTextMaxBytes,
   TranscriptItemSchema,
+  type TranscriptDeferredWork,
   type TranscriptItem,
 } from "@opensteer/protocol/transcript";
 import type { MessageTextFacts } from "./transcript-store.js";
@@ -578,6 +579,21 @@ export function itemScopeNodeId(row: Pick<Item, "kind" | "nodeId" | "view">) {
 }
 
 const transcriptHydrationBatchSize = 25;
+/**
+ * Maximum contiguous completed `tool`/`reasoning` items kept inline in a settled run when a client
+ * opts in via `acceptDeferredWork`. Larger stretches fold into their earliest item with
+ * `deferredWork` metadata and hydrate on demand via `view: "work"`.
+ */
+export const transcriptInlineWorkLimit = 12;
+const foldedKeyScanBatchSize = 200;
+
+function isDeferrableWorkKind(kind: string): kind is "tool" | "reasoning" {
+  return kind === "tool" || kind === "reasoning";
+}
+
+function isoDateTime(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : value;
+}
 
 /**
  * Exact JSON-encoded inline prose byte length computed in SQL without transferring prose text.
@@ -625,6 +641,202 @@ function drawableItemKeys(tx: Read, scope: DetailScope) {
     : query.where(sql.raw<boolean>(taskItemsPredicate));
 }
 
+type HydratableCandidate = {
+  readonly id: string;
+  readonly minBytes: number;
+  readonly estimatedBytes: number;
+  readonly deferredWork?: TranscriptDeferredWork;
+};
+
+/**
+ * Scans backward from `cursor` (or the tail) in lightweight key batches, folding contiguous
+ * `tool`/`reasoning` stretches belonging to terminal runs when they exceed
+ * `transcriptInlineWorkLimit`. Never splits a folded stretch across pages: a stretch that starts
+ * before `limit` candidates are emitted is scanned to its chronologically earliest item, which
+ * carries the `deferredWork` summary.
+ */
+async function collectFoldedCandidates(
+  tx: Read,
+  scope: Extract<DetailScope, { kind: "thread" }>,
+  cursor: TranscriptCursor | undefined,
+  limit: number,
+  maxTurns: number,
+  unfoldRunId?: string | null,
+): Promise<{ readonly candidates: readonly HydratableCandidate[]; readonly hasOlder: boolean }> {
+  const terminalRunRows = await tx
+    .selectFrom("runs")
+    .select("id")
+    .where("threadId", "=", scope.threadId)
+    .where("status", "in", ["completed", "failed", "interrupted"])
+    .execute();
+  const terminalRuns = new Set<string>(terminalRunRows.map(({ id }) => id));
+  if (unfoldRunId) terminalRuns.delete(unfoldRunId);
+  if (terminalRuns.size === 0) {
+    let query = drawableItemKeys(tx, scope).orderBy("position", "desc").orderBy("id", "desc");
+    if (cursor)
+      query = query.where(
+        sql<boolean>`(position,id) < (${cursor.beforePosition}::bigint,${cursor.beforeId})`,
+      );
+    const rows = await query.limit(limit + 1).execute();
+    return { candidates: rows.slice(0, limit), hasOlder: rows.length > limit };
+  }
+
+  type KeyRow = {
+    readonly id: string;
+    readonly position: string | null;
+    readonly kind: string;
+    readonly runId: string | null;
+    readonly isTurnStart: boolean;
+    readonly createdAt: Date | string;
+    readonly completedAt: string | null;
+    readonly minBytes: number;
+    readonly estimatedBytes: number;
+  };
+  type OpenStretch = {
+    readonly runId: string;
+    count: number;
+    earliest: KeyRow;
+    inline: KeyRow[];
+    minCreatedAtMs: number;
+    minCreatedAt: string;
+    maxEndedAtMs: number;
+    maxEndedAt: string;
+    onlyThinking: boolean;
+  };
+
+  const emitted: HydratableCandidate[] = [];
+  let turns = 0;
+  let hasOlder = false;
+  let openStretch: OpenStretch | null = null;
+  let scanBefore: { readonly position: string; readonly id: string } | undefined = cursor
+    ? { position: cursor.beforePosition, id: cursor.beforeId }
+    : undefined;
+
+  const flushStretch = () => {
+    if (!openStretch) return;
+    const stretch = openStretch;
+    openStretch = null;
+    if (stretch.count <= transcriptInlineWorkLimit) {
+      for (const row of stretch.inline) {
+        if (emitted.length >= limit) {
+          hasOlder = true;
+          return;
+        }
+        emitted.push(row);
+      }
+      return;
+    }
+    if (emitted.length >= limit) {
+      hasOlder = true;
+      return;
+    }
+    const deferredWork: TranscriptDeferredWork = {
+      itemCount: stretch.count - 1,
+      ...(Number.isFinite(stretch.minCreatedAtMs) ? { startedAt: stretch.minCreatedAt } : {}),
+      ...(Number.isFinite(stretch.maxEndedAtMs) ? { endedAt: stretch.maxEndedAt } : {}),
+      onlyThinking: stretch.onlyThinking,
+    };
+    emitted.push({ ...stretch.earliest, deferredWork });
+  };
+
+  const atLimit = () => emitted.length >= limit || turns >= maxTurns;
+
+  for (;;) {
+    let batchQuery = tx
+      .selectFrom("transcriptItems")
+      .select(["id", "position", "kind", "runId", "isTurnStart", "createdAt"])
+      .select(sql<string | null>`view->>'completedAt'`.as("completedAt"))
+      .select(inlineTextMinBytes.as("minBytes"))
+      .select(estimatedItemBytes.as("estimatedBytes"))
+      .where("visible", "=", true)
+      .where("threadId", "=", scope.threadId)
+      .where(sql.raw<boolean>(taskItemsPredicate))
+      .orderBy("position", "desc")
+      .orderBy("id", "desc")
+      .limit(foldedKeyScanBatchSize);
+    if (scanBefore)
+      batchQuery = batchQuery.where(
+        sql<boolean>`(position,id) < (${scanBefore.position}::bigint,${scanBefore.id})`,
+      );
+    const batch: readonly KeyRow[] = await batchQuery.execute();
+    if (batch.length === 0) {
+      flushStretch();
+      break;
+    }
+    for (const row of batch) {
+      const deferrable =
+        row.runId !== null && terminalRuns.has(row.runId) && isDeferrableWorkKind(row.kind);
+      if (openStretch !== null) {
+        if (deferrable && row.runId === openStretch.runId) {
+          openStretch.count += 1;
+          openStretch.earliest = row;
+          if (openStretch.count <= transcriptInlineWorkLimit) openStretch.inline.push(row);
+          else openStretch.inline.length = 0;
+          const created = isoDateTime(row.createdAt);
+          const createdMs = Date.parse(created);
+          if (
+            Number.isFinite(createdMs) &&
+            (!Number.isFinite(openStretch.minCreatedAtMs) || createdMs < openStretch.minCreatedAtMs)
+          ) {
+            openStretch.minCreatedAtMs = createdMs;
+            openStretch.minCreatedAt = created;
+          }
+          const ended = row.completedAt ?? created;
+          const endedMs = Date.parse(ended);
+          if (
+            Number.isFinite(endedMs) &&
+            (!Number.isFinite(openStretch.maxEndedAtMs) || endedMs > openStretch.maxEndedAtMs)
+          ) {
+            openStretch.maxEndedAtMs = endedMs;
+            openStretch.maxEndedAt = ended;
+          }
+          if (row.kind !== "reasoning") openStretch.onlyThinking = false;
+          continue;
+        }
+        flushStretch();
+        if (hasOlder) break;
+      }
+      // Once we have collected `limit` candidates (or `maxTurns` turns), seeing any older row
+      // proves more history exists without needing to scan an older folded stretch.
+      if (atLimit()) {
+        hasOlder = true;
+        break;
+      }
+      if (deferrable && row.runId !== null) {
+        const created = isoDateTime(row.createdAt);
+        const ended = row.completedAt ?? created;
+        openStretch = {
+          runId: row.runId,
+          count: 1,
+          earliest: row,
+          inline: [row],
+          minCreatedAtMs: Date.parse(created),
+          minCreatedAt: created,
+          maxEndedAtMs: Date.parse(ended),
+          maxEndedAt: ended,
+          onlyThinking: row.kind === "reasoning",
+        };
+        continue;
+      }
+      emitted.push(row);
+      if (row.isTurnStart) turns += 1;
+    }
+    if (hasOlder) break;
+    if (batch.length < foldedKeyScanBatchSize) {
+      flushStretch();
+      break;
+    }
+    const last = batch.at(-1)!;
+    if (!last.position) {
+      flushStretch();
+      break;
+    }
+    scanBefore = { position: last.position, id: last.id };
+  }
+
+  return { candidates: emitted, hasOlder };
+}
+
 function encodedItemBytes(item: TranscriptItem) {
   const privateBytes =
     item.kind === "message" && item.author?.kind === "human" ? clientSendKeyWireReserve : 0;
@@ -655,11 +867,7 @@ function cardWithinCeiling(row: Item, item: TranscriptItem, hardMaxBytes: number
 async function selectHydratedWindow(
   tx: Read,
   scope: DetailScope,
-  candidates: readonly {
-    readonly id: string;
-    readonly minBytes: number;
-    readonly estimatedBytes: number;
-  }[],
+  candidates: readonly HydratableCandidate[],
   limit: number,
   maxBytes: number,
   hardMaxBytes: number,
@@ -676,6 +884,7 @@ async function selectHydratedWindow(
     const first = candidates[offset]!;
     if (enforceBounds && (remaining === 0 || (Number(first.minBytes) || 0) > remaining)) break;
     const batchIds: string[] = [];
+    const deferredById = new Map<string, TranscriptDeferredWork>();
     let batchEstimated = 0;
     while (
       offset < candidates.length &&
@@ -688,6 +897,7 @@ async function selectHydratedWindow(
       if (batchIds.length > 0 && (batchEstimated + nextEstimate > remaining || nextMin > remaining))
         break;
       batchIds.push(candidate.id);
+      if (candidate.deferredWork) deferredById.set(candidate.id, candidate.deferredWork);
       batchEstimated += nextEstimate;
       offset += 1;
     }
@@ -697,7 +907,12 @@ async function selectHydratedWindow(
       if (selected.length >= limit) break;
       const row = byId.get(id);
       if (!row) continue;
-      const rawItem = itemView(row);
+      const baseItem = itemView(row);
+      const deferredWork = deferredById.get(id);
+      const rawItem =
+        deferredWork && (baseItem.kind === "tool" || baseItem.kind === "reasoning")
+          ? { ...baseItem, deferredWork }
+          : baseItem;
       const item =
         selected.length === 0 && allowFirstOverBudget
           ? cardWithinCeiling(row, rawItem, hardMaxBytes)
@@ -774,6 +989,10 @@ export function readTranscriptPage(
     readonly cursor?: TranscriptCursor;
     readonly after?: TranscriptCursor;
     readonly anchorItemId?: string;
+    readonly throughItemId?: string;
+    readonly view?: "work";
+    readonly workAnchorId?: string;
+    readonly acceptDeferredWork?: boolean;
     readonly limit?: number;
     readonly maxBytes?: number;
     readonly maxTurns?: number;
@@ -789,7 +1008,14 @@ export function readTranscriptPage(
   },
 ) {
   return withPersonalSyncRead(database, async (tx) => {
-    if ((input.cursor && input.after) || (input.anchorItemId && (input.cursor || input.after)))
+    if (
+      (input.cursor && input.after) ||
+      (input.anchorItemId && (input.cursor || input.after)) ||
+      (input.view === "work" &&
+        (!input.workAnchorId || input.after || input.anchorItemId || input.throughItemId)) ||
+      (input.workAnchorId && input.view !== "work") ||
+      (input.throughItemId && (input.after || input.anchorItemId))
+    )
       throw new OpensteerError({
         code: "bad_request",
         message: "Choose one transcript page boundary",
@@ -818,19 +1044,8 @@ export function readTranscriptPage(
     const maxBytes = Math.max(8192, Math.min(input.maxBytes ?? 1024 * 1024, 1024 * 1024));
     const from = drawableItems(tx, scope);
     const keys = drawableItemKeys(tx, scope);
-    const anchor = input.anchorItemId
-      ? ((await from.where("id", "=", input.anchorItemId).executeTakeFirst()) ??
-        (await from.where(sql<boolean>`message_id = ${input.anchorItemId}`).executeTakeFirst()))
-      : undefined;
     const budget = maxBytes - 1024;
     const hardCeiling = Math.max(budget, 768 * 1024);
-    const maxTurns = Math.max(1, input.maxTurns ?? Number.MAX_SAFE_INTEGER);
-    const keyQuery = keys.orderBy("position", "desc").orderBy("id", "desc");
-    let olderKeyQuery = keyQuery;
-    if (cursor)
-      olderKeyQuery = keyQuery.where(
-        sql<boolean>`(position,id) < (${cursor.beforePosition}::bigint,${cursor.beforeId})`,
-      );
     const makeCursor = (boundary: Item | undefined): TranscriptCursor | null =>
       boundary?.position
         ? {
@@ -843,6 +1058,96 @@ export function readTranscriptPage(
             beforeId: boundary.id,
           }
         : null;
+    if (input.view === "work") {
+      const anchor = await drawableItems(tx, scope, false)
+        .where("id", "=", input.workAnchorId!)
+        .executeTakeFirst();
+      if (!anchor?.position || !anchor.runId || !isDeferrableWorkKind(anchor.kind))
+        return { kind: "history-reset" as const, anchorUnavailable: true as const };
+      const stop = await keys
+        .clearSelect()
+        .select(["position", "id"])
+        .where(sql<boolean>`(position,id) > (${anchor.position}::bigint,${anchor.id})`)
+        .where((eb) =>
+          eb.or([
+            eb("kind", "not in", ["tool", "reasoning"]),
+            sql<boolean>`run_id is distinct from ${anchor.runId}`,
+          ]),
+        )
+        .orderBy("position", "asc")
+        .orderBy("id", "asc")
+        .limit(1)
+        .executeTakeFirst();
+      let workQuery = keys
+        .where(sql<boolean>`(position,id) > (${anchor.position}::bigint,${anchor.id})`)
+        .where("kind", "in", ["tool", "reasoning"])
+        .where("runId", "=", anchor.runId);
+      if (stop?.position)
+        workQuery = workQuery.where(
+          sql<boolean>`(position,id) < (${stop.position}::bigint,${stop.id})`,
+        );
+      if (input.cursor)
+        workQuery = workQuery.where(
+          sql<boolean>`(position,id) < (${input.cursor.beforePosition}::bigint,${input.cursor.beforeId})`,
+        );
+      const candidates = await workQuery
+        .orderBy("position", "desc")
+        .orderBy("id", "desc")
+        .limit(limit + 1)
+        .execute();
+      const { selected } = await selectHydratedWindow(
+        tx,
+        scope,
+        candidates,
+        limit,
+        budget,
+        hardCeiling,
+        Number.MAX_SAFE_INTEGER,
+      );
+      const runs = await fitRunCards(tx, scope, [{ rows: selected, min: 1 }], budget);
+      const hasMore = candidates.length > selected.length;
+      const oldest = selected.at(-1)?.row;
+      return {
+        kind: "page" as const,
+        revision: state.sequence,
+        ...(runs.length ? { runs } : {}),
+        items: selected.reverse().map(({ item }) => item),
+        hasMore,
+        nextBefore: hasMore ? makeCursor(oldest) : null,
+        nextAfter: null,
+        anchorItemId: null,
+      };
+    }
+    let unfoldRunId: string | null = null;
+    if (input.throughItemId) {
+      const target = await keys
+        .clearSelect()
+        .select(["id", "position", "kind", "runId"])
+        .where((eb) =>
+          eb.or([
+            eb("id", "=", input.throughItemId!),
+            sql<boolean>`message_id = ${input.throughItemId!}`,
+          ]),
+        )
+        .limit(1)
+        .executeTakeFirst();
+      if (!target?.position)
+        return { kind: "history-reset" as const, anchorUnavailable: true as const };
+      if (isDeferrableWorkKind(target.kind) && target.runId) unfoldRunId = target.runId;
+    }
+    const anchor = input.anchorItemId
+      ? ((await from.where("id", "=", input.anchorItemId).executeTakeFirst()) ??
+        (await from.where(sql<boolean>`message_id = ${input.anchorItemId}`).executeTakeFirst()))
+      : undefined;
+    const maxTurns = input.throughItemId
+      ? Number.MAX_SAFE_INTEGER
+      : Math.max(1, input.maxTurns ?? Number.MAX_SAFE_INTEGER);
+    const keyQuery = keys.orderBy("position", "desc").orderBy("id", "desc");
+    let olderKeyQuery = keyQuery;
+    if (cursor)
+      olderKeyQuery = keyQuery.where(
+        sql<boolean>`(position,id) < (${cursor.beforePosition}::bigint,${cursor.beforeId})`,
+      );
     if (input.after) {
       const candidates = await keys
         .where(
@@ -944,6 +1249,20 @@ export function readTranscriptPage(
         );
       if (remainingNewer) nextAfter = makeCursor(newest);
       hasMore = olderCandidates.length > rows.length - 1;
+    } else if (input.acceptDeferredWork && scope.kind === "thread") {
+      const { candidates, hasOlder } = await collectFoldedCandidates(
+        tx,
+        scope,
+        cursor,
+        limit,
+        maxTurns,
+        unfoldRunId,
+      );
+      rows = (
+        await selectHydratedWindow(tx, scope, candidates, limit, budget, hardCeiling, maxTurns)
+      ).selected;
+      runs = await fitRunCards(tx, scope, [{ rows, min: 1 }], budget);
+      hasMore = hasOlder || candidates.length > rows.length;
     } else {
       const candidates = await olderKeyQuery.limit(limit + 1).execute();
       rows = (

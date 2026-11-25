@@ -229,10 +229,15 @@ export function computerReasonWords(
     case "connecting":
       return `Connecting to ${names.machine}…`;
     case "unsupported":
-    case "computer-view-unsupported":
+      // The Mac itself cannot capture this window (its macOS lacks what that takes).
       return names.phone
         ? phoneScreenUnavailableWords(names.machine)
-        : `Live view isn’t available for ${names.target} on ${names.machine} yet.`;
+        : `Live view isn’t available for ${names.target} on ${names.machine}.`;
+    case "computer-view-unsupported":
+      // A Mac answers this only once it has said its Opensteer cannot show windows.
+      return names.phone
+        ? phoneScreenUnavailableWords(names.machine)
+        : `Update Opensteer on ${names.machine} to see ${names.target}.`;
     case "window-unreadable":
     case "accessibility-error":
       return `${names.target}’s window can’t be read.`;
@@ -283,6 +288,8 @@ export function computerReasonWords(
       return `${names.target} is minimized on ${names.machine}.`;
     case "window-closed":
       return `${names.target} has no open window on ${names.machine}.`;
+    case "window-identity-lost":
+      return `${names.machine} no longer knows which ${names.target} window this was. Choose the window again.`;
     case "target-unavailable":
       return names.phone
         ? `${names.machine} isn’t reachable right now.`

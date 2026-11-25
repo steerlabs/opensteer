@@ -777,6 +777,72 @@ describe("workSummary", () => {
       )?.label,
     ).toBe("Worked for 7s");
   });
+
+  it("summarizes deferred work accurately including long runs, thinking-only folds, and spawn-tool anchors", () => {
+    const start = "2026-08-16T10:00:00.000Z";
+    const end = "2026-08-16T11:10:00.000Z";
+    const reply = message({ createdAt: end, id: "long-reply" });
+    const foldedTool = tool({
+      completedAt: "2026-08-16T10:00:05.000Z",
+      createdAt: start,
+      deferredWork: { endedAt: end, itemCount: 84, startedAt: start },
+      id: "tool:anchor",
+    });
+    const longTurn = turns([run({ replyMessageId: reply.id }), foldedTool, reply])[0]!;
+    expect(longTurn.deferredWork).toEqual([
+      { endedAt: end, itemCount: 84, itemId: "tool:anchor", startedAt: start },
+    ]);
+    expect(turnFolds(longTurn)).toBe(true);
+    expect(workSummary(longTurn)).toEqual({ label: "Worked for 1h 10m", state: "settled" });
+
+    const foldedThought = reasoning({
+      completedAt: "2026-08-16T10:00:05.000Z",
+      createdAt: start,
+      deferredWork: {
+        endedAt: "2026-08-16T10:00:45.000Z",
+        itemCount: 15,
+        onlyThinking: true,
+        startedAt: start,
+      },
+      id: "thought:anchor",
+    });
+    const thoughtTurn = turns([run({ replyMessageId: reply.id }), foldedThought, reply])[0]!;
+    expect(workSummary(thoughtTurn)).toEqual({ label: "Thought for 45s", state: "settled" });
+
+    // Even when a subagent spawn tool is hidden from visible work steps, its deferredWork anchor survives.
+    const spawnCallId = "call-spawn";
+    const spawnTool = tool({
+      callId: spawnCallId,
+      createdAt: start,
+      deferredWork: { endedAt: end, itemCount: 20, startedAt: start },
+      id: "tool:spawn",
+    });
+    const childNode: TranscriptEntry = {
+      completedAt: end,
+      createdAt: start,
+      effort: null,
+      id: "node:1",
+      kind: "node",
+      model: null,
+      nodeId: "node_1",
+      nodeKind: "subagent",
+      originCallId: spawnCallId,
+      parentNodeId: null,
+      phaseIndex: null,
+      phases: [],
+      progress: null,
+      prompt: "Research",
+      result: null,
+      runId: "run-a",
+      status: "completed",
+      title: "Research",
+    };
+    const spawnTurn = turns([run({ replyMessageId: reply.id }), spawnTool, childNode, reply])[0]!;
+    expect(spawnTurn.work.some((entry) => entry.id === spawnTool.id)).toBe(false);
+    expect(spawnTurn.deferredWork).toEqual([
+      { endedAt: end, itemCount: 20, itemId: "tool:spawn", startedAt: start },
+    ]);
+  });
 });
 
 describe("a task's turn", () => {

@@ -11,6 +11,7 @@ import {
   type IntegrationCallSubject,
 } from "@opensteer/core";
 import { readComputerUseResultHeadline, readComputerStepHeadline } from "@opensteer/protocol";
+import type { TranscriptDeferredWork } from "@opensteer/protocol/transcript";
 import { BoundedCache } from "@opensteer/shared/boundedCache";
 import { isRecord } from "@opensteer/shared/isRecord";
 import type {
@@ -108,12 +109,17 @@ export type ActivityFeedEntry = Exclude<
   }
 >;
 
+export interface TurnDeferredWork extends TranscriptDeferredWork {
+  readonly itemId: string;
+}
+
 /**
  * One contiguous stretch of a Run. A Run is one turn unless something arrived
  * in the middle of it — a steer, another Thread's result — in which case each
  * stretch is its own turn, and the Run's outcome sits with the last one.
  */
 export interface Turn {
+  readonly deferredWork?: readonly TurnDeferredWork[];
   readonly nodes?: readonly NodeEntry[];
   readonly personWaiting?: boolean;
   readonly startedBy?: MessageAuthor;
@@ -460,12 +466,18 @@ function turnFrom(
     if (entry.kind === "node" && entry.parentNodeId !== null) continue;
     work.push(entry);
   }
+  const deferredWork = all.flatMap((entry): TurnDeferredWork[] =>
+    (entry.kind === "tool" || entry.kind === "reasoning") && entry.deferredWork
+      ? [{ itemId: entry.itemId ?? entry.id, ...entry.deferredWork }]
+      : [],
+  );
   const reply =
     work.findLast(
       (entry): entry is MessageEntry => entry.kind === "message" && replies.has(entry.id),
     ) ?? null;
   return {
     assignments,
+    ...(deferredWork.length ? { deferredWork } : {}),
     reply,
     run,
     runId,
@@ -591,7 +603,9 @@ function cardOfferNeed(reason: string): PasswordsNeed | null {
  * words. A turn that only spoke has nothing to fold.
  */
 export function turnFolds(turn: Turn): boolean {
-  return turn.work.some((entry) => entry.kind !== "message");
+  return (
+    turn.work.some((entry) => entry.kind !== "message") || (turn.deferredWork?.length ?? 0) > 0
+  );
 }
 
 /**
@@ -955,8 +969,10 @@ function joinedTurn(turns: readonly Turn[]): Turn {
   const last = turns.at(-1);
   if (!last || !only) throw new Error("A reply gathers at least one turn.");
   if (turns.length === 1) return only;
+  const deferredWork = turns.flatMap((turn) => turn.deferredWork ?? []);
   return {
     ...last,
+    ...(deferredWork.length ? { deferredWork } : {}),
     assignments: turns.flatMap((turn) => turn.assignments),
     work: turns.flatMap((turn) => turn.work),
   };
@@ -1088,8 +1104,14 @@ export function workSummary(turn: Turn): WorkSummary | null {
   if (state !== "settled") return { label: liveLabel(turn, state), state };
   // The work is what came before the reply: writing the answer is not more of it.
   const steps = stepsOf(turn);
-  const duration = workDuration(steps);
-  const onlyThinking = steps.length > 0 && steps.every((entry) => entry.kind === "reasoning");
+  const duration = workDuration(steps, turn.deferredWork);
+  const deferredOnlyThinking = (turn.deferredWork ?? []).every(
+    (entry) => entry.onlyThinking === true,
+  );
+  const onlyThinking =
+    (steps.length > 0 || (turn.deferredWork?.length ?? 0) > 0) &&
+    deferredOnlyThinking &&
+    steps.every((entry) => entry.kind === "reasoning");
   const verb = onlyThinking ? "Thought" : "Worked";
   return {
     label: foldedSubagentSummary(
@@ -1195,20 +1217,31 @@ function liveLabel(turn: Turn, state: Exclude<TurnState, "settled">): string {
  * person for. A decision is the person's, so its receipt bounds no work: it
  * can come long after a durable Request let the Run finish.
  */
-function workDuration(work: readonly WorkEntry[]): string | null {
+function workDuration(
+  work: readonly WorkEntry[],
+  deferredWork?: readonly TurnDeferredWork[],
+): string | null {
   const done = work.filter((entry) => entry.kind !== "request");
-  const started = done
-    .map((entry) => Date.parse(entry.createdAt))
+  const started = [
+    ...done.map((entry) => Date.parse(entry.createdAt)),
+    ...(deferredWork ?? []).map((entry) =>
+      entry.startedAt ? Date.parse(entry.startedAt) : Number.NaN,
+    ),
+  ]
     .filter(Number.isFinite)
     .sort((left, right) => left - right)[0];
-  const completed = done
-    .map((entry) =>
+  const completed = [
+    ...done.map((entry) =>
       Date.parse(
         entry.kind === "tool" || entry.kind === "reasoning" || entry.kind === "node"
           ? (entry.completedAt ?? entry.createdAt)
           : entry.createdAt,
       ),
-    )
+    ),
+    ...(deferredWork ?? []).map((entry) =>
+      entry.endedAt ? Date.parse(entry.endedAt) : Number.NaN,
+    ),
+  ]
     .filter(Number.isFinite)
     .sort((left, right) => right - left)[0];
   if (started === undefined || completed === undefined || completed < started) return null;

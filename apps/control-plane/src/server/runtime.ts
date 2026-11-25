@@ -95,6 +95,7 @@ export async function startControlPlane(
         ? new CloudComputerStore(database, {
             config: cloud,
             accountOrigin: config.publicOrigin,
+            portalOrigin: config.portalOrigin,
             cipher: new CloudComputerSecretCipher(config.adoptionOperationKey),
             stripe,
             returnUrl: new URL(cloudComputerPortalPath, config.portalOrigin),

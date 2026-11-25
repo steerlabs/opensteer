@@ -160,6 +160,7 @@ export function createPersonalReads(
     scope: DetailScope,
     cursor?: PersonalResumeCursor,
     anchorItemId?: string,
+    acceptDeferredWork?: boolean,
   ) =>
     withPersonalSyncRead(database, async (tx) => {
       const cut = await readPersonalDetailSnapshot(tx, {
@@ -167,6 +168,7 @@ export function createPersonalReads(
         scope,
         ...(cursor ? { cursor } : {}),
         ...(anchorItemId ? { anchorItemId } : {}),
+        ...(acceptDeferredWork ? { acceptDeferredWork: true } : {}),
       });
       // Lease ownership is read in the cut its values come from.
       const queued =
@@ -188,6 +190,7 @@ export function createPersonalReads(
     cursor: PersonalResumeCursor | null,
     anchorItemId?: string,
     selectedThreadId?: string,
+    acceptDeferredWork?: boolean,
   ) => {
     const cut =
       scope.kind === "shell"
@@ -197,7 +200,7 @@ export function createPersonalReads(
             cursor,
             selectedThreadId ? ThreadIdSchema.parse(selectedThreadId) : undefined,
           )
-        : await detail(session, scope, cursor ?? undefined, anchorItemId);
+        : await detail(session, scope, cursor ?? undefined, anchorItemId, acceptDeferredWork);
     await dependencies.onPersonalScopeCut?.(scope);
     return {
       cut,
@@ -220,12 +223,13 @@ export function createPersonalReads(
     share: { readonly reader: object; readonly atLeast: string },
     ...input: Parameters<typeof readShared>
   ) => {
-    const [session, , scope, cursor, anchorItemId, selectedThreadId] = input;
+    const [session, , scope, cursor, anchorItemId, selectedThreadId, acceptDeferredWork] = input;
     const key = JSON.stringify([
       session.user.id,
       scope,
       cursor,
       anchorItemId ?? null,
+      Boolean(acceptDeferredWork),
       // A shell cut that becomes a snapshot includes the reader's selected task.
       scope.kind === "shell" ? (selectedThreadId ?? null) : null,
       // A shell snapshot carries the reading session; other cuts are the viewer's.
@@ -254,8 +258,17 @@ export function createPersonalReads(
     anchorItemId?: string,
     selectedThreadId?: string,
     share?: { readonly reader: object; readonly atLeast: string },
+    acceptDeferredWork?: boolean,
   ) => {
-    const input = [session, surface, scope, cursor, anchorItemId, selectedThreadId] as const;
+    const input = [
+      session,
+      surface,
+      scope,
+      cursor,
+      anchorItemId,
+      selectedThreadId,
+      acceptDeferredWork,
+    ] as const;
     const { cut, replay, holders } = share
       ? await readOnce(share, ...input)
       : await readShared(...input);
@@ -387,6 +400,10 @@ export function createPersonalReads(
       ...(input.anchorItemId || input.aroundMessageId
         ? { anchorItemId: input.anchorItemId ?? input.aroundMessageId! }
         : {}),
+      ...(input.throughItemId ? { throughItemId: input.throughItemId } : {}),
+      ...(input.view ? { view: input.view } : {}),
+      ...(input.workAnchorId ? { workAnchorId: input.workAnchorId } : {}),
+      ...(input.acceptDeferredWork ? { acceptDeferredWork: true } : {}),
       ...(input.limit ? { limit: input.limit } : {}),
     });
     if (result.kind === "unavailable") return unavailable();
@@ -515,7 +532,13 @@ export function createPersonalReads(
       return rpcSuccess(result);
     },
     "thread.snapshot.get": async (input, context) => {
-      const cut = await detail(requireSession(context), detailScope(input));
+      const cut = await detail(
+        requireSession(context),
+        detailScope(input),
+        undefined,
+        undefined,
+        input.acceptDeferredWork,
+      );
       if (cut.kind !== "snapshot") return unavailable();
       return rpcSuccess(await decorateDetail(requireSession(context), cut.snapshot, cut.holders));
     },

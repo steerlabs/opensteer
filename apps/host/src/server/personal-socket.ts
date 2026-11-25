@@ -98,7 +98,15 @@ export function attachPersonalSocket(options: {
     });
   };
   const sync = new PersonalSyncSocket({
-    read: async (scope, cursor, signal, anchorItemId, selectedThreadId, atLeast) => {
+    read: async (
+      scope,
+      cursor,
+      signal,
+      anchorItemId,
+      selectedThreadId,
+      atLeast,
+      acceptDeferredWork,
+    ) => {
       signal.throwIfAborted();
       try {
         return await reads.readCut(
@@ -109,6 +117,7 @@ export function attachPersonalSocket(options: {
           anchorItemId,
           selectedThreadId,
           { reader: sync, atLeast },
+          acceptDeferredWork,
         );
       } catch (error) {
         if (error instanceof OpensteerError && ["forbidden", "unauthorized"].includes(error.code))

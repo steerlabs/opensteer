@@ -109,6 +109,7 @@ describe("personal realtime negotiation", () => {
       undefined,
       undefined,
       expect.objectContaining({ atLeast: expect.any(String) }),
+      false,
     );
   });
 

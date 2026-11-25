@@ -61,6 +61,7 @@ export function transcriptCard(
         state,
         streamText: preview,
         ...(item.completedAt ? { completedAt: item.completedAt } : {}),
+        ...(item.deferredWork ? { deferredWork: item.deferredWork } : {}),
         tool: item.tool ?? null,
       };
     }
@@ -73,6 +74,7 @@ export function transcriptCard(
         previewTruncated: view.truncated === true,
         state: live ? "streaming" : "done",
         text: body?.kind === "text" ? body.text : preview,
+        ...(item.deferredWork ? { deferredWork: item.deferredWork } : {}),
       };
     case "request":
       return view.status === "pending"

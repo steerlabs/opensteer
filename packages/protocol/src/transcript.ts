@@ -125,6 +125,19 @@ export const TranscriptMessageRefsSchema = z.object({
 });
 export type TranscriptMessageRefs = z.infer<typeof TranscriptMessageRefsSchema>;
 
+/**
+ * Compact summary of completed `tool`/`reasoning` items folded into the first item of a contiguous
+ * stretch when the client opts in via `acceptDeferredWork`. Expanding the turn hydrates the hidden
+ * items via `thread.items.page` (`view: "work"`, `workAnchorId: item.id`).
+ */
+export const TranscriptDeferredWorkSchema = z.object({
+  itemCount: z.int().positive(),
+  startedAt: z.iso.datetime().optional(),
+  endedAt: z.iso.datetime().optional(),
+  onlyThinking: z.boolean().optional(),
+});
+export type TranscriptDeferredWork = z.infer<typeof TranscriptDeferredWorkSchema>;
+
 export const TranscriptItemSchema = z.discriminatedUnion("kind", [
   z.object({
     ...card,
@@ -150,6 +163,7 @@ export const TranscriptItemSchema = z.discriminatedUnion("kind", [
     toolCallId: z.string().min(1).max(160),
     tool: ToolIdentityViewSchema.nullable().optional(),
     completedAt: z.iso.datetime().optional(),
+    deferredWork: TranscriptDeferredWorkSchema.optional(),
     view: TranscriptItemPreviewSchema.refine((value) => value.preview === undefined),
   }),
   z.object({
@@ -196,6 +210,7 @@ export const TranscriptItemSchema = z.discriminatedUnion("kind", [
     kind: z.literal("reasoning"),
     blockId: z.string().min(1).max(255),
     bindingGeneration: z.int().nonnegative().nullable(),
+    deferredWork: TranscriptDeferredWorkSchema.optional(),
   }),
   z.object({
     ...card,

@@ -59,47 +59,14 @@ export interface ObservedDetail {
   observers: number;
   slot?: DetailId | undefined;
   /**
-   * Where the reader is, as the last explicit move or the last measurement left it: absent at the
-   * latest messages. Ordinary scrolling never changes it.
-   */
-  anchor?: string;
-  /** Sets the anchor for an explicit move (a jump, a link, Return to latest) and tells the Host. */
-  anchorTo(itemId: string | undefined): void;
-  /**
-   * Cuts the scope again from the Host, centred where the reader is: what it holds can no longer
-   * be extended (the Host's history moved to a new epoch). Nothing while it is not subscribed.
+   * Cuts the scope again from the Host at the live tail: what it holds can no longer be extended
+   * (the Host's history moved to a new epoch). Nothing while it is not subscribed.
    */
   recut(): void;
-  /**
-   * The view's one-shot measurement of the row in view: undefined at the latest messages. Asked
-   * only when the position is needed (a repair, a subscription) and no move is under way.
-   */
-  measure?: (() => string | undefined | null) | undefined;
-  /**
-   * A move under way owns the position until it has landed (the view revealed its target) or
-   * failed: its target is the anchor. `read` once its page is installed and the view is to reveal.
-   */
-  moving?:
-    | {
-        readonly intent: number;
-        readonly target: string | undefined;
-        /** Its page landed. */
-        read?: boolean;
-        /** The view revealed its target, possibly before the read settled. */
-        revealed?: boolean;
-      }
-    | undefined;
-  /**
-   * The reader's explicit moves, numbered (a jump, a link, Return to latest). A jump's page, a
-   * repair's reread and a subscription's first cut act only for the move they began under.
-   */
-  intent: number;
-  /** Takes the next intent number, for a move the reader is about to make. */
-  intend(): number;
-  /** The intent current when this scope last subscribed: its first cut answers that one. */
-  subscribedIntent: number;
-  /** The anchor the Host was last told on this subscription. */
-  sentAnchor?: string | null;
+  /** Whether the connected Host advertises `transcript-deferred-work-v1`. */
+  acceptDeferredWork(): boolean;
+  /** Current confirmed deployment/viewer/epoch identity, if attached and synchronized. */
+  identity(): ScopedPersonalIdentity | undefined;
   controller?: AbortController | undefined;
   held?: Map<string, Live> | undefined;
   heldBytes: number;
@@ -203,15 +170,18 @@ export class ScopedPersonalStream {
     resources?: PersonalResourcePort,
     cacheDeploymentId?: string,
     released?: () => void,
+    acceptDeferredWork?: () => boolean,
   ) {
     this.cache = cache;
     this.#resources = resources;
     this.#cacheDeploymentId = cacheDeploymentId;
     this.#released = released;
+    this.#acceptDeferredWork = acceptDeferredWork ?? (() => false);
   }
 
   /** Told after the stream lets go of an inactive scope, so what was built on it can go too. */
   readonly #released: (() => void) | undefined;
+  readonly #acceptDeferredWork: () => boolean;
 
   peekDetail(scope: DetailScope) {
     return this.#details.get(scopeKey(scope));
@@ -230,13 +200,11 @@ export class ScopedPersonalStream {
       liveBytes: 0,
       revision: 0,
       subscriptions: 0,
-      anchorTo: (itemId) => this.#anchorTo(detail, itemId),
       recut: () => {
         if (detail.slot) this.#subscribe(detail, false, true);
       },
-      intent: 0,
-      intend: () => ++detail.intent,
-      subscribedIntent: 0,
+      acceptDeferredWork: () => this.#acceptDeferredWork(),
+      identity: () => this.#identity,
     };
     this.#details.set(key, detail);
     return detail;
@@ -736,26 +704,6 @@ export class ScopedPersonalStream {
         detail.saved = "read";
       }
     }
-    // A subscription's first cut answers the anchor it asked for: null means that row is gone.
-    // A repair's cut may answer an older anchor; the reader reads around its own instead.
-    if (
-      frame.type === "host.snapshot" &&
-      "items" in frame.snapshot &&
-      detail.anchor &&
-      frame.snapshot.anchorItemId === null &&
-      !detail.transcript.getSnapshot().synchronized &&
-      // Only the anchor this subscription asked for: the reader may have moved since.
-      detail.intent === detail.subscribedIntent
-    )
-      delete detail.anchor;
-    // A snapshot after `host.synchronized` is the Host's inline repair and applies in place. Where
-    // the reader is goes with it, measured now, before the repair replaces what is on screen.
-    if (
-      frame.type === "host.snapshot" &&
-      "items" in frame.snapshot &&
-      detail.transcript.getSnapshot().synchronized
-    )
-      this.#position(detail);
     if (!detail.transcript.apply(frame, this.#identity, true)) {
       this.#subscribe(detail, false, true);
       return;
@@ -863,40 +811,6 @@ export class ScopedPersonalStream {
       subscriptionId: frame.subscriptionId,
       generation: frame.generation,
       throughSequence: through,
-    });
-  }
-
-  #anchorTo(detail: ObservedDetail, itemId: string | undefined) {
-    if (itemId === undefined) delete detail.anchor;
-    else detail.anchor = itemId;
-    this.#sendAnchor(detail);
-  }
-
-  /**
-   * Where the reader is, at the moment it is needed: a move under way owns it with its target;
-   * otherwise the view measures the row in view, once, now; otherwise the last explicit anchor.
-   */
-  #position(detail: ObservedDetail) {
-    // A measurement that cannot tell (null: the view is mid-layout) keeps the last place.
-    const measured = detail.moving ? undefined : detail.measure?.();
-    const at = detail.moving
-      ? detail.moving.target
-      : detail.measure && measured !== null
-        ? measured
-        : detail.anchor;
-    if (at === undefined) delete detail.anchor;
-    else detail.anchor = at;
-  }
-
-  #sendAnchor(detail: ObservedDetail) {
-    const anchor = detail.anchor ?? null;
-    if (!detail.slot || detail.sentAnchor === anchor) return;
-    detail.sentAnchor = anchor;
-    this.#send?.({
-      type: "client.anchor",
-      subscriptionId: detail.slot,
-      generation: detail.transcript.getSnapshot().generation,
-      ...(anchor === null ? {} : { anchorItemId: anchor }),
     });
   }
 
@@ -1055,20 +969,16 @@ export class ScopedPersonalStream {
     if (repair) delete detail.unconfirmed;
     if (detail.unconfirmed) detail.unconfirmed.generation = generation;
     const cursor =
-      !repair && detail.transcript.canCheckpoint()
+      !repair && detail.transcript.canResume()
         ? this.#cursor(detail.scope, detail.transcript.getSnapshot().through)
         : detail.unconfirmed?.saved.cursor;
-    // The subscription centres on where the reader is now.
-    this.#position(detail);
     const subscription = {
       subscriptionId: slot,
       scope: detail.scope,
       generation,
       ...(cursor ? { cursor } : {}),
-      ...(detail.anchor ? { anchorItemId: detail.anchor } : {}),
+      ...(this.#acceptDeferredWork() ? { acceptDeferredWork: true as const } : {}),
     } satisfies Omit<Subscribe, "type">;
-    detail.sentAnchor = detail.anchor ?? null;
-    detail.subscribedIntent = detail.intent;
     if (!attaching) this.#send?.({ type: "client.subscribe", ...subscription });
     return subscription;
   }
@@ -1087,7 +997,8 @@ export class ScopedPersonalStream {
 
   /**
    * Keeps the most recently shown inactive scopes whole, so returning to one paints it at once and
-   * resumes from its cursor. Each holds at most its trimmed window (see the transcript store).
+   * resumes from its cursor. Expanded scopes count card overhead alongside inline text and do not
+   * bypass the memory budget once inactive.
    */
   #evict() {
     let kept = 0;
@@ -1095,11 +1006,13 @@ export class ScopedPersonalStream {
     const inactive = [...this.#details.entries()].reverse();
     for (const [key, detail] of inactive) {
       if (detail.slot || key === this.#selected) continue;
-      const { items } = detail.transcript.getSnapshot();
+      const state = detail.transcript.getSnapshot();
+      const { items, expanded } = state;
       if (items.size > 0) {
-        text += this.#inlineText(items);
+        text += this.#inlineText(items) + items.size * 512;
         kept++;
-        if (kept <= 2 || (kept <= retainedDetails && text <= retainedTextBudget)) continue;
+        if ((!expanded && kept <= 2) || (kept <= retainedDetails && text <= retainedTextBudget))
+          continue;
       }
       if (detail.observers > 0) detail.transcript.begin(++this.#generation, false);
       else {
@@ -1162,7 +1075,10 @@ export class ScopedPersonalStream {
       const fence = () =>
         entry ? entry.detail.subscriptions : this.shell.getSnapshot().generation;
       const taken = fence();
-      const current = () => authority === this.#authority && fence() === taken;
+      const current = () =>
+        authority === this.#authority &&
+        fence() === taken &&
+        (!entry || !entry.detail.transcript.getSnapshot().expanded);
       const written = this.#fence;
       if (!written) continue;
       const session = this.#sessionId;
@@ -1183,6 +1099,7 @@ export class ScopedPersonalStream {
       // A scope let go for recency still writes what it showed; one replaced by another does not.
       const held = this.#details.get(key.scopeKey);
       if (held && held !== detail) return;
+      if (detail.transcript.getSnapshot().expanded) return;
       const snapshot = detail.transcript.checkpoint(entry.state);
       if (!snapshot) return;
       const strip = (item: import("@opensteer/protocol/transcript").TranscriptItem) => {
@@ -1293,7 +1210,12 @@ function validDetailCheckpoint(
     throughSequence: cursor.data.afterSequence,
     snapshot: held.state,
   });
-  if (!frame.success || frame.data.type !== "host.snapshot" || "tasks" in frame.data.snapshot)
+  if (
+    !frame.success ||
+    frame.data.type !== "host.snapshot" ||
+    "tasks" in frame.data.snapshot ||
+    frame.data.snapshot.nextAfter != null
+  )
     return;
   return { cursor: cursor.data, state: frame.data.snapshot };
 }

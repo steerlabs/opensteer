@@ -105,6 +105,44 @@ it("follows the feed address the account gives now, and rewrites its own line", 
   expect(feedLine()).toEqual([`OPENSTEER_HOME_RELEASE_MANIFEST_URL='${moved}'`]);
 });
 
+const portalLines = () =>
+  readFileSync(join(home, "config.env"), "utf8")
+    .split("\n")
+    .filter((line) => line.startsWith("OPENSTEER_HOME_PORTAL_ORIGIN"));
+
+it("takes the account's portal into config.env at each check, and only an https origin", () => {
+  config(`OPENSTEER_HOME_RELEASE_MANIFEST_URL='${configured}'`);
+  const before = readFileSync(join(home, "config.env"), "utf8");
+  for (const portalOrigin of [
+    undefined,
+    "http://portal.example.test",
+    "https://portal.example.test/",
+    "https://user@portal.example.test",
+    "https://portal.example.test'\nOPENSTEER_HOME_HOSTNAME='x",
+    "https://portal.example.test\nhttps://other.example.test",
+    7,
+  ]) {
+    account({ releaseManifestUrl: configured, portalOrigin });
+    const result = run("managed_feed");
+    expect(result.status, String(portalOrigin)).toBe(0);
+    expect(readFileSync(join(home, "config.env"), "utf8"), String(portalOrigin)).toBe(before);
+  }
+  account({ releaseManifestUrl: configured, portalOrigin: "https://portal.example.test" });
+  const result = run("managed_feed");
+  expect(result.status).toBe(0);
+  expect(result.stdout).toBe(`${configured}\n`);
+  expect(result.stderr).toContain("portal");
+  expect(portalLines()).toEqual(["OPENSTEER_HOME_PORTAL_ORIGIN='https://portal.example.test'"]);
+  // The same answer again writes nothing; a moved portal replaces the line.
+  expect(run("managed_feed").stderr).not.toContain("portal");
+  account({ releaseManifestUrl: moved, portalOrigin: "https://portal.example.test:8443" });
+  expect(run("managed_feed").stdout).toBe(`${moved}\n`);
+  expect(portalLines()).toEqual([
+    "OPENSTEER_HOME_PORTAL_ORIGIN='https://portal.example.test:8443'",
+  ]);
+  expect(feedLine()).toEqual([`OPENSTEER_HOME_RELEASE_MANIFEST_URL='${moved}'`]);
+});
+
 it("keeps its own address, and says so, when the account does not answer", () => {
   config(`OPENSTEER_HOME_RELEASE_MANIFEST_URL='${configured}'`);
   account(null);

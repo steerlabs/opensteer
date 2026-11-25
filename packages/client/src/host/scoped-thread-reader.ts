@@ -1,4 +1,4 @@
-import { utf8ByteLength, MessageIdSchema } from "@opensteer/core";
+import { utf8ByteLength } from "@opensteer/core";
 import {
   includeDeviceAccessRequests,
   type HostApiClient,
@@ -16,22 +16,14 @@ import {
   type RunQueueEntry,
   type TranscriptEntry,
 } from "./client.js";
-import {
-  FencedReads,
-  type FencedJob,
-  type FencedRead,
-  type FencedRequestOptions,
-} from "./fenced-reads.js";
+import { FencedReads, type FencedRead } from "./fenced-reads.js";
 import { unwrapRpcResult } from "./host-session-client.js";
 import type { ObservedDetail } from "./scoped-personal-stream.js";
 import { transcriptCard } from "./transcript-item-view.js";
 import {
   displayedItemIds,
   finalizedItemText,
-  type TranscriptPage,
-  type TranscriptPageAsk,
   type TranscriptState,
-  type TranscriptFollowReader,
 } from "./thread-transcript-store.js";
 
 export interface ThreadViewState {
@@ -50,7 +42,6 @@ export interface ThreadViewState {
   readonly moreTools?: boolean;
   readonly moreNodes?: boolean;
   readonly hasMore: boolean;
-  readonly hasNewer: boolean;
   readonly moreRequests: boolean;
 }
 
@@ -61,7 +52,6 @@ export const emptyThreadView: ThreadViewState = {
   inputQueue: null,
   synchronized: false,
   hasMore: false,
-  hasNewer: false,
   moreRequests: false,
 };
 
@@ -71,17 +61,13 @@ export interface ThreadViewSource {
 }
 
 type Overlay = "requests" | "tools" | "nodes";
-/** A page that extends the window at one edge. */
-type Paging = "earlier" | "newer";
-/**
- * The read key for history. A move (a jump, Return to latest, a repair's reread) replaces the
- * window and has one key; paging extends it at one edge, and each edge has its own key, so asking
- * for newer never cancels earlier and neither cancels a move.
- */
-const historyKey = (mode: Paging | "move") => (mode === "move" ? "history" : `history:${mode}`);
 type RequestSummaries = NonNullable<
   ReturnType<ObservedDetail["transcript"]["getSnapshot"]>["snapshot"]
 >["pendingRequests"];
+
+const maxEarlierPagesPerClick = 10;
+const maxTargetedEarlierPages = 50;
+const maxDeferredWorkPages = 50;
 
 export class TranscriptBodies {
   readonly #entries = new Map<string, { value: TranscriptItemResult; size: number }>();
@@ -157,6 +143,8 @@ export class ScopedThreadReader implements ThreadViewSource {
   #queueRows: unknown;
   #requestGeneration = 0;
   #bodyGeneration = 0;
+  #earlierCall = 0;
+  #activeTarget: string | undefined;
   #view: ThreadViewState = emptyThreadView;
 
   constructor(detail: ObservedDetail, rpc: HostApiClient, bodies: TranscriptBodies, listen = true) {
@@ -172,7 +160,6 @@ export class ScopedThreadReader implements ThreadViewSource {
 
   getSnapshot = () => this.#view;
   #disposed = false;
-  #newest = true;
 
   subscribe = (listener: () => void) => {
     this.#listeners.add(listener);
@@ -214,12 +201,7 @@ export class ScopedThreadReader implements ThreadViewSource {
       this.#bodyGeneration = state.generation;
     }
     let entries = this.#view.entries;
-    if (
-      this.#rows !== state.items ||
-      this.#liveRows !== state.liveItems ||
-      this.#newest !== state.newest
-    ) {
-      this.#newest = state.newest;
+    if (this.#rows !== state.items || this.#liveRows !== state.liveItems) {
       for (const [id, item] of this.#rows ?? [])
         if (state.items.get(id) !== item) this.#bodies.remove(this.#bodyKey(id));
       this.#rows = state.items;
@@ -260,7 +242,6 @@ export class ScopedThreadReader implements ThreadViewSource {
     }
     const inputQueue = state.inputQueue;
     const hasMore = state.snapshot?.nextBefore != null;
-    const hasNewer = state.snapshot?.nextAfter != null;
     const moreRequests = state.synchronized && state.snapshot?.overlayCursors?.requests != null;
     const moreTools = state.synchronized && state.snapshot?.overlayCursors?.tools != null;
     const moreNodes = state.synchronized && state.snapshot?.overlayCursors?.nodes != null;
@@ -311,7 +292,6 @@ export class ScopedThreadReader implements ThreadViewSource {
       requests !== this.#view.requests ||
       runQueue !== this.#view.runQueue ||
       hasMore !== this.#view.hasMore ||
-      hasNewer !== this.#view.hasNewer ||
       moreRequests !== this.#view.moreRequests ||
       moreTools !== this.#view.moreTools ||
       moreNodes !== this.#view.moreNodes ||
@@ -329,7 +309,6 @@ export class ScopedThreadReader implements ThreadViewSource {
         runQueue,
         inputQueue,
         hasMore,
-        hasNewer,
         moreRequests,
         moreTools,
         moreNodes,
@@ -464,125 +443,73 @@ export class ScopedThreadReader implements ThreadViewSource {
   }
 
   /**
-   * A repair replaced the scope with the Host's cut. What the reader had read on top of it is
-   * read again: around its anchor (or the latest at the tail), and the overlay pages the person
-   * had loaded. A history read already in flight runs again in the new cut instead, so a newer
-   * jump is never replaced by this reread. The queue and Requests reread by themselves.
+   * A repair replaced the scope with a fresh live tail cut. Re-read any overlay pages the person
+   * had loaded; queue and Requests reread by themselves.
    */
   #afterRepair() {
-    const state = this.#detail.transcript.getSnapshot();
-    const anchor = this.#detail.anchor;
-    if (
-      !this.#reads.busy("history") &&
-      !this.#detail.moving &&
-      (anchor !== undefined ? !holdsAnchor(state.items.values(), anchor) : !state.newest)
-    )
-      void this.#requestMove((read) => this.#readHistory(read, { mode: "anchor" }), {
-        observed: this.#observed,
-      }).catch(() => undefined);
-    // A move whose page was read but not yet revealed lost that page to the repair: its target is
-    // read again under the same move, and the view still reveals it.
-    const moving = this.#detail.moving;
-    if (moving?.read && !this.#reads.busy("history")) {
-      const ask = moving.target
-        ? ({ mode: "around", aroundMessageId: moving.target, intent: moving.intent } as const)
-        : ({ mode: "latest", intent: moving.intent } as const);
-      void this.#requestMove((read) => this.#readHistory(read, ask), {
-        observed: this.#observed,
-      }).catch(() => undefined);
-    }
     for (const [kind, depth] of this.#overlayDepth)
       if (depth > 0) void this.#requestOverlays(kind, true).catch(() => undefined);
   }
 
   /**
-   * The view revealed the target of the move under way. The move gives up the position once its
-   * page has landed too, whichever of the two comes first: a view drawing the target as the page
-   * lands may say so before the read settles.
+   * Extends the transcript backward while staying attached to the live tail.
+   *
+   * Without `throughItemId`: loads earlier pages until at least one turn boundary arrives (or
+   * history ends). With `throughItemId`: extends backward until that item (or message id) is
+   * loaded, rejecting with `not_found` when the Host no longer holds it.
    */
-  revealed() {
-    const moving = this.#detail.moving;
-    if (!moving) return;
-    if (moving.read) this.#detail.moving = undefined;
-    else moving.revealed = true;
-  }
-
-  /** The view's report of whether the reader follows the live latest. */
-  setFollowing(read: TranscriptFollowReader | undefined) {
-    this.#detail.transcript.setFollowing(read);
-  }
-
-  /** The view's one-shot measurement of the row in view, asked only when the position is needed. */
-  setMeasure(measure: (() => string | undefined | null) | undefined) {
-    this.#detail.measure = measure;
-  }
-
-  /**
-   * Reads history for the reader. A newer request supersedes one in flight; one overtaken by a
-   * repair runs again in the new cut, so a jump lands even when a repair arrived first.
-   */
-  history(
-    mode: "earlier" | "newer" | "around" | "latest",
-    aroundMessageId?: string,
-  ): Promise<boolean> {
+  loadEarlier(options?: { readonly throughItemId?: string | undefined }): Promise<boolean> {
     if (this.#disposed) return Promise.resolve(false);
-    // A jump or Return to latest is a move of the reader's: it takes the next intent number, and
-    // only that intent's page may land. Paging earlier or newer moves no one.
-    const paging = mode === "earlier" || mode === "newer";
-    const intent = paging ? undefined : this.#detail.intend();
-    if (intent !== undefined) {
-      // The move owns the position from now until it lands or fails: a repair or subscription
-      // meanwhile centres on its target, and the Host is told at once.
-      const target = mode === "around" ? aroundMessageId : undefined;
-      this.#detail.moving = { intent, target };
-      this.#detail.anchorTo(target);
-      // The window paging extended is about to be replaced: its pages would answer nothing.
-      this.#reads.stop(historyKey("earlier"));
-      this.#reads.stop(historyKey("newer"));
-    }
-    // The person waits on this read: a failure is theirs to see and retry. One asked for while the
-    // scope resubscribes waits for its cut rather than finding nothing, so a valid link still lands.
-    const job: FencedJob = async (read) => {
-      if (!this.#ready() && (!(await this.#untilObserved(read.signal)) || !read.current())) return;
-      // A page continues the window a move leaves (a repair's reread restoring where the reader
-      // was), never the cut the move is about to replace.
-      while (paging && this.#moves) {
-        await this.#moves;
-        if (!read.current()) return;
-      }
-      await this.#readHistory(read, { mode, aroundMessageId, intent });
-    };
-    const options = { observed: () => !this.#disposed, retry: false };
-    return (
-      paging ? this.#reads.request(historyKey(mode), job, options) : this.#requestMove(job, options)
-    ).then(
-      () => this.#settled(intent, true),
-      (error: unknown) => {
-        // A failure answers for its own move only: a superseded one reports nothing.
-        if (!this.#settled(intent, false)) return false;
-        throw error;
-      },
-    );
+    // Do not let plain upward scrolling cancel an active targeted jump (e.g., mobile link load).
+    if (
+      !options?.throughItemId &&
+      this.#activeTarget !== undefined &&
+      this.#reads.busy("history:earlier")
+    )
+      return Promise.resolve(false);
+    const throughItemId = options?.throughItemId;
+    const call = ++this.#earlierCall;
+    this.#activeTarget = throughItemId;
+    let landed = false;
+    return this.#reads
+      .request(
+        "history:earlier",
+        async (read) => {
+          if (!this.#ready() && (!(await this.#untilObserved(read.signal)) || !read.current()))
+            return;
+          landed = await this.#readEarlier(read, throughItemId);
+        },
+        { observed: () => !this.#disposed, retry: false },
+      )
+      .then(
+        () => {
+          if (call === this.#earlierCall) this.#activeTarget = undefined;
+          return call === this.#earlierCall && landed;
+        },
+        (error) => {
+          if (call === this.#earlierCall) this.#activeTarget = undefined;
+          if (call !== this.#earlierCall) return false;
+          throw error;
+        },
+      );
   }
 
-  /**
-   * The one place a reader's move learns how it ended, success or failure: the intent number is
-   * compared first. A move with no intent (paging) always speaks for itself; a superseded move
-   * resolves false, landed or not, so no caller acts on it.
-   */
-  #settled(intent: number | undefined, succeeded: boolean) {
-    if (intent === undefined) return true;
-    const moving = this.#detail.moving;
-    // Read and installed, the move was marked read as its page landed (`#installPage`); it holds
-    // the position until the view reveals its target. Anything else ends it.
-    if (moving?.intent === intent && !(succeeded && this.#landed === intent && moving.read))
-      this.#detail.moving = undefined;
-    if (this.#detail.intent !== intent) return false;
-    return succeeded ? this.#landed === intent : true;
+  /** Hydrates all deferred work items folded into `workAnchorId` while staying live-tail-anchored. */
+  loadDeferredWork(workAnchorId: string): Promise<boolean> {
+    if (this.#disposed) return Promise.resolve(false);
+    let landed = false;
+    return this.#reads
+      .request(
+        `work:${workAnchorId}`,
+        async (read) => {
+          if (!this.#ready() && (!(await this.#untilObserved(read.signal)) || !read.current()))
+            return;
+          landed = await this.#readDeferredWork(read, workAnchorId);
+        },
+        { observed: () => !this.#disposed, retry: false },
+      )
+      .then(() => landed);
   }
-
-  /** The intent whose page last landed. */
-  #landed = 0;
 
   #ready() {
     return this.#observed() && this.#detail.transcript.getSnapshot().snapshot !== null;
@@ -606,157 +533,187 @@ export class ScopedThreadReader implements ThreadViewSource {
     });
   }
 
-  async #readHistory(
-    read: FencedRead,
-    ask: {
-      readonly mode: "earlier" | "newer" | "around" | "latest" | "anchor";
-      readonly aroundMessageId?: string | undefined;
-      /** The reader's move this read is for; a newer move makes it land nothing. */
-      readonly intent?: number | undefined;
-    },
-  ) {
-    // A repair's reread is for the intent current as it starts; a move since makes it moot.
-    const intent = ask.mode === "anchor" ? this.#detail.intent : ask.intent;
-    const current = () =>
-      read.current() && (intent === undefined || this.#detail.intent === intent);
-    const state = this.#detail.transcript.getSnapshot();
-    const snapshot = state.snapshot;
-    if (!snapshot) return;
-    const { mode, aroundMessageId } = ask;
-    const key = historyKey(mode === "earlier" || mode === "newer" ? mode : "move");
+  async #readEarlier(read: FencedRead, throughItemId: string | undefined): Promise<boolean> {
     const transcript = this.#detail.transcript;
-    const token = transcript.beginRead();
-    try {
-      if (mode === "anchor") {
-        const anchor = this.#detail.anchor;
-        if (anchor !== undefined && !holdsAnchor(state.items.values(), anchor)) {
-          const page = await this.#page(read.signal, null, undefined, anchor);
-          // The reader scrolled on to a row this client holds: that is where they are now.
-          if (!current()) return;
-          if (page.kind === "page" && holdsAnchor(page.items, anchor)) {
-            this.#installPage(
-              page,
-              state.generation,
-              { mode: "around" },
-              token,
-              undefined,
-              intent,
-              key,
-            );
-            return;
-          }
-          // The Host no longer has the reader's row: the reader follows the latest messages.
-          this.#detail.anchorTo(undefined);
-        }
-        if (this.#detail.anchor !== undefined || transcript.getSnapshot().newest) return;
-        const latest = await this.#page(read.signal, null);
-        if (current() && latest.kind === "page")
-          this.#installPage(
-            latest,
-            state.generation,
-            { mode: "latest" },
-            token,
-            undefined,
-            intent,
-            key,
-          );
-        return;
+    const maxPages = throughItemId ? maxTargetedEarlierPages : maxEarlierPagesPerClick;
+    const unavailable = () =>
+      new HostClientRequestError({
+        code: "not_found",
+        message: "The requested message is unavailable.",
+        status: 404,
+      });
+
+    for (let pages = 0; pages < maxPages;) {
+      if (!read.current()) return false;
+      const state = transcript.getSnapshot();
+      const snapshot = state.snapshot;
+      if (!snapshot) return false;
+      if (throughItemId && holdsTarget(state.items.values(), throughItemId)) return true;
+      const before = snapshot.nextBefore;
+      if (!before) {
+        if (throughItemId) throw unavailable();
+        return pages > 0;
       }
-      const before = mode === "earlier" ? snapshot.nextBefore : null;
-      const after = mode === "newer" ? snapshot.nextAfter : null;
-      if ((mode === "earlier" && !before) || (mode === "newer" && !after)) return;
-      const page = await this.#page(
-        read.signal,
-        before ?? null,
-        undefined,
-        // A jump's target is a message or any row (a Request's receipt): the Host places either.
-        aroundMessageId,
-        after ?? undefined,
-      );
-      if (!current()) return;
-      const unavailable = () =>
-        new HostClientRequestError({
-          code: "not_found",
-          message: "The requested message is unavailable.",
-          status: 404,
+      const token = transcript.beginRead();
+      const supportsDeferredWork = this.#detail.acceptDeferredWork();
+      try {
+        const page = await this.#page(read.signal, before, {
+          ...(supportsDeferredWork ? { acceptDeferredWork: true } : {}),
+          ...(throughItemId
+            ? { ...(supportsDeferredWork ? { throughItemId } : {}), limit: 100 }
+            : {}),
         });
-      if (page.kind === "page") {
-        if (aroundMessageId && !page.items.some((item) => isTarget(item, aroundMessageId)))
-          throw unavailable();
-        const ask: TranscriptPageAsk =
-          mode === "earlier" || mode === "newer" ? { mode, from: (before ?? after)! } : { mode };
-        this.#installPage(page, state.generation, ask, token, aroundMessageId, intent, key);
-        return;
+        if (!read.current()) return false;
+        if (page.kind === "history-reset") {
+          if (page.anchorUnavailable && throughItemId) throw unavailable();
+          this.#detail.recut();
+          return false;
+        }
+        const outcome = transcript.installPage(
+          page,
+          state.generation,
+          { mode: "earlier", from: before },
+          token,
+        );
+        if (outcome === "stale") {
+          this.#reads.changed("history:earlier");
+          return false;
+        }
+        if (outcome === "moved") continue;
+        const afterInstall = transcript.getSnapshot();
+        for (const item of page.items) {
+          const current = afterInstall.items.get(item.id);
+          if (finalizedItemText(current)) this.#detail.text.finishItem(item.id);
+        }
+        pages += 1;
+        if (throughItemId) {
+          if (holdsTarget(afterInstall.items.values(), throughItemId)) return true;
+          if (!page.hasMore || !page.nextBefore) throw unavailable();
+          if (sameCursor(page.nextBefore, before))
+            throw new Error("History pagination did not advance.");
+          continue;
+        }
+        if (!page.hasMore || !page.nextBefore || page.items.some((item) => item.isTurnStart))
+          return true;
+        if (sameCursor(page.nextBefore, before)) return true;
+      } finally {
+        transcript.endRead(token);
       }
-      // A jump's target the Host no longer holds.
-      if (aroundMessageId) throw unavailable();
-      // The Host's history moved to a new epoch: every cursor this cut holds is void, and no page
-      // read from one can join it. The scope is cut again, centred where the reader is, and this
-      // read runs again in the new cut, from its edge.
-      this.#detail.recut();
-    } finally {
-      transcript.endRead(token);
     }
+    if (throughItemId) {
+      if (holdsTarget(transcript.getSnapshot().items.values(), throughItemId)) return true;
+      if (transcript.getSnapshot().snapshot?.nextBefore)
+        throw new HostClientRequestError({
+          code: "unavailable",
+          message: "The requested message is too far back to load in one jump.",
+          status: 503,
+        });
+      throw unavailable();
+    }
+    return true;
   }
 
-  #installPage(
-    page: TranscriptPage,
-    generation: number,
-    ask: TranscriptPageAsk,
-    token: number,
-    aroundMessageId: string | undefined,
-    intent: number | undefined,
-    key: string,
-  ) {
-    // A move's page marks the move read before the store tells anyone it landed, so a view that
-    // reveals the target as it draws the page finds the move ready to end.
-    const current = this.#detail.moving;
-    const moving =
-      intent !== undefined && current?.intent === intent && this.#detail.measure !== undefined
-        ? current
-        : undefined;
-    if (moving) moving.read = true;
-    const outcome = this.#detail.transcript.installPage(page, generation, ask, token);
-    if (outcome !== "installed") {
-      if (moving) moving.read = false;
-      // The store refused it (its change journal overflowed, or the cut moved): the read is not
-      // done and runs again, rather than reporting a page that never landed.
-      if (outcome === "stale") this.#reads.changed(key);
-      // `moved`: the edge this page continues is gone (the window was replaced or gave it up), so
-      // the page answers nothing on screen. The reader asks again from the edge they see.
-      return;
+  async #readDeferredWork(read: FencedRead, workAnchorId: string): Promise<boolean> {
+    const transcript = this.#detail.transcript;
+    let before: TranscriptOrderCursor | null = this.#deferredWorkUpperBound(workAnchorId);
+    for (let pages = 0; pages < maxDeferredWorkPages;) {
+      if (!read.current()) return false;
+      const state = transcript.getSnapshot();
+      const anchor = state.items.get(workAnchorId);
+      if (!anchor) return false;
+      if (
+        (anchor.kind !== "tool" && anchor.kind !== "reasoning") ||
+        anchor.deferredWork === undefined
+      )
+        return true;
+      const token = transcript.beginRead();
+      try {
+        const page = await this.#page(read.signal, before, {
+          view: "work",
+          workAnchorId,
+          limit: 100,
+        });
+        if (!read.current()) return false;
+        if (page.kind === "history-reset") {
+          if (!page.anchorUnavailable) this.#detail.recut();
+          return false;
+        }
+        const outcome = transcript.installDeferredWorkPage(
+          page,
+          state.generation,
+          workAnchorId,
+          token,
+        );
+        if (outcome === "stale") {
+          this.#reads.changed(`work:${workAnchorId}`);
+          return false;
+        }
+        if (outcome === "moved") return false;
+        const afterInstall = transcript.getSnapshot();
+        for (const item of page.items) {
+          const current = afterInstall.items.get(item.id);
+          if (finalizedItemText(current)) this.#detail.text.finishItem(item.id);
+        }
+        pages += 1;
+        if (!page.hasMore || !page.nextBefore) return true;
+        if (before && sameCursor(page.nextBefore, before))
+          throw new Error("Deferred work pagination did not advance.");
+        before = page.nextBefore;
+      } finally {
+        transcript.endRead(token);
+      }
     }
-    if (intent !== undefined) this.#landed = intent;
-    // Revealed while its page was still landing: the move has landed and gives up the position.
-    if (moving?.revealed && this.#detail.moving === moving) this.#detail.moving = undefined;
+    return false;
+  }
+
+  /**
+   * When a partial fold was bounded by an already-loaded tool/reasoning row of the same Run,
+   * start `view: "work"` strictly before that row so hydration does not re-fetch already-loaded
+   * steps.
+   */
+  #deferredWorkUpperBound(workAnchorId: string): TranscriptOrderCursor | null {
     const state = this.#detail.transcript.getSnapshot();
-    for (const item of page.items) {
-      const current = state.items.get(item.id);
-      if (finalizedItemText(current)) this.#detail.text.finishItem(item.id);
-    }
-    // The scope's anchor is where the reader is: none back at the latest, the linked message after a
-    // jump. Paging keeps it: the reader still looks at the row they scrolled to.
-    if (ask.mode === "latest" && state.newest) this.#detail.anchorTo(undefined);
-    else if (aroundMessageId) {
-      const target = page.items.find((item) => isTarget(item, aroundMessageId));
-      if (target) this.#detail.anchorTo(target.id);
-    }
+    const anchor = state.items.get(workAnchorId);
+    if (!anchor?.runId) return null;
+    const index = state.historyIds.indexOf(workAnchorId);
+    if (index < 0 || index + 1 >= state.historyIds.length) return null;
+    const next = state.items.get(state.historyIds[index + 1]!);
+    if (!next || next.runId !== anchor.runId || (next.kind !== "tool" && next.kind !== "reasoning"))
+      return null;
+    const identity = this.#detail.identity();
+    if (!identity) return null;
+    const { scope } = this.#detail;
+    return {
+      deploymentId: identity.deploymentId,
+      viewerId: identity.viewerId,
+      epoch: identity.epoch,
+      threadId: scope.threadId,
+      nodeId: scope.kind === "node" ? scope.nodeId : null,
+      beforeId: next.id,
+      beforePosition: next.position,
+    };
   }
 
   async #page(
     signal: AbortSignal,
     before: TranscriptOrderCursor | null,
-    aroundMessageId?: string,
-    anchorItemId?: string,
-    after?: TranscriptOrderCursor,
+    options?: {
+      readonly acceptDeferredWork?: boolean;
+      readonly throughItemId?: string;
+      readonly view?: "work";
+      readonly workAnchorId?: string;
+      readonly limit?: number;
+    },
   ) {
     const scope = this.#detail.scope;
     const query = {
       threadId: scope.threadId,
       ...(before ? { before } : {}),
-      ...(after ? { after } : {}),
-      ...(aroundMessageId ? { aroundMessageId: MessageIdSchema.parse(aroundMessageId) } : {}),
-      ...(anchorItemId ? { anchorItemId } : {}),
+      ...(options?.acceptDeferredWork ? { acceptDeferredWork: true } : {}),
+      ...(options?.throughItemId ? { throughItemId: options.throughItemId } : {}),
+      ...(options?.view ? { view: options.view } : {}),
+      ...(options?.workAnchorId ? { workAnchorId: options.workAnchorId } : {}),
+      ...(options?.limit ? { limit: options.limit } : {}),
     };
     const result =
       scope.kind === "node"
@@ -765,15 +722,9 @@ export class ScopedThreadReader implements ThreadViewSource {
     const page = unwrapRpcResult(result);
     if (page.kind === "page") {
       const nodeId = scope.kind === "node" ? scope.nodeId : null;
-      const expected =
-        before ??
-        after ??
-        this.#detail.transcript.getSnapshot().snapshot?.nextBefore ??
-        this.#detail.transcript.getSnapshot().snapshot?.nextAfter;
-      const boundaries = [
-        [page.nextBefore, page.items[0]],
-        [page.nextAfter, page.items.at(-1)],
-      ] as const;
+      const expected = before ?? this.#detail.transcript.getSnapshot().snapshot?.nextBefore;
+      const boundary = page.nextBefore;
+      const first = page.items[0];
       if (
         page.threadId !== scope.threadId ||
         page.nodeId !== nodeId ||
@@ -794,19 +745,16 @@ export class ScopedThreadReader implements ThreadViewSource {
             run.nodeId !== nodeId ||
             BigInt(run.revision) > BigInt(page.revision),
         ) ||
-        boundaries.some(
-          ([cursor, item]) =>
-            cursor &&
-            (!item ||
-              cursor.threadId !== scope.threadId ||
-              cursor.nodeId !== nodeId ||
-              cursor.beforeId !== item.id ||
-              cursor.beforePosition !== item.position ||
-              (expected &&
-                (cursor.viewerId !== expected.viewerId ||
-                  cursor.epoch !== expected.epoch ||
-                  cursor.deploymentId !== expected.deploymentId))),
-        )
+        (boundary &&
+          (!first ||
+            boundary.threadId !== scope.threadId ||
+            boundary.nodeId !== nodeId ||
+            boundary.beforeId !== first.id ||
+            boundary.beforePosition !== first.position ||
+            (expected &&
+              (boundary.viewerId !== expected.viewerId ||
+                boundary.epoch !== expected.epoch ||
+                boundary.deploymentId !== expected.deploymentId))))
       )
         throw new Error("The Host returned a history page for the wrong scope or cut.");
     }
@@ -822,27 +770,6 @@ export class ScopedThreadReader implements ThreadViewSource {
     this.#overlayDepth.set(kind, Math.max(this.#overlayDepth.get(kind) ?? 0, pages + 1));
     await this.#requestOverlays(kind, false);
   }
-
-  /**
-   * Requests a move's read: one that replaces the window (a jump, Return to latest, a repair's
-   * reread). Paging waits for it, so a page continues the window the move leaves, not one it is
-   * about to replace.
-   */
-  #requestMove(job: FencedJob, options: FencedRequestOptions) {
-    const request = this.#reads.request(historyKey("move"), job, options);
-    const settled = request.then(
-      () => undefined,
-      () => undefined,
-    );
-    this.#moves = settled;
-    void settled.then(() => {
-      if (this.#moves === settled) this.#moves = undefined;
-    });
-    return request;
-  }
-
-  /** The move in flight, if any: settled, whether it landed or not. */
-  #moves: Promise<void> | undefined;
 
   #requestOverlays(kind: Overlay, retry: boolean) {
     return this.#reads.request(`overlay:${kind}`, (read) => this.#readOverlays(read, kind), {
@@ -993,14 +920,15 @@ export function transcriptBodyKey(
   ]);
 }
 
-/** Whether `items` hold the anchor: a row's own id, or a jump's target message. */
-/** Whether `item` is a jump's target: the row itself, or the row of the message it names. */
-function isTarget(item: TranscriptItem, target: string) {
-  return item.id === target || (item.kind === "message" && item.messageId === target);
+function holdsTarget(items: Iterable<TranscriptItem>, target: string) {
+  for (const item of items)
+    if (item.id === target || (item.kind === "message" && item.messageId === target)) return true;
+  return false;
 }
 
-function holdsAnchor(items: Iterable<TranscriptItem>, anchor: string) {
-  for (const item of items)
-    if (item.id === anchor || (item.kind === "message" && item.messageId === anchor)) return true;
-  return false;
+function sameCursor(
+  a: Pick<TranscriptOrderCursor, "beforeId" | "beforePosition">,
+  b: Pick<TranscriptOrderCursor, "beforeId" | "beforePosition">,
+) {
+  return a.beforeId === b.beforeId && a.beforePosition === b.beforePosition;
 }

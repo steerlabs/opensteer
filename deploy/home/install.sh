@@ -273,6 +273,8 @@ else
       OPENSTEER_HOME_MANAGED_ID=$(jq -er .managedHome.cloudComputerId "$result")
       OPENSTEER_HOME_MANAGED_GENERATION=$(jq -er .managedHome.generation "$result")
       OPENSTEER_HOME_ACCOUNT_ORIGIN=$(jq -er .accountOrigin "$result")
+      # The account's portal, which the Home's own pages link to (Add a device).
+      OPENSTEER_HOME_PORTAL_ORIGIN=$(account_portal "$result")
       OPENSTEER_HOME_OIDC_CLIENT_ID=$(jq -er .managedHome.oidc.clientId "$result")
     fi
   elif [[ -n ${OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL:-} || -n ${OPENSTEER_BROWSER_EGRESS_UPSTREAM_USERNAME:-} || -n ${OPENSTEER_BROWSER_EGRESS_UPSTREAM_PASSWORD_FILE:-} ]]; then
@@ -290,7 +292,7 @@ else
       printf "COMPOSE_PROJECT_NAME='%s'\n" "$COMPOSE_PROJECT_NAME"
     fi
     for suffix in BIND_IP HTTP_PORT HTTPS_PORT RUNNER_CPUS RUNNER_MEMORY BROWSER_CPUS BROWSER_MEMORY RELEASE_MANIFEST_URL \
-      LOCAL_PASSWORD_ENABLED MANAGED_ID MANAGED_GENERATION ACCOUNT_ORIGIN OIDC_CLIENT_ID; do
+      LOCAL_PASSWORD_ENABLED MANAGED_ID MANAGED_GENERATION ACCOUNT_ORIGIN OIDC_CLIENT_ID PORTAL_ORIGIN; do
       key="OPENSTEER_HOME_$suffix"
       value=${!key:-}
       if [[ -n $value ]]; then

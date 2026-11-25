@@ -308,6 +308,7 @@ managed_feed() {
           (.sha256 | type) == "string" and (.sha256 | test("^[0-9a-f]{64}$")))' "$answer" \
           > "$recipe" 2>/dev/null || rm -f -- "$recipe"
       fi
+      follow_account_portal "$answer" || echo "The account's portal could not be written to config.env." >&2
       rm -f -- "$answer"
       if [[ $asked != "$configured" ]]; then
         set_configured_feed "$asked" || return
@@ -326,16 +327,40 @@ managed_feed() {
   printf '%s\n' "$configured"
 }
 
-set_configured_feed() {
+set_configured_feed() { set_config_line OPENSTEER_HOME_RELEASE_MANIFEST_URL "$1"; }
+
+# set_config_line KEY VALUE: config.env's line for KEY becomes KEY='VALUE', by one rename.
+set_config_line() {
   local tmp status=0
   tmp=$(mktemp "$home_dir/config.env.XXXXXX") || return
   # grep finding no other line is fine (1); a failed read or write (2) never replaces config.env.
-  grep -v '^OPENSTEER_HOME_RELEASE_MANIFEST_URL=' "$home_dir/config.env" > "$tmp" || status=$?
-  if ((status > 1)) || ! printf "OPENSTEER_HOME_RELEASE_MANIFEST_URL='%s'\n" "$1" >> "$tmp" ||
+  grep -v "^$1=" "$home_dir/config.env" > "$tmp" || status=$?
+  if ((status > 1)) || ! printf "%s='%s'\n" "$1" "$2" >> "$tmp" ||
     ! publish_file "$tmp" "$home_dir/config.env"; then
     rm -f -- "$tmp"
     return 1
   fi
+}
+
+# account_portal ANSWER: the account's portal origin in a boot or release-feed answer, when it is a
+# plain HTTPS origin; nothing otherwise.
+account_portal() {
+  local portal
+  portal=$(jq -r '.portalOrigin | select(type == "string")' "$1" 2>/dev/null) || return 0
+  # The whole value, one line: an origin and nothing else.
+  if [[ $portal =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then printf '%s\n' "$portal"; fi
+}
+
+# follow_account_portal ANSWER: config.env names the portal the account's answer gives, so the Host
+# links to it from the next start of its containers (a Home made before the boot answer had it
+# gets it this way). An answer that names none changes nothing.
+follow_account_portal() {
+  local portal
+  portal=$(account_portal "$1")
+  [[ -n $portal ]] || return 0
+  grep -qxF "OPENSTEER_HOME_PORTAL_ORIGIN='$portal'" "$home_dir/config.env" && return 0
+  set_config_line OPENSTEER_HOME_PORTAL_ORIGIN "$portal" &&
+    echo "This Home now links to its Opensteer account's portal: $portal" >&2
 }
 
 # release_change <active selection> <candidate selection>: same (this exact release), rebuild (the
@@ -915,7 +940,14 @@ run_release() { OPENSTEER_HOME_SWITCHING=${1##*/} "$1/opensteer-home" "$2"; }
 # prepare_release (release-prepare): this release readied while another runs: every image its own
 # Compose files name obtained and here, its sandbox policies read from them, its units checked.
 prepare_release() {
+  local answer
   [[ $(compose_project) == "$(pod_project)" ]] || fail "The release's Compose project is not this Home's."
+  # A managed Home follows what its account gives now, which this release's containers read when
+  # its gate starts them (a Home whose running code predates that learns it here).
+  if [[ -f "$home_dir/managed" ]] && answer=$(mktemp "$home_dir/feed.XXXXXX"); then
+    if ask_account release-feed "$answer"; then follow_account_portal "$answer" || :; fi
+    rm -f -- "$answer"
+  fi
   plan_inventory "$(uses_local_images)" || fail "The release's images could not be recorded."
   fetch_release_images "$release_dir/images.env" "$(uses_local_images)" || fail "The release's images could not be obtained."
   if [[ -f "$home_dir/managed" ]]; then
