@@ -32,6 +32,7 @@ journey() {
       export OPENSTEER_DOWNLOADS_E2E_ARTIFACT_DIR="$out/downloads"
       export OPENSTEER_PROFILE_RESTORE_ARTIFACT_DIR="$out/profile-restore"
       export OPENSTEER_HOST_TRANSPORT_E2E_ARTIFACT_DIR="$out/host-transport"
+      export OPENSTEER_LEAVE_HOME_E2E_ARTIFACT_DIR="$out/leave-home"
       export OPENSTEER_SHARED_BROWSER_E2E_ARTIFACT_DIR="$out/browser"
       export OPENSTEER_BROWSER_FOLLOW_E2E_ARTIFACT_DIR="$out/browser"
       export OPENSTEER_BROWSER_E2E_ARTIFACT_DIR="$out/idle"
@@ -43,7 +44,7 @@ journey() {
       export OPENSTEER_SYSTEM_CA_E2E_ARTIFACT_DIR="$out/system-ca"
       export OPENSTEER_EXTENSIONS_E2E_ARTIFACT_DIR="$out/extensions"
       # OPENSTEER_ELECTRON_SMOKES names the smokes to run, in order (one may repeat); all by default.
-      for smoke in ${OPENSTEER_ELECTRON_SMOKES:-cdp-boundary passwords attachments downloads focus host-transport browser idle quit menu-bar passkeys usb profile-restore cookies system-ca extensions}; do
+      for smoke in ${OPENSTEER_ELECTRON_SMOKES:-cdp-boundary passwords attachments downloads focus host-transport leave-home browser idle quit menu-bar passkeys usb profile-restore cookies system-ca extensions}; do
         mkdir -p "$out/$smoke"
         smoke_start=$SECONDS
         smoke_code=0

@@ -15,6 +15,7 @@ export const smokeConfig = {
     "scripts/editing-engine-journey.ts",
     "scripts/electron-attachment-smoke.ts",
     "scripts/electron-host-transport-smoke.ts",
+    "scripts/electron-leave-home-smoke.ts",
     "scripts/electron-browser-cookie-smoke.ts",
     "scripts/electron-profile-restore-smoke.ts",
     "scripts/electron-browser-focus-smoke.ts",

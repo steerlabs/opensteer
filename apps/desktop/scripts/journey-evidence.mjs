@@ -53,6 +53,7 @@ try {
       "downloads",
       "focus",
       "host-transport",
+      "leave-home",
       "browser",
       "idle",
       "quit",

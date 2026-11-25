@@ -144,6 +144,17 @@ try {
     case "host-transport":
       assert.equal(reportedArtifact().code, 0);
       break;
+    case "leave-home": {
+      // Home A left (proof verified, its session and Runner key gone), Home B untouched, A again.
+      const { code: reported, checks } = reportedArtifact();
+      assert.equal(reported, 0);
+      assert.equal(checks.leftA.membership, "removed");
+      assert.equal(checks.leaveProof.verified, true);
+      assert.deepEqual(checks.goneForA.keyFiles, []);
+      assert.equal(checks.untouchedB.membership, "active");
+      assert.equal(checks.rejoinedA.membership, "active");
+      break;
+    }
     case "idle":
       assert.equal(local("electron-local-visibility.json").passed, true);
       assert.equal(local("electron-idle-cpu.json").phases.length, 3);
