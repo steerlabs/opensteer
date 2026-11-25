@@ -51,7 +51,6 @@ import { AppMark } from "../computer-apps/app-icons.js";
 import { computerIcon } from "../computers/device-art.js";
 import { DeviceLabel } from "../computers/device-label.js";
 import { useHereId } from "../computers/here.js";
-import { WebTabNotice } from "../devices/web-tab-notice.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { SiteMark } from "../site-mark.js";
@@ -520,7 +519,6 @@ export const StartPage = memo(function StartPage({
         <span className="launcher__spacer" />
         {trailing}
       </div>
-      <WebTabNotice hostClient={hostClient} />
       <div className="start-page" onKeyDown={onPageKey} ref={stageRef}>
         <div className="start-page__column">
           <form
