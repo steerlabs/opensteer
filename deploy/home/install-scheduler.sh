@@ -9,6 +9,27 @@ if [[ $unit == opensteer-home && $home_dir == /etc/opensteer-home ]]; then
 fi
 unit_env=''
 if [[ -f "$home_dir/boot/options.env" ]]; then unit_env="EnvironmentFile=$home_dir/boot/options.env"; fi
+# Written with the units, so it changes only once an update has committed: before any of the
+# Home's code runs, an update interrupted before its commit gets its previous recipe back, under
+# the Home's lock (never while an update still runs). That recipe's own update recovery then
+# rolls the images back. It reads only the journal, and nothing of the recipe being installed.
+cat > "$home_dir/restore-recipe.sh.new" <<'RESTORE'
+#!/bin/sh
+home=$1
+journal="$home/update.pending"
+[ -d "$journal/recipe.previous" ] && [ ! -e "$journal/committed" ] || exit 0
+exec /usr/bin/flock "$home/operation.lock" /bin/sh -c '
+  journal="$1/update.pending"
+  [ -d "$journal/recipe.previous" ] && [ ! -e "$journal/committed" ] || exit 0
+  for file in "$journal"/recipe.previous/*; do
+    [ -f "$file" ] || continue
+    cp -p -- "$file" "$1/.restore.new" && mv -f -- "$1/.restore.new" "$1/${file##*/}" || exit 1
+  done
+  sync' restore "$home"
+RESTORE
+chmod 0700 "$home_dir/restore-recipe.sh.new"
+mv -f -- "$home_dir/restore-recipe.sh.new" "$home_dir/restore-recipe.sh"
+restore="ExecStartPre=$home_dir/restore-recipe.sh $home_dir"
 cat > "$unit_dir/$unit.service" <<UNIT
 [Unit]
 Description=Opensteer Home
@@ -26,6 +47,7 @@ TimeoutStartSec=0
 TimeoutStopSec=180
 Environment=OPENSTEER_HOME_DIR=$home_dir
 $unit_env
+$restore
 ExecStart=$home_dir/opensteer-home start
 ExecStop=$home_dir/opensteer-home stop
 
@@ -55,6 +77,7 @@ After=$unit.service
 Type=oneshot
 Environment=OPENSTEER_HOME_DIR=$home_dir
 $unit_env
+$restore
 ExecStart=$home_dir/opensteer-home $command
 UNIT
   timer="OnCalendar=$calendar

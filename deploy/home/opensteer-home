@@ -37,6 +37,19 @@ recover_home() {
 }
 
 case "${1:-}" in
+  update-gate)
+    # An update's gate, run from the recipe it is installing while the update holds the Home's
+    # lock: the candidate release starts with this recipe's limits, then one maintenance check
+    # (the Host's firewall and every service's health) must pass before the update commits.
+    journal="$home_dir/update.pending"
+    [[ $# == 1 && ${OPENSTEER_HOME_UPDATE_JOURNAL:-} == "$journal" && -d $journal && ! -L $journal ]] ||
+      fail "Usage: opensteer-home update-gate (only from an update in progress)"
+    release_env="$journal/candidate.env" install_sandbox_policies
+    release_env="$journal/candidate.env" start_pod
+    pid=$(host_pid) || fail 'The new release has no running Host.'
+    check_firewall "$pid" || fail "The new release's firewall check failed."
+    pod_healthy "$(pod_snapshot)" || fail "The new release's services are not all healthy."
+    ;;
   status)
     [[ $# == 1 ]] || fail "Usage: opensteer-home status"
     # shellcheck source=/dev/null

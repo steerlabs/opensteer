@@ -314,6 +314,27 @@ on a bring-your-own Home, or supply a manifest to `update` directly. The Openste
 account gives every Cloud Computer a `releaseManifestUrl` in its boot response and its current
 feed at each update check; a managed Home updates from the account's feed only.
 
+A release is one thing: an update also replaces the Home's recipe (its scripts and Compose
+files, so `home_limits`, the maintenance pass, the firewall and the units) when the release names
+one. A managed Home takes the recipe only from its account's release-feed answer, `recipe: {url,
+sha256}`, pinned in the account's own release config: the standalone installer and its SHA-256,
+never a manifest's. A bring-your-own Home takes it from the manifest its owner gives `update`,
+`"recipe": {"url": "https://…/opensteer-home-installer.sh", "sha256": "…"}`; a manifest without
+one updates the images only and says the recipe was not updated. A claimed bring-your-own Home
+updates its recipe the same way. The updater downloads the installer, checks its SHA-256, unpacks
+the recipe without running it, and refuses the update if any of that fails, before anything
+stops. It journals the previous recipe beside the previous images (`update.pending`), replaces
+each file by a rename, and then runs the new recipe's own `opensteer-home update-gate`: the
+release starts with the new recipe's limits and must pass one maintenance check (the Host's
+firewall and every service's health). Only then does the update commit; the units, timers and
+`/usr/local/bin/opensteer-home` follow the committed recipe only. A failed gate puts the
+previous recipe and images back and starts them. An update interrupted before its commit is
+undone at the next start by `restore-recipe.sh`, which the units run first (`ExecStartPre`,
+under the Home's lock); it is written with the units, so an update never replaces it before it
+commits. The previous recipe's own recovery then rolls the images back. Volumes, `config.env`
+and secrets are never touched. A Home installed before this updater needs one replace (or a new
+install) to get it.
+
 ## Problems and reports
 
 The maintenance timer hands the Host what only the machine knows, as fixed values: each service's

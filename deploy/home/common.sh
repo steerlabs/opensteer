@@ -6,7 +6,7 @@ unset release_env volume_env stage_project
 services=(host gateway runner browser-runtime browser-egress channel-runtime)
 default_home_dir=/etc/opensteer-home
 # The recipe a Home keeps in its directory and runs from.
-recipe_files=(compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml compose.browser-pool.yaml common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh)
+recipe_files=(compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml compose.browser-pool.yaml common.sh firewall.sh backup.sh update.sh machine-status.sh opensteer-home install-scheduler.sh)
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 
 lock_home() {
@@ -279,10 +279,16 @@ ask_account() {
 # answers and the address passes the boot checks (config.env is rewritten when it changed), and
 # otherwise the one config.env has. An address that fails the checks is never used.
 managed_feed() {
-  local configured asked='' answer
+  local configured asked='' answer recipe=${1:-}
   configured=$(configured_feed) || return
   answer=$(mktemp "$home_dir/feed.XXXXXX") || return
   if ask_account release-feed "$answer"; then
+    # The recipe of the account's release, pinned in its own config: kept for the update to fetch.
+    if [[ -n $recipe ]]; then
+      jq -ce '.recipe | select(type == "object" and (.url | type) == "string" and
+        (.sha256 | type) == "string" and (.sha256 | test("^[0-9a-f]{64}$")))' "$answer" \
+        > "$recipe" 2>/dev/null || rm -f -- "$recipe"
+    fi
     asked=$(jq -r '.releaseManifestUrl | select(type == "string")' "$answer" 2>/dev/null) || asked=''
     if [[ -n $asked ]] && valid_managed_feed "$asked"; then
       rm -f -- "$answer"
@@ -692,7 +698,7 @@ compose_down_home() {
 remove_home_files() {
   rm -rf -- "${home_dir:?}/"{secrets,boot,identity,restore.pending,update.pending,restore.pending.retired,update.pending.retired}
   rm -rf -- "$home_dir/"{install,backup,update,egress,images.placeholder,feed,config.env,pool-network}.??????
-  rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,compose.browser-pool.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,browser-pool,pool-network,pool-network-asked,update-database.dump,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
+  rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,compose.browser-pool.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,browser-pool,pool-network,pool-network-asked,restore-recipe.sh,update-database.dump,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
 }
 
 # Whether this Home was installed with --local-images.
@@ -710,6 +716,54 @@ installed_unit_prefix() {
 # Only the Home in the default directory, with the default units, owns the command on the path.
 owns_operator_command() {
   [[ $home_dir == "$default_home_dir" && ${OPENSTEER_HOME_UNIT_PREFIX:-opensteer-home} == opensteer-home ]]
+}
+
+# fetch_recipe URL SHA256 DIRECTORY PINNED: a release's recipe (its scripts and Compose files) from
+# its standalone installer, checked against its SHA-256 and unpacked into DIRECTORY without running
+# anything of it. PINNED (a managed Home) fetches only from public addresses, as the feed does.
+fetch_recipe() {
+  local url=$1 sha=$2 directory=$3 pinned=$4 bundle archive name resolution args=()
+  [[ ${#url} -le 2048 && $url =~ ^https://[^@/?#[:space:]]+(/[^?#[:space:]]*)?$ && $sha =~ ^[0-9a-f]{64}$ ]] ||
+    { echo 'The release names an invalid recipe.' >&2; return 1; }
+  if $pinned; then
+    resolution=$(managed_feed_resolution "$url") ||
+      { echo 'The recipe must resolve only to public HTTPS addresses.' >&2; return 1; }
+    args=(--noproxy '*' --resolve "$resolution")
+  fi
+  bundle="$directory.bundle" archive="$directory.tgz"
+  curl -q --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 120 \
+    --max-filesize 16777216 "${args[@]}" --output "$bundle" -- "$url" ||
+    { echo 'The recipe could not be downloaded.' >&2; return 1; }
+  [[ $(openssl dgst -sha256 -r "$bundle" | cut -d' ' -f1) == "$sha" ]] ||
+    { echo 'The recipe does not match its SHA-256.' >&2; return 1; }
+  sed -n "/^base64 -d <<'OPENSTEER_HOME_FILES'/,/^OPENSTEER_HOME_FILES\$/p" "$bundle" | sed '1d;$d' |
+    base64 -d > "$archive" 2>/dev/null || { echo 'The recipe is not an installer.' >&2; return 1; }
+  # Plain names only: nothing of it lands outside its directory.
+  while IFS= read -r name; do
+    name=${name#./}
+    [[ -z $name || $name =~ ^[a-z0-9][a-z0-9._-]*$ ]] || { echo 'The recipe holds an unexpected path.' >&2; return 1; }
+  done < <(tar -tzf "$archive") || return 1
+  mkdir -- "$directory" && tar -xzf "$archive" -C "$directory" || return 1
+  for name in "${recipe_files[@]}"; do
+    [[ -f "$directory/$name" && ! -L "$directory/$name" ]] ||
+      { echo "The recipe lacks $name." >&2; return 1; }
+  done
+}
+
+# put_recipe DIRECTORY: the recipe files from DIRECTORY replace the Home's, each by a rename.
+put_recipe() {
+  local name
+  for name in "${recipe_files[@]}"; do
+    [[ -f "$1/$name" ]] || continue
+    install -m 0600 "$1/$name" "$home_dir/.$name.new" && mv -f -- "$home_dir/.$name.new" "$home_dir/$name" || return
+  done
+  chmod 0700 "$home_dir/"{firewall.sh,opensteer-home,install-scheduler.sh} && sync "$home_dir"
+}
+
+# The units, timers and the command on the path, from the recipe the Home now runs (after a commit).
+refresh_installed_units() {
+  [[ -d /run/systemd/system || -n ${OPENSTEER_HOME_UNIT_DIR:-} ]] || return 0
+  "$home_dir/install-scheduler.sh" "$home_dir" "$(installed_unit_prefix)"
 }
 
 install_recipe() {

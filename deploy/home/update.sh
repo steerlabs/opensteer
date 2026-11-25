@@ -29,6 +29,7 @@ update_recovery() {
   if [[ -f "$journal/committed" ]]; then
     cmp -s "$journal/candidate.env" "$active" || { recovery_needs_operator "$journal"; return 1; }
     sync "$active" "$home_dir" "$journal/committed" "$journal" || return
+    refresh_installed_units || return
     retire_journal "$journal"
     return
   fi
@@ -38,11 +39,21 @@ update_recovery() {
     return
   fi
   release_env="$journal/candidate.env" compose down || return
+  # The previous recipe comes back with the previous images (a unit's restore step may already
+  # have put it back before this code ran).
+  if [[ -d "$journal/recipe.previous" ]]; then put_recipe "$journal/recipe.previous" || return; fi
   cp "$journal/previous.env" "$active.new" || return
   publish_file "$active.new" "$active" || return
   install_sandbox_policies && start_pod || return
   echo 'Rolled back to the previous images. The pre-update dump is retained for manual recovery.'
   retire_journal "$journal"
+}
+
+# release_recipe MANIFEST OUT: the recipe a self-hosted Home's release manifest names, if any.
+release_recipe() {
+  jq -ce '.recipe | select(type == "object" and (.url | type) == "string" and
+    (.sha256 | type) == "string" and (.sha256 | test("^[0-9a-f]{64}$")))' "$1" > "$2" 2>/dev/null ||
+    rm -f -- "$2"
 }
 
 update_home() (
@@ -61,10 +72,12 @@ update_home() (
   active="$home_dir/images.env"
   if [[ $# == 2 ]]; then
     release_to_env "$2" "$candidate" "$pinned"
+    release_recipe "$2" "$current_dir/recipe.json"
   else
     if $pinned; then
       # The feed its account gives now, checked as at boot; its own when the account is silent.
-      feed=$(managed_feed) || fail 'No update feed passed the checks.'
+      # The recipe comes only from the account's answer, never from a manifest.
+      feed=$(managed_feed "$current_dir/recipe.json") || fail 'No update feed passed the checks.'
     else
       feed=$(compose config --environment | sed -n 's/^OPENSTEER_HOME_RELEASE_MANIFEST_URL=//p')
     fi
@@ -77,6 +90,7 @@ update_home() (
     fi
     fetch_manifest "$feed" "$current_dir/release.json" "$pinned"
     release_to_env "$current_dir/release.json" "$candidate" "$pinned"
+    if ! $pinned; then release_recipe "$current_dir/release.json" "$current_dir/recipe.json"; fi
   fi
   old_version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$active")
   new_version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$candidate")
@@ -124,6 +138,21 @@ update_home() (
 
   fetch_release_images "$candidate" "$(uses_local_images)"
   if $pinned; then check_release_stamps "$candidate"; fi
+  # A release is one thing: its recipe (scripts and Compose files) rides with its images, checked
+  # against its SHA-256 before anything is stopped, and journalled beside the previous one.
+  if [[ -s "$current_dir/recipe.json" ]]; then
+    fetch_recipe "$(jq -r .url "$current_dir/recipe.json")" "$(jq -r .sha256 "$current_dir/recipe.json")" \
+      "$current_dir/recipe.new" "$pinned" || fail "The release's recipe could not be used. Nothing was changed."
+    rm -f -- "$current_dir/recipe.new.bundle" "$current_dir/recipe.new.tgz"
+    mkdir -- "$current_dir/recipe.previous"
+    for service in "${recipe_files[@]}"; do
+      if [[ -f "$home_dir/$service" ]]; then cp -p -- "$home_dir/$service" "$current_dir/recipe.previous/$service"; fi
+    done
+  elif $pinned; then
+    echo 'The Opensteer account named no recipe for this release: only its images are updated.'
+  else
+    echo 'This release names no recipe: only its images are updated; the recipe was not updated.'
+  fi
   # shellcheck source=deploy/home/backup.sh
   source "$home_dir/backup.sh"
   postgres_tool pg_dump --format=custom > "$current_dir/database.dump"
@@ -133,10 +162,15 @@ update_home() (
   mv -- "$current_dir" "$journal"
   sync "$home_dir"
   compose down
-  if release_env="$journal/candidate.env" install_sandbox_policies && release_env="$journal/candidate.env" start_pod; then
+  # The new recipe replaces the Home's (each file by a rename); its own code then starts the release
+  # and runs one maintenance check. Only then is the update committed.
+  if { [[ ! -d "$journal/recipe.new" ]] || put_recipe "$journal/recipe.new"; } &&
+    OPENSTEER_HOME_UPDATE_JOURNAL="$journal" "$home_dir/opensteer-home" update-gate; then
     cp "$journal/candidate.env" "$active.new"
     publish_file "$active.new" "$active"
     durable_marker "$journal/committed"
+    # Units, timers and the command on the path follow the committed recipe only.
+    refresh_installed_units || fail 'Updated; its units could not be written yet: the next start writes them.'
     retire_journal "$journal"
     echo "Updated Home to $new_version."
     if declare -F record_update_result >/dev/null; then
