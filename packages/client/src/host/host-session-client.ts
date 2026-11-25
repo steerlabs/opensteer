@@ -2101,9 +2101,7 @@ export class HttpHostClient {
               latestRunCompletedAt: row.latestRunCompletedAt,
               inputQueuePaused: row.inputQueuePaused ?? held.inputQueuePaused,
               runQueued: row.runQueued,
-              runStartHoldReason: row.runWaitingForRun
-                ? "waiting-for-run"
-                : (row.runStartHoldReason ?? null),
+              runStartHoldReason: row.runStartHoldReason ?? null,
               failureCode: row.failureCode ?? null,
               agentSessionId: row.agentSessionId ?? null,
               externalWork: row.externalWork ?? null,
@@ -5371,7 +5369,7 @@ function compactThread(
     environmentId: row.environmentId,
     harnessInstanceId: row.harnessInstanceId,
     runQueued: row.runQueued,
-    runStartHoldReason: row.runWaitingForRun ? "waiting-for-run" : (row.runStartHoldReason ?? null),
+    runStartHoldReason: row.runStartHoldReason ?? null,
     failureCode: row.failureCode ?? null,
     agentSessionId: row.agentSessionId ?? null,
     externalWork: row.externalWork ?? null,

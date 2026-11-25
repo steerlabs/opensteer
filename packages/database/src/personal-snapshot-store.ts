@@ -64,12 +64,7 @@ export function taskView(task: Task) {
     environmentId: task.environmentId,
     harnessInstanceId: task.harnessInstanceId,
     runQueued: task.runQueued,
-    // Apps inside the wire window know only the stop hold: waiting for another Run is its own field.
-    ...(task.runStartHoldReason === "waiting-for-run"
-      ? { runWaitingForRun: true }
-      : task.runStartHoldReason
-        ? { runStartHoldReason: task.runStartHoldReason }
-        : {}),
+    ...(task.runStartHoldReason ? { runStartHoldReason: task.runStartHoldReason } : {}),
     ...(task.externalWork?.status === "active"
       ? { agentSessionId: task.externalWork.sessionId }
       : {}),

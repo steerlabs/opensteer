@@ -40,14 +40,6 @@ import {
   TranscriptOrderCursorViewSchema,
 } from "./transcript.js";
 
-/**
- * The hold reasons apps inside the wire window read. A Run that waits for another Run to finish
- * (`waiting-for-run`) is sent as `runWaitingForRun` / `waitingForRun` instead, which they ignore.
- */
-const WireRunStartHoldReasonSchema = RunStartHoldReasonSchema.extract([
-  "previous-stop-unconfirmed",
-]);
-
 export const scopedPersonalApiVersion = 66;
 export const personalClientFrameMaxBytes = 32 * 1024;
 export const personalChangesFrameMaxBytes = 512 * 1024;
@@ -227,9 +219,7 @@ const task = z.object({
   /** A Run waits to start and none is executing. */
   runQueued: z.boolean(),
   /** Why a queued Run is being held back from starting on its device. */
-  runStartHoldReason: WireRunStartHoldReasonSchema.nullable().optional(),
-  /** Its queued Run waits for another Run on its computer to finish (that Runner runs all it may). */
-  runWaitingForRun: z.boolean().optional(),
+  runStartHoldReason: RunStartHoldReasonSchema.nullable().optional(),
   /** A connected agent is working this task itself; Stop it with `agent.session.stop`. */
   agentSessionId: AgentSessionIdSchema.nullable().optional(),
   externalWork: PersonalTaskExternalWorkSchema.nullable().optional(),
@@ -273,9 +263,7 @@ const queue = z.object({
         revision: PersonalRevisionSchema,
         status: z.string().max(80),
         finishing: z.boolean(),
-        startHoldReason: WireRunStartHoldReasonSchema.nullable().optional(),
-        /** It waits for another Run on its computer to finish. */
-        waitingForRun: z.boolean().optional(),
+        startHoldReason: RunStartHoldReasonSchema.nullable().optional(),
         createdAt: z.iso.datetime().optional(),
         runOrdinal: z.int().nonnegative().optional(),
       }),

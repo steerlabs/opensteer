@@ -51,11 +51,7 @@ export function activeRunQueue(tx: Read, threadId: ThreadId) {
     .then((runs) =>
       runs.map(({ startHoldReason, ...run }) => ({
         ...run,
-        ...(startHoldReason === "waiting-for-run"
-          ? { waitingForRun: true }
-          : startHoldReason
-            ? { startHoldReason }
-            : {}),
+        ...(startHoldReason ? { startHoldReason } : {}),
         createdAt: run.createdAt.toISOString(),
       })),
     );
