@@ -542,7 +542,7 @@ export function Sidebar({
   const rows = [...list.working, ...list.ready].filter((row) => !row.connectedAgentTask);
   const days = doneView ? doneDays(doneRows, Date.now()) : [];
   const doneMore = doneList?.hasMore ?? list.hasMore;
-  const doneLine = (doneCount ?? 0) > 0 || doneList?.hasMore === true || moved.length > 0;
+  const doneLine = doneCount > 0 || doneList?.hasMore === true || moved.length > 0;
   const rowKeys = doneView
     ? [
         ...days.flatMap((day) => [`day:${day.id}`, ...day.rows.map((row) => row.threadId)]),
@@ -821,7 +821,7 @@ export function Sidebar({
                 <h2 className="side-head__title" id="sidebar-tasks">
                   Done
                 </h2>
-                {doneCount === null ? null : <span className="side-head__count">{doneCount}</span>}
+                <span className="side-head__count">{doneCount}</span>
               </div>
             ) : (
               <div className="side-head">

@@ -125,14 +125,12 @@ export function useTaskMark(hostClient: HostClient, threadId: string | null): Ta
   return useHostSelector(hostClient, select, sameTaskMark);
 }
 
-/** A server total includes unread pages. Only a fully held page gives a person's total. */
+/** The Host counts the person's Done window. Hide any session row still held from a frame. */
 export function personDoneTaskList(snapshot: HostSnapshot) {
   const list = doneTaskList(snapshot);
   if (!list) return null;
-  const rows = list.rows.filter((row) => !row.connectedAgentTask);
   return {
-    rows,
-    total: list.hasMore ? null : rows.length,
-    hasMore: list.hasMore,
+    ...list,
+    rows: list.rows.filter((row) => !row.connectedAgentTask),
   };
 }

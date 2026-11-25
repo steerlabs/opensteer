@@ -105,9 +105,11 @@ describe("a task a connected agent works itself", () => {
     await act(async () => client.setTaskDone(ordinary.threadId, true));
     await act(async () => client.setTaskDone(mockAgentWorkThreads.ended, true));
     await vi.waitFor(() => {
-      expect(
-        client.getSnapshot().doneTasks[mainDoneTasks]?.entries.map(({ thread }) => thread.id),
-      ).toContain(mockAgentWorkThreads.ended);
+      const doneTasks = client.getSnapshot().doneTasks[mainDoneTasks]!;
+      const doneIds = doneTasks.entries.map(({ thread }) => thread.id);
+      expect(doneIds).toContain(ordinary.threadId);
+      expect(doneIds).not.toContain(mockAgentWorkThreads.ended);
+      expect(doneTasks.window.totalItems).toBe(doneTotal + 1);
       expect(done()?.getAttribute("aria-label")).toBe(
         `Done, ${doneTotal + 1} ${doneTotal === 0 ? "task" : "tasks"}`,
       );

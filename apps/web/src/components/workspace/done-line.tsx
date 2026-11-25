@@ -76,7 +76,7 @@ export function DoneLine({
 }: {
   /** The open conversation is one of the Done tasks. */
   readonly active: boolean;
-  readonly count: number | null;
+  readonly count: number;
   readonly hostClient: HostClient;
   readonly lineRef: Ref<HTMLLIElement>;
   readonly moved: readonly TaskRow[];
@@ -113,7 +113,7 @@ export function DoneLine({
     >
       <button
         aria-current={active ? "true" : undefined}
-        aria-label={count === null ? "Done" : `Done, ${count} ${count === 1 ? "task" : "tasks"}`}
+        aria-label={`Done, ${count} ${count === 1 ? "task" : "tasks"}`}
         className="side-task__main side-done__main"
         onClick={onOpen}
         ref={main}
@@ -135,11 +135,9 @@ export function DoneLine({
           +{shown.length}
         </button>
       ) : null}
-      {count === null ? null : (
-        <span aria-hidden className="side-done__count">
-          {count}
-        </span>
-      )}
+      <span aria-hidden className="side-done__count">
+        {count}
+      </span>
       {card && chip.current ? (
         <Popover
           anchor={chip.current}

@@ -1,6 +1,7 @@
 import { outsideName } from "@opensteer/shared/outsideName";
 import { chatParityProvider } from "./chat-parity.js";
 import { ItemTextStore } from "../host/item-text-store.js";
+import { isConnectedAgentTask } from "../host/agent-work.js";
 import { taskOriginEndedMessage } from "../host/connected-agents-copy.js";
 import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import {
@@ -2740,12 +2741,11 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     // The preview holds every task, so a page is a slice of what it holds.
     "tasks.list": async (input) => {
       const snapshot = client.getSnapshot();
-      const entries = (snapshot.tasks?.entries ?? []).filter(
-        ({ thread }) =>
-          (!input.active || thread.status === "running" || thread.status === "waiting") &&
-          (!input.done || thread.doneAt !== null),
-      );
-      if (input.done) entries.sort(newestDone);
+      const entries = input.done
+        ? mockDoneTasks(snapshot.tasks?.entries ?? [])
+        : input.active
+          ? snapshot.activeTasks
+          : (snapshot.tasks?.entries ?? []).filter(({ thread }) => mockRecentTask(thread));
       const start = input.before ? Number(input.before) : 0;
       if (!Number.isInteger(start) || start < 0 || start > entries.length) {
         return mockRefusal(
@@ -3815,6 +3815,21 @@ function mockTaskPageEntry({ thread, failure, lastReply }: TaskEntry) {
   });
 }
 
+function mockRecentTask(thread: ThreadSummary) {
+  return (
+    thread.doneAt === null &&
+    thread.status !== "running" &&
+    thread.status !== "waiting" &&
+    !isConnectedAgentTask(thread)
+  );
+}
+
+function mockDoneTasks(entries: readonly TaskEntry[]) {
+  return entries
+    .filter(({ thread }) => thread.doneAt !== null && !isConnectedAgentTask(thread))
+    .sort(newestDone);
+}
+
 function mockThread(thread: ThreadSummary): Thread {
   return ThreadSchema.parse({
     returnHint: thread.returnHint ?? null,
@@ -4096,9 +4111,9 @@ export class MockHostClient implements HostClient {
       pendingRequestWindow: mockWindow(snapshot.waitingRequests.length),
       runQueue: [],
       tasks: {
-        recent: page(recent),
+        recent: page(recent.filter(({ thread }) => mockRecentTask(thread))),
         active: page(snapshot.activeTasks),
-        done: page(recent.filter(({ thread }) => thread.doneAt !== null)),
+        done: page(mockDoneTasks(recent)),
       },
       needsYou: mockNeedsYou(snapshot, undefined, undefined),
       resources: (({ tabs, browser }) => ({ tabs, browser }))(this.#state.bootstrap()),
@@ -13944,26 +13959,9 @@ class MockHostState {
     _held: Record<string, TaskListState>,
   ): Record<string, TaskListState> {
     if (!tasks) return {};
+    const entries = mockDoneTasks(tasks.entries);
     return {
-      [mainDoneTasks]: {
-        entries: tasks.entries
-          .filter(({ thread }) => thread.doneAt !== null)
-          .sort(newestDone)
-          .map((entry) => {
-            const { externalWork, agentSessionId, ...thread } = entry.thread;
-            if (!externalWork && !agentSessionId) return entry;
-            // Done is paged on a real Home. The preview must use the same classification facts.
-            const paged = mockTaskPageEntry(entry);
-            return {
-              ...entry,
-              thread: {
-                ...thread,
-                ...(paged.externalWork ? { externalWork: paged.externalWork } : {}),
-              },
-            };
-          }),
-        window: mockWindow(tasks.entries.filter(({ thread }) => thread.doneAt !== null).length),
-      },
+      [mainDoneTasks]: { entries, window: mockWindow(entries.length) },
     };
   }
 
