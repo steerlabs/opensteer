@@ -12071,20 +12071,22 @@ export class HostedBrowserBroker {
       if (pending.submitted) pending.acknowledge?.();
       const cause = agentProtocolError(message.error);
       if (pending.bounded) {
-        // These correlated screenshot replies report a known refusal or a
-        // measured observation that exceeded its result budget.
+        // A7: an answer over its limit arrived, so the command ran: it fails, naming the answer's
+        // size and the limit, and is never unknown; the session stays usable for the next command.
+        // A screenshot is one case of this, with its own two refusals of a known outcome.
         if (
-          pending.screenshot &&
-          (cause.reason === "browser-full-page-capture" ||
-            cause.reason === "browser-screenshot-limit" ||
-            cause.reason === "browser-reply-limit")
+          cause.reason === "browser-reply-limit" ||
+          (pending.screenshot &&
+            (cause.reason === "browser-full-page-capture" ||
+              cause.reason === "browser-screenshot-limit"))
         ) {
           pending.reject(new BrowserCdpRefusal(cause));
           return;
         }
-        // A7: an agent's command. Only an error the runtime says came before the command reached
-        // the page is a refusal; any other (or one that does not say) may have come after its
-        // effect, and its outcome is unknown: never failed, never retried here.
+        // A7: an agent's command. Otherwise only an error the runtime says came before the command
+        // reached the page is a refusal; any other (or one that does not say: lost contact, the
+        // runtime gone mid-command) may have come after its effect, and its outcome is unknown:
+        // never failed, never retried here.
         if (message.error.unsent !== true) {
           pending.reject(new OperationOutcomeUnknown(browserOutcomeUnknownWords));
           return;
@@ -12107,8 +12109,7 @@ export class HostedBrowserBroker {
               code: cause.code,
               message: words[message.error.code],
               retryable: cause.retryable,
-              ...(cause.reason === "browser-reply-limit" ||
-              cause.reason === "browser-command-cancelled" ||
+              ...(cause.reason === "browser-command-cancelled" ||
               cause.reason === "browser-input-canceled" ||
               cause.reason === "browser-tab-open-closed" ||
               cause.reason === "browser-cdp-protocol-error"

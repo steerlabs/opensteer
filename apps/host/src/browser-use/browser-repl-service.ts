@@ -1,3 +1,4 @@
+import { answerTooLargeWords } from "@opensteer/browser-runtime-core";
 import { OpensteerError } from "@opensteer/core";
 import { z } from "zod";
 import type { Clock } from "@opensteer/shared/clock";
@@ -141,12 +142,12 @@ const replyTooLarge = () =>
 function publicFailure(error: unknown): ReplFailure {
   if (error instanceof OperationOutcomeUnknown)
     return { code: "outcome-unknown", message: error.message, performed: [] };
-  // A7: the browser's reply limit is reached only after the command ran: its effect is unknown.
+  // A7: lost contact, or a reply that did not come, leaves an effect unknown. An answer over the
+  // browser's reply limit is not one of these: it arrived, so the command ran, and it is a failure
+  // of that command with its size (the port's refusal, caught by the script like any other).
   if (
     error instanceof OpensteerError &&
-    (error.reason === "outcome-unknown" ||
-      error.reason === "browser-tab-open-outcome-unknown" ||
-      error.reason === "browser-reply-limit")
+    (error.reason === "outcome-unknown" || error.reason === "browser-tab-open-outcome-unknown")
   )
     return {
       code: "outcome-unknown",
@@ -594,8 +595,18 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
         if (screenshot && typeof encoded === "string" && encoded.length > call.maxBytes)
           throw screenshotTooLarge();
         const bytes = boundedBytes(encoded, call.maxBytes);
+        // A7: the answer arrived over its limit, so the command ran: it fails, naming its size.
         if (bytes === undefined || !browserJsonShapeFits(encoded, call.maxDepth))
-          throw replyTooLarge();
+          throw new BrowserBridgeError(
+            "bridge-limit",
+            answerTooLargeWords(
+              bytes === undefined && typeof encoded === "string"
+                ? Buffer.byteLength(encoded)
+                : undefined,
+              call.maxBytes,
+              method,
+            ),
+          );
         const result: unknown = JSON.parse(encoded);
         if (screenshot) {
           const { data, cropped } = screenshotResult.parse(result);

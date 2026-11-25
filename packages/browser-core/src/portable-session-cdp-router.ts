@@ -3,11 +3,13 @@ import {
   standardCdpRootTargetMethods as standardRootTargets,
 } from "./standard-cdp-page-methods.js";
 import {
+  agentCdpMessageMaxBytes,
   standardCdpMessageMaxBytes,
   standardCdpBufferedMaxBytes,
   standardCdpMaxPending,
 } from "./standard-cdp-limits.js";
 export {
+  agentCdpMessageMaxBytes,
   standardCdpMessageMaxBytes,
   standardCdpBufferedMaxBytes,
   standardCdpMaxPending,
@@ -16,7 +18,7 @@ import { ThisHomeAddressSet, type ThisHomeAddresses } from "@opensteer/shared/ho
 import { contextScopedCdpMethods } from "./cdp-context.js";
 import { CdpProductIsolation } from "./cdp-product-isolation.js";
 import { ConnectionExtensionIsolation, isExtensionUrl } from "./connection-extension-isolation.js";
-import { boundedJsonSize, type JsonSizeBudget } from "./bounded-json.js";
+import { answerTooLargeMessage, boundedJsonSize, type JsonSizeBudget } from "./bounded-json.js";
 import { utf8Size } from "./bytes.js";
 import {
   cdpCommandRefusal,
@@ -155,16 +157,23 @@ export class SessionCdpRouterError extends Error {
   readonly code: "bad_command" | "conflict" | "forbidden" | "not_found" | "too_large";
   /** A7: refused before the command was handed on toward the browser: nothing happened. */
   readonly unsent: boolean;
+  /**
+   * A7: the command ran and its answer arrived, over the limit: a failure of that command, never
+   * an unknown outcome. Only the answer-size check says so; no other refusal proves the command
+   * finished.
+   */
+  readonly answerTooLarge: boolean;
 
   constructor(
     code: SessionCdpRouterError["code"],
     message: string,
-    options?: ErrorOptions & { readonly unsent?: boolean },
+    options?: ErrorOptions & { readonly unsent?: boolean; readonly answerTooLarge?: boolean },
   ) {
     super(message, options);
     this.name = "SessionCdpRouterError";
     this.code = code;
     this.unsent = options?.unsent === true;
+    this.answerTooLarge = options?.answerTooLarge === true;
   }
 }
 
@@ -298,9 +307,9 @@ function mentionsExtensionUrl(value: unknown, depth: number): boolean {
 }
 
 const defaultLimits: SessionCdpRouterLimits = {
-  maxCommandBytes: 432 * 1_024,
-  maxEventBytes: 432 * 1_024,
-  maxResultBytes: 432 * 1_024,
+  maxCommandBytes: agentCdpMessageMaxBytes,
+  maxEventBytes: agentCdpMessageMaxBytes,
+  maxResultBytes: agentCdpMessageMaxBytes,
   internalRuntimeEnableTimeoutMs: 5_000,
 };
 
@@ -799,19 +808,29 @@ export class SessionCdpRouter {
     this.#assertResultSize(result, this.#limits.maxResultBytes, budget);
   }
 
-  #assertResultSize(result: unknown, maxResultBytes: number, budget?: JsonSizeBudget): void {
+  #assertResultSize(
+    result: unknown,
+    maxResultBytes: number,
+    budget?: JsonSizeBudget,
+    method?: string,
+  ): void {
     const tooLarge = budget
       ? boundedJsonSize(result, {
           ...budget,
           maxBytes: Math.min(maxResultBytes, budget.maxBytes),
         }) === undefined
       : serializedBytes(result) > maxResultBytes;
-    if (tooLarge) {
+    if (tooLarge)
       throw new SessionCdpRouterError(
         "too_large",
-        "CDP result exceeds the bounded agent transport. Query a narrower result in the page.",
+        answerTooLargeMessage(
+          result,
+          Math.min(maxResultBytes, budget?.maxBytes ?? Infinity),
+          budget ?? standardJsonBudget,
+          method,
+        ),
+        { answerTooLarge: true },
       );
-    }
   }
 
   /**
@@ -1017,6 +1036,7 @@ export class SessionCdpRouter {
           result,
           this.#sessionLimits(state).maxResultBytes,
           command.replyBudget ?? standardJsonBudget,
+          command.method,
         );
         return result;
       }
@@ -1079,6 +1099,7 @@ export class SessionCdpRouter {
       result,
       this.#sessionLimits(state).maxResultBytes,
       command.replyBudget ?? (state.standard ? standardJsonBudget : undefined),
+      command.method,
     );
     return result;
   }

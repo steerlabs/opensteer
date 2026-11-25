@@ -104,6 +104,34 @@ class FakeBackend implements BrowserCdpBackend {
 }
 
 describe("SessionCdpRouter", () => {
+  it("refuses an answer over its limit naming the answer's size, the limit and how to ask for less", () => {
+    const router = new SessionCdpRouter(new FakeBackend());
+    const refusal = (() => {
+      try {
+        router.admitPageResult({ value: "x".repeat(600 * 1_024) });
+      } catch (error) {
+        return error;
+      }
+      return undefined;
+    })();
+    expect(refusal).toMatchObject({
+      code: "too_large",
+      // The command ran: a failure of it, never an unknown outcome.
+      answerTooLarge: true,
+      message:
+        "The command ran, but its answer is 601 KiB, over the 432 KiB limit for one answer, so it exceeds the bounded agent transport and was dropped. Ask for less. If the command changed something, do not run it again.",
+    });
+    // An answer too deep to measure says so instead of a size.
+    let deep: unknown = "end";
+    for (let level = 0; level < 40; level++) deep = [deep];
+    expect(() =>
+      router.admitPageResult(deep, { maxBytes: Infinity, maxDepth: 32, maxEntries: 16_384 }),
+    ).toThrow(
+      "The command ran, but its answer is too deeply nested or has too many entries, so it exceeds the bounded agent transport and was dropped.",
+    );
+    expect(() => router.admitPageResult({ value: "x".repeat(1_024) })).not.toThrow();
+  });
+
   it("puts a tab the runtime woke in the place its slept target held in each lineage, only when the tab itself woke, and never after a close (run 12)", async () => {
     const backend = new FakeBackend();
     backend.dedicatedContext = true;

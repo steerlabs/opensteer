@@ -9111,13 +9111,17 @@ it("a reopening whose last read fails for another reason keeps the open tab and 
 });
 
 /*
- * A7: an agent's command answered by an error. Only one the runtime says came before the command
- * reached the page (`unsent`) is a refusal; one that does not say may have come after its effect,
- * and its outcome is unknown: never failed, never retried by the Home.
+ * A7: an agent's command answered by an error. One the runtime says came before the command
+ * reached the page (`unsent`) is a refusal, and so is an answer that arrived over its limit (the
+ * command ran: it fails with the answer's size); one that does not say may have come after its
+ * effect, and its outcome is unknown: never failed, never retried by the Home.
  */
+const answerOverLimit =
+  "The page ran the command, but its answer is 1.1 MiB, over the 1020 KiB limit for one answer, so it exceeds the bounded agent transport and was dropped.";
 it.each([
   ["after", undefined],
   ["before", true],
+  ["with an answer over its limit after", undefined],
 ] as const)(
   "tells an agent's command apart by whether its error came %s it reached the page (A7)",
   async (when, unsent) => {
@@ -9137,13 +9141,13 @@ it.each([
     const descriptor = await service.pageTabs.open(
       { kind: "person", ownerId },
       { kind: "page", guest: true, url: "about:blank" },
-      `bind-${when}`,
+      `bind-${when.length}`,
     );
     await memory.add(descriptor);
     const row = memory.rows.get(descriptor.id)!;
     const binding = service.pageTabs.bindBrowserScript!(
       {
-        authority: { ownerId, agentBindingId: `run:bind-${when}` },
+        authority: { ownerId, agentBindingId: `run:bind-${when.length}` },
         threadId: createId("thread"),
         signal: new AbortController().signal,
       } as never,
@@ -9173,20 +9177,25 @@ it.each([
               retryable: true,
               unsent: true,
             }
-          : {
-              code: "bad_message",
-              message: "Browser result exceeds its byte or nesting limit.",
-              reason: "browser-reply-limit",
-              retryable: false,
-            },
+          : when === "after"
+            ? // The page went away mid-command: whether it ran is not known.
+              { code: "internal", message: "Target closed.", retryable: false }
+            : {
+                code: "bad_message",
+                message: answerOverLimit,
+                reason: "browser-reply-limit",
+                retryable: false,
+              },
     });
-    if (unsent === true) {
+    if (when !== "after") {
       const refused = await binding.then(
         () => null,
         (error: unknown) => error,
       );
       expect(refused).toBeInstanceOf(OpensteerError);
       expect(refused).not.toBeInstanceOf(OperationOutcomeUnknown);
+      if (unsent !== true)
+        expect(refused).toMatchObject({ reason: "browser-reply-limit", message: answerOverLimit });
     } else await expect(binding).rejects.toBeInstanceOf(OperationOutcomeUnknown);
   },
 );

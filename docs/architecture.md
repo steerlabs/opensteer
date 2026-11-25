@@ -246,7 +246,9 @@ Each call is one reviewed **operation** of an **agent session**:
    endpoint is never issued twice. This holds across idle and a Home restart.
 6. **Unknown is never guessed.** An effect whose reply was lost, or that Stop, Disconnect or a
    narrowed grant cut off after hand-off, is recorded `unknown`, never failed or completed, and is
-   never retried by the Home. A Home that restarts settles handed-off operations as `unknown`. The
+   never retried by the Home. What the Home knows is not unknown: a browser command whose answer
+   arrived over its limit ran, so it fails with the answer's size and the limit; lost contact
+   stays unknown. A Home that restarts settles handed-off operations as `unknown`. The
    person sees **Uncertain**.
 7. **`pending` is continued, not polled.** A call waits up to 25 seconds for the person, then
    returns `{ status: "pending", taskId, operationId, requestId, next }`. The agent continues by

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { boundedJsonSize } from "@opensteer/browser-runtime-core";
+import { answerTooLargeMessage, boundedJsonSize } from "@opensteer/browser-runtime-core";
 import { OpensteerError, refused, TabIdSchema, type ThreadId } from "@opensteer/core";
 import {
   BrowserCdpCommandSchema,
@@ -83,8 +83,13 @@ function logAttachmentEnded(detail: {
   console.warn("browser.use.attachment.ended", JSON.stringify(detail));
 }
 
-function checkReply(value: unknown, budget: BrowserUseBudget): void {
-  if (boundedJsonSize(value, budget) === undefined) throw tooLarge();
+/** A7: the answer arrived over its limit, so the command ran: a failure naming its size. */
+function checkReply(value: unknown, budget: BrowserUseBudget, method?: string): void {
+  if (boundedJsonSize(value, budget) === undefined)
+    throw refused(
+      "resource_exhausted",
+      answerTooLargeMessage(value, budget.maxBytes, budget, method),
+    );
 }
 
 function translate(
@@ -109,7 +114,10 @@ function translate(
     context?.onEnded?.();
     throw afterSubmit ? endedAfterSubmit() : ended();
   }
-  if (error instanceof OpensteerError && error.reason === "browser-reply-limit") throw tooLarge();
+  // A7: the browser's answer arrived over its limit: the command ran, and it fails with the
+  // runtime's words (its size, the limit, what to ask for instead).
+  if (error instanceof OpensteerError && error.reason === "browser-reply-limit")
+    throw refused("resource_exhausted", error.message);
   if (error instanceof OpensteerError && error.reason === "browser-cdp-protocol-error")
     throw new BrowserUseCdpError(-32000, error.message);
   throw error;
@@ -373,7 +381,7 @@ export function createBrowserUsePort({
         if (budget.maxImageBytes !== undefined && budget.maxImageBytes < 1) throw tooLarge();
         const { result } = await target.relay.dispatch(parsed.data, budget);
         const value = await result;
-        checkReply(value, call);
+        checkReply(value, call, method);
         return JSON.stringify(value);
       } catch (error) {
         if (method === "Page.captureScreenshot" && error instanceof OpensteerError) {
@@ -382,7 +390,7 @@ export function createBrowserUsePort({
           if (error.reason === "browser-reply-limit")
             throw refused(
               "resource_exhausted",
-              `Screenshot exceeded the ${call.maxBytes / 1024} KiB reply limit. Use a smaller viewport clip or JPEG via CDP.`,
+              `Screenshot exceeded the ${Math.floor(call.maxBytes / 1024)} KiB reply limit. Use a smaller viewport clip or JPEG via CDP.`,
             );
         }
         translate(error, {

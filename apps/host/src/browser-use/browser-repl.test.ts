@@ -346,24 +346,67 @@ describe("browser REPL", () => {
     });
   });
 
-  it("keeps an effect uncertain when the browser cannot return its reply", async () => {
-    let dispatched = false;
-    const { run } = setup({
-      command: async () => {
-        dispatched = true;
-        throw new OpensteerError({
-          code: "bad_request",
-          reason: "browser-reply-limit",
-          message: "Browser result exceeds its byte or nesting limit.",
-        });
+  // A7: an answer over the browser's reply limit arrived, so the command ran: it is an error of
+  // that one command, which the script can catch, never an unknown outcome.
+  const overLimit =
+    "The page ran the command, but its answer is 1.1 MiB, over the 1020 KiB limit for one answer, so it exceeds the bounded agent transport and was dropped. Ask the page for less: a slice of the text, an element by selector, or innerText instead of the HTML. If the command changed the page, do not run it again.";
+  const answering = () =>
+    setup({
+      command: async (_target, method, params) => {
+        if (method === "Runtime.releaseObjectGroup") return "{}";
+        if ((params as { expression?: string } | undefined)?.expression === "big")
+          throw new OpensteerError({
+            code: "bad_request",
+            reason: "browser-reply-limit",
+            message: overLimit,
+          });
+        return JSON.stringify({ result: { type: "string", value: "small" } });
       },
     });
-    const result = await run(`${bind} await page.cdp("Runtime.evaluate");`);
-    expect(dispatched).toBe(true);
-    expect(result).toMatchObject({
-      isError: true,
-      structuredContent: { error: { code: "outcome-unknown" } },
+
+  it("throws an answer over the reply limit into the script, which catches it and goes on", async () => {
+    const { run } = answering();
+    expect(
+      await run(`${bind}
+      try { await page.cdp("Runtime.evaluate", { expression: "big" }); }
+      catch (error) { print(error.code, error.message); }
+      return (await page.cdp("Runtime.evaluate", { expression: "html" })).result.value;`),
+    ).toEqual({
+      content: [{ type: "text", text: `bad_request ${overLimit}` }, text("small")],
     });
+  });
+
+  it("fails a call that does not catch an answer over the limit, and the next call works", async () => {
+    const { run } = answering();
+    expect(
+      await run(`${bind} await page.cdp("Runtime.evaluate", { expression: "big" });`),
+    ).toMatchObject({
+      isError: true,
+      structuredContent: { error: { code: "bad_request", message: overLimit } },
+    });
+    expect(
+      await run(
+        'return (await page.cdp("Runtime.evaluate", { expression: "html" })).result.value;',
+      ),
+    ).toEqual({ content: [text("small")] });
+  });
+
+  it("keeps an evaluate whose contact was lost mid-command unknown, caught or not", async () => {
+    const { run } = setup({
+      command: async () => {
+        throw new OperationOutcomeUnknown(
+          "A browser action did not confirm its outcome. Observe the page before trying again.",
+        );
+      },
+    });
+    for (const script of [
+      `${bind} await page.cdp("Runtime.evaluate", { expression: "html" });`,
+      `${bind} try { await page.cdp("Runtime.evaluate", { expression: "html" }); } catch (error) { print(error.code); } return "caught";`,
+    ])
+      expect(await run(script)).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: "outcome-unknown" } },
+      });
   });
 
   it("uses the shared wall deadline and frees a context even if the port has not replied", async () => {
