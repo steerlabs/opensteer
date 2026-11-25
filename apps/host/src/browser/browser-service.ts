@@ -2211,6 +2211,15 @@ export class BrowserService {
     }
   }
 
+  async #connectedSelectedGrant(agent: { ownerId: UserId; agentBindingId: string }) {
+    const authority = await this.#repository.resolveResourceAccess?.({
+      ownerUserId: agent.ownerId,
+      agentBindingId: agent.agentBindingId,
+      explicitAccess: "read-write",
+    });
+    return authority ? selectedGrantOf(authority.execution) : null;
+  }
+
   async #resolveIdentityOpen(
     ownerId: UserId,
     command: {
@@ -2230,12 +2239,19 @@ export class BrowserService {
   }> {
     const profileId = command.identity.kind === "profile" ? command.identity.profileId : null;
     const identityKey = profileId ?? "guest";
-    const profile = profileId ? await this.#repository.getBrowserProfile(profileId, ownerId) : null;
+    const grant = agent && profileId ? await this.#connectedSelectedGrant(agent) : null;
+    const profile =
+      profileId &&
+      (!grant || agentGrantAllows(grant, { kind: "browser-profile", profileId }, "read-write"))
+        ? await this.#repository.getBrowserProfile(profileId, ownerId)
+        : null;
     if (profileId && !profile)
-      throw this.#tabOpenRefusal(
-        "browser-profile-unavailable",
-        "That browser profile is unavailable. Choose a profile.",
-      );
+      throw grant
+        ? new OpensteerError({ code: "not_found", message: "Browser profile not found." })
+        : this.#tabOpenRefusal(
+            "browser-profile-unavailable",
+            "That browser profile is unavailable. Choose a profile.",
+          );
     const storage =
       profileId && this.#localProfiles
         ? await this.#localProfiles.storage(profileId)
@@ -2626,10 +2642,18 @@ export class BrowserService {
           let opening: StartBrowserSessionInput | null = null;
           let identityKey: string | null = null;
           let runnerId: RunnerId;
+          const releasePoolReservation = () => {
+            budget.cleanupPoolAbort?.();
+            budget.cleanupPoolAbort = undefined;
+            budget.pool?.reservation.release();
+            budget.pool = undefined;
+          };
           const attachPoolReservation = (
             target: BrowserPoolCoordinator,
             reservation: BrowserPoolReservation,
           ) => {
+            budget.cleanupPoolAbort?.();
+            budget.cleanupPoolAbort = undefined;
             budget.pool = { target, reservation };
             const ended = reservation.ended;
             if (ended) {
@@ -2759,7 +2783,7 @@ export class BrowserService {
                 }
               : undefined;
             if (budget.pool?.target !== pooled) {
-              budget.pool?.reservation.release();
+              releasePoolReservation();
               const reservation = agent
                 ? await this.#reserveAgentPool(
                     pooled.gate,
@@ -2787,6 +2811,8 @@ export class BrowserService {
               this.#requireOpenableSession(current);
               record = current;
             }
+          } else if (budget.pool) {
+            releasePoolReservation();
           }
           binding = {
             callerUserId: ownerId,
@@ -4237,19 +4263,26 @@ export class BrowserService {
     let identity: NonNullable<BrowserTabOpenCommand["identity"]>;
     let placement: BrowserPlacementSelector | undefined;
     if (input.identity.kind === "profile") {
-      const profiles = await this.#repository.listBrowserProfiles(agent.ownerId);
+      const grant = await this.#connectedSelectedGrant(agent);
+      const profiles = (await this.#repository.listBrowserProfiles(agent.ownerId)).filter(
+        (p) =>
+          !grant ||
+          agentGrantAllows(grant, { kind: "browser-profile", profileId: p.id }, "read-write"),
+      );
       const name = input.identity.profile;
       const byId = profiles.find((profile) => profile.id === name);
       const matches = byId
         ? [byId]
         : profiles.filter((profile) => profile.name.toLowerCase() === name.toLowerCase());
       if (matches.length !== 1)
-        throw new OpensteerError({
-          code: "bad_request",
-          message: matches.length
-            ? "That profile name is ambiguous. Use browser_profile_list and pass a profile ID."
-            : "Unknown browser profile. Use browser_profile_list to find its name or ID.",
-        });
+        throw grant && !matches.length
+          ? new OpensteerError({ code: "not_found", message: "Browser profile not found." })
+          : new OpensteerError({
+              code: "bad_request",
+              message: matches.length
+                ? "That profile name is ambiguous. Use browser_profile_list and pass a profile ID."
+                : "Unknown browser profile. Use browser_profile_list to find its name or ID.",
+            });
       identity = { kind: "profile", profileId: matches[0]!.id };
     } else {
       identity = { kind: "guest" };
@@ -8226,6 +8259,9 @@ export class BrowserService {
         });
         throw new BrowserCdpConnectionEnded("This device's browser access was turned off.");
       }
+      if (waiter.signal.aborted && waiter.signal.reason instanceof BrowserCdpConnectionEnded) {
+        throw waiter.signal.reason;
+      }
       throw error;
     } finally {
       waiters.delete(entry);
@@ -9755,7 +9791,8 @@ export class HostedBrowserBroker {
     return (
       this.#poolAdmission !== undefined &&
       !this.#channelLossDone &&
-      this.#socket.readyState !== WebSocket.OPEN
+      (this.#socket.readyState === WebSocket.CLOSING ||
+        this.#socket.readyState === WebSocket.CLOSED)
     );
   }
 

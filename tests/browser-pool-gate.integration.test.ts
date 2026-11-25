@@ -46,7 +46,11 @@ import { createId } from "../packages/core/src/index.js";
 import { KeyedMutationQueue } from "../packages/shared/src/mutationQueue.js";
 import { BrowserPoolGate } from "../apps/host/src/browser/browser-pool-gate.js";
 import { PooledBrowserRelay } from "../apps/host/src/browser/browser-pool-relay.js";
-import { BrowserService, HostedBrowserBroker } from "../apps/host/src/browser/browser-service.js";
+import {
+  BrowserCdpConnectionEnded,
+  BrowserService,
+  HostedBrowserBroker,
+} from "../apps/host/src/browser/browser-service.js";
 import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
 import { requireRunnerDeviceAccess } from "../apps/host/src/administration/device-access.js";
 import {
@@ -4674,5 +4678,193 @@ it("vetoes a park attempted during the first session.state send after a re-attac
   } finally {
     releaseReattachStateSend.resolve();
     socket.emit("close", 1000, Buffer.from("closed"));
+  }
+});
+
+it("V4, V5 & V6 (Opus N2/N5/N7): Stop during reserve wait reports task ended, CONNECTING broker is not pendingChannelLoss, and ungranted vs missing profiles read identical not_found without waking", async () => {
+  // V5 (Opus N2): only sockets that have left OPEN (CLOSING/CLOSED) count as pendingChannelLoss;
+  // a CONNECTING socket must never stall concurrent opens.
+  const connectingSocket = Object.assign(new EventEmitter(), {
+    readyState: WebSocket.CONNECTING as number,
+    send: () => {},
+    close: () => {},
+    terminate: () => {},
+  });
+  const gate = new BrowserPoolGate();
+  gate.set({ recovered: true });
+  const connectingBroker = new HostedBrowserBroker({
+    poolAdmission: {
+      runnerId: createId("runner"),
+      now: () => gate.backgroundNow(),
+      wait: (signal) => gate.background(signal),
+      retiring: () => gate.retiringOrAdopting,
+      refusesWrite: (reservation) => gate.refusesWrite(reservation),
+    },
+    readSessionState: async () => ({ runs: 0, pinned: false, keepAwake: false, agentTabs: [] }),
+    profileId: null,
+    historyWrite: () => {},
+    navigation: false,
+    groupId: BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`),
+    onTabsChanged: () => {},
+    onRecordsChanged: () => {},
+    onActivity: () => {},
+    onPageChanged: () => {},
+    cdpBoundary: true,
+    sharedControl: true,
+    targetControl: true,
+    captureRegion: false,
+    rasterDemand: false,
+    editing: undefined,
+    passkeys: false,
+    passkeyOwnOrigins: () => [],
+    clipboard: false,
+    computer: null,
+    connectTimeoutMs: 5_000,
+    fileStaging: false,
+    signIn: false,
+    stateImport: false,
+    onState: async () => {},
+    onTerminal: () => {},
+    sessionId: BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`),
+    socket: connectingSocket as never,
+  });
+  void connectingBroker.ready().catch(() => undefined);
+  try {
+    expect(connectingBroker.pendingChannelLoss).toBe(false);
+    connectingSocket.readyState = WebSocket.CLOSING;
+    expect(connectingBroker.pendingChannelLoss).toBe(true);
+    connectingSocket.readyState = WebSocket.CLOSED;
+    expect(connectingBroker.pendingChannelLoss).toBe(true);
+  } finally {
+    connectingSocket.emit("close", 1000, Buffer.from("closed"));
+  }
+
+  const j = await journey("v4-v6-gate", { chromium: false, profile: true });
+  try {
+    const home = await j.startHome();
+    const ungrantedProfile = await j.store.createBrowserProfile({
+      name: "Private Banking",
+      ownerId: j.task.userId,
+      homeRunnerId: j.task.runnerId,
+      idempotencyKey: "v6-ungranted-profile",
+    });
+
+    // Park the browser cleanly.
+    expect(await home.coordinator.tryPark()).toBe("parked");
+    expect(home.coordinator.gate.phase).toBe("parked");
+
+    // V6 (Opus N5): a Run working for a connected agent with a selected grant must get the exact
+    // same immediate `not_found` for an ungranted existing profile and a missing profile, with no
+    // wake and no wait.
+    const connections = new AgentConnectionStore(j.database);
+    const connection = await connections.create({
+      userId: j.task.userId,
+      label: "Connected agent V6",
+      clientName: "Connected agent V6",
+      accessMode: "full-access",
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: j.profile!.id }],
+      },
+      resource: "https://pooled.test/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    expect(await connections.activate(connection.id, randomUUID())).toBe(true);
+    const { session: agentSession } = await beginAgentSession(j.database, {
+      userId: j.task.userId,
+      agentConnectionId: connection.id,
+    });
+    const connectedRun = {
+      agentBindingId: `session:${agentSession.id}`,
+      ownerId: j.task.userId,
+      environmentId: j.task.environmentId,
+      threadId: agentSession.threadId,
+    };
+    const missingProfileId = createId("browserProfile");
+
+    const ungrantedAgentErr = await home.service
+      .openAgentTab(connectedRun, {
+        identity: { kind: "profile", profile: ungrantedProfile.id },
+        operationKey: `v6-agent-ungranted-${randomUUID()}`,
+      })
+      .catch((error: unknown) => error);
+    const missingAgentErr = await home.service
+      .openAgentTab(connectedRun, {
+        identity: { kind: "profile", profile: missingProfileId },
+        operationKey: `v6-agent-missing-${randomUUID()}`,
+      })
+      .catch((error: unknown) => error);
+    expect(ungrantedAgentErr).toMatchObject({
+      code: "not_found",
+      message: "Browser profile not found.",
+    });
+    expect(missingAgentErr).toMatchObject({
+      code: "not_found",
+      message: "Browser profile not found.",
+    });
+
+    const ungrantedOpenErr = await home.service
+      .openTab(
+        j.task.userId,
+        {
+          type: "browser.tab.open",
+          identity: { kind: "profile", profileId: ungrantedProfile.id },
+          idempotencyKey: `v6-open-ungranted-${randomUUID()}`,
+        },
+        connectedRun,
+      )
+      .catch((error: unknown) => error);
+    const missingOpenErr = await home.service
+      .openTab(
+        j.task.userId,
+        {
+          type: "browser.tab.open",
+          identity: { kind: "profile", profileId: missingProfileId },
+          idempotencyKey: `v6-open-missing-${randomUUID()}`,
+        },
+        connectedRun,
+      )
+      .catch((error: unknown) => error);
+    expect(ungrantedOpenErr).toMatchObject({
+      code: "not_found",
+      message: "Browser profile not found.",
+    });
+    expect(missingOpenErr).toMatchObject({
+      code: "not_found",
+      message: "Browser profile not found.",
+    });
+    // Neither ungranted nor missing woke the parked browser.
+    expect(home.coordinator.gate.phase).toBe("parked");
+
+    // V4 (Opus N7): a Run stopped while waiting on the pool reserve is told its task ended,
+    // not "did not wake in time".
+    const resume = holdResume(j.controller);
+    const run = {
+      agentBindingId: `run:${j.task.runId}`,
+      ownerId: j.task.userId,
+      environmentId: j.task.environmentId,
+      threadId: j.task.threadId,
+    };
+    const waitingOpen = home.service
+      .openTab(
+        j.task.userId,
+        {
+          type: "browser.tab.open",
+          identity: { kind: "profile", profileId: j.profile!.id },
+          idempotencyKey: `v4-stop-wait-${randomUUID()}`,
+        },
+        run,
+      )
+      .catch((error: unknown) => error);
+    await resume.seen;
+    await home.service.detachAgentSessionsForBinding(run.agentBindingId);
+    const stopErr = await waitingOpen;
+    expect(stopErr).toBeInstanceOf(BrowserCdpConnectionEnded);
+    expect((stopErr as Error).message).toBe("The browser task ended.");
+    expect(home.coordinator.gate.held).toBe(0);
+    resume.allow();
+  } finally {
+    await j.close();
   }
 });

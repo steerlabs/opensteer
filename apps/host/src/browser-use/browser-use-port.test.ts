@@ -1,6 +1,7 @@
 import { createId, refused } from "@opensteer/core";
 import { browserHostMethods, createBrowserSessionId } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
+import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import type { BrowserService } from "../browser/browser-service.js";
 import type { BrowserUseCall, BrowserUsePort } from "./browser-repl-service.js";
 import { createBrowserUsePort, type BrowserUseTabAccess } from "./browser-use-port.js";
@@ -245,6 +246,40 @@ describe("Browser Use port", () => {
       expect(close).toHaveBeenCalledOnce();
       dispatch.mockImplementation(attach);
       await expect(port.openPage(binding.tabId, call)).resolves.toMatchObject({ closed: false });
+    },
+  );
+
+  it.each(["Target.targetDestroyed", "Target.detachedFromTarget"])(
+    "V3 (Opus N6): settles %s during bind as OperationOutcomeUnknown after a command was submitted",
+    async (method) => {
+      const { binding, port, call, emit, dispatch, close } = setup();
+      const attach = dispatch.getMockImplementation()!;
+      let submitted = false;
+      dispatch.mockImplementation(async (...args) => {
+        submitted = true;
+        const answer = await attach(...args);
+        if (args[0].method === "Target.attachToTarget")
+          emit({
+            sequence: 1,
+            method,
+            parameters: { targetId: "target", sessionId: "cdp-session" },
+          });
+        return answer;
+      });
+      await expect(
+        port.openPage(binding.tabId, {
+          ...call,
+          browserSend: {
+            target: { runnerId: createId("runner"), runtimeId: "browser-main" },
+            recheck: async () => {},
+            submitted: () => {
+              submitted = true;
+            },
+            hasSubmitted: () => submitted,
+          },
+        }),
+      ).rejects.toBeInstanceOf(OperationOutcomeUnknown);
+      expect(close).toHaveBeenCalledOnce();
     },
   );
 

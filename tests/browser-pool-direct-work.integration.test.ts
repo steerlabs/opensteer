@@ -20,7 +20,7 @@ import { OpensteerError, type RequestId, type ThreadId } from "../packages/core/
 import { type TabRecord } from "../packages/database/src/index.js";
 import { listBrowserPoolDocumentLosses } from "./browser-pool-journey.test-support.js";
 import { TabSleeper } from "../packages/browser-runtime-core/src/browser/tab-sleeper.js";
-import { before, holdResume, journey } from "./browser-pool-journey.test-support.js";
+import { before, holdResume, journey, until } from "./browser-pool-journey.test-support.js";
 
 type Journey = Awaited<ReturnType<typeof journey>>;
 type Home = Awaited<ReturnType<Journey["startHome"]>>;
@@ -463,8 +463,10 @@ it("lets a tab-targeted call made while a crashed Home reattaches its sessions w
       .finally(() => {
         settled = true;
       });
+    // Prevent an unhandled MCP 'Connection closed' rejection if an earlier assertion fails before await call.
+    void call.catch(() => undefined);
     // The call passed the checks it can make now and waits on admission for the reattach.
-    await vi.waitFor(() => expect(home.coordinator.gate.demand).toBe(true));
+    await until(() => expect(home.coordinator.gate.demand).toBe(true));
     expect(settled).toBe(false);
     j.runnerUp();
     const result = await call;

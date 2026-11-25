@@ -199,7 +199,8 @@ export function createBrowserUsePort({
       checkReply(pageReply, call);
       const page = resumed.parse(pageReply);
       root = page.targetId;
-      if (closed || detached.has(root)) throw ended();
+      if (closed || detached.has(root))
+        throw call.browserSend?.hasSubmitted?.() ? endedAfterSubmit() : ended();
       const channelReply = await (
         await relay.dispatch(
           {
@@ -211,7 +212,8 @@ export function createBrowserUsePort({
       ).result;
       checkReply(channelReply, call);
       const channel = attached.parse(channelReply);
-      if (closed || detached.has(channel.sessionId)) throw ended();
+      if (closed || detached.has(channel.sessionId))
+        throw call.browserSend?.hasSubmitted?.() ? endedAfterSubmit() : ended();
       const fields = browserTargetSchema.parse({ ...page, ...channel, tabId: binding.tabId });
       checkReply({ ...fields, handle: "0000000000000000" }, call);
       const attachedRelay = relay;
