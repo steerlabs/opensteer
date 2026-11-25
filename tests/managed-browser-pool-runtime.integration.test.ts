@@ -2696,6 +2696,14 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
           attach: async () => {
             if (failRelayDuringWake) {
               wakeRelayFailures += 1;
+              if (wakeRelayFailures % 3 === 1) {
+                throw new BrowserPoolAdmissionClosed("The pooled browser is not running.");
+              }
+              if (wakeRelayFailures % 3 === 2) {
+                throw Object.assign(new Error("Simulated relay error carrying end-unconfirmed"), {
+                  reason: "end-unconfirmed",
+                });
+              }
               throw new Error("Simulated non-network relay attach refusal during wake");
             }
             relayAttached = true;
@@ -2750,6 +2758,166 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
       }
     } finally {
       await host?.close();
+      await poolHost?.close();
+      await database.drop();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("V1 (Sol 1): recovering a preparing-row park across a real Home restart attaches the relay for the exact guest and keeps retained tabs", async () => {
+    const database = await cloneTestDatabase("host");
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-pool-v1-preparing-"));
+    let host1: PersonalHostRuntime | undefined;
+    let host2: PersonalHostRuntime | undefined;
+    let poolHost: LoopbackPoolHost | undefined;
+    let registeredKeys:
+      | {
+          readonly homeKey: string;
+          readonly relayKey: string;
+          readonly ticketKey: { readonly keyId: string; readonly spki: string };
+        }
+      | undefined;
+    let targetResponse: ManagedBrowserPoolTargetResponse = { status: "preparing" };
+    const accountControlFetch: typeof globalThis.fetch = async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === managedBrowserPoolRegistrationPath && init?.method === "PUT") {
+        const parsed = ManagedBrowserPoolRegistrationRequestSchema.parse(
+          JSON.parse(String(init.body)),
+        );
+        registeredKeys = parsed.document.keys;
+        return Response.json(targetResponse);
+      }
+      if (url.pathname === managedBrowserPoolTargetPath) {
+        return Response.json(registeredKeys ? targetResponse : { status: "unregistered" });
+      }
+      return new Response("not found", { status: 404 });
+    };
+    try {
+      const config1 = managedConfig(database.url, directory, await freePort(), {
+        browserPool: true,
+      });
+      const started1 = await ownTestDatabaseProducer(database.url, async () => {
+        const runtime = await createHostRuntime(config1, {
+          personalAccountGrantFetch: jwksFetch(),
+          accountControlFetch,
+          managedBrowserPoolTiming: { firstDelayMs: 50, maxDelayMs: 150, idleParkMs: 250 },
+        });
+        if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
+        await runtime.listen();
+        return { host: runtime, close: () => runtime.close() };
+      });
+      host1 = started1.host;
+      const { ownerId } = await claimHome(host1);
+      const runnerId = await enrollMainRunner(host1, config1);
+      await vi.waitFor(() => expect(registeredKeys).toBeDefined(), { timeout: 5_000 });
+      poolHost = await startLoopbackPoolHost({
+        directory,
+        slotId: `bps_${randomUUID()}`,
+        term: 1,
+        registered: registeredKeys!,
+      });
+      targetResponse = { status: "ready", target: poolHost.target };
+      await vi.waitFor(
+        async () => {
+          expect((await host1!.app.inject({ method: "GET", url: "/ready" })).json()).toEqual({
+            ok: true,
+            browserPool: "ready",
+          });
+        },
+        { timeout: 10_000 },
+      );
+
+      // Hold the first `seal` control so Home 1 stops while the runtime has retired its sessions
+      // and the Home's durable slot row is in `phase = "preparing"`.
+      const sealReached = Promise.withResolvers<void>();
+      const releaseSeal = Promise.withResolvers<void>();
+      const originalControlPool = poolHost.runtime.controlPool.bind(poolHost.runtime);
+      const controlSpy = vi
+        .spyOn(poolHost.runtime, "controlPool")
+        .mockImplementation(async (control, signature) => {
+          if (control.kind === "seal") {
+            sealReached.resolve();
+            await releaseSeal.promise;
+            throw new Error("Home 1 restarted before seal completed");
+          }
+          return originalControlPool(control, signature);
+        });
+
+      const opened = await host1.browser.openTab(ownerId, {
+        type: "browser.tab.open",
+        identity: { kind: "guest" },
+        placement: { kind: "runner", runnerId },
+        idempotencyKey: `v1-preparing-${randomUUID()}`,
+      });
+      const instanceBeforeRestart = (
+        await poolHost.agent.agent.status(poolHost.slotId, poolHost.term)
+      ).instance;
+
+      // Idle park runs retire -> reaches seal with the slot row in "preparing".
+      await sealReached.promise;
+      const slotBeforeRestart = await host1.store.database
+        .selectFrom("browserPoolSlots")
+        .select(["phase", "instanceId", "epoch"])
+        .where("runnerId", "=", runnerId)
+        .executeTakeFirst();
+      expect(slotBeforeRestart?.phase).toBe("preparing");
+      expect(poolHost.runtime.poolState()?.phase).toBe("retired");
+
+      // Restart Home 1 before seal completes.
+      releaseSeal.resolve();
+      await host1.close();
+      host1 = undefined;
+      controlSpy.mockRestore();
+
+      // Start Home 2 against the same database & pool host. Its recovery releases the preparing
+      // park, attaches the real managed relay for the exact guest, and readopts the retained tab
+      // on the SAME guest instance without replacing it.
+      const config2 = managedConfig(database.url, directory, await freePort(), {
+        browserPool: true,
+      });
+      const started2 = await ownTestDatabaseProducer(database.url, async () => {
+        const runtime = await createHostRuntime(config2, {
+          personalAccountGrantFetch: jwksFetch(),
+          accountControlFetch,
+          managedBrowserPoolTiming: { firstDelayMs: 50, maxDelayMs: 150, idleParkMs: 60_000 },
+        });
+        if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
+        await runtime.listen();
+        return { host: runtime, close: () => runtime.close() };
+      });
+      host2 = started2.host;
+
+      await vi.waitFor(
+        async () => {
+          const ready = (await host2!.app.inject({ method: "GET", url: "/ready" })).json();
+          const slot = await host2!.store.database
+            .selectFrom("browserPoolSlots")
+            .select(["phase", "instanceId"])
+            .where("runnerId", "=", runnerId)
+            .executeTakeFirst();
+          expect(ready).toEqual({ ok: true, browserPool: "ready" });
+          expect(slot?.phase).toBe("running");
+        },
+        { timeout: 15_000 },
+      );
+
+      const statusAfterRestart = await poolHost.agent.agent.status(poolHost.slotId, poolHost.term);
+      expect(statusAfterRestart.instance).toBe(instanceBeforeRestart);
+      const sessionAfterRestart = await host2.store.database
+        .selectFrom("browserSessions")
+        .select("state")
+        .where("id", "=", opened.sessionId)
+        .executeTakeFirst();
+      expect(sessionAfterRestart?.state).toBe("ready");
+      const losses = await host2.store.database
+        .selectFrom("browserPoolDocumentLosses")
+        .select("surfaceId")
+        .where("sessionId", "=", opened.sessionId)
+        .execute();
+      expect(losses).toHaveLength(0);
+    } finally {
+      await host1?.close();
+      await host2?.close();
       await poolHost?.close();
       await database.drop();
       await rm(directory, { recursive: true, force: true });

@@ -340,6 +340,8 @@ export class BrowserPoolCoordinator {
   #relayFailingSince: number | undefined;
   #relaySuspectedAt: number | undefined;
   #relayFailed = false;
+  /** Exact guest fence currently being readopted (permits relay attach during release adoption). */
+  #readoptingGuest: { readonly instanceId: string; readonly epoch: number } | undefined;
 
   constructor(options: BrowserPoolCoordinatorOptions) {
     this.#options = options;
@@ -640,16 +642,10 @@ export class BrowserPoolCoordinator {
 
   /** Current guest fence eligible to serve or readopt on the relay, or null when not active. */
   activeGuest(): { readonly instanceId: string; readonly epoch: number } | null {
+    if (this.#closed || this.#ended || this.#released || this.#over) return null;
+    if (this.#readoptingGuest) return this.#readoptingGuest;
     const slot = this.#slot;
-    if (
-      !slot ||
-      this.#closed ||
-      this.#ended ||
-      this.#released ||
-      this.#over ||
-      (slot.phase !== "running" && slot.phase !== "waking")
-    )
-      return null;
+    if (!slot || (slot.phase !== "running" && slot.phase !== "waking")) return null;
     return { instanceId: slot.instanceId, epoch: slot.epoch };
   }
 
@@ -995,8 +991,11 @@ export class BrowserPoolCoordinator {
           }
         }
         // The runtime could not confirm a stopped session's pages gone at its adoption: it does
-        // not serve, and this guest is replaced (its end is those rows' evidence, V2).
-        if (endUnconfirmed(error) && !this.#released) this.#discardWanted = "end-unconfirmed";
+        // not serve, and this guest is replaced (its end is those rows' evidence, V2). Fenced by
+        // origin (`BrowserPoolEndUnconfirmed`, thrown only from `#control`), never from a wrapped
+        // relay/attach error.
+        if (error instanceof BrowserPoolEndUnconfirmed && !this.#released)
+          this.#discardWanted = "end-unconfirmed";
         const over = targetOver(error);
         if (over && !this.#released) {
           this.#beginOver(over);
@@ -1810,7 +1809,11 @@ export class BrowserPoolCoordinator {
     const delivered = await this.#deliver(issued, signed.signature);
     // The runtime refused to serve because a stopped session's page would not close: this guest
     // is replaced at once, with that reason (V2, W3).
-    if (endUnconfirmed(delivered.refusal)) throw delivered.refusal;
+    if (endUnconfirmed(delivered.refusal))
+      throw new BrowserPoolEndUnconfirmed(
+        "The runtime could not confirm a stopped session's pages gone.",
+        { cause: delivered.refusal },
+      );
     return delivered.state;
   }
 
@@ -2136,15 +2139,21 @@ export class BrowserPoolCoordinator {
     let tabLosses: readonly BrowserPoolSessionLoss[] = [];
     if (state.phase === "adopting" && state.adoption && !state.adoption.outcome) {
       this.#signal?.throwIfAborted();
+      this.#readoptingGuest = state.fence
+        ? { instanceId: state.fence.instance, epoch: state.fence.epoch }
+        : { instanceId: slot.instanceId, epoch: slot.epoch };
       try {
         await this.ensureRelayAttached(this.#signal);
       } catch (error) {
-        if (this.#signal?.aborted || error instanceof BrowserPoolAdmissionClosed) throw error;
-        // Relay attach failures never count toward discarding a healthy guest (Sol 1);
-        // classify as unanswered so the loop retries inside the adoption window.
+        if (this.#signal?.aborted) throw error;
+        // Relay attach failures (including admission refusals on the attach itself) never count
+        // toward discarding a healthy guest (Sol 1); keep them in the unanswered retry lane so
+        // recovery retries inside the runtime's adoption window.
         throw unknownAnswer(error)
           ? error
           : new BrowserPoolUnanswered("The pooled browser relay did not attach.", { cause: error });
+      } finally {
+        this.#readoptingGuest = undefined;
       }
       slot = await this.#advance(slot, {
         phase: slot.phase,
@@ -2708,6 +2717,9 @@ function targetOver(error: unknown): string | undefined {
   if (error instanceof BrowserPoolTargetFenced) return "fenced";
   return undefined;
 }
+
+/** The runtime refused to serve because a stopped session's page would not close (V2). */
+class BrowserPoolEndUnconfirmed extends Error {}
 
 /** A call the controller refused, signed and stored, because its term is not the slot's. */
 class BrowserPoolTargetFenced extends Error {}

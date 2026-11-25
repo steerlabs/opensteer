@@ -2207,6 +2207,7 @@ export async function createHostRuntime(
       onSettingsChanged,
     });
     await browser.initialize();
+    let runnersRegistry: RunnerRegistry | undefined;
     let reportManagedBrowserPoolError: (error: unknown) => void = (error) => {
       if (!(error instanceof ManagedBrowserPoolUnclaimed))
         console.warn("Managed browser pool failed", error);
@@ -2234,7 +2235,8 @@ export async function createHostRuntime(
         browser,
         browserRelay,
         passkeys: config.passkeys === true,
-        isAgentsStopped: (runnerId) => runners.agentsStoppedSince(runnerId) !== null,
+        isAgentsStopped: (runnerId) =>
+          (runnersRegistry?.agentsStoppedSince(runnerId) ?? null) !== null,
         account: {
           controlApiOrigin: managedHome.accountOrigin,
           hostCredential: async () =>
@@ -2859,6 +2861,7 @@ export async function createHostRuntime(
         },
       },
     });
+    runnersRegistry = runners;
     function observeRunnerCatalogs(
       identity: RunnerIdentity,
       environmentId: EnvironmentId,
