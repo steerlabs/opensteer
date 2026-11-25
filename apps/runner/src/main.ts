@@ -364,6 +364,8 @@ async function startAgentsRunner(input: {
     24 * 60 * 60 * 1000,
   );
   pluginPruner.unref();
+  // A Linux Runner's memory cgroup counts its processes killed for memory; elsewhere none.
+  const memoryKills = cgroupMemoryKills();
   const runtime = new RunnerRuntime({
     agentSkills,
     attachmentCache,
@@ -385,7 +387,7 @@ async function startAgentsRunner(input: {
     plugins: cacheRunPlugins,
     logger,
     maxConcurrentRuns: config.maxConcurrentRuns,
-    memoryKills: cgroupMemoryKills(),
+    ...(memoryKills ? { memoryKills } : {}),
     maxConcurrentTriggerPrograms: config.maxConcurrentTriggerPrograms,
     machineAccess: machineAccessRuntimeOptions(config, applicationConfig.nativeFsHelperBinary),
     mode: config.mode,
