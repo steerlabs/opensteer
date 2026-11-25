@@ -3,13 +3,16 @@ import { readFileSync } from "node:fs";
 /**
  * The kernel's count of processes it killed for lack of memory in the Runner's
  * own memory cgroup (cgroup v2 `memory.events`, `oom_kill`). The Runner reads
- * it only when a Run has failed, never on a timer and never for a Run that
- * ended otherwise: a count that moved since it last looked means a process of
- * the Runner was killed for memory in that time.
+ * it only when a failed Run's own engine was ended by a SIGKILL, never on a
+ * timer and never for a Run that ended otherwise.
  */
 export interface MemoryKills {
-  /** Whether a process was killed for memory since the last call (or since start). */
-  killedSinceLastLook(): boolean;
+  /**
+   * Claims one of the kills counted since the Runner started that no Run has
+   * claimed yet: true once per kill, so two Runs whose engines were both killed
+   * each get one, and a third gets none.
+   */
+  claimKill(): boolean;
 }
 
 /**
@@ -22,15 +25,14 @@ export function cgroupMemoryKills(
   const file = memoryEventsFile(read);
   if (!file) return undefined;
   const count = () => oomKills(read, file);
-  let seen = count();
-  if (seen === undefined) return undefined;
+  let claimed = count();
+  if (claimed === undefined) return undefined;
   return {
-    killedSinceLastLook() {
+    claimKill() {
       const now = count();
-      if (now === undefined) return false;
-      const moved = now > (seen ?? now);
-      seen = now;
-      return moved;
+      if (now === undefined || claimed === undefined || now <= claimed) return false;
+      claimed += 1;
+      return true;
     },
   };
 }

@@ -67,6 +67,19 @@ export interface RunningSupervisedProcess {
 
 const running = new Set<RunningSupervisedProcess>();
 
+/** A supervised process whose target a SIGKILL ended (the supervisor exits 137), and when. */
+export interface KilledSupervisedProcess {
+  readonly environment: Readonly<Record<string, string>>;
+  readonly at: number;
+}
+const killed: KilledSupervisedProcess[] = [];
+const killedKept = 64;
+
+/** The latest supervised processes a SIGKILL ended, oldest first (at most 64). */
+export function killedSupervisedProcesses(): readonly KilledSupervisedProcess[] {
+  return killed;
+}
+
 /**
  * Every supervised process this process started whose tree is not proven gone:
  * those still running, and those that exited without proving it.
@@ -157,7 +170,13 @@ export function spawnSupervised(options: SupervisedProcessOptions): SupervisedPr
     child.once("exit", (code, signal) => {
       // Only Windows lists trees from here; elsewhere the process group does.
       if (platform !== "win32" || windowsSupervisorDrained(code)) running.delete(entry);
-      resolve({ code: supervisedExitCode(code, platform), signal });
+      const exitCode = supervisedExitCode(code, platform);
+      // The supervisor reports its target's SIGKILL as 137: whose it was, a Runner asks later.
+      if (exitCode === 137 && platform !== "win32") {
+        killed.push({ environment: options.environment, at: Date.now() });
+        if (killed.length > killedKept) killed.shift();
+      }
+      resolve({ code: exitCode, signal });
     });
   });
 

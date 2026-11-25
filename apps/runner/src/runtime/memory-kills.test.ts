@@ -13,16 +13,18 @@ const files =
 const events = (kills: number) =>
   `low 0\nhigh 0\nmax 12\noom 3\noom_kill ${kills}\noom_group_kill 0\n`;
 
-it("sees a kill for memory in the Runner's own cgroup since it last looked, once", () => {
+it("lets each kill for memory in the Runner's own cgroup be claimed once, from its start", () => {
   const disk: Record<string, string> = {
     "/proc/self/cgroup": "0::/\n",
     "/sys/fs/cgroup/memory.events": events(2),
   };
   const kills = cgroupMemoryKills(files(disk));
-  expect(kills?.killedSinceLastLook()).toBe(false);
-  disk["/sys/fs/cgroup/memory.events"] = events(3);
-  expect(kills?.killedSinceLastLook()).toBe(true);
-  expect(kills?.killedSinceLastLook()).toBe(false);
+  // Kills before the Runner started are no Run's.
+  expect(kills?.claimKill()).toBe(false);
+  disk["/sys/fs/cgroup/memory.events"] = events(4);
+  expect(kills?.claimKill()).toBe(true);
+  expect(kills?.claimKill()).toBe(true);
+  expect(kills?.claimKill()).toBe(false);
 });
 
 it("reads the cgroup the process is in when it is not a container's own namespace", () => {
@@ -30,7 +32,7 @@ it("reads the cgroup the process is in when it is not a container's own namespac
     "/proc/self/cgroup": "0::/system.slice/opensteer-runner.service\n",
     "/sys/fs/cgroup/system.slice/opensteer-runner.service/memory.events": events(0),
   };
-  expect(cgroupMemoryKills(files(disk))?.killedSinceLastLook()).toBe(false);
+  expect(cgroupMemoryKills(files(disk))?.claimKill()).toBe(false);
 });
 
 it("invents no reason where there is no cgroup v2 memory count: a Mac, cgroup v1, no controller", () => {

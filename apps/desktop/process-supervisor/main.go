@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -261,6 +262,11 @@ func targetExitCode(result error) int {
 		code := exitError.ExitCode()
 		if code >= 0 && code <= 255 {
 			return code
+		}
+		// A target a signal ended: 128 and its number, as a shell reports it (137 for SIGKILL), so
+		// a Runner can tell a kill (the kernel's, for memory) from an ordinary failure.
+		if status, ok := exitError.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			return 128 + int(status.Signal())
 		}
 	}
 	return 1

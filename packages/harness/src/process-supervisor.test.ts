@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { collectStreamText, spawnSupervised } from "./process-supervisor.js";
+import {
+  collectStreamText,
+  killedSupervisedProcesses,
+  spawnSupervised,
+} from "./process-supervisor.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -22,6 +26,32 @@ function node(script: string, options: Partial<Parameters<typeof spawnSupervised
 }
 
 describe("spawnSupervised", () => {
+  it.skipIf(process.platform === "win32")(
+    "reports a target a SIGKILL ended as 137 and keeps whose it was, as the kernel's kill for memory looks",
+    async () => {
+      const marker = `killed-${process.pid}-${Date.now()}`;
+      const child = node('process.kill(process.pid, "SIGKILL")', {
+        environment: { OPENSTEER_TEST_MARKER: marker },
+      });
+      await expect(child.exited).resolves.toMatchObject({ code: 137 });
+      expect(
+        killedSupervisedProcesses().some(
+          ({ environment }) => environment.OPENSTEER_TEST_MARKER === marker,
+        ),
+      ).toBe(true);
+      // An ordinary failure is not a kill.
+      const failed = node("process.exit(3)", {
+        environment: { OPENSTEER_TEST_MARKER: `${marker}-3` },
+      });
+      await expect(failed.exited).resolves.toMatchObject({ code: 3 });
+      expect(
+        killedSupervisedProcesses().some(
+          ({ environment }) => environment.OPENSTEER_TEST_MARKER === `${marker}-3`,
+        ),
+      ).toBe(false);
+    },
+  );
+
   it("refuses to start anything without the native supervisor", () => {
     vi.stubEnv(processSupervisorExecutableVariable, undefined);
     expect(() => node("")).toThrow(processSupervisorExecutableVariable);
