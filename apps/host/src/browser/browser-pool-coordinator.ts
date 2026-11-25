@@ -81,6 +81,20 @@ export class BrowserPoolRelayAttachError extends Error {
   override readonly name = "BrowserPoolRelayAttachError";
 }
 
+export interface BrowserPoolWakeTrace {
+  readonly slotId: string;
+  readonly term: number;
+  readonly instanceId: string;
+  readonly epoch: number;
+  readonly retainedSessions: number;
+  readonly adoptedSessions: number;
+  readonly lostSessions: number;
+  readonly totalMs: number;
+  readonly afterResumeMs: number;
+  readonly steps: Readonly<Record<string, number>>;
+  readonly relayHandshakes: readonly number[];
+}
+
 /** What the Home does per session; one session's failure is that session's alone. */
 export interface BrowserPoolAdopter {
   /** Live pages the Home believes the runtime has, before a retire. */
@@ -209,6 +223,10 @@ export interface BrowserPoolCoordinatorOptions {
   };
   /** Called when the coordinator's reported status, gate phase, or relay state changes. */
   readonly onStateChanged?: () => void;
+  /** Emitted once per completed wake with step timings and relay handshake durations. */
+  readonly onWake?: (trace: BrowserPoolWakeTrace) => void;
+  /** Starts collecting relay tunnel handshake durations for one wake; returns a stop/read closure. */
+  readonly beginWakeTiming?: () => () => readonly number[];
   /**
    * Called once the guest is running (before reattaching retained sessions or opening admission)
    * so the Home's in-process browser relay attaches to this target's transport.
@@ -345,6 +363,25 @@ export class BrowserPoolCoordinator {
   #relayFailed = false;
   /** Exact guest fence currently being readopted (permits relay attach during release adoption). */
   #readoptingGuest: { readonly instanceId: string; readonly epoch: number } | undefined;
+  #wakeTrace:
+    | {
+        readonly startedAt: number;
+        afterResumeAt?: number;
+        mark: number;
+        readonly steps: Record<string, number>;
+        retainedSessions: number;
+        adoptedSessions: number;
+        lostSessions: number;
+      }
+    | undefined;
+
+  #markWakeStep(name: string): void {
+    const trace = this.#wakeTrace;
+    if (!trace) return;
+    const now = performance.now();
+    trace.steps[name] = Math.round((now - trace.mark) * 10) / 10;
+    trace.mark = now;
+  }
 
   constructor(options: BrowserPoolCoordinatorOptions) {
     this.#options = options;
@@ -1684,9 +1721,50 @@ export class BrowserPoolCoordinator {
   }
 
   async #wakeStep(): Promise<void> {
-    await this.#wake();
-    this.#publish(this.#slot);
-    if (this.#slot?.phase === "running") this.#kickRelay();
+    const startedAt = performance.now();
+    const trace = this.#options.onWake
+      ? {
+          startedAt,
+          mark: startedAt,
+          steps: {} as Record<string, number>,
+          retainedSessions: 0,
+          adoptedSessions: 0,
+          lostSessions: 0,
+        }
+      : undefined;
+    this.#wakeTrace = trace;
+    let finishHandshakes = trace ? this.#options.beginWakeTiming?.() : undefined;
+    try {
+      await this.#wake();
+      this.#publish(this.#slot);
+      this.#markWakeStep("publish");
+      if (trace && this.#slot?.phase === "running") {
+        const now = performance.now();
+        const relayHandshakes = finishHandshakes ? finishHandshakes() : [];
+        finishHandshakes = undefined;
+        try {
+          this.#options.onWake?.({
+            slotId: this.#slot.slotId,
+            term: this.#slot.term,
+            instanceId: this.#slot.instanceId,
+            epoch: this.#slot.epoch,
+            retainedSessions: trace.retainedSessions,
+            adoptedSessions: trace.adoptedSessions,
+            lostSessions: trace.lostSessions,
+            totalMs: Math.round((now - trace.startedAt) * 10) / 10,
+            afterResumeMs: Math.round((now - (trace.afterResumeAt ?? trace.startedAt)) * 10) / 10,
+            steps: trace.steps,
+            relayHandshakes,
+          });
+        } catch {
+          // Diagnostic callbacks must never interrupt wake completion.
+        }
+      }
+      if (this.#slot?.phase === "running") this.#kickRelay();
+    } finally {
+      finishHandshakes?.();
+      this.#wakeTrace = undefined;
+    }
   }
 
   async #discardRead(reason: string): Promise<void> {
@@ -2108,6 +2186,7 @@ export class BrowserPoolCoordinator {
       )
         return this.#discard(slot, "live-state-unavailable");
       const result = await this.#call(slot, "resume", status);
+      this.#markWakeStep("resume");
       if (!result.applied) {
         // Refused with the saved state still there (the controller's reason, such as a profile
         // disk that is missing): not woken, asked again later, and never given up for a fresh
@@ -2137,6 +2216,10 @@ export class BrowserPoolCoordinator {
       this.#refused = undefined;
       this.#publish(this.#slot);
     }
+    if (this.#wakeTrace && this.#wakeTrace.afterResumeAt === undefined) {
+      this.#wakeTrace.afterResumeAt = performance.now();
+      this.#wakeTrace.mark = this.#wakeTrace.afterResumeAt;
+    }
     const adopt = resumed.control!;
     // The resume moves the epoch on; slot, term and instance stay the slot's.
     if (
@@ -2144,14 +2227,20 @@ export class BrowserPoolCoordinator {
       (status.phase === "running" && !sameFence(statusFence(status), adopt.fence))
     )
       return this.#discard(slot, "guest-changed");
-    if (slot.epoch !== adopt.fence.epoch)
+    if (slot.epoch !== adopt.fence.epoch) {
       slot = await this.#advance(slot, {
         phase: "waking",
         fence: { instanceId: adopt.fence.instance, epoch: adopt.fence.epoch },
       });
+      this.#markWakeStep("advanceEpoch");
+    }
     // Resumed, the guest runs again: only now is its runtime asked.
     let state = await this.#state();
-    if (state.phase === "sealed") state = (await this.#deliver(adopt, resumed.signature!)).state;
+    this.#markWakeStep("state");
+    if (state.phase === "sealed") {
+      state = (await this.#deliver(adopt, resumed.signature!)).state;
+      this.#markWakeStep("adopt");
+    }
     // An adopt that did not arrive leaves the runtime sealed under the epoch before it: the
     // next attempt sends it again.
     if (
@@ -2191,6 +2280,7 @@ export class BrowserPoolCoordinator {
         : { instanceId: slot.instanceId, epoch: slot.epoch };
       try {
         await this.ensureRelayAttached(this.#signal);
+        this.#markWakeStep("relay");
       } catch (error) {
         if (this.#signal?.aborted) throw error;
         // Relay attach failures (including admission refusals on the attach itself) never count
@@ -2206,7 +2296,9 @@ export class BrowserPoolCoordinator {
         phase: slot.phase,
         attachmentGeneration: slot.attachmentGeneration + 1,
       });
+      this.#markWakeStep("advanceAttempt");
       const attempt = slot.attachmentGeneration;
+      if (this.#wakeTrace) this.#wakeTrace.retainedSessions = state.adoption.sessions.length;
       if (this.#adopter)
         tabLosses = await this.#adopter.reattach({
           sessions: state.adoption.sessions,
@@ -2215,12 +2307,15 @@ export class BrowserPoolCoordinator {
           attempt,
           ...(this.#signal ? { signal: this.#signal } : {}),
         });
+      this.#markWakeStep("reattach");
       // Partial results survive a restart: they are durable before the runtime completes.
       slot = await this.#advance(slot, {
         phase: slot.phase,
         outcome: { pendingTabLosses: tabLosses } as unknown as Record<string, unknown>,
       });
+      this.#markWakeStep("advanceLosses");
       state = await this.#control(slot, "complete", state.fence!, attempt);
+      this.#markWakeStep("complete");
     } else {
       tabLosses =
         (slot.outcome as { pendingTabLosses?: BrowserPoolSessionLoss[] } | null)
@@ -2229,6 +2324,10 @@ export class BrowserPoolCoordinator {
     const outcome = state.adoption?.outcome;
     if (state.phase !== "running" || !outcome || !sameIntent(state, slot))
       throw new Error("The browser adoption has no outcome yet.");
+    if (this.#wakeTrace) {
+      this.#wakeTrace.adoptedSessions = outcome.adopted.length;
+      this.#wakeTrace.lostSessions = outcome.lost.length;
+    }
     const lostIds = new Set(outcome.lost.map(({ sessionId }) => sessionId));
     // A session the person stopped was left out on purpose: it ends, and its tabs are not ones
     // the browser lost, so they have no note (P20). Any ready session left out falls back to the
@@ -2280,6 +2379,7 @@ export class BrowserPoolCoordinator {
       { losses, closing: { kind: "runtime-ended" } },
       { adopted: outcome.adopted, lost: outcome.lost },
     );
+    this.#markWakeStep("finishRunning");
   }
 
   /** The ladder's last rung: the live state is discarded and a fresh guest is started. */

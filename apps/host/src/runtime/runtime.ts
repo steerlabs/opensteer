@@ -508,6 +508,9 @@ export interface HostRuntimeOptions {
     readonly maxDelayMs?: number;
     readonly idleParkMs?: number | null;
     readonly statusEveryMs?: number;
+    readonly onWake?: (
+      trace: import("../browser/browser-pool-coordinator.js").BrowserPoolWakeTrace,
+    ) => void;
   };
 }
 export async function createHostRuntime(
@@ -2215,6 +2218,9 @@ export async function createHostRuntime(
         console.warn("Managed browser pool failed", error);
     };
     let logManagedBrowserPoolStatus: (_status: ManagedBrowserPoolStatus) => void = () => undefined;
+    let logManagedBrowserPoolWake: (
+      _trace: import("../browser/browser-pool-coordinator.js").BrowserPoolWakeTrace,
+    ) => void = () => undefined;
     if (config.managedHome?.browserPool) {
       const managedHome = config.managedHome;
       const poolKeys = await loadOrCreateManagedBrowserPoolKeys(dataDirectory);
@@ -2256,6 +2262,10 @@ export async function createHostRuntime(
         onStatusChanged: (status) => {
           logManagedBrowserPoolStatus(status);
           announceResources("browser-placement", "browser-availability", "tab");
+        },
+        onWake: (trace) => {
+          logManagedBrowserPoolWake(trace);
+          options.managedBrowserPoolTiming?.onWake?.(trace);
         },
         onError: (error) => reportManagedBrowserPoolError(error),
       });
@@ -3953,6 +3963,11 @@ export async function createHostRuntime(
       };
       logManagedBrowserPoolStatus = (status) =>
         app.log.info({ browserPool: status, cloudComputerId }, "Managed browser pool status");
+      logManagedBrowserPoolWake = (trace) =>
+        app.log.info(
+          { event: "browser_pool.woke", cloudComputerId, ...trace },
+          "Managed browser pool woke",
+        );
       logManagedBrowserPoolStatus(managedBrowserPool.status());
     }
     // The Account's copy of this Host's signed discovery envelope is what every

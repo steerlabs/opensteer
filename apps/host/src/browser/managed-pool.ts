@@ -201,6 +201,7 @@ export function managedBrowserPool(
     readonly relay: ManagedBrowserPoolRelay;
   },
   keys: ManagedBrowserPoolHomeKeys,
+  options: { readonly onTunnelOpen?: (ms: number) => void } = {},
 ) {
   const spki = (value: string) =>
     createPublicKey({ key: Buffer.from(value, "base64"), format: "der", type: "spki" });
@@ -214,7 +215,17 @@ export function managedBrowserPool(
     slot: target.slotId,
     term: target.term,
   };
-  const transport = poolRelayTransport(endpoint);
+  const rawTransport = poolRelayTransport(endpoint);
+  const transport = options.onTunnelOpen
+    ? {
+        open: async () => {
+          const startedAt = performance.now();
+          const tunnel = await rawTransport.open();
+          options.onTunnelOpen!(Math.round((performance.now() - startedAt) * 10) / 10);
+          return tunnel;
+        },
+      }
+    : rawTransport;
   const controller = managedBrowserPoolController(target, keys.homeKey);
   return {
     controller,

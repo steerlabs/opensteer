@@ -27,6 +27,7 @@ import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import {
   BrowserPoolCoordinator,
   type BrowserPoolCoordinatorOptions,
+  type BrowserPoolWakeTrace,
 } from "./browser-pool-coordinator.js";
 import type { BrowserService } from "./browser-service.js";
 import { managedBrowserPool, type ManagedBrowserPoolHomeKeys } from "./managed-pool.js";
@@ -365,6 +366,8 @@ export function managedBrowserPoolCoordinator(input: {
   readonly onError?: (error: unknown) => void;
   readonly onDiscard?: (reason: string) => void;
   readonly onStateChanged?: () => void;
+  readonly onWake?: (trace: BrowserPoolWakeTrace) => void;
+  readonly beginWakeTiming?: () => () => readonly number[];
   readonly idleParkMs?: number | null;
   readonly statusEveryMs?: number;
   readonly retryMs?: number;
@@ -390,6 +393,8 @@ export function managedBrowserPoolCoordinator(input: {
     ...(input.onError ? { onError: input.onError } : {}),
     ...(input.onDiscard ? { onDiscard: input.onDiscard } : {}),
     ...(input.onStateChanged ? { onStateChanged: input.onStateChanged } : {}),
+    ...(input.onWake ? { onWake: input.onWake } : {}),
+    ...(input.beginWakeTiming ? { beginWakeTiming: input.beginWakeTiming } : {}),
     ...(input.idleParkMs !== undefined ? { idleParkMs: input.idleParkMs } : {}),
     ...(input.statusEveryMs !== undefined ? { statusEveryMs: input.statusEveryMs } : {}),
     ...(input.retryMs !== undefined ? { retryMs: input.retryMs } : {}),
@@ -456,6 +461,7 @@ export async function startManagedBrowserPool(input: {
         readonly fetch?: typeof fetch;
       };
   readonly onStatusChanged?: (status: ManagedBrowserPoolStatus) => void;
+  readonly onWake?: (trace: BrowserPoolWakeTrace) => void;
   readonly onError?: (error: unknown) => void;
 }): Promise<ManagedBrowserPoolHome> {
   const keys = input.keys ?? (await loadOrCreateManagedBrowserPoolKeys(input.dataDirectory));
@@ -674,7 +680,12 @@ export async function startManagedBrowserPool(input: {
     }
     if (closed) return;
 
-    const parts = managedBrowserPool(target, keys);
+    let activeWakeHandshakes: number[] | undefined;
+    const parts = managedBrowserPool(target, keys, {
+      onTunnelOpen: (ms) => {
+        activeWakeHandshakes?.push(ms);
+      },
+    });
     let coordinator: BrowserPoolCoordinator | undefined;
     const relay = input.browserRelay
       ? createManagedPooledRelay({
@@ -715,6 +726,19 @@ export async function startManagedBrowserPool(input: {
           }
         : {}),
       onStateChanged: syncStatus,
+      ...(input.onWake
+        ? {
+            onWake: input.onWake,
+            beginWakeTiming: () => {
+              const bucket: number[] = [];
+              activeWakeHandshakes = bucket;
+              return () => {
+                if (activeWakeHandshakes === bucket) activeWakeHandshakes = undefined;
+                return bucket;
+              };
+            },
+          }
+        : {}),
       onSuspect: (reason) => targets.suspect(reason === "over" ? { over: true } : {}),
       ...(input.onError ? { onError: input.onError } : {}),
     });
