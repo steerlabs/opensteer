@@ -1897,6 +1897,9 @@ importers:
       '@noble/hashes':
         specifier: 2.4.0
         version: 2.4.0
+      '@opensteer/browser-core':
+        specifier: workspace:*
+        version: link:../browser-core
       '@opensteer/shared':
         specifier: workspace:*
         version: link:../shared

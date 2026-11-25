@@ -112,7 +112,7 @@ import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
-  isChromeExtensionUrl,
+  isExtensionUrl,
   normalizePageOpenUrl,
   OpensteerError,
   agentGrantAllows,
@@ -278,7 +278,7 @@ function connectedAgentBinding(agentBindingId: string | undefined): boolean {
 
 /** Whether any string in a (bounded) CDP value is an extension's address. */
 function mentionsChromeExtensionUrl(value: unknown, depth: number): boolean {
-  if (typeof value === "string") return isChromeExtensionUrl(value);
+  if (typeof value === "string") return isExtensionUrl(value);
   if (depth > 16 || value === null || typeof value !== "object") return false;
   for (const entry of Array.isArray(value) ? value : Object.values(value))
     if (mentionsChromeExtensionUrl(entry, depth + 1)) return true;
@@ -6326,7 +6326,7 @@ export class BrowserService {
               : undefined;
         const eventSessionId = typeof params?.sessionId === "string" ? params.sessionId : undefined;
         if (params?.targetInfo !== undefined) {
-          if (isChromeExtensionUrl(params.targetInfo.url)) {
+          if (isExtensionUrl(params.targetInfo.url)) {
             if (targetId) visibleRootTargets.delete(targetId);
             return;
           }

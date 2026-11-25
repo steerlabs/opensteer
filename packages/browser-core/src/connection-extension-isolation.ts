@@ -1,27 +1,9 @@
 import { remoteObjectContextId } from "./execution-contexts.js";
 import { SessionCdpRouterError, type CdpParameters } from "./portable-session-cdp-router.js";
 
-/**
- * Whether a URL or origin parses (per WHATWG URL rules, stripping ASCII tabs/newlines and leading
- * C0 controls) to a Chrome extension scheme, including `view-source:`, `blob:`, and `filesystem:`
- * wrappers whose inner URL is `chrome-extension:`.
- */
-export function isExtensionUrl(value: unknown): boolean {
-  if (typeof value !== "string") return false;
-  try {
-    const parsed = new URL(value);
-    if (parsed.protocol === "chrome-extension:") return true;
-    if (
-      parsed.protocol === "view-source:" ||
-      parsed.protocol === "blob:" ||
-      parsed.protocol === "filesystem:"
-    )
-      return isExtensionUrl(parsed.pathname);
-    return false;
-  } catch {
-    return false;
-  }
-}
+import { isExtensionUrl } from "./extension-url.js";
+
+export { isExtensionUrl };
 
 /** Whether a free-form string (e.g. a formatted stack trace or breakpoint regex) mentions an extension URL. */
 function containsExtensionUrl(value: unknown): boolean {
