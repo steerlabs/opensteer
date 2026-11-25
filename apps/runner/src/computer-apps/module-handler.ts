@@ -67,6 +67,8 @@ import {
 } from "./provider.js";
 
 export const computerAppStatusIntervalMs = 30_000;
+/** How soon a Mac whose helper has not answered yet looks again. */
+const ownerViewPendingRetryMs = 1_000;
 
 export interface ComputerAppModuleHandlerOptions {
   readonly stopped?: boolean;
@@ -100,6 +102,7 @@ type IntegrationsStatus = Pick<
   | "captureSupported"
   | "displayAvailable"
   | "ownerViewVersion"
+  | "ownerViewPending"
   | "type"
   | "loginText"
   | "passwordSignIn"
@@ -195,6 +198,8 @@ export class ComputerAppModuleHandler {
   #lastStatus: string | undefined;
   #publishedStatus: IntegrationsStatus | undefined;
   #statusTimer: ReturnType<typeof setInterval> | undefined;
+  /** While this Mac's helper has not answered, the next look comes this soon. */
+  #pendingTimer: ReturnType<typeof setTimeout> | undefined;
   #stream: RunnerModuleStream | undefined;
 
   constructor(options: ComputerAppModuleHandlerOptions) {
@@ -1064,6 +1069,15 @@ export class ComputerAppModuleHandler {
       });
   }
 
+  #lookAgainSoon(stream: RunnerModuleStream): void {
+    if (this.#pendingTimer) return;
+    this.#pendingTimer = setTimeout(() => {
+      this.#pendingTimer = undefined;
+      if (this.#stream === stream) this.#queueInspection(stream);
+    }, ownerViewPendingRetryMs);
+    this.#pendingTimer.unref();
+  }
+
   #invalidatePasswordStatus(stream: RunnerModuleStream): void {
     const current = this.#publishedStatus;
     if (!current || (!current.loginText && !current.passwordSignIn)) return;
@@ -1119,14 +1133,20 @@ export class ComputerAppModuleHandler {
         ? { passwordSignIn: 2 as const }
         : {}),
     };
-    const ownerViewVersion = this.#computerUse?.ownerViewVersion();
+    // After an app start the helper can take longer to launch than one readiness
+    // probe waits. Until it answers, owner view is not known: the status says so,
+    // and the next look comes soon rather than at the next interval.
+    const ownerViewPending = this.#computerUse ? !this.#computerUse.ownerViewKnown() : false;
+    const ownerViewVersion = ownerViewPending ? undefined : this.#computerUse?.ownerViewVersion();
     if (this.#stream !== stream) return;
-    const fingerprint = JSON.stringify({ apps, ownerViewVersion, ...passwords });
+    if (ownerViewPending) this.#lookAgainSoon(stream);
+    const fingerprint = JSON.stringify({ apps, ownerViewVersion, ownerViewPending, ...passwords });
     if (fingerprint === this.#lastStatus) return;
     const status: IntegrationsStatus = {
       apps,
       ...passwords,
       ...(ownerViewVersion === undefined ? {} : { ownerViewVersion }),
+      ...(ownerViewPending ? { ownerViewPending: true as const } : {}),
       // Desktop bundles this Runner with a helper that speaks the capture
       // method, and replaces any older helper before a session can open.
       ...(this.#computerUse ? { displayAvailable: ownerViewVersion === 3 } : {}),
@@ -1267,6 +1287,8 @@ export class ComputerAppModuleHandler {
     this.#localMcp?.detach();
     if (this.#statusTimer) clearInterval(this.#statusTimer);
     this.#statusTimer = undefined;
+    if (this.#pendingTimer) clearTimeout(this.#pendingTimer);
+    this.#pendingTimer = undefined;
     this.#stream = undefined;
     this.#lastStatus = undefined;
     this.#publishedStatus = undefined;

@@ -364,6 +364,14 @@ export class ComputerUseHandler {
     return this.#readiness?.ownerViewVersion;
   }
 
+  /**
+   * Whether the helper has answered on this connection. Until it has, a missing
+   * owner view version means "not known yet", never "this Mac has none".
+   */
+  ownerViewKnown(): boolean {
+    return this.#readiness !== undefined;
+  }
+
   async resolveTabWindow(
     input: { windowId: string } | { app: import("@opensteer/protocol").ComputerAppIdentity },
     options: RequestOptions,
