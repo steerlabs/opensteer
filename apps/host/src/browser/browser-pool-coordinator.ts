@@ -321,7 +321,10 @@ export class BrowserPoolCoordinator {
   #overEnd:
     { done: boolean; settle: boolean; readonly ended: PromiseWithResolvers<void> } | undefined;
   /** The controller's reason for the last start or wake it refused; cleared once one applies. */
-  #refused: { readonly reason: string; readonly since: Date } | undefined;
+  #refused:
+    { readonly reason: string; readonly since: Date; readonly savedStateKept: boolean } | undefined;
+  /** True while a retry of a refused wake/start/recover/discard/restart is in flight. */
+  #retryingRefused = false;
   #idleTimer: ReturnType<typeof setTimeout> | undefined;
   /** Independent relay-attach lane: never stands ahead of status, Stop, deadlines, repair or park. */
   readonly #relayAdapter:
@@ -892,7 +895,9 @@ export class BrowserPoolCoordinator {
     while (!this.#closed && !this.#ended) {
       const changed = this.#changed.signal;
       let step: Step | undefined;
-      let priorRefused: { readonly reason: string; readonly since: Date } | undefined;
+      let priorRefused:
+        | { readonly reason: string; readonly since: Date; readonly savedStateKept: boolean }
+        | undefined;
       try {
         // Choosing the next step reads the database too: it has a bound, and a removal ends it.
         const selecting = new AbortController();
@@ -957,17 +962,14 @@ export class BrowserPoolCoordinator {
         const preempt = new AbortController();
         const signal = AbortSignal.any([preempt.signal, AbortSignal.timeout(deadlineMs)]);
         priorRefused = this.#refused;
-        if (
+        const retrying =
           !this.#over &&
           this.#refused !== undefined &&
           (step.name === "wake" ||
             step.name === "recover" ||
             step.name === "discard" ||
-            step.name === "restart")
-        ) {
-          this.#refused = undefined;
-          this.#options.onStateChanged?.();
-        }
+            step.name === "restart");
+        this.#retryingRefused = retrying;
         this.#step = { name: step.name, preempt };
         this.#signal = signal;
         try {
@@ -975,6 +977,7 @@ export class BrowserPoolCoordinator {
             step!.run(signal),
           );
         } finally {
+          this.#retryingRefused = false;
           this.#step = undefined;
           this.#signal = undefined;
         }
@@ -1022,13 +1025,17 @@ export class BrowserPoolCoordinator {
           const clearedUnreachable = this.#clearUnanswered();
           // Not started, and nothing of the guest lost: asked again later, never a reason to
           // give live state up, and spaced so the host is not asked in a loop.
-          const announce = priorRefused?.reason !== error.reason || clearedUnreachable;
+          const sameRefusal =
+            priorRefused?.reason === error.reason &&
+            priorRefused.savedStateKept === error.savedStateKept;
+          const announce = !sameRefusal || clearedUnreachable;
           this.#refused = {
             reason: error.reason,
-            since: priorRefused?.reason === error.reason ? priorRefused.since : new Date(),
+            since: sameRefusal && priorRefused ? priorRefused.since : new Date(),
+            savedStateKept: error.savedStateKept,
           };
           this.#options.onStateChanged?.();
-          this.gate.noteAttemptRefused(error.reason);
+          this.gate.noteAttemptRefused(error.reason, error.savedStateKept);
           // Subscribed clients learn of a refusal when it begins or its reason changes; the
           // announcement has its own bound, and a removal ends it.
           if (announce) await this.#announce(changed);
@@ -1350,9 +1357,13 @@ export class BrowserPoolCoordinator {
    * sessions is the loop's next step, under its bound, until it has succeeded.
    */
   #beginOver(reason: string, settle = false): PromiseWithResolvers<void> {
+    this.#clearUnanswered();
+    this.#relayUnknownSince = undefined;
+    this.#relayUnreachable = false;
+    this.#relayFailed = false;
     if (!this.#over) {
       this.#over = reason;
-      this.#refused = { reason, since: new Date() };
+      this.#refused = { reason, since: new Date(), savedStateKept: false };
       this.#display = { phase: "failed", since: new Date() };
     }
     this.#stopRelay();
@@ -2109,14 +2120,14 @@ export class BrowserPoolCoordinator {
         ) {
           // Back to parked: it is asked again only while someone wants the browser.
           if (slot.phase === "waking") await this.#advance(slot, { phase: "parked" });
-          throw new BrowserPoolNotStarted(result.reason);
+          throw new BrowserPoolNotStarted(result.reason, true);
         }
-        // Refused, and the saved state is gone with it (an agent that consumed the resume before
-        // it checked, say, the egress proxy): a refusal all the same. Not woken; the fresh guest
-        // its loss needs comes at the next turn, paced as a refusal is, never at once into the
-        // same refusal (W4).
+        // Refused, and the saved state is gone with it (for example, disk restore or vCPU resume
+        // failed after consuming the saved state): a refusal all the same. Not woken; the fresh
+        // guest its loss needs comes at the next turn, paced as a refusal is, never at once into
+        // the same refusal (W4).
         if (slot.phase === "waking") await this.#advance(slot, { phase: "parked" });
-        throw new BrowserPoolNotStarted(result.reason ?? "resume-refused");
+        throw new BrowserPoolNotStarted(result.reason ?? "resume-refused", false);
       }
       resumed = result;
       status = result.status;
@@ -2337,6 +2348,16 @@ export class BrowserPoolCoordinator {
     return this.#unknownSince !== undefined || this.#relayUnknownSince !== undefined;
   }
 
+  /** True while a retry of a previously refused wake or start is currently in flight. */
+  get retryingRefused(): boolean {
+    return this.#retryingRefused;
+  }
+
+  /** Signed terminal reason (`fenced`, `slot-deleted`, `browser-replaced`) when this target is over. */
+  get over(): string | undefined {
+    return this.#over;
+  }
+
   /**
    * The phase a client shows: a fresh start or a restart in progress, or a failed start. A start
    * or wake the controller refused carries its reason (`egress-required`,
@@ -2347,6 +2368,8 @@ export class BrowserPoolCoordinator {
         readonly phase: "starting" | "restarting" | "failed" | "waking" | "running" | "parked";
         readonly since: Date;
         readonly refused?: string;
+        /** True only when signed host status proved saved state stayed paused on the same fence. */
+        readonly savedStateKept?: boolean;
         /** Calls or relay attachment have gone unanswered past their bound: cannot be reached now. */
         readonly unreachable?: true;
         /** The in-process relay failed to attach while the guest is running. */
@@ -2400,6 +2423,7 @@ export class BrowserPoolCoordinator {
     return {
       ...(shown ?? { phase: "failed" as const, since: refused.since }),
       refused: refused.reason,
+      savedStateKept: refused.savedStateKept,
       ...unreachable,
     };
   }
@@ -2770,9 +2794,11 @@ class BrowserPoolPending extends Error {}
 /** The controller answered, signed and stored, that it did not start or wake the guest. */
 class BrowserPoolNotStarted extends Error {
   readonly reason: string;
-  constructor(reason: string | undefined) {
+  readonly savedStateKept: boolean;
+  constructor(reason: string | undefined, savedStateKept = false) {
     super(`The guest was not started: ${reason ?? "refused"}.`);
     this.reason = reason ?? "refused";
+    this.savedStateKept = savedStateKept;
   }
 }
 /** How long a step may run before its deadline signal fires. */

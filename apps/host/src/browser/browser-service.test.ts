@@ -12726,7 +12726,7 @@ describe("pooled identity open authority precheck and outage refusal words (pool
         demandCount++;
         if (demandCount === 1) {
           refused = "egress-proxy-down";
-          setup.gate.noteAttemptRefused("egress-proxy-down");
+          setup.gate.noteAttemptRefused("egress-proxy-down", true);
         } else {
           refused = undefined;
           setup.gate.set({ recovered: true, away: null });
@@ -12864,4 +12864,433 @@ describe("pooled identity open authority precheck and outage refusal words (pool
     expect(reserveCalls).toBe(2);
     expect(gate.held).toBe(0);
   });
+
+  it("cancels an agent's post-reservation pending-relay wait and releases its gate hold when Browser access is turned off", async () => {
+    vi.useFakeTimers();
+    try {
+      let deviceBrowserAllowed = true;
+      let pending = false;
+      let waitEntered!: () => void;
+      const enteredWait = new Promise<void>((resolve) => {
+        waitEntered = resolve;
+      });
+      let waitSignalAborted = false;
+      const keys = generateKeyPairSync("ed25519");
+      const ownerId = createId("user");
+      const runnerId = createId("runner");
+      const repository = new SelectedGrantRepository(ownerId);
+      const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+      repository.granted = [kept.id];
+      const gate = new BrowserPoolGate();
+      gate.set({ recovered: true, away: null });
+      const realReserve = gate.reserve.bind(gate);
+      gate.reserve = ((...args: Parameters<typeof gate.reserve>) => {
+        // Relay becomes pending right after reservation is granted (after initial selection check).
+        pending = true;
+        return realReserve(...args);
+      }) as typeof gate.reserve;
+      const coordinator = {
+        runtimeId: "browser-main",
+        gate,
+        unanswered: false,
+        report: () => undefined,
+        setAdopter: () => undefined,
+        recover: async () => undefined,
+        retire: async () => undefined,
+        close: () => undefined,
+        ensureRelayAttached: async () => undefined,
+      } as unknown as BrowserPoolCoordinator;
+      const service = new BrowserService({
+        ...profileStateOptions,
+        repository,
+        signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+        personal: true,
+        pooledOnly: true,
+        requireAgentAccess: async (id) => {
+          if (!deviceBrowserAllowed)
+            throw new DeviceAccessRefusal("device-access-off", DeviceIdSchema.parse(id), "browser");
+        },
+        targetResolver: {
+          resolve: () => undefined,
+          placements: () => [],
+          pendingAdmission: (id) => pending && id === runnerId,
+          waitForTarget: (_id, signal) => {
+            waitEntered();
+            return new Promise<void>((_resolve, reject) => {
+              signal?.addEventListener(
+                "abort",
+                () => {
+                  waitSignalAborted = true;
+                  reject(signal.reason);
+                },
+                { once: true },
+              );
+            });
+          },
+        },
+        onSessionsChanged: () => undefined,
+        onError: () => undefined,
+      });
+      const originalList = repository.listEligibleBrowserRunners.bind(repository);
+      repository.listEligibleBrowserRunners = async () => [
+        ...(await originalList()),
+        {
+          id: runnerId,
+          kind: "main",
+          name: "Cloud Computer",
+          allowedModules: ["browser"],
+          ownerKind: "deployment",
+          ownerUserId: null,
+        },
+      ];
+      await service.adoptPool(runnerId, coordinator, {
+        label: "Cloud Computer",
+        environmentIds: [],
+      });
+      cleanups.push(() => service.close());
+      const agent = {
+        ownerId,
+        agentBindingId: "session:selected",
+        threadId: createId("thread"),
+      };
+
+      const opening = service.openTab(
+        ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `post-reserve-off-${randomUUID()}`,
+          identity: { kind: "profile", profileId: kept.id },
+          placement: { kind: "runner", runnerId },
+          url: "https://example.test/post-reserve-off",
+        },
+        agent,
+      );
+      await withTimeout(enteredWait, 5_000, {
+        timeoutError: () => new Error("post-reservation waitForTarget was not entered"),
+      });
+      expect(gate.held).toBe(1);
+      deviceBrowserAllowed = false;
+      await service.withRunnerAdmission(runnerId, () => service.disableAgentAccess(runnerId));
+      await expect(opening).rejects.toMatchObject({
+        code: "forbidden",
+        reason: "device-access-off",
+      });
+      expect(waitSignalAborted).toBe(true);
+      expect(gate.held).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("runs the exact grant read last before reserving on existing-page bind and restore so narrowing during device or ownership reads takes zero reservations", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const ownerId = createId("user");
+    const runnerId = createId("runner");
+    const repository = new SelectedGrantRepository(ownerId);
+    const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+    repository.granted = [kept.id];
+    const memory = memoryTabs();
+    const gate = new BrowserPoolGate();
+    gate.set({ recovered: true, away: null });
+    let reserveCalls = 0;
+    const realReserve = gate.reserve.bind(gate);
+    gate.reserve = ((...args: Parameters<typeof gate.reserve>) => {
+      reserveCalls++;
+      return realReserve(...args);
+    }) as typeof gate.reserve;
+    const coordinator = {
+      runtimeId: "browser-main",
+      gate,
+      unanswered: false,
+      report: () => undefined,
+      setAdopter: () => undefined,
+      recover: async () => undefined,
+      retire: async () => undefined,
+      close: () => undefined,
+      ensureRelayAttached: async () => undefined,
+    } as unknown as BrowserPoolCoordinator;
+    let narrowOnDeviceRead = false;
+    const service = new BrowserService({
+      ...profileStateOptions,
+      repository,
+      tabs: memory.store,
+      tabPlaces: { write: async () => false, notice: () => {} },
+      signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+      personal: true,
+      pooledOnly: true,
+      requireAgentAccess: async () => {
+        if (narrowOnDeviceRead) {
+          narrowOnDeviceRead = false;
+          repository.granted = [];
+        }
+      },
+      targetResolver: {
+        resolve: () => undefined,
+        placements: () => [],
+      },
+      onSessionsChanged: () => undefined,
+      onError: () => undefined,
+    });
+    const originalList = repository.listEligibleBrowserRunners.bind(repository);
+    repository.listEligibleBrowserRunners = async () => [
+      ...(await originalList()),
+      {
+        id: runnerId,
+        kind: "main",
+        name: "Cloud Computer",
+        allowedModules: ["browser"],
+        ownerKind: "deployment",
+        ownerUserId: null,
+      },
+    ];
+    await service.adoptPool(runnerId, coordinator, { label: "Cloud Computer", environmentIds: [] });
+    cleanups.push(() => service.close());
+
+    // 1) Existing-page bind: narrowing grant during the device-access read before reservation takes 0 holds.
+    const existingSession = await repository.createBrowserSession({
+      id: createBrowserSessionId(),
+      placementKey: `runner:${runnerId}`,
+      runnerId,
+      runtimeId: "browser-main",
+      profileId: kept.id,
+      origin: "person",
+      opener: { kind: "person", userId: ownerId },
+    });
+    const surfaceId = createId("tab");
+    const existingRow = {
+      id: surfaceId,
+      ownerId,
+      kind: "page" as const,
+      generation: 1,
+      computerId: runnerId,
+      profileId: kept.id,
+      url: "https://example.test/existing",
+      title: "Existing",
+      state: "open" as const,
+      pageBinding: {
+        sessionId: existingSession.id,
+        surfaceId,
+        lineageId: existingSession.id,
+      },
+    };
+    memory.rows.set(surfaceId, existingRow as never);
+    narrowOnDeviceRead = true;
+    await expect(
+      service.pageTabs.bindBrowserScript!(
+        {
+          authority: { ownerId, agentBindingId: "session:selected" },
+          threadId: createId("thread"),
+        } as never,
+        existingRow as never,
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(reserveCalls).toBe(0);
+    expect(gate.held).toBe(0);
+
+    // 2) Restore path (ended session -> #restoreWorkspacePage -> #admitStart): narrowing during device read takes 0 holds.
+    repository.granted = [kept.id];
+    await repository.transitionBrowserSession({
+      sessionId: existingSession.id,
+      from: ["starting", "ready"],
+      state: "closed",
+    });
+    narrowOnDeviceRead = true;
+    await expect(
+      service.pageTabs.bindBrowserScript!(
+        {
+          authority: { ownerId, agentBindingId: "session:selected" },
+          threadId: createId("thread"),
+        } as never,
+        existingRow as never,
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(reserveCalls).toBe(0);
+    expect(gate.held).toBe(0);
+  });
+
+  it("omits the tabs-and-sign-ins-kept promise when a refusal did not prove saved state was kept", async () => {
+    vi.useFakeTimers();
+    try {
+      const setup = await makePooledSetup({ gateOpen: false });
+      setup.gate.onChange = () => {
+        setup.gate.noteAttemptRefused("resume-refused", false);
+      };
+      await expect(
+        setup.service.openTab(setup.ownerId, {
+          type: "browser.tab.open",
+          idempotencyKey: `refused-no-saved-state-${randomUUID()}`,
+          identity: { kind: "profile", profileId: setup.kept.id },
+          url: "https://example.test/refused-fresh",
+        }),
+      ).rejects.toMatchObject({
+        code: "conflict",
+        reason: "browser-pool-start-refused",
+        message: "Your Cloud Computer’s browser can’t start right now. Try again in a moment.",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports unreachable instead of a stale refusal when a new open times out while retrying a refused wake", async () => {
+    vi.useFakeTimers();
+    try {
+      const keys = generateKeyPairSync("ed25519");
+      const ownerId = createId("user");
+      const runnerId = createId("runner");
+      const repository = new SelectedGrantRepository(ownerId);
+      const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+      const gate = new BrowserPoolGate();
+      gate.set({ recovered: true, away: "parked" });
+      const coordinator = {
+        runtimeId: "browser-main",
+        gate,
+        unanswered: false,
+        retryingRefused: true,
+        report: () => ({
+          phase: "failed" as const,
+          since: new Date(),
+          refused: "egress-required",
+          savedStateKept: true,
+        }),
+        setAdopter: () => undefined,
+        recover: async () => undefined,
+        retire: async () => undefined,
+        close: () => undefined,
+        ensureRelayAttached: async () => undefined,
+      } as unknown as BrowserPoolCoordinator;
+      const service = new BrowserService({
+        ...profileStateOptions,
+        repository,
+        signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+        personal: true,
+        pooledOnly: true,
+        targetResolver: { resolve: () => undefined, placements: () => [] },
+        onSessionsChanged: () => undefined,
+        onError: () => undefined,
+      });
+      const originalList = repository.listEligibleBrowserRunners.bind(repository);
+      repository.listEligibleBrowserRunners = async () => [
+        ...(await originalList()),
+        {
+          id: runnerId,
+          kind: "main",
+          name: "Cloud Computer",
+          allowedModules: ["browser"],
+          ownerKind: "deployment",
+          ownerUserId: null,
+        },
+      ];
+      await service.adoptPool(runnerId, coordinator, {
+        label: "Cloud Computer",
+        environmentIds: [],
+      });
+      cleanups.push(() => service.close());
+
+      const opening = service.openTab(ownerId, {
+        type: "browser.tab.open",
+        idempotencyKey: `retry-timeout-${randomUUID()}`,
+        identity: { kind: "profile", profileId: kept.id },
+        url: "https://example.test/retry-timeout",
+      });
+      const settled = opening.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      await vi.advanceTimersByTimeAsync(18_000);
+      expect(await settled).toMatchObject({
+        error: {
+          code: "conflict",
+          reason: "browser-pool-unreachable",
+          message: "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["fenced", "slot-deleted"] as const)(
+    "reports a definitively ended (%s) pool target as setting up instead of an outage",
+    async (overReason) => {
+      const keys = generateKeyPairSync("ed25519");
+      const ownerId = createId("user");
+      const runnerId = createId("runner");
+      const repository = new SelectedGrantRepository(ownerId);
+      const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+      const gate = new BrowserPoolGate();
+      gate.set({ recovered: true, away: null, hold: "over" });
+      const coordinator = {
+        runtimeId: "browser-main",
+        gate,
+        unanswered: false,
+        over: overReason,
+        report: () => ({
+          phase: "failed" as const,
+          since: new Date(),
+          refused: overReason,
+          savedStateKept: false,
+        }),
+        setAdopter: () => undefined,
+        recover: async () => undefined,
+        retire: async () => undefined,
+        close: () => undefined,
+        ensureRelayAttached: async () => undefined,
+      } as unknown as BrowserPoolCoordinator;
+      const service = new BrowserService({
+        ...profileStateOptions,
+        repository,
+        signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+        personal: true,
+        pooledOnly: true,
+        targetResolver: { resolve: () => undefined, placements: () => [] },
+        onSessionsChanged: () => undefined,
+        onError: () => undefined,
+      });
+      const originalList = repository.listEligibleBrowserRunners.bind(repository);
+      repository.listEligibleBrowserRunners = async () => [
+        ...(await originalList()),
+        {
+          id: runnerId,
+          kind: "main",
+          name: "Cloud Computer",
+          allowedModules: ["browser"],
+          ownerKind: "deployment",
+          ownerUserId: null,
+        },
+      ];
+      await service.adoptPool(runnerId, coordinator, {
+        label: "Cloud Computer",
+        environmentIds: [],
+      });
+      cleanups.push(() => service.close());
+
+      // Both default-placement open and explicit-placement open report setting up, not an outage.
+      await expect(
+        service.openTab(ownerId, {
+          type: "browser.tab.open",
+          idempotencyKey: `over-${overReason}-${randomUUID()}`,
+          identity: { kind: "profile", profileId: kept.id },
+          url: "https://example.test/over",
+        }),
+      ).rejects.toMatchObject({
+        code: "conflict",
+        reason: "browser-pool-setting-up",
+        message: "Setting up your browser… This can take a few minutes.",
+      });
+      await expect(
+        service.openTab(ownerId, {
+          type: "browser.tab.open",
+          idempotencyKey: `over-explicit-${overReason}-${randomUUID()}`,
+          identity: { kind: "profile", profileId: kept.id },
+          placement: { kind: "runner", runnerId },
+          url: "https://example.test/over-explicit",
+        }),
+      ).rejects.toMatchObject({
+        code: "conflict",
+        reason: "browser-pool-setting-up",
+        message: "Setting up your browser… This can take a few minutes.",
+      });
+    },
+  );
 });

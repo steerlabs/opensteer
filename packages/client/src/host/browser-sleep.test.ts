@@ -402,6 +402,19 @@ describe("a browser that cannot be used now", () => {
     },
   );
 
+  it("does not promise tabs were kept when a start refusal did not preserve saved state", () => {
+    expect(report("start-refused", "parked")).toEqual({
+      kind: "paused",
+      computerId: computer,
+      reason: "start-refused",
+    });
+    expect(browserNotReady(report("start-refused", "parked"))).toEqual({
+      title: "Browsing paused",
+      detail: "Your Cloud Computer’s browser can’t start right now. Try again in a moment.",
+      waiting: false,
+    });
+  });
+
   it("keeps today's lines while it wakes or starts", () => {
     expect(browserNotReady(report(undefined, "waking"))).toBeNull();
     expect(browserWakeLine(report(undefined, "waking"), 9_000, { picture: false })?.text).toBe(

@@ -488,7 +488,15 @@ export async function startManagedBrowserPool(input: {
     )
       return "unavailable";
     if (phase === "open") return relayReady ? "ready" : "unavailable";
-    if (phase === "parked") return "ready";
+    if (phase === "parked") {
+      if (
+        report?.phase === "waking" ||
+        report?.phase === "starting" ||
+        report?.phase === "restarting"
+      )
+        return "preparing";
+      return applied.coordinator.unanswered ? "unavailable" : "ready";
+    }
     return "preparing";
   };
 
@@ -513,6 +521,14 @@ export async function startManagedBrowserPool(input: {
     const report = applied.coordinator.report();
     if (phase === "released") return "This device was removed.";
     if (
+      applied.coordinator.over ||
+      (report?.refused !== undefined &&
+        (report.refused === "slot-deleted" ||
+          report.refused === "fenced" ||
+          report.refused === "browser-replaced"))
+    )
+      return "Setting up your browser… This can take a few minutes.";
+    if (
       report?.unreachable ||
       report?.relayFailed ||
       applied.coordinator.unanswered ||
@@ -520,7 +536,9 @@ export async function startManagedBrowserPool(input: {
     )
       return "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.";
     if (report?.refused)
-      return "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.";
+      return report.savedStateKept
+        ? "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept."
+        : "Your Cloud Computer’s browser can’t start right now. Try again in a moment.";
     if (phase === "open" && applied.relay && !applied.relay.isAttached())
       return "Your Cloud Computer’s browser isn’t connected right now. Try again in a moment.";
     return "Setting up your browser… This can take a few minutes.";

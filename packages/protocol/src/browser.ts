@@ -1864,6 +1864,8 @@ export const BrowserTabOpenRefusalReasonSchema = z.enum([
   "browser-profile-home-unavailable",
   "browser-placement-unavailable",
   "browser-pool-refused",
+  "browser-pool-start-refused",
+  "browser-pool-setting-up",
   "browser-pool-unreachable",
   "browser-pool-disconnected",
   "browser-placement-ambiguous",

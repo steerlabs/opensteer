@@ -405,6 +405,8 @@ export const browserSleepWords = {
   paused: "Browsing paused",
   pausedDetail:
     "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
+  pausedStartRefusedDetail:
+    "Your Cloud Computer’s browser can’t start right now. Try again in a moment.",
 
   failedTitle: "Your browser couldn’t start",
   failedDetail: "Your tabs and sign-ins are kept. Try again in a moment.",
@@ -527,7 +529,9 @@ export function browserNotReady(browser: BrowserSleep): {
       // Its way out to the internet is missing or down: the same words as for a missing address.
       browser.reason === "egress-required" || browser.reason === "egress-proxy-down"
         ? cloudWords("cloud.ip.pausedDetail")
-        : browserSleepWords.pausedDetail,
+        : browser.reason === "start-refused"
+          ? browserSleepWords.pausedStartRefusedDetail
+          : browserSleepWords.pausedDetail,
     waiting: false,
   };
 }

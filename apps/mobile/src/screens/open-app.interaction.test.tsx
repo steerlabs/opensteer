@@ -327,6 +327,11 @@ it.each([
     "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
   ],
   [
+    "browser-pool-start-refused",
+    "Your Cloud Computer’s browser can’t start right now. Try again in a moment.",
+  ],
+  ["browser-pool-setting-up", "Setting up your browser… This can take a few minutes."],
+  [
     "browser-pool-unreachable",
     "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
   ],

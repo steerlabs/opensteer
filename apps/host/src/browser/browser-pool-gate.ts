@@ -1,13 +1,16 @@
 import { OpensteerError } from "@opensteer/core";
 import { BrowserPoolAdmissionClosed } from "@opensteer/database";
 
-/** The controller explicitly refused this start/wake attempt while preserving saved state. */
+/** The controller explicitly refused this start/wake attempt. */
 export class BrowserPoolAttemptRefused extends BrowserPoolAdmissionClosed {
   readonly refusedReason: string;
-  constructor(reason: string) {
+  /** True only when signed host status proved the saved state stayed paused on the same fence. */
+  readonly savedStateKept: boolean;
+  constructor(reason: string, savedStateKept = false) {
     super(`The pooled browser could not start (${reason}). Nothing was sent.`);
     this.name = "BrowserPoolAttemptRefused";
     this.refusedReason = reason;
+    this.savedStateKept = savedStateKept;
   }
 }
 
@@ -58,6 +61,7 @@ export class BrowserPoolGate {
   #ended = new AbortController();
   #refusalGeneration = 0;
   #lastRefusalReason: string | undefined;
+  #lastRefusalSavedStateKept = false;
   readonly #idle: (() => void)[] = [];
   readonly #settlers = new Set<() => Promise<void>>();
   /** The loop is asked to act: someone waits with demand, or a hold needs holders gone. */
@@ -218,9 +222,10 @@ export class BrowserPoolGate {
    * The controller explicitly refused this wake/start attempt: waiting opens that opted in end at
    * once with the pool's refusal reason, while a later open still creates fresh demand and retries.
    */
-  noteAttemptRefused(reason: string): void {
+  noteAttemptRefused(reason: string, savedStateKept = false): void {
     this.#refusalGeneration++;
     this.#lastRefusalReason = reason;
+    this.#lastRefusalSavedStateKept = savedStateKept;
     this.#notify();
   }
 
@@ -285,7 +290,10 @@ export class BrowserPoolGate {
         if (this.#hold === "released")
           throw new BrowserPoolAdmissionClosed("This device was removed. Nothing was sent.");
         if (failOnRefusal && this.#refusalGeneration !== seenRefusal)
-          throw new BrowserPoolAttemptRefused(this.#lastRefusalReason ?? "refused");
+          throw new BrowserPoolAttemptRefused(
+            this.#lastRefusalReason ?? "refused",
+            this.#lastRefusalSavedStateKept,
+          );
         if (this.admits) return this.#take(demand, waited);
         if (this.#preparing && (demand || !this.#repairing)) this.#demanded = true;
         // Demand asks the loop once, as it begins to wait: the loop keeps a change that came
