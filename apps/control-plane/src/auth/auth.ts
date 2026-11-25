@@ -21,7 +21,11 @@ import { ControlPlaneError } from "../server/errors.js";
 import type { ControlPlaneDatabaseSchema } from "../database/schema.js";
 import { appleOrigin } from "./apple-sign-in.js";
 import { isOfficialNativeReference } from "../database/store.js";
-import { appReviewSignIn, type AppReviewSignInConfig } from "./app-review-sign-in.js";
+import {
+  appReviewSignIn,
+  appReviewSignInPath,
+  type AppReviewSignInConfig,
+} from "./app-review-sign-in.js";
 
 const accountJwks = {
   gracePeriod: 30 * 24 * 60 * 60,
@@ -46,6 +50,7 @@ interface ControlPlaneAuthConfig {
   readonly googleClientId?: string;
   readonly googleClientSecret?: string;
   readonly appReview?: AppReviewSignInConfig;
+  readonly syntheticSignIn?: AppReviewSignInConfig;
   /** Minted before this runs; a process that outlives the secret needs a restart. */
   readonly apple?: { readonly clientId: string; readonly clientSecret: string };
 }
@@ -114,7 +119,36 @@ export function createControlPlaneAuth(
     baseURL: config.publicOrigin.origin,
     database: databaseOption,
     databaseHooks: {
+      account: {
+        create: {
+          // The synthetic purchase's Account signs in only through its own sign-in: no Google,
+          // Apple or other sign-in is ever linked into it, whoever holds that email.
+          before: async (account) => {
+            const user = await database
+              .selectFrom("users")
+              .select("syntheticAt")
+              .where("id", "=", account.userId as never)
+              .executeTakeFirst();
+            if (user?.syntheticAt) return false;
+            return undefined;
+          },
+        },
+      },
       session: {
+        create: {
+          // A marked Account is the synthetic purchase's: only its own sign-in opens a session
+          // for it, never Google, Apple or a provider link however it came to exist.
+          before: async (session, context) => {
+            if (context?.path === appReviewSignInPath) return undefined;
+            const user = await database
+              .selectFrom("users")
+              .select("syntheticAt")
+              .where("id", "=", session.userId as never)
+              .executeTakeFirst();
+            if (user?.syntheticAt) return false;
+            return undefined;
+          },
+        },
         delete: {
           before: async (session) => {
             // The provider preserves offline_access tokens on logout; Account sign-out
@@ -146,7 +180,7 @@ export function createControlPlaneAuth(
       },
     },
     disabledPaths: [
-      ...(config.appReview ? [] : ["/sign-in/app-review"]),
+      ...(config.appReview || config.syntheticSignIn ? [] : ["/sign-in/app-review"]),
       "/change-email",
       "/change-password",
       "/delete-user",
@@ -162,7 +196,16 @@ export function createControlPlaneAuth(
     ],
     emailAndPassword: { enabled: false },
     plugins: [
-      ...(config.appReview ? [appReviewSignIn(config.appReview)] : []),
+      ...(config.appReview || config.syntheticSignIn
+        ? [
+            appReviewSignIn(
+              [
+                config.appReview,
+                config.syntheticSignIn && { ...config.syntheticSignIn, synthetic: true as const },
+              ].filter((account): account is AppReviewSignInConfig => account !== undefined),
+            ),
+          ]
+        : []),
       // The provider uses the JWT issuer; pin it across both public hostnames.
       jwt({
         disableSettingJwtHeader: true,
@@ -247,6 +290,11 @@ export function createControlPlaneAuth(
     // this host makes that post subject to the origin check.
     trustedOrigins: [config.publicOrigin.origin, ...(config.apple ? [appleOrigin] : [])],
     user: {
+      // The synthetic purchase's mark (`app-review-sign-in.ts`): set only by the insert of its
+      // own Account, never by a request, never in a response.
+      additionalFields: {
+        syntheticAt: { type: "date", required: false, input: false, returned: false },
+      },
       deleteUser: { enabled: false },
       fields: { name: "displayName" },
       modelName: "users",

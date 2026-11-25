@@ -2701,6 +2701,21 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     // The preview keeps no durable session history to page back through.
     "machine.access.history": async () => rpcSuccess({ nextCursor: null, sessions: [] }),
     // A computer's placed tasks are counted in this read, from the tasks the preview holds.
+    // The preview sends nothing anywhere; with a destination set it shows the bytes a Host would.
+    "problems.get": async () =>
+      rpcSuccess({
+        problems: client.problems,
+        reporting: { destination: client.problemDestination },
+        body:
+          client.problemDestination === "none"
+            ? null
+            : JSON.stringify({
+                schema: 1,
+                home: client.problemDestination === "operator" ? "cloud-computer" : "server",
+                version: "0.0.0",
+                problems: client.problems,
+              }),
+      }),
     "machines.list": async () => {
       const snapshot = client.getSnapshot();
       const tasks = snapshot.tasks?.entries ?? [];
@@ -4494,6 +4509,15 @@ export class MockHostClient implements HostClient {
         profile.name in homes ? { ...profile, homeRunnerId: homes[profile.name]! } : profile,
       ),
     });
+  }
+
+  /** The problems the preview's Home has, for a scenario or a test. */
+  setProblems(
+    problems: readonly import("@opensteer/protocol/problems").Problem[],
+    destination: "operator" | "own" | "none" = "none",
+  ): void {
+    this.#state.problems = [...problems];
+    this.#state.problemDestination = destination;
   }
 
   setSearchSuggestionsAvailable(available: boolean): void {
@@ -13900,6 +13924,10 @@ class MockHostState {
         personalSettings: { ...this.snapshot.personalSettings, idleCompactionPolicy: policy },
       });
   }
+  /** Where the preview's Home would send its report: by default nowhere, as a Mac. */
+  problemDestination: "operator" | "own" | "none" = "none";
+  /** What a preview shows as this Home's problems; none until a test or a scenario sets some. */
+  problems: import("@opensteer/protocol/problems").Problem[] = [];
   setQuietTaskDays(days: QuietTaskDays): void {
     this.update({ ...this.snapshot, quietTaskDays: days });
   }

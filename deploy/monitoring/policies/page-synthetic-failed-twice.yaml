@@ -1,0 +1,35 @@
+# The synthetic purchase failed twice in a row, so buying is broken even if nobody tried today.
+# (scripts/synthetic-cloud-computer.mjs: sign in, pay with Stripe's test card, wait for the Cloud
+# Computer, open it, delete it.)
+# Runbook: docs/cloud-computer-operations.md, "The synthetic purchase failed".
+displayName: "Opensteer: The synthetic purchase failed twice"
+severity: CRITICAL
+userLabels:
+  opensteer_alert: page
+documentation:
+  mimeType: text/markdown
+  subject: "Opensteer: The synthetic purchase failed twice"
+  content: |-
+    The synthetic purchase failed in two runs in a row (it runs every six hours). Its log line
+    names the step that failed.
+
+    Open the runbook, docs/cloud-computer-operations.md, section "The synthetic purchase failed".
+combiner: OR
+conditions:
+  - displayName: "Two failed runs within thirteen hours"
+    conditionThreshold:
+      # The log-based metric in metrics/synthetic-run-failed.yaml.
+      filter: >-
+        metric.type="logging.googleapis.com/user/opensteer_synthetic_run_failed" AND
+        resource.type="k8s_container"
+      aggregations:
+        - alignmentPeriod: 46800s
+          perSeriesAligner: ALIGN_SUM
+          crossSeriesReducer: REDUCE_SUM
+      comparison: COMPARISON_GT
+      thresholdValue: 1
+      duration: 0s
+      trigger:
+        count: 1
+alertStrategy:
+  autoClose: 86400s

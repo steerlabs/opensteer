@@ -1,0 +1,26 @@
+# A ready Cloud Computer has reported no backup for 36 hours; its daily backup is failing or its report is refused.
+# Runbook: docs/cloud-computer-operations.md, "A Cloud Computer reports a problem".
+displayName: "Opensteer: A Cloud Computer has not backed up for 36 hours"
+severity: WARNING
+userLabels:
+  opensteer_alert: digest
+documentation:
+  mimeType: text/markdown
+  subject: "Opensteer: A Cloud Computer has not backed up for 36 hours"
+  content: |-
+    A ready Cloud Computer has reported no backup for 36 hours; its daily backup is failing or its report is refused.
+
+    Open the runbook, docs/cloud-computer-operations.md, section "A Cloud Computer reports a problem".
+combiner: OR
+conditions:
+  - displayName: "A Cloud Computer has not backed up for 36 hours"
+    conditionMatchedLog:
+      filter: >-
+        resource.type="k8s_container" AND resource.labels.namespace_name="opensteer-system" AND jsonPayload.event="account.cloud_computer.backup_overdue"
+      labelExtractors:
+        computer_id: EXTRACT(jsonPayload.computerId)
+        event: EXTRACT(jsonPayload.event)
+alertStrategy:
+  notificationRateLimit:
+    period: 86400s
+  autoClose: 604800s

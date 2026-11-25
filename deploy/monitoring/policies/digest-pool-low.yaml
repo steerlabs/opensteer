@@ -1,0 +1,26 @@
+# Fewer than two free backup targets (checkout stops at none) or egress endpoints (browsing pauses at none).
+# Runbook: docs/cloud-computer-operations.md, "No free backup target or egress endpoint".
+displayName: "Opensteer: A Cloud Computer pool is nearly empty"
+severity: WARNING
+userLabels:
+  opensteer_alert: digest
+documentation:
+  mimeType: text/markdown
+  subject: "Opensteer: A Cloud Computer pool is nearly empty"
+  content: |-
+    Fewer than two free backup targets (checkout stops at none) or egress endpoints (browsing pauses at none).
+
+    Open the runbook, docs/cloud-computer-operations.md, section "No free backup target or egress endpoint".
+combiner: OR
+conditions:
+  - displayName: "A Cloud Computer pool is nearly empty"
+    conditionMatchedLog:
+      filter: >-
+        resource.type="k8s_container" AND resource.labels.namespace_name="opensteer-system" AND jsonPayload.event="account.pool.low"
+      labelExtractors:
+        pool: EXTRACT(jsonPayload.pool)
+        event: EXTRACT(jsonPayload.event)
+alertStrategy:
+  notificationRateLimit:
+    period: 86400s
+  autoClose: 604800s
