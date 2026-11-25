@@ -3553,6 +3553,8 @@ describe("ACP prompt steering, outcome inspection, and permission disposition", 
         readonly code: number | null;
         readonly signal: NodeJS.Signals | null;
       }>();
+      let observedSessionUpdates = 0;
+      const sessionUpdatesObserved = new Deferred<void>();
       let buffer = "";
       const stdin = new Writable({
         write(chunk, _encoding, callback) {
@@ -3634,10 +3636,10 @@ describe("ACP prompt steering, outcome inspection, and permission disposition", 
                       },
                     })}\n`,
                   );
-                  setTimeout(() => {
+                  void sessionUpdatesObserved.promise.then(() => {
                     stdout.end();
                     exited.resolve({ code: 1, signal: null });
-                  }, 15);
+                  });
                   return;
                 }
                 if (mode === "post-write-turn-chunk-then-fail") {
@@ -3717,6 +3719,19 @@ describe("ACP prompt steering, outcome inspection, and permission disposition", 
               error instanceof OpensteerError
                 ? error
                 : new OpensteerError({ code: "harness_error", message: String(error) }),
+            normalizeUpdate: (update) => {
+              if (
+                update &&
+                typeof update === "object" &&
+                "sessionUpdate" in update &&
+                (update.sessionUpdate === "available_commands_update" ||
+                  update.sessionUpdate === "current_mode_update")
+              ) {
+                observedSessionUpdates += 1;
+                if (observedSessionUpdates >= 2) sessionUpdatesObserved.resolve();
+              }
+              return normalizeAcpUpdate(update);
+            },
             permissionChoices: () => [],
             ...(mode === "pre-write-session-update-then-epipe"
               ? {
@@ -3748,7 +3763,7 @@ describe("ACP prompt steering, outcome inspection, and permission disposition", 
                         },
                       })}\n`,
                     );
-                    await new Promise((resolve) => setTimeout(resolve, 15));
+                    await sessionUpdatesObserved.promise;
                     return () => undefined;
                   },
                 }
