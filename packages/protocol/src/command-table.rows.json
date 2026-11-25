@@ -559,21 +559,21 @@
     {
       "type": "request.command.approve",
       "family": "tasks",
-      "governs": "a command Request ← `requestId`; the person approves the command, as proposed or changed",
+      "governs": "a command Request ← `requestId`; the person approves the command exactly as proposed",
       "faces": [
         {
           "when": null,
-          "class": "approve",
+          "class": "person-view",
           "answers": {
-            "a": "ask",
-            "b": "ask",
-            "c": "ask",
-            "d": "ask"
+            "a": "not_found",
+            "b": "not_found",
+            "c": "not_found",
+            "d": "not_found"
           }
         }
       ],
       "step": "—",
-      "note": "A4: the person's answer to a command Request; an agent's ask about it points at that Request",
+      "note": "A4: the person's answer to a command Request, on their own screen; to an agent it reads as a command that does not exist",
       "effect": {
         "where": "outside",
         "why": "registry.ts:118: runs another command",
@@ -3670,6 +3670,50 @@
         "why": "trigger-service.ts:267: one store write",
         "ongoing": false
       }
+    },
+    {
+      "type": "trigger.secrets.set",
+      "family": "automations",
+      "governs": "an automation's secrets ← `triggerId`",
+      "faces": [
+        {
+          "when": "`remove` only",
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "ask"
+          }
+        },
+        {
+          "when": "`set` given",
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "`names` given without `set`, or omitted",
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "removing or clearing secrets destroys person-entered data (`destroy`, like `app.delete`); setting values (`set`, in `agentMaySet`) needs Full access in the automation's own lineage (same admission as changing its script, trigger.update face 1); when the same name appears in both `remove` and `set`, `remove` runs first so `set` wins; proposing `names` without values always asks (`secret`) and the person enters values on the automation's Secrets screen (`editor: automation-secrets`), never on the Request card",
+      "effect": {
+        "where": "database",
+        "why": "trigger-service.ts:238: one store write; the notices after it are in memory",
+        "ongoing": true
+      }
     }
   ],
   "inputs": {
@@ -3691,6 +3735,7 @@
     "tab.group.update name": "same class; omitted: unchanged (schema only)",
     "tab.group.update color": "same class; omitted: unchanged (schema only)",
     "tab.group.update collapsed": "same class; omitted: unchanged (schema only)",
+    "tab.group.close tabIds": "same class: only the members the card listed close, and a group whose shown members changed is refused; omitted: every member now (tab-store.ts closeGroup)",
     "settings.plugin.enabled.set target.kind": "same class: which kind of thing is turned on or off",
     "settings.plugin.enabled.set enabled": "face: false narrow, true approve",
     "plugins.install source.kind": "same class (widen-self): a new plugin, catalog or by address; lead decision D10; folder: a folder inside Agent home, your own agents only, as today's tool reads it (the lead's ruling); under a connection's grant the kind is not in the schema",
@@ -3857,6 +3902,10 @@
     "trigger.status.set status": "face: paused narrow, archived narrow with Full access, active widen-self",
     "trigger.run payload": "same class; omitted: no payload",
     "trigger.cancel occurrenceId": "same class; omitted: every pending occurrence (agent-tools triggers.ts:86)",
+    "trigger.secrets.set clearAll": "face 0 (`destroy`): explicit full wipe of stored secrets (including an unreadable envelope); asks below Full access and on selected grants",
+    "trigger.secrets.set names": "face 2 (`secret`): names-only proposal asking the person to enter values on the automation's Secrets screen; omitted: remove/clearAll (face 0) or direct set (face 1)",
+    "trigger.secrets.set remove": "face 0 (`destroy`): remove only (without non-empty set or names) asks below Full access and on selected grants; omitted: clearAll (face 0), set (face 1) or secret ask (face 2)",
+    "trigger.secrets.set set": "face 1 (`widen-self`, Full access, own lineage, `agentMaySet`): widens in the automation's lineage (same admission as changing the script, trigger.update face 1); stripped from stored Requests and refused when the call asks",
     "personal.accountLink.unlink step": "same class: identity whatever the step, the Mac app's two unlink steps (lead's AD10 ruling)",
     "plugins.install source.name": "same class; omitted: the folder's own plugin name",
     "plugins.install source.pluginId": "same class (widen-self): a new version of that plugin from your own agent's folder, as today's tool deploys one"

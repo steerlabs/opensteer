@@ -1,7 +1,7 @@
 import { deviceDefinitions } from "@opensteer/integration-catalog/devices";
 import { dataAppName } from "../devices/access-requests.js";
 import { localTargetBlocked } from "../devices/target-blocked.js";
-import { isPhoneDisplayDefinitionId } from "@opensteer/core";
+import { commandAgentStatus, isPhoneDisplayDefinitionId } from "@opensteer/core";
 import { createHash } from "node:crypto";
 import {
   BrowserRequestOutcomeSchema,
@@ -684,34 +684,30 @@ function passwordSignInContinuation(
 /** What became of a command the agent proposed, from the Request's own record of it. */
 export function commandContinuation(request: Request): string {
   const command = request.command!;
-  const asked = `your proposed change “${command.sentence ?? command.summary}” (Request ${request.id})`;
+  // What the proposer reads back: what it sent (the type, the Request) and a value-free status,
+  // never the Home's sentence or anything the Home looked up (rule 5).
+  const asked = `your proposal ${command.type} (Request ${request.id})`;
   const Asked = `${asked[0]!.toUpperCase()}${asked.slice(1)}`;
   if (request.status === "withdrawn") return `${Asked} was withdrawn; nothing changed.`;
-  if (request.status === "cancelled")
-    return request.cancellationReason === "authority-revoked"
-      ? `${Asked} closed: you can no longer ask for it, so nothing changed.`
-      : `${Asked} was cancelled (${request.cancellationReason}); nothing changed.`;
-  if (request.status === "declined") {
-    const words =
-      request.response?.kind === "form"
-        ? Object.values(request.response.answers)
-            .flat()
-            .filter((value) => value !== "decline")
-            .join(" ")
-            .trim()
-        : "";
-    return [
-      `The person declined ${asked}.`,
-      ...(words ? [`They said: ${JSON.stringify(words.slice(0, 2_000))}`] : []),
-      "Nothing changed. The same proposal is answered as declined for a day; do not repeat it unless something changed.",
-    ].join("\n");
-  }
-  switch (command.outcome?.status) {
-    case "done":
-      return `The person approved ${asked}${command.approved?.changed ? " after changing it" : ""}, and it was made.${command.outcome.result === undefined ? "" : ` Result: ${JSON.stringify(command.outcome.result).slice(0, 4_000)}`}`;
-    case "failed":
-      return `The person approved ${asked}${command.approved?.changed ? " after changing it" : ""}, but it did not happen (${command.outcome.code}): ${command.outcome.message}`;
-    case "unknown":
+  switch (commandAgentStatus(request)) {
+    case "closed":
+      return request.cancellationReason === "authority-revoked"
+        ? `${Asked} closed: you can no longer ask for it, so nothing changed.`
+        : `${Asked} closed before it was answered; nothing changed.`;
+    case "declined":
+      return [
+        `The person declined ${asked}.`,
+        "Nothing changed. The same proposal is answered as declined for a day; do not repeat it unless something changed.",
+      ].join("\n");
+    case "person-says-done":
+      return `The person says they did this themselves (${asked}). Nothing here shows that it happened, and your proposal did not run. Read the current state before relying on it.`;
+    case "done-by-person":
+      return `The person did what you proposed themselves, with their own command (${asked}); your proposal itself did not run.`;
+    case "approved-done":
+      return `The person approved ${asked}, and it was made.${command.outcome?.status === "done" && command.outcome.result !== undefined ? ` Result: ${JSON.stringify(command.outcome.result).slice(0, 4_000)}` : ""}`;
+    case "approved-failed":
+      return `The person approved ${asked}, but it did not happen (${command.outcome?.status === "failed" ? command.outcome.code : "failed"}): ${command.outcome?.status === "failed" ? command.outcome.message : ""}`;
+    case "approved-unknown":
       return `The person approved ${asked}, but the Home does not know whether it took effect. Check the current state with a safe read before doing anything else; never repeat it blindly.`;
     default:
       return `The person approved ${asked}; it is still being made.`;

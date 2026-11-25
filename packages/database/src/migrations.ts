@@ -850,6 +850,26 @@ export function migrationProvider(options?: {
                   `.execute(database);
                 },
               },
+              "0119_automation_secret_names": {
+                /**
+                 * Stores each automation's sorted secret names unsealed beside `encrypted_secrets`
+                 * so listing names never requires decrypting values and a key mismatch never blocks
+                 * opening the automation or removing unreadable secrets (S6).
+                 *
+                 * Flushes deferred `triggers_current_revision_fk` events before `alter table` so an
+                 * upgrade that runs `0113_automations_contract` and `0119_automation_secret_names`
+                 * in one Migrator transaction does not fail PostgreSQL's `CheckTableNotInUse`.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    set constraints triggers_current_revision_fk immediate;
+                    alter table triggers
+                      add column if not exists secret_names jsonb
+                        check (secret_names is null or jsonb_typeof(secret_names) = 'array');
+                    set constraints triggers_current_revision_fk deferred;
+                  `.execute(database);
+                },
+              },
             }
           : {}),
       };

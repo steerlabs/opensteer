@@ -1,13 +1,15 @@
 import { agentToolFailureResult } from "@opensteer/agent-tools";
-import { createToolOutput, type RunId } from "@opensteer/core";
+import { createToolOutput, opensteerToolNamespace, type RunId } from "@opensteer/core";
 import {
   AgentToolRelayRequestSchema,
   agentToolHostRoutePath,
   type AgentToolRelayResponse,
 } from "@opensteer/protocol/agent-tool-relay";
+import { redactToolArgumentsForStorage } from "@opensteer/protocol/command-table";
 import type { FastifyInstance } from "fastify";
 import type { AgentToolActivityStore } from "@opensteer/database";
 import type { RealtimeHub } from "@opensteer/orchestration";
+import { digestToolArgumentsWithSecrets } from "../commands/secret-digest.js";
 import type { AgentCallerResolver, RunCaller } from "./agent-caller.js";
 import type { OpensteerMcpService } from "./opensteer-mcp-service.js";
 import { fingerprint } from "./operations.js";
@@ -34,8 +36,12 @@ export function registerAgentToolRoute(
     >;
     readonly activity: Pick<AgentToolActivityStore, "start" | "complete">;
     readonly realtime: Pick<RealtimeHub, "observeScopes">;
+    readonly secretDigestKey: Buffer;
   },
 ): void {
+  if (options.secretDigestKey.byteLength === 0) {
+    throw new Error("Agent tool relay route requires a non-empty secretDigestKey.");
+  }
   const active = new Map<
     string,
     {
@@ -153,7 +159,21 @@ export function registerAgentToolRoute(
       let started: Awaited<ReturnType<AgentToolActivityStore["start"]>>["handle"] | undefined;
       try {
         controller.signal.throwIfAborted();
-        const activity = await options.activity.start(context, callId, name, args);
+        const recordedArgs = redactToolArgumentsForStorage(args, {
+          namespace: opensteerToolNamespace,
+          name,
+        });
+        const argumentDigest =
+          recordedArgs !== args
+            ? digestToolArgumentsWithSecrets(options.secretDigestKey, { toolName: name, args })
+            : undefined;
+        const activity = await options.activity.start(
+          context,
+          callId,
+          name,
+          recordedArgs,
+          argumentDigest,
+        );
         started = activity.handle;
         if (activity.completed) {
           // Durable output is bounded and sanitized like every engine-reported tool result.

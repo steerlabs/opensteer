@@ -48,6 +48,15 @@ describe("AutomationSecrets", () => {
       remove: ["EXTRA", "WEBHOOK_SECRET"],
     });
     expect(cleared).toBeNull();
+
+    // Documented policy: when the same name appears in both `remove` and `set`, `remove` runs
+    // first and `set` wins (replacing the stored value).
+    const seeded = await secrets.apply(triggerA, null, { set: { SAME_KEY: "old" } });
+    const overlap = await secrets.apply(triggerA, seeded!.envelope, {
+      remove: ["SAME_KEY"],
+      set: { SAME_KEY: "new" },
+    });
+    expect(await secrets.values(triggerA, overlap!.envelope)).toEqual({ SAME_KEY: "new" });
   });
 
   it("binds sealed envelopes to their trigger id, rejects case-insensitive collisions, and bounds total bytes (Z10)", async () => {
@@ -66,5 +75,53 @@ describe("AutomationSecrets", () => {
         set: { BIG_A: "a".repeat(40_000), BIG_B: "b".repeat(40_000) },
       }),
     ).rejects.toThrow(/total/iu);
+  });
+
+  it("distinguishes permanent unreadable envelopes from transient vault errors and requires explicit clearAll (R6)", async () => {
+    const secrets = makeSecrets();
+    const sealed = await secrets.apply(triggerA, null, { set: { KEEP_ME: "val" } });
+    expect(sealed).not.toBeNull();
+
+    // Permanent unreadable error (wrong key / corrupted ciphertext) -> conflict with automation-secrets-unreadable
+    const wrongKey = Buffer.alloc(32, 0x99);
+    const wrongVault = new AesGcmSecretVault(
+      new StaticEncryptionKeyProvider(new Map([[1, wrongKey]]), 1),
+    );
+    const wrongSecrets = new AutomationSecrets(wrongVault);
+    await expect(
+      wrongSecrets.applyWithMeta(triggerA, sealed!.envelope, { remove: ["KEEP_ME"] }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      reason: "automation-secrets-unreadable",
+    });
+    await expect(
+      wrongSecrets.applyWithMeta(triggerA, sealed!.envelope, { set: { NEW_KEY: "v" } }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      reason: "automation-secrets-unreadable",
+    });
+    // Explicit clearAll: true clears even when ciphertext cannot be opened.
+    const cleared = await wrongSecrets.applyWithMeta(triggerA, sealed!.envelope, {
+      clearAll: true,
+    });
+    expect(cleared).toEqual({ changed: true, names: [], sealed: null });
+
+    // Transient vault failure -> unavailable with automation-secrets-unavailable, never silent wipe
+    const flakyVault = {
+      open: async () => {
+        throw new Error("vault temporarily offline");
+      },
+      seal: async () => {
+        throw new Error("vault temporarily offline");
+      },
+    };
+    const flakySecrets = new AutomationSecrets(flakyVault);
+    await expect(
+      flakySecrets.applyWithMeta(triggerA, sealed!.envelope, { remove: ["KEEP_ME"] }),
+    ).rejects.toMatchObject({
+      code: "internal",
+      reason: "automation-secrets-unavailable",
+      retryable: true,
+    });
   });
 });

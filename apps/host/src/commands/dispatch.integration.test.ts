@@ -105,6 +105,7 @@ describeStore("the door with the Home's own admission", (it) => {
       registry,
       admit: agentCommandAdmission(database),
       scope: agentCommandScope(database),
+      secretDigestKey: Buffer.alloc(32, 0x33),
     };
     // Each caller's commands at once: the Home's pool runs them side by side.
     for (const agent of callers)
@@ -178,6 +179,7 @@ describeStore("the door with the Home's own admission", (it) => {
       registry,
       admit: agentCommandAdmission(database),
       scope: agentCommandScope(database),
+      secretDigestKey: Buffer.alloc(32, 0x33),
       propose: async () => {
         opened.push("opened");
         return { status: "pending" as const, requestId: "req_new" as never, existing: false };
@@ -226,6 +228,7 @@ describeStore("the door with the Home's own admission", (it) => {
       registry: { ...registry, "machine.rename": any } as unknown as CommandRegistry,
       admit: agentCommandAdmission(database),
       scope: agentCommandScope(database),
+      secretDigestKey: Buffer.alloc(32, 0x33),
     };
     const run = {
       kind: "run",

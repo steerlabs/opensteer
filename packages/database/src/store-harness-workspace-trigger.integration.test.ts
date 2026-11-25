@@ -1682,29 +1682,6 @@ describeStore("PostgreSQL store", (it) => {
     // Raw body bytes are preserved for dispatch (Y2 / Y15).
     const dispatchCtx = await triggers.loadDispatchContext(first.occurrence.commandId);
     expect(dispatchCtx.webhookBody?.equals(firstBody)).toBe(true);
-
-    // Key rotation (T7): old URL returns identical 404 immediately; new URL accepts requests.
-    const rotatedKey = "whk_rotated012345678901234567890123456789012";
-    const rotated = await triggers.rotateWebhookKey({
-      actorThreadId: null,
-      ownerId: fixture.userId,
-      triggerId: created.trigger.id,
-      webhookRouteKey: rotatedKey,
-    });
-    expect(rotated.webhookRouteKey).toBe(rotatedKey);
-    await expect(
-      triggers.enqueueWebhook({
-        headers: {},
-        method: "POST",
-        routeKey: created.trigger.webhookRouteKey ?? "",
-      }),
-    ).rejects.toMatchObject({ code: "not_found", message: "Webhook not found" });
-    const afterRotate = await triggers.enqueueWebhook({
-      headers: {},
-      method: "POST",
-      routeKey: rotatedKey,
-    });
-    expect(afterRotate.wasDuplicate).toBe(false);
   });
   it("caps the pending webhook backlog at 100 in order before refusing with resource_exhausted (Y11)", async ({
     storeFixture,

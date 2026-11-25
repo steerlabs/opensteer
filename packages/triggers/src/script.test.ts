@@ -4,6 +4,7 @@ import {
   AutomationOutcomeSchema,
   AutomationPausedBySchema,
   AutomationScriptSchema,
+  AutomationSecretMapSchema,
   AutomationSecretNameSchema,
   AutomationSecretValueSchema,
   normalizeScriptText,
@@ -105,11 +106,43 @@ describe("AutomationSecretNameSchema (Z10)", () => {
       expect(AutomationSecretNameSchema.safeParse(safe).success, safe).toBe(true);
     }
 
-    for (const bad of ["", "123_BAD", "BAD-NAME", "BAD.NAME", "A".repeat(65)]) {
+    for (const bad of [
+      "",
+      "123_BAD",
+      "BAD-NAME",
+      "BAD.NAME",
+      "A".repeat(65),
+      "__proto__",
+      "constructor",
+      "prototype",
+    ]) {
       expect(AutomationSecretNameSchema.safeParse(bad).success, bad).toBe(false);
     }
 
     expect(AutomationSecretValueSchema.safeParse("whsec_live_123").success).toBe(true);
-    expect(AutomationSecretValueSchema.safeParse("bad\0val").success).toBe(false);
+    const nul = AutomationSecretValueSchema.safeParse("bad\0val");
+    expect(nul.success).toBe(false);
+    if (!nul.success) {
+      expect(
+        (nul.error.issues[0] as { params?: { reason?: string } } | undefined)?.params?.reason,
+      ).toBe("automation-secret-invalid-value");
+    }
+    const oversized = AutomationSecretValueSchema.safeParse("x".repeat(65_537));
+    expect(oversized.success).toBe(false);
+    if (!oversized.success) {
+      expect(
+        (oversized.error.issues[0] as { params?: { reason?: string } } | undefined)?.params?.reason,
+      ).toBe("automation-secret-invalid-value");
+    }
+
+    const protoParsed = AutomationSecretMapSchema.safeParse(JSON.parse('{"__proto__":"secret"}'));
+    expect(protoParsed.success).toBe(false);
+    if (!protoParsed.success) {
+      expect(protoParsed.error.issues[0]).toMatchObject({
+        code: "custom",
+        path: ["__proto__"],
+        params: { reason: "automation-secret-invalid-name" },
+      });
+    }
   });
 });

@@ -1,5 +1,5 @@
 import { sql } from "kysely";
-import { agentGrantAccess, RunnerIdSchema, utf8Prefix } from "@opensteer/core";
+import { agentGrantAccess, commandAgentStatus, RunnerIdSchema, utf8Prefix } from "@opensteer/core";
 import { requestResult } from "../request-result.js";
 import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
 import {
@@ -38,7 +38,13 @@ import { ThreadService } from "../../threads/thread-service.js";
 import { ThreadWaitService } from "../../threads/thread-wait.js";
 import type { TaskQuestionNotices } from "../../threads/task-question-notices.js";
 import { readThreadWaitSnapshot } from "@opensteer/database";
-import { withDatabaseTransaction } from "@opensteer/database";
+import {
+  commandNotFoundMessage,
+  commandSubject,
+  stillReaches,
+  storedProposal,
+  withDatabaseTransaction,
+} from "@opensteer/database";
 import { assertThreadCaller } from "@opensteer/database";
 import type { RealtimeHub } from "@opensteer/orchestration";
 import type { HostApiCommand, PersonShowMessage } from "@opensteer/protocol";
@@ -161,6 +167,7 @@ export class ProductToolHandlers {
       registry: {} as never,
       requests: () => undefined,
       administration: {} as never,
+      secretDigestKey: Buffer.alloc(0),
     });
     return this.#door.through(caller, command as unknown as HostApiCommand, act);
   }
@@ -695,8 +702,11 @@ export class ProductToolHandlers {
     const recentPlaces = (await this.#readableTabPlaces(caller, references))
       .slice(0, 10)
       .map(({ runId, tabId, title, site }) => ({ runId, tabId, title, site }));
+    const reachedPending: Request[] = [];
+    for (const request of recent.pendingRequests ?? [])
+      if (await this.#reaches(caller, request)) reachedPending.push(request);
     const pendingRequests = boundedThreadItems(
-      (recent.pendingRequests ?? []).map((request) => agentRequest(request, "list")),
+      reachedPending.map((request) => agentRequest(request, "list")),
       64 * 1024,
     );
     const context = {
@@ -1257,6 +1267,9 @@ export class ProductToolHandlers {
         threadCallerAuthority(caller),
         input.requestId!,
       );
+      // Under a connection's grant, a proposal it no longer reaches reads like nothing there.
+      if (!(await this.#reaches(caller, request)))
+        throw new OpensteerError({ code: "not_found", message: commandNotFoundMessage });
       return {
         request: {
           ...agentRequest(request, "full"),
@@ -1286,7 +1299,10 @@ export class ProductToolHandlers {
       ...(input.cursor ? { before: input.cursor } : {}),
       limit: input.limit,
     });
-    const projected = page.requests.map((request) => agentRequest(request, "list"));
+    const reached: Request[] = [];
+    for (const request of page.requests)
+      if (await this.#reaches(caller, request)) reached.push(request);
+    const projected = reached.map((request) => agentRequest(request, "list"));
     return {
       requests: projected,
       window: {
@@ -1294,6 +1310,18 @@ export class ProductToolHandlers {
         byteCount: Buffer.byteLength(JSON.stringify(productToolOutput(projected)), "utf8"),
       },
     };
+  }
+
+  /**
+   * Whether this caller may see a Request at all: always, but for a command proposal read under
+   * a connection's grant only while it still reaches what the command governs now (rule 5).
+   */
+  async #reaches(caller: AgentCaller, request: Request): Promise<boolean> {
+    if (!request.command || !callerLineage(caller)) return true;
+    const command = storedProposal(request.command);
+    return command
+      ? stillReaches(this.#store.database, caller.userId, commandSubject(caller.key), command)
+      : false;
   }
 
   async opensteer_request_withdraw({ caller, input }: ToolCall<"opensteer_request_withdraw">) {
@@ -2323,6 +2351,24 @@ function conflict(message: string, retryable = false): OpensteerError {
 const requestQuestionFullBytes = 16 * 1024;
 
 function agentRequest(request: Request, detail: "full" | "list" = "full") {
+  // A command an agent proposed reads as what was sent and where it stands: never the Home's
+  // sentence, card or anything it looked up (rule 5).
+  if (request.command) {
+    // The one value-free status every agent surface reads, and nothing of who answered or on
+    // which of the person's devices.
+    const title = `Proposal: ${request.command.type}`;
+    return {
+      id: request.id,
+      link: formatReferenceLink(request.id, title),
+      kind: request.kind,
+      status: request.status === "withdrawn" ? request.status : commandAgentStatus(request),
+      title,
+      reason: request.command.agentReason,
+      originatingThreadId: request.originatingThreadId,
+      createdAt: request.createdAt,
+      resolvedAt: request.resolvedAt,
+    };
+  }
   const rawQuestion = personQuestionRecord(request);
   const question = rawQuestion
     ? personQuestionRecordWithin(

@@ -4320,6 +4320,75 @@ html[data-tab-sorting] * {
   font-size: var(--text-sm);
 }
 
+/* A command an agent proposed: every argument, whole, with what the Home knows beside it. */
+.command-request__gives {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+}
+
+/* Everything but the sentence, who asked and the buttons scrolls, in one capped region. */
+.command-request__scroll {
+  display: grid;
+  gap: var(--space-8);
+  overflow-y: auto;
+  max-height: min(24rem, 50vh);
+}
+
+.command-request__rows {
+  display: grid;
+  gap: var(--space-4);
+  margin: 0;
+  padding: var(--space-8) var(--space-10);
+  border-radius: var(--radius-sm);
+  background: var(--fill-quiet);
+  font-size: var(--text-sm);
+}
+
+.command-request__row {
+  display: grid;
+  grid-template-columns: minmax(7rem, max-content) 1fr;
+  column-gap: var(--space-12);
+}
+
+.command-request__label {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.command-request__heading,
+.command-request__more,
+.command-request__next {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+}
+
+.command-request__value,
+.command-request__current {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+  min-width: 0;
+  margin: 0;
+  grid-column: 2;
+}
+
+.command-request__proposed {
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.command-request__name,
+.command-request__now {
+  color: var(--text-soft);
+}
+
+.command-request__current {
+  color: var(--muted);
+}
+
 /* The connected agents' live controls share the sidebar's row and the header's pill. */
 .agents-now {
   flex: none;

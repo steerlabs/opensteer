@@ -95,6 +95,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
         registry,
         scope: async () => ({ scope: null, grant: null, mode: "full-access" }),
         admit: async () => ({ answer: "now", face: 0, execution: null }),
+        secretDigestKey: Buffer.alloc(32, 0x33),
       }),
     },
   );

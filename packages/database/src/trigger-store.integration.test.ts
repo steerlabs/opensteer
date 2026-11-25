@@ -2820,8 +2820,11 @@ integration.sequential("Trigger failure auto-pause", () => {
         ? (JSON.parse(current.toString("utf8")) as Record<string, string>)
         : {};
       parsed[key] = value;
+      const names = Object.keys(parsed).sort();
       return {
-        result: Object.keys(parsed).sort(),
+        changed: true,
+        names,
+        result: names,
         sealed: { envelope: Buffer.from(JSON.stringify(parsed), "utf8"), keyVersion: 1 },
       };
     };

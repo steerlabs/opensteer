@@ -194,6 +194,43 @@ integration("workspace tabs", () => {
     for (const id of closed.tabIds) expect(await tabs.get(ownerId, id)).toBeNull();
   });
 
+  it("closes the group only while it holds exactly the members the person was shown: a tab that joined since refuses it (D4)", async () => {
+    const { tabs, ownerId, members, groupId, write } = await groupOf(2);
+    const shown = members.map((tab) => tab.id);
+    // A third tab joins after the person read the card: the group changed, and nothing closes.
+    const late = write("app", { appId: `app_${randomUUID()}` });
+    await tabs.open(late, "late");
+    await tabs.organize(ownerId, { tabIds: [late.id], group: { groupId } }, "join");
+    await expect(
+      tabs.closeGroup(ownerId, groupId, "close-shown", undefined, undefined, shown),
+    ).rejects.toMatchObject({ code: "conflict" });
+    for (const id of [...shown, late.id])
+      expect(await tabs.get(ownerId, id)).toMatchObject({ closedAt: null });
+    // As shown, it closes whole.
+    const closed = await tabs.closeGroup(ownerId, groupId, "close-all", undefined, undefined, [
+      ...shown,
+      late.id,
+    ]);
+    expect([...closed.tabIds].sort()).toEqual([...shown, late.id].sort());
+    expect(groupIn(closed.layout, groupId)).toBeUndefined();
+  });
+
+  it("refuses a close of shown members when the group no longer holds them all", async () => {
+    const { tabs, ownerId, members, groupId } = await groupOf(2);
+    await tabs.organize(ownerId, { tabIds: [members[0]!.id], group: null } as never, "leave");
+    await expect(
+      tabs.closeGroup(
+        ownerId,
+        groupId,
+        "close-stale",
+        undefined,
+        undefined,
+        members.map((tab) => tab.id),
+      ),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(await tabs.get(ownerId, members[1]!.id)).not.toBeNull();
+  });
+
   it("removes a group that is already empty", async () => {
     const { tabs, ownerId, members, outside, groupId } = await groupOf(2);
     // Closing every member one by one keeps the empty group, for Undo.
