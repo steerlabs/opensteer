@@ -1,4 +1,4 @@
-import { runTerminationUnprovenCode } from "@opensteer/core";
+import { runOutOfMemoryCode, runTerminationUnprovenCode } from "@opensteer/core";
 import {
   createToolImageStore,
   withGeneratedImageReplies,
@@ -132,6 +132,7 @@ import {
   type RunnerShutdownProof,
 } from "./execution-containment.js";
 import { warmEngineKey, WarmEnginePool, type WarmEngine } from "./warm-engine-pool.js";
+import { type MemoryKills } from "./memory-kills.js";
 import { startProgramEndpoints, type ProgramEndpointSet } from "../agent/program-endpoints.js";
 import { AutomationScriptExecutor, type AutomationScriptEvent } from "../agent/script-executor.js";
 import { WatchSupervisor } from "../triggers/watch-supervisor.js";
@@ -230,6 +231,11 @@ export interface RunnerRuntimeOptions {
   readonly plugins: typeof cacheRunPlugins;
   readonly logger?: RunnerLogger;
   readonly maxConcurrentRuns: number;
+  /**
+   * The kernel's count of the Runner's processes killed for lack of memory,
+   * where the Runner can read one (its Linux cgroup); read only when a Run failed.
+   */
+  readonly memoryKills?: MemoryKills;
   /**
    * The person stopped agents on this computer. While true, new Runs and
    * Trigger programs are refused as not ready, so the Home keeps them queued.
@@ -483,6 +489,7 @@ export class RunnerRuntime {
   readonly #logger: RunnerLogger | undefined;
   readonly #safeMessageOptions: typeof safeMessageOptions;
   readonly #maxConcurrentRuns: number;
+  readonly #memoryKills: MemoryKills | undefined;
   readonly #maxConcurrentTriggerPrograms: number;
   readonly #maxRunEventBytes: number;
   readonly #maxRunEvents: number;
@@ -702,6 +709,7 @@ export class RunnerRuntime {
     this.#logger = options.logger
       ? scrubbingLogger(options.logger, this.#safeMessageOptions.secrets)
       : undefined;
+    this.#memoryKills = options.memoryKills;
     this.#maxConcurrentRuns = boundedPositiveInteger(
       options.maxConcurrentRuns,
       1,
@@ -3977,6 +3985,15 @@ export class RunnerRuntime {
       await this.#settleLiveStreams(active).catch(() => undefined);
       if (active.interrupted)
         terminal = { data: { status: "interrupted" }, type: "run.interrupted" };
+      // A Run whose engine the kernel killed for lack of memory says so, whatever
+      // its engine's driver made of the loss. What it did until then stands.
+      if (terminal.type === "run.failed" && this.#memoryKills?.killedSinceLastLook()) {
+        terminal = failureEvent(
+          "The Run's engine was stopped by the kernel for lack of memory",
+          runOutOfMemoryCode,
+          "This Run ran out of memory and was stopped. What it did before then stays as it is.",
+        );
+      }
       if (termination !== "proven") {
         terminal = failureEvent(
           "Stopping could not be confirmed. Something from this Run may still be running on that device.",

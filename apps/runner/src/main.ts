@@ -55,6 +55,7 @@ import { prepareMessagingModule, type PreparedMessagingModule } from "./messagin
 import { shutdownSignals } from "@opensteer/shared/processControl";
 
 import type { PhoneScreenDriver } from "./computer-apps/phone-screen-driver.js";
+import { cgroupMemoryKills } from "./runtime/memory-kills.js";
 
 const RUNTIME_VERSION = "0.0.0";
 
@@ -384,6 +385,7 @@ async function startAgentsRunner(input: {
     plugins: cacheRunPlugins,
     logger,
     maxConcurrentRuns: config.maxConcurrentRuns,
+    memoryKills: cgroupMemoryKills(),
     maxConcurrentTriggerPrograms: config.maxConcurrentTriggerPrograms,
     machineAccess: machineAccessRuntimeOptions(config, applicationConfig.nativeFsHelperBinary),
     mode: config.mode,

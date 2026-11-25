@@ -820,6 +820,8 @@ export const ActiveRunStatusSchema = z.enum(nonTerminalRunStatuses);
  */
 export const runTerminationUnprovenCode = "execution_termination_unproven";
 export const harnessUsageLimitFailureCode = "harness_usage_limit";
+/** A Run whose engine the kernel killed for lack of memory (the Runner saw its cgroup count it). */
+export const runOutOfMemoryCode = "run_out_of_memory";
 
 /** Why a Run was interrupted without a person asking to stop it. */
 export const RunInterruptedCauseSchema = z.enum(["lease-lost", "engine-retired"]);

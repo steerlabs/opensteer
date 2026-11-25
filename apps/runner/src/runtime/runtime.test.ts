@@ -7087,6 +7087,96 @@ describe("harness process environment", () => {
     }
   });
 
+  it("says a Run ran out of memory when the kernel killed one of the Runner's processes for it, and reads nothing for a Run that completed", async () => {
+    const environmentId = createId("environment");
+    const driverKind = HarnessIdSchema.parse("memory-kill-test");
+    const registry = new HarnessRegistry();
+    let ending: "completed" | "failed" = "failed";
+    registry.registerDriver(
+      new FakeHarnessDriver(driverKind, () =>
+        ending === "completed"
+          ? new ScriptedHarnessSession([{ data: { status: "completed" }, type: "run.completed" }])
+          : new ScriptedHarnessSession([
+              {
+                data: {
+                  code: "opencode_harness_error",
+                  message: "OpenCode event stream failed: terminated",
+                  retryable: false,
+                  status: "failed",
+                },
+                type: "run.failed",
+              },
+            ]),
+      ),
+    );
+    let killed = true;
+    const looks = vi.fn(() => {
+      const moved = killed;
+      killed = false;
+      return moved;
+    });
+    const runtime = configuredRuntime({
+      environmentId,
+      maxConcurrentRuns: 3,
+      memoryKills: { killedSinceLastLook: looks },
+      registry,
+    });
+    try {
+      const events: RunnerOperationalReport[] = [];
+      const sink: RunnerMessageSink = {
+        send: async (message) => {
+          events.push(message);
+        },
+      };
+      const ended = async (command: ReturnType<typeof executeCommand>) => {
+        await reconcile(registry, command);
+        await expect(runtime.handleCommand(command, sink)).resolves.toEqual({
+          status: "accepted",
+        });
+        await waitUntil(() =>
+          events.some(
+            (message) =>
+              message.type === "runner.event" &&
+              message.event.runId === command.context.runId &&
+              (message.event.type === "run.failed" || message.event.type === "run.completed"),
+          ),
+        );
+        return events.find(
+          (message) =>
+            message.type === "runner.event" &&
+            message.event.runId === command.context.runId &&
+            (message.event.type === "run.failed" || message.event.type === "run.completed"),
+        );
+      };
+      // The engine died and the kernel counted a kill for memory: the Run says so, in its own words.
+      expect(await ended(executeCommand(environmentId, driverKind))).toMatchObject({
+        event: {
+          data: {
+            code: "run_out_of_memory",
+            ownerMessage:
+              "This Run ran out of memory and was stopped. What it did before then stays as it is.",
+            status: "failed",
+          },
+          type: "run.failed",
+        },
+      });
+      // A failure with no kill counted keeps its engine's own words.
+      expect(await ended(executeCommand(environmentId, driverKind))).toMatchObject({
+        event: { data: { code: "opencode_harness_error" }, type: "run.failed" },
+      });
+      expect(looks).toHaveBeenCalledTimes(2);
+      // A Run that completed costs no look at the count (rule 7).
+      ending = "completed";
+      killed = true;
+      expect(await ended(executeCommand(environmentId, driverKind))).toMatchObject({
+        event: { type: "run.completed" },
+      });
+      expect(looks).toHaveBeenCalledTimes(2);
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("keeps a proxy password out of retry messages, failure messages, and start-up errors in events, catalogs, and logs (G7)", async () => {
     const proxy = "http://alice:p@ss/word?q#g7@proxy.invalid:8080";
     const tokenProxy = "http://proxy-token-g7@proxy.invalid:8080";
@@ -8352,6 +8442,7 @@ function configuredRuntime(input: {
   readonly logger?: ConstructorParameters<typeof RunnerRuntime>[0]["logger"];
   readonly maxRunEvents?: number;
   readonly maxConcurrentRuns?: number;
+  readonly memoryKills?: ConstructorParameters<typeof RunnerRuntime>[0]["memoryKills"];
   readonly mode?: ConstructorParameters<typeof RunnerRuntime>[0]["mode"];
   readonly networkSecrets?: readonly string[];
   readonly privateStateDirectory?: string;
@@ -8376,6 +8467,7 @@ function configuredRuntime(input: {
       ...(input.containment ? { containment: input.containment } : {}),
       ...(input.logger ? { logger: input.logger } : {}),
       maxConcurrentRuns: input.maxConcurrentRuns ?? 1,
+      ...(input.memoryKills ? { memoryKills: input.memoryKills } : {}),
       ...(input.maxRunEvents === undefined ? {} : { maxRunEvents: input.maxRunEvents }),
       ...(input.mode === undefined ? {} : { mode: input.mode }),
       ...(input.networkSecrets === undefined ? {} : { networkSecrets: input.networkSecrets }),
