@@ -47,7 +47,7 @@ function release(name: string, steps: Steps = {}) {
   files["common.sh"] = `release_files=(${releaseFiles.join(" ")})\n# release ${name}: common.sh\n`;
   files["opensteer-home"] = `#!/usr/bin/env bash
 [[ $OPENSTEER_HOME_SWITCHING == "$(basename "$(dirname "$0")")" ]] || exit 9
-printf 'release ${name} %s\\n' "$1" >> "${log}"
+printf 'release ${name} %s\\n' "$*" >> "${log}"
 case $1 in
   release-prepare)
     printf 'sha256:%s example.test/${name.toLowerCase()}:pulled\\n' "$(printf '${name.toLowerCase()}%.0s' {1..64})" > "$(dirname "$0")/images.ids"
@@ -162,9 +162,45 @@ function pinned(files: Record<string, string>, version?: string) {
 }
 
 /**
- * The update as its timer runs it: the running release's own code (sourced from `current`, as
- * opensteer-home does), with Docker, the database and the disk stood in for.
+ * What the Home's own code runs with here: Docker, the database, the disk and the account stood in
+ * for, then `fault`. The updater sources it, and so does each step a release with this checkout's
+ * code runs in its own process (as its opensteer-home would, which runs only as root); a stand-in
+ * release runs its own command.
  */
+function standIns(fault = "") {
+  const path = join(work, "stand-ins.sh");
+  writeFileSync(
+    path,
+    `managed_feed_resolution() { echo ok; }
+sync() { :; } # macOS syncs every disk at each call
+fetch_manifest() { cp "${join(work, "release.json")}" "$2"; }
+${configured}
+compose() {
+  [[ $1 != down || ! -e "${join(work, "stop-at-down")}" ]] || kill -KILL $BASHPID
+  printf 'compose %s (%s)\\n' "$*" "\${release_dir##*/}" >> "${log}"
+  case $1 in
+    config) configured "${postgres}" "\${release_env:-$release_dir/images.env}" ;;
+    exec) case "$*" in *psql*) echo 1048576 ;; *pg_dump*) echo 'dump of the database' ;; esac ;;
+  esac
+}
+${dockerStub(work, log)}
+df() { printf 'Filesystem 1M-blocks Used Available Capacity Mounted\\nstand-in 100000 1 %s 1%% /\\n' "$(cat "${join(work, "free")}")"; }
+start_pod() { printf 'start_pod (%s)\\n' "\${release_dir##*/}" >> "${log}"; }
+run_release() {
+  if grep -q '^gate_release()' "$1/common.sh"; then
+    OPENSTEER_HOME_SWITCHING=\${1##*/} bash -c 'source "$1/common.sh"; source "$1/update.sh"; source "$2"; "\${3/release-/}_release" "\${@:4}"' step "$1" "${path}" "\${@:2}"
+  else
+    OPENSTEER_HOME_SWITCHING=\${1##*/} "$1/opensteer-home" "\${@:2}"
+  fi
+}
+${fault}
+`,
+  );
+  return path;
+}
+
+/** The update as its timer runs it: the running release's own code (sourced from `current`, as
+ * opensteer-home does), with the stand-ins above. */
 function update(
   release: object,
   args = "scheduled-update",
@@ -177,26 +213,11 @@ function update(
     "bash",
     [
       "-c",
-      `source "$1/common.sh"; source "$1/update.sh"; source "$1/machine-status.sh"
-       managed_feed_resolution() { echo ok; }
-       sync() { :; } # macOS syncs every disk at each call
-       fetch_manifest() { cp "${join(work, "release.json")}" "$2"; }
-       ${configured}
-       compose() {
-         [[ $1 != down || ! -e "${join(work, "stop-at-down")}" ]] || kill -KILL $BASHPID
-         printf 'compose %s (%s)\\n' "$*" "\${release_dir##*/}" >> "${log}"
-         case $1 in
-           config) configured "${postgres}" "\${release_env:-$release_dir/images.env}" ;;
-           exec) case "$*" in *psql*) echo 1048576 ;; *pg_dump*) echo 'dump of the database' ;; esac ;;
-         esac
-       }
-       ${dockerStub(work, log)}
-       df() { printf 'Filesystem 1M-blocks Used Available Capacity Mounted\\nstand-in 100000 1 %s 1%% /\\n' "$(cat "${join(work, "free")}")"; }
-       start_pod() { printf 'start_pod (%s)\\n' "\${release_dir##*/}" >> "${log}"; }
-       ${fault}
+      `source "$1/common.sh"; source "$1/update.sh"; source "$1/machine-status.sh"; source "$2"
        ${asOpensteerHomeCallsUpdate(`${args}${manifestPath ? ` "${manifestPath}"` : ""}`)}`,
       "update",
       join(home, "current"),
+      standIns(fault),
     ],
     {
       encoding: "utf8",
@@ -797,13 +818,7 @@ it("starts each release with the limits its own code computes: an update brings 
   // A Cloud Computer that runs A, whose code gave the Host 640 MiB on a 4 GiB machine.
   writeFileSync(join(home, "browser-pool"), "");
   const a = join(home, "releases", running);
-  writeFileSync(
-    join(a, "common.sh"),
-    readFileSync(join(a, "common.sh"), "utf8").replace(
-      /host=\$\(clamp \$\(\(budget \/ 8\)\) \d+ 2048\)/u,
-      "host=$(clamp $((budget / 8)) 640 2048)",
-    ),
-  );
+  oldSplitIn(a);
   const b = join(home, "releases", "1.2.4-bbbbbb");
   mkdirSync(b);
   for (const file of releaseFiles) cpSync(join(source, file), join(b, file));
@@ -889,6 +904,149 @@ env() {
     `${running} up OPENSTEER_HOME_LIMIT_HOST_MEMORY=640m`,
   ]);
   expect(current()).toBe(`releases/${running}`);
+});
+
+/**
+ * A Cloud Computer's pod as Docker Compose keeps it, stood in for: each release's own compose()
+ * and start_pod() run, from that release's own files, on a 4 GiB machine; Compose records each
+ * `up` with the Host's limit and creates the Host only when what it is asked for differs from the
+ * Host it runs (never under --no-recreate), as Compose recreates a container whose configuration
+ * changed. The switch of `current` is marked where it happens.
+ */
+function composeStandIn(composed: string) {
+  const pod = join(work, "pod");
+  return `eval "stub_$(declare -f compose)"
+eval "$(source "$release_dir/common.sh"; declare -f compose start_pod)"
+machine_size() { echo 3908 2; }
+prepare_release() { :; }
+prepare_runner_apparmor() { :; }
+host_pid() { echo 42; }
+apply_firewall() { :; }
+check_firewall() { :; }
+pod_healthy() { :; }
+readlink() { if [[ $1 == /proc/* ]]; then echo 'net:[1]'; else command readlink "$@"; fi; }
+eval "real_$(declare -f switch_link)"
+switch_link() {
+  real_switch_link "$@" || return
+  [[ $2 != */current ]] || printf 'switched to %s\\n' "\${1##*/}" >> "${composed}"
+}
+env() {
+  local limits=() file='' sub='' asked
+  while [[ $1 != docker ]]; do [[ $1 != OPENSTEER_HOME_LIMIT_HOST_MEMORY=* ]] || limits+=("$1"); shift; done
+  shift 2
+  while (($#)); do
+    case $1 in
+      -f) [[ -n $file ]] || file=$2; shift 2 ;;
+      --env-file | --project-name | --project-directory) shift 2 ;;
+      *) sub=$1; break ;;
+    esac
+  done
+  asked="$(basename "$(dirname "$file")") \${limits[*]}"
+  case $sub in
+    up)
+      printf '%s up %s\\n' "\${asked%% *}" "\${limits[*]}" >> "${composed}"
+      if [[ ! -s "${pod}" ]] || [[ " $* " != *" --no-recreate "* && $(cat "${pod}") != "$asked" ]]; then
+        printf 'creates the Host: %s\\n' "$asked" >> "${composed}"
+        printf '%s' "$asked" > "${pod}"
+      fi ;;
+    down) printf '%s down\\n' "\${asked%% *}" >> "${composed}"; rm -f -- "${pod}" ;;
+    *) stub_compose "$@" ;;
+  esac
+}`;
+}
+
+/** Release A gives the Host 640 MiB on a 4 GiB machine; this checkout's code gives it 1536 MiB. */
+function oldSplitIn(release: string) {
+  writeFileSync(
+    join(release, "common.sh"),
+    readFileSync(join(release, "common.sh"), "utf8").replace(
+      /host=\$\(clamp \$\(\(budget \/ 8\)\) \d+ 2048\)/u,
+      "host=$(clamp $((budget / 8)) 640 2048)",
+    ),
+  );
+}
+
+const sourceFiles = () =>
+  Object.fromEntries(releaseFiles.map((file) => [file, readFileSync(join(source, file), "utf8")]));
+
+it("hands the Home to the release it switched to: after an update only the new release's own code starts it", () => {
+  // A Cloud Computer that runs A, with A's split, updates to B, this checkout's code.
+  writeFileSync(join(home, "browser-pool"), "");
+  oldSplitIn(join(home, "releases", running));
+  const composed = join(work, "composed");
+  writeFileSync(join(work, "pod"), `${running} OPENSTEER_HOME_LIMIT_HOST_MEMORY=640m`);
+  pinned(sourceFiles());
+  const result = update(newer, "scheduled-update", undefined, composeStandIn(composed));
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain("Updated Home to 1.2.4.");
+  const b = current().slice("releases/".length);
+  const steps = readFileSync(composed, "utf8").trim().split("\n");
+  expect(steps).toEqual([
+    `${running} down`,
+    // B's gate, by B's own code: the Host created once, with B's split.
+    `${b} up OPENSTEER_HOME_LIMIT_HOST_MEMORY=1536m`,
+    `creates the Host: ${b} OPENSTEER_HOME_LIMIT_HOST_MEMORY=1536m`,
+    `${b} up OPENSTEER_HOME_LIMIT_HOST_MEMORY=1536m`,
+    `switched to ${b}`,
+    // After the switch, B's own code owns the Home: the pod its gate started is the one asked for,
+    // so Compose changes nothing (no second Host, no second drop of /healthz).
+    `${b} up OPENSTEER_HOME_LIMIT_HOST_MEMORY=1536m`,
+    `${b} up OPENSTEER_HOME_LIMIT_HOST_MEMORY=1536m`,
+  ]);
+  const after = steps.slice(steps.indexOf(`switched to ${b}`));
+  expect(after.filter((step) => step.includes("640m"))).toEqual([]);
+  expect(steps.filter((step) => step.startsWith("creates the Host"))).toHaveLength(1);
+});
+
+it("hands the Home to the release it went back to: after a rollback only that release's own code starts it", () => {
+  // A Cloud Computer that runs B (this checkout's code, B's split) goes back to A (A's split).
+  writeFileSync(join(home, "browser-pool"), "");
+  const a = join(home, "releases", running);
+  oldSplitIn(a);
+  const b = "1.2.4-bbbbbb";
+  mkdirSync(join(home, "releases", b));
+  for (const file of releaseFiles) cpSync(join(source, file), join(home, "releases", b, file));
+  writeFileSync(join(home, "releases", b, "images.env"), selection("1.2.4", "b"));
+  rmSync(join(home, "current"));
+  symlinkSync(`releases/${b}`, join(home, "current"));
+  symlinkSync(`releases/${running}`, join(home, "previous"));
+  const composed = join(work, "composed");
+  writeFileSync(join(work, "pod"), `${b} OPENSTEER_HOME_LIMIT_HOST_MEMORY=1536m`);
+  const back = spawnSync(
+    "bash",
+    [
+      "-c",
+      `source "$1/common.sh"; source "$1/update.sh"; source "$2"
+       rollback_home`,
+      "rollback",
+      join(home, "current"),
+      standIns(composeStandIn(composed)),
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        OPENSTEER_HOME_DIR: home,
+        OPENSTEER_HOME_UNIT_DIR: join(work, "units"),
+        PATH: `${work}:${process.env.PATH}`,
+      },
+    },
+  );
+  expect(back.status, back.stderr).toBe(0);
+  expect(back.stdout).toContain("Back on the previous release (1.2.3).");
+  const steps = readFileSync(composed, "utf8").trim().split("\n");
+  expect(steps).toEqual([
+    `${b} down`,
+    `${running} up OPENSTEER_HOME_LIMIT_HOST_MEMORY=640m`,
+    `creates the Host: ${running} OPENSTEER_HOME_LIMIT_HOST_MEMORY=640m`,
+    `${running} up OPENSTEER_HOME_LIMIT_HOST_MEMORY=640m`,
+    `switched to ${running}`,
+    `${running} up OPENSTEER_HOME_LIMIT_HOST_MEMORY=640m`,
+    `${running} up OPENSTEER_HOME_LIMIT_HOST_MEMORY=640m`,
+  ]);
+  const after = steps.slice(steps.indexOf(`switched to ${running}`));
+  expect(after.filter((step) => step.includes("1536m"))).toEqual([]);
+  expect(steps.filter((step) => step.startsWith("creates the Host"))).toHaveLength(1);
 });
 
 it("names a release's tagged images by their ids, by tags no release can move", () => {
@@ -1396,10 +1554,13 @@ it("remembers every release that failed here, keeping the first one's line and d
   expect(readFileSync(join(failed, "database.dump"), "utf8")).toBe("pre-migration dump\n");
 });
 
+/** B is this checkout's code, its preparation and gate stood in for: after the switch, its own code owns the Home. */
+const ownedByB = "prepare_release() { :; }; gate_release() { :; }";
+
 it("switches a Home a person stopped and leaves it stopped", () => {
   writeFileSync(join(work, "main-state"), "inactive\n");
-  pinned(release("B"));
-  const result = update(newer);
+  pinned(sourceFiles());
+  const result = update(newer, "scheduled-update", undefined, ownedByB);
   expect(result.status, result.stderr).toBe(0);
   expect(said()).toContain(`compose down (${current().slice("releases/".length)})`);
   expect(said()).not.toContain("start_pod");
@@ -1408,12 +1569,37 @@ it("switches a Home a person stopped and leaves it stopped", () => {
 
 it("starts a Home whose start had failed through its main unit after the switch", () => {
   writeFileSync(join(work, "main-state"), "failed\n");
-  pinned(release("B"));
-  const result = update(newer);
+  pinned(sourceFiles());
+  const result = update(newer, "scheduled-update", undefined, ownedByB);
   expect(result.status, result.stderr).toBe(0);
   expect(said()).toContain("systemctl start --no-block opensteer-home.service");
   expect(said()).not.toContain("start_pod");
 });
+
+it.each([
+  ["active", ""],
+  ["inactive", "inactive\n"],
+  ["failed", "failed\n"],
+])(
+  "tells the release it switched to that the main unit was %s, and leaves the Home to that release's own command",
+  (told, state) => {
+    if (state) writeFileSync(join(work, "main-state"), state);
+    pinned(release("B"));
+    const result = update(newer);
+    expect(result.status, result.stderr).toBe(0);
+    expect(said()).toContain(`release B release-own ${told}`);
+    // Nothing of the code that switched starts or stops the Home after B's gate.
+    expect(said().slice(said().indexOf("release B release-gate"))).not.toMatch(
+      /start_pod|compose down \(|systemctl start/u,
+    );
+    // This checkout's own command takes the step only from a switch to its release.
+    const command = readFileSync(join(source, "opensteer-home"), "utf8");
+    expect(command).toContain(
+      '[[ $# == 2 && $2 =~ ^(active|inactive|failed)$ && ${OPENSTEER_HOME_SWITCHING:-} == "${release_dir##*/}" ]] ||',
+    );
+    expect(command).toContain('own_release "$2"');
+  },
+);
 
 it("does not take Docker's failed answer for a Home that is down", () => {
   writeFileSync(join(work, "docker-fails"), "");

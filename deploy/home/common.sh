@@ -966,8 +966,29 @@ pod_state() {
   fi
 }
 
-# run_release RELEASE STEP: RELEASE's own code runs a step of a switch to it, under its caller's lock.
-run_release() { OPENSTEER_HOME_SWITCHING=${1##*/} "$1/opensteer-home" "$2"; }
+# run_release RELEASE STEP [ARG]: RELEASE's own code runs a step of a switch to it, in its own
+# process under its caller's lock (the step takes no lock).
+run_release() { OPENSTEER_HOME_SWITCHING=${1##*/} "$1/opensteer-home" "${@:2}"; }
+
+# own_home STATE: after a switch, or one undone, the current release's own code owns the Home
+# (release-own), never the functions of the code that switched: those compute their own release's
+# limits, which another release's Compose files would then run with.
+own_home() {
+  local current
+  current=$(current_release) && run_release "$current" release-own "$1"
+}
+
+# own_release STATE (release-own): this release runs as the main unit had the Home: running while
+# the unit is active (a pod its gate already started as asked is left as it is: Compose changes
+# nothing); stopped when a person stopped it; started through the unit when its last start had
+# failed, so that systemd owns what runs.
+own_release() {
+  case $1 in
+    inactive) compose down ;;
+    failed) systemctl start --no-block "$(installed_unit_prefix).service" ;;
+    *) start_pod ;;
+  esac
+}
 
 # prepare_release (release-prepare): this release readied while another runs: every image its own
 # Compose files name obtained and here, its sandbox policies read from them, its units checked.
@@ -1194,7 +1215,7 @@ rerun_installed_home() {
   if ((status != 0)); then
     echo 'The new release did not start. Putting the previous one back.' >&2
     ((status == 1 || status == 5)) || fail 'The previous one is not back yet: the next start puts it back.'
-    if $running && ! start_pod; then fail 'The previous release did not start again either. See: sudo opensteer-home logs host'; fi
+    if $running && ! own_home active; then fail 'The previous release did not start again either. See: sudo opensteer-home logs host'; fi
     fail 'The Home is back on its previous release.'
   fi
   release_dir=$to

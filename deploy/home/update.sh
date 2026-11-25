@@ -49,17 +49,6 @@ main_state() {
   case $state in inactive | failed) echo "$state" ;; *) echo active ;; esac
 }
 
-# own_home STATE: after a switch, the current release runs as the main unit had the Home: running
-# while the unit is active; stopped when a person stopped it; started through the unit when its
-# last start had failed, so that systemd owns what runs.
-own_home() {
-  case $1 in
-    inactive) release_dir=$(current_release) compose down ;;
-    failed) systemctl start --no-block "$(installed_unit_prefix).service" ;;
-    *) release_dir=$(current_release) start_pod ;;
-  esac
-}
-
 # settled VERSION: the Home runs the release its feed names; a result left from before (waiting, a
 # failed check, an update whose result was never written) says so now.
 settled() {
