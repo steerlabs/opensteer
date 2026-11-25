@@ -55,8 +55,13 @@ function storeOf(session: object): Store {
   return store;
 }
 
+/**
+ * A record's key. The URL goes without its #fragment: did-start-navigation and will-redirect carry
+ * it, Chromium's loader (onBeforeRedirect) does not, and the rule never reads it.
+ */
 function key(webContentsId: number, frameTreeNodeId: number, url: string): string {
-  return `${webContentsId}:${frameTreeNodeId}:${url}`;
+  const fragment = url.indexOf("#");
+  return `${webContentsId}:${frameTreeNodeId}:${fragment < 0 ? url : url.slice(0, fragment)}`;
 }
 
 function put<K, V>(map: Map<K, Timed<V>>, id: K, value: V): void {

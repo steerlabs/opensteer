@@ -121,6 +121,38 @@ describe("Chromium's rewrite of an extension's dynamic address", () => {
     });
   });
 
+  it("matches a navigation's URL with its #fragment to the loader's URL without it", () => {
+    const session = {};
+    // A hash route: did-start-navigation and will-redirect carry the fragment, Chromium's loader
+    // (onBeforeRedirect) does not.
+    extensionNavigationStarted(session, 1, 7, `${dynamic}/app.html#/settings`, {
+      initiatorOrigin: `chrome-extension://${id}`,
+    });
+    recordExtensionRedirect(session, 1, 7, `${dynamic}/app.html`, `${staticBase}/app.html`);
+    expect(takeExtensionRedirect(session, 1, 7, `${staticBase}/app.html#/settings`)).toEqual({
+      dynamicHop: true,
+      judge: { kind: "initiator", origin: `chrome-extension://${id}` },
+    });
+    // A 302 whose Location carries #token=…
+    recordExtensionRedirect(session, 1, 7, "https://trusted.test/oauth", `${dynamic}/dyn.html`);
+    expect(takeExtensionRedirect(session, 1, 7, `${dynamic}/dyn.html#token=1`)).toEqual({
+      dynamicHop: false,
+      from: "https://trusted.test",
+    });
+    extensionRedirectedIntoDynamic(
+      session,
+      1,
+      7,
+      `${dynamic}/dyn.html#token=1`,
+      "https://trusted.test",
+    );
+    recordExtensionRedirect(session, 1, 7, `${dynamic}/dyn.html`, `${staticBase}/dyn.html`);
+    expect(takeExtensionRedirect(session, 1, 7, `${staticBase}/dyn.html#token=1`)).toEqual({
+      dynamicHop: true,
+      judge: { kind: "redirect", origin: "https://trusted.test" },
+    });
+  });
+
   it("follows a subresource request by its id and address, once", () => {
     const session = {};
     recordDynamicExtensionRequestHop(session, 42, `${staticBase}/dyn.txt`);

@@ -5750,6 +5750,37 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
           intoAlias: false,
           hop: false,
         });
+      // A #fragment (a hash route, a token) is on the navigation's URL and not on the loader's.
+      started(`${dynamicHost}/dyn.html#/settings`, own);
+      beforeRedirect({
+        webContentsId: webContentsIdOf(view.webContents),
+        frame: { frameTreeNodeId: 1 },
+        url: `${dynamicHost}/dyn.html`,
+        redirectURL: page("dyn.html"),
+        resourceType: "mainFrame",
+      });
+      expect.soft(refuses(page("dyn.html#/settings"), null, own), "a hash route").toBe(false);
+      started("https://trusted.test/oauth", trusted);
+      beforeRedirect({
+        webContentsId: webContentsIdOf(view.webContents),
+        frame: { frameTreeNodeId: 1 },
+        url: "https://trusted.test/oauth",
+        redirectURL: `${dynamicHost}/dyn.html`,
+        resourceType: "mainFrame",
+      });
+      expect
+        .soft(refuses(`${dynamicHost}/dyn.html#token=1`, null, trusted), "into it with #token")
+        .toBe(false);
+      beforeRedirect({
+        webContentsId: webContentsIdOf(view.webContents),
+        frame: { frameTreeNodeId: 1 },
+        url: `${dynamicHost}/dyn.html`,
+        redirectURL: page("dyn.html"),
+        resourceType: "mainFrame",
+      });
+      expect
+        .soft(refuses(page("dyn.html#token=1"), null, trusted), "its hop with #token")
+        .toBe(false);
       // M3a: a navigation that ends or gives way leaves no record a later redirect can use.
       started(`${dynamicHost}/nonwar.html`);
       beforeRedirect({
