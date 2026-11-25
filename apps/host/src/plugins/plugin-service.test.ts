@@ -7,6 +7,7 @@ import { expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import type { RunnerIdentity } from "@opensteer/orchestration";
 import { HostMessageSchema } from "./engine-protocol.js";
+import { engineInventoryEmpty } from "./engine-storage.js";
 import { PluginService } from "./plugin-service.js";
 import { PluginStopCoordinator } from "./plugin-stop-coordinator.js";
 
@@ -16,8 +17,35 @@ const active = vi.hoisted(() => new Map<string, string>());
 vi.mock("./engine-storage.js", () => ({
   engineActiveVersions: async () => active,
   engineDemand: async () => ({ busy: false, dueInMs: null }),
-  engineInventoryEmpty: async () => false,
+  engineInventoryEmpty: vi.fn(async () => false),
 }));
+
+it("lists through the engine when the installed inventory cannot be read", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-inventory-test-"));
+  const service = new PluginService({
+    processEntry: new URL("file:///unused.js"),
+    databaseUrl: "postgres://unused.invalid/unused",
+    dataDirectory: directory,
+    owner: "owner",
+    credentialKey: new Uint8Array(32),
+    origin: "https://fixture.invalid",
+  });
+  const caller = { caller: "personal", mode: "automatic" } as const;
+  const request = vi.spyOn(service, "request").mockResolvedValue([]);
+  vi.mocked(engineInventoryEmpty).mockRejectedValueOnce(new Error("Inventory read failed"));
+  try {
+    await expect(service.list({}, caller)).resolves.toEqual([]);
+    expect(engineInventoryEmpty).toHaveBeenCalledWith(
+      "postgres://unused.invalid/unused",
+      "apps",
+      "owner",
+    );
+    expect(request).toHaveBeenCalledExactlyOnceWith("list", {}, caller, undefined, undefined);
+  } finally {
+    await service.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 it("makes the skill record follow the active version, and repairs a refresh that failed", async () => {
   const plugin = "app_252169e9-de1b-4743-a005-50b6ed1b1fa0";

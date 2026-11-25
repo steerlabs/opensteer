@@ -1241,6 +1241,12 @@ test("Disconnect settles after the same Mac reboots and keeps unverified plugin 
   }
 });
 
+// SIGUSR2 terminates the test engine without its shutdown handler. These cases
+// need crash recovery. SIGKILL has its own test for suppressing a restart.
+function crashEngine(pid: number) {
+  process.kill(pid, "SIGUSR2");
+}
+
 test("Disconnect waits for an exited plugin engine's Home callback and recovers the witness after restart", async () => {
   const caller = await connect("full-access", "read-write");
   const entered = Promise.withResolvers<void>();
@@ -1279,7 +1285,7 @@ test("Disconnect waits for an exited plugin engine's Home callback and recovers 
       namespace: expect.any(String),
       launchId: expect.any(String),
     });
-    process.kill(health.pid, "SIGKILL");
+    crashEngine(health.pid);
     await expect(deadline(observed, "Plugin did not report contact loss")).resolves.toMatchObject({
       status: "unknown",
     });
@@ -1352,7 +1358,7 @@ test("a lost plugin reply after a provider write settles the first call and its 
       ]),
       "Plugin did not reach its provider",
     );
-    process.kill(health.pid, "SIGKILL");
+    crashEngine(health.pid);
     const first = await deadline(observed, "Plugin did not return an unknown receipt");
     expect(first).toMatchObject({
       status: "unknown",
@@ -2737,7 +2743,7 @@ test("engine loss interrupts open and answered-but-unconsumed waits", async () =
     void executions.recover().then(() => lost.resolve(), lost.reject);
   });
   const health = await service.health({}, ownerContext);
-  process.kill(health.pid, "SIGKILL");
+  crashEngine(health.pid);
   await deadline(lost.promise, "Engine loss did not recover executions");
   for (const result of [pending, answered]) {
     const requestId = RequestIdSchema.parse(result.requestId);

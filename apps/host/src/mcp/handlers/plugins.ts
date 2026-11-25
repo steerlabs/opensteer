@@ -90,11 +90,19 @@ export class PluginToolHandlers {
    * tools yet; this list is where it appears, blocked with why.
    */
   async list(c: ToolCall<"opensteer_plugin_list">) {
-    const context = this.options.authority.admit(c.caller);
-    const settings = await this.options.settings.settings(c.caller.userId);
+    const caller = c.caller;
+    const context = this.options.authority.admit(caller);
+    const settings = await this.options.settings.settings(caller.userId);
+    // Local providers are listed independently of the installed plugin engine.
+    const listInstalled =
+      caller.kind !== "connection" ||
+      caller.grant.scope === "everything" ||
+      caller.grant.resources.some(
+        (resource) => resource.kind === "plugin" && resource.target.kind === "installed",
+      );
     const broadDiscovery = c.discoveryInput !== undefined && c.discoveryInput.id === undefined;
     let pluginsUnavailable =
-      broadDiscovery && this.options.service.state().status === "unavailable";
+      listInstalled && broadDiscovery && this.options.service.state().status === "unavailable";
     const onEngineUnavailable = (error: unknown) => {
       if (
         !broadDiscovery ||
@@ -106,12 +114,11 @@ export class PluginToolHandlers {
       return [];
     };
     const [plugins, local] = await Promise.all([
-      pluginsUnavailable
+      !listInstalled || pluginsUnavailable
         ? []
         : this.options.service.list({}, context, c.signal).catch(onEngineUnavailable),
       c.input.pluginId ? [] : (this.options.localProviders?.providers(context) ?? []),
     ]);
-    const caller = c.caller;
     const access = (id: string) => {
       const configured = settings.find((s) => s.pluginId === id)?.access ?? "all";
       if (caller.kind !== "connection" || configured === "off") return configured;
