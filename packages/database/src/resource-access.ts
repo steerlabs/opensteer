@@ -14,6 +14,8 @@ import {
   chatEndedMessage,
   requestOptionDeclines,
   intersectResourceAccess,
+  isAllowedConnectionPageUrl,
+  isExtensionUrl,
   minThreadAccessMode,
   OpensteerError,
   type AgentGrant,
@@ -101,6 +103,22 @@ export function lineageAllowsPersonalContext(
   connection: Pick<AgentConnectionAuthority, "bridgeSenders"> | null,
 ): boolean {
   return connection?.bridgeSenders !== "anyone";
+}
+
+/**
+ * Whether an admitted execution may persist or remove profile Chrome extensions via CDP
+ * (`Extensions.loadUnpacked`, `Extensions.uninstall`): Full access with personal context on the
+ * person's own lineage, the same standing under which the door runs a command at once.
+ */
+export function executionMayManageExtensions(
+  execution: Pick<ExecutionAuthority, "actor" | "agentConnection" | "mode">,
+): boolean {
+  return (
+    execution.actor === "native" &&
+    execution.agentConnection === null &&
+    execution.mode === "full-access" &&
+    lineageAllowsPersonalContext(execution.agentConnection)
+  );
 }
 
 /**
@@ -750,6 +768,39 @@ export function authorizeTarget(
 }
 
 /**
+ * May this admitted execution know of a browser page at this address? A page on an extension's
+ * address does not exist to a connection's work (its own sessions and the Runs of its tasks): it
+ * is neither listed nor reached, and reads exactly as an absent page. The person and their own
+ * agents, which no connection leads, see every page.
+ */
+export function authorizePageAddress(
+  // The connection that leads the work, if any: its admitted execution's, or a caller's lineage.
+  execution: { readonly agentConnection: object | null },
+  url: unknown,
+): boolean {
+  return execution.agentConnection === null || !isExtensionUrl(url);
+}
+
+/**
+ * May this admitted execution read a recorded place? The page rule judges only a browser tab's
+ * place: a tab's place keeps only its page's web origin, and records none for a page without one,
+ * an extension's page among them, so a connection's work reads a tab's place only where it has a
+ * web origin, past rows included (P3). A Mac app window's or a phone screen's place has no address
+ * and is not a page: it is read as any place (P9). The person and their own agents read every
+ * place.
+ */
+export function authorizePlaceSite(
+  execution: { readonly agentConnection: object | null },
+  place: { readonly kind: string; readonly site: string | null },
+): boolean {
+  return (
+    execution.agentConnection === null ||
+    place.kind !== "page" ||
+    (place.site !== null && authorizePageAddress(execution, place.site))
+  );
+}
+
+/**
  * Direct operations need a consent the person made on the grant screen. A connection that kept
  * its old `everything` at consent version 1 may delegate as before, but not act directly.
  */
@@ -1100,6 +1151,14 @@ export async function admitCommand(
       ? await admit(database)
       : await withDatabaseTransaction(database, admit);
   const connection = execution.agentConnection;
+  // Connected agents (and Runs in a connected agent's lineage) never open non-HTTP(S) pages as tabs.
+  if (
+    connection &&
+    input.command.type === "tab.open" &&
+    input.command.target.kind === "page" &&
+    !isAllowedConnectionPageUrl(input.command.target.url)
+  )
+    throw forbidden("Use about:blank or an HTTP(S) URL without credentials.");
   // The same holding rule the listing reads, where it is admitted (and readmitted at the effect).
   if (connection && !lineageAllowsPersonalContext(connection) && anyoneChatHoldsNo(row))
     return { answer: "not_found", face: undefined, execution };

@@ -27,6 +27,15 @@ const TokenFileSchema = z.object({
   project_id: z.string().optional(),
   refresh_token: z.string().min(1),
 });
+// Antigravity 1.5 writes OAuth tokens to `antigravity-oauth-token` without an
+// OAuth client secret, so we use its access token directly while it is valid.
+const CliTokenFileSchema = z.object({
+  token: z.object({
+    access_token: z.string().min(1),
+    expiry: z.string().optional(),
+    refresh_token: z.string().optional(),
+  }),
+});
 const TokenResponseSchema = z.object({
   access_token: z.string().min(1),
   expires_in: z.number().positive(),
@@ -434,16 +443,37 @@ async function requestJson(
   return jsonResponse(await request(url, { ...init, redirect: "manual", signal }));
 }
 
-/** Reads Google's account quota without exposing or retaining OAuth credentials. */
-export async function readAntigravityUsage(input: {
-  readonly authMethod: AntigravityAuthMethod;
-  readonly fetch?: typeof fetch;
-  readonly now?: number;
+async function resolveAccessToken(input: {
+  readonly cliTokenPath?: string;
+  readonly now: number;
+  readonly request: typeof fetch;
   readonly signal: AbortSignal;
   readonly tokenPath: string;
-}): Promise<HarnessObservedUsage | undefined> {
-  if (input.authMethod !== "oauth-personal" && input.authMethod !== "oauth-business") {
-    return undefined;
+}): Promise<{ readonly accessToken: string; readonly projectId?: string } | undefined> {
+  if (input.cliTokenPath) {
+    let rawCliToken: string | undefined;
+    try {
+      rawCliToken = await readFile(input.cliTokenPath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
+    }
+    if (rawCliToken !== undefined) {
+      // A 1.5 CLI token file is authoritative for this profile: never silently fall back
+      // to a potentially stale or different-account legacy `acp_token.json` when it expires.
+      try {
+        const cliToken = CliTokenFileSchema.parse(JSON.parse(rawCliToken));
+        const expiryMs = cliToken.token.expiry ? Date.parse(cliToken.token.expiry) : Number.NaN;
+        if (
+          !cliToken.token.expiry ||
+          (Number.isFinite(expiryMs) && expiryMs > input.now + 30_000)
+        ) {
+          return { accessToken: cliToken.token.access_token };
+        }
+      } catch {
+        return undefined;
+      }
+      return undefined;
+    }
   }
   let token: z.infer<typeof TokenFileSchema>;
   try {
@@ -451,12 +481,9 @@ export async function readAntigravityUsage(input: {
   } catch {
     return undefined;
   }
-  const now = input.now ?? Date.now();
-  const request = input.fetch ?? fetch;
-  const signal = AbortSignal.any([input.signal, AbortSignal.timeout(30_000)]);
   const refreshed = TokenResponseSchema.parse(
     await requestJson(
-      request,
+      input.request,
       "https://oauth2.googleapis.com/token",
       {
         body: new URLSearchParams({
@@ -468,15 +495,44 @@ export async function readAntigravityUsage(input: {
         headers: { "content-type": "application/x-www-form-urlencoded" },
         method: "POST",
       },
-      signal,
+      input.signal,
     ),
   );
+  return {
+    accessToken: refreshed.access_token,
+    ...(token.project_id ? { projectId: token.project_id } : {}),
+  };
+}
+
+/** Reads Google's account quota without exposing or retaining OAuth credentials. */
+export async function readAntigravityUsage(input: {
+  readonly authMethod: AntigravityAuthMethod;
+  readonly cliTokenPath?: string;
+  readonly fetch?: typeof fetch;
+  readonly now?: number;
+  readonly signal: AbortSignal;
+  readonly tokenPath: string;
+}): Promise<HarnessObservedUsage | undefined> {
+  if (input.authMethod !== "oauth-personal" && input.authMethod !== "oauth-business") {
+    return undefined;
+  }
+  const now = input.now ?? Date.now();
+  const request = input.fetch ?? fetch;
+  const signal = AbortSignal.any([input.signal, AbortSignal.timeout(30_000)]);
+  const credential = await resolveAccessToken({
+    ...(input.cliTokenPath ? { cliTokenPath: input.cliTokenPath } : {}),
+    now,
+    request,
+    signal,
+    tokenPath: input.tokenPath,
+  });
+  if (!credential) return undefined;
   const headers = {
-    Authorization: `Bearer ${refreshed.access_token}`,
+    Authorization: `Bearer ${credential.accessToken}`,
     "content-type": "application/json",
     "user-agent": `antigravity/hub/2.24.0 (aidev_client; os_type=${process.platform}; arch=${process.arch})`,
   };
-  const body = JSON.stringify(token.project_id ? { project: token.project_id } : {});
+  const body = JSON.stringify(credential.projectId ? { project: credential.projectId } : {});
   const fetchOperation = async <T>(
     operation: string,
     parse: (value: unknown) => T,

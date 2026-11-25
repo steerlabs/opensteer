@@ -112,6 +112,7 @@ export interface AcpProtocolClient {
     sessionId: string,
     blocks: readonly AcpPromptBlock[],
     signal: AbortSignal,
+    options?: { readonly onWritten?: () => void },
   ): Promise<AcpPromptResult>;
   cancel(sessionId: string, metadata?: Readonly<Record<string, unknown>>): Promise<void>;
   closeSession(sessionId: string): Promise<void>;
@@ -211,9 +212,17 @@ function createV1Client(
       );
       return { action: "accept", content };
     });
+  const pendingPromptWrites: (() => void)[] = [];
+  const stdinSink = createStdinSink(process.child.stdin);
   const stream = acpV1.ndJsonStream(
-    Writable.toWeb(process.child.stdin),
+    stdinSink.stream,
     Readable.toWeb(Readable.from(stdout)) as ReadableStream<Uint8Array>,
+  );
+  const writable = observePromptWrites(
+    stream.writable,
+    acpV1.methods.agent.session.prompt,
+    pendingPromptWrites,
+    stdinSink.setNextWriteHook,
   );
   // SDK dispatch walks async handlers; project updates before a following RPC response can settle.
   const readable = stream.readable.pipeThrough(
@@ -238,7 +247,7 @@ function createV1Client(
       },
     }),
   );
-  const connection = app.connect({ ...stream, readable });
+  const connection = app.connect({ ...stream, readable, writable });
   const agent = connection.agent;
   return {
     version: 1,
@@ -330,16 +339,25 @@ function createV1Client(
       );
       return sessionOptions(response.configOptions);
     },
-    prompt: async (sessionId, blocks, signal) => {
-      const response = await agent.request(
-        acpV1.methods.agent.session.prompt,
-        { sessionId, prompt: blocks.map(v1Block) },
-        { cancellationSignal: signal },
-      );
-      return {
-        stopReason: response.stopReason,
-        ...(response.usage ? { usage: promptUsage(response.usage) } : {}),
+    prompt: async (sessionId, blocks, signal, options) => {
+      const onWritten = () => {
+        options?.onWritten?.();
       };
+      pendingPromptWrites.push(onWritten);
+      try {
+        const response = await agent.request(
+          acpV1.methods.agent.session.prompt,
+          { sessionId, prompt: blocks.map(v1Block) },
+          { cancellationSignal: signal },
+        );
+        return {
+          stopReason: response.stopReason,
+          ...(response.usage ? { usage: promptUsage(response.usage) } : {}),
+        };
+      } finally {
+        const index = pendingPromptWrites.indexOf(onWritten);
+        if (index >= 0) pendingPromptWrites.splice(index, 1);
+      }
     },
     cancel: (sessionId, metadata) =>
       agent.notify(acpV1.methods.agent.session.cancel, {
@@ -380,12 +398,21 @@ function createV2Client(
         ? { action: "cancel" }
         : { action: "accept", content: result };
     });
-  const connection = app.connect(
-    acpV2.ndJsonStream(
-      Writable.toWeb(process.child.stdin),
-      Readable.toWeb(Readable.from(stdout)) as ReadableStream<Uint8Array>,
-    ),
+  const pendingPromptWrites: (() => void)[] = [];
+  const stdinSink = createStdinSink(process.child.stdin);
+  const rawStream = acpV2.ndJsonStream(
+    stdinSink.stream,
+    Readable.toWeb(Readable.from(stdout)) as ReadableStream<Uint8Array>,
   );
+  const connection = app.connect({
+    ...rawStream,
+    writable: observePromptWrites(
+      rawStream.writable,
+      acpV2.methods.agent.session.prompt,
+      pendingPromptWrites,
+      stdinSink.setNextWriteHook,
+    ),
+  });
   const agent = connection.agent;
   return {
     version: 2,
@@ -474,7 +501,7 @@ function createV2Client(
       );
       return sessionOptions(response.configOptions);
     },
-    prompt: async (sessionId, blocks, signal) => {
+    prompt: async (sessionId, blocks, signal, options) => {
       if (idle.has(sessionId))
         throw new OpensteerError({
           code: "conflict",
@@ -482,6 +509,10 @@ function createV2Client(
         });
       const turn = { done: new Deferred<string>(), running: false };
       idle.set(sessionId, turn);
+      const onWritten = () => {
+        options?.onWritten?.();
+      };
+      pendingPromptWrites.push(onWritten);
       try {
         const request = agent.request(
           acpV2.methods.agent.session.prompt,
@@ -491,6 +522,8 @@ function createV2Client(
         const [, stopReason] = await Promise.all([request, turn.done.promise]);
         return { stopReason };
       } finally {
+        const index = pendingPromptWrites.indexOf(onWritten);
+        if (index >= 0) pendingPromptWrites.splice(index, 1);
         idle.delete(sessionId);
       }
     },
@@ -503,6 +536,126 @@ function createV2Client(
       await agent.request(acpV2.methods.agent.session.close, { sessionId });
     },
   };
+}
+
+/**
+ * Wraps a Node `Writable` child stdin stream so each web `writer.write(chunk)`
+ * settles only when `stdin.write(chunk, callback)` invokes its callback (or
+ * the stream errors/closes). Unlike `Writable.toWeb`, this does not resolve
+ * early while buffered below `highWaterMark`, so an immediate or async EPIPE
+ * rejects the write before `observePromptWrites` reports the prompt written.
+ * When `nextWriteHook` is armed for a `session/prompt` frame, it fires
+ * synchronously inside the successful `stdin.write` callback so an immediate
+ * response on `stdout` cannot race ahead of the prompt-written fence.
+ */
+function createStdinSink(stdin: Writable): {
+  readonly stream: WritableStream<Uint8Array>;
+  readonly setNextWriteHook: (hook: (() => void) | undefined) => void;
+} {
+  let streamError: unknown;
+  let hasStreamError = false;
+  let nextWriteHook: (() => void) | undefined;
+  const onError = (error: unknown) => {
+    if (!hasStreamError) {
+      hasStreamError = true;
+      streamError = error;
+    }
+  };
+  stdin.on("error", onError);
+  const stream = new WritableStream<Uint8Array>({
+    write(chunk) {
+      const onSuccess = nextWriteHook;
+      nextWriteHook = undefined;
+      if (hasStreamError) return Promise.reject(streamError);
+      if (stdin.destroyed || stdin.writableEnded) {
+        return Promise.reject(stdin.errored ?? new Error("ACP stdin is closed"));
+      }
+      return new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: Error | null) => {
+          if (settled) return;
+          settled = true;
+          stdin.off("error", onWriteError);
+          stdin.off("close", onClose);
+          if (error) {
+            reject(error);
+          } else {
+            onSuccess?.();
+            resolve();
+          }
+        };
+        const onWriteError = (error: Error) => finish(error);
+        const onClose = () => finish(stdin.errored ?? new Error("ACP stdin closed during write"));
+        stdin.once("error", onWriteError);
+        stdin.once("close", onClose);
+        try {
+          stdin.write(chunk, (error) => finish(error));
+        } catch (error) {
+          finish(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+    },
+    close() {
+      nextWriteHook = undefined;
+      stdin.off("error", onError);
+      if (stdin.destroyed || stdin.writableEnded) return;
+      return new Promise<void>((resolve) => {
+        stdin.end(() => resolve());
+      });
+    },
+    abort(reason) {
+      nextWriteHook = undefined;
+      stdin.off("error", onError);
+      if (!stdin.destroyed) {
+        stdin.destroy(reason instanceof Error ? reason : undefined);
+      }
+    },
+  });
+  return {
+    stream,
+    setNextWriteHook: (hook) => {
+      nextWriteHook = hook;
+    },
+  };
+}
+
+function observePromptWrites<Message>(
+  streamWritable: WritableStream<Message>,
+  promptMethod: string,
+  pendingPromptWrites: (() => void)[],
+  setNextWriteHook: (hook: (() => void) | undefined) => void,
+): WritableStream<Message> {
+  return new WritableStream<Message>({
+    async write(message) {
+      const onWritten =
+        isRecord(message) && message.method === promptMethod
+          ? pendingPromptWrites.shift()
+          : undefined;
+      let notified = false;
+      const notifyOnce = onWritten
+        ? () => {
+            if (notified) return;
+            notified = true;
+            onWritten();
+          }
+        : undefined;
+      setNextWriteHook(notifyOnce);
+      const writer = streamWritable.getWriter();
+      try {
+        await writer.write(message);
+      } finally {
+        setNextWriteHook(undefined);
+        writer.releaseLock();
+      }
+      notifyOnce?.();
+    },
+    close() {
+      return streamWritable.close();
+    },
+    abort(reason) {
+      return streamWritable.abort(reason);
+    },
+  });
 }
 
 function v1Capabilities(capabilities: AcpClientCapabilities): acpV1.ClientCapabilities {

@@ -42,14 +42,28 @@ export type CommandEffectOutcome<T> =
  * unknown without acting while its attempt runs or once it may have happened; done, the handler's
  * own lookup replays it.
  */
+/**
+ * Runs one piece of work later, once, its failure handled by the work itself: a timer in the
+ * Home, a hand the test turns, so no test races the clock.
+ */
+export type LaterWork = (work: () => Promise<unknown>) => void;
+
+/** A Home's own later: once, after `ms`, never holding the process open. */
+export function laterBy(ms: number): LaterWork {
+  return (work) => {
+    const timer = setTimeout(() => void work(), ms);
+    timer.unref?.();
+  };
+}
+
 export async function runCommandEffect<T>(input: {
   readonly row: CommandRow;
   readonly attempts: CommandAttempts | undefined;
   readonly attempt: CommandAttemptInput;
   readonly readmit?: ((transaction: Kysely<DatabaseSchema>) => Promise<void>) | undefined;
   readonly act: () => Promise<T>;
-  /** How long after a lost attempt receipt it is written once more (default 30 seconds). */
-  readonly receiptRetryMs?: number;
+  /** Runs a lost attempt receipt's one later write (default: after 30 seconds). */
+  readonly later?: LaterWork;
 }): Promise<CommandEffectOutcome<T>> {
   const outside = commandEffect(input.row) === "outside";
   const begun =
@@ -63,7 +77,10 @@ export async function runCommandEffect<T>(input: {
   // told what happened (rule 4), never an error for an effect that ran. Until it is written the
   // attempt reads as "may have happened" to anything that asks it, so nothing runs twice; it is
   // written once more a little later, so the row reaches its known outcome without a restart
-  // (and a Disconnect waiting on it is not held until then).
+  // (and a Disconnect waiting on it is not held until then). If that one later write fails too,
+  // the row stays `running` until the Home's startup recovery settles it `unknown`: still true to
+  // rule 4 (it may have happened, and nothing runs it again), and to rule 3 (a Disconnect waiting
+  // on it shows no end until there is evidence). No retry loop.
   const settle = async (state: "done" | "failed" | "unknown") => {
     if (!id || !input.attempts) return;
     const attempts = input.attempts;
@@ -77,10 +94,7 @@ export async function runCommandEffect<T>(input: {
       await attempts.settle(id, state);
     } catch (error) {
       warn(error);
-      const timer = setTimeout(() => {
-        void attempts.settle(id, state).catch(warn);
-      }, input.receiptRetryMs ?? 30_000);
-      timer.unref?.();
+      (input.later ?? laterBy(30_000))(() => attempts.settle(id, state).catch(warn));
     }
   };
   let output: T;

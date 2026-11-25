@@ -59,6 +59,12 @@ import { DesktopAppOriginPolicy } from "../src/app/navigation-policy.js";
 import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launcher.js";
 import { idleCpuPhase } from "./electron-idle-cpu-smoke.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard(
+  process.env.OPENSTEER_IDLE_CPU_SMOKE === "1" ? "idle" : "browser",
+  process.env.OPENSTEER_IDLE_CPU_SMOKE === "1" ? 300_000 : 360_000,
+);
 
 const smokeDownloads = smokeDesktopDownloads();
 
@@ -2846,7 +2852,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         firstLayout.resizes.length === 0 &&
         unsafe?.code === "forbidden" &&
         unsafe.message ===
-          "CDP navigation is limited to HTTP and HTTPS URLs without embedded credentials.",
+          "CDP navigation is limited to HTTP(S) and extension pages, without embedded credentials.",
       outcome,
     );
     await agent("Target.closeTarget", { targetId: created.targetId });

@@ -1,7 +1,7 @@
 export type AntigravityPlatform = "darwin-arm64" | "darwin-x64" | "linux-arm64" | "linux-x64";
 
 export interface AntigravityReleaseMember {
-  readonly name: "agy_acp_server.par" | "localharness_external";
+  readonly name: "antigravity";
   readonly sizeBytes: number;
   readonly type: "file";
 }
@@ -9,63 +9,60 @@ export interface AntigravityReleaseMember {
 export interface AntigravityReleaseAsset {
   readonly archive: {
     readonly sha256: string;
+    readonly sha512?: string;
     readonly sizeBytes: number;
     readonly url: string;
   };
-  readonly members: readonly [AntigravityReleaseMember, AntigravityReleaseMember];
+  readonly members: readonly [AntigravityReleaseMember];
 }
 
 /**
- * Google's complete 1.4.1 ACP release. Later 1.4 releases write a system skill
- * into every Workspace, so a bump requires re-qualification rather than only
- * replacing these hashes.
+ * Google's pinned 1.5.16 standalone Go Antigravity CLI release (`antigravity acp`).
+ * Replaces the legacy 1.4.1 Python/PAR runtime, fixing Claude thinking-signature
+ * corruption on resume and enabling native mid-turn prompt steering.
  */
 export const antigravityReleaseManifest = {
-  version: "1.4.1",
+  version: "1.5.16",
   platforms: {
     "darwin-arm64": {
       archive: {
-        url: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.4.1-darwin-arm64.zip",
-        sizeBytes: 112_737_434,
-        sha256: "f9bdd68291ae78c38d2141e63bc86b84e6cc7b9f60f71652c68435a7943deb17",
+        url: "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.16-5250855658717184/darwin-arm/cli_mac_arm64.tar.gz",
+        sizeBytes: 86_506_312,
+        sha256: "ba47202f712de4c4a78fd787d81ba206d73e11c97572fc69420f29a77efc8d95",
+        sha512:
+          "33f5617dc74fea606d47b2483c6d271c850c9f3c9c55b724c664c3c0d4b82100d819fbcf55714f851765f6628d4296883ac8939b4fdeb55d5e6b9ce923135d18",
       },
-      members: [
-        { name: "agy_acp_server.par", sizeBytes: 280_996_576, type: "file" },
-        { name: "localharness_external", sizeBytes: 120_246_928, type: "file" },
-      ],
+      members: [{ name: "antigravity", sizeBytes: 230_641_440, type: "file" }],
     },
     "darwin-x64": {
       archive: {
-        url: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.4.1-darwin-x86_64.zip",
-        sizeBytes: 118_349_036,
-        sha256: "27e31f096874704f14167b07ef9e84cc77134615ee41d024f7b1c957add85307",
+        url: "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.16-5250855658717184/darwin-x64/cli_mac_x64.tar.gz",
+        sizeBytes: 92_242_508,
+        sha256: "14cd76a31e42ad461d6f8adf7631306cac37553f547aba0a0f111b0824d21c0c",
+        sha512:
+          "b3eae073ee633032e9d473cdc7725c30bdfe2e09436bc36cfb3422e7e5fa3733de9591a7f78d02362294e7bf87e345d70e5d839689e526129a6f3fc041857a05",
       },
-      members: [
-        { name: "agy_acp_server.par", sizeBytes: 285_186_624, type: "file" },
-        { name: "localharness_external", sizeBytes: 124_910_048, type: "file" },
-      ],
+      members: [{ name: "antigravity", sizeBytes: 240_522_160, type: "file" }],
     },
     "linux-x64": {
       archive: {
-        url: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.1-linux-x86_64.zip",
-        sizeBytes: 336_170_339,
-        sha256: "2e37012ceb2a5c7fc7309b6e6596234fb637ee3c62a5199f65d4cbe777871384",
+        url: "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.16-5250855658717184/linux-x64/cli_linux_x64.tar.gz",
+        sizeBytes: 101_821_670,
+        sha256: "9bdab234d06bad1a61be2321072652eb06be78baff1acbfae47331da5a090abc",
+        sha512:
+          "3dee9f26e298156db673f6ce2a0f5dfed5b30006e04ceb9809c68070e7b717587b33a3da0f8bc2eda45af81a50bc8b14c82b28ae5832bcfe3e7fd49397117b31",
       },
-      members: [
-        { name: "agy_acp_server.par", sizeBytes: 930_826_753, type: "file" },
-        { name: "localharness_external", sizeBytes: 131_187_512, type: "file" },
-      ],
+      members: [{ name: "antigravity", sizeBytes: 275_067_592, type: "file" }],
     },
     "linux-arm64": {
       archive: {
-        url: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.1-linux-arm64.zip",
-        sizeBytes: 321_922_507,
-        sha256: "609336a1c97545487e3ddd55dbd153dc0f40f4e6534486cc1c5f4c0ebb85c2da",
+        url: "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.16-5250855658717184/linux-arm/cli_linux_arm64.tar.gz",
+        sizeBytes: 92_724_848,
+        sha256: "7ddeec790084e550af18adb04a5b6c5fdf2db3e1026854f49901a04cb4265c7e",
+        sha512:
+          "23c193151499a4986fd5fa0d8132665cc8ffbad6cc0b3ff4fd53a2cb68abb76b149a992b836d53063443cd89add335f14d8134fb02abdcecbf6e1eaef6c53d33",
       },
-      members: [
-        { name: "agy_acp_server.par", sizeBytes: 933_416_796, type: "file" },
-        { name: "localharness_external", sizeBytes: 124_895_000, type: "file" },
-      ],
+      members: [{ name: "antigravity", sizeBytes: 257_774_256, type: "file" }],
     },
   },
 } as const satisfies {

@@ -29,6 +29,7 @@ import {
   readAgentRequest,
   AgentRequestResponderSchema,
   reachableNode,
+  authorizePlaceSite,
 } from "@opensteer/database";
 import { activityItem, messageItem, taskItem, boundedThreadItems } from "../thread-items.js";
 import { productToolOutput } from "../tool-output.js";
@@ -171,11 +172,11 @@ export class ProductToolHandlers {
     });
     return this.#door.through(caller, command as unknown as HostApiCommand, act);
   }
-  async #readableTabPlaces<T extends { tabId: import("@opensteer/core").TabId }>(
-    caller: AgentCaller,
-    rows: readonly T[],
-  ): Promise<T[]> {
+  async #readableTabPlaces<
+    T extends { tabId: import("@opensteer/core").TabId; site: string | null },
+  >(caller: AgentCaller, rows: readonly T[]): Promise<T[]> {
     const owner = caller.userId;
+    const lineage = callerLineage(caller);
     // A selected grant reads only places in tabs its own lineage's tasks opened.
     const lineageId = selectedLineageId(caller);
     if (lineageId && rows.length) {
@@ -205,13 +206,19 @@ export class ProductToolHandlers {
         async (row) =>
           await this.#tabs?.get?.(owner, row.tabId).then(
             (tab) =>
-              !selected ||
-              (tab.kind === "page" &&
-                !!tab.profile &&
-                agentGrantAccess(selected, {
-                  kind: "browser-profile",
-                  profileId: tab.profile.profileId,
-                }) !== null),
+              // Rule 1's place rule (P3, P9): a browser tab's place is read by a connection's work
+              // only where it has a web origin; a Mac app window's or phone screen's is not a page.
+              authorizePlaceSite(
+                { agentConnection: lineage },
+                { kind: tab.kind, site: row.site },
+              ) &&
+              (!selected ||
+                (tab.kind === "page" &&
+                  !!tab.profile &&
+                  agentGrantAccess(selected, {
+                    kind: "browser-profile",
+                    profileId: tab.profile.profileId,
+                  }) !== null)),
             () => false,
           ),
       ),
@@ -843,7 +850,9 @@ export class ProductToolHandlers {
       this.#readableTabPlaces(
         caller,
         page.items.flatMap((item) =>
-          item.type === "place.entered" ? [{ id: item.id, tabId: item.place.tabId }] : [],
+          item.type === "place.entered"
+            ? [{ id: item.id, tabId: item.place.tabId, site: item.place.site }]
+            : [],
         ),
       ),
       machineIds.length

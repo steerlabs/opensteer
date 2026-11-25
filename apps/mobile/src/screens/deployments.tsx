@@ -333,7 +333,7 @@ function shownAttention(snapshot: HostSnapshot): ComputerAttention {
   const value = {
     homeName,
     needsYou,
-    unread: taskList(snapshot).ready.some((row) => row.unread),
+    unread: taskList(snapshot, { personTasksOnly: true }).ready.some((row) => row.unread),
   };
   shownHeld = { source: snapshot, value };
   return value;

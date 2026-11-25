@@ -3,6 +3,7 @@ import {
   createId,
   DeviceIdSchema,
   TabIdSchema,
+  WindowIdSchema,
   type AgentGrant,
   type ExecutionNodeId,
   type RunId,
@@ -15,6 +16,7 @@ import {
   TabStore,
   TriggerStore,
   beginAgentSession,
+  readAgentThreadRecent,
 } from "@opensteer/database";
 import pg from "pg";
 import { expect, vi } from "vitest";
@@ -28,7 +30,13 @@ import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import type { TabActor } from "../tabs/ports.js";
-import { readableTabTasks, tabComputer, tabReadAuthority } from "../tabs/tab-authority.js";
+import {
+  authorizeTabActor,
+  canReadTab,
+  readableTabTasks,
+  tabComputer,
+  tabReadAuthority,
+} from "../tabs/tab-authority.js";
 import { TabService } from "../tabs/tab-service.js";
 import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orchestration";
 import { ThreadService } from "../threads/thread-service.js";
@@ -530,6 +538,297 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     });
     expect(withdrawn.isError, JSON.stringify(withdrawn.content)).not.toBe(true);
     expect((withdrawn.structuredContent as { recentPlaces: unknown[] }).recentPlaces).toEqual([]);
+  });
+
+  it("a tab on an extension's page does not exist to a connection's lineage (N3)", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("lineage-extension-page");
+    const profileId = createId("browserProfile");
+    await storeFixture.database
+      .insertInto("browserProfiles")
+      .values({ id: profileId, ownerId: f.userId, homeRunnerId: f.runnerId, name: "Shared" })
+      .execute();
+    const grant: AgentGrant = {
+      scope: "selected",
+      tasks: true,
+      resources: [{ kind: "browser-profile", profileId }],
+    };
+    const tabs = new TabStore(storeFixture.database);
+    const url = await serveMcp(storeFixture, {});
+    const agent = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant,
+    });
+    const own = await createTask(agent, f, "extension-page-own");
+    const ownRun = await startPersonalQueuedRunFixture(
+      storeFixture.store,
+      (await queuedRun(storeFixture, own)).id,
+    );
+    const tab = async (label: string, address: string): Promise<TabId> => {
+      const sessionId = `bsn_${randomUUID()}` as import("@opensteer/core").BrowserSessionId;
+      await storeFixture.store.createBrowserSession({
+        id: sessionId,
+        ownerId: f.userId,
+        runnerId: f.runnerId,
+        origin: "agent",
+        opener: { kind: "person", userId: f.userId },
+        placementKey: "test",
+        profileId: null,
+        runtimeId: "test",
+      });
+      const id = TabIdSchema.parse(`bsf_${label}`);
+      await tabs.open(
+        {
+          id,
+          ownerId: f.userId,
+          computerId: DeviceIdSchema.parse(f.runnerId),
+          kind: "page",
+          title: `Title ${label}`,
+          url: address,
+          profileId,
+          profileName: "Shared",
+          openedBy: { taskId: own },
+          pageBinding: { lineageId: sessionId, sessionId, surfaceId: id },
+        },
+        label,
+      );
+      return id;
+    };
+    const extensionPage = `chrome-extension://${"a".repeat(32)}/options.html`;
+    // The Home's tab store keeps no extension address: neither a new tab's nor a navigation's.
+    await expect(tab("refused", extensionPage)).rejects.toThrow();
+    const webTab = await tab("web", "https://web.test/");
+    const extensionTab = await tab("extension", "https://was-web.test/");
+    const written = await tabs.get(f.userId, extensionTab, true);
+    await expect(
+      tabs.updatePage(f.userId, extensionTab, written!.generation, written!.pageBinding!, {
+        title: "Options",
+        url: extensionPage,
+      }),
+    ).rejects.toThrow();
+    // Should a row ever hold one, the authority still says it does not exist to the lineage.
+    await storeFixture.database
+      .updateTable("personalTabs")
+      .set({ url: extensionPage, title: "My Extension Options" })
+      .where("id", "=", extensionTab)
+      .execute();
+    const unused = async (): Promise<never> => {
+      throw new Error("Unexpected native work");
+    };
+    const service = new TabService({
+      store: tabs,
+      devices: storeFixture.store,
+      pages: {
+        open: unused,
+        state: async () => ({ state: "open" as const, usedBy: [{ taskId: own }] }),
+        activate: unused,
+        bind: unused,
+        closeViewers: async () => {},
+      },
+      nativeTargets: {
+        resolveWindow: unused,
+        windowState: unused,
+        phoneState: unused,
+        openOwnerView: unused,
+        closeOwnerViews: async () => {},
+        onTargetAcquired: () => () => {},
+      },
+      apps: { get: unused },
+      computer: async (owner, id, db) => ({
+        ...(await tabComputer(owner, id, db)),
+        connected: true,
+      }),
+      canRead: canReadTab,
+      readAuthority: tabReadAuthority,
+      canReadTask: async (actor, id, db) => (await readableTabTasks(actor, [id], db)).has(id),
+      readableTasks: readableTabTasks,
+      authorize: unused,
+      authorizeMembership: authorizeTabActor,
+      onError: (error) => {
+        throw error;
+      },
+    });
+    const claims: RunToolScope = {
+      aud: "opensteer-run-tools",
+      iss: "opensteer-host",
+      iat: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + 3600,
+      jti: randomUUID(),
+      requestedBy: f.userId,
+      threadId: own,
+      runId: ownRun.runId,
+      environmentId: f.environmentId,
+      runnerId: f.runnerId,
+      runnerBootId: ownRun.runnerBootId,
+      bindingGeneration: ownRun.bindingGeneration,
+    };
+    const connectionActor = {
+      kind: "connection",
+      caller: {
+        kind: "connection",
+        key: `connection:${agent.id}`,
+        connectionId: agent.id,
+        grant,
+        grantRevision: 1,
+        userId: f.userId,
+        accessMode: "full-access",
+      },
+    } as const satisfies TabActor;
+    try {
+      for (const actor of [connectionActor, { kind: "run", claims }] as TabActor[]) {
+        // Not listed (tab_list, discover and browser_use's pages() all project through here).
+        const { tabs: shown } = await service.project(actor);
+        expect(
+          shown.map(({ tabId }) => tabId),
+          actor.kind,
+        ).toEqual([webTab]);
+        expect(JSON.stringify(shown)).not.toContain("chrome-extension:");
+        // Not readable: the same answer as a tab that never existed.
+        const row = await tabs.get(f.userId, extensionTab, true);
+        expect(await canReadTab(actor, row!, storeFixture.database), actor.kind).toBe(false);
+      }
+      const absent = await service
+        .connectionTab(connectionActor, TabIdSchema.parse("bsf_absent"))
+        .catch((error: unknown) => error);
+      const hidden = await service
+        .connectionTab(connectionActor, extensionTab)
+        .catch((error: unknown) => error);
+      expect(hidden).toMatchObject({ code: "not_found", message: "Tab not found." });
+      expect({ ...(hidden as object) }).toEqual({ ...(absent as object) });
+      // The person sees it.
+      const { tabs: person } = await service.project({ kind: "person", ownerId: f.userId });
+      expect(person.map(({ tabId }) => tabId).sort()).toEqual([extensionTab, webTab].sort());
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("keeps an extension page's place for the person and their own agents, and from every connection, but not a Mac app's or phone's (P3, P9)", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("extension-place");
+    const tabs = new TabStore(storeFixture.database);
+    const runScopes: Record<string, RunToolScope> = {};
+    const url = await serveMcp(storeFixture, {
+      runScopes,
+      tabs: {
+        get: async (owner, tabId) => {
+          const row = await tabs.get(owner, tabId, true);
+          if (!row) throw new Error("No such tab");
+          return { ...row, profile: null } as never;
+        },
+      },
+    });
+    const tab = async (label: string): Promise<TabId> => {
+      const sessionId = `bsn_${randomUUID()}` as import("@opensteer/core").BrowserSessionId;
+      await storeFixture.store.createBrowserSession({
+        id: sessionId,
+        ownerId: f.userId,
+        runnerId: f.runnerId,
+        origin: "agent",
+        opener: { kind: "person", userId: f.userId },
+        placementKey: "test",
+        profileId: null,
+        runtimeId: "test",
+      });
+      const id = TabIdSchema.parse(`bsf_${label}`);
+      await tabs.open(
+        {
+          id,
+          ownerId: f.userId,
+          computerId: DeviceIdSchema.parse(f.runnerId),
+          kind: "page",
+          title: label,
+          url: "https://web.test/",
+          openedBy: "person",
+          pageBinding: { lineageId: sessionId, sessionId, surfaceId: id },
+        },
+        label,
+      );
+      return id;
+    };
+    const extensionTab = await tab("extension");
+    const webTab = await tab("web");
+    // A Mac app's window and a phone's screen: places without an address, never pages.
+    const windowTab = TabIdSchema.parse("bsf_window");
+    await tabs.open(
+      {
+        id: windowTab,
+        ownerId: f.userId,
+        computerId: DeviceIdSchema.parse(f.runnerId),
+        kind: "window",
+        windowId: WindowIdSchema.parse(`win_${randomUUID()}`),
+        windowApp: { bundleId: "test.app", displayName: "Test", teamId: null },
+        title: "Window",
+        openedBy: "person",
+      },
+      "window",
+    );
+    const phoneTab = TabIdSchema.parse("bsf_phone");
+    await tabs.open(
+      {
+        id: phoneTab,
+        ownerId: f.userId,
+        computerId: DeviceIdSchema.parse(f.runnerId),
+        kind: "phone",
+        title: "iPhone",
+        openedBy: "person",
+      },
+      "phone",
+    );
+    // One of your own agents' Runs entered an extension's options page, a web page, a Mac app's
+    // window and a phone's screen: the extension's page keeps no site (it has no web origin), as
+    // rows always have, and so do the window and the screen.
+    for (const [tabId, title, site] of [
+      [extensionTab, "My Extension Options", null],
+      [webTab, "Web", "https://web.test"],
+      [windowTab, "Window", null],
+      [phoneTab, "iPhone", null],
+    ] as const)
+      await storeFixture.store.recordRunTabPlace({
+        runId: f.runId,
+        bindingGeneration: f.bindingGeneration,
+        data: { tabId, title, site },
+      });
+    const placesOf = (result: Awaited<ReturnType<Client["callTool"]>>) => {
+      expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
+      return (result.structuredContent as { recentPlaces: { tabId: string }[] }).recentPlaces
+        .map(({ tabId }) => tabId)
+        .sort();
+    };
+    const all = [extensionTab, webTab, windowTab, phoneTab].sort();
+    // The Run itself reads all four.
+    runScopes.own = fixtureRunScope({ ...f, threadId: f.threadId });
+    const own = await runClient(url, "own");
+    expect(
+      placesOf(
+        await own.callTool({ name: "opensteer_task_read", arguments: { taskId: f.threadId } }),
+      ),
+    ).toEqual(all);
+    // So does the person's record of the task.
+    const recent = await readAgentThreadRecent(storeFixture.database, {
+      threadId: f.threadId,
+      ownerId: f.userId,
+      runLimit: 5,
+    });
+    expect(recent?.places.map(({ tabId }) => tabId).sort()).toEqual(all);
+    // A connection that may read every task reads the web tab's place, the window's and the
+    // screen's: the page rule judges only a browser tab's place.
+    const agent = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+    });
+    expect(
+      placesOf(
+        await agent.client.callTool({
+          name: "opensteer_task_read",
+          arguments: { taskId: f.threadId },
+        }),
+      ),
+    ).toEqual([webTab, windowTab, phoneTab].sort());
   });
 
   it("derives task list pending filter, counts, changedSince questions, and task read pendingRequests from connectionRequests", async ({

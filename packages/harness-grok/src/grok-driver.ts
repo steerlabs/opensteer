@@ -1107,8 +1107,10 @@ function grokAuthenticationMethod(
 }
 
 function sanitizeGrokError(error: unknown): string {
-  if (error instanceof OpensteerError && error.message.trim()) return error.message.slice(0, 2_000);
-  if (error instanceof Error && error.message.trim()) return error.message.slice(0, 2_000);
+  // Leave truncation to AcpHarnessSession after named-secret redaction so a
+  // credential crossing character 2,000 cannot survive half-sliced.
+  if (error instanceof OpensteerError && error.message.trim()) return error.message;
+  if (error instanceof Error && error.message.trim()) return error.message;
   return "Grok could not complete the request";
 }
 

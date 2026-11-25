@@ -49,10 +49,22 @@ const proxyAddressNames = [
 ] as const;
 
 const proxyAddressNameSet: ReadonlySet<string> = new Set(proxyAddressNames);
+const networkEnvironmentNameSet: ReadonlySet<string> = new Set(networkEnvironmentNames);
 
 /** Names of environment variables whose values may appear in engine diagnostics. */
 export const credentialNamePattern =
   /(?:AUTHORIZATION|COOKIE|TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY|CREDENTIAL|PRIVATE_KEY|PROXY)/iu;
+
+const opaqueCredentialNamePattern =
+  /(?:AUTHORIZATION|COOKIE|TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY|CREDENTIAL|PRIVATE_KEY)/iu;
+
+const proxyAddressLikeNamePattern = /(?:^|_)PROXY$/iu;
+const proxyBypassOrHostNamePattern = /^(?:NO_PROXY|(?:.*_)?PROXY_HOST)$/iu;
+
+function isOpaqueNamedSecretVariable(name: string): boolean {
+  if (networkEnvironmentNameSet.has(name) || proxyBypassOrHostNamePattern.test(name)) return false;
+  return opaqueCredentialNamePattern.test(name);
+}
 
 export function networkCredentialSecrets(
   environment: Readonly<Record<string, string | undefined>>,
@@ -69,9 +81,14 @@ export function networkCredentialSecrets(
     }
   }
 
-  for (const name of proxyAddressNames) {
-    const proxy = environment[name];
+  for (const [name, proxy] of Object.entries(environment)) {
     if (!proxy) continue;
+    if (
+      !proxyAddressNameSet.has(name) &&
+      (proxyBypassOrHostNamePattern.test(name) || !proxyAddressLikeNamePattern.test(name))
+    ) {
+      continue;
+    }
     const address = proxy.replace(/^[a-z][a-z0-9+.-]*:\/\//iu, "");
     const separator = address.lastIndexOf("@");
     if (separator <= 0) continue;
@@ -94,13 +111,36 @@ export function engineDiagnosticSecrets(
       (entry): entry is [string, string] =>
         typeof entry[1] === "string" &&
         entry[1].length >= minimumLength &&
-        !proxyAddressNameSet.has(entry[0]) &&
-        credentialNamePattern.test(entry[0]),
+        isOpaqueNamedSecretVariable(entry[0]),
     )
     .map(([, value]) => value)
     .sort((left, right) => right.length - left.length);
   // Mask proxy userinfo first so diagnostics can still show the proxy endpoint.
   return [...new Set([...networkCredentialSecrets(environment), ...namedValues])];
+}
+
+/**
+ * Non-empty opaque named credential values shorter than `minimumLength`
+ * characters (too short to redact safely by literal substring replacement).
+ * Network settings such as `NO_PROXY` and proxy hosts are never included.
+ */
+export function shortNamedSecrets(
+  environment: Readonly<Record<string, string | undefined>>,
+  minimumLength = 4,
+): readonly string[] {
+  return [
+    ...new Set(
+      Object.entries(environment)
+        .filter(
+          (entry): entry is [string, string] =>
+            typeof entry[1] === "string" &&
+            entry[1].length > 0 &&
+            entry[1].length < minimumLength &&
+            isOpaqueNamedSecretVariable(entry[0]),
+        )
+        .map(([, value]) => value),
+    ),
+  ].sort((left, right) => right.length - left.length);
 }
 
 // Both parts are bounded, so a long run of letters cannot make it backtrack

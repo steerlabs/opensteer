@@ -1683,3 +1683,32 @@ it("names the viewer whose input a page edit followed, judged by when the edit h
     await ledger.close();
   }
 });
+
+it("claims a page with a null opener without a parent targetId so it does not inherit another page's lineage (2a(ii))", async () => {
+  const agentPage = new FakePage({ url: "https://agent.test/" });
+  const context = new FakeContext([agentPage]);
+  const claimTarget = vi.fn();
+  const ledger = new SurfaceLedger(context, { claimTarget });
+  await ledger.start();
+  await flushMicrotasks();
+  const agentTargetId = await agentPage.targetId();
+  claimTarget.mockClear();
+  try {
+    const extensionTab = new FakePage({ url: "https://extension-opened.test/" });
+    expect(await extensionTab.opener()).toBeNull();
+    context.addPage(extensionTab);
+    await flushMicrotasks();
+    const extensionTargetId = await extensionTab.targetId();
+    expect(claimTarget).toHaveBeenCalledWith(extensionTargetId, undefined);
+
+    claimTarget.mockClear();
+    const agentPopup = new FakePage({ url: "https://popup.test/", opener: agentPage });
+    context.addPage(agentPopup);
+    await flushMicrotasks();
+    const popupTargetId = await agentPopup.targetId();
+    expect(claimTarget).toHaveBeenCalledWith(popupTargetId, agentTargetId);
+  } finally {
+    await ledger.closeOwnedPages();
+    await ledger.close();
+  }
+});

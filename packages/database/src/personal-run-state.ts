@@ -89,6 +89,7 @@ export async function readFinishChildren(
   tx: Tx,
   runId: RunId,
   steer?: Pick<FinishIntent, "attemptId" | "bindingGeneration">,
+  options?: { readonly runnerProvenExecute?: boolean },
 ) {
   let remaining = 128;
   let hasMore = false;
@@ -148,7 +149,11 @@ export async function readFinishChildren(
           .selectFrom("commands")
           .select("id")
           .where("runId", "=", runId)
-          .where(sql<boolean>`status in ('pending','dispatched','unknown')`)
+          .where(
+            options?.runnerProvenExecute
+              ? sql<boolean>`status in ('pending','dispatched') or (type = 'run.execute' and status = 'unknown')`
+              : sql<boolean>`status in ('pending','dispatched')`,
+          )
           .orderBy("id")
           .limit(limit)
           .execute(),
@@ -303,10 +308,12 @@ export async function advancePersonalRunFinish(
     .forNoKeyUpdate()
     .executeTakeFirstOrThrow();
   const steer = run.finishIntent.mode === "steer" ? run.finishIntent : undefined;
-  const children = await readFinishChildren(tx, runId, steer);
+  const runnerProvenExecute =
+    (run.finishIntent.mode ?? (run.finishIntent.statement ? "runner" : "host")) === "runner";
+  const children = await readFinishChildren(tx, runId, steer, { runnerProvenExecute });
   await actions.settle(children, run.finishIntent);
   if (children.hasMore) return "more" as const;
-  const remaining = await readFinishChildren(tx, runId, steer);
+  const remaining = await readFinishChildren(tx, runId, steer, { runnerProvenExecute });
   if (
     remaining.requests.length ||
     remaining.commands.length ||

@@ -904,3 +904,8 @@ describe("a client-chosen name as a claim", () => {
     expect(agentClaim("Helper", 40)).toBe("Helper");
   });
 });
+
+it("falls back to the product's unnamed connected agent when both names are blank", () => {
+  const identity = connectedAgentIdentity({ label: "  \t ", clientName: "   " });
+  expect(identity).toMatchObject({ label: "A connected agent", initial: "A", providerId: null });
+});

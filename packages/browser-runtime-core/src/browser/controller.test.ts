@@ -882,6 +882,246 @@ describe("BrowserController", () => {
     }
   });
 
+  it("opens a connected agent's script attachment as a connection's when the Home says so (S-3)", async () => {
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+    await controller.start();
+    const surfaceId = ledger.snapshot()[0]!.id;
+    const budget = { maxBytes: 65_536, maxDepth: 16, maxEntries: 256 };
+    const reply = (requestId: string) =>
+      sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    const scriptCommand = async (
+      scriptAttachmentId: string,
+      method: string,
+      parameters: Record<string, unknown>,
+      extra: Record<string, unknown> = {},
+    ) => {
+      const requestId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId,
+        scriptAttachmentId,
+        replyBudget: budget,
+        command: { method, parameters },
+        ...extra,
+      } as BrowserClientMessage);
+      return reply(requestId);
+    };
+    try {
+      for (const connection of [true, false]) {
+        const scriptAttachmentId = randomUUID();
+        expect(
+          await scriptCommand(
+            scriptAttachmentId,
+            browserHostMethods.resumeTab,
+            { surfaceId },
+            { scriptEventBudget: budget, ...(connection ? { connection: true } : {}) },
+          ),
+        ).toMatchObject({ type: "cdp.result" });
+        // A later command that does not itself say it is a connection's is still held to a
+        // connection's rules on a connection's attachment, and only there.
+        const listed = await scriptCommand(scriptAttachmentId, "Extensions.getExtensions", {});
+        if (connection)
+          expect(listed).toMatchObject({
+            type: "cdp.error",
+            error: {
+              code: "forbidden",
+              message: expect.stringContaining("not available to a connected agent"),
+            },
+          });
+        else expect(JSON.stringify(listed)).not.toContain("not available to a connected agent");
+      }
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  it("never lists or resumes a tab on an extension's page to a connection (N1)", async () => {
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+    await controller.start();
+    const surfaceId = ledger.snapshot()[0]!.id;
+    const extensionPage = `chrome-extension://${"a".repeat(32)}/options.html`;
+    const budget = { maxBytes: 65_536, maxDepth: 16, maxEntries: 256 };
+    const reply = async (message: Record<string, unknown>) => {
+      const requestId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId,
+        ...message,
+      } as BrowserClientMessage);
+      return sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    };
+    const list = (connection: boolean) =>
+      reply({
+        command: { method: browserHostMethods.listTabs, parameters: {} },
+        ...(connection ? { connection: true } : {}),
+      });
+    const resume = (target: string, connection: boolean, scriptAttachmentId = randomUUID()) =>
+      reply({
+        scriptAttachmentId,
+        replyBudget: budget,
+        scriptEventBudget: budget,
+        command: { method: browserHostMethods.resumeTab, parameters: { surfaceId: target } },
+        ...(connection ? { connection: true } : {}),
+      });
+    // What a tab that does not exist answers.
+    const absent = await resume(BrowserSurfaceIdSchema.parse(`tab_${"0".repeat(8)}`), true);
+    expect(absent).toMatchObject({ type: "cdp.error", error: { code: "not_found" } });
+    const absentError = (absent as { error: unknown }).error;
+    const opened = (scriptAttachmentId: string) => {
+      try {
+        cdpRouter.assertScriptTarget(validClaims().sessionId, scriptAttachmentId);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    try {
+      for (const world of ["web", "extension", "becomes-extension-while-waking"] as const) {
+        page.setMetadata("A page", "https://example.test/");
+        if (world === "extension") page.setMetadata("My Extension Options", extensionPage);
+        if (world === "becomes-extension-while-waking") {
+          const wake = ledger.wake.bind(ledger);
+          vi.spyOn(ledger, "wake").mockImplementation(async (id) => {
+            const binding = await wake(id);
+            page.setMetadata("My Extension Options", extensionPage);
+            return binding;
+          });
+        }
+        const hidden = world !== "web";
+        // A connection: not listed, and resuming it answers as a tab that does not exist, with
+        // no script attachment opened and no target named.
+        const listed = await list(true);
+        expect(JSON.stringify(listed).includes(surfaceId), world).toBe(world !== "extension");
+        expect(JSON.stringify(listed)).not.toContain("chrome-extension:");
+        const scriptAttachmentId = randomUUID();
+        const resumed = await resume(surfaceId, true, scriptAttachmentId);
+        if (hidden) {
+          expect(resumed, world).toMatchObject({ type: "cdp.error" });
+          expect((resumed as { error: unknown }).error, world).toEqual(absentError);
+          expect(opened(scriptAttachmentId), world).toBe(false);
+        } else {
+          expect(resumed, world).toMatchObject({ type: "cdp.result" });
+          expect(opened(scriptAttachmentId), world).toBe(true);
+        }
+        // Your own agent, not bound to a connection, as before.
+        page.setMetadata("A page", world === "extension" ? extensionPage : "https://example.test/");
+        expect(JSON.stringify(await list(false)).includes(surfaceId), world).toBe(true);
+        expect(await resume(surfaceId, false), world).toMatchObject({ type: "cdp.result" });
+        vi.restoreAllMocks();
+      }
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  it("fills nothing into a page on an extension's page for a connection (N1)", async () => {
+    const controller = createController();
+    await controller.start();
+    const fill = vi.spyOn(HostSignIns.prototype, "fill").mockResolvedValue("filled");
+    try {
+      const attached = await cdpRouter.send(validClaims().sessionId, {
+        method: "Target.attachToTarget",
+        parameters: { targetId: await page.targetId(), flatten: true },
+      });
+      const sessionId = (attached as { sessionId: string }).sessionId;
+      const loginRef = `lgn_${"a".repeat(32)}`;
+      const fillLogin = async (session: string, connection: boolean) => {
+        const requestId = randomUUID();
+        await controller.handle({
+          type: "cdp.command",
+          requestId,
+          command: {
+            method: "Opensteer.fillLogin",
+            sessionId: session,
+            parameters: { loginRef, field: "password" },
+          },
+          ...(connection ? { connection: true } : {}),
+        } as BrowserClientMessage);
+        return sink.messages.findLast(
+          (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+        );
+      };
+      page.setMetadata("Options", `chrome-extension://${"a".repeat(32)}/options.html`);
+      const absent = await fillLogin("unknown", true);
+      const hidden = await fillLogin(sessionId, true);
+      expect(hidden).toMatchObject({ type: "cdp.error" });
+      expect((hidden as { error: unknown }).error).toEqual((absent as { error: unknown }).error);
+      expect(fill).not.toHaveBeenCalled();
+      // Your own agent, not bound to a connection, as before.
+      expect(await fillLogin(sessionId, false)).toMatchObject({
+        type: "cdp.result",
+        result: { status: "filled" },
+      });
+      expect(fill).toHaveBeenCalledOnce();
+    } finally {
+      fill.mockRestore();
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
+  it("reads a page's live address for a connection's fill and picture, not only the ledger's (P7)", async () => {
+    const controller = createController();
+    await controller.start();
+    const fill = vi.spyOn(HostSignIns.prototype, "fill").mockResolvedValue("filled");
+    try {
+      const attached = await cdpRouter.send(validClaims().sessionId, {
+        method: "Target.attachToTarget",
+        parameters: { targetId: await page.targetId(), flatten: true },
+        connection: true,
+      });
+      const sessionId = (attached as { sessionId: string }).sessionId;
+      const send = async (command: Record<string, unknown>) => {
+        const requestId = randomUUID();
+        await controller.handle({
+          type: "cdp.command",
+          requestId,
+          command,
+          connection: true,
+        } as BrowserClientMessage);
+        return sink.messages.findLast(
+          (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+        );
+      };
+      // The page is on an extension's address; the ledger has not heard yet.
+      (page as unknown as { pageUrl: string }).pageUrl =
+        `chrome-extension://${"a".repeat(32)}/options.html`;
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)?.url).not.toContain("chrome-extension:");
+      const loginRef = `lgn_${"a".repeat(32)}`;
+      const filled = await send({
+        method: "Opensteer.fillLogin",
+        sessionId,
+        parameters: { loginRef, field: "password" },
+      });
+      const absentFill = await send({
+        method: "Opensteer.fillLogin",
+        sessionId: "unknown",
+        parameters: { loginRef, field: "password" },
+      });
+      expect((filled as { error: unknown }).error).toEqual(
+        (absentFill as { error: unknown }).error,
+      );
+      expect(fill).not.toHaveBeenCalled();
+      const picture = await send({ method: "Page.captureScreenshot", sessionId, parameters: {} });
+      expect(picture).toMatchObject({
+        type: "cdp.error",
+        error: { code: "not_found", message: "The browser page closed." },
+      });
+    } finally {
+      fill.mockRestore();
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("lists suspended tabs within a byte budget, resumes explicitly, and closes by their old target", async () => {
     const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
     await controller.start();

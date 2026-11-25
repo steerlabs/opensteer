@@ -326,6 +326,86 @@ A mirror failure does not make the live browser jar untrustworthy: keep pages op
 save. Network Service loss can invalidate the live jar. Engines must prove directory ownership has
 ended before reuse; a settled close alone does not prove a Chromium process exited.
 
+## Chrome extensions
+
+A saved Electron profile keeps Chrome extensions as Chrome does: the person installs them from the
+Chrome Web Store page in any tab, and your own agents running in a Full access task with personal
+context on the person's own lineage can load unpacked folders or remove extensions with CDP's
+`Extensions.loadUnpacked` and `Extensions.uninstall` (and any of your own agents driving the profile
+can call `Extensions.getExtensions` and `Extensions.triggerAction`, sent from any page of the
+profile; only a backend that keeps extensions answers that domain). Tasks below Full access or under
+a connected agent's lineage are refused `Extensions.loadUnpacked` and `Extensions.uninstall`;
+connected agents are refused the entire `Extensions.*` domain, cannot open or navigate to
+`chrome-extension:` pages over CDP or `tab.open`, have page-initiated navigations, subframes,
+redirects, popups, and subresource requests to `chrome-extension:` URLs blocked or cancelled once a
+connected agent binds the page via CDP, and are isolated from extension targets and content-script
+execution worlds (with agent-chosen world names namespaced so they never match or probe extension
+worlds). Every other page of the profile (the person's, your own agents', a tab a connected agent
+opened before it binds it) reaches an extension's pages and files as a website can in Chrome: an
+extension's own pages move among its own pages, and any other page navigates, follows a redirect,
+opens a window or an iframe, or requests a file at a `chrome-extension:` address only when that
+extension lists it as web-accessible for the page. Anything else is refused the same way as an
+address of an extension that is not installed, and the page stays where it was. A server
+redirect into an extension is judged by the site whose response redirects, whoever started the
+navigation, so a sign-in provider listed by the extension can send the person back to it while a
+site that only bounces cannot, and a redirect Opensteer did not see (a service worker's) is
+refused. A window is judged by the frame that opens it: by the origin the browser reports for the
+opener, or, when it reports none, by the window's own first navigation. An extension's dynamic
+address (a resource it lists with `use_dynamic_url`, which `chrome.runtime.getURL()` gives under a
+random host that changes each session) is only another name for its own address: Chromium rewrites
+it to that address, and the navigation is judged there exactly as at that address, by the page that
+started it or the site whose redirect led there, with the `use_dynamic_url` resource counting as
+listed; a window opened onto one is judged by its own first navigation, and a guessed host reaches
+nothing. Opensteer's own opening
+of an extension's pages (its popup, its options page) is not a page's navigation and stays
+allowed. Two residuals remain: main-world DOM mutations written directly into a page by an
+extension's content script remain readable from the page's default world, and a tab opened via
+`tab.open` is not marked connection-controlled until a connected agent binds it via CDP (which is
+for ever for an agent that never binds it), so before binding that page can reach the extension
+pages and files that extensions list as web-accessible, just as any website can in Chrome. A
+connected agent cannot attach to or drive a tab that ended on an extension page, and once it
+binds a page, that page reaches no extension address at all.
+
+Observed on real Electron: `will-frame-navigate` fires for `data:` and `blob:` iframes and not for
+`srcdoc`, and a content-script execution world is reported over CDP with `auxData.isDefault: false`,
+`type: "isolated"`, the extension's name, and a `chrome-extension:` origin. Electron itself refuses
+nothing at the navigation level: without the checks above, a web page's `location.href`, link,
+server redirect, `window.open` or iframe to any `chrome-extension:` page commits there (Chromium
+then shows `ERR_BLOCKED_BY_CLIENT` there for a page that is not web-accessible or not installed); its extension loader
+does refuse a web page's `fetch`, image or script request for a file that is not web-accessible.
+
+The person's own actions in their own app (installing from the Web Store window or removing
+an extension from the toolbar's Extensions menu, each with a native confirmation dialog) stay on the
+desktop bridge as the person's hand in their own browser, just like installing or removing an
+extension in Chrome. The person sees every extension in the toolbar's Extensions menu (with a quiet
+"Not from Chrome Web Store" label for unpacked folders), opens its options there as an ordinary tab
+and removes any after a confirmation. Guest keeps none (Electron loads extensions only into
+persistent Sessions), and phone engines run none. Because content scripts run in the profile's
+pages, after Opensteer fills a saved password or card into a page, an installed extension running in
+that page can read it just as page scripts and an agent working in that page can.
+
+[Profile extensions](../apps/desktop/src/browser/profile-extensions.ts) and its in-repo
+[extensions runtime](../apps/desktop/src/browser/extensions) load each profile's Web Store installs
+(its `Extensions` folder, updated on Chrome's cadence) and unpacked folders in parallel before the
+profile's first page, because Electron forgets extensions at exit. They live with the profile's
+Session, serialize every load, Store install, update, removal and teardown through one mutation
+queue, and expose toolbar state and popups directly over `DesktopBrowserPresentationBridge` (anchored
+to the exact window that clicked the button).
+
+The in-repo extension router derives caller identity strictly in main from `senderFrame.origin` or
+`serviceWorker.scope` (never from renderer arguments) and enforces Chrome's manifest permissions
+across `cookies`, `tabs`, `webNavigation`, `contextMenus`, `notifications`, `tabs.insertCSS`, and
+`permissions.request` (which never silently escalates). Web Store IPC answers only the real top-level
+`https://chromewebstore.google.com` document and disables page-initiated uninstall. Store downloads
+stage outside the profile's scanned tree, verify the CRX3 RSA/ECDSA-SHA256 signature and approved
+manifest before moving atomically into place, and skip automatic updates that expand permissions.
+Popups stay confined to their own `chrome-extension://<id>/` origin (external links open as normal
+tabs), and native messaging is absent. An extension's own files bypass the profile's request gate so
+its worker starts before admission; its web requests follow the gate as a page's do. Electron's
+limits are the engine's: no `runtime.onInstalled`, no `declarativeNetRequest`, and Opensteer's own
+request policy takes `webRequest` events. Checks: `pnpm --filter @opensteer/desktop
+test:electron-extensions` (with `OPENSTEER_EXTENSIONS_SMOKE_WEB_STORE=1`, the Web Store too).
+
 ## Passkeys
 
 `OPENSTEER_PASSKEYS=1` on the Host enables passkeys in the Personal browser and hosted Chromium; off

@@ -31,6 +31,71 @@ try {
     case "cdp-boundary":
       assert.equal(local("electron.json").passed, true);
       break;
+    case "extensions": {
+      const KNOWN_STEP = "chrome.windows.create and remove";
+      // Exactly what the extension's worker receives on real Electron: the refusal wrapped by
+      // the extension API's IPC call.
+      const KNOWN_REFUSAL =
+        "Error invoking remote method 'opensteer-crx:call': Error: Creating separate browser windows is not supported; use chrome.tabs.create() to open a tab.";
+      const report = local("extensions.json");
+      assert.equal(report.passed, true);
+      assert.equal(report.boundaryPassed, true);
+      for (const section of [
+        "connected-agent-isolation",
+        "connected-agent-breakpoints",
+        "connected-agent-compromise",
+        "connected-agent-probes",
+        "connected-agent-dialog",
+        "extension-web-accessible",
+      ]) {
+        const entry = local(`section-${section}.json`);
+        assert.equal(entry.section, section);
+        assert.equal(
+          entry.passed,
+          true,
+          `extensions section ${section} failed: ${entry.error ?? ""}`,
+        );
+      }
+      const lifecycle = local("section-extension-lifecycle.json");
+      assert.equal(lifecycle.section, "extension-lifecycle");
+      if (
+        lifecycle.passed === true ||
+        lifecycle.status === "passed" ||
+        report.lifecyclePassed === true
+      ) {
+        assert.fail(
+          `extensions lifecycle step "${KNOWN_STEP}" unexpectedly PASSED; remove the knownMainFault entry from validate-electron-journey.mjs and electron-extensions-smoke.ts.`,
+        );
+      }
+      assert.equal(
+        lifecycle.status,
+        "known-main-fault",
+        `extensions section extension-lifecycle failed: ${lifecycle.error ?? JSON.stringify(lifecycle)}`,
+      );
+      assert.equal(lifecycle.passed, false);
+      assert.equal(report.lifecyclePassed, false);
+      assert.equal(
+        lifecycle.error,
+        undefined,
+        `extensions section extension-lifecycle recorded an unexpected error alongside knownMainFault: ${lifecycle.error}`,
+      );
+      assert.equal(
+        report.error,
+        undefined,
+        `extensions aggregate report recorded an unexpected error alongside knownMainFault: ${report.error}`,
+      );
+      assert.equal(report.lifecycleStatus, "known-main-fault");
+      assert.equal(lifecycle.knownMainFault?.step, KNOWN_STEP);
+      assert.equal(lifecycle.knownMainFault?.refusal, KNOWN_REFUSAL);
+      assert.deepEqual(lifecycle.knownMainFault?.phases, ["install", "reopen"]);
+      assert.equal(report.knownMainFault?.step, KNOWN_STEP);
+      assert.equal(report.knownMainFault?.refusal, KNOWN_REFUSAL);
+      assert.deepEqual(report.knownMainFault?.phases, ["install", "reopen"]);
+      console.log(
+        `[journey] extensions: PASS (6/6 boundary sections passed; extension-lifecycle = knownMainFault at "${KNOWN_STEP}" — ${KNOWN_REFUSAL})`,
+      );
+      break;
+    }
     case "passwords":
       assert.equal(local("manifest.json").passed, true);
       assert.equal(local("leak-scan.json").executed, true);

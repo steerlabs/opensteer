@@ -3049,6 +3049,12 @@ export async function createHostServer(
         ...(dependencies.liveText ? { liveText: dependencies.liveText } : {}),
         refreshOwner: () => dependencies.ownerProfile?.refreshSoon(),
         probeMachines: () => dependencies.runners.probeFullDiskAccess(),
+        reauthenticate: async () =>
+          (
+            await dependencies.authenticator.authenticateSessionContext(request.headers, {
+              mutation: true,
+            })
+          ).session,
       });
     },
   );

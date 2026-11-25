@@ -324,4 +324,46 @@ describe("ProviderRetryTracker", () => {
       vi.useRealTimers();
     }
   });
+
+  it("cleans named secrets straddling byte 256 before truncating, logging, or publishing (Z2)", () => {
+    const secret = "ABCD-RUN-ONLY-SECRET-9K2M";
+    vi.stubEnv("TEST_PROVIDER_RETRY_SECRET", secret);
+    vi.useFakeTimers();
+    try {
+      const events: HarnessDurableEvent[] = [];
+      const logs: Array<{
+        readonly level: "info" | "warn";
+        readonly message: string;
+        readonly fields: Readonly<Record<string, unknown>> | undefined;
+      }> = [];
+      const tracker = new ProviderRetryTracker({
+        publish: (event) => events.push(event),
+        onBudgetExceeded: () => undefined,
+        budgetMs: 1_000,
+        log: (level, message, fields) => {
+          logs.push({ fields, level, message });
+        },
+      });
+
+      // Place the secret so its first 19 bytes sit before byte 256 and its tail crosses byte 256.
+      const prefix = "x".repeat(256 - 19);
+      tracker.noteRetry({
+        code: `err_${secret}`,
+        message: `${prefix}${secret}`,
+      });
+      vi.advanceTimersByTime(1_000);
+
+      expect(JSON.stringify(events)).not.toContain("ABCD-RUN-ONLY");
+      expect(JSON.stringify(events)).not.toContain(secret);
+      expect(JSON.stringify(logs)).not.toContain("ABCD-RUN-ONLY");
+      expect(JSON.stringify(logs)).not.toContain(secret);
+      expect(events[0]).toMatchObject({
+        data: { message: expect.stringContaining("[REDACTED]") },
+        type: "run.retry",
+      });
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
 });

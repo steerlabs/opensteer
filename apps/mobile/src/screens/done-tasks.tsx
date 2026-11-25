@@ -1,5 +1,5 @@
 import {
-  doneTaskList,
+  personDoneTaskList,
   quietSeenScope,
   seenThroughOf,
   type HostClient,
@@ -49,7 +49,7 @@ export function DoneTasksScreen(props: DoneTasksScreenProps): ReactNode {
 }
 
 const newestShown = (snapshot: HostSnapshot): string | null =>
-  seenThroughOf(doneTaskList(snapshot)?.rows ?? [], null);
+  seenThroughOf(personDoneTaskList(snapshot)?.rows ?? [], null);
 
 /** What the Done page shows of quiet moves is seen, so "+N" stops counting it. */
 function SeeQuietMoves(props: { readonly hostClient: HostClient }): null {

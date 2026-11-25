@@ -6,7 +6,11 @@ import { backgroundLightModels, voiceCallSeed } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
 import { startRealtime } from "./voice.js";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
-import { networkCredentialSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
+import {
+  engineDiagnosticSecrets,
+  networkCredentialSecrets,
+  redactNetworkCredentials,
+} from "@opensteer/shared/safeMessage";
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
@@ -1500,7 +1504,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         ...(this.#retryBudgetMs !== undefined ? { budgetMs: this.#retryBudgetMs } : {}),
         log: this.#log,
         logContext: { harness: "codex", runId: run.runId },
-        secrets: networkCredentialSecrets(this.#context.environment),
+        secrets: engineDiagnosticSecrets(this.#context.environment, 4),
       }),
       runId: run.runId,
       started: false,

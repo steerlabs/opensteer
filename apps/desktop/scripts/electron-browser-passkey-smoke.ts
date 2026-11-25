@@ -25,6 +25,9 @@ import {
   ElectronBrowserLauncher,
   electronBrowserPartition,
 } from "../src/browser/electron-browser-launcher.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("passkeys", 300000);
 
 const smokeDownloads = smokeDesktopDownloads();
 

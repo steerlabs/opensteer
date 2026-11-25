@@ -1,5 +1,5 @@
 import { runRetryMessageMaxLength, utf8Prefix, type RunRetry } from "@opensteer/core";
-import { networkCredentialSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
+import { engineDiagnosticSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import type { HarnessDurableEvent, HarnessLog } from "./types.js";
 
 /**
@@ -140,9 +140,9 @@ export class ProviderRetryTracker {
       input.retryDelayMs >= 0
         ? Math.trunc(input.retryDelayMs)
         : null;
+    const secrets = this.#secrets ?? engineDiagnosticSecrets(process.env, 4);
     const rawCode = input.code?.trim();
-    const code = rawCode ? utf8Prefix(rawCode, 128) : null;
-    const secrets = this.#secrets ?? networkCredentialSecrets(process.env);
+    const code = rawCode ? utf8Prefix(redactNetworkCredentials(rawCode, secrets), 128) : null;
     const message =
       utf8Prefix(
         redactNetworkCredentials(input.message.trim(), secrets),
@@ -187,7 +187,7 @@ export class ProviderRetryTracker {
             ...this.#logContext,
             error: redactNetworkCredentials(
               error instanceof Error ? error.message : String(error),
-              this.#secrets ?? networkCredentialSecrets(process.env),
+              this.#secrets ?? engineDiagnosticSecrets(process.env, 4),
             ),
           });
         }

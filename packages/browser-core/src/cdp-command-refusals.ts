@@ -1,3 +1,4 @@
+import { isExtensionUrl } from "./connection-extension-isolation.js";
 import {
   standardCdpPageMethods,
   standardCdpRootTargetMethods,
@@ -22,6 +23,24 @@ export const connectionPermissionRefusal =
 
 export const clipboardPermissionRefusal =
   "Clipboard permissions cannot be granted to a page. Paste with a key chord, or use Input.insertText to enter text.";
+
+export const extensionManagementRefusal =
+  "Installing or removing browser extensions requires Full access. Install or remove it yourself from the browser toolbar, or give this task Full access.";
+
+const extensionMutationMethods = new Set(["Extensions.loadUnpacked", "Extensions.uninstall"]);
+
+/** Whether a CDP command (or a nested `Target.sendMessageToTarget`) persists or removes extensions. */
+export function isExtensionMutationCommand(
+  method: string,
+  parameters: Parameters | undefined,
+  depth = 0,
+): boolean {
+  if (extensionMutationMethods.has(method)) return true;
+  if (method !== "Target.sendMessageToTarget") return false;
+  const nested = decodeNestedCdpMessage(parameters?.message);
+  if (!nested || depth >= maximumNesting) return false;
+  return isExtensionMutationCommand(nested.method, nested.params, depth + 1);
+}
 
 /** Editing commands that read the clipboard or write it, as Blink names them (any case). */
 const clipboardEditingCommands = new Set([
@@ -171,6 +190,13 @@ export function cdpCommandRefusal(
 ): string | undefined {
   const values = parameters ?? {};
   if (connection && permissionMethods.has(method)) return connectionPermissionRefusal;
+  if (
+    connection &&
+    (method === "Page.navigate" || method === "Target.createTarget") &&
+    typeof values.url === "string" &&
+    isExtensionUrl(values.url)
+  )
+    return "CDP navigation is limited to HTTP and HTTPS URLs without embedded credentials.";
   if (clipboardPermissionGrant(method, values)) return clipboardPermissionRefusal;
   if (method === "Input.dispatchKeyEvent")
     return connection && clipboardKeyEvent(values) ? connectionClipboardRefusal : undefined;

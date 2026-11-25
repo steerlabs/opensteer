@@ -28,6 +28,7 @@ import {
   useTab,
 } from "@opensteer/client/react";
 import type { BrowserSurfaceId, TabTarget } from "@opensteer/core";
+import type { DesktopBrowserPresentationTarget } from "@opensteer/protocol/desktop";
 import {
   useCallback,
   useEffect,
@@ -50,9 +51,11 @@ import type { BrowserPresentation } from "../workspace/identity.js";
 import { PlaceMark } from "../workspace/place-mark.js";
 import { ProfileChip } from "../workspace/profile-chip.js";
 import { useTabCloser } from "../workspace/tab-closer.js";
+import { useOptionalWorkspace } from "../workspace/workspace-context.js";
 import { BrowserToolbar } from "./browser-chrome.js";
 import { useBrowserCommandKeys } from "./browser-command-keys.js";
 import { BrowserDownloads } from "./browser-downloads.js";
+import { BrowserExtensions } from "./browser-extensions.js";
 import { BrowserPageDialog } from "./browser-page-dialog.js";
 import { BrowserPasskeyBar } from "./browser-passkey-bar.js";
 import type { BrowserThreadPair } from "./browser-thread-pair.js";
@@ -166,6 +169,7 @@ export function PlaceBrowserView({
   const viewed = useBrowserViewerSurface(hostClient, sessionId, tabId);
   const toast = useToast();
   const navigate = useNavigate();
+  const workspace = useOptionalWorkspace();
   const [signInOpen, setSignInOpen] = useState(false);
   const [menuButton, setMenuButton] = useState<HTMLButtonElement | null>(null);
   const closeTab = useTabCloser();
@@ -359,6 +363,16 @@ export function PlaceBrowserView({
   }, [nativePresentation.placement, presentationPresented, sessionId, tabId]);
   const nativeTarget = nativePresentation.target;
   const nativePlacement = nativePresentation.placement;
+  const nativeExtensionsTarget = useMemo<DesktopBrowserPresentationTarget | null>(
+    () =>
+      nativePlacement
+        ? {
+            presentationId: nativePlacement.presentationId,
+            revision: nativePlacement.revision,
+          }
+        : null,
+    [nativePlacement?.presentationId, nativePlacement?.revision],
+  );
   const nativeEditing = useMemo(
     () =>
       nativePlacement
@@ -592,6 +606,15 @@ export function PlaceBrowserView({
     if (size) send({ ...size, surfaceId: tabId, type: "viewport.set" });
   };
   const manageProfiles = () => void navigate("/settings/sign-ins/browsers");
+  // Only saved profiles keep extensions, so the store and extension options open in this page's profile.
+  const openInProfile = (url: string) => {
+    const profileId = listed?.profile?.profileId ?? session?.profileId;
+    if (!profileId) return;
+    const show = workspace?.nav.beginPlaceOperation();
+    void hostClient
+      .openTab({ kind: "page", url, profileId } as TabTarget)
+      .then((opened) => show?.({ kind: "tab", tabId: opened.tabId }), onReportError);
+  };
 
   const hasBrowser = session !== null || dormant;
   const menu: SurfaceMenuItem[] = hasBrowser
@@ -888,6 +911,15 @@ export function PlaceBrowserView({
                   <Icon name={nativePresentation.fullscreen ? "compact" : "fit"} />
                 </button>
               )}
+              {native && nativePresentation.bridge?.extensions ? (
+                <BrowserExtensions
+                  appZoomFactor={placement?.appZoomFactor ?? 1}
+                  bridge={nativePresentation.bridge}
+                  onOpenTab={openInProfile}
+                  onReportError={onReportError}
+                  target={nativeExtensionsTarget}
+                />
+              ) : null}
               <BrowserDownloads />
               {menu.length > 0 ? (
                 <SurfaceMenu

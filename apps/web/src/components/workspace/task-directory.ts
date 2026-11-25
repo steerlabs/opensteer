@@ -1,6 +1,5 @@
 import { useCallback, useMemo, useRef } from "react";
 import {
-  doneTaskList,
   sameTaskListSource,
   sameTaskMark,
   taskAttention,
@@ -125,12 +124,4 @@ export function useTaskMark(hostClient: HostClient, threadId: string | null): Ta
   return useHostSelector(hostClient, select, sameTaskMark);
 }
 
-/** The Host counts the person's Done window. Hide any session row still held from a frame. */
-export function personDoneTaskList(snapshot: HostSnapshot) {
-  const list = doneTaskList(snapshot);
-  if (!list) return null;
-  return {
-    ...list,
-    rows: list.rows.filter((row) => !row.connectedAgentTask),
-  };
-}
+export { personDoneTaskList } from "@opensteer/client/host";

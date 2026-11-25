@@ -2,6 +2,7 @@ import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import {
   ModelSelectionSchema,
   createId,
+  harnessSessionBrokenFailureCode,
   harnessUsageLimitFailureCode,
   type HarnessInstanceId,
 } from "@opensteer/core";
@@ -13,14 +14,16 @@ import {
   type HarnessRunInput,
   type HarnessSessionContext,
 } from "@opensteer/harness";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AntigravityHarnessDriver,
+  antigravityHarnessCapabilities,
   antigravityModelDescriptors,
+  antigravityPermissionDisposition,
   antigravitySessionPolicy,
   classifyAntigravityAcpError,
   normalizeAntigravityUpdate,
@@ -62,17 +65,20 @@ const initial: readonly AcpSessionConfigOption[] = [
 ];
 
 describe("Antigravity ACP policy", () => {
-  it("uses Zed identity, read-only files, resume, and explicit access-mode mappings", () => {
-    expect(antigravitySessionPolicy(1)).toMatchObject({
+  it("uses Opensteer identity, restart steering (no native prompt steering), read-only files, resume, and explicit access-mode mappings", () => {
+    expect(antigravityHarnessCapabilities.steering).toBe(false);
+    expect(antigravityHarnessCapabilities.messageAttachments?.nativeImages?.steering).toBe(false);
+    const policyV1 = antigravitySessionPolicy(1);
+    expect(policyV1).toMatchObject({
       accessModeIds: {
         "approval-required": "default",
         "auto-accept-edits": "auto_edit",
-        auto: "default",
+        auto: "auto",
         "full-access": "yolo",
       },
       cancel: { behavior: "wait-for-prompt" },
       clientCapabilities: { elicitation: true, fileSystem: "read-only", terminal: false },
-      clientInfo: { name: "zed", version: "0.0.0" },
+      clientInfo: { name: "opensteer", version: "0.0.0" },
       eagerAuthentication: true,
       model: {
         effortCategory: "thought_level",
@@ -80,6 +86,235 @@ describe("Antigravity ACP policy", () => {
         type: "config-options",
       },
       resume: { method: "resume", suppressReplay: false },
+    });
+    expect(policyV1.steering).toBeUndefined();
+  });
+
+  it("enforces access modes via permissionDisposition when the 1.5 CLI stays in default mode", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opensteer-antigravity-perms-"));
+    temporaryDirectories.push(root);
+    const workspacePath = join(root, "workspace");
+    const outsidePath = join(root, "outside");
+    await mkdir(workspacePath);
+    await mkdir(outsidePath);
+    await symlink(outsidePath, join(workspacePath, "escape-link"));
+
+    const editInside = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: {
+        id: "call-1",
+        kind: "edit",
+        locations: [{ path: join(workspacePath, "src", "file.ts") }],
+      },
+    };
+    const editEscape = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: {
+        id: "call-2",
+        kind: "edit",
+        locations: [{ path: join(workspacePath, "escape-link", "secret.txt") }],
+      },
+    };
+    const executeCall = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: { id: "call-3", kind: "execute", rawInput: { CommandLine: "rm -rf /tmp/x" } },
+    };
+    const opensteerMcp = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: {
+        id: "call-4",
+        kind: "other",
+        rawInput: { ServerName: "opensteer", ToolName: "opensteer_task_read" },
+      },
+    };
+
+    const deleteInside = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: {
+        id: "call-del",
+        kind: "delete",
+        locations: [{ path: join(workspacePath, "src", "file.ts") }],
+      },
+    };
+    const moveInside = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: {
+        id: "call-move",
+        kind: "move",
+        locations: [{ path: join(workspacePath, "src", "file.ts") }],
+      },
+    };
+    const spoofedTitleMcp = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: {
+        id: "call-spoof",
+        kind: "other",
+        title: "Run mcp_opensteer_task_read",
+      },
+    };
+    const opensteerMetaMcp = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: {
+        id: "call-meta",
+        kind: "other",
+        meta: { mcp: { server: "opensteer", tool: "opensteer_task_read" } },
+      },
+    };
+
+    expect(
+      antigravityPermissionDisposition(executeCall, {
+        accessMode: "full-access",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("allow");
+    expect(
+      antigravityPermissionDisposition(editInside, {
+        accessMode: "auto-accept-edits",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("allow");
+    expect(
+      antigravityPermissionDisposition(deleteInside, {
+        accessMode: "auto-accept-edits",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("ask");
+    expect(
+      antigravityPermissionDisposition(moveInside, {
+        accessMode: "auto-accept-edits",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("ask");
+    expect(
+      antigravityPermissionDisposition(editEscape, {
+        accessMode: "auto-accept-edits",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("ask");
+    expect(
+      antigravityPermissionDisposition(executeCall, {
+        accessMode: "auto-accept-edits",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("ask");
+    expect(
+      antigravityPermissionDisposition(spoofedTitleMcp, {
+        accessMode: "auto-accept-edits",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("ask");
+    expect(
+      antigravityPermissionDisposition(opensteerMcp, {
+        accessMode: "auto-accept-edits",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("allow");
+    expect(
+      antigravityPermissionDisposition(opensteerMetaMcp, {
+        accessMode: "auto-accept-edits",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("allow");
+    expect(
+      antigravityPermissionDisposition(editInside, {
+        accessMode: "approval-required",
+        workspacePath,
+        writableRoots: [workspacePath],
+      }),
+    ).toBe("ask");
+    const readCall = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: { id: "call-read", kind: "read" },
+    };
+    const searchCall = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: { id: "call-search", kind: "search" },
+    };
+    const thinkCall = {
+      options: [{ id: "allow", kind: "allow_once", label: "Allow" }],
+      toolCall: { id: "call-think", kind: "think" },
+    };
+    for (const invalidMode of [undefined, "unrecognized-mode"] as unknown as [
+      Parameters<typeof antigravityPermissionDisposition>[1]["accessMode"],
+      Parameters<typeof antigravityPermissionDisposition>[1]["accessMode"],
+    ]) {
+      for (const request of [readCall, searchCall, thinkCall, opensteerMcp, opensteerMetaMcp]) {
+        expect(
+          antigravityPermissionDisposition(request, {
+            accessMode: invalidMode,
+            workspacePath,
+            writableRoots: [workspacePath],
+          }),
+        ).toBe("ask");
+      }
+    }
+  });
+
+  it("disables native prompt steering for both ACP protocol versions so Antigravity steers by restart (X1)", async () => {
+    expect(antigravitySessionPolicy(1).steering).toBeUndefined();
+    expect(antigravitySessionPolicy(2).steering).toBeUndefined();
+
+    for (const protocolVersion of [1, 2] as const) {
+      const fixture = await setupTurn("skills");
+      const prepared = vi.spyOn(antigravityRuntime, "prepareAntigravityRuntime").mockResolvedValue({
+        directory: fixture.context.workspacePath,
+        executable: process.execPath,
+        protocolVersion,
+        version: "1.5.16",
+      });
+      const driver = new AntigravityHarnessDriver({
+        nodeExecutable: process.execPath,
+        runtimeCacheDirectory: fixture.context.workspacePath,
+      });
+      try {
+        expect(driver.capabilities.steering).toBe(false);
+        await driver.prepare({
+          config: {},
+          environment: fixture.context.environment,
+          providerState: fixture.context.providerState,
+          signal: AbortSignal.timeout(2_000),
+          sourceId: "google",
+          workingDirectory: fixture.context.workspacePath,
+        });
+        const adapter = await driver.create({
+          config: {},
+          instanceId: fixture.context.harnessInstanceId,
+          sourceId: "google",
+        });
+        try {
+          expect(adapter.capabilities.steering).toBe(false);
+          expect(adapter.capabilities.messageAttachments?.nativeImages?.steering).toBe(false);
+        } finally {
+          await adapter.close();
+        }
+      } finally {
+        prepared.mockRestore();
+        await fixture.adapter.close();
+      }
+    }
+  });
+
+  it("classifies missing Claude thinking signatures as harness_session_broken", () => {
+    const error = classifyAntigravityAcpError(
+      new Error("messages.1.content.0.thinking.signature: Field required"),
+      {
+        operation: "prompt",
+        providerSessionReference: "11111111-1111-4111-8111-111111111111",
+        stderrTail: "",
+      },
+    );
+    expect(error).toMatchObject({
+      code: harnessSessionBrokenFailureCode,
+      retryable: true,
     });
   });
 
@@ -627,9 +862,8 @@ it("refuses a task that is not the person's own before starting Antigravity", as
   const prepared = vi.spyOn(antigravityRuntime, "prepareAntigravityRuntime").mockResolvedValue({
     directory: fixture.context.workspacePath,
     executable: process.execPath,
-    harness: process.execPath,
     protocolVersion: 1,
-    version: "1.4.1",
+    version: "1.5.16",
   });
   const driver = new AntigravityHarnessDriver({
     nodeExecutable: process.execPath,

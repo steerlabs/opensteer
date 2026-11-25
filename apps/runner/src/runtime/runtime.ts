@@ -16,10 +16,11 @@ import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { hostCommandPlatform } from "@opensteer/shared/command";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import {
-  networkCredentialSecrets,
+  engineDiagnosticSecrets,
   networkEnvironmentNames,
   redactNetworkCredentials,
   safeMessage,
+  shortNamedSecrets,
 } from "@opensteer/shared/safeMessage";
 import { selectEnvironment } from "@opensteer/shared/userEnvironment";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -340,6 +341,14 @@ interface ActiveRun {
   shutdown?: boolean;
   readonly abort: AbortController;
   readonly command: Extract<RunnerCommand, { readonly type: "run.execute" }>;
+  environment?: Readonly<Record<string, string>>;
+  proxiedSecret?: string;
+  redaction?: {
+    readonly agentToolsToken: string | undefined;
+    readonly environment: Readonly<Record<string, string>> | undefined;
+    readonly proxiedSecret: string | undefined;
+    readonly value: RunDiagnosticRedaction;
+  };
   readonly journal: RunJournal;
   /** Local time after which the Run stops unless the Host renews its lease. */
   leaseDeadline: number;
@@ -3409,6 +3418,7 @@ export class RunnerRuntime {
       }
       signal.throwIfAborted();
       const baseEnvironment = await this.#harnessEnvironment(context.harness.driverKind);
+      active.environment = baseEnvironment;
       // Before anything of the Run starts: an engine not shown to start
       // without the person's own configuration runs only their own tasks.
       assertEngineMayRun(context.harness.driverKind, {
@@ -3710,6 +3720,8 @@ export class RunnerRuntime {
           reason: "voice-engine-unsupported",
           message: "This engine does not support voice calls.",
         });
+      active.environment = environment;
+      active.proxiedSecret = proxied.secret;
       const sessionContext = {
         ...(active.voiceCall ? { voiceCall: active.voiceCall } : {}),
         ...attachmentContext,
@@ -3914,7 +3926,7 @@ export class RunnerRuntime {
       // Runner could not take broke the harness protocol.
       terminal = consumptionError
         ? failureEvent(
-            safeMessage(consumptionError, this.#safeMessageOptions),
+            this.#safeRunError(active, consumptionError),
             consumptionError instanceof EventBufferOverflowError
               ? "harness_event_budget_exceeded"
               : "harness_protocol_error",
@@ -3923,12 +3935,12 @@ export class RunnerRuntime {
           ? { data: { status: "interrupted" }, type: "run.interrupted" }
           : error instanceof EngineUnavailableForTaskError
             ? failureEvent(
-                error.message,
+                this.#scrubRunText(active, error.message),
                 "forbidden",
-                redactNetworkCredentials(error.ownerMessage, this.#safeMessageOptions.secrets),
+                this.#scrubRunText(active, error.ownerMessage),
               )
             : failureEvent(
-                safeMessage(error, this.#safeMessageOptions),
+                this.#safeRunError(active, error),
                 error instanceof OpensteerError && error.reason === "previous-stop-unconfirmed"
                   ? runTerminationUnprovenCode
                   : // A refusal reaches the Home as one, not as an execution error.
@@ -4064,10 +4076,7 @@ export class RunnerRuntime {
         // The logger names the line `message`; the reason is `detail`.
         this.#logger?.error("run.failed", {
           code: terminal.data.code,
-          detail: redactNetworkCredentials(
-            terminal.data.ownerMessage ?? terminal.data.message,
-            this.#safeMessageOptions.secrets,
-          ),
+          detail: this.#scrubRunText(active, terminal.data.ownerMessage ?? terminal.data.message),
           driverKind: context.harness.driverKind,
           harnessInstanceId: context.harnessInstanceId,
           runId: context.runId,
@@ -4367,7 +4376,11 @@ export class RunnerRuntime {
             data: { status: "interrupted", cause: active.interruptionCause },
           }
         : original;
-    const event = fittedDurableEvent(outcome, this.#safeMessageOptions.secrets);
+    const redaction =
+      outcome.type === "run.failed" || outcome.type === "run.retry"
+        ? this.#runRedactionContext(active)
+        : undefined;
+    const event = fittedDurableEvent(outcome, redaction);
     const { context } = active.command;
     const pending = PendingAgentEventV2Schema.parse({
       bindingGeneration: context.bindingGeneration,
@@ -4571,8 +4584,67 @@ export class RunnerRuntime {
       await session.resolveRequest(requestId, response);
       return { status: "accepted" };
     } catch (error) {
-      return reject("not_found", safeMessage(error, this.#safeMessageOptions), false);
+      return reject("not_found", this.#safeRunError(active, error), false);
     }
+  }
+
+  #runRedactionContext(active: ActiveRun): RunDiagnosticRedaction {
+    const rawEnvironment = active.environment;
+    const proxiedSecret = active.proxiedSecret;
+    const agentToolsToken = active.credentials?.agentTools;
+    if (
+      active.redaction &&
+      active.redaction.environment === rawEnvironment &&
+      active.redaction.proxiedSecret === proxiedSecret &&
+      active.redaction.agentToolsToken === agentToolsToken
+    ) {
+      return active.redaction.value;
+    }
+    const environment = rawEnvironment ?? process.env;
+    const tokens = [
+      proxiedSecret ?? "",
+      agentToolsToken ?? "",
+      active.command.context.agentTools.token,
+    ].filter(Boolean);
+    const shortSecrets = [
+      ...new Set([
+        ...shortNamedSecrets(environment, 4),
+        ...shortNamedSecrets(process.env, 4),
+        ...tokens.filter((token) => token.length > 0 && token.length < 4),
+      ]),
+    ].sort((left, right) => right.length - left.length);
+    const secrets = [
+      ...new Set([
+        ...this.#safeMessageOptions.secrets,
+        ...engineDiagnosticSecrets(process.env, 4),
+        ...engineDiagnosticSecrets(environment, 4),
+        ...tokens.filter((token) => token.length >= 4),
+      ]),
+    ].sort((left, right) => right.length - left.length);
+    const value: RunDiagnosticRedaction = { secrets, shortSecrets };
+    active.redaction = {
+      agentToolsToken,
+      environment: rawEnvironment,
+      proxiedSecret,
+      value,
+    };
+    return value;
+  }
+
+  #scrubRunText(
+    active: ActiveRun,
+    text: string,
+    suppressedMessage = suppressedRunFailureMessage,
+  ): string {
+    return sanitizeRunDiagnosticText(text, this.#runRedactionContext(active), suppressedMessage);
+  }
+
+  #safeRunError(active: ActiveRun, error: unknown): string {
+    const redaction = this.#runRedactionContext(active);
+    const message = safeMessage(error, { ...this.#safeMessageOptions, secrets: redaction.secrets });
+    return redaction.shortSecrets.some((secret) => message.includes(secret))
+      ? suppressedRunFailureMessage
+      : message;
   }
 
   async #steer(
@@ -4618,9 +4690,9 @@ export class RunnerRuntime {
       });
     } catch (error) {
       if (error instanceof HarnessSteerDeliveryUnknownError) {
-        return { message: safeMessage(error, this.#safeMessageOptions), status: "uncertain" };
+        return { message: this.#safeRunError(active, error), status: "uncertain" };
       }
-      return reject("conflict", safeMessage(error, this.#safeMessageOptions), false);
+      return reject("conflict", this.#safeRunError(active, error), false);
     }
     try {
       await this.#emit(active, {
@@ -4630,7 +4702,7 @@ export class RunnerRuntime {
     } catch (error) {
       // The provider already accepted the message. Losing the durable receipt
       // cannot be presented as a refusal or cause the input to run again.
-      return { message: safeMessage(error, this.#safeMessageOptions), status: "uncertain" };
+      return { message: this.#safeRunError(active, error), status: "uncertain" };
     }
     return { status: "accepted" };
   }
@@ -4940,9 +5012,25 @@ const reasoningCompletedMaxLength = 300_000;
  * work, so the text is cut to fit, saying it was cut. Every engine's events
  * pass through here.
  */
+interface RunDiagnosticRedaction {
+  readonly secrets: readonly string[];
+  readonly shortSecrets: readonly string[];
+}
+
+function sanitizeRunDiagnosticText(
+  text: string,
+  redaction: RunDiagnosticRedaction,
+  suppressedMessage: string,
+): string {
+  const redacted = redactNetworkCredentials(text, redaction.secrets);
+  return redaction.shortSecrets.some((secret) => redacted.includes(secret))
+    ? suppressedMessage
+    : redacted;
+}
+
 function fittedDurableEvent(
   event: HarnessDurableEvent,
-  secrets: readonly string[],
+  redaction?: RunDiagnosticRedaction,
 ): HarnessDurableEvent {
   switch (event.type) {
     case "node.message": {
@@ -4982,7 +5070,9 @@ function fittedDurableEvent(
       };
     }
     case "run.retry": {
-      const redacted = redactNetworkCredentials(event.data.message, secrets);
+      const redacted = redaction
+        ? sanitizeRunDiagnosticText(event.data.message, redaction, suppressedRunRetryMessage)
+        : event.data.message;
       const message = utf8Prefix(redacted, runRetryMessageMaxLength);
       return message === event.data.message
         ? event
@@ -4993,15 +5083,27 @@ function fittedDurableEvent(
         ...event,
         data: {
           ...event.data,
-          // An engine's error can quote a proxy address, which can carry a password.
+          // An engine's error can quote a proxy address or Run-scoped secret.
           message: fittedText(
-            redactNetworkCredentials(event.data.message, secrets),
+            redaction
+              ? sanitizeRunDiagnosticText(
+                  event.data.message,
+                  redaction,
+                  suppressedRunFailureMessage,
+                )
+              : event.data.message,
             runFailureMessageMaxLength,
           ),
           ...(event.data.ownerMessage !== undefined
             ? {
                 ownerMessage: fittedText(
-                  redactNetworkCredentials(event.data.ownerMessage, secrets),
+                  redaction
+                    ? sanitizeRunDiagnosticText(
+                        event.data.ownerMessage,
+                        redaction,
+                        suppressedRunFailureMessage,
+                      )
+                    : event.data.ownerMessage,
                   runFailureMessageMaxLength,
                 ),
               }
@@ -5204,10 +5306,15 @@ function scrubbingLogger(logger: RunnerLogger, secrets: readonly string[]): Runn
   };
 }
 
+const suppressedRunFailureMessage =
+  "This Run failed; details were withheld because the error contained a credential.";
+const suppressedRunRetryMessage =
+  "Retrying after an error; details were withheld because the message contained a credential.";
+
 const safeMessageOptions = {
   fallback: "Runner operation failed",
   maximumLength: Number.MAX_SAFE_INTEGER,
-  secrets: networkCredentialSecrets(process.env),
+  secrets: engineDiagnosticSecrets(process.env, 4),
 } as const;
 
 function boundedPositiveInteger(

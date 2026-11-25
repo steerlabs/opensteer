@@ -7,6 +7,7 @@ import {
   externalAgentsReach,
   guideAddress,
   phoneSentence,
+  connectedAgentNamePart,
   type ConnectedAgentRow,
   type ExternalAgentGuide,
 } from "@opensteer/client/host";
@@ -62,7 +63,10 @@ export function ExternalAgentsSettingsController(): ReactNode {
     rows.map((row): NativeSettingsRow => ({
       key: row.id,
       kind: "button",
-      label: row.identity.label,
+      label: phoneSentence(
+        [connectedAgentNamePart({ name: row.identity.label, who: row.identity.who })],
+        { quoteNames: !row.connection.bridge },
+      ),
       detail: phoneSentence(row.lineParts),
       opens: true,
       lead: (

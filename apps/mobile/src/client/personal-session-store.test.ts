@@ -55,11 +55,20 @@ describe("createPersonalSessionStore", () => {
     );
   });
 
-  it("presents nothing once the session has expired", async () => {
+  it("presents nothing once the session can no longer be valid", async () => {
     const { sessions } = store();
     await sessions.save(session("2026-09-14T00:00:00.000Z"));
 
-    expect(await sessions.authorization(deploymentId, new Date("2026-09-14T00:00:01Z"))).toBeNull();
+    expect(await sessions.authorization(deploymentId, new Date("2026-09-21T00:00:01Z"))).toBeNull();
+  });
+
+  it("keeps presenting a session past its sign-in idle deadline, which the Host renews on use", async () => {
+    const { sessions } = store();
+    await sessions.save(session("2026-09-14T00:00:00.000Z"));
+
+    expect(await sessions.authorization(deploymentId, new Date("2026-09-20T00:00:00Z"))).toBe(
+      `PersonalRemote ${token}`,
+    );
   });
 
   it("retains the storage error if a new credential cannot be saved", async () => {
