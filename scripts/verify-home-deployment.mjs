@@ -2353,6 +2353,13 @@ mv "$OPENSTEER_HOME_DIR/current/common.proof.sh" "$OPENSTEER_HOME_DIR/current/co
           url: `${loopbackOrigin}/`,
           title: "Runner loopback",
         });
+      } catch (error) {
+        // What the browser, its egress and the Host said, with the error.
+        const logs = ["browser-runtime", "browser-egress", "host"].map((service) => {
+          const output = result("docker", ["logs", "--tail", "25", container(service)]);
+          return `--- ${service}\n${output.stdout}${output.stderr}`;
+        });
+        throw new Error(`${error.message}\n${logs.join("\n")}`);
       } finally {
         vm(`load_compose
         rm -f "$home_dir/secrets/"egress_{url,username,password}
