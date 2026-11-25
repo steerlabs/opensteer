@@ -36,6 +36,7 @@
     "@opensteer/orchestration": "workspace:*",
     "@opensteer/protocol": "workspace:*",
     "@opensteer/runner-auth": "workspace:*",
+    "@opensteer/runner-client": "workspace:*",
     "@opensteer/shared": "workspace:*",
     "@opensteer/triggers": "workspace:*",
     "fastify": "catalog:",

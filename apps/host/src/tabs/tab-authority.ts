@@ -1,5 +1,6 @@
 import {
   OpensteerError,
+  agentGrantAllows,
   isAllowedConnectionPageUrl,
   isPhoneDisplayDefinitionId,
   type ResourceAccessLevel,
@@ -180,6 +181,13 @@ function tabTargetAuthority(
     const target =
       "ownerId" in targetInput ? targetInput : DeviceTabTargetSchema.parse(targetInput);
     if ("ownerId" in target && target.ownerId !== ownerId) return false;
+    const profileId = target.kind === "page" && "profileId" in target ? target.profileId : null;
+    if (
+      selected &&
+      profileId &&
+      !agentGrantAllows(selected.grant, { kind: "browser-profile", profileId }, required)
+    )
+      return false;
     // Rule 1's page rule: to a connection's work a page on an extension's address does not exist.
     if (
       target.kind === "page" &&
@@ -189,7 +197,6 @@ function tabTargetAuthority(
       return false;
     if (actor.kind === "person" && "id" in target && required === "read") return true;
     let computerId = "computerId" in target ? target.computerId : undefined;
-    const profileId = target.kind === "page" && "profileId" in target ? target.profileId : null;
     if (target.kind === "app") {
       const app = (await (apps ??= appRows.execute())).find((app) => app.id === target.appId);
       if (!app || app.deleting) return false;

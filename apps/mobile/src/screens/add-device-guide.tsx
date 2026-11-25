@@ -12,19 +12,19 @@ import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings
  */
 export function addDeviceGuideSections(input: {
   readonly onConnectSomethingElse: () => void;
+  readonly mac: {
+    /** The name the Mac app lists this Home by, and asks to connect to. */
+    readonly homeName: string;
+    /** The Opensteer account's site, when this Home has one: it links to the Mac app. */
+    readonly portalOrigin: string | null;
+    readonly onShareLink: (link: string) => void;
+  };
 }): readonly NativeSettingsSection[] {
   return [
     {
       key: "mac",
       title: "A Mac",
-      rows: [
-        {
-          key: "instructions",
-          kind: "text",
-          label:
-            "Install Opensteer on the Mac and sign in with the same Opensteer account. It shows up here, and you choose what your agent can use.",
-        },
-      ],
+      rows: macRows(input.mac),
     },
     {
       key: "add-phone",
@@ -120,6 +120,49 @@ export function addDeviceGuideSections(input: {
           onPress: input.onConnectSomethingElse,
         },
       ],
+    },
+  ];
+}
+
+/**
+ * Adding a Mac, in the order a person does it. With an Opensteer account behind this Home, the
+ * app comes from the account's own link (`/mac`), sent to the Mac from here, and signing in there
+ * lists this Home: opening it asks to connect this Mac, and Connect does. A Home with no
+ * Opensteer account has no such link or list: a pairing code from that Home connects the Mac.
+ */
+function macRows(mac: {
+  readonly homeName: string;
+  readonly portalOrigin: string | null;
+  readonly onShareLink: (link: string) => void;
+}): readonly NativeSettingsRow[] {
+  const install = {
+    key: "install",
+    kind: "text" as const,
+    label: "1. Install Opensteer on the Mac.",
+  };
+  if (mac.portalOrigin === null)
+    return [
+      install,
+      {
+        key: "pair",
+        kind: "text",
+        label: `2. Connect it with a pairing code: in Opensteer on ${mac.homeName}, choose Add a device › Advanced › Use a pairing code.`,
+      },
+    ];
+  const link = new URL("/mac", mac.portalOrigin).toString();
+  return [
+    install,
+    {
+      key: "link",
+      kind: "button",
+      label: "Send me the Mac link",
+      onPress: () => mac.onShareLink(link),
+    },
+    { key: "sign-in", kind: "text", label: "2. Sign in with the same Opensteer account." },
+    {
+      key: "connect",
+      kind: "text",
+      label: `3. Open ${mac.homeName} there and choose Connect. You choose what your agent can use on the Mac.`,
     },
   ];
 }

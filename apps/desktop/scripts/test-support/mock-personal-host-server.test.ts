@@ -1,6 +1,11 @@
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { HttpHostClient, type ClientLifecycle, type WebSocketClient } from "@opensteer/client/host";
+import {
+  browserViewerGraceMs,
+  HttpHostClient,
+  type ClientLifecycle,
+  type WebSocketClient,
+} from "@opensteer/client/host";
 import { MockHostClient, MockPersonalHost } from "@opensteer/client/mock";
 import type { TabId } from "@opensteer/core";
 import { BrowserServerMessageSchema, BrowserSurfaceIdSchema } from "@opensteer/protocol";
@@ -190,11 +195,16 @@ describe("mock personal host HTTP + WS fixture bridge", () => {
       for (const listener of next ? foregroundListeners : backgroundListeners) listener();
     };
 
+    const viewerSockets: WebSocketClient[] = [];
     const client = new HttpHostClient({
       baseUrl: origin,
       capabilities: [],
       lifecycle,
-      webSocketFactory: nodeWebSocketFactory,
+      webSocketFactory: (url) => {
+        const socket = nodeWebSocketFactory(url);
+        if (url.includes("/browser-sessions/")) viewerSockets.push(socket);
+        return socket;
+      },
     });
     let activatedSurface = false;
     const stopBind = client.subscribe(() => {
@@ -217,7 +227,17 @@ describe("mock personal host HTTP + WS fixture bridge", () => {
       setVisible(true);
       await vi.waitFor(() => expect(subscriptions.size).toBe(2), { timeout: 5_000 });
 
-      setVisible(false);
+      // Hidden, the client stays a viewer for the grace, then lets go of both sockets.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        setVisible(false);
+        vi.advanceTimersByTime(browserViewerGraceMs - 1);
+        // The client's own sockets: closing one changes its state at once.
+        expect(viewerSockets.filter((socket) => socket.readyState === 1)).toHaveLength(2);
+        vi.advanceTimersByTime(1);
+      } finally {
+        vi.useRealTimers();
+      }
       await vi.waitFor(() => expect(subscriptions.size).toBe(0), { timeout: 5_000 });
 
       setVisible(true);

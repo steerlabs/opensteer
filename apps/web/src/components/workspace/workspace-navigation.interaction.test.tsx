@@ -8,6 +8,7 @@ import type { MockHostClient } from "@opensteer/client/mock";
 import {
   doneTaskList,
   heldThread,
+  HostClientRequestError,
   placeList,
   taskAfter,
   taskList,
@@ -862,6 +863,43 @@ describe("a link arriving at the start page", () => {
       { typed: true },
     );
   });
+
+  it.each([
+    [
+      "browser-pool-refused",
+      "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
+    ],
+    [
+      "browser-pool-start-refused",
+      "Your Cloud Computer’s browser can’t start right now. Try again in a moment.",
+    ],
+    ["browser-pool-setting-up", "Setting up your browser… This can take a few minutes."],
+    [
+      "browser-pool-unreachable",
+      "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
+    ],
+  ])(
+    "shows the Cloud Computer pool reason (%s) on the start page without telling the person to choose another profile",
+    async (reason, expectedText) => {
+      await mount((source) => {
+        vi.spyOn(source, "openTab").mockRejectedValueOnce(
+          new HostClientRequestError({
+            code: "conflict",
+            message: expectedText,
+            reason,
+            status: 409,
+          }),
+        );
+        return { pathname: "/", search: "?panel=browser", state };
+      });
+      await until("The start page never showed the pool refusal", () => {
+        const alert = document.querySelector(".start-page__refusal");
+        expect(alert?.textContent).toContain(expectedText);
+        expect(alert?.textContent).not.toContain("Choose another profile");
+        return alert;
+      });
+    },
+  );
 });
 
 it("keeps the person on their tab when a docked task moves tabs, and jumps from its live card", async () => {

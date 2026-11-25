@@ -8,11 +8,7 @@ import type {
 } from "@opensteer/browser-runtime-core";
 import { BrowserRuntimeError } from "@opensteer/browser-runtime-core";
 import { expect, it } from "vitest";
-import {
-  browserPoolEndFailure,
-  browserPoolEndFailureIsHandled,
-  browserPoolEndOutcome,
-} from "./browser-pool-coordinator.js";
+import { browserPoolEndFailure, browserPoolEndOutcome } from "./browser-pool-coordinator.js";
 import { BrowserPoolUnanswered } from "./browser-pool-controller.js";
 
 const fence: BrowserPoolRuntimeFence = { slot: "slot", term: 1, instance: "i-1", epoch: 1 };
@@ -122,18 +118,12 @@ it.each(refusals)("takes %s as %s", async (_name, refusal, runtimeState, expecte
 
 it("throws only the loop's unknown or its pending, never a plain error", () => {
   expect(browserPoolEndFailure(0, undefined)).toBeUndefined();
-  const thrown = [
-    browserPoolEndFailure(1, undefined),
-    browserPoolEndFailure(0, relayRefused),
-    browserPoolEndFailure(2, relayRefused),
-    browserPoolEndFailure(0, forbidden),
-    browserPoolEndFailure(0, new Error("boom")),
-    browserPoolEndFailure(3, new Error("boom")),
-  ];
-  for (const error of thrown) expect(browserPoolEndFailureIsHandled(error)).toBe(true);
+  expect(browserPoolEndFailure(1, undefined)?.constructor.name).toBe("BrowserPoolPending");
+  expect(browserPoolEndFailure(0, relayRefused)).toBe(relayRefused);
+  expect(browserPoolEndFailure(2, relayRefused)).toBe(relayRefused);
   // A refusal the runtime gave is kept as the cause of the unknown it becomes.
   expect(browserPoolEndFailure(0, forbidden)).toBeInstanceOf(BrowserPoolUnanswered);
   expect((browserPoolEndFailure(0, forbidden) as Error).cause).toBe(forbidden);
-  // A plain error, not through the end step, is neither.
-  expect(browserPoolEndFailureIsHandled(new Error("boom"))).toBe(false);
+  expect(browserPoolEndFailure(0, new Error("boom"))).toBeInstanceOf(BrowserPoolUnanswered);
+  expect(browserPoolEndFailure(3, new Error("boom"))).toBeInstanceOf(BrowserPoolUnanswered);
 });

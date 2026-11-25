@@ -1931,6 +1931,10 @@ export class BrowserRuntime implements NativePresentationSource {
     this.pool?.close();
     if (this.shutdownResult) return this.shutdownResult;
     this.shuttingDown = true;
+    // Refuse new replay-ledger writes immediately and drain any in-flight writeAtomic before
+    // shutdown() resolves, so stopping or cleaning up the state directory never races the ledger.
+    const ticketsClosed = this.ticketVerifier.close?.();
+    void ticketsClosed?.catch(() => undefined);
     for (const attempt of this.attempts) attempt.abort();
     for (const host of this.hosts.values()) {
       host.acceptingSessions = false;
@@ -1957,9 +1961,13 @@ export class BrowserRuntime implements NativePresentationSource {
         this.hosts.clear();
         this.sessions.clear();
       } finally {
-        // A failed shutdown (Chromium died under it) still lets the profile go, so the same
-        // process can start a runtime on it again.
-        await this.localStore?.close();
+        try {
+          await ticketsClosed;
+        } finally {
+          // A failed shutdown (Chromium died under it) still lets the profile go, so the same
+          // process can start a runtime on it again.
+          await this.localStore?.close();
+        }
       }
       this.state = "closed";
     })();

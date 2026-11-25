@@ -52,6 +52,7 @@ export class DurableAttachTicketReplayLedger {
   readonly #maxEntries: number;
   readonly #maxFileBytes: number;
   readonly #mutex: AsyncMutex;
+  #closed = false;
 
   private constructor(options: DurableAttachTicketReplayLedgerOptions) {
     if (!path.isAbsolute(options.filePath)) {
@@ -86,6 +87,11 @@ export class DurableAttachTicketReplayLedger {
   }
 
   claim(nonce: string, expiresAt: number, now: number): Promise<void> {
+    if (this.#closed) {
+      return Promise.reject(
+        new AttachTicketReplayLedgerError("unavailable", "Attach ticket replay ledger is closed"),
+      );
+    }
     if (!ReplayEntrySchema.shape.nonce.safeParse(nonce).success) {
       return Promise.reject(
         new AttachTicketReplayLedgerError("unavailable", "Replay nonce is invalid"),
@@ -97,6 +103,15 @@ export class DurableAttachTicketReplayLedger {
       );
     }
     return this.#mutex.run(() => this.#claim(nonce, expiresAt, now));
+  }
+
+  /**
+   * Stops admitting new claims and waits for any in-flight write to finish so
+   * shutdown can exit or remove the ledger directory without racing `writeAtomic`.
+   */
+  close(): Promise<void> {
+    this.#closed = true;
+    return this.#mutex.run(async () => undefined);
   }
 
   async #initialize(now: number): Promise<void> {
@@ -128,6 +143,12 @@ export class DurableAttachTicketReplayLedger {
   }
 
   async #claim(nonce: string, expiresAt: number, now: number): Promise<void> {
+    if (this.#closed) {
+      throw new AttachTicketReplayLedgerError(
+        "unavailable",
+        "Attach ticket replay ledger is closed",
+      );
+    }
     try {
       await ensureReplayDirectory(path.dirname(this.#filePath));
       const state = await this.#read();

@@ -960,6 +960,17 @@ export function listBrowserPoolRetiredTargets(
     .execute(databaseOperationOptions());
 }
 
+/** Every replaced target across any Runner (including earlier replaced Runners) still draining Stops. */
+export function listAllBrowserPoolRetiredTargets(
+  database: Kysely<DatabaseSchema>,
+): Promise<readonly BrowserPoolRetiredTarget[]> {
+  return database
+    .selectFrom("browserPoolRetiredTargets")
+    .selectAll()
+    .orderBy("retiredAt")
+    .execute(databaseOperationOptions());
+}
+
 /** A replaced target none of whose Stops waits any more: the Home stops asking it. */
 export async function forgetBrowserPoolRetiredTarget(
   database: Kysely<DatabaseSchema>,
@@ -1228,20 +1239,6 @@ export async function dismissBrowserPoolUnconfirmedSession(
   });
 }
 
-export function listBrowserPoolDocumentLosses(
-  database: Kysely<DatabaseSchema>,
-  ownerId: UserId,
-  surfaceId: BrowserSurfaceId,
-) {
-  return database
-    .selectFrom("browserPoolDocumentLosses")
-    .selectAll()
-    .where("ownerId", "=", ownerId)
-    .where("surfaceId", "=", surfaceId)
-    .orderBy("lostAt", "desc")
-    .execute(databaseOperationOptions());
-}
-
 /**
  * The person sees a loss once. A notice stays until the client says it showed it (by its id);
  * a reply lost on the way is answered with the same notice again.
@@ -1478,8 +1475,14 @@ export async function retireBrowserPoolTarget(
   /**
    * The target as the Home's account gave it (W8): kept, with the slot's fence, while a Stop it
    * held waits for its word, so a Home (this one, or one after a restart) goes on asking it.
+   * `endActiveSessions` ends any `starting`/`ready` sessions still owned by the retiring slot in
+   * the same transaction (used when retiring a pre-crash stale slot whose live coordinator never
+   * ran `retirePool`; Sol 4).
    */
-  retired?: { readonly target: Readonly<Record<string, unknown>> },
+  retired?: {
+    readonly target?: Readonly<Record<string, unknown>>;
+    readonly endActiveSessions?: boolean;
+  },
 ): Promise<void> {
   await commitPersonalMutation(
     database,
@@ -1500,7 +1503,50 @@ export async function retireBrowserPoolTarget(
         .where("runnerId", "=", runnerId)
         .returningAll()
         .executeTakeFirst(databaseOperationOptions());
-      if (slot && retired) {
+      if (slot && retired?.endActiveSessions) {
+        // End any non-closing sessions still bound to the retiring slot with their tab loss notes
+        // in this same transaction (Sol 4: covers crash between target write and retirement).
+        // Closing Stops keep state='closing' without fabricated close evidence (Rule 4 / W14).
+        const staleReady = await tx
+          .selectFrom("browserSessions")
+          .select("id")
+          .where("runnerId", "=", runnerId)
+          .where("runtimeId", "=", slot.runtimeId)
+          .where("state", "in", ["starting", "ready"])
+          .where(ownedBy(slot))
+          .orderBy("id")
+          .execute(databaseOperationOptions());
+        if (staleReady.length) {
+          const staleIds = staleReady.map(({ id }) => id);
+          const tabRows = await tx
+            .selectFrom("personalTabs")
+            .select(["id", sql<BrowserSessionId>`page_binding->>'sessionId'`.as("sessionId")])
+            .where(sql<string>`page_binding->>'sessionId'`, "in", staleIds)
+            .where("closedAt", "is", null)
+            .orderBy("id")
+            .execute(databaseOperationOptions());
+          const tabsBySession = new Map<BrowserSessionId, string[]>();
+          for (const row of tabRows) {
+            const list = tabsBySession.get(row.sessionId) ?? [];
+            list.push(row.id);
+            tabsBySession.set(row.sessionId, list);
+          }
+          await recordBrowserPoolLosses(
+            tx,
+            slot,
+            staleIds.map((sessionId) => ({
+              sessionId,
+              reason: "browser-replaced",
+              surfaces: (tabsBySession.get(sessionId) ?? []).map((surfaceId) => ({
+                surfaceId,
+                documentId: null,
+              })),
+            })),
+            null,
+          );
+        }
+      }
+      if (slot && retired?.target) {
         const waiting = await tx
           .selectFrom("browserSessions")
           .select("id")

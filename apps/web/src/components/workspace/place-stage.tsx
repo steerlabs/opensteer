@@ -200,8 +200,11 @@ function SelectedPlace({
         : tabViewerStands(viewer, tabState)
           ? ("show" as const)
           : ("ask-again" as const);
-  // A tab still asleep after its answer is asked for again only by Try again.
+  // A tab still asleep after its answer is asked for again only by Try again. Nothing asks while
+  // the page is hidden: the Home lets a tab nobody sees sleep, and asking would wake it again.
+  // The moment the page is seen, it asks.
   const needsActivation =
+    pageVisible &&
     placeKey !== null &&
     !!kind &&
     tabState !== "unavailable" &&

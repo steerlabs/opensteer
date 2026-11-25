@@ -35,6 +35,7 @@ import { deviceListSections, type DeviceListRow, type PhoneHere } from "./device
 import type { NativeSettingsSection } from "./native-settings-page.types.js";
 import { otherDevicesSettingsRows } from "./settings-model.js";
 import { useSettingsHost } from "./use-settings-host.js";
+import { shareMacLink } from "./welcome-model.js";
 
 const machineKinds = ["machine"] as const;
 
@@ -308,6 +309,14 @@ export function DevicesSettingsController(): ReactNode {
         ) : null}
         <AddDeviceGuide
           sections={addDeviceGuideSections({
+            mac: {
+              homeName:
+                selection.hostClient?.getSnapshot().identityConfig?.deployment.name ??
+                deploymentName,
+              portalOrigin:
+                selection.hostClient?.getSnapshot().identityConfig?.portalOrigin ?? null,
+              onShareLink: shareMacLink,
+            },
             onConnectSomethingElse: () => {
               setAdding(false);
               void leave.openNewTask(connectDeviceDraftText);

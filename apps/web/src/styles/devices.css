@@ -138,6 +138,25 @@ a.devices-row:focus-visible {
   font-size: var(--text-sm);
 }
 
+.add-device__steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+  margin: 0;
+  padding-left: 1.25em;
+  color: var(--text-soft);
+  line-height: 1.5;
+}
+
+/* The way to the Mac app, under the step it belongs to. */
+.add-device__get {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8);
+  margin-top: var(--space-8);
+}
+
 .add-device__pairing {
   display: flex;
   flex-direction: column;

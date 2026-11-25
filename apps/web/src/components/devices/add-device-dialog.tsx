@@ -138,7 +138,7 @@ export function AddDeviceDialog({
       title={<span id={titleId}>{choice ? choiceTitles[choice] : "Add a device"}</span>}
     >
       {choice === "mac" ? (
-        <AddMac homeName={homeName} />
+        <AddMac homeName={homeName} onPairing={() => setChoice("pairing")} />
       ) : choice === "phone" ? (
         <AddPhone homeName={homeName} />
       ) : choice === "chrome" ? (
@@ -215,13 +215,73 @@ function RemoteAccessOffNotice({ homeName }: { readonly homeName: string }) {
   ) : null;
 }
 
-function AddMac({ homeName }: { readonly homeName: string }) {
+/** The Opensteer account's door to the Mac app: it sends the person to the current download. */
+function macDownloadUrl(portalOrigin: string): string {
+  return new URL("/mac", portalOrigin).toString();
+}
+
+/**
+ * Adding a Mac, in the order a person does it. With an Opensteer account behind this Home, the
+ * app comes from the account's own link, and signing in there lists this Home: opening it asks
+ * "Connect this Mac to …", whose Connect makes the Mac one of the devices. A Home with no
+ * Opensteer account has no such link or list: a pairing code connects the Mac instead.
+ */
+function AddMac({
+  homeName,
+  onPairing,
+}: {
+  readonly homeName: string;
+  readonly onPairing: () => void;
+}) {
+  const { snapshot } = useShell();
+  const portal = snapshot.identityConfig?.portalOrigin ?? null;
+  const link = portal ? macDownloadUrl(portal) : null;
+  // The name the Mac app lists this Home by, and asks to connect to.
+  const name = snapshot.identityConfig?.deployment.name ?? homeName;
+  const [copied, setCopied] = useState(false);
+  if (!link)
+    return (
+      <div className="add-device__panel">
+        <ol className="add-device__steps">
+          <li>Install Opensteer on the Mac.</li>
+          <li>Connect it to {homeName} with a pairing code.</li>
+        </ol>
+        <RemoteAccessOffNotice homeName={homeName} />
+        <div className="add-device__pairing">
+          <button className="btn btn--small" onClick={onPairing} type="button">
+            Use a pairing code
+          </button>
+        </div>
+      </div>
+    );
   return (
     <div className="add-device__panel">
-      <p>
-        Install Opensteer on the Mac and sign in with the same Opensteer account. It sets itself up
-        as one of your devices, and you choose what your agent can use there.
-      </p>
+      <ol className="add-device__steps">
+        <li>
+          Install Opensteer on the Mac.
+          <span className="add-device__get">
+            <a className="btn btn--primary" href={link} rel="noopener noreferrer" target="_blank">
+              <Icon name="download" />
+              Get Opensteer for Mac
+            </a>
+            <button
+              className="btn btn--small"
+              onClick={() =>
+                void navigator.clipboard
+                  ?.writeText(link)
+                  .then(() => setCopied(true))
+                  .catch(() => undefined)
+              }
+              type="button"
+            >
+              <Icon name="copy" />
+              {copied ? "Copied" : "Copy link"}
+            </button>
+          </span>
+        </li>
+        <li>Sign in with the same Opensteer account.</li>
+        <li>{`Open ${name} there and choose Connect. You choose what your agent can use on the Mac.`}</li>
+      </ol>
       <RemoteAccessOffNotice homeName={homeName} />
     </div>
   );

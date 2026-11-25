@@ -392,6 +392,69 @@ describe("Ed25519AttachTicketVerifier", () => {
       code: "forbidden",
     });
   });
+
+  it("drains in-flight ledger writes on close() and rejects subsequent claims without touching disk", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const root = await temporaryDirectory();
+    const privateDir = path.join(root, "private");
+    const replayLedgerPath = path.join(privateDir, "attach-ticket-replay-v1.json");
+    const pausedKey = Promise.withResolvers<void>();
+    const releaseKey = Promise.withResolvers<void>();
+    let pauseNext = false;
+    const verifier = await Ed25519AttachTicketVerifier.create({
+      initializationNow: new Date("2030-01-01T00:01:00.000Z"),
+      replayLedgerPath,
+      resolvePublicKey: async () => {
+        if (pauseNext) {
+          pauseNext = false;
+          pausedKey.resolve();
+          await releaseKey.promise;
+        }
+        return keys.publicKey;
+      },
+    });
+
+    const concurrent = Array.from({ length: 10 }, (_, index) =>
+      verifier
+        .verify(
+          ticket(
+            validClaims({ nonce: `nonce-close-${String(index).padStart(16, "0")}` }),
+            keys.privateKey,
+          ),
+          expectation(),
+        )
+        .catch((error: unknown) => error),
+    );
+    pauseNext = true;
+    const pausedVerify = verifier
+      .verify(
+        ticket(validClaims({ nonce: "nonce-paused-000000000000000" }), keys.privateKey),
+        expectation(),
+      )
+      .catch((error: unknown) => error);
+    await pausedKey.promise;
+
+    await verifier.close();
+    await rm(root, { recursive: true });
+    releaseKey.resolve();
+    const pausedResult = await pausedVerify;
+    await Promise.all(concurrent);
+
+    expect(pausedResult).toMatchObject({
+      code: "forbidden",
+      message: "The browser attach ticket replay ledger is unavailable.",
+    });
+    await expect(
+      verifier.verify(
+        ticket(validClaims({ nonce: "nonce-after-close-0000000000" }), keys.privateKey),
+        expectation(),
+      ),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+      message: "The browser attach ticket replay ledger is unavailable.",
+    });
+    await expect(stat(privateDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });
 
 async function createVerifier(

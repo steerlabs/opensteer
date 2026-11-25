@@ -152,6 +152,15 @@ export interface NativeProfileOpenTiming {
   readonly elapsedSinceStartMs: number;
 }
 
+interface PooledTransferPolicy {
+  /** Maximum lifetime for pooled uploads whose byte progress cannot be observed. */
+  readonly maxUnobservedMs: number;
+}
+
+const defaultPooledTransferPolicy: PooledTransferPolicy = {
+  maxUnobservedMs: 60 * 60_000,
+};
+
 interface PlaywrightChromiumLauncherOptions {
   authenticator?: PasskeyAuthenticator;
   /** How long the look for the tab helper may run after a native launch (tests shorten it). */
@@ -167,6 +176,8 @@ interface PlaywrightChromiumLauncherOptions {
   platform?: NodeJS.Platform;
   proxyUrl?: string;
   preserveLoopbackBypass?: boolean;
+  /** Pooled runtime only (M7): lifetime-bounded upload retire holds (downloads are disabled in pooled guests). */
+  pooledTransfers?: boolean | Partial<PooledTransferPolicy>;
 }
 
 /** Reduced Chrome UA at the shipped engine major; stock headless announces itself. */
@@ -315,6 +326,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
   private readonly headless: boolean;
   private readonly proxyUrl: string | undefined;
   private readonly preserveLoopbackBypass: boolean;
+  private readonly pooledTransfers: PooledTransferPolicy | undefined;
 
   constructor(options: PlaywrightChromiumLauncherOptions) {
     if (!path.isAbsolute(options.executablePath)) {
@@ -335,6 +347,16 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     this.headless = options.headless;
     this.proxyUrl = options.proxyUrl;
     this.preserveLoopbackBypass = options.preserveLoopbackBypass === true;
+    this.pooledTransfers =
+      options.pooledTransfers === true
+        ? defaultPooledTransferPolicy
+        : options.pooledTransfers
+          ? {
+              maxUnobservedMs:
+                options.pooledTransfers.maxUnobservedMs ??
+                defaultPooledTransferPolicy.maxUnobservedMs,
+            }
+          : undefined;
     const platform = options.platform ?? process.platform;
     if (platform === "linux") {
       const proc = options.linuxProcFs;
@@ -615,6 +637,10 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         authenticator,
         providerConfig,
         anchor,
+        false,
+        undefined,
+        undefined,
+        this.pooledTransfers,
       );
       if (this.headless) launched.clipboard = await ChromiumClipboard.create(browser);
       // Sessions' agents hear of the pages they own as Chromium announces
@@ -930,6 +956,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         true,
         candidate,
         helperTargetId ?? undefined,
+        this.pooledTransfers,
       );
       if (this.headless) launched.clipboard = ChromiumClipboard.lazy(browser);
       timing("clipboard");
@@ -972,6 +999,7 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
     dedicatedContext = false,
     lifecycle?: ChromiumTabLifecycleBridge,
     privatePageTargetId?: string,
+    pooledTransfers?: PooledTransferPolicy,
   ) {
     this.persistencePage = privatePage;
     this.owner = owner;
@@ -986,6 +1014,7 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
       privatePage,
       lifecycle,
       dedicatedContext,
+      pooledTransfers,
     );
     if (authenticator) {
       for (const page of context.pages())
@@ -1409,6 +1438,7 @@ class PlaywrightContextHandle implements BrowserContext {
   /** The name a hidden page was seen with, so its tab's removal closes it first. */
   private readonly pageTitles = new WeakMap<Page, string>();
   private readonly laneTails = new Map<string, Promise<void>>();
+  readonly pooledTransfers: PooledTransferPolicy | undefined;
 
   constructor(
     context: PlaywrightBrowserContext,
@@ -1418,6 +1448,7 @@ class PlaywrightContextHandle implements BrowserContext {
     privatePage?: Page,
     lifecycle?: ChromiumTabLifecycleBridge,
     nativeProfile = false,
+    pooledTransfers?: PooledTransferPolicy,
   ) {
     this.privatePage = privatePage;
     this.lifecycleCandidate = lifecycle;
@@ -1426,6 +1457,7 @@ class PlaywrightContextHandle implements BrowserContext {
     this.context = context;
     this.openDialogs = openDialogs;
     this.nativeProfile = nativeProfile;
+    this.pooledTransfers = pooledTransfers;
     for (const page of context.pages()) {
       if (this.isHiddenPage(page)) continue;
       if (nativeProfile) this.arrive(page);
@@ -2700,6 +2732,7 @@ class PlaywrightPageHandle implements BrowserPage {
   readonly captureRestore?: () => Promise<unknown | null>;
   readonly sleepsAsItself: () => boolean;
   readonly freeze: () => Promise<() => Promise<void>>;
+  readonly activeTransfers?: () => readonly ("download" | "upload")[];
   private pendingDiscard: {
     readonly tokenId: string;
     readonly targetId: string;
@@ -2708,6 +2741,8 @@ class PlaywrightPageHandle implements BrowserPage {
   private requestMethod = "GET";
   private documentMethod = "GET";
   private readonly uploads = new Set<Request>();
+  /** Pooled runtime only: start time of each in-flight upload (unobserved progress, 60 min cap). */
+  private readonly pooledUploadStarts: Map<Request, number> | undefined;
   private captureSession: Promise<PlaywrightCdpSession> | undefined;
   private captureWorld: number | undefined;
   private cdpPromise: Promise<CdpSession> | null = null;
@@ -2783,9 +2818,38 @@ class PlaywrightPageHandle implements BrowserPage {
       if (request.isNavigationRequest() && request.frame() === page.mainFrame())
         this.requestMethod = request.method();
     });
-    page.on("requestfinished", (request) => this.uploads.delete(request));
-    page.on("requestfailed", (request) => this.uploads.delete(request));
-    page.once("close", () => this.uploads.clear());
+    page.on("requestfinished", (request) => {
+      this.uploads.delete(request);
+    });
+    page.on("requestfailed", (request) => {
+      this.uploads.delete(request);
+    });
+    page.once("close", () => {
+      this.uploads.clear();
+    });
+    const pooledTransfers = contextHandle.pooledTransfers;
+    if (pooledTransfers) {
+      const uploadStarts = new Map<Request, number>();
+      this.pooledUploadStarts = uploadStarts;
+      page.on("request", (request) => {
+        if (!["GET", "HEAD"].includes(request.method())) uploadStarts.set(request, Date.now());
+      });
+      page.on("requestfinished", (request) => {
+        uploadStarts.delete(request);
+      });
+      page.on("requestfailed", (request) => {
+        uploadStarts.delete(request);
+      });
+      // A renderer crash or page close ends renderer-bound uploads at once (M7).
+      page.on("crash", () => {
+        this.uploads.clear();
+        uploadStarts.clear();
+      });
+      page.once("close", () => {
+        uploadStarts.clear();
+      });
+      this.activeTransfers = () => this.readActivePooledTransfers(pooledTransfers);
+    }
     page.once("close", () => void this.endedBy().then((cause) => this.confirmGone(cause)));
     page.on("popup", (popup) => {
       contextHandle.wrap(popup).openerHandle = this;
@@ -2793,6 +2857,23 @@ class PlaywrightPageHandle implements BrowserPage {
     page.on("framenavigated", (frame) => {
       if (frame === page.mainFrame()) this.documentMethod = this.requestMethod;
     });
+  }
+
+  /**
+   * Pooled runtime only (M7): returns active uploads that should veto idle parking, bounded in
+   * total by `policy.maxUnobservedMs` (60 minutes). Shipped pooled guests disable downloads
+   * (`acceptDownloads: false` and `PortableSessionCdpRouter` blocks/no-ops `Browser.setDownloadBehavior`),
+   * so only uploads can run.
+   */
+  private readActivePooledTransfers(
+    policy: PooledTransferPolicy,
+  ): readonly ("download" | "upload")[] {
+    if (this.gone || !this.pooledUploadStarts) return [];
+    const now = Date.now();
+    for (const startedAt of this.pooledUploadStarts.values()) {
+      if (now - startedAt < policy.maxUnobservedMs) return ["upload"];
+    }
+    return [];
   }
 
   async keepAwake(): Promise<"tab-helper" | PageKeepAwake | "upload" | "post" | "media" | null> {

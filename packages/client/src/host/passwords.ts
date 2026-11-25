@@ -412,6 +412,8 @@ function chromeCookiesUnavailableMessage(
       return sentence`A task or automation can’t ask you to allow a sign-in`;
     case "rate-limited":
       return sentence`Too many sign-in attempts for now`;
+    case "unconfirmed":
+      return sentence`Couldn’t confirm whether the sign-in reached the browser`;
     default:
       return problemTitle(reason, site);
   }

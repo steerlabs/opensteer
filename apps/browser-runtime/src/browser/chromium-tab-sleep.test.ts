@@ -4,6 +4,7 @@ import {
   PageOwnership,
   SurfaceLedger,
   TabSleeper,
+  poolPageRetireBlockers,
   standardCdpPath,
   type BrowserRuntime,
   type StandardCdpAttachment,
@@ -2598,3 +2599,135 @@ it("never puts a tab to sleep that desktop Chrome would not discard, nor one tha
   expect(await pdf.page.keepAwake?.()).toBe("pdf");
   expect(await ledger.sleep(pdf.tab.id, () => null)).toBe(false);
 }, 90_000);
+
+it("M7: bounds pooled upload retire holds by lifetime, crash, and page close while leaving ordinary Homes untouched", async () => {
+  const stalledRes: import("node:http").ServerResponse[] = [];
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    if (url.pathname === "/page") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end("<!doctype html><html><body>transfer test</body></html>");
+      return;
+    }
+    if (url.pathname === "/upload") {
+      stalledRes.push(response);
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as import("node:net").AddressInfo).port;
+  const origin = `http://127.0.0.1:${port}`;
+  cleanup.push(async () => {
+    for (const res of stalledRes) res.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  // 1. Pooled launcher with short maxUnobservedMs for fast real-Chromium testing.
+  const pooledDir = await mkdtemp(path.join(tmpdir(), "os-m7-pooled-"));
+  cleanup.push(() => rm(pooledDir, { recursive: true, force: true }));
+  const pooledLauncher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+    ...({ pooledTransfers: { maxUnobservedMs: 350 } } as Record<string, unknown>),
+  });
+  const pooled = await launchReady(pooledLauncher, nativeProfileRequest(pooledDir));
+  cleanup.push(() => pooled.close());
+
+  // 1a. Upload holds initially and releases once maxUnobservedMs expires.
+  const upPage = await pooled.context.createPage();
+  const upCdp = await upPage.cdp();
+  await upCdp.send("Page.navigate", { url: `${origin}/page` });
+  await vi.waitFor(async () => {
+    const r = (await upCdp.send("Runtime.evaluate", {
+      expression: "document.readyState",
+      returnByValue: true,
+    })) as { result?: { value?: string } };
+    expect(r.result?.value).toBe("complete");
+  });
+  await upCdp.send("Runtime.evaluate", {
+    expression: `void fetch("/upload", { method: "POST", body: "hello" }).catch(() => {});`,
+  });
+  await vi.waitFor(
+    async () => {
+      expect(await poolPageRetireBlockers(upPage, "active")).toContain("upload");
+    },
+    { timeout: 5_000, interval: 25 },
+  );
+  await vi.waitFor(
+    async () => {
+      expect(await poolPageRetireBlockers(upPage, "active")).toEqual([]);
+    },
+    { timeout: 3_000, interval: 40 },
+  );
+
+  // 1b. Renderer crash clears the active upload hold immediately.
+  const upCrashPage = await pooled.context.createPage();
+  const upCrashCdp = await upCrashPage.cdp();
+  await upCrashCdp.send("Page.navigate", { url: `${origin}/page` });
+  await vi.waitFor(async () => {
+    const r = (await upCrashCdp.send("Runtime.evaluate", {
+      expression: "document.readyState",
+      returnByValue: true,
+    })) as { result?: { value?: string } };
+    expect(r.result?.value).toBe("complete");
+  });
+  await upCrashCdp.send("Runtime.evaluate", {
+    expression: `void fetch("/upload", { method: "POST", body: "hello-crash" }).catch(() => {});`,
+  });
+  await vi.waitFor(
+    async () => {
+      expect(await poolPageRetireBlockers(upCrashPage, "active")).toContain("upload");
+    },
+    { timeout: 5_000, interval: 25 },
+  );
+  const upCrashed = Promise.withResolvers<void>();
+  const offUpCrash = upCrashPage.onRendererGone?.(() => upCrashed.resolve());
+  void upCrashCdp.send("Page.crash").catch(() => undefined);
+  await upCrashed.promise;
+  offUpCrash?.();
+  await vi.waitFor(
+    async () => {
+      expect(await poolPageRetireBlockers(upCrashPage, "active")).toEqual([]);
+    },
+    { timeout: 3_000, interval: 40 },
+  );
+
+  // 1c. Page close clears the active upload hold immediately.
+  const upClosePage = await pooled.context.createPage();
+  const upCloseCdp = await upClosePage.cdp();
+  await upCloseCdp.send("Page.navigate", { url: `${origin}/page` });
+  await vi.waitFor(async () => {
+    const r = (await upCloseCdp.send("Runtime.evaluate", {
+      expression: "document.readyState",
+      returnByValue: true,
+    })) as { result?: { value?: string } };
+    expect(r.result?.value).toBe("complete");
+  });
+  await upCloseCdp.send("Runtime.evaluate", {
+    expression: `void fetch("/upload", { method: "POST", body: "hello-close" }).catch(() => {});`,
+  });
+  await vi.waitFor(
+    async () => {
+      expect(await poolPageRetireBlockers(upClosePage, "active")).toContain("upload");
+    },
+    { timeout: 5_000, interval: 25 },
+  );
+  await upClosePage.close();
+  expect(await poolPageRetireBlockers(upClosePage, "active")).toEqual([]);
+
+  // 2. Ordinary (non-pooled) launcher: no pooled activeTransfers method on pages.
+  const ordinaryDir = await mkdtemp(path.join(tmpdir(), "os-m7-ordinary-"));
+  cleanup.push(() => rm(ordinaryDir, { recursive: true, force: true }));
+  const ordinaryLauncher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const ordinary = await launchReady(ordinaryLauncher, nativeProfileRequest(ordinaryDir));
+  cleanup.push(() => ordinary.close());
+  const ordinaryPage = await ordinary.context.createPage();
+  expect(ordinaryPage.activeTransfers).toBeUndefined();
+}, 60_000);

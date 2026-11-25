@@ -6,12 +6,11 @@
  * control key, with the instance it reaches and that instance's bridge token, and from then on
  * the connection carries the bridge protocol unchanged.
  */
-import { createPublicKey, randomBytes, verify, type KeyObject } from "node:crypto";
+import { randomBytes, verify, type KeyObject } from "node:crypto";
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import type { Duplex } from "node:stream";
 
-export const poolRelayPort = 7312;
 const maximumLineBytes = 4096;
 
 /** What the client sends first, after the handshake. */
@@ -238,12 +237,6 @@ export function requestOverTunnel(
     request.end(input.body);
     socket.resume();
   });
-}
-
-export function spkiPublicKey(base64: string): KeyObject {
-  const key = createPublicKey({ key: Buffer.from(base64, "base64"), format: "der", type: "spki" });
-  if (key.asymmetricKeyType !== "ed25519") throw new Error("A pool key must be Ed25519.");
-  return key;
 }
 
 function isIpAddress(host: string): boolean {

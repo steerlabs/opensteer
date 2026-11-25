@@ -10,6 +10,7 @@ import {
   useBrowserPresentationWait,
   useBrowserSleep,
   useBrowserTabAwake,
+  useViewerGrace,
 } from "@opensteer/client/react";
 import type {
   BrowserCommand,
@@ -271,16 +272,34 @@ function BrowserStreamView({
       return;
     }
   }, [active, attempt, awake, hostClient, interactive, native, session.id, sharedWatch, tabId]);
-  // Held apart from the picture, so the picture coming and going reuses this socket.
+  // Held apart from the picture, so the picture coming and going reuses this socket. Off screen
+  // it is still a viewer to the Home, which keeps the browser awake for it, so once nobody has
+  // seen the page for the grace the hold keeps only the page and its last picture, with no
+  // socket. The new hold is taken before the old one goes, so the page is never let go between.
+  const seenRecently = useViewerGrace(active);
+  const keptHold = useRef<(() => void) | null>(null);
   useEffect(() => {
-    if (!kept) return;
-    try {
-      return hostClient.retainBrowserViewer(session.id, tabId, { picture: false });
-    } catch {
-      // A Host without pictureless control reconnects when the picture returns.
-      return;
-    }
-  }, [hostClient, kept, session.id, tabId]);
+    const previous = keptHold.current;
+    keptHold.current = null;
+    if (kept)
+      try {
+        keptHold.current = hostClient.retainBrowserViewer(
+          session.id,
+          tabId,
+          seenRecently ? { picture: false } : { picture: false, connect: false },
+        );
+      } catch {
+        // A Host without pictureless control reconnects when the picture returns.
+      }
+    previous?.();
+  }, [hostClient, kept, seenRecently, session.id, tabId]);
+  useEffect(
+    () => () => {
+      keptHold.current?.();
+      keptHold.current = null;
+    },
+    [],
+  );
 
   const finish = useCallback(
     (delivery: BrowserFrameView) => {
