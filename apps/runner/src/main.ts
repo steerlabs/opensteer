@@ -55,6 +55,7 @@ import { prepareMessagingModule, type PreparedMessagingModule } from "./messagin
 import { shutdownSignals } from "@opensteer/shared/processControl";
 
 import type { PhoneScreenDriver } from "./computer-apps/phone-screen-driver.js";
+import { cgroupMemoryKills } from "./runtime/memory-kills.js";
 
 const RUNTIME_VERSION = "0.0.0";
 
@@ -363,6 +364,8 @@ async function startAgentsRunner(input: {
     24 * 60 * 60 * 1000,
   );
   pluginPruner.unref();
+  // A Linux Runner's memory cgroup counts its processes killed for memory; elsewhere none.
+  const memoryKills = cgroupMemoryKills();
   const runtime = new RunnerRuntime({
     agentSkills,
     attachmentCache,
@@ -384,6 +387,7 @@ async function startAgentsRunner(input: {
     plugins: cacheRunPlugins,
     logger,
     maxConcurrentRuns: config.maxConcurrentRuns,
+    ...(memoryKills ? { memoryKills } : {}),
     maxConcurrentTriggerPrograms: config.maxConcurrentTriggerPrograms,
     machineAccess: machineAccessRuntimeOptions(config, applicationConfig.nativeFsHelperBinary),
     mode: config.mode,

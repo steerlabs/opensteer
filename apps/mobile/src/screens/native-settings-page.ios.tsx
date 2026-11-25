@@ -160,6 +160,8 @@ export function NativeSettingsSections(props: {
 function Row({ row }: { readonly row: NativeSettingsRow }) {
   // At the largest sizes a row's mark takes a line of its own (`stacked-layout.ts`).
   const stacked = useStackedLayout();
+  if (row.kind === "content")
+    return <RNHostView matchContents={{ vertical: true }}>{row.content}</RNHostView>;
   if (row.kind === "chips")
     return (
       <Picker

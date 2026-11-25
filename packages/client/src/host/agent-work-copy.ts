@@ -31,6 +31,8 @@ export const agentWorkCopy = {
   "work.headerLocal": "Connected agent · an app on this computer",
   "work.subtitle": "{agent} · {what}",
   "work.activity": "Activity",
+  "now.row.needsYou": "Needs you",
+  "now.row.working": "Working",
   "work.activityEmpty": "Nothing yet.",
   "work.activityUnavailable": "This Opensteer doesn’t list an agent’s actions yet.",
   "work.usingNow": "Using now",
@@ -87,6 +89,9 @@ export const agentWorkCopy = {
   "tab.needsYou": "{agent} needs you",
   "tab.answer": "Answer",
 
+  "ask.sessionTitle": "Connected agent {agent} asks in {task}",
+  "ask.sessionTitleUnnamed": "A connected agent asks in {task}",
+  "ask.sessionTitleWithoutTask": "Question from a connected agent",
   "ask.title": "{agent}: {question}",
   "ask.listTitle": "{agent} · {question}",
   "ask.says": "{agent} says:",

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import {
   agentBrowserOptions,
@@ -9,6 +9,7 @@ import {
   chatTasksNow,
   connectedAgentConnected,
   connectedAgentNamePart,
+  showConnectedAgentStatus,
   connectedAgentActivity,
   connectionsRead,
   connectedAgentDetail,
@@ -26,23 +27,21 @@ import {
 import {
   useChromeTabGrantCatalog,
   useConnectedAgents,
+  useConnectedAgentWork,
+  useConnectedAgentHistory,
   useLiveTasks,
 } from "@opensteer/client/react";
 import { type ChatGrantShape, type ThreadAccessMode } from "@opensteer/core";
 import { useShell } from "../../app-shell.js";
 import { Dialog } from "../../dialog.js";
 import { ReadGate } from "../../read-gate.js";
-import { useConnectedAgentWork } from "../../use-connected-agent-sessions.js";
 import { Icon } from "../../icon.js";
 import { AgentGrantEditor, ConnectionModeChoices } from "../agent-grant-editor.js";
 import { AgentMark } from "../agent-mark.js";
 import { AgentWhoLine, AgentWithdrawnNotice } from "../agent-who.js";
 import { ChatFactsSection } from "./chat-facts.js";
 import { ConnectedAgentNowSection } from "./connected-agent-now-section.js";
-import {
-  ConnectedAgentEarlierSection,
-  useConnectedAgentHistory,
-} from "./connected-agent-earlier-section.js";
+import { ConnectedAgentEarlierSection } from "./connected-agent-earlier-section.js";
 import { SectionHeader, SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
 import { SentenceText } from "../../../ui/address-text.js";
 
@@ -70,10 +69,6 @@ export function ConnectedAgentPage({
   const chatHost = chatScreenHost(client);
   const work = useConnectedAgentWork(chatHost, connectionId);
   const history = useConnectedAgentHistory(chatHost, connectionId);
-  const activeSessionIds = useMemo(
-    () => new Set(work.view.agents.map(({ sessionId }) => sessionId)),
-    [work.view.agents],
-  );
   const liveTasks = useLiveTasks(client);
   const chromeTabs = useChromeTabGrantCatalog(client, true);
   const { snapshot } = shell;
@@ -223,9 +218,7 @@ export function ConnectedAgentPage({
           onDisconnect={withdrawn && !busy ? () => setConfirming("disconnect") : null}
           who={who}
         />
-        {detail.row.phase !== "active" || (chat && !work.view.agents.length) ? (
-          <StatusNotice status={detail.status} />
-        ) : null}
+        {showConnectedAgentStatus(detail.row) ? <StatusNotice status={detail.status} /> : null}
         {detail.uncertain ? (
           <p className="notice connected-agent__uncertain" role="alert">
             <Icon name="alert-circle" />
@@ -260,7 +253,7 @@ export function ConnectedAgentPage({
           />
         ) : null}
         <ConnectedAgentNowSection client={client} work={work} />
-        <ConnectedAgentEarlierSection activeSessionIds={activeSessionIds} history={history} />
+        <ConnectedAgentEarlierSection activeAgents={work.view.agents} history={history} />
         {detail.editable ? (
           <>
             <AgentGrantEditor

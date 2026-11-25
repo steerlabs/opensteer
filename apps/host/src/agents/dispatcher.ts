@@ -265,7 +265,22 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     ) {
       return false;
     }
-    return this.#runners.hasRunCapacity(command.environmentId, dispatchingRuns);
+    if (this.#runners.hasRunCapacity(command.environmentId, dispatchingRuns)) return true;
+    // Its computer's Runner runs as many Runs as it may: the Run waits for one of them to end,
+    // and says so. Decided from the row this pass read: written only when it has no hold, and
+    // marked on that row until the next listing reads it again.
+    if (
+      command.runId &&
+      command.runStartHoldReason === null &&
+      this.#runners.isAttached(command.environmentId)
+    ) {
+      command.runStartHoldReason = "waiting-for-run";
+      void this.#store.holdRunForAnotherRun(command.runId).catch(() => {
+        // Shown on a later pass: a failed write only delays the words.
+        command.runStartHoldReason = null;
+      });
+    }
+    return false;
   }
   async dispatch(command: CommandRow, signal: AbortSignal): Promise<void> {
     if (!command.environmentId) {

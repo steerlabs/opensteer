@@ -68,6 +68,7 @@ export interface QuestionRequestCardProps {
   readonly showQueue?: boolean;
   readonly asker?: boolean;
   readonly surface: SurfaceModel;
+  readonly title?: string | undefined;
 }
 
 /**
@@ -100,15 +101,15 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
         requestId={request.id}
       />
     );
-  const { heading, prompt } = questionHeading(requestTitle(request), field.prompt);
+  const { heading, prompt } = questionHeading(props.title ?? requestTitle(request), field.prompt);
   const detail = presentation.detail ?? "";
   const [unfolded, setUnfolded] = useState(false);
 
   useEffect(() => {
     void AccessibilityInfo.announceForAccessibility(
-      `Opensteer needs your input. ${requestTitleText(presentation)}`,
+      `Opensteer needs your input. ${props.title ?? requestTitleText(presentation)}`,
     );
-  }, [request.id, presentation]);
+  }, [request.id, presentation, props.title]);
 
   const scroller = useRef<ScrollViewInstance>(null);
   const [scroll, setScroll] = useState({ box: 0, content: 0, offset: 0 });

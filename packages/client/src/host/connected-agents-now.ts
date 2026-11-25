@@ -4,15 +4,22 @@ import {
   type AgentOperationView,
 } from "@opensteer/core";
 import {
+  agentPlaceParts,
   connectedAgentNamePart,
-  operationAction,
+  needsYouAgentRequest,
+  operationActionParts,
+  operationRequestView,
+  sessionQuestions,
+  sessionSlotFromHome,
+  sessionTaskView,
   operationTime,
   sessionAgent,
   type SessionAgent,
 } from "./agent-work.js";
 import { workSentence, workWords, type SafeWorkCopyValues } from "./agent-work-copy.js";
 import type { ThreadSummary, WaitingRequestView } from "./client.js";
-import { plainSentence, type SentencePart } from "./sentence-parts.js";
+import { joinSentenceParts, named, plainSentence, type SentencePart } from "./sentence-parts.js";
+import { formatRelativeTime } from "./thread-list-model.js";
 import { requestsWaitingOn } from "./waiting-requests.js";
 
 export type ConnectedAgentNowTask = Pick<ThreadSummary, "id" | "status" | "externalWork">;
@@ -25,6 +32,7 @@ export interface ConnectedAgentNow {
   readonly state: "working" | "needs-you";
   readonly places: readonly AgentOperationTarget[];
   readonly action: string | null;
+  readonly actionParts: readonly SentencePart[];
   readonly waiting: WaitingRequestView | null;
 }
 
@@ -68,6 +76,11 @@ export function connectedAgentsNow(input: {
     ].filter((target): target is AgentOperationTarget => target !== undefined);
     // When no action is in flight, the latest recorded action is the only place we can name.
     if (targets.length === 0 && latest) targets.push(latest.target);
+    const question = waiting
+      ? (needsYouAgentRequest(waiting.request, sessionSlotFromHome(work))?.question ??
+        waiting.request.presentation.title)
+      : null;
+    const actionParts = question ? [question] : latest ? operationActionParts(latest) : [];
     const entry: ConnectedAgentNow = {
       agent: sessionAgent(work.connection),
       connectionId: work.connection.id,
@@ -75,7 +88,8 @@ export function connectedAgentsNow(input: {
       sessionId: work.sessionId,
       state: waiting || task.status === "waiting" ? "needs-you" : "working",
       places: distinctAgentPlaces(targets),
-      action: waiting?.request.presentation.title ?? (latest ? operationAction(latest) : null),
+      action: actionParts.length ? plainSentence(actionParts, { quoteNames: false }) : null,
+      actionParts,
       waiting,
     };
     (entry.state === "needs-you" ? needsYou : working).push(entry);
@@ -161,4 +175,116 @@ function singleAgentHeadline(
 ): readonly SentencePart[] {
   const [, ...detail] = workSentence(key, { agent: { name: agent.name } }, values);
   return [connectedAgentNamePart(agent), ...detail];
+}
+
+export function connectedAgentNowRow(
+  entry: ConnectedAgentNow,
+  sharedDeviceName?: string | null,
+  distinction?: string,
+) {
+  const needsYou = entry.state === "needs-you";
+  const status = workWords(needsYou ? "now.row.needsYou" : "now.row.working");
+  const placeLines = entry.places.map((place) => agentPlaceParts(place, sharedDeviceName));
+  return {
+    nameParts: [connectedAgentNamePart(entry.agent)],
+    placeLines,
+    status,
+    primaryAction: needsYou ? ("work.review" as const) : ("work.watch" as const),
+    needsYou,
+    detailParts: joinSentenceParts([
+      [status],
+      ...placeLines,
+      entry.actionParts,
+      distinction ? [distinction] : [],
+    ]),
+    request: entry.waiting?.request ?? null,
+    requestId: entry.waiting?.request.id,
+  };
+}
+
+export function connectedAgentNowSection(work: {
+  readonly view: { readonly agents: readonly ConnectedAgentNow[] };
+  readonly tasks: readonly ThreadSummary[];
+  readonly activity: ReadonlyMap<string, readonly AgentOperationView[]> | undefined;
+}) {
+  return work.view.agents.flatMap((entry) => {
+    const thread = work.tasks.find(({ id }) => id === entry.threadId);
+    if (!thread) return [];
+    const row = connectedAgentNowRow(entry);
+    const slot = sessionSlotFromHome(
+      thread.externalWork,
+      work.activity?.get(thread.id)?.filter(({ sessionId }) => sessionId === entry.sessionId),
+    );
+    if (slot?.sessionId !== entry.sessionId) return [];
+    const view = sessionTaskView({ thread, slot });
+    if (!view) return [];
+    const request = row.request;
+    const operation = request ? operationRequestView({ request, session: slot }) : null;
+    return [
+      {
+        entry,
+        row,
+        titleParts: [named(thread.title)],
+        detailParts: joinSentenceParts([...row.placeLines, row.needsYou ? [row.status] : []]),
+        view,
+        operation: request && operation ? { request, view: operation } : null,
+        question: request ? sessionQuestions([request])[0] : undefined,
+      },
+    ];
+  });
+}
+
+/** Matching rows from different connections need a visible way to tell them apart. */
+export function matchingConnectedAgentRows(
+  agents: readonly ConnectedAgentNow[],
+  sharedDeviceName?: string | null,
+) {
+  const groups = new Map<string, ConnectedAgentNow[]>();
+  for (const entry of agents) {
+    const row = connectedAgentNowRow(entry, sharedDeviceName);
+    const key = JSON.stringify([row.nameParts, entry.state, entry.action, row.placeLines]);
+    const group = groups.get(key);
+    if (group) group.push(entry);
+    else groups.set(key, [entry]);
+  }
+  const duplicates = new Map<string, ReadonlySet<string>>();
+  for (const group of groups.values()) {
+    const connections = new Set(group.map(({ connectionId }) => connectionId));
+    if (connections.size > 1)
+      for (const { sessionId } of group) duplicates.set(sessionId, connections);
+  }
+  return duplicates;
+}
+
+const connectedClock = new Intl.DateTimeFormat(undefined, {
+  hour: "numeric",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
+export function connectedAgentRowDistinctions(
+  agents: readonly ConnectedAgentNow[],
+  matching: ReadonlyMap<string, ReadonlySet<string>>,
+  connections: readonly { readonly id: string; readonly createdAt: string }[] | null,
+  now = new Date(),
+) {
+  const created = new Map(connections?.map(({ id, createdAt }) => [id, createdAt]));
+  const labels = new Map<string, string>();
+  for (const { sessionId, connectionId } of agents) {
+    const group = matching.get(sessionId);
+    const joined = created.get(connectionId);
+    if (!group || !joined) continue;
+    const age = formatRelativeTime(joined, now);
+    if (!age) continue;
+    const sameAge = [...group].some((id) => {
+      const other = created.get(id);
+      return id !== connectionId && other && formatRelativeTime(other, now) === age;
+    });
+    const when = age === "now" ? "just now" : /^\d/u.test(age) ? `${age} ago` : age;
+    labels.set(
+      sessionId,
+      `Connected ${when}${sameAge ? ` · ${connectedClock.format(new Date(joined))}` : ""}`,
+    );
+  }
+  return labels;
 }

@@ -278,7 +278,7 @@ describe("what a person reads and presses in a connected agent's task", () => {
         }
         // The agent's whole message, every choice and Dismiss.
         for (const words of [
-          "Connected agent Claude asks in Find flights to Lisbon",
+          "Connected agent Claude asks in “\u2068Find flights to Lisbon\u2069”",
           "The site signed you out.",
           "Sign in to TAP Air Portugal in the Travel tab, then tap Done.",
           "allow",

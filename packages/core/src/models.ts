@@ -820,13 +820,20 @@ export const ActiveRunStatusSchema = z.enum(nonTerminalRunStatuses);
  */
 export const runTerminationUnprovenCode = "execution_termination_unproven";
 export const harnessUsageLimitFailureCode = "harness_usage_limit";
+/** A Run whose engine the kernel killed for lack of memory (the Runner saw its cgroup count it). */
+export const runOutOfMemoryCode = "run_out_of_memory";
 
 /** Why a Run was interrupted without a person asking to stop it. */
 export const RunInterruptedCauseSchema = z.enum(["lease-lost", "engine-retired"]);
 export type RunInterruptedCause = z.infer<typeof RunInterruptedCauseSchema>;
 
 /** Why a queued Run is being held back from starting on its device. */
-export const RunStartHoldReasonSchema = z.enum(["previous-stop-unconfirmed"]);
+/**
+ * Why a queued Run has not started: the previous Run's stop is unconfirmed (held until it is
+ * proven), or its computer's Runner is running as many Runs as it may (the Run starts when one
+ * of them ends; the Home keeps offering it).
+ */
+export const RunStartHoldReasonSchema = z.enum(["previous-stop-unconfirmed", "waiting-for-run"]);
 export type RunStartHoldReason = z.infer<typeof RunStartHoldReasonSchema>;
 
 /**

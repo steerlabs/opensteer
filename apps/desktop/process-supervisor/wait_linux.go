@@ -23,6 +23,15 @@ func waitWithoutReaping(processID int) error {
 	)
 }
 
+// Whether the process has already ended, without reaping it or waiting for it: a stop sent to a
+// target that is already a zombie did not end it.
+func endedWithoutReaping(processID int) bool {
+	var information unix.Siginfo
+	err := unix.Waitid(unix.P_PID, processID, &information, unix.WEXITED|unix.WNOWAIT|unix.WNOHANG, nil)
+	// With WNOHANG and nothing to report, waitid succeeds and leaves the zeroed siginfo as it was.
+	return err == nil && information.Signo != 0
+}
+
 func enableChildSubreaper() error {
 	return unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
 }

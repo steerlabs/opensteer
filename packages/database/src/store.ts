@@ -1794,6 +1794,10 @@ export class OpensteerStore {
   async markCommandFrameSent(commandId: CommandRow["id"]): Promise<void> {
     return commandStore.markCommandFrameSent(this.#database, commandId);
   }
+  /** Holds a queued Run as waiting for another Run on its computer; false when it has a hold. */
+  async holdRunForAnotherRun(runId: RunId): Promise<boolean> {
+    return commandStore.holdQueuedRunForAnotherRun(this.#database, runId);
+  }
   async retryCommand(
     commandId: CommandRow["id"],
     error: unknown,
