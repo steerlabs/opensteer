@@ -7,6 +7,7 @@ import { standardCdpEndpoint } from "../apps/host/src/browser/standard-cdp-endpo
 import { AgentSessionService } from "../apps/host/src/agent-sessions/agent-session-service.js";
 import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
 import { BrowserScriptService } from "../apps/host/src/browser-use/browser-script-service.js";
+import { TabService } from "../apps/host/src/tabs/tab-service.js";
 import {
   BrowserScriptConfinement,
   BrowserToolHandlers,
@@ -1402,5 +1403,172 @@ it("V2 (Opus M1): turning off the device Browser switch during browserSend.reche
     }
   } finally {
     await j.close();
+  }
+});
+
+it("lists, in its next call, a page a connected agent's script opened and left by throwing, and closes it", async () => {
+  const site = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end("<!doctype html><title>Left open</title><p>left</p>");
+  });
+  site.listen(0, "127.0.0.1");
+  await once(site, "listening");
+  const origin = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
+  const j = await journey("direct-pages-left", { profile: true });
+  try {
+    const home = await j.startHome();
+    await home.service.start({ ownerId: j.task.userId, profileId: j.profile!.id });
+    const work = await directWork(j, () => home);
+    // The script opens a page and throws before it closes it, as the real machine's did.
+    const left = await work.use(
+      `const page = await newPage(${JSON.stringify(`${origin}/left`)}); print(page.tabId); throw new Error("before its close");`,
+    );
+    expect(left.isError, text(left)).toBe(true);
+    const tabId = /(?:tab|surface)_[A-Za-z0-9-]+/u.exec(text(left))?.[0];
+    if (!tabId) throw new Error(`The script printed no tab: ${text(left)}`);
+    // The next call of the same connection lists it ...
+    const listed = await work.use("return (await pages()).map((page) => page.tabId);");
+    expect(listed.isError, text(listed)).not.toBe(true);
+    expect(text(listed)).toContain(tabId);
+    // ... and closes it.
+    const closed = await work.use(
+      `const page = await openPage(${JSON.stringify(tabId)}); await page.close(); await sleep(500); return (await pages()).map((page) => page.tabId);`,
+    );
+    expect(closed.isError, text(closed)).not.toBe(true);
+    expect(text(closed)).not.toContain(tabId);
+    // A script that ends unknown (its other page closed under a command it had sent) leaves the
+    // page it kept: the next call lists it too, and closes it.
+    const lost = await work.use(
+      `const kept = await newPage(${JSON.stringify(`${origin}/kept`)}); print(kept.tabId); const gone = await newPage(${JSON.stringify(`${origin}/gone`)}); await gone.close(); return await gone.title();`,
+    );
+    expect(lost.structuredContent, text(lost)).toMatchObject({ status: "unknown" });
+    // An unknown result carries no output: the kept page is found by its address in the Home's rows.
+    const keptId = await vi.waitFor(async () => {
+      const kept = (await j.tabs.snapshot(j.task.userId)).rows.find(
+        (row) => row.kind === "page" && row.url?.includes("/kept"),
+      );
+      if (!kept) throw new Error("The kept page has no tab row.");
+      return kept.id;
+    });
+    const relisted = await work.use("return (await pages()).map((page) => page.tabId);");
+    expect(relisted.isError, text(relisted)).not.toBe(true);
+    expect(text(relisted)).toContain(keptId);
+    const reclosed = await work.use(
+      `const page = await openPage(${JSON.stringify(keptId)}); await page.close(); await sleep(500); return (await pages()).map((page) => page.tabId);`,
+    );
+    expect(reclosed.isError, text(reclosed)).not.toBe(true);
+    expect(text(reclosed)).not.toContain(keptId);
+  } finally {
+    await j.close();
+    site.close();
+  }
+});
+
+it("lets a connected agent reach the page-handle limit with pages its scripts left, then list and close them all and go on", async () => {
+  const site = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end("<!doctype html><title>Left open</title><p>left</p>");
+  });
+  site.listen(0, "127.0.0.1");
+  await once(site, "listening");
+  const origin = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
+  const j = await journey("direct-pages-limit", { profile: true });
+  try {
+    const home = await j.startHome();
+    await home.service.start({ ownerId: j.task.userId, profileId: j.profile!.id });
+    const work = await directWork(j, () => home);
+    const left: string[] = [];
+    // Scripts that each open a page and fail before closing it, until the limit refuses one.
+    for (let index = 0; index < 20; index++) {
+      const result = await work.use(
+        `const page = await newPage(${JSON.stringify(`${origin}/left-${index}`)}); print(page.tabId); throw new Error("before its close");`,
+      );
+      const tabId = /(?:tab|surface)_[A-Za-z0-9-]+/u.exec(text(result))?.[0];
+      if (!tabId) {
+        expect(text(result)).toContain("At most 16 page handles");
+        // The limit says how to get out.
+        expect(text(result)).toContain("pages()");
+        break;
+      }
+      left.push(tabId);
+    }
+    expect(left).toHaveLength(16);
+    // The next call lists every page it left, and closes them.
+    const cleared = await work.use(
+      `const left = new Set(${JSON.stringify(left)}); for (const listed of await pages()) if (left.has(listed.tabId)) await (await openPage(listed.tabId)).close(); await sleep(500); return (await pages()).map((page) => page.tabId);`,
+    );
+    expect(cleared.isError, text(cleared)).not.toBe(true);
+    for (const tabId of left) expect(text(cleared)).not.toContain(tabId);
+    // Closed pages count no more: the agent opens a new one.
+    const next = await work.use(
+      `const page = await newPage(${JSON.stringify(`${origin}/next`)}); const id = page.tabId; await page.close(); return id;`,
+    );
+    expect(next.isError, text(next)).not.toBe(true);
+  } finally {
+    await j.close();
+    site.close();
+  }
+});
+
+it("lets the person close any tab a connected agent's handle still holds, page and all, and the agent's handle ends", async () => {
+  const site = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end("<!doctype html><title>Held</title><p>held</p>");
+  });
+  site.listen(0, "127.0.0.1");
+  await once(site, "listening");
+  const origin = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
+  const j = await journey("direct-pages-person-close", { profile: true });
+  try {
+    const home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const [own] = await home.service.savedPages(j.task.userId, session.id);
+    if (!own?.pageBinding) throw new Error("The saved profile has no durable tab.");
+    const work = await directWork(j, () => home);
+    // The agent opens a page of its own and binds the person's tab, and keeps both handles.
+    const held = await work.use(
+      `globalThis.mine = await newPage(${JSON.stringify(`${origin}/held`)}); globalThis.theirs = await openPage(${JSON.stringify(own.id)}); return mine.tabId;`,
+    );
+    expect(held.isError, text(held)).not.toBe(true);
+    const mineId = /(?:tab|surface)_[A-Za-z0-9-]+/u.exec(text(held))?.[0];
+    if (!mineId) throw new Error(`The script returned no tab: ${text(held)}`);
+    // The person closes both, by the route the web app's close-all calls (tabs.close).
+    const tabs = new TabService({
+      store: j.tabs,
+      pages: home.service.pageTabs,
+      nativeTargets: { onTargetAcquired: () => () => undefined },
+      authorizeMembership: async () => undefined,
+      onError: (error: unknown) => {
+        throw error;
+      },
+    } as never);
+    const result = await tabs.close(
+      { kind: "person", ownerId: j.task.userId },
+      [mineId as TabRecord["id"], own.id],
+      "person-close-all",
+    );
+    expect(result.failed).toEqual([]);
+    expect([...result.closed].sort()).toEqual([mineId, own.id].sort());
+    // The agent's page itself closes. (A person's own tab's page does not close on this route
+    // even when no agent holds it: that is not an agent's hold, and is not decided here.)
+    await vi.waitFor(
+      () => expect(home.service.tabStateOf(session.id, mineId as never)).toBeUndefined(),
+      { timeout: 10_000 },
+    );
+    // The agent's handles end as a closed page: an ordinary error its script can catch.
+    const after = await work.use(
+      `const ended = []; for (const page of [mine, theirs]) { try { await page.title(); } catch (error) { ended.push(error.code); } } return { ended, listed: (await pages()).map((page) => page.tabId) };`,
+    );
+    expect(after.isError, text(after)).not.toBe(true);
+    expect(text(after)).not.toContain(mineId);
+    expect(text(after)).not.toContain(own.id);
+    // Each ends as an ended page attachment, which the script caught like any other error.
+    expect(text(after)).toContain(String.raw`\"ended\":[\"conflict\",\"conflict\"]`);
+  } finally {
+    await j.close();
+    site.close();
   }
 });

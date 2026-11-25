@@ -469,10 +469,23 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
     call: BrowserUseCall,
     state: BrowserContext<Target>,
   ): Promise<ReplReply> {
+    // A pooled page's handle outlives its attachment (a park detaches it, a use rebinds it), so
+    // one whose tab has closed since, by the agent or the person, is found here: at the limit,
+    // a detached handle whose tab the agent can no longer list stops counting.
+    if (
+      state.targets.size + state.opening >= browserReplLimits.handles &&
+      [...state.targets.values()].some((binding) => binding.detached)
+    ) {
+      const listed = new Set((await this.#port.listPages(call)).map(({ tabId }) => tabId));
+      // Deleting from a Map while iterating it visits each remaining entry once.
+      for (const binding of state.targets.values())
+        if (binding.detached && !listed.has(binding.target.tabId))
+          this.#retire(request.context, state, binding);
+    }
     if (state.targets.size + state.opening >= browserReplLimits.handles)
       throw new BrowserBridgeError(
         "bridge-limit",
-        "At most 16 page handles may be opened in a browser context.",
+        "At most 16 page handles may be open in a browser context, and pages your earlier scripts opened stay open until they are closed. List them with pages(), and close each one you no longer need with (await openPage(tabId)).close().",
       );
     state.opening++;
     let unclaimed: Target | undefined;
