@@ -1525,6 +1525,108 @@ async function isolation(slots: Slot[]) {
   });
 }
 
+/**
+ * Not in the repository: added for the a9e05f458 real-host proof (lead's request). In pull mode
+ * (the production egress), three wakes from disk with HTTPS after each, then a wake from disk
+ * whose proxy cannot come up (the crash-loop helper kills it whenever it runs): the guest runs,
+ * its status says the proxy is down, HTTPS fails; after the loop ends, a park and a wake serve.
+ */
+async function pullWake(others: Slot[]) {
+  for (const slot of others) await slot.ensureStopped();
+  const standins = await helper({ cmd: "standins", assigned: ["bench-pw-a"] });
+  await helper({ cmd: "pull-mode", origin: standins.origin });
+  await waitForAgent(others[0]!);
+  const slot = new Slot("bench-pw-a", -1, { egress: false });
+  await slot.create();
+  await slot.learnIndex();
+  // The stand-in account service may still be starting: its first fetch can fail ("try again later").
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await slot.call("start");
+      break;
+    } catch (error) {
+      if (attempt >= 10 || !/egress could not be fetched/u.test(String(error))) throw error;
+      await sleep(1_000);
+    }
+  }
+  let { cdp } = await firstReply(slot, now());
+  const workload = await setup(cdp);
+  const https = async () => httpsProbe(cdp, await cdp.attach(workload.targets.at(-1)!));
+  const first = await https();
+  for (let sample = 1; sample <= 3; sample += 1) {
+    cdp.close();
+    await slot.call("pause");
+    const saveMs = await slot.waitForDisk();
+    const start = now();
+    const resumed = await slot.call("resume");
+    const reply = await firstReply(slot, start);
+    cdp = reply.cdp;
+    const result = await https();
+    emit({
+      kind: "pull-disk-wake",
+      sample,
+      save_ms: saveMs,
+      resume_call_ms: resumed.ms,
+      first_cdp_reply_ms: reply.ms,
+      https_after_wake: result,
+      https_ms: now() - start,
+      ok: result === "opaque",
+    });
+  }
+  cdp.close();
+  await slot.call("pause");
+  await slot.waitForDisk();
+  const loop = helper({ cmd: "proxy-crash-loop", index: slot.index, seconds: 45 });
+  await sleep(6_000);
+  const start = now();
+  const resumed = await slot.call("resume");
+  let downAfterMs: number | null = null;
+  let phase: string | undefined;
+  while (now() - start < 30_000) {
+    const status = await slot.status();
+    phase = status.phase;
+    if (status.proxy === "down") {
+      downAfterMs = now() - start;
+      break;
+    }
+    await sleep(100);
+  }
+  const reply = await firstReply(slot, start);
+  cdp = reply.cdp;
+  const whileDown = await https();
+  const loopResult = await loop;
+  cdp.close();
+  await slot.call("pause");
+  await sleep(1_000);
+  const again = now();
+  const resumedAgain = await slot.call("resume");
+  const replyAgain = await firstReply(slot, again);
+  cdp = replyAgain.cdp;
+  const after = await https();
+  const statusAfter = (await slot.status()).proxy ?? null;
+  cdp.close();
+  emit({
+    kind: "pull-proxy-down-wake",
+    https_first: first,
+    loop: loopResult,
+    resume_call_ms: resumed.ms,
+    phase_while_down: phase,
+    status_proxy_down_after_ms: downAfterMs,
+    first_cdp_reply_while_down_ms: reply.ms,
+    https_while_down: whileDown,
+    resume_again_call_ms: resumedAgain.ms,
+    https_after_park_and_wake: after,
+    status_proxy_after: statusAfter,
+    ok:
+      first === "opaque" &&
+      phase === "running" &&
+      downAfterMs !== null &&
+      whileDown !== "opaque" &&
+      after === "opaque" &&
+      statusAfter === null,
+  });
+}
+
 async function waitForAgent(slot: Slot, timeoutMs = 60_000): Promise<void> {
   const until = now() + timeoutMs;
   for (;;) {
@@ -2056,6 +2158,7 @@ async function main() {
   if (options.phases.includes("mkfs-time")) await mkfsTimes();
   if (options.phases.includes("egress-pull")) await pulledEgress(slots);
   if (options.phases.includes("pull-run8")) await pulledRun8(slots);
+  if (options.phases.includes("pull-wake")) await pullWake(slots);
   assertAll();
   emit({ kind: "done" });
 }
