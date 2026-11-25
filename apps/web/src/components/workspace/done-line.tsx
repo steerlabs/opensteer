@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useRef, useState, type Ref } from "react";
-import { seenThroughOf, taskMark, type HostClient, type TaskRow } from "@opensteer/client/host";
+import {
+  isolatedPlainSentence,
+  seenThroughOf,
+  taskMark,
+  type HostClient,
+  type SentencePart,
+  type TaskRow,
+} from "@opensteer/client/host";
 import type { QuietTaskDays } from "@opensteer/core";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { useToast } from "../toast.js";
 import { act, failureWords } from "../use-action.js";
 import { TaskMark } from "./task-mark.js";
+import { TaskOriginLine } from "../agent-work.js";
 
 /** At most this many tasks move back at once, so a long list does not flood a slow link. */
 const moveBackConcurrency = 4;
@@ -63,6 +71,7 @@ export function DoneLine({
   onOpen,
   onOpenTask,
   onSeen,
+  origins,
   quietTaskDays,
 }: {
   /** The open conversation is one of the Done tasks. */
@@ -74,6 +83,7 @@ export function DoneLine({
   readonly onOpen: () => void;
   readonly onOpenTask: (threadId: string) => void;
   readonly onSeen: (rows: readonly TaskRow[]) => void;
+  readonly origins: ReadonlyMap<string, readonly SentencePart[]>;
   readonly quietTaskDays: QuietTaskDays | null;
 }) {
   const chip = useRef<HTMLButtonElement | null>(null);
@@ -149,6 +159,7 @@ export function DoneLine({
               onOpenTask(threadId);
             }}
             quietTaskDays={quietTaskDays}
+            origins={origins}
             rows={card.left}
           />
         </Popover>
@@ -163,12 +174,14 @@ function QuietMovedCard({
   onOpenTask,
   quietTaskDays,
   rows,
+  origins,
 }: {
   readonly hostClient: HostClient;
   readonly onMovedBack: (threadId: string) => void;
   readonly onOpenTask: (threadId: string) => void;
   readonly quietTaskDays: QuietTaskDays | null;
   readonly rows: readonly TaskRow[];
+  readonly origins: ReadonlyMap<string, readonly SentencePart[]>;
 }) {
   const toast = useToast();
   const [moving, setMoving] = useState<ReadonlySet<string>>(new Set());
@@ -213,28 +226,35 @@ function QuietMovedCard({
           : "No recent activity"}
       </p>
       <ul className="quiet-moved__rows">
-        {rows.map((row) => (
-          <li className="quiet-moved__row" key={row.threadId}>
-            <button
-              className="quiet-moved__open"
-              onClick={() => onOpenTask(row.threadId)}
-              type="button"
-            >
-              <TaskMark size={20} mark={taskMark(row)} quiet={row.quiet} />
-              <span className="quiet-moved__name">{row.title}</span>
-            </button>
-            <button
-              aria-label={`Move back: ${row.title}`}
-              className="icon-btn icon-btn--small quiet-moved__back"
-              disabled={moving.has(row.threadId)}
-              onClick={() => void moveBack([row])}
-              title="Move back to Tasks"
-              type="button"
-            >
-              <Icon name="undo" />
-            </button>
-          </li>
-        ))}
+        {rows.map((row) => {
+          const origin = origins.get(row.originConnectionId ?? "");
+          return (
+            <li className="quiet-moved__row" key={row.threadId}>
+              <button
+                aria-label={origin ? `${row.title} — ${isolatedPlainSentence(origin)}` : undefined}
+                className="quiet-moved__open"
+                onClick={() => onOpenTask(row.threadId)}
+                type="button"
+              >
+                <TaskMark size={20} mark={taskMark(row)} quiet={row.quiet} />
+                <span className="side-task__text">
+                  <span className="quiet-moved__name">{row.title}</span>
+                  <TaskOriginLine parts={origin} />
+                </span>
+              </button>
+              <button
+                aria-label={`Move back: ${row.title}`}
+                className="icon-btn icon-btn--small quiet-moved__back"
+                disabled={moving.has(row.threadId)}
+                onClick={() => void moveBack([row])}
+                title="Move back to Tasks"
+                type="button"
+              >
+                <Icon name="undo" />
+              </button>
+            </li>
+          );
+        })}
       </ul>
       {rows.length > 1 ? (
         <div className="quiet-moved__actions">

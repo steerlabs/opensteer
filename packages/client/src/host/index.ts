@@ -97,6 +97,8 @@ export * from "./connected-agent-view.js";
 export * from "./chat-view.js";
 export * from "./agent-identity.js";
 export * from "./agent-work.js";
+export * from "./connected-agents-now.js";
+export * from "./connected-agent-earlier.js";
 export * from "./agent-work-copy.js";
 export * from "./connected-agent-options.js";
 

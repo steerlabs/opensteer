@@ -1,6 +1,7 @@
 import type { HostApiClient, HostApiCommandOutput } from "@opensteer/protocol";
 import type { HostClient } from "./client.js";
 import type { ClientCommandInput } from "./device-commands.js";
+import type { HostSnapshotSource } from "./host-snapshot-store.js";
 
 /**
  * Everything the Messaging, chat and connected-agent screens send to a Home, on the web and the
@@ -26,6 +27,8 @@ export const chatScreenCommands = [
 export const chatScreenReads = [
   "channels.get",
   "connections.list",
+  "connections.activity",
+  "threads.activity",
   "channel.connection.check",
 ] as const;
 
@@ -60,12 +63,14 @@ export type ChatScreenCommand = Extract<
   { readonly type: ChatScreenCommandType }
 >;
 
-export interface ChatScreenHost {
+export interface ChatScreenHost extends HostSnapshotSource {
   dispatch(command: ChatScreenCommand): Promise<HostApiCommandOutput>;
   readonly rpc: Pick<HostApiClient, (typeof chatScreenReads)[number]>;
 }
 
 /** A Home as those screens may reach it. */
-export function chatScreenHost(client: Pick<HostClient, "dispatch" | "rpc">): ChatScreenHost {
+export function chatScreenHost(
+  client: Pick<HostClient, "dispatch" | "rpc"> & HostSnapshotSource,
+): ChatScreenHost {
   return client;
 }

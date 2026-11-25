@@ -1150,6 +1150,17 @@ button.side-needs:hover {
   margin-top: 1px;
 }
 
+.side-task--needs-you .agent-mark {
+  width: var(--space-20);
+  height: var(--space-20);
+  font-size: var(--text-xs);
+}
+
+.side-task--needs-you .agent-mark .provider-logo {
+  width: var(--space-12);
+  height: var(--space-12);
+}
+
 .side-task__text {
   display: grid;
   flex: 1;
@@ -1171,6 +1182,7 @@ button.side-needs:hover {
    The name fills the row, so a short one never reaches the fade. */
 .side-task__title,
 .side-tab__title,
+.side-task__origin,
 .side-task__ask {
   mask-image: linear-gradient(to right, var(--mask-ink) calc(100% - var(--space-24)), transparent);
 }
@@ -1190,19 +1202,19 @@ button.side-needs:hover {
   color: var(--muted);
 }
 
-/* The one second line: what the task asks of you, in amber. One line, so
-   every task is two lines at most and the list keeps its rhythm; the whole
-   ask is in the task. */
-.side-task__ask {
+.side-task__ask,
+.side-task__origin {
   overflow: hidden;
-  color: var(--amber-text);
   font-size: var(--text-sm);
   line-height: 1.36;
   white-space: nowrap;
 }
 
-/* A connected agent's own task says what it is using, quietly: it asks nothing. */
-.side-task__ask--quiet {
+.side-task__ask {
+  color: var(--amber-text);
+}
+
+.side-task__origin {
   color: var(--muted);
 }
 
@@ -3138,6 +3150,7 @@ button.start-apps__row--away:focus-visible {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+  line-height: 1.25;
   white-space: normal;
 }
 .side-tab--grouped::before,
@@ -4305,4 +4318,241 @@ html[data-tab-sorting] * {
   padding: var(--space-8) var(--space-12);
   color: var(--text-soft);
   font-size: var(--text-sm);
+}
+
+/* The connected agents' live controls share the sidebar's row and the header's pill. */
+.agents-now {
+  flex: none;
+  min-width: 0;
+}
+
+.agents-now.side-task {
+  margin: 0 var(--space-10) var(--space-4);
+  flex-wrap: wrap;
+  border-color: var(--green-line);
+}
+
+.agents-now.side-task:has([data-needs-you]) {
+  border-color: var(--amber-line);
+  background-color: var(--amber-wash);
+  color: var(--amber-text);
+}
+
+.agents-now .agents-now__trigger {
+  min-height: var(--control-height-sm);
+  min-width: 0;
+  gap: var(--space-6);
+  padding: var(--space-4) var(--space-6);
+  color: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+}
+
+.agents-now__headline {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agents-now.side-task .agents-now__trigger[data-single-agent] {
+  gap: var(--space-4);
+  padding-inline: var(--space-4);
+}
+
+.agents-now__trigger[data-single-agent] .agents-now__headline {
+  line-height: 1.25;
+}
+
+.agents-now__headline-line {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agents-now__headline-detail {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+}
+
+.agents-now__trigger > .icon,
+.agents-now-panel__footer .icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+
+.agents-now__trigger[aria-expanded="true"] > .icon {
+  transform: rotate(180deg);
+}
+
+.agents-now__marks {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  font-size: var(--text-xs);
+  position: relative;
+}
+
+.agents-now__marks .status-dot {
+  position: absolute;
+  inset-inline-end: 0;
+  inset-block-end: 0;
+  width: 5px;
+  height: 5px;
+}
+
+.agents-now__marks .agent-mark {
+  width: 18px;
+  height: 18px;
+  font-size: var(--text-xs);
+}
+
+.agents-now__marks .agent-mark .provider-logo {
+  width: 12px;
+  height: 12px;
+}
+
+.agents-now__marks .agent-mark + .agent-mark {
+  margin-inline-start: -3px;
+}
+
+.agents-now__quick-stop {
+  margin-inline-end: var(--space-2);
+  padding-inline: var(--space-6);
+}
+
+.agents-now--compact .agents-now__trigger {
+  flex: none;
+  border: 1px solid var(--green-line);
+  border-radius: var(--radius-full);
+  background: var(--fill-quiet);
+  white-space: nowrap;
+}
+
+.agents-now--compact .agents-now__trigger[data-needs-you] {
+  border-color: var(--amber-line);
+  background-color: var(--amber-wash);
+  color: var(--amber-text);
+}
+
+.agents-now--compact .agents-now__trigger:hover {
+  background-color: var(--fill-plate-hover);
+}
+
+.popover.agents-now-panel {
+  width: 350px;
+  max-width: min(350px, calc(100vw - 20px));
+  min-width: 0;
+  padding: var(--space-10);
+  background: var(--surface-elevated);
+}
+
+.agents-now-panel__header,
+.agents-now-panel__footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-4);
+}
+
+.agents-now-panel__header h2 {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.agents-now-panel__header > .outside-name {
+  max-width: 44%;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  text-align: end;
+}
+
+.agents-now-panel__list {
+  margin: var(--space-6) 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agents-now-panel__row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-8) var(--space-4);
+  border-top: 1px solid var(--rim-plate);
+}
+
+.agents-now-panel__row[data-needs-you] {
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius-sm);
+  background: var(--amber-wash);
+}
+
+.agents-now-panel__row[data-needs-you] + .agents-now-panel__row {
+  border-top-color: transparent;
+}
+
+.agents-now-panel__detail {
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
+}
+
+.agents-now-panel__where {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  column-gap: var(--space-6);
+}
+
+.agents-now-panel__where > span {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.agents-now-panel__actions {
+  display: flex;
+  gap: var(--space-4);
+}
+
+.agents-now-panel__row[data-needs-you] .btn--primary {
+  border-color: var(--amber-line);
+  background: var(--amber);
+  color: var(--ground);
+}
+
+.agents-now :is(.agents-now__quick-stop, .agents-now__trigger),
+.agents-now-panel .btn {
+  -webkit-app-region: no-drag;
+}
+
+.agents-now-panel__footer {
+  border-top: 1px solid var(--rim-plate);
+}
+
+.agents-now-panel__stop-all {
+  color: var(--red);
+}
+
+.agents-now-panel__footer > a {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  color: var(--text);
+  font-size: var(--text-xs);
+}
+
+.agents-now__inline-error,
+.agents-now-panel__error {
+  margin: var(--space-4);
+  color: var(--amber-text);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.agents-now__inline-error {
+  flex-basis: 100%;
 }
