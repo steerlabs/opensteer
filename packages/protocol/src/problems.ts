@@ -265,6 +265,34 @@ export const ProblemSchema = z
   .refine(reportRefinements.fieldsOfItsCode, { path: ["fields"], message: "Not a field of it" });
 export type Problem = z.infer<typeof ProblemSchema>;
 
+/**
+ * How an update that did not install ended, where the table's one sentence for `update.failed`
+ * would not be true: the release is still being published (Opensteer tries again by itself), or
+ * it did not start on this Home (Opensteer waits for another release, or an operator's retry).
+ */
+export const updateResultText = {
+  waiting: {
+    words: "An update is waiting: its release is not fully published yet.",
+    next: "Nothing changed. Opensteer tries again by itself once the release is complete.",
+  },
+  "not-retried": {
+    words: "An update did not start on this Home. Opensteer kept the version it had.",
+    next: "Nothing was lost. Opensteer waits for a newer release, or for its operator to try this one again.",
+  },
+} as const satisfies Partial<
+  Record<z.infer<typeof UpdateResultSchema>, Pick<ProblemDefinition, "words" | "next">>
+>;
+
+/** A problem's sentence and what to do next: the table's, or for an update, how it ended. */
+export function problemText(problem: Pick<Problem, "code" | "fields">): {
+  readonly words: string;
+  readonly next: string;
+} {
+  const result = problem.code === "update.failed" ? problem.fields.updateResult : undefined;
+  if (result === "waiting" || result === "not-retried") return updateResultText[result];
+  return problemTable[problem.code];
+}
+
 export const problemsLimit = 32;
 
 /**

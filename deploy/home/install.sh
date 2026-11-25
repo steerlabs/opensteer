@@ -319,6 +319,7 @@ fi
 if $prepare; then
   install_sandbox_policies
 else
+  plan_inventory "$local_images"
   fetch_release_images "$release_dir/images.env" "$local_images"
   if $local_images; then touch "$home_dir/local-images"; fi
   if $resume_managed; then check_release_stamps "$release_dir/images.env"; fi

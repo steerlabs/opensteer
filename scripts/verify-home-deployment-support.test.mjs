@@ -313,8 +313,8 @@ const switchFixture = `
     for name in a b c; do
       mkdir -p "$home_dir/releases/$name"
       printf 'OPENSTEER_HOME_VERSION=1.0.0\nOPENSTEER_HOME_HOST_IMAGE=host:%s\n' "$name" > "$home_dir/releases/$name/images.env"
-      # The ids of the images each runs: PostgreSQL's is shared by all three.
-      printf 'sha256:%064d\nsha256:%s\n' 0 "$(printf "$name%.0s" {1..64})" > "$home_dir/releases/$name/images.ids"
+      # What each pulled or made, by id and name: PostgreSQL's is shared by all three.
+      printf 'sha256:%064d postgres:shared\nsha256:%s host:%s\n' 0 "$(printf "$name%.0s" {1..64})" "$name" > "$home_dir/releases/$name/images.ids"
     done
     printf 'manual recovery copy\n' > "$home_dir/releases/b/database.dump"
     printf 'a b\n' > "$home_dir/update.pending"
@@ -414,6 +414,7 @@ const installedHome = ({ state = "required", fetch = "ok", start = "ok", running
     # The new release's own gate (it runs as root), and the old release started again.
     run_release() { echo "start $(version_of "$1")" >> "$log"; ${start === "ok" ? "true" : "false"}; }
     pin_release() { echo "pin $(version_of "$release_dir")" >> "$log"; }
+    plan_inventory() { :; }
     refresh_units() { echo units >> "$log"; }
     start_pod() { echo "start $(version_of "$release_dir")" >> "$log"; }
     rerun() { (rerun_installed_home "$@" "$(pwd)/deploy/home"); }
@@ -460,6 +461,13 @@ await test("the installer run again on a claimed, managed or mismatched Home cha
     {
       setup: installedHome({ fetch: "fails" }),
       run: 'rerun home.example.test "$staging/new.json" true true',
+      message: /The release's images could not be obtained\. Nothing was changed\./u,
+      log: "fetch true\n",
+    },
+    {
+      // Without a manifest it reuses the running release's images where they are: no registry.
+      setup: installedHome({ fetch: "fails" }),
+      run: "rerun home.example.test '' false true",
       message: /The release's images could not be obtained\. Nothing was changed\./u,
       log: "fetch true\n",
     },
@@ -900,10 +908,8 @@ await test("an interrupted switch is decided by `current` alone, and keeps the d
     readlink "$home_dir/current"; readlink "$home_dir/previous"
     ls "$home_dir/releases"; cat "$home_dir/docker.log"
   `);
-  assert.equal(
-    ahead,
-    `releases/b\nreleases/a\na\nb\ndocker image rm -f -- sha256:${"c".repeat(64)}\n`,
-  );
+  // Only the name c pulled, never by id or forced: an image goes when nothing else names it.
+  assert.equal(ahead, "releases/b\nreleases/a\na\nb\ndocker image rm -- host:c\n");
   // Anything else is the operator's: everything stays.
   const neither = runHome(`${switchFixture}
     current c
@@ -919,6 +925,21 @@ await test("an interrupted switch is decided by `current` alone, and keeps the d
     ls "$home_dir/releases"
   `);
   assert.equal(stuck, "An earlier release is kept to be removed later: c\na\nb\nc\n");
+  // A Docker that cannot answer is not an image that is gone: c stays; a missing one is gone.
+  const unknown = runRecovery(`${switchFixture}
+    current b
+    docker() { [[ $2 == inspect ]] && echo 'Cannot connect to the Docker daemon' >&2; return 1; }
+    recover_switch 2>&1
+    ls "$home_dir/releases"
+  `);
+  assert.equal(unknown, "An earlier release is kept to be removed later: c\na\nb\nc\n");
+  const missing = runRecovery(`${switchFixture}
+    current b
+    docker() { [[ $2 == inspect ]] && echo "Error: No such image: $4" >&2; return 1; }
+    recover_switch 2>&1
+    ls "$home_dir/releases"
+  `);
+  assert.equal(missing, "a\nb\n");
 });
 
 for (const { name, fixture, recover, selector } of [
@@ -1063,11 +1084,14 @@ await test("the managed scheduler enables the update timer from install, with or
     "",
   ]) {
     writeFileSync(config, content);
-    rmSync(updateTimer, { force: true });
+    // A first install: no units yet, nothing marked enabled.
+    rmSync(units, { recursive: true, force: true });
+    mkdirSync(units);
+    rmSync(resolve(temp, "units.enabled"), { force: true });
     const output = run();
     assert.match(
       output,
-      /enable --now opensteer-home-proof-update\.timer opensteer-home-proof-backup\.timer opensteer-home-proof-maintain\.timer/u,
+      /enable opensteer-home-proof\.service opensteer-home-proof-update\.timer opensteer-home-proof-backup\.timer opensteer-home-proof-maintain\.timer/u,
     );
     assert.doesNotMatch(output, /disable/u);
     assert.match(readFileSync(updateTimer, "utf8"), /OnCalendar=hourly/u);

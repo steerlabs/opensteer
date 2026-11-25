@@ -333,7 +333,10 @@ and says `Nothing was changed`, which is then true; a check that changes nothing
 Before `update.pending` or `current` names the new release, its directory is flushed to disk. One
 switch at a time: an update, the installer run again and `rollback` refuse while one is not
 finished, and no cleanup removes a release that `current`, `previous`, `update.pending` or
-`update.failed` names. Cleanup compares images by id.
+`update.failed` names. Cleanup removes only the image names the Home pulled or made (recorded in
+`images.ids` before each pull), never by id and never forced, so an image goes only when nothing
+else names it, and never one a kept release uses; when Docker cannot say, the release is kept to
+try again. Docker that cannot say whether the Home runs is a failed check, not a Home that is down.
 
 The switch writes `update.pending` (the two releases' names), stops the running release with its
 own files, starts the new one with the new release's own code and runs one maintenance check
@@ -344,7 +347,18 @@ are removed, `update.pending` goes, and the units are compared with what the new
 and rewritten only where they differ. None of these undoes the commit, and one that fails is
 tried again at the next start. A failed check stops the new release's containers with the running
 release's files, under the Home's own Compose project (`--remove-orphans`, volumes kept), and
-starts the running release again. That release is remembered (`update.failed`, written before the running release starts again) and is not tried again by itself: a later check offered the same release changes nothing, records it as `not-retried`, and keeps that release's directory with the dump taken before its first attempt until another release commits. Another release is tried; `sudo opensteer-home update --retry` tries the same one once more. Every start decides by `current` alone:
+starts the running release again. A release its own gate rejected is remembered (`update.failed`,
+one line per release, written before the running release starts again) and is not tried again by
+itself: a later check offered it changes nothing, records it as `not-retried`, and keeps its
+directory with the dump taken before its first attempt until another release commits. Another
+release is tried; `sudo opensteer-home update --retry` tries a remembered one once more. A switch
+that failed for another reason (stopping the running release, a sync, the rename) is not
+remembered: the next check tries again. The Home ends as its main unit had it: running while the
+unit is active, stopped when a person stopped it (the update switches it and leaves it stopped),
+and started through the unit when its last start had failed, so systemd owns what runs. Units are
+enabled once, at the first scheduling (`units.enabled`); afterwards a unit a person disabled stays
+disabled, only a unit written where there was none is enabled, and each enabled timer is started if
+it is not running. Every start decides by `current` alone:
 
 | Where the update stopped                      | At the next start                                                                        |
 | --------------------------------------------- | ---------------------------------------------------------------------------------------- |
@@ -358,7 +372,9 @@ The update timer runs hourly with a fixed per-machine offset of up to a quarter 
 one minute, and it runs whether or not the Home is up: a Home that is down still takes the release
 that fixes it. Nothing goes back by itself after a commit: a committed release that turns out bad
 (at a later start, say) has migrated the database, and going back on it is a person's decision.
-`sudo opensteer-home rollback` makes `previous` current by the same switch an update makes.
+`sudo opensteer-home rollback` makes `previous` current by the same switch an update makes, once
+its images are found on the machine, and remembers the release it left as one that failed here,
+so no timer installs it again (a different release, or `update --retry`, moves on).
 
 A rollback deliberately keeps the database as the new release's migrations left it (they are
 expand-only, so the previous Host runs on it; the dump stays in the failed release's directory, and

@@ -1168,6 +1168,7 @@ async function managedProof(directory, shipped) {
   let feedServerAttempted = false;
   const unit = managedProject;
   let bootRequests = 0;
+  let releaseFeedRequests = 0;
   let completeRequests = 0;
   let identity;
   let snapshotId;
@@ -1241,6 +1242,7 @@ async function managedProof(directory, shipped) {
       },
       // The account's release feed: the feed's address and the installer it pins with it.
       async releaseFeedForHome(id, authorization) {
+        releaseFeedRequests++;
         assert.equal(id, cloudComputerId);
         assert.ok(homeCredentials(authorization), "Release feed without the Home's credentials");
         return {
@@ -1528,7 +1530,20 @@ async function managedProof(directory, shipped) {
       { managed: true, allowFailure: true },
     );
     assert.notEqual(refusedFeed.status, 0);
-    assert.match(refusedFeed.stderr, /Managed Home releases require a digest/u);
+    if (!/Managed Home releases require a digest/u.test(refusedFeed.stderr)) {
+      // What the Account fixture saw, and what the Home's own request gets from it.
+      const direct = vm(
+        `source "$OPENSTEER_HOME_DIR/current/common.sh"
+        answer=$(mktemp); CURL_CA_BUNDLE=${quote(`${feedDirectory}/both.pem`)} ask_account release-feed "$answer" && echo answered
+        cat "$answer"; rm -f "$answer"
+        sed -n 's/^OPENSTEER_HOME_ACCOUNT_ORIGIN=//p' "$OPENSTEER_HOME_DIR/config.env"
+        CURL_CA_BUNDLE=${quote(`${feedDirectory}/both.pem`)} curl -sS -o /dev/null -w '%{http_code}' "$(sed -n "s/^OPENSTEER_HOME_ACCOUNT_ORIGIN='\\([^']*\\)'$/\\1/p" "$OPENSTEER_HOME_DIR/config.env")/v1/cloud-computers/${cloudComputerId}/release-feed" 2>&1 || true`,
+        { managed: true, allowFailure: true },
+      );
+      throw new Error(
+        `${refusedFeed.stderr}\nrelease-feed requests seen: ${releaseFeedRequests}\n${direct.stdout}${direct.stderr}`,
+      );
+    }
     assert.equal(
       vm(
         `load_compose

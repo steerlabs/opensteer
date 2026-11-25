@@ -25,16 +25,39 @@ release_waiting() {
 # release_identity SELECTOR RECIPE_SHA: a release named by its images and its installer.
 release_identity() { { cat "$1"; printf '%s\n' "$2"; } | digest; }
 
-# remember_failed RELEASE: a release that failed its gate here is not tried again by itself. Kept:
-# the directory of its first failure, with the dump taken before it, and since when.
+# remember_failed RELEASE: a release that failed its gate here, or that the operator rolled back
+# from, is not tried again by itself, until another release commits. One line each ("ID
+# IDENTITY SINCE"): the directory of its first failure stays, with the dump taken before it.
 remember_failed() {
-  local memory="$home_dir/update.failed" id=${1##*/} identity since known=''
+  local memory="$home_dir/update.failed" identity
   identity=$(release_identity "$(release_named "$1")" "$(cat "$1/recipe.sha256" 2>/dev/null)")
-  since=$(date -u +'%Y-%m-%dT%H:%M:00Z')
-  if [[ -f $memory ]]; then read -r id known since < "$memory"; fi
-  if [[ $known != "$identity" ]]; then id=${1##*/} since=$(date -u +'%Y-%m-%dT%H:%M:00Z'); fi
-  printf '%s %s %s\n' "$id" "$identity" "$since" > "$memory.new" && publish_file "$memory.new" "$memory" ||
+  [[ -z $(failed_release "$identity") ]] || return 0
+  { cat "$memory" 2>/dev/null; printf '%s %s %s\n' "${1##*/}" "$identity" "$(date -u +'%Y-%m-%dT%H:%M:00Z')"; } > "$memory.new" &&
+    publish_file "$memory.new" "$memory" ||
     echo 'The failed release could not be remembered: the next check tries it again.' >&2
+}
+
+# failed_release IDENTITY: the line that remembers that release, if any.
+failed_release() { awk -v id="$1" '$2 == id { print; exit }' "$home_dir/update.failed" 2>/dev/null || :; }
+
+# main_state: how this Home's main unit stands: active; inactive (a person stopped it); failed (its
+# last start failed). A Home without systemd counts as active.
+main_state() {
+  local state=''
+  [[ -d /run/systemd/system || -n ${OPENSTEER_HOME_UNIT_DIR:-} ]] || { echo active; return; }
+  state=$(systemctl show --property ActiveState --value "$(installed_unit_prefix).service" 2>/dev/null) || state=''
+  case $state in inactive | failed) echo "$state" ;; *) echo active ;; esac
+}
+
+# own_home STATE: after a switch, the current release runs as the main unit had the Home: running
+# while the unit is active; stopped when a person stopped it; started through the unit when its
+# last start had failed, so that systemd owns what runs.
+own_home() {
+  case $1 in
+    inactive) release_dir=$(current_release) compose down ;;
+    failed) systemctl start --no-block "$(installed_unit_prefix).service" ;;
+    *) release_dir=$(current_release) start_pod ;;
+  esac
 }
 
 # settled VERSION: the Home runs the release its feed names; a result left from before (waiting, a
@@ -48,7 +71,7 @@ settled() {
 # the running one (nothing outside it is written), then switched to by cutover.
 update_home() (
   [[ $# -le 2 ]] || fail "Usage: opensteer-home update [MANIFEST.json]"
-  local feed old_version new_version bundle_version change identity known since pinned=false unwritten='The release could not be written. Nothing was changed.'
+  local feed old_version new_version bundle_version change identity remembered since first unit pod pinned=false unwritten='The release could not be written. Nothing was changed.'
   if [[ -f "$home_dir/managed" ]]; then
     pinned=true
     [[ $# == 1 ]] || fail 'Managed Homes update only from the Account feed.'
@@ -118,12 +141,14 @@ update_home() (
   source "$release_dir/backup.sh"
   # A release that failed its gate here waits for the next one, or the operator's `update --retry`.
   identity=$(release_identity "$manifest.env" "$(if [[ -s "$manifest.recipe" ]]; then jq -r .sha256 "$manifest.recipe"; else cat "$from/recipe.sha256" 2>/dev/null; fi)")
-  if [[ ${retry_failed:-false} != true && -f "$home_dir/update.failed" ]] &&
-    read -r _ known since < "$home_dir/update.failed" && [[ $known == "$identity" ]]; then
+  remembered=$(failed_release "$identity")
+  if [[ ${retry_failed:-false} != true && -n $remembered ]]; then
+    read -r _ _ since <<< "$remembered"
     echo "Release $new_version did not start here: waiting for the next one (sudo opensteer-home update --retry tries it again)."
     record_update_result not-retried "$old_version" "$new_version" "$since"
     return 0
   fi
+  pod=$(pod_state) || fail 'Docker could not say whether this Home runs. Nothing was changed.'
   if [[ $change == same ]]; then room_for_release; else room_for_release images; fi ||
     fail 'There is not enough room on this machine for the release. Nothing was changed.'
   to=$(new_release "$new_version") || fail "$unwritten"
@@ -152,7 +177,7 @@ update_home() (
   # The release readies itself with its own code: its images, sandbox policies and units.
   run_release "$to" release-prepare || fail 'The release could not be prepared. Nothing was changed.'
   # The database as it is before the switch, kept with this release for as long as its directory.
-  if pod_running; then
+  if [[ $pod == running ]]; then
     postgres_tool pg_dump --format=custom > "$to/database.dump" ||
       fail 'The database could not be dumped before the update. Nothing was changed.'
   else
@@ -160,20 +185,36 @@ update_home() (
   fi
 
   prepared=true
+  # A Home a person stopped is switched and left stopped; one whose start failed is started through
+  # its main unit afterwards.
+  unit=$(main_state)
   local status=0
   cutover "$from" "$to" || status=$?
   case $status in
     0)
       echo "Updated Home to $new_version."
+      own_home "$unit" || echo "The Home is on $new_version but did not start: the next start starts it." >&2
       refresh_units || echo "The new release's units could not be written yet: the next start writes them." >&2
       record_update_result updated "$old_version" "$new_version"
       ;;
-    1)
-      printf '%s\n' "Home $new_version did not pass its check. Restoring $old_version." >&2
-      remember_failed "$to"
-      if start_pod; then
+    1 | 5)
+      if ((status == 1)); then
+        printf '%s\n' "Home $new_version did not pass its check. Restoring $old_version." >&2
+        remember_failed "$to"
+      else
+        printf '%s\n' "The switch to $new_version failed before it was made. Restoring $old_version." >&2
+      fi
+      if own_home "$unit"; then
+        if ((status == 5)); then
+          record_update_result failed "$old_version" "$new_version"
+          fail "The update failed and was undone; the next check tries it again."
+        fi
         record_update_result rolled-back "$old_version" "$new_version"
-        fail "The update was rolled back. This release is not tried again by itself; the database dump taken before its first attempt is kept in $home_dir/releases/$(cut -d' ' -f1 "$home_dir/update.failed" 2>/dev/null || echo "${to##*/}")/database.dump until another release updates this Home."
+        read -r first _ < <(failed_release "$identity")
+        if [[ -s "$home_dir/releases/${first:-${to##*/}}/database.dump" ]]; then
+          fail "The update was rolled back. This release is not tried again by itself; the database dump taken before its first attempt is kept in $home_dir/releases/${first:-${to##*/}}/database.dump until another release updates this Home."
+        fi
+        fail 'The update was rolled back. This release is not tried again by itself; no dump was taken before it (the Home was not running).'
       fi
       record_update_result failed "$old_version" "$new_version"
       fail "The update failed, and $old_version did not start again (sudo opensteer-home logs host)."
@@ -184,6 +225,7 @@ update_home() (
       ;;
     4)
       echo "Updated Home to $new_version."
+      own_home "$unit" || echo "The Home is on $new_version but did not start: the next start starts it." >&2
       record_update_result updated "$old_version" "$new_version"
       fail 'What follows the switch could not be finished; the next start finishes it, and no update runs until then.'
       ;;
@@ -195,22 +237,30 @@ update_home() (
 )
 
 # rollback_home: the way back after a committed release turns out bad (opensteer-home rollback):
-# `previous` becomes current by the same switch an update makes. Never automatic: the database is
-# as the bad release migrated it, and going back is a person's decision.
+# `previous` becomes current by the same switch an update makes, once its images are known to be
+# here, and the release left is remembered as one that failed here, so no timer installs it again.
+# Never automatic: the database is as the bad release migrated it, and going back is a person's
+# decision.
 rollback_home() (
-  local back status=0
+  local back from unit status=0
   [[ ! -e "$home_dir/update.pending" ]] || fail 'The last switch of releases is not finished yet; the next start finishes it.'
   back=$(readlink -- "$home_dir/previous") && [[ $back =~ ^releases/[a-zA-Z0-9._-]+$ && -d "$home_dir/$back" ]] ||
     fail 'This Home has no previous release to go back to.'
-  cutover "$(current_release)" "$home_dir/$back" || status=$?
+  release_dir=$home_dir/$back images_present ||
+    fail "The previous release's images are not all on this machine. Nothing was changed."
+  from=$(current_release) || exit
+  unit=$(main_state)
+  cutover "$from" "$home_dir/$back" || status=$?
   case $status in
     0 | 4)
       echo "Back on the previous release ($(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$home_dir/$back/images.env"))."
+      remember_failed "$from"
+      own_home "$unit" || echo 'The previous release is current but did not start: the next start starts it.' >&2
       ((status == 0)) || fail 'What follows the switch could not be finished; the next start finishes it.'
       refresh_units || echo "This Home's units could not be refreshed; the next start tries again." >&2
       ;;
-    1)
-      if start_pod; then fail 'The previous release did not pass its check; this one runs again.'; fi
+    1 | 5)
+      if own_home "$unit"; then fail 'The previous release did not pass its check; this one runs again.'; fi
       fail 'The previous release did not pass its check, and this one did not start again.'
       ;;
     2) fail 'The switch could not be recorded. Nothing was changed.' ;;

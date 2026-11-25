@@ -96,23 +96,39 @@ if [[ $unit == opensteer-home && $home_dir == /etc/opensteer-home && $(readlink 
 fi
 # A unit is written only where it differs from the installed one, beside itself and renamed into
 # place: an interruption leaves the old unit or the new one, never an empty one a reboot would load.
-changed=false
+changed=false fresh=()
 for file in "$staged"/*; do
   name=${file##*/}
   cmp -s -- "$file" "$unit_dir/$name" && continue
+  # A unit that was not there cannot have been disabled by a person: it is enabled below.
+  if [[ ! -e "$unit_dir/$name" && ( $name == "$unit.service" || $name == *.timer ) ]]; then fresh+=("$name"); fi
   install -m 0644 -- "$file" "$unit_dir/$name.new"
   sync "$unit_dir/$name.new"
   mv -f -- "$unit_dir/$name.new" "$unit_dir/$name"
   changed=true
 done
-# systemd is told when something changed, or when any one unit is not loaded as written or not
-# enabled; a query that fails counts as not.
+# systemd reloads what changed, or what it has not loaded as written; a query that fails counts as
+# not loaded.
 for file in "$staged"/*; do
   [[ $(systemctl show --property NeedDaemonReload --value "${file##*/}" 2>/dev/null) == no ]] || changed=true
 done
-for name in "$unit.service" "${timers[@]}"; do systemctl is-enabled --quiet "$name" 2>/dev/null || changed=true; done
-$changed || exit 0
-sync "$unit_dir"
-systemctl daemon-reload
-systemctl enable "$unit.service"
-systemctl enable --now "${timers[@]}"
+if $changed; then
+  sync "$unit_dir"
+  systemctl daemon-reload
+fi
+# The units are enabled at the Home's first scheduling, which units.enabled marks: from then on a
+# unit a person disabled stays disabled, and only a unit written where there was none is enabled.
+# An interrupted first scheduling enables them all again.
+if [[ ! -e "$home_dir/units.enabled" ]]; then
+  systemctl enable "$unit.service" "${timers[@]}"
+  touch "$home_dir/units.enabled"
+elif ((${#fresh[@]})); then
+  systemctl enable "${fresh[@]}"
+fi
+# Each enabled timer runs: an interrupted start leaves one enabled and stopped. A query that fails
+# counts as stopped.
+for name in "${timers[@]}"; do
+  if systemctl is-enabled --quiet "$name" 2>/dev/null && ! systemctl is-active --quiet "$name" 2>/dev/null; then
+    systemctl start "$name"
+  fi
+done

@@ -312,7 +312,7 @@ it("starts no local browser and no local browser egress on a Cloud Computer", ()
   // down and restarted on every maintenance pass and could never update.
   expect(read("opensteer-home")).toContain('pod_healthy "$snapshot"');
   expect(read("common.sh")).toMatch(/^pod_healthy\(\) \{\n(?:.*\n)*?.*running_services/mu);
-  expect(read("common.sh")).toMatch(/^images_present\(\) \{\n(?:.*\n)*?.*running_services/mu);
+  expect(read("common.sh")).toMatch(/^service_images\(\) \{\n(?:.*\n)*?.*running_services/mu);
 });
 
 /** `running_services` from `common.sh` for a Home directory holding these markers. */
