@@ -136,4 +136,35 @@ describe("no page of a browser the Home owns loads one of the Home's addresses, 
       expect(String(await session.read(root, "location.href"))).toBe(`${site.origin}/`),
     );
   }, 60_000);
+
+  it("refuses every spelling of the Home's own host: a trailing dot, another case (M3)", async () => {
+    const home = await listen(() => ({ body: "<p>Sign in to your Home</p>" }));
+    closing.push(home.close);
+    // The Home's canonical origin is a name; the browser resolves it to this machine.
+    const session = await startFollowSession({
+      args: ["--host-resolver-rules=MAP home.test 127.0.0.1,MAP home.test. 127.0.0.1"],
+      claims: {
+        homeAddresses: { origins: [`http://home.test:${home.port}`], loopbackPorts: [] },
+      },
+    });
+    const root = session.rootSurfaceId;
+    for (const url of [
+      `http://home.test.:${home.port}/settings`,
+      `http://HOME.test:${home.port}/`,
+      `http://user@home.test:${home.port}/`,
+    ]) {
+      await session
+        .read(root, `location.href = ${JSON.stringify(url)}; true`)
+        .catch(() => undefined);
+      await vi.waitFor(
+        async () =>
+          expect(
+            String(await session.read(root, "document.body?.innerText ?? ''").catch(() => "")),
+          ).toContain(homeElsewhereText),
+        { timeout: 15_000 },
+      );
+      await session.read(root, `location.href = "about:blank"; true`).catch(() => undefined);
+    }
+    expect(home.hits).toEqual([]);
+  }, 60_000);
 });

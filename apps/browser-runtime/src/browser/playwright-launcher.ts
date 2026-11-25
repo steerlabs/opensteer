@@ -1403,15 +1403,14 @@ class PlaywrightContextHandle implements BrowserContext {
   #homeCdp: PlaywrightCdpSession | undefined;
   #homeRuleOn = false;
 
-  /** The browser pauses only requests to the Home's own hosts and ports; every other goes on. */
+  /** The browser pauses only requests that may be the Home's; the set decides each one (M3). */
   async applyHomeAddresses(): Promise<void> {
     const cdp = this.#homeCdp;
     if (!cdp) return;
     const home = this.home.current;
-    const patterns = [
-      ...home.origins.map((origin) => `${origin}/*`),
-      ...home.loopbackPorts.map((port) => `*:${port}/*`),
-    ];
+    // The browser pauses requests whose address contains one of the set's own substrings, every
+    // spelling of the Home included; the handler asks the set itself, and lets the rest go on.
+    const patterns = home.reportedNeedles.map((needle) => `*${needle}*`);
     if (patterns.length === 0) {
       if (this.#homeRuleOn) await cdp.send("Fetch.disable" as never).catch(() => undefined);
       this.#homeRuleOn = false;

@@ -82,6 +82,15 @@ export class ThisHomeAddressSet {
     return [...this.#origins];
   }
 
+  /**
+   * Substrings every address of this Home contains in the form a browser reports it (any port,
+   * a trailing dot, userinfo, a default port the browser leaves out): a prefilter a browser can
+   * apply cheaply, wider than the set. The set itself (`includesReported`) decides each one.
+   */
+  get reportedNeedles(): readonly string[] {
+    return this.#needles;
+  }
+
   /** The loopback ports that are this Home's. */
   get loopbackPorts(): readonly number[] {
     return [...this.#ports];

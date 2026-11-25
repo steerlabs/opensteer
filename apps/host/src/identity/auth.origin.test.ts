@@ -41,12 +41,13 @@ function home(publicOrigin = loopbackHome) {
       // As the identity does: a remote cookie, and an Origin when one is demanded, its route's.
       authenticateRemoteSession: async (headers, options) =>
         typeof headers.cookie === "string" &&
-        headers.cookie.includes("__Host-opensteer.session=") &&
+        headers.cookie.includes("__Host-opensteer.session=r") &&
         (!options?.mutation || headers.origin === route)
           ? session
           : null,
     },
     publicUrl: new URL(publicOrigin),
+    homeOrigins: () => [new URL(publicOrigin).origin, route],
   });
 }
 
@@ -109,6 +110,16 @@ describe("a cookie's request comes from the Home's own page, in every scope (q1)
     await accepted({ cookie: remote, "sec-fetch-site": "same-origin" });
     await refused({ cookie: remote, origin: "https://evil.example.com" });
     await refused({ cookie: remote, "sec-fetch-site": "same-site" });
+    // The Home's own route with no session of the route's is not signed in there, whatever cookie
+    // of another origin it carries: asked to sign in, not refused as another origin.
+    for (const lapsed of ["__Host-opensteer.session=lapsed", cookie])
+      await expect(
+        home().authenticateSession({
+          cookie: lapsed,
+          origin: route,
+          "sec-fetch-site": "same-origin",
+        }),
+      ).rejects.toMatchObject({ code: "unauthorized" });
   });
 
   it("answers exactly what the desktop app's main process sends, whatever Sec-Fetch-Site its engine adds", async () => {

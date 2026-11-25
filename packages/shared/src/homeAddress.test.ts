@@ -135,3 +135,42 @@ describe("isThisHomeAddress", () => {
     });
   });
 });
+
+describe("one matcher for every spelling a browser reports (M3)", () => {
+  /** CDP `Fetch.enable` urlPattern matching: `*` is any run, `?` one character. */
+  const matches = (pattern: string, url: string) =>
+    new RegExp(
+      `^${pattern
+        .replace(/[.+^${}()|[\]\\]/gu, "\\$&")
+        .replace(/\*/gu, ".*")
+        .replace(/\?/gu, ".")}$`,
+      "u",
+    ).test(url);
+  const cases = [
+    {
+      home: { origins: ["https://home.example.com"], loopbackPorts: [80] },
+      urls: [
+        "https://home.example.com/",
+        "https://home.example.com./settings",
+        "wss://home.example.com/v1/realtime",
+        "https://user@home.example.com/",
+        "http://localhost/",
+        "http://127.0.0.1./tasks",
+        "http://[::1]/",
+        "http://sub.localhost/",
+      ],
+    },
+    {
+      home: { origins: ["http://127.0.0.1:4310"], loopbackPorts: [4310] },
+      urls: ["http://localhost.:4310/", "http://127.0.0.2:4310/x", "ws://[::1]:4310/socket"],
+    },
+  ];
+  for (const { home, urls } of cases)
+    for (const url of urls)
+      it(`pauses and refuses ${url}`, () => {
+        const set = new ThisHomeAddressSet(home);
+        const patterns = set.reportedNeedles.map((needle) => `*${needle}*`);
+        expect(patterns.some((pattern) => matches(pattern, url))).toBe(true);
+        expect(set.includesReported(url)).toBe(true);
+      });
+});

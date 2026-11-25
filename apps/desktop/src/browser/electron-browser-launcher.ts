@@ -417,6 +417,9 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
         if (controlled) this.#connectionWebContents.add(id);
         else this.#connectionWebContents.delete(id);
       },
+      setHomeAddresses: (home) => {
+        this.#home = home;
+      },
       profileSession,
       ...(authenticator ? { authenticator } : {}),
       ...(localProfile ? { localProfile } : {}),
@@ -826,8 +829,12 @@ interface ElectronBrowserContextOptions {
   ) => ElectronBrowserView;
   readonly createHelper: (options: ElectronBrowserViewOptions) => WebContentsView;
   readonly onConnectionWebContents?: (webContentsId: number, controlled: boolean) => void;
-  /** This Home's addresses, as the Home last told this browser: kept by the launcher (G1). */
-  readonly setHomeAddresses?: (home: ThisHomeAddressSet) => void;
+  /**
+   * This Home's addresses, as the Home last told this browser: kept by the launcher for every
+   * profile session it configures (G1). Required: no context of a browser the Home owns exists
+   * without it, a Guest's or a saved profile's.
+   */
+  readonly setHomeAddresses: (home: ThisHomeAddressSet) => void;
   readonly profileSession: Session;
   readonly localProfile?: ElectronLocalProfile;
   readonly onPageTiming?: PageOpenTiming;
@@ -876,7 +883,7 @@ class ElectronBrowserContext implements BrowserContext {
   }
   /** This Home's addresses, from its ticket or a route change (G1). */
   setHomeAddresses(home: ThisHomeAddressSet): void {
-    this.#options.setHomeAddresses?.(home);
+    this.#options.setHomeAddresses(home);
   }
 
   pages(): BrowserPage[] {

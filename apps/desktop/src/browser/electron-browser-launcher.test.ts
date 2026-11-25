@@ -6837,6 +6837,46 @@ describe("native Electron profiles", () => {
       await rm(f.root, { recursive: true, force: true });
     }
   });
+  it("refuses this Home's addresses in a saved local profile, as in a Guest (G1, M1)", async () => {
+    const f = await fixture();
+    const { session } = await import("electron");
+    const { ThisHomeAddressSet } = await import("@opensteer/shared/homeAddress");
+    try {
+      await f.initialize();
+      // Admitted, so its gate lets the profile's requests go: what is refused is the Home's.
+      const browser = await f.launch();
+      const profile = vi.mocked(session.fromPath).mock.results.at(-1)!.value;
+      // As the runtime's router hands the backend the set from the attach ticket.
+      await browser.cdp.setHomeAddresses?.(
+        new ThisHomeAddressSet({ origins: ["http://127.0.0.1:4310"], loopbackPorts: [4310] }),
+      );
+      const before = vi.mocked(profile.webRequest.onBeforeRequest).mock.calls.at(-1)![0] as (
+        details: Record<string, unknown>,
+        callback: (response: { cancel?: boolean }) => void,
+      ) => void;
+      const ask = (url: string, webContentsId?: number) => {
+        let answer: { cancel?: boolean } | undefined;
+        before(
+          {
+            url,
+            method: "GET",
+            resourceType: webContentsId ? "mainFrame" : "other",
+            webContentsId,
+          },
+          (response) => (answer = response),
+        );
+        return answer;
+      };
+      expect(ask("https://web.test/", 7)).toEqual({ cancel: false });
+      expect(ask("http://127.0.0.1:4310/", 7)).toEqual({ cancel: true });
+      expect(ask("http://localhost:4310/v1/auth/session")).toEqual({ cancel: true });
+      await browser.close();
+    } finally {
+      await f.launcher.localProfiles.release(f.directory);
+      f.launcher.close();
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
   it("does not admit a prepared profile when attachment is cancelled during readiness recovery", async () => {
     const f = await fixture();
     const { acquireElectronLocalProfile } = await import("./electron-local-profile.js");

@@ -2666,7 +2666,23 @@ integration("Host vertical slice", () => {
         headers: remoteHeaders,
       },
     );
-    expect(revokedBootstrap.status).toBe(401);
+    // The route is gone, so its origin is no longer one of the Home's own: a request stating it
+    // is refused as another origin's (G2), whatever it carries. The remote session ended with the
+    // route, which the same cookie shows from no origin at all: not signed in.
+    expect(revokedBootstrap.status).toBe(403);
+    const revokedCookie = await testRpcRequest(
+      origin,
+      "personal.shell.get",
+      {},
+      {
+        headers: {
+          [hostApiVersionHeader]: String(hostApiVersion),
+          cookie: remoteHeaders.cookie,
+          "sec-fetch-site": "same-origin",
+        },
+      },
+    );
+    expect(revokedCookie.status).toBe(401);
     // Rotation is delivery-blind: the phone's credential dies with the cookie.
     const revokedNative = await testRpcRequest(
       origin,

@@ -2239,6 +2239,8 @@ export async function createHostRuntime(
         new BrowserAttachTicketSigner({
           keyId: poolKeys.ticketKey.keyId,
           privateKey: poolKeys.ticketKey.key,
+          // A pooled guest is a browser this Home owns: it refuses the Home's addresses (G1, M2).
+          homeAddresses: () => homeAddresses.current().toJSON(),
         }),
       );
       managedBrowserPool = await startManagedBrowserPool({
@@ -3386,6 +3388,7 @@ export async function createHostRuntime(
       },
       ...(personalRemoteAccess ? { personalRemote: personalRemoteAccess } : {}),
       publicUrl: config.canonicalOrigin,
+      homeOrigins: () => homeAddresses.current().origins,
     });
     administrationCatalogs = new HarnessCatalogReconciliationOwner({
       catalogs: harnessCatalogs,

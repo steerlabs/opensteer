@@ -51,17 +51,26 @@ export class HostAuthenticator<Identity extends HostAuthenticatingIdentity = Ide
   readonly #identity: Identity;
   readonly #personalRemote: PersonalRemoteSessionAuthenticator | undefined;
   readonly #publicOrigin: string;
+  readonly #homeOrigins: (() => readonly string[]) | undefined;
   readonly #onAuthenticatedSession: ((session: AuthenticatedSession) => Promise<void>) | undefined;
 
   constructor(options: {
     readonly identity: Identity;
     readonly personalRemote?: PersonalRemoteSessionAuthenticator | undefined;
     readonly publicUrl: URL;
+    /**
+     * This Home's own origins now: its canonical origin and its current Remote access route
+     * (`HomeAddressBook`). A cookie request whose Origin is none of them is no page of the Home's,
+     * refused at once. Without it, another Origin than the canonical one is a page of the Home's
+     * only when the identity finds it is the signed route's, with that route's session.
+     */
+    readonly homeOrigins?: () => readonly string[];
     readonly onAuthenticatedSession?: (session: AuthenticatedSession) => Promise<void>;
   }) {
     this.#identity = options.identity;
     this.#personalRemote = options.personalRemote;
     this.#publicOrigin = options.publicUrl.origin;
+    this.#homeOrigins = options.homeOrigins;
     this.#onAuthenticatedSession = options.onAuthenticatedSession;
   }
 
@@ -141,9 +150,11 @@ export class HostAuthenticator<Identity extends HostAuthenticatingIdentity = Ide
     // no page can attach one, so no page rule applies to it. From here the credential is a cookie,
     // which a browser attaches to whatever request a page makes (q1, G2): in every scope, a read
     // as much as a change and on every cookie socket, the request comes from the Home's own page.
-    // - An Origin, when sent, is the Home's own (the route's, for a remote cookie), checked below;
+    // - An Origin, when sent, is one of the Home's own (its canonical origin, its current route);
     //   no other page can send it, so Sec-Fetch-Site is not asked then (the desktop app's main
-    //   process states the Home's origin, whatever Sec-Fetch-Site its engine adds).
+    //   process states the Home's origin, whatever Sec-Fetch-Site its engine adds). Each cookie is
+    //   then the session of its own origin only: the route's cookie of the route, the canonical
+    //   cookie of the canonical origin.
     // - With no Origin, Sec-Fetch-Site, when sent, is `same-origin` or `none` (an address typed or
     //   a bookmark): a page on another loopback port is same-site with a Mac Home, so `same-site`
     //   is refused.
@@ -152,6 +163,11 @@ export class HostAuthenticator<Identity extends HostAuthenticatingIdentity = Ide
     // Home's own browsers never load the Home, so it never exists there, G1).
     const originSent = headers.origin !== undefined;
     if (!originSent) requireOwnPageRequest(headers);
+    else if (
+      this.#homeOrigins &&
+      !this.#homeOrigins().includes(requestOrigin(headers.origin) ?? "")
+    )
+      throw new OpensteerError({ code: "forbidden", message: "Request origin is not allowed" });
     const remote = await this.#personalRemote?.authenticateRemoteSession(headers, {
       mutation: (options.mutation ?? false) || originSent,
     });
@@ -162,9 +178,16 @@ export class HostAuthenticator<Identity extends HostAuthenticatingIdentity = Ide
         surface: "personal-remote",
       };
     }
-    if ((options.mutation || originSent) && requestOrigin(headers.origin) !== this.#publicOrigin) {
+    if (options.mutation && requestOrigin(headers.origin) !== this.#publicOrigin) {
       throw new OpensteerError({ code: "forbidden", message: "Request origin is not allowed" });
     }
+    // Another Origin than the canonical one: a read from the Home's own route (one `homeOrigins`
+    // names) carried no session of the route's, so it is not signed in there, whatever cookie of
+    // another origin it carries; any other Origin is no page of the Home's.
+    if (originSent && requestOrigin(headers.origin) !== this.#publicOrigin)
+      throw this.#homeOrigins
+        ? new OpensteerError({ code: "unauthorized", message: "Authentication required" })
+        : new OpensteerError({ code: "forbidden", message: "Request origin is not allowed" });
     return {
       credentialKind: "browser-cookie",
       session: await this.#identity.requireSession(toWebHeaders(headers)),
