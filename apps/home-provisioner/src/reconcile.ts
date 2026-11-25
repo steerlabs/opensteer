@@ -1,17 +1,22 @@
 import { randomUUID } from "node:crypto";
 import {
   BootstrapScrubFailure,
+  ObservationFailed,
+  observed,
   ProviderOutcomeUnknown,
+  ProviderPlacementError,
   ProviderRateLimited,
   ProviderWriteRejected,
+  RemoteRequestError,
 } from "./http.js";
 import { refused } from "@opensteer/core";
-import type {
-  CloudComputerCheck,
-  CloudComputerDesired,
-  CloudComputerId,
-  CloudComputerReport,
-  CloudComputerProviderWrite,
+import {
+  cloudComputerReadinessDeadline,
+  type CloudComputerCheck,
+  type CloudComputerDesired,
+  type CloudComputerId,
+  type CloudComputerReport,
+  type CloudComputerProviderWrite,
 } from "@opensteer/control-plane-protocol";
 import { accountRefused, type AccountApi } from "./account.js";
 import { renderUserData } from "./boot.js";
@@ -20,6 +25,16 @@ import type { DnsProvider, VmProvider, VmServer, VmServerId } from "./provider.j
 
 type Failure = NonNullable<CloudComputerReport["lastError"]>;
 class Superseded extends Error {}
+/**
+ * A step done once a pass for every computer (the firewall) failed: the stack's problem, never
+ * evidence about one computer. It is logged once a pass; only the two steps that need the
+ * firewall (creating a machine, attaching the rule to one) stop for it, and nothing else does.
+ */
+class SharedStepFailed extends Error {
+  constructor(cause: unknown) {
+    super("A step shared by every Cloud Computer failed", { cause });
+  }
+}
 
 interface ReconcilerOptions {
   readonly account: AccountApi;
@@ -72,9 +87,24 @@ export class Reconciler {
             const report = await this.#apply(
               computer,
               (operationSignal, check) =>
-                (firewall ??= provider.ensureFirewall(operationSignal, check)),
+                (firewall ??= provider.ensureFirewall(operationSignal, check).catch((error) => {
+                  // A lost lease, a refused Account and a rate limit keep their own meaning.
+                  if (
+                    error instanceof Superseded ||
+                    accountRefused(error) ||
+                    rateLimited(error) !== undefined
+                  )
+                    throw error;
+                  // Once a pass, for the operator (the tick then sends no heartbeat): the
+                  // failing-pass digest names the cause.
+                  this.#options.onError?.(error);
+                  throw new SharedStepFailed(error);
+                })),
               signal,
             );
+            // Nothing new to say of it this pass: a read failed and the last report stands.
+            if (!report) continue;
+            // The judged attempt is in the key: the next deadline is sent though it reads alike.
             const key = JSON.stringify(report);
             if (this.#reports.get(computer.id) === key) continue;
             this.#reports.delete(computer.id);
@@ -162,7 +192,7 @@ export class Reconciler {
     computer: CloudComputerDesired,
     ensureFirewall: (signal: AbortSignal, check: () => Promise<void>) => Promise<number>,
     signal: AbortSignal,
-  ): Promise<CloudComputerReport> {
+  ): Promise<CloudComputerReport | undefined> {
     const { account, provider, dns, discover } = this.#options;
     const { id, generation, revision, state, hostname } = computer;
     let current: VmServer | undefined;
@@ -183,10 +213,15 @@ export class Reconciler {
       ipv6: phase === "deleted" || !computer.ipv6Enabled ? null : (current?.ipv6 ?? null),
       observedIdentity: phase === "deleted" ? null : (computer.observedIdentity ?? null),
     });
-    const unready = (phase: "provisioning" | "booting") =>
+    // The deadline is judged against the attempt this desired state names, and says so: the
+    // account accepts it only for its current attempt.
+    const unready = (phase: "provisioning" | "booting"): CloudComputerReport =>
       computer.readinessStartedAt &&
       this.#now() - Date.parse(computer.readinessStartedAt) >= this.#options.readinessTimeoutMs
-        ? report("failed", "The Cloud Computer did not become ready before its deadline.")
+        ? {
+            ...report("failed", cloudComputerReadinessDeadline),
+            judgedReadinessStartedAt: computer.readinessStartedAt,
+          }
         : report(phase);
     const pending = new Map(
       (computer.pendingProviderWrites ?? []).map((write) => [write.token, write]),
@@ -348,9 +383,9 @@ export class Reconciler {
                 await act((job, check) => provider.delete(server.id, job, check));
               else await act((job, check) => provider.powerOff(server.id, job, check));
             }
-            const observed = await provider.describe(server.id, signal, server.generation);
-            if (current?.id === server.id) current = observed;
-            if (observed && (state === "deleted" || observed.status !== "off")) settled = false;
+            const seen = await provider.describe(server.id, signal, server.generation);
+            if (current?.id === server.id) current = seen;
+            if (seen && (state === "deleted" || seen.status !== "off")) settled = false;
           }
           return settled;
         })();
@@ -406,16 +441,26 @@ export class Reconciler {
           if (old.status === "deleting") return unready("provisioning");
           if (old.status !== "off") {
             await act((job, check) => provider.powerOff(old.id, job, check));
-            const observed = await provider.describe(old.id, signal, old.generation);
-            if (observed && observed.status !== "off") return unready("provisioning");
+            const seen = await provider.describe(old.id, signal, old.generation);
+            if (seen && seen.status !== "off") return unready("provisioning");
           }
         }
         failure = "The Cloud Computer DNS operation failed.";
         await withdraw();
       }
 
-      const firewallId = await act((job, check) => ensureFirewall(job, check));
+      // The shared firewall is needed to create a machine and to attach its rule to one, and for
+      // nothing else: when it failed this pass, a machine that must be created is reported
+      // provisioning (its deadline applies), and one that exists goes on to be powered on, read,
+      // discovered and reported as it is, its attachment left for a later pass.
+      let firewallId: number | undefined;
+      try {
+        firewallId = await act((job, check) => ensureFirewall(job, check));
+      } catch (error) {
+        if (!(error instanceof SharedStepFailed)) throw error;
+      }
       if (!current && computer.bootstrapToken) {
+        if (firewallId === undefined) return unready("provisioning");
         const userData = renderUserData(
           {
             cloudComputerId: id,
@@ -437,7 +482,7 @@ export class Reconciler {
                   region: computer.region ?? this.#options.defaultRegion,
                   serverType: computer.serverType ?? this.#options.defaultServerType,
                   image: this.#options.image,
-                  firewallId,
+                  firewallId: firewallId!,
                   userData,
                   requestId: token,
                 },
@@ -456,6 +501,7 @@ export class Reconciler {
 
       const server = current;
       if (
+        firewallId !== undefined &&
         !(await act((job, check) =>
           provider.ensureFirewallAttached(server, firewallId, job, check),
         ))
@@ -489,7 +535,7 @@ export class Reconciler {
         ? await Promise.all(
             [addresses.ipv4, addresses.ipv6]
               .filter((ip) => ip !== null)
-              .map((ip) => discover(hostname, ip, signal)),
+              .map((ip) => observed(discover(hostname, ip, signal))),
           )
         : [];
       const invalid =
@@ -569,9 +615,34 @@ export class Reconciler {
         // confirmed this pass, never as a Home that missed its deadline.
         return report("booting");
       }
+      // A read that failed observed nothing, whatever its status: unknown stays unknown, nothing
+      // new is reported, the error is the operator's (onError, the failing-pass digest), and the
+      // next pass looks again. A read is known by its request (`request` in http.ts: a GET), and
+      // the shared firewall never gets here, so what is left came from a write to this
+      // computer's own resources: failed only when the provider or DNS refused it, or when the
+      // provider holds a machine of it in another zone.
+      if (error instanceof ObservationFailed || !refusedWrite(error)) return undefined;
       return report("failed", failure);
     }
   }
+}
+
+/**
+ * A write the provider or DNS refused for this computer's own resources (its instance, address,
+ * bootstrap or DNS records: an HTTP 4xx other than a rate limit), or the provider's machine of it
+ * in another zone, where an operator must act. Not a read, nor the shared firewall: those are
+ * `ObservationFailed` and `SharedStepFailed` before they get here.
+ */
+function refusedWrite(error: unknown): boolean {
+  const original = error instanceof ProviderWriteRejected ? error.original : error;
+  if (original instanceof ProviderPlacementError) return true;
+  return (
+    original instanceof RemoteRequestError &&
+    (original.service === "Google Compute Engine" || original.service === "Cloudflare") &&
+    original.status >= 400 &&
+    original.status < 500 &&
+    original.status !== 429
+  );
 }
 
 /** A provider rate limit, whether a read met it or it refused a write before carrying it out. */

@@ -40,7 +40,8 @@
     "./command-table": "./src/command-table.ts",
     "./command-review": "./src/command-review.ts",
     "./command-words": "./src/command-words.ts",
-    "./test-support/command-samples": "./src/command-samples.test-support.ts"
+    "./test-support/command-samples": "./src/command-samples.test-support.ts",
+    "./problems": "./src/problems.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

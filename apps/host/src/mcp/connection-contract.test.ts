@@ -181,7 +181,7 @@ describe("the connection's actual MCP listing", () => {
           "connections",
           "requests",
           "activity",
-          ...(selectedGrant ? [] : ["settings", "engines"]),
+          ...(selectedGrant ? [] : ["settings", "engines", "problems"]),
           ...(!selectedGrant || apps ? ["devices"] : []),
         ].sort(),
       );

@@ -70,7 +70,25 @@ it("loads optional managed Home settings from the Account runtime directory", ()
       stripeWebhookSecret: files.OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET,
       releaseManifestUrl: files.OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL,
       region: "europe-west3-a",
+      notReadyAfterMinutes: 30,
     });
+    expect(config.cloudComputers?.heartbeatUrl).toBeUndefined();
+    const watched = loadControlPlaneConfig({
+      ...environment,
+      OPENSTEER_CLOUD_COMPUTER_NOT_READY_MINUTES: "45",
+      OPENSTEER_CLOUD_COMPUTER_HEARTBEAT_URL: "https://hc.example.com/ping/billing",
+    }).cloudComputers;
+    expect(watched?.notReadyAfterMinutes).toBe(45);
+    expect(watched?.heartbeatUrl?.href).toBe("https://hc.example.com/ping/billing");
+    for (const [name, value] of [
+      ["OPENSTEER_CLOUD_COMPUTER_NOT_READY_MINUTES", "2"],
+      // Below the provisioner's own readiness deadline and a normal first set-up's margin.
+      ["OPENSTEER_CLOUD_COMPUTER_NOT_READY_MINUTES", "14"],
+      ["OPENSTEER_CLOUD_COMPUTER_HEARTBEAT_URL", "http://hc.example.com/ping/billing"],
+    ] as const)
+      expect(() => loadControlPlaneConfig({ ...environment, [name]: value })).toThrow(
+        `Missing or invalid ${name}`,
+      );
     expect(() =>
       loadControlPlaneConfig({
         ...environment,
@@ -78,6 +96,37 @@ it("loads optional managed Home settings from the Account runtime directory", ()
           "https://user:password@releases.example.com/feed",
       }),
     ).toThrow("Missing or invalid OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL");
+    // The synthetic purchase's sign-in opens only beside a test-mode Stripe secret key (U6, S4).
+    const synthetic = {
+      OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL: "Synthetic@Example.com",
+      OPENSTEER_SYNTHETIC_SIGN_IN_PASSWORD: "s".repeat(24),
+    };
+    expect(loadControlPlaneConfig({ ...environment, ...synthetic }).syntheticSignIn).toEqual({
+      email: "synthetic@example.com",
+      password: "s".repeat(24),
+    });
+    for (const key of ["sk_live_123456789", "rk_live_123456789", "rk_test_123456789"])
+      expect(() =>
+        loadControlPlaneConfig({
+          ...environment,
+          ...synthetic,
+          OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY: key,
+        }),
+      ).toThrow("needs a test-mode Stripe secret key");
+    expect(() =>
+      loadControlPlaneConfig({
+        ...environment,
+        OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL: "synthetic@example.com",
+      }),
+    ).toThrow("email and password together");
+    expect(() =>
+      loadControlPlaneConfig({
+        ...environment,
+        ...synthetic,
+        OPENSTEER_APP_REVIEW_EMAIL: "synthetic@example.com",
+        OPENSTEER_APP_REVIEW_PASSWORD: "r".repeat(24),
+      }),
+    ).toThrow("must not be the App Review account");
   } finally {
     rmSync(directory, { recursive: true });
   }
@@ -115,6 +164,18 @@ describe("control-plane configuration", () => {
         OPENSTEER_CONTROL_PLANE_DATABASE_URL: "https://db.example/opensteer",
       }),
     ).toThrow(/PostgreSQL/u);
+  });
+
+  it("opens the synthetic purchase's sign-in on no stack that does not say it is a test stack (S4)", () => {
+    expect(loadControlPlaneConfig(validEnvironment).syntheticSignIn).toBeUndefined();
+    // No Cloud Computer setting at all, so no test-mode key: refused.
+    expect(() =>
+      loadControlPlaneConfig({
+        ...validEnvironment,
+        OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL: "synthetic@example.com",
+        OPENSTEER_SYNTHETIC_SIGN_IN_PASSWORD: "s".repeat(24),
+      }),
+    ).toThrow("needs a test-mode Stripe secret key");
   });
 
   it("enables App Review sign-in only with a valid email and a long password together", () => {

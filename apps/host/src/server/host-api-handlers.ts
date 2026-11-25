@@ -63,6 +63,7 @@ export function createHostApiHandlers(
     | "tabs.get"
     | "tabs.state"
     | "machines.list"
+    | "problems.get"
     | "assignment.get"
     | "thread.assignments.list"
     | "browser.searchSuggestions.get"
@@ -200,6 +201,7 @@ export function createHostApiHandlers(
   } satisfies Omit<
     HostApiHandlers,
     | "machines.list"
+    | "problems.get"
     | "tabs.get"
     | "tabs.state"
     | "apps.list"
