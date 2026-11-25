@@ -1311,11 +1311,38 @@ async function checkWebAccessibleResources(
       `location.href = ${JSON.stringify(bounce(other, dynamicPage))}; "started"`,
     );
     await waitFor(() => page.url() === `${base}dyn.html`);
+    // A server redirect to a page not listed under the dynamic address: Chromium refuses it before
+    // any hop (its error page at the address it was sent to), exactly as for a guessed host.
     const redirectedToNonWar = await redirected(other, dynamicNonWar);
-    assert.deepEqual(
-      redirectedToNonWar,
-      { url: `${web}/start`, title: "/start" },
+    const redirectedToGuessed = await redirected(other, `${guessedBase}nonwar.html`);
+    assert.ok(
+      [`${web}/start`, dynamicNonWar].includes(redirectedToNonWar.url) &&
+        redirectedToNonWar.title !== "Smoke non-WAR",
       `a server redirect reached the non-web-accessible page through the dynamic address: ${JSON.stringify(redirectedToNonWar)}`,
+    );
+    assert.ok(
+      [`${web}/start`, `${guessedBase}nonwar.html`].includes(redirectedToGuessed.url) &&
+        redirectedToGuessed.title === redirectedToNonWar.title &&
+        (redirectedToGuessed.url === `${web}/start`) ===
+          (redirectedToNonWar.url === `${web}/start`),
+      `the dynamic address read differently from a guessed host: ${JSON.stringify({ redirectedToNonWar, redirectedToGuessed })}`,
+    );
+    // The extension's own page sent through a web redirect to it: the hop is judged as the site
+    // that redirected (M2), not as the extension.
+    await load(page, `${base}options.html`);
+    await contents(page).executeJavaScript(
+      `location.href = ${JSON.stringify(bounce(other, dynamicNonWar))}; "started"`,
+    );
+    await settle();
+    const ownViaRedirect = {
+      url: page.url(),
+      title: await contents(page)
+        .executeJavaScript("document.title")
+        .catch((error: unknown) => `unreadable: ${String(error)}`),
+    };
+    assert.ok(
+      ownViaRedirect.url !== `${base}nonwar.html` && ownViaRedirect.title !== "Smoke non-WAR",
+      `ext -> web redirect -> dynamic non-web-accessible page loaded: ${JSON.stringify(ownViaRedirect)}`,
     );
     await load(page, `${web}/start`);
     const tabbed = await popupsOf(() =>
@@ -1334,7 +1361,7 @@ async function checkWebAccessibleResources(
       `a new tab reached the non-web-accessible page through the dynamic address: ${JSON.stringify(tabbed)}`,
     );
     console.log(
-      `[extensions-smoke] extension-web-accessible: dynamic redirect=${JSON.stringify(redirectedToNonWar)} tab=${JSON.stringify(tabbed)}`,
+      `[extensions-smoke] extension-web-accessible: dynamic redirect=${JSON.stringify(redirectedToNonWar)} guessed=${JSON.stringify(redirectedToGuessed)} own-via-redirect=${JSON.stringify(ownViaRedirect)} tab=${JSON.stringify(tabbed)}`,
     );
     sectionChecks.push("an extension's dynamic address works, a guessed one reaches nothing");
 
