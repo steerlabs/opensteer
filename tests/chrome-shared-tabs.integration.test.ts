@@ -414,10 +414,26 @@ async function proveChromeShares(
         `<a target="_blank" href="${extension}/connect.html#${invitation}">Pair the companion</a>`,
       ),
   );
+  // Every request that reaches the Home's own server from a probe (D1): what an attached shared
+  // tab's session rules must keep from leaving Chrome.
+  const probeHits: string[] = [];
+  home.get("/home-probe/:kind", async (request, reply) => {
+    probeHits.push(`${(request.params as { kind: string }).kind} ${request.headers.cookie ?? ""}`);
+    return reply.type("text/html").send("<!doctype html><title>probe</title>");
+  });
+  home.server.on("upgrade", (request: { url?: string; headers: { cookie?: string } }) => {
+    if (request.url?.startsWith("/home-probe/"))
+      probeHits.push(`${request.url.slice("/home-probe/".length)} ${request.headers.cookie ?? ""}`);
+  });
   await home.listen({ host: "127.0.0.1", port });
   // The pages shared from Chrome are a web site's, never this Home's: a tab on the Home's own
   // address is not one an agent may be given (rule 1's page rule).
   pages = createHttpServer((request, response) => {
+    const redirect = /^\/test-redirect-([a-z]+)$/u.exec(request.url ?? "")?.[1];
+    if (redirect) {
+      response.writeHead(302, { location: `${origin}/home-probe/redirect-${redirect}` }).end();
+      return;
+    }
     const name = decodeURIComponent(/^\/test-tab\/([^/?#]+)/u.exec(request.url ?? "")?.[1] ?? "");
     if (!name) {
       response.writeHead(404).end();
@@ -1260,6 +1276,25 @@ async function proveChromeShares(
   }
   const client = await attach(firstId);
   await chrome.addCookies([{ name: "fixture", value: "fixture-session", url: origin }]);
+  // From a web page, a fetch, a WebSocket, an iframe and a redirect to the Home (D1).
+  const probe = (who: string) => `(async () => {
+    const home = ${JSON.stringify(origin)};
+    const who = ${JSON.stringify(who)};
+    const settle = (start) => new Promise((done) => { start(done); setTimeout(done, 1500); });
+    await fetch(home + "/home-probe/fetch-" + who, { credentials: "include", mode: "no-cors" }).catch(() => {});
+    await settle((done) => {
+      const socket = new WebSocket(home.replace("http", "ws") + "/home-probe/ws-" + who);
+      socket.onopen = socket.onerror = socket.onclose = () => done();
+    });
+    for (const src of [home + "/home-probe/frame-" + who, location.origin + "/test-redirect-" + who])
+      await settle((done) => {
+        const frame = document.createElement("iframe");
+        frame.onload = frame.onerror = () => done();
+        frame.src = src;
+        document.body.append(frame);
+      });
+    return "probed";
+  })()`;
   const repl = liveTabs.browserUsePort(async () => authority);
   const replCall = {
     contextKey: "chrome-repl",
@@ -1291,6 +1326,32 @@ async function proveChromeShares(
         ),
       ),
     ).toMatchObject({ result: { value: "First" } });
+    // An agent drives First: nothing of the probe reaches the Home, with its cookie or without.
+    expect(
+      JSON.parse(
+        await repl.command(
+          selected,
+          "Runtime.evaluate",
+          { expression: probe("agent"), awaitPromise: true, returnByValue: true },
+          undefined,
+          { ...replCall, signal: AbortSignal.timeout(15_000), deadline: Date.now() + 15_000 },
+        ),
+      ),
+    ).toMatchObject({ result: { value: "probed" } });
+    // The person's own tab, which no agent drives, then reaches the Home with its cookie: the
+    // probe is real, and whatever of the agent's tab reached the Home arrived before it.
+    const control = await chrome.newPage();
+    await control.goto(`${site}/test-tab/Control`);
+    await control.evaluate(probe("person"));
+    await vi.waitFor(() =>
+      expect(probeHits.map((hit) => hit.split(" ")[0]).sort()).toEqual(
+        expect.arrayContaining(["fetch-person", "frame-person", "redirect-person", "ws-person"]),
+      ),
+    );
+    expect(probeHits.filter((hit) => hit.includes("-agent"))).toEqual([]);
+    expect(probeHits.every((hit) => hit.includes("fixture=fixture-session"))).toBe(true);
+    await control.close();
+    probeHits.length = 0;
     const reads: unknown = JSON.parse(
       await repl.command(
         selected,

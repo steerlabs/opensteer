@@ -9196,120 +9196,117 @@ it.each([
   },
 );
 
-it(
-  "records no popup of a task's tab on an address of this Home for the task, and closes it (B3)",
-  {
-    timeout: 20_000,
-  },
-  async () => {
-    const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-    const ownerId = createId("user");
-    const repository = new MemoryBrowserRepository(ownerId);
-    const memory = memoryTabs();
-    vi.spyOn(repository, "listBrowserSessionViewers").mockResolvedValue({ userIds: [ownerId] });
-    const service = new BrowserService({
-      ...nativeProfileOptions(),
-      ...profileStateOptions,
-      repository,
-      signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
-      targetResolver: runnerTarget({ url: runtime.url, tabRestoreVersion: true }),
-      tabs: memory.store,
-      tabPlaces: { write: async () => false, notice: () => {} },
-      homeAddresses: () =>
-        new ThisHomeAddressSet({ origins: ["https://home.example.com"], loopbackPorts: [4310] }),
+it("records no popup of a task's tab on an address of this Home for the task, and closes it (B3)", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+  const ownerId = createId("user");
+  const repository = new MemoryBrowserRepository(ownerId);
+  const memory = memoryTabs();
+  vi.spyOn(repository, "listBrowserSessionViewers").mockResolvedValue({ userIds: [ownerId] });
+  const service = new BrowserService({
+    ...nativeProfileOptions(),
+    ...profileStateOptions,
+    repository,
+    signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
+    targetResolver: runnerTarget({ url: runtime.url, tabRestoreVersion: true }),
+    tabs: memory.store,
+    tabPlaces: { write: async () => false, notice: () => {} },
+    homeAddresses: () =>
+      new ThisHomeAddressSet({ origins: ["https://home.example.com"], loopbackPorts: [4310] }),
+  });
+  cleanups.push(() => service.close());
+  const taskId = createId("thread");
+  const descriptor = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "opener",
+  );
+  await memory.add({ ...descriptor, openedBy: { taskId } });
+  const opener = descriptor.id;
+  const row = (id: string, url: string, order: number) =>
+    BrowserTabRecordSchema.parse({
+      id,
+      state: "live",
+      title: id,
+      url,
+      icon: null,
+      order,
+      openerId: opener,
+      documentId: `document-${id}`,
+      geometryRevision: 0,
+      loading: false,
+      navigationFailed: false,
+      canGoBack: false,
+      canGoForward: false,
+      sizedByAgent: false,
     });
-    cleanups.push(() => service.close());
-    const taskId = createId("thread");
-    const descriptor = await service.pageTabs.open(
-      { kind: "person", ownerId },
-      { kind: "page", guest: true, url: "about:blank" },
-      "opener",
-    );
-    await memory.add({ ...descriptor, openedBy: { taskId } });
-    const opener = descriptor.id;
-    const row = (id: string, url: string, order: number) =>
-      BrowserTabRecordSchema.parse({
-        id,
-        state: "live",
-        title: id,
-        url,
-        icon: null,
-        order,
-        openerId: opener,
-        documentId: `document-${id}`,
-        geometryRevision: 0,
-        loading: false,
-        navigationFailed: false,
-        canGoBack: false,
-        canGoForward: false,
-        sizedByAgent: false,
+  const closes: string[] = [];
+  void (async () => {
+    for (;;) {
+      const command = (await runtime.nextCommand()) as {
+        type?: unknown;
+        requestId?: unknown;
+        command?: { method?: unknown; parameters?: Record<string, unknown> };
+      };
+      if (command.type !== "cdp.command") continue;
+      const closing = command.command?.method === browserHostMethods.closeTab;
+      if (closing) closes.push(String(command.command?.parameters?.surfaceId));
+      runtime.sendServer({
+        type: "cdp.result",
+        requestId: command.requestId,
+        result: closing ? { outcome: "tab-closed" } : {},
       });
-    const closes: string[] = [];
-    void (async () => {
-      for (;;) {
-        const command = await runtime.nextCommand();
-        if (command.type !== "cdp.command") continue;
-        if (command.command.method === browserHostMethods.closeTab)
-          closes.push(String(command.command.parameters?.surfaceId));
-        runtime.sendServer({
-          type: "cdp.result",
-          requestId: command.requestId,
-          result:
-            command.command.method === browserHostMethods.closeTab ? { outcome: "tab-closed" } : {},
-        });
-      }
-    })().catch(() => undefined);
-    runtime.sendServer({ type: "browser.tabs", stream: { op: "begin", generation: "popups" } });
-    runtime.sendServer({
-      type: "browser.tabs",
-      stream: { op: "end", revision: 1, count: 0, meta: { activeId: null, inventoryRevision: 1 } },
-    });
-    runtime.sendServer({
-      type: "browser.tabs",
-      stream: {
-        op: "change",
-        generation: "popups",
-        base: 1,
-        revision: 2,
-        add: [
-          row("page-home", "http://127.0.0.1:4310/settings", 10),
-          row("page-web", "https://popup.test/", 11),
-        ],
-      },
-    });
-    // The rows reach the session's inventory first; a flush then writes their descriptors.
-    await vi.waitFor(() =>
-      expect(service.pageInventory(descriptor.pageBinding!.sessionId)?.records.size).toBe(2),
-    );
-    await service.flushPendingTabDescriptors();
-    await vi.waitFor(() => expect(memory.rows.has("page-web")).toBe(true), { timeout: 6000 });
-    // The task's popup on the Home is neither the task's tab nor kept open.
-    expect(memory.rows.has("page-home")).toBe(false);
-    expect(memory.rows.get("page-web")?.openedBy).toEqual({ taskId });
-    await vi.waitFor(() => expect(closes).toContain("page-home"), { timeout: 6000 });
-    // A popup of the person's own tab on the Home is the person's, and stays.
-    memory.rows.get(opener)!.openedBy = "person";
-    runtime.sendServer({
-      type: "browser.tabs",
-      stream: {
-        op: "change",
-        generation: "popups",
-        base: 2,
-        revision: 3,
-        add: [row("page-person-home", "https://home.example.com/", 12)],
-      },
-    });
-    await vi.waitFor(() =>
-      expect(service.pageInventory(descriptor.pageBinding!.sessionId)?.records.size).toBe(3),
-    );
-    await service.flushPendingTabDescriptors();
-    await vi.waitFor(() => expect(memory.rows.get("page-person-home")?.openedBy).toBe("person"), {
-      timeout: 6000,
-    });
-    expect(closes).not.toContain("page-person-home");
-  },
-);
+    }
+  })().catch(() => undefined);
+  runtime.sendServer({ type: "browser.tabs", stream: { op: "begin", generation: "popups" } });
+  runtime.sendServer({
+    type: "browser.tabs",
+    stream: { op: "end", revision: 1, count: 0, meta: { activeId: null, inventoryRevision: 1 } },
+  });
+  runtime.sendServer({
+    type: "browser.tabs",
+    stream: {
+      op: "change",
+      generation: "popups",
+      base: 1,
+      revision: 2,
+      add: [
+        row("page-home", "http://127.0.0.1:4310/settings", 10),
+        row("page-web", "https://popup.test/", 11),
+      ],
+    },
+  });
+  // The rows reach the session's inventory first; a flush then writes their descriptors.
+  await vi.waitFor(() =>
+    expect(service.pageInventory(descriptor.pageBinding!.sessionId)?.records.size).toBe(2),
+  );
+  await service.flushPendingTabDescriptors();
+  await vi.waitFor(() => expect(memory.rows.has("page-web")).toBe(true), { timeout: 3000 });
+  // The task's popup on the Home is neither the task's tab nor kept open.
+  expect(memory.rows.has("page-home")).toBe(false);
+  expect(memory.rows.get("page-web")?.openedBy).toEqual({ taskId });
+  await vi.waitFor(() => expect(closes).toContain("page-home"), { timeout: 3000 });
+  // A popup of the person's own tab on the Home is the person's, and stays.
+  memory.rows.get(opener)!.openedBy = "person";
+  runtime.sendServer({
+    type: "browser.tabs",
+    stream: {
+      op: "change",
+      generation: "popups",
+      base: 2,
+      revision: 3,
+      add: [row("page-person-home", "https://home.example.com/", 12)],
+    },
+  });
+  await vi.waitFor(() =>
+    expect(service.pageInventory(descriptor.pageBinding!.sessionId)?.records.size).toBe(3),
+  );
+  await service.flushPendingTabDescriptors();
+  await vi.waitFor(() => expect(memory.rows.get("page-person-home")?.openedBy).toBe("person"), {
+    timeout: 6000,
+  });
+  expect(closes).not.toContain("page-person-home");
+});
 
 function memoryTabs() {
   const rows = new Map<string, TabRecord>();

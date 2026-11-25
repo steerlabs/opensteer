@@ -58,7 +58,9 @@ export class ThisHomeAddressSet {
       const origin = canonicalOrigin(value);
       if (!origin) continue;
       origins.add(origin);
+      // The host with its port, and alone: `home.example.com.:8443` holds only the latter.
       needles.add(new URL(origin).host);
+      needles.add(new URL(origin).hostname);
     }
     const ports = new Set(home.loopbackPorts.filter((port) => Number.isInteger(port) && port > 0));
     for (const port of ports) {
@@ -125,12 +127,64 @@ export class ThisHomeAddressSet {
       url.protocol === "ws:" ? "http:" : url.protocol === "wss:" ? "https:" : url.protocol;
     if (scheme !== "http:" && scheme !== "https:") return false;
     const port = url.port ? Number(url.port) : scheme === "https:" ? 443 : 80;
-    if (this.#origins.has(`${scheme}//${url.host}`)) return true;
+    // A fully qualified spelling (`home.example.com.`) names the same host.
+    const hostname = url.hostname.endsWith(".") ? url.hostname.slice(0, -1) : url.hostname;
+    if (this.#origins.has(`${scheme}//${hostname}${url.port ? `:${url.port}` : ""}`)) return true;
     return this.#ports.has(port) && isLoopbackUrlHostname(url.hostname);
+  }
+
+  /**
+   * Regular expressions (RE2 syntax, for a browser's request rules) that match a request URL, in
+   * the canonical form a browser gives one, exactly when it is one of this Home's addresses over
+   * http(s) or ws(s): each origin, and every loopback spelling on each of the Home's ports. Built
+   * from the same loopback list as this test, so a browser blocks what the predicate refuses.
+   */
+  requestPatterns(): string[] {
+    const userinfo = "(?:[^/?#@]*@)?";
+    const end = "(?:[/?#]|$)";
+    const patterns: string[] = [];
+    for (const origin of this.#origins) {
+      const url = new URL(origin);
+      const secure = url.protocol === "https:";
+      const schemes = secure ? "(?:https|wss)" : "(?:http|ws)";
+      const port = url.port ? `:${url.port}` : `(?::${secure ? 443 : 80})?`;
+      patterns.push(`^${schemes}://${userinfo}${escapeRegex(url.hostname)}\\.?${port}${end}`);
+    }
+    // One pattern per spelling: a browser compiles each rule's pattern within a small budget.
+    for (const port of this.#ports)
+      for (const spelling of loopbackSpellings) {
+        const host = `${spelling}\\.?`;
+        patterns.push(`^(?:https?|wss?)://${userinfo}${host}:${port}${end}`);
+        if (port === 80) patterns.push(`^(?:http|ws)://${userinfo}${host}${end}`);
+        if (port === 443) patterns.push(`^(?:https|wss)://${userinfo}${host}${end}`);
+      }
+    return patterns;
   }
 }
 
-const loopbackNeedles = ["localhost", "127.", "[::1]", "[::ffff:7f", "0.0.0.0", "[::]"];
+/**
+ * Every spelling of a loopback host as a browser serializes it: `localhost` and its subdomains,
+ * `127.0.0.0/8`, `[::1]`, an IPv4-mapped loopback address, the unspecified addresses a browser
+ * connects to locally, each with or without a trailing dot. The one list the predicate and the
+ * request patterns share.
+ */
+const loopbackSpellings = [
+  "localhost",
+  "(?:[a-z0-9-]+\\.)+localhost",
+  "127\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}",
+  "0\\.0\\.0\\.0",
+  "\\[::1\\]",
+  "\\[::\\]",
+  "\\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\\]",
+  "\\[::ffff:0:0\\]",
+];
+const loopbackHostname = new RegExp(`^(?:${loopbackSpellings.join("|")})\\.?$`, "u");
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+const loopbackNeedles = ["localhost", "127.", "[::1]", "[::ffff:", "0.0.0.0", "[::]"];
 
 function canonicalOrigin(value: string): string | null {
   try {
@@ -145,12 +199,9 @@ function canonicalOrigin(value: string): string | null {
 /**
  * A hostname as WHATWG URL serializes it (lower case, IPv4 in dotted decimal, IPv6 compressed in
  * brackets) that reaches this machine: `localhost` and its subdomains, `127.0.0.0/8`, `[::1]`, an
- * IPv4-mapped loopback address, and the unspecified addresses a browser connects to locally.
+ * IPv4-mapped loopback address, and the unspecified addresses a browser connects to locally
+ * (`[::ffff:0:0]` among them), with or without a trailing dot.
  */
 function isLoopbackUrlHostname(hostname: string): boolean {
-  const host = hostname.endsWith(".") ? hostname.slice(0, -1) : hostname;
-  if (host === "localhost" || host.endsWith(".localhost")) return true;
-  if (host === "[::1]" || host === "[::]" || host === "0.0.0.0") return true;
-  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/u.test(host)) return true;
-  return /^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/u.test(host);
+  return loopbackHostname.test(hostname);
 }

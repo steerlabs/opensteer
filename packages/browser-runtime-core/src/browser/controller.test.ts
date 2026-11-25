@@ -1698,7 +1698,7 @@ describe("BrowserController", () => {
             creationOrigin === "agent" ? ["hold", "navigate", "release"] : ["navigate"],
           ),
         );
-        expect(create.mock.calls.at(-1)?.[0]?.agent).toBe(
+        expect((create.mock.calls.at(-1)?.[0] as { agent?: boolean } | undefined)?.agent).toBe(
           creationOrigin === "agent" ? true : undefined,
         );
         expect(hold).toHaveBeenCalledTimes(creationOrigin === "agent" ? 1 : 0);

@@ -447,6 +447,8 @@ export class ChromeTabDebugger {
   #detach(share: Share): Promise<void> {
     const current = share.attachment;
     if (!current) {
+      // Whatever path ends this share, no rule outlives an agent's hold of its tab (D1).
+      void this.#releaseHome(share.tabId).catch(() => undefined);
       const pending = this.#detaching.get(share.tabId);
       if (pending) return pending;
       return share.detachFailed
@@ -513,7 +515,13 @@ export class ChromeTabDebugger {
         if (!canDebug(share.info.url, this.#home(link)))
           throw new Error("This Chrome tab is no longer shared.");
         await this.#blockHome(share.tabId, this.#home(link));
-        return this.#debugger.attach({ tabId: share.tabId }, "1.3");
+        try {
+          return await this.#debugger.attach({ tabId: share.tabId }, "1.3");
+        } catch (error) {
+          // No agent drives it: its rules go with the attachment that failed (D1).
+          await this.#releaseHome(share.tabId).catch(() => undefined);
+          throw error;
+        }
       }),
     });
     try {
@@ -566,15 +574,16 @@ export class ChromeTabDebugger {
     if (!this.#rules || home.empty || this.#ruleIds.has(tabId)) return;
     await this.#rulesCleared;
     if (this.#ruleIds.has(tabId)) return;
-    const filters = homeUrlFilters(home);
-    const ids = filters.map(() => this.#nextRuleId++);
+    // The same patterns the shared predicate refuses, over pages, frames, requests and sockets.
+    const patterns = home.requestPatterns();
+    const ids = patterns.map(() => this.#nextRuleId++);
     const installed = this.#rules
       .updateSessionRules({
-        addRules: filters.map((urlFilter, index) => ({
+        addRules: patterns.map((regexFilter, index) => ({
           id: ids[index]!,
           priority: 1,
           action: { type: "block" },
-          condition: { tabIds: [tabId], urlFilter, resourceTypes: allResourceTypes },
+          condition: { tabIds: [tabId], regexFilter, resourceTypes: allResourceTypes },
         })),
       })
       .then(() => ids);
@@ -614,20 +623,6 @@ const allResourceTypes = [
   "webbundle",
   "other",
 ] as const;
-
-/** One URL filter per address of this Home: each origin, and each loopback name on its ports. */
-function homeUrlFilters(home: ThisHomeAddressSet): string[] {
-  const filters = new Set<string>();
-  for (const origin of home.origins) {
-    filters.add(`|${origin}/`);
-    filters.add(`|${origin.replace(/^http/u, "ws")}/`);
-  }
-  for (const port of home.loopbackPorts)
-    for (const host of ["localhost", "127.0.0.1", "[::1]"])
-      for (const scheme of ["http", "https", "ws", "wss"])
-        filters.add(`|${scheme}://${host}:${port}/`);
-  return [...filters];
-}
 
 function loopbackPort(origin: string): number | undefined {
   try {

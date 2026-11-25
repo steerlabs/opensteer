@@ -23,7 +23,13 @@ function listen<T extends (...args: never[]) => void>() {
 const paired = ["http://127.0.0.1:4310"];
 const sent = { origins: ["https://home.example.com"], loopbackPorts: [4310] };
 
-async function fixture(url = "https://fixture.test/", leftBehind: number[] = []) {
+async function fixture(
+  url = "https://fixture.test/",
+  leftBehind: number[] = [],
+  attachFails = false,
+) {
+  const onRemoved = listen<(tabId: number) => void>();
+  const onDetach = listen<(source: ChromeDebuggee, reason: string) => void>();
   const onCreated =
     listen<(details: { sourceTabId: number; tabId: number; url: string }) => void>();
   const onUpdated =
@@ -31,6 +37,7 @@ async function fixture(url = "https://fixture.test/", leftBehind: number[] = [])
   const order: string[] = [];
   const attach = vi.fn(async () => {
     order.push("attach");
+    if (attachFails) throw new Error("Another debugger is attached to the tab.");
   });
   const detach = vi.fn(async () => {
     order.push("detach");
@@ -48,7 +55,7 @@ async function fixture(url = "https://fixture.test/", leftBehind: number[] = [])
       attach,
       detach,
       sendCommand: vi.fn(async () => ({ worked: true })),
-      onDetach: listen<(source: ChromeDebuggee, reason: string) => void>(),
+      onDetach,
       onEvent:
         listen<
           (source: ChromeDebuggee, method: string, params?: Record<string, unknown>) => void
@@ -58,7 +65,7 @@ async function fixture(url = "https://fixture.test/", leftBehind: number[] = [])
       ),
     },
     {
-      onRemoved: listen<(tabId: number) => void>(),
+      onRemoved,
       onReplaced: listen<(added: number, removed: number) => void>(),
       onUpdated,
       create: vi.fn(),
@@ -123,6 +130,8 @@ async function fixture(url = "https://fixture.test/", leftBehind: number[] = [])
     rules,
     onCreated,
     onUpdated,
+    onRemoved,
+    onDetach,
     evaluate,
     send,
     shareId,
@@ -167,16 +176,23 @@ describe("ChromeTabDebugger: a shared tab an agent drives may not be on an addre
     expect((await f.evaluate()).ok).toBe(true);
     expect(f.order.slice(0, 2)).toEqual(["rules", "attach"]);
     expect(f.rules.remove).toEqual([]);
-    const filters = f.rules.add.map((rule) => rule.condition.urlFilter);
-    for (const filter of [
-      "|https://home.example.com/",
-      "|wss://home.example.com/",
-      "|http://127.0.0.1:4310/",
-      "|http://localhost:4310/",
-      "|http://[::1]:4310/",
+    const patterns = f.rules.add.map((rule) => new RegExp(rule.condition.regexFilter, "u"));
+    const blocked = (url: string) => patterns.some((pattern) => pattern.test(url));
+    for (const url of [
+      "https://home.example.com/",
+      "wss://home.example.com/v1/realtime",
+      "http://127.0.0.1:4310/",
+      "ws://127.0.0.1:4310/socket",
+      "http://localhost:4310/",
+      "http://[::1]:4310/",
+      "http://0.0.0.0:4310/",
+      "http://sub.localhost:4310/",
+      "http://localhost.:4310/",
+      "https://home.example.com./",
     ])
-      expect(filters).toContain(filter);
-    expect(filters.some((filter) => filter.includes(":5173"))).toBe(false);
+      expect(blocked(url), url).toBe(true);
+    for (const url of ["http://localhost:5173/", "https://web.test/", "http://127.0.0.1:43100/"])
+      expect(blocked(url), url).toBe(false);
     for (const rule of f.rules.add) {
       expect(rule.condition.tabIds).toEqual([5]);
       expect(rule.condition.resourceTypes).toContain("main_frame");
@@ -210,6 +226,67 @@ describe("ChromeTabDebugger: a shared tab an agent drives may not be on an addre
     f.onCreated.emit({ sourceTabId: 5, tabId: 6, url: "http://localhost:4310/" });
     await Promise.resolve();
     expect(f.relay.list("home")).toHaveLength(1);
+  });
+
+  describe("no rule outlives the agent's hold on every path (D1)", () => {
+    const paths: [string, (f: Awaited<ReturnType<typeof fixture>>) => Promise<unknown>][] = [
+      [
+        "a detach",
+        (f) =>
+          f.send({
+            action: "detach",
+            requestId: crypto.randomUUID(),
+            shareId: f.shareId!,
+            attachmentId: f.attachmentId,
+          }),
+      ],
+      [
+        "an unshare",
+        (f) =>
+          f.send({
+            action: "unshare",
+            requestId: crypto.randomUUID(),
+            shareId: f.shareId!,
+            attachmentId: f.attachmentId,
+          }),
+      ],
+      ["the person's stop", async (f) => f.relay.stop("home", f.shareId!)],
+      ["a closed tab", async (f) => f.onRemoved.emit(5)],
+      ["Chrome's own detach", async (f) => f.onDetach.emit({ tabId: 5 }, "canceled_by_user")],
+      ["the Home's disconnect", async (f) => f.relay.disconnect("home")],
+      [
+        "the tab going to the Home",
+        async (f) =>
+          f.onUpdated.emit(
+            5,
+            { url: "http://localhost:4310/" },
+            { id: 5, url: "http://localhost:4310/" },
+          ),
+      ],
+    ];
+    for (const [path, end] of paths)
+      it(`after ${path}`, async () => {
+        const f = await fixture();
+        expect((await f.evaluate()).ok).toBe(true);
+        expect(f.rules.add.length).toBeGreaterThan(0);
+        await end(f);
+        await vi.waitFor(() =>
+          expect([...f.rules.remove].sort()).toEqual(f.rules.add.map((rule) => rule.id).sort()),
+        );
+      });
+
+    it("after an attach Chrome refuses", async () => {
+      const f = await fixture("https://fixture.test/", [], true);
+      expect((await f.evaluate()).ok).toBe(false);
+      expect(f.rules.add.length).toBeGreaterThan(0);
+      await vi.waitFor(() =>
+        expect([...f.rules.remove].sort()).toEqual(f.rules.add.map((rule) => rule.id).sort()),
+      );
+      // And again after the person stops sharing: nothing is left, nothing removed twice.
+      f.relay.stop("home", f.shareId!);
+      await Promise.resolve();
+      expect(f.rules.remove).toHaveLength(f.rules.add.length);
+    });
   });
 
   it("removes the rules a previous service worker left before it adds its own", async () => {

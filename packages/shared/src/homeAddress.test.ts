@@ -28,6 +28,11 @@ describe("isThisHomeAddress", () => {
     "filesystem:http://localhost:4310/temporary/x",
     "\thttps://home.example.com/",
     "https://home%2eexample.com/",
+    "https://home.example.com./",
+    "https://home.example.com.:443/settings",
+    "https://route.opensteer.test.:8443/",
+    "http://[::ffff:0.0.0.0]:4310/",
+    "http://sub.localhost.:4310/",
   ];
   for (const value of yes)
     it(`is the Home: ${JSON.stringify(value)}`, () => {
@@ -81,6 +86,46 @@ describe("isThisHomeAddress", () => {
     ];
     for (const value of reported)
       expect(set.includesReported(value), value).toBe(set.includes(value));
+  });
+
+  it("gives request patterns that match exactly what it refuses (D1)", () => {
+    for (const loopbackPorts of [[4310], [80], [443]]) {
+      const set = new ThisHomeAddressSet({ ...home, loopbackPorts });
+      const patterns = set.requestPatterns().map((pattern) => new RegExp(pattern, "u"));
+      const corpus = [
+        ...yes,
+        ...no.filter((value): value is string => typeof value === "string"),
+        "http://localhost/",
+        "https://localhost/",
+        "http://127.0.0.1/x",
+        "ws://localhost/socket",
+        "wss://127.0.0.1/",
+        "ws://127.0.0.1:4310/v1/realtime",
+        "wss://home.example.com/v1/realtime",
+        "ws://home.example.com/",
+        "http://0.0.0.0:4310/",
+        "http://[::]:4310/",
+        "http://127.2.3.4:4310/",
+        "http://localhost:43100/",
+        "http://localhost:431/",
+        "https://home.example.com.evil.test/",
+        "https://evil.test/home.example.com/",
+      ];
+      for (const value of corpus) {
+        let canonical: string;
+        try {
+          canonical = new URL(value.trim()).href;
+        } catch {
+          continue;
+        }
+        // A browser blocks requests to web sockets and pages, not to wrappers of them.
+        if (!/^(?:https?|wss?):/u.test(canonical)) continue;
+        expect(
+          patterns.some((pattern) => pattern.test(canonical)),
+          `${loopbackPorts[0]} ${canonical}`,
+        ).toBe(set.includes(canonical));
+      }
+    }
   });
 
   it("keeps the data form for the wire", () => {

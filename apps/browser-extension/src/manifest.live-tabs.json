@@ -13,7 +13,7 @@
     "storage",
     "webNavigation"
   ],
-  "host_permissions": ["http://*/*", "https://*/*"],
+  "host_permissions": ["http://*/*", "https://*/*", "ws://*/*", "wss://*/*"],
   "background": {
     "service_worker": "worker.js",
     "type": "module"

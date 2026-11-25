@@ -68,7 +68,7 @@ interface ChromeSessionRule {
   id: number;
   priority: number;
   action: { type: "block" };
-  condition: { tabIds: number[]; urlFilter: string; resourceTypes: readonly string[] };
+  condition: { tabIds: number[]; regexFilter: string; resourceTypes: readonly string[] };
 }
 
 interface ChromeApi {

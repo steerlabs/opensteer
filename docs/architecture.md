@@ -479,9 +479,17 @@ memory (`apps/host/src/browser/home-addresses.ts`) and every attach ticket that 
 claim, and every new shared Chrome tab attachment, carries it to the browser. An agent's
 navigation, new tab and history step there are refused as any refused address; such a page is not
 listed, attached, woken, filled or pictured; a page that commits one by any route ends the agent's
-channels to it. In the Mac's browser a page any agent holds also cannot navigate, frame, redirect or
-open a window there and sends the Home no cookie; a shared Chrome tab an agent drives has a session
-rule that blocks its requests to the Home. A dev server on another loopback port is not this Home.
+channels to it. A page an agent makes, and a popup of a page an agent holds, is agent-controlled
+from construction until that agent's hold ends; only the router's holds release it. When the set
+changes (Remote access on, off, or a new route), every agent's attachment ends and attaches again
+with the new set. In the Mac's browser a page any agent holds also cannot navigate, frame, redirect
+or open a window there and sends the Home no cookie; a shared Chrome tab an agent drives has session
+rules, from the same address list, that block its pages, requests and web sockets to the Home. No
+response of the Home renders inside a frame (`frame-ancestors 'none'`, `X-Frame-Options: DENY`), except
+an app the Home frames itself. A dev server on another loopback port is not this Home. Accepted as
+they are: a service worker's own request has no page, so neither browser line sees it (the Home's
+frame headers and its Origin check on changes cover it); a window a shared Chrome tab opens to the
+Home is the person's own tab, which no agent can drive.
 What this costs, by decision: a Run of the person's own agent that opens this Home's own web pages
 is refused (the owner may overturn it).
 
