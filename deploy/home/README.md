@@ -165,10 +165,13 @@ An Opensteer Cloud Computer's Home is different in two ways, both set by
   TCP to that subnet on those two ports, before it rejects every private
   range. The rule is for the pod: the Runner, gateway and Channel Runtime
   share the Host's network namespace, so a shell of your own agents' Runs can
-  open those ports too. The pool agent answers only requests signed with the
-  key the Host registered for its slot, and the relay only a TLS client
-  holding its relay key; both keys are in the Host's data volume, which no
-  other service mounts. The Opensteer account
+  open those ports too, but holds no key. What protects the pool is the
+  slot's keys and each Home's capped share: the pool agent answers only
+  requests signed with the key the Host registered for its slot, and the relay
+  only a TLS client holding its relay key; both keys are in the Host's data
+  volume, which no other service mounts; and the pool host takes at most 16
+  connections at a time from one Home at the agent port and 64 at the relay.
+  The Opensteer account
   refuses to boot a Cloud Computer until it knows the pool network (the
   installer retries), and the installer refuses a boot answer without a valid
   one, and fetches again a saved one that lacks it. Maintenance asks the
