@@ -112,8 +112,8 @@ export async function defineEgress(
     // counter (sleepEgress), so only the proxy's own failures count: five starts in 120 s, with
     // a restart delay that backs off from 1 s to 30 s (five restarts then take about 22 s, so a
     // proxy that keeps crashing trips the limit; measured on run 5's host, a 30 s window never
-    // tripped with that backoff), and then the proxy stays down until the slot's next start or
-    // wake (reviveEgress), and the slot's status says so.
+    // tripped with that backoff). Status reports the failure, and the next start or wake can
+    // recreate the socket or reset the service.
     `--slice=${egressSlice}`,
     "--property=StartLimitIntervalSec=120",
     "--property=StartLimitBurst=5",
@@ -236,7 +236,7 @@ export async function reviveEgress(
   return true;
 }
 
-/** The slot numbers whose proxy (or its socket) failed: down until their next start or wake. */
+/** The slot numbers whose proxy service or socket is currently failed. */
 export async function failedEgress(): Promise<readonly number[]> {
   const text = await run(
     "systemctl",
@@ -249,6 +249,17 @@ export async function failedEgress(): Promise<readonly number[]> {
   return [...indices];
 }
 
+/** Clears a failed service or restart backoff so socket activation gets a fresh start. */
+export async function resetEgressIfNeeded(index: number, signal: AbortSignal): Promise<void> {
+  const state = (
+    await run("systemctl", ["show", "-p", "ActiveState", "--value", egressUnit(index)], {
+      allow: [1],
+      signal,
+    }).catch(() => "")
+  ).trim();
+  if (state === "activating" || state === "failed") await sleepEgress(index).catch(() => undefined);
+}
+
 /** Ends the socket and the process: the slot is going away. */
 export async function removeEgress(index: number): Promise<void> {
   await run("systemctl", ["stop", egressSocket(index), egressUnit(index)], { allow: [5] });
@@ -258,24 +269,14 @@ export async function removeEgress(index: number): Promise<void> {
  * Confirms the slot's egress proxy process is running and serving `/health` inside its
  * network namespace (triggering socket activation if idle), within `signal`'s bound. Returns
  * `false` immediately if the proxy service or socket has entered `failed`, or if `signal` aborts
- * before a healthy `{"ok":true}` answer is received.
+ * before a healthy `{"ok":true}` answer is received. A recheck makes one health request.
  */
-export async function confirmEgress(index: number, signal: AbortSignal): Promise<boolean> {
+export async function confirmEgress(
+  index: number,
+  signal: AbortSignal,
+  once = false,
+): Promise<boolean> {
   const unit = egressUnit(index);
-  const socket = egressSocket(index);
-  // If a prior crash left the service in auto-restart backoff or failed while its socket is
-  // still listening, reset it so the probe triggers an immediate fresh start instead of waiting
-  // out a restart backoff timer.
-  const initialState = (
-    await run("systemctl", ["show", "-p", "ActiveState", "--value", unit], {
-      allow: [1],
-      signal,
-    }).catch(() => "")
-  ).trim();
-  if (initialState === "activating" || initialState === "failed") {
-    await sleepEgress(index).catch(() => undefined);
-  }
-
   const healthUrl = `http://${proxyAddress}:${proxyPort}/health`;
   while (!signal.aborted) {
     const body = await run(
@@ -307,16 +308,13 @@ export async function confirmEgress(index: number, signal: AbortSignal): Promise
         // Non-JSON answer: keep checking until the bound expires or the unit fails.
       }
     }
-    if (signal.aborted) return false;
-    const states = (
-      await run("systemctl", ["show", "-p", "ActiveState", "--value", unit, socket], {
-        allow: [1],
-        signal,
-      }).catch(() => "")
-    )
-      .trim()
-      .split("\n");
-    if (states.some((state) => state.trim() === "failed")) return false;
+    if (once || signal.aborted) return false;
+    const states = await run(
+      "systemctl",
+      ["show", "-p", "ActiveState", "--value", unit, egressSocket(index)],
+      { allow: [1], signal },
+    ).catch(() => "");
+    if (states.split(/\s+/u).includes("failed")) return false;
     try {
       await sleep(150, undefined, { signal });
     } catch {

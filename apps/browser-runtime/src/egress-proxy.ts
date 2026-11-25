@@ -14,8 +14,8 @@ import {
   resolvePublicAddresses,
   tlsServerName,
   type ResolvedPublicAddress,
-} from "@opensteer/access";
-import { refused } from "@opensteer/core";
+} from "@opensteer/access/public-network";
+import { refused } from "@opensteer/core/opensteer-error";
 import { closeHttpServerNow, refuseConnection } from "@opensteer/shared/httpServer";
 import type { BrowserEgressUpstream } from "./egress-config.js";
 

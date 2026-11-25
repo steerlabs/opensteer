@@ -286,14 +286,12 @@ No upstream, no start, and the host's credentials are a copy of what the account
     defined again if its definition differs. Then the start goes on.
   - **None assigned:** what is there is removed, and a stored, signed `applied: false` with
     reason `egress-required` answers; nothing is booted.
-  - **Proxy not serving:** before `start` or wake (`resume`, from memory or disk) answers applied,
-    the agent confirms the slot's egress proxy serves `/health` inside its network namespace and
-    its systemd service is `active` within 5 s (`deadlines.proxy`; `firecracker/egress.ts`,
-    `confirmEgress`). On `resume` this check (with `#ensureHost`, `#prepareToRun` and closing the
-    guest gate) runs before the right to resume is consumed (`consumed`), so a refusal leaves the
-    slot `paused` with its saved state intact and a later resume succeeds once the proxy is back.
-    In both cases no guest is left running and a stored, signed `applied: false` with reason
-    `egress-proxy-down` answers (`agent.ts`, `#prepareToRun`).
+  - **Proxy not serving.** Before `start`, the agent requires an active service and a `/health`
+    answer within 5 s. A wake from either tier recreates a down socket and resets a failed or
+    restarting service as needed before recording `consumed`. The bounded health probe then
+    activates the proxy alongside restore or resume, and the socket queues early connections.
+    Signed status reports a failed probe as `proxy: "down"` so the Home can park and wake the guest.
+    The agent's periodic health recheck clears the report once the proxy serves again.
   - **The fetch could not be completed** (no answer, a refusal, a malformed answer, its
     deadline): what is there is used, if anything is. Otherwise it is refused as `unavailable`
     ("try again later"), with nothing written.

@@ -1,6 +1,6 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { OpensteerError } from "@opensteer/core";
+import { OpensteerError } from "@opensteer/core/opensteer-error";
 
 export interface ResolvedPublicAddress {
   readonly address: string;
