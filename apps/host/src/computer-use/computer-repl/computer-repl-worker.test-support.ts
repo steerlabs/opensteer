@@ -45,18 +45,17 @@ if (port && typeof plans === "object" && plans !== null) {
   };
 }
 
-// `workerData.slowed = {cpuScale, hostParseMs}` makes this worker a slow one.
-// `cpuScale`: every microsecond of CPU this thread spends counts `cpuScale`
-// times, as the same work on a machine that many times slower: the guest's own
-// code and the Host's alike. `hostParseMs`: the Host's JSON.parse (the guest
-// has QuickJS's own) of a string over 64 KiB first spends that much real CPU,
-// as a Host slow to take in what a guest hands it.
-const slowed =
-  typeof data === "object" && data !== null && "slowed" in data ? data.slowed : undefined;
-if (typeof slowed === "object" && slowed !== null) {
+/**
+ * Makes this worker a slow one. `cpuScale`: every microsecond of CPU this thread
+ * spends counts `cpuScale` times, as the same work on a machine that many times
+ * slower: the guest's own code and the Host's alike. `hostParseMs`: the Host's
+ * JSON.parse (the guest has QuickJS's own) of a string over 64 KiB first spends
+ * that much real CPU, as a Host slow to take in what a guest hands it.
+ */
+export function slowThisThread(slowed: { cpuScale?: number; hostParseMs?: number }): void {
   const realCpu = process.threadCpuUsage.bind(process);
-  if ("cpuScale" in slowed && typeof slowed.cpuScale === "number") {
-    const scale = slowed.cpuScale;
+  const scale = slowed.cpuScale;
+  if (scale !== undefined)
     process.threadCpuUsage = (previous?: NodeJS.CpuUsage) => {
       const { user, system } = realCpu();
       return {
@@ -64,8 +63,7 @@ if (typeof slowed === "object" && slowed !== null) {
         system: system * scale - (previous?.system ?? 0),
       };
     };
-  }
-  if ("hostParseMs" in slowed && typeof slowed.hostParseMs === "number") {
+  if (slowed.hostParseMs !== undefined) {
     const burnUs = slowed.hostParseMs * 1000;
     const parse = JSON.parse;
     JSON.parse = (text: string, reviver?: Parameters<typeof JSON.parse>[1]) => {
@@ -80,3 +78,8 @@ if (typeof slowed === "object" && slowed !== null) {
     };
   }
 }
+
+// Preloaded with `workerData.slowed = {cpuScale?, hostParseMs?}`: a slow worker.
+const slowed =
+  typeof data === "object" && data !== null && "slowed" in data ? data.slowed : undefined;
+if (typeof slowed === "object" && slowed !== null) slowThisThread(slowed);
