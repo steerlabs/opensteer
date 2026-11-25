@@ -36,7 +36,6 @@ export function BrowserToolbar({
   disabled,
   focusAddress = false,
   find = null,
-  follow = null,
   notice = null,
   leading,
   loading = false,
@@ -60,8 +59,6 @@ export function BrowserToolbar({
   /** A blank page: the address takes the keyboard as it appears. */
   focusAddress?: boolean;
   find?: BrowserFindControls | null;
-  /** A conversation is docked beside the page. */
-  follow?: BrowserAddressFollow | null;
   notice?: ReactNode;
   leading?: ReactNode;
   /** The page is loading: Reload becomes Stop. */
@@ -138,7 +135,6 @@ export function BrowserToolbar({
           loading={loading}
           disabled={disabled}
           focusOnMount={editing || focusAddress}
-          follow={follow}
           key={activeTab?.id ?? "no-active-tab"}
           mark={mark}
           onDone={compact ? () => setEditing(false) : null}
@@ -184,21 +180,10 @@ function BrowserPageName({ onEdit, tab }: { onEdit: (() => void) | null; tab: Br
 
 /* ---- Address bar ---- */
 
-/**
- * The docked conversation's agent in the address: its mark and a ring while
- * the page follows it. The mark stays mounted while a conversation is docked,
- * so it fades out as well as in.
- */
-export interface BrowserAddressFollow {
-  readonly mark: ReactNode;
-  readonly following: boolean;
-}
-
 function BrowserAddress({
   chip,
   disabled,
   focusOnMount,
-  follow,
   loading,
   mark,
   omnibox,
@@ -211,7 +196,6 @@ function BrowserAddress({
   chip: ReactNode;
   disabled: boolean;
   focusOnMount: boolean;
-  follow: BrowserAddressFollow | null;
   loading: boolean;
   mark: ReactNode;
   omnibox: { readonly hostClient: HostClient; readonly choice: BrowserIdentityChoice };
@@ -264,13 +248,7 @@ function BrowserAddress({
   return (
     <form
       ref={anchor}
-      className={[
-        "browser-address",
-        chip ? "browser-address--chip" : "",
-        follow?.following ? "browser-address--following" : "",
-      ]
-        .filter(Boolean)
-        .join(" ")}
+      className={["browser-address", chip ? "browser-address--chip" : ""].filter(Boolean).join(" ")}
       onSubmit={(event) => {
         event.preventDefault();
         controller.submit();
@@ -297,17 +275,6 @@ function BrowserAddress({
         />
         {parts ? <BrowserAddressDisplay url={url} hidden /> : null}
       </span>
-      {follow ? (
-        <span
-          aria-hidden={follow.following ? undefined : true}
-          aria-label={follow.following ? "Following the agent" : undefined}
-          className="browser-address__following"
-          role={follow.following ? "img" : undefined}
-          title={follow.following ? "Following the agent" : undefined}
-        >
-          {follow.mark}
-        </span>
-      ) : null}
       {controller.dirty && !controller.submitting && controller.value !== pageValue ? (
         <button
           aria-label="Go"

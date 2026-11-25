@@ -16,7 +16,13 @@ import {
   type TranscriptFixtureSnapshot,
   type TaskRow,
 } from "@opensteer/client/host";
-import { BrowserProfileIdSchema, createId, ThreadIdSchema } from "@opensteer/core";
+import {
+  BrowserProfileIdSchema,
+  BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
+  createId,
+  ThreadIdSchema,
+} from "@opensteer/core";
 
 import { rememberPlace } from "./navigation.js";
 
@@ -889,4 +895,45 @@ describe("a link arriving at the start page", () => {
       });
     },
   );
+});
+
+it("keeps the person on their tab when a docked task moves tabs, and jumps from its live card", async () => {
+  await mount((source) => {
+    const places = placeList(source.getSnapshot());
+    const acting = places.find((place) => place.title === "Le Petit Jardin")!;
+    const threadId = acting.occupants[0]!.threadId;
+    return `/tasks/${threadId}?panel=browser&tab=${acting.key}`;
+  });
+  const places = placeList(client.getSnapshot());
+  const acting = places.find((place) => place.title === "Le Petit Jardin")!;
+  const reading = places.find((place) => place.title === "Your reading list")!;
+  const threadId = acting.occupants[0]!.threadId;
+  const shownTab = () => element<HTMLElement>(".browser-view").dataset.browserTab;
+  const liveCard = () => document.querySelector(".conv-header .viewfinder");
+  const composer = element("[data-composer-input]");
+  const run = client
+    .getSnapshot()
+    .runQueue.find((entry) => entry.threadId === threadId && entry.status === "running")!;
+  const actingViewer = client.tabViewer(acting.key);
+  if (actingViewer?.kind !== "page") throw new Error("Expected page viewer");
+
+  await act(async () => {
+    client.actInPlace(threadId, reading.key);
+    client.enterPlace(run.id, threadId, {
+      place: {
+        kind: "browser",
+        sessionId: BrowserSessionIdSchema.parse(actingViewer.sessionId),
+        surfaceId: BrowserSurfaceIdSchema.parse(reading.key),
+      },
+      title: reading.title,
+      site: null,
+    });
+  });
+
+  expect(shownTab(), "The stage must stay on the person's tab").toBe(acting.key);
+  expect(liveCard()?.getAttribute("aria-label")).toContain(`Show ${reading.title}`);
+
+  await click(liveCard()!);
+  expect(shownTab()).toBe(reading.key);
+  expect(element("[data-composer-input]")).toBe(composer);
 });

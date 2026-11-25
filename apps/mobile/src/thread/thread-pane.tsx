@@ -44,7 +44,6 @@ import {
   usageLimitNotice,
   visibleTranscript,
   withoutOwnAssignment,
-  type BrowserTabDestination,
   type HostClient,
   type HostSnapshot,
   type ConversationRow,
@@ -58,7 +57,7 @@ import {
   type WaitingInput,
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
-import type { BrowserPageContentPart } from "@opensteer/core";
+import type { BrowserPageContentPart, TabId } from "@opensteer/core";
 import { useHostSnapshot, useWaitingInputs } from "@opensteer/client/react";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { conversationActions } from "./conversation-actions.js";
@@ -257,9 +256,9 @@ export interface PageCompanion {
   readonly page: BrowserPageContentPart | null;
   /**
    * Shows another browser tab in that page, in place, while it is a browser
-   * tab: the conversation stays where it is, and following picks up there.
+   * tab: the conversation stays where it is.
    */
-  readonly showTab: ((tab: BrowserTabDestination) => void) | null;
+  readonly showTab: ((tabId: TabId) => void) | null;
 }
 
 /** The pane's complete read set; maps and run entries are scoped to this Thread. */
@@ -1074,7 +1073,7 @@ function ThreadPaneForUser(
   const openSurface = useCallback(
     (destination: TabDestination) => {
       const page = hostClient.getSnapshot().tabs.get(destination.tabId)?.kind === "page";
-      if (page && showTab !== null) showTab({ tabId: destination.tabId });
+      if (page && showTab !== null) showTab(destination.tabId);
       else openPlace(destination);
     },
     [hostClient, openPlace, showTab],

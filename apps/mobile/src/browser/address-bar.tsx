@@ -1,4 +1,3 @@
-import type { TaskMark as TaskMarkValue } from "@opensteer/client/host";
 import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Image, Pressable, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
 import { GestureDetector, usePanGesture } from "react-native-gesture-handler";
@@ -6,7 +5,6 @@ import Animated, {
   cancelAnimation,
   Easing,
   FadeIn,
-  LayoutAnimationConfig,
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,
@@ -18,11 +16,8 @@ import { scheduleOnRN } from "react-native-worklets";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import type { ComputerSymbol } from "../screens/settings-model.js";
 import { NativeMenu } from "../thread/composer-menu.js";
-import { AgentOrb } from "../ui/agent-orb.js";
-import { appear, exit } from "../ui/motion.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
-import { TaskMark } from "../ui/task-mark.js";
 import { ToolbarCapsule } from "./toolbar.js";
 import { HostLine } from "../ui/address-text.js";
 
@@ -37,10 +32,8 @@ const switchDistance = 56;
  * edge says what is happening in the page: the page loading, or an agent
  * acting in it.
  *
- * While the page keeps up with an agent's tab, a green ring and the agent's
- * mark say so: the one sign that this is what the agent sees. A page that runs
- * on another device ends with that device's shape, which names it when tapped;
- * the site keeps every other point.
+ * A page that runs on another device ends with that device's shape, which
+ * names it when tapped; the site keeps every other point.
  */
 export const AddressCapsule = memo(function AddressCapsule(props: {
   readonly acting: boolean;
@@ -50,8 +43,6 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
   readonly arriving?: boolean;
   /** The device the page runs on, where that is not this one; tapping it names it. */
   readonly device?: PageDevice | null;
-  /** Keeping up with this Thread's agent: its task mark, or null for the agent orb. */
-  readonly following?: { readonly mark: TaskMarkValue | null } | null;
   readonly favicon: string | null;
   /** Given where Forward has room beside Back; otherwise it is in the page's menu. */
   readonly forward: { readonly enabled: boolean; readonly onPress: () => void } | null;
@@ -86,25 +77,18 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
   const moved = useAnimatedStyle(() => ({ transform: [{ translateX: drag.value }] }));
   const reduceMotion = useReducedMotion();
   const placeholder = "Search or enter address";
-  const following = props.following ?? null;
   const device = props.device ?? null;
   const address = props.site === null ? "Address" : `Address, ${props.site}`;
-  const fade = reduceMotion ? {} : { entering: appear, exiting: exit };
-  const glyph = following ? (
-    following.mark === null ? (
-      <AgentOrb size={16} />
-    ) : (
-      <TaskMark mark={following.mark} size={16} />
-    )
-  ) : props.favicon !== null ? (
-    <Image
-      accessibilityIgnoresInvertColors
-      source={{ uri: props.favicon }}
-      style={styles.favicon}
-    />
-  ) : props.secure ? (
-    <Symbol name="lock" size={12} tint={color.muted} weight="semibold" />
-  ) : null;
+  const glyph =
+    props.favicon !== null ? (
+      <Image
+        accessibilityIgnoresInvertColors
+        source={{ uri: props.favicon }}
+        style={styles.favicon}
+      />
+    ) : props.secure ? (
+      <Symbol name="lock" size={12} tint={color.muted} weight="semibold" />
+    ) : null;
   return (
     <GestureDetector gesture={swipe}>
       <View style={styles.slot}>
@@ -131,7 +115,7 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
                 ? "Edits the address. Swipe sideways for the next tab."
                 : "Edits the address"
             }
-            accessibilityLabel={following === null ? address : `${address}. Following the agent`}
+            accessibilityLabel={address}
             accessibilityRole="button"
             onPress={props.onEdit}
             style={({ pressed }) => [
@@ -145,14 +129,7 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
               {...(props.arriving === true && !reduceMotion ? { entering: arrive } : {})}
               style={[styles.site, moved]}
             >
-              {/* Following fades the agent's mark in over the site's, and back; a page draws its own at once. */}
-              <LayoutAnimationConfig skipEntering>
-                {glyph === null ? null : (
-                  <Animated.View key={following ? "agent" : "site"} {...fade}>
-                    {glyph}
-                  </Animated.View>
-                )}
-              </LayoutAnimationConfig>
+              {glyph}
               {props.site === null ? (
                 <AppText
                   maxFontSizeMultiplier={controlFontScaleLimit}
@@ -176,11 +153,6 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
             </Animated.View>
           </Pressable>
           {device === null ? null : <DeviceGlyph device={device} />}
-          <LayoutAnimationConfig skipEntering>
-            {following === null ? null : (
-              <Animated.View {...fade} pointerEvents="none" style={styles.ring} />
-            )}
-          </LayoutAnimationConfig>
           {props.loading ? (
             <ActivityLine tone="loading" />
           ) : props.acting ? (
@@ -462,12 +434,6 @@ const styles = StyleSheet.create({
   },
   light: { borderRadius: 2, bottom: 0, position: "absolute", top: 0 },
   pressed: { opacity: 0.6 },
-  ring: {
-    ...StyleSheet.absoluteFill,
-    borderColor: color.green,
-    borderRadius: radius.full,
-    borderWidth: 1.5,
-  },
   searchGlyph: { paddingEnd: space[8], paddingStart: space[14] },
   site: { alignItems: "center", flexDirection: "row", gap: space[6], maxWidth: "100%" },
   siteText: { flexShrink: 1 },

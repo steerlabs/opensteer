@@ -1652,50 +1652,6 @@ button.browser-download__file:hover {
     calc(0px - var(--browser-frame-top, 0px));
 }
 
-/* A docked conversation beside the page. Following its agent rings the
-   address in green with the task's mark: the one sign that this is what the
-   agent sees. Anywhere else, the conversation's live card says where it is. */
-.browser-address--following,
-.browser-address--following:focus-within {
-  border-color: var(--green);
-  box-shadow:
-    var(--edge-plate),
-    0 0 0 0.5px var(--green);
-}
-
-/* Folded into the address's own gap until the page follows. */
-.browser-address__following {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 0;
-  margin-left: calc(0px - var(--space-8));
-  overflow: hidden;
-  opacity: 0;
-  scale: 0.6;
-  pointer-events: none;
-  transition:
-    width var(--duration-fast) var(--ease-out),
-    margin var(--duration-fast) var(--ease-out),
-    opacity var(--duration-fast) linear,
-    scale var(--duration-fast) var(--ease-out);
-}
-
-.browser-address--following .browser-address__following {
-  width: 16px;
-  margin-right: var(--space-4);
-  margin-left: 0;
-  opacity: 1;
-  scale: 1;
-  pointer-events: auto;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .browser-address__following {
-    transition: none;
-  }
-}
-
 /* ---- A Cloud Computer's browser waking ---- */
 
 /* A fresh start's pages will not match the old picture, so it dims at once. */
