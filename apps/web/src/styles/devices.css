@@ -375,49 +375,6 @@ a.devices-row:focus-visible {
   gap: var(--space-8);
 }
 
-/* ---- A web browser window ---- */
-
-.web-tab-notice {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-6) var(--space-10);
-  padding: var(--space-8) var(--space-8) var(--space-8) var(--space-12);
-  border: 1px solid var(--blue-line);
-  border-radius: var(--radius-md);
-  background: var(--blue-wash);
-  color: var(--text-soft);
-  font-size: var(--text-md);
-  line-height: 1.45;
-}
-
-.browser-view > .web-tab-notice {
-  margin: var(--space-8) var(--space-12) 0;
-}
-
-.web-tab-notice__icon {
-  flex: none;
-  width: 16px;
-  height: 16px;
-  color: var(--blue);
-}
-
-.web-tab-notice__text {
-  flex: 1 1 16rem;
-  min-width: 0;
-  margin: 0;
-}
-
-.web-tab-notice__link {
-  flex: none;
-  color: var(--ember);
-  font-weight: var(--weight-medium);
-}
-
-.web-tab-notice__close {
-  flex: none;
-}
-
 /* ---- Entry: welcome, choosing an Opensteer ---- */
 
 .desktop-entry__rows {
