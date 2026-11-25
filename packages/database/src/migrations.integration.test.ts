@@ -997,6 +997,18 @@ describe("fresh personal/team lineage", () => {
       "created_by, created_at DESC, id DESC",
     );
   });
+  it("keeps a device's switches in one record: the device's, never a copy on its Runner", async () => {
+    await migrateToLatest(database);
+    // A Runner row once held its computer's switches. The Device holds them now, and
+    // a second copy is how a decision would one day read the wrong one.
+    const columns = await sql<{ name: string }>`
+      select column_name as name from information_schema.columns
+      where table_schema = 'public' and table_name = 'runners'
+        and column_name in ('access_policy', 'access_policy_revision')
+    `.execute(database);
+    expect(columns.rows).toEqual([]);
+  });
+
   it("migrates existing device policies without widening shell access or binding sessions", async () => {
     await migrateToLatest(database, migrationsBefore("0008_devices"));
     const fixture = await seedPersonalFixture(database, "/tmp/pre-devices-home");

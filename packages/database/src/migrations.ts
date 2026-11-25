@@ -889,6 +889,23 @@ export function migrationProvider(options?: {
                   `.execute(database);
                 },
               },
+              "0121_one_device_switch_record_contract": {
+                /**
+                 * A device's switches live on its Device (`devices.access_policy`), which every
+                 * decision reads. The Runner's own copy was left by 0028 for a later contract
+                 * step and never read since; it held all-off for every new computer, so it
+                 * read as the opposite of the person's switches. Nothing of a person's is in it.
+                 * A contract step: no Home since 0028 names the column, so one still running the
+                 * previous release never reads or writes it.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table runners
+                      drop column if exists access_policy,
+                      drop column if exists access_policy_revision;
+                  `.execute(database);
+                },
+              },
             }
           : {}),
       };
