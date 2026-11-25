@@ -59,6 +59,7 @@ import {
   hashRunnerEnrollmentToken,
 } from "../packages/runner-auth/src/index.js";
 import { freePort } from "../packages/shared/src/loopbackPort.test-support.js";
+import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import { BrowserRuntime } from "../packages/browser-runtime-core/src/runtime.js";
 import { BrowserRuntimeServer } from "../packages/browser-runtime-core/src/server.js";
 import { Ed25519AttachTicketVerifier } from "../packages/browser-runtime-core/src/security/attach-ticket.js";
@@ -103,6 +104,7 @@ import {
 } from "../apps/host/src/browser/managed-pool-keys.js";
 import { initializePersonalState } from "../apps/host/src/runtime/personal-state.js";
 import { createHostRuntime, type PersonalHostRuntime } from "../apps/host/src/runtime/runtime.js";
+import { LocalServerService } from "../apps/host/src/local-servers/local-server-service.js";
 import { createPersonalRunFixturePort } from "../packages/database/src/personal-run-fixture.test-support.js";
 
 const homeOrigin = "https://cc-pool-home.example.test";
@@ -2926,17 +2928,45 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
       const config2 = managedConfig(database.url, directory, await freePort(), {
         browserPool: true,
       });
-      const started2 = await ownTestDatabaseProducer(database.url, async () => {
-        const runtime = await createHostRuntime(config2, {
-          personalAccountGrantFetch: jwksFetch(),
-          accountControlFetch,
-          managedBrowserPoolTiming: { firstDelayMs: 50, maxDelayMs: 150, idleParkMs: 60_000 },
+      const attach = Promise.withResolvers<"browser.attached" | "browser.command-error">();
+      const handleMessage = RunnerBrowserHub.prototype.handleMessage;
+      const relaySpy = vi
+        .spyOn(RunnerBrowserHub.prototype, "handleMessage")
+        .mockImplementation(async function (this: RunnerBrowserHub, peer, message) {
+          await handleMessage.call(this, peer, message);
+          if (
+            peer.id.startsWith("managed-pool-browser:") &&
+            (message.type === "browser.attached" || message.type === "browser.command-error")
+          )
+            attach.resolve(message.type);
         });
-        if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
-        await runtime.listen();
-        return { host: runtime, close: () => runtime.close() };
-      });
-      host2 = started2.host;
+      const recoverPluginData = LocalServerService.prototype.recoverPluginData;
+      // The pool can already receive relay messages at this point in Host startup.
+      const startupSpy = vi
+        .spyOn(LocalServerService.prototype, "recoverPluginData")
+        .mockImplementationOnce(async function (this: LocalServerService) {
+          await recoverPluginData.call(this);
+          const result = await withTimeout(attach.promise, 10_000, {
+            timeoutError: () => new Error("No pooled browser attach reply during Host startup"),
+          });
+          expect(result).toBe("browser.attached");
+        });
+      try {
+        const started2 = await ownTestDatabaseProducer(database.url, async () => {
+          const runtime = await createHostRuntime(config2, {
+            personalAccountGrantFetch: jwksFetch(),
+            accountControlFetch,
+            managedBrowserPoolTiming: { firstDelayMs: 50, maxDelayMs: 150, idleParkMs: 60_000 },
+          });
+          if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
+          await runtime.listen();
+          return { host: runtime, close: () => runtime.close() };
+        });
+        host2 = started2.host;
+      } finally {
+        startupSpy.mockRestore();
+        relaySpy.mockRestore();
+      }
 
       await vi.waitFor(
         async () => {
