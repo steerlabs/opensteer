@@ -3370,6 +3370,34 @@ describe("BrowserService", () => {
     };
   }
 
+  it("records no place, nor its title, for a page at an extension's address", async () => {
+    const f = await runPlaceFixture(new ManualClock(0));
+    f.record.mockResolvedValue(true);
+    f.runtime.publishTabs({
+      surfaces: [
+        {
+          id: "page-1",
+          active: true,
+          title: "My Extension Options",
+          url: `chrome-extension://${"a".repeat(32)}/options.html`,
+          geometryRevision: 1,
+        },
+        {
+          id: "page-2",
+          active: false,
+          title: "Web",
+          url: "https://example.com",
+          geometryRevision: 1,
+        },
+      ],
+    });
+    await f.activity("page-1");
+    await f.activity("page-2");
+    await f.drain();
+    expect(f.record.mock.calls.map(([input]) => input.data.tabId)).toEqual(["page-2"]);
+    expect(JSON.stringify(f.record.mock.calls)).not.toContain("My Extension Options");
+  });
+
   it("bounds interleaved activity writes and converges usage on the final surface", async () => {
     const clock = new ManualClock(0);
     const f = await runPlaceFixture(clock);
