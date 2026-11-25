@@ -4398,7 +4398,11 @@ describe("BrowserController", () => {
       heldSize.release();
       heldDragCancel.release();
       heldPersonSize.release();
-      await Promise.allSettled([pendingAgentViewport1, pendingAgentViewport2, pendingPersonViewport]);
+      await Promise.allSettled([
+        pendingAgentViewport1,
+        pendingAgentViewport2,
+        pendingPersonViewport,
+      ]);
       await controller.close();
       await ledger.close();
     }
