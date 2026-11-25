@@ -291,6 +291,31 @@ describe("owner-session computer app approvals", () => {
     expect(review.name).toBe(app.displayName);
     expect(computerUse.resolveApp).toHaveBeenCalledWith({ app: app.bundleId, deviceId });
   });
+  it("lists a Mac's installed apps when the request names its Runner, as every client does", async () => {
+    const { service, computerUse } = fixture();
+    const listed = { apps: [], total: 0 };
+    const installedApps = vi.fn(async () => listed);
+    Object.assign(computerUse, { installedApps });
+    // The route's input: the Runner, and the listing's own parameters.
+    await expect(
+      service.installedComputerApps({
+        actorUserId: ownerUserId,
+        icons: true,
+        limit: 20,
+        offset: 0,
+        query: "Notes",
+        runnerId,
+      }),
+    ).resolves.toEqual(listed);
+    expect(installedApps).toHaveBeenCalledWith(
+      deviceId,
+      ownerUserId,
+      { icons: true, limit: 20, offset: 0, query: "Notes" },
+      undefined,
+      undefined,
+    );
+  });
+
   it("names an app that has no Mac identity by its catalog title, not its id", async () => {
     const { service } = fixture({ ...request, app: null, definitionId: "iphone-location" });
     const review = await service.reviewComputerAppSetup({

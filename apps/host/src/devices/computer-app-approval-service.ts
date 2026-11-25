@@ -895,7 +895,9 @@ export class ComputerAppApprovalService {
         message: "Computer use is unavailable on this Deployment.",
       });
     try {
-      const { actorUserId, deviceId, definitionId, ...params } = input;
+      // The Runner named the target (`#target` resolved it to `deviceId`); it is not a
+      // listing parameter, and the listing's strict schema refuses anything that is not.
+      const { actorUserId, deviceId, definitionId, runnerId: _runnerId, ...params } = input;
       const inventory =
         machines ??
         (await computerUse.eligibleMachines(actorUserId, definitionId ?? computerUseDefinitionId));
