@@ -85,13 +85,15 @@ describe("every browser the Home owns is given the Home's addresses (G1)", () =>
       "apps/browser-runtime/src/browser/chromium-clipboard.ts:const context = await browser.newContext({":
         "the private clipboard: every request is answered by its own route, none leaves it",
     };
-    const sites = files.flatMap(({ file, text }) =>
-      text
-        .split("\n")
-        .filter((line) => /\.newContext\(|launchPersistentContext\(/u.test(line))
-        .filter((line) => !file.startsWith("apps/host/src/computer-use/"))
-        .map((line) => `${file}:${line.trim()}`),
-    );
+    // The computer-use REPL's `runtime.newContext()` is a script VM, not a browser.
+    const sites = files
+      .filter(({ file }) => !file.startsWith("apps/host/src/computer-use/"))
+      .flatMap(({ file, text }) =>
+        text
+          .split("\n")
+          .filter((line) => /\.newContext\(|launchPersistentContext\(/u.test(line))
+          .map((line) => `${file}:${line.trim()}`),
+      );
     expect(sites.filter((site) => !(site in sorted))).toEqual([]);
     expect(Object.keys(sorted).filter((site) => !sites.includes(site))).toEqual([]);
   });

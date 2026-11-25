@@ -1,3 +1,4 @@
+import type { RuntimeBrowserAttachTicketClaims } from "../packages/protocol/src/browser.js";
 import {
   createHash,
   createPublicKey,
@@ -244,6 +245,8 @@ async function enrollMainRunner(host: PersonalHostRuntime, config: HostConfig): 
 }
 
 interface LoopbackPoolHost {
+  /** Every ticket the guest's runtime verified, as it read it (M2). */
+  readonly verifiedClaims: readonly RuntimeBrowserAttachTicketClaims[];
   readonly agent: TestPoolAgent;
   readonly currentAgent: () => PoolAgent;
   readonly runtime: BrowserRuntime;
