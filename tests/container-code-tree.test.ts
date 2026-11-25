@@ -60,7 +60,7 @@ function stage(name: string): string {
   return next < 0 ? text.slice(start) : text.slice(start, start + 1 + next);
 }
 
-it("runs the guard in every Home image, after its last copy and before it drops root", () => {
+it("runs the guard in every Home image after its copies, before its release record and its user", () => {
   for (const name of [
     "host",
     "runner",
@@ -72,15 +72,25 @@ it("runs the guard in every Home image, after its last copy and before it drops 
     const text = stage(name);
     const lines = text.split("\n");
     const guarded = lines.findIndex((line) => line.includes("sh /tmp/assert-readable-tree.sh"));
-    const lastCopy = lines.findLastIndex((line) => line.startsWith("COPY "));
+    const record = lines.findLastIndex((line) => line.includes("/release/release.json "));
+    const lastCopy = lines.findLastIndex(
+      (line, index) => line.startsWith("COPY ") && index !== record,
+    );
     const lastUser = lines.findLastIndex((line) => line.startsWith("USER "));
     expect(guarded, name).toBeGreaterThan(lastCopy);
+    // The guard only reads: the release record stays each image's last layer.
+    expect(record, name).toBeGreaterThan(guarded);
+    expect(`${lines[guarded - 1]}${lines[guarded]}`, name).not.toContain("chmod");
     expect(lastUser, name).toBeGreaterThan(guarded);
     expect(lines[lastUser], name).not.toBe("USER root");
   }
   // The Host's code is root's: it runs as 10001, or 10002 on a Cloud Computer, and neither may
   // change it.
   const host = stage("host");
-  expect(host).toContain("sh /tmp/assert-readable-tree.sh --root-owned /app");
+  expect(host).toContain(
+    "sh /tmp/assert-readable-tree.sh --root-owned /app /usr/local/share/opensteer",
+  );
+  expect(stage("host-build")).toContain("chmod -R a+rX,go-w /output/host");
+  expect(stage("web-build")).toContain("chmod -R a+rX,go-w /source/apps/web/dist");
   expect(host).not.toMatch(/^COPY [^\n]*--chown=10001/mu);
 });

@@ -127,7 +127,7 @@ describe("container build context", () => {
     const containerfile = await readFile(resolve("deploy/container/Containerfile"), "utf8");
     expect(containerfile).toContain("node scripts/write-web-distribution-manifest.mjs");
     expect(containerfile).toContain(
-      "COPY --from=web-build --chown=10001:10001 /source/apps/web/dist /usr/local/share/opensteer/web",
+      "COPY --from=web-build /source/apps/web/dist /usr/local/share/opensteer/web",
     );
     expect(containerfile).toContain(
       "OPENSTEER_WEB_DISTRIBUTION_DIRECTORY=/usr/local/share/opensteer/web",
@@ -386,5 +386,5 @@ it("builds and stages the plugin child and native runtime for the container's ow
   expect(build).toContain("pnpm --filter apps build");
   expect(build).toContain("pnpm --filter @opensteer/host build");
   expect(build).toContain("scripts/plugin-engine/stage-container-host.ts /output/host");
-  expect(recipe).toContain("COPY --from=host-build --chown=10001:10001 /output/host ./");
+  expect(recipe).toContain("COPY --from=host-build /output/host ./");
 });
