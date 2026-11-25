@@ -1134,8 +1134,9 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         throw new Error("Failed to activate lost-reply connection");
       const lostCall = await connectAgent(lostToken);
 
-      // A7: a command the page ran, whose reply the browser cannot return (deeper than the reply
-      // may be): the agent is told its outcome is unknown, and the row says so; it happened.
+      // A7: a command the page ran, whose answer arrived but cannot be carried (deeper than an
+      // answer may be): nothing is unknown, so the agent is told the command ran and its answer
+      // was dropped, as a failure of that call, and the row says failed; it happened.
       const ranUrl = `${site.origin}/?reply-limit`;
       const tooDeep = await lostCall("browser_use", {
         profileId: profile.id,
@@ -1150,13 +1151,16 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         .object({ operationId: AgentOperationIdSchema })
         .passthrough()
         .parse(tooDeep.structuredContent);
-      expect(uncertain).toMatchObject({ status: "unknown", operationId: expect.any(String) });
+      expect(uncertain).toMatchObject({ status: "failed", operationId: expect.any(String) });
+      expect(JSON.stringify(tooDeep)).toContain(
+        "The command ran, but its answer is too deeply nested or has too many entries",
+      );
       const uncertainRow = await host.store.database
         .selectFrom("agentOperations")
-        .select(["state", "outcome"])
+        .select(["state", "outcome", "contactLostAt"])
         .where("id", "=", AgentOperationIdSchema.parse(uncertain.operationId))
         .executeTakeFirstOrThrow();
-      expect(uncertainRow).toEqual({ state: "unknown", outcome: "unknown" });
+      expect(uncertainRow).toEqual({ state: "failed", outcome: "failed", contactLostAt: null });
       const seen = await lostCall("browser_use", {
         profileId: profile.id,
         code: `const tab = (await pages()).find((entry) => entry.url === ${JSON.stringify(ranUrl)});
