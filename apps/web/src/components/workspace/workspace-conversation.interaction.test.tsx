@@ -921,42 +921,6 @@ describe("a conversation's foot", () => {
     expect(scroller.scrollTop, "A scroll up beside a reflow was taken for the reflow").toBe(1850);
   });
 
-  it("a window that stops short of the latest offers Load newer and the way back to the latest", async () => {
-    const long = "thr_00000000-0000-4000-8000-000000000005";
-    let latest!: ReturnType<typeof vi.fn>;
-    const watch = (source: MockHostClient) => {
-      const real = source.getThreadTranscript.bind(source);
-      const views = new WeakMap<object, object>();
-      vi.spyOn(source, "getThreadTranscript").mockImplementation((threadId) => {
-        const view = real(threadId);
-        return {
-          subscribe: view.subscribe,
-          getSnapshot: () => {
-            const current = view.getSnapshot();
-            if (!views.has(current)) views.set(current, { ...current, hasNewer: true });
-            return views.get(current) as typeof current;
-          },
-        };
-      });
-      latest = vi.fn(async () => true);
-      source.loadLatestTranscript = latest as typeof source.loadLatestTranscript;
-      return source;
-    };
-    await mount(`/tasks/${long}`, { hostClient: watch });
-    const jumps = () =>
-      [...document.querySelectorAll<HTMLButtonElement>(".transcript__jump")].map((button) =>
-        button.textContent?.trim(),
-      );
-    expect(jumps()).toEqual(["Load newer", "Back to latest"]);
-    // One floating group, so neither button covers the other.
-    expect(document.querySelector(".transcript__jumps")?.children).toHaveLength(2);
-    const back = [...document.querySelectorAll<HTMLButtonElement>(".transcript__jump")].find(
-      (button) => button.textContent?.includes("Back to latest"),
-    )!;
-    await act(async () => back.click());
-    expect(latest).toHaveBeenCalledTimes(1);
-  });
-
   it("a link overtaken by a newer link in the same task reports nothing missing and leaves the reader at the newer one", async () => {
     const long = "thr_00000000-0000-4000-8000-000000000005";
     const messages = () =>
@@ -965,187 +929,42 @@ describe("a conversation's foot", () => {
         .transcripts[long]!.filter((entry) => entry.kind === "message")
         .map(({ id }) => id);
     let first!: (landed: boolean) => void;
-    let around!: ReturnType<typeof vi.fn>;
-    let latest!: ReturnType<typeof vi.fn>;
+    let loadEarlier!: ReturnType<typeof vi.fn>;
     const watch = (source: MockHostClient) => {
-      const real = source.loadTranscriptAround.bind(source);
-      around = vi
+      const real = source.loadEarlierTranscript.bind(source);
+      loadEarlier = vi
         .fn(real)
-        // The first link's page is slow; the newer link's move supersedes it.
+        // The first link's page is slow; the newer link supersedes it.
         .mockImplementationOnce(() => new Promise<boolean>((resolve) => (first = resolve)));
-      source.loadTranscriptAround = around as typeof source.loadTranscriptAround;
-      latest = vi.fn(source.loadLatestTranscript.bind(source));
-      source.loadLatestTranscript = latest as typeof source.loadLatestTranscript;
+      source.loadEarlierTranscript = loadEarlier as typeof source.loadEarlierTranscript;
       return source;
     };
     await mount(`/tasks/${long}`, { hostClient: watch });
-    // A message the newer link's page does not hold: only a superseded jump could misjudge it.
+    // A message not yet loaded: only a superseded jump could misjudge it.
     const a = "msg_00000000-0000-4000-8000-0000000000aa";
     const [b] = messages();
     await act(async () => goTo!(`/tasks/${long}?messageId=${a}`));
-    await vi.waitFor(() => expect(around).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(loadEarlier).toHaveBeenCalledTimes(1));
     await act(async () => goTo!(`/tasks/${long}?messageId=${b}`));
-    await vi.waitFor(() => expect(around).toHaveBeenCalledTimes(2));
     await act(async () => first(false));
-    // The superseded page's answer is handled by a promise chain with no timer: it has run by now.
     await microtasksDrained();
     expect(
       document.querySelector(".ref-unavailable"),
       "a superseded link reported its message missing",
     ).toBeNull();
-    expect(latest, "a superseded link returned the reader to the latest").not.toHaveBeenCalled();
   });
 
-  it("tells nobody as the reader scrolls; asked at a repair, it names the row in view and puts it back where it stood", async () => {
-    // The Host's repairs of this conversation, as its reader counts them.
-    let repairs = 0;
+  it("scrolling up offers a single Jump to latest button and never detaches with Load newer", async () => {
     const long = "thr_00000000-0000-4000-8000-000000000005";
-    let measure: (() => string | undefined | null) | null = null;
-    const anchors = vi.fn();
-    const watch = (source: MockHostClient) => {
-      const real = source.getThreadTranscript.bind(source);
-      const views = new WeakMap<object, Map<number, object>>();
-      vi.spyOn(source, "getThreadTranscript").mockImplementation((threadId) => {
-        const view = real(threadId);
-        return {
-          subscribe: view.subscribe,
-          getSnapshot: () => {
-            const current = view.getSnapshot();
-            const held = views.get(current) ?? new Map<number, object>();
-            views.set(current, held);
-            if (!held.has(repairs)) held.set(repairs, { ...current, repairs, cuts: repairs + 1 });
-            return held.get(repairs) as typeof current;
-          },
-        };
-      });
-      // The one-shot measurement the view gives the client, and any report it might make.
-      vi.spyOn(source, "setTranscriptPosition").mockImplementation((_threadId, given) => {
-        measure = given;
-        return () => undefined;
-      });
-      Object.assign(source, { setTranscriptAnchor: anchors });
-      return source;
-    };
-    await mount(`/tasks/${long}`, { hostClient: watch });
+    await mount(`/tasks/${long}`);
     const scroller = element<HTMLElement>(".transcript-scroll");
-    const rows = () => [...scroller.querySelectorAll("[data-transcript-row]:not(:empty)")];
-    expect(rows().length, "The conversation has too few rows to scroll").toBeGreaterThan(1);
-    // Each row is 100px tall; `above` is what a repair adds over them.
-    const geometry = { content: rows().length * 100 + 400, above: 0 };
+    const geometry = { content: 2400 };
     transcriptGeometry(geometry);
-    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-      this: Element,
-    ) {
-      const index = rows().indexOf(this);
-      const top = index < 0 ? 0 : geometry.above + index * 100 - scroller.scrollTop;
-      const height = index < 0 ? 400 : 100;
-      return DOMRect.fromRect({ x: 0, y: top, width: 640, height });
-    });
-    const frame = () =>
-      act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
     for (const _ of [1, 2]) await scrollTo(scroller, geometry.content);
-    await frame();
-    expect(measure, "the view gave the client no way to ask").not.toBeNull();
-    expect(measure!(), "A reader at the foot is at the latest").toBeUndefined();
-
-    // The reader scrolls up to stand 30px into the second row. Nobody is told.
-    await scrollTo(scroller, 130);
-    await frame();
-    expect(anchors).not.toHaveBeenCalled();
-    // The client asks, as it does when a repair arrives, before the repair changes the rows.
-    expect(measure!(), "The row in view was not named").toEqual(expect.any(String));
-
-    // A repair lays the conversation out again with 300px more above that row.
-    geometry.above = 300;
-    geometry.content += 300;
-    repairs = 1;
-    await act(async () => {
-      await client.dispatch({
-        type: "thread.sendMessage",
-        threadId: long,
-        content: [{ type: "text", text: "Arrived with the repair" }],
-        delivery: "queue",
-        idempotencyKey: "repair-arrival",
-      });
-    });
-    expect(scroller.scrollTop, "The repair moved the reader off their row").toBe(430);
-    expect(element(".transcript__jump")).not.toBeNull();
-  });
-
-  it("a new subscription's snapshot, not only a repair, puts the measured row back where it stood", async () => {
-    // The Host's repairs of this conversation, as its reader counts them.
-    let repairs = 0;
-    const long = "thr_00000000-0000-4000-8000-000000000005";
-    let measure: (() => string | undefined | null) | null = null;
-    const anchors = vi.fn();
-    const watch = (source: MockHostClient) => {
-      const real = source.getThreadTranscript.bind(source);
-      const views = new WeakMap<object, Map<number, object>>();
-      vi.spyOn(source, "getThreadTranscript").mockImplementation((threadId) => {
-        const view = real(threadId);
-        return {
-          subscribe: view.subscribe,
-          getSnapshot: () => {
-            const current = view.getSnapshot();
-            const held = views.get(current) ?? new Map<number, object>();
-            views.set(current, held);
-            if (!held.has(repairs))
-              held.set(repairs, { ...current, repairs: 0, cuts: repairs + 1 });
-            return held.get(repairs) as typeof current;
-          },
-        };
-      });
-      // The one-shot measurement the view gives the client, and any report it might make.
-      vi.spyOn(source, "setTranscriptPosition").mockImplementation((_threadId, given) => {
-        measure = given;
-        return () => undefined;
-      });
-      Object.assign(source, { setTranscriptAnchor: anchors });
-      return source;
-    };
-    await mount(`/tasks/${long}`, { hostClient: watch });
-    const scroller = element<HTMLElement>(".transcript-scroll");
-    const rows = () => [...scroller.querySelectorAll("[data-transcript-row]:not(:empty)")];
-    expect(rows().length, "The conversation has too few rows to scroll").toBeGreaterThan(1);
-    // Each row is 100px tall; `above` is what a repair adds over them.
-    const geometry = { content: rows().length * 100 + 400, above: 0 };
-    transcriptGeometry(geometry);
-    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-      this: Element,
-    ) {
-      const index = rows().indexOf(this);
-      const top = index < 0 ? 0 : geometry.above + index * 100 - scroller.scrollTop;
-      const height = index < 0 ? 400 : 100;
-      return DOMRect.fromRect({ x: 0, y: top, width: 640, height });
-    });
-    const frame = () =>
-      act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
-    for (const _ of [1, 2]) await scrollTo(scroller, geometry.content);
-    await frame();
-    expect(measure, "the view gave the client no way to ask").not.toBeNull();
-    expect(measure!(), "A reader at the foot is at the latest").toBeUndefined();
-
-    // The reader scrolls up to stand 30px into the second row. Nobody is told.
-    await scrollTo(scroller, 130);
-    await frame();
-    expect(anchors).not.toHaveBeenCalled();
-    // The client asks, as it does when a repair arrives, before the repair changes the rows.
-    expect(measure!(), "The row in view was not named").toEqual(expect.any(String));
-
-    // A repair lays the conversation out again with 300px more above that row.
-    geometry.above = 300;
-    geometry.content += 300;
-    repairs = 1;
-    await act(async () => {
-      await client.dispatch({
-        type: "thread.sendMessage",
-        threadId: long,
-        content: [{ type: "text", text: "Arrived with the repair" }],
-        delivery: "queue",
-        idempotencyKey: "repair-arrival",
-      });
-    });
-    expect(scroller.scrollTop, "The repair moved the reader off their row").toBe(430);
-    expect(element(".transcript__jump")).not.toBeNull();
+    await scrollTo(scroller, 200);
+    const jumps = [...document.querySelectorAll<HTMLButtonElement>(".transcript__jump")];
+    expect(jumps).toHaveLength(1);
+    expect(jumps[0]?.getAttribute("aria-label")).toBe("Jump to latest");
+    expect(document.querySelector(".transcript__jumps")).toBeNull();
   });
 });

@@ -400,6 +400,7 @@ export interface ReasoningEntry {
   readonly itemId?: string;
   readonly itemRevision?: string;
   readonly previewTruncated?: boolean;
+  readonly deferredWork?: import("@opensteer/protocol/transcript").TranscriptDeferredWork;
   completedAt?: string | null | undefined;
   createdAt: string;
   id: string;
@@ -437,6 +438,7 @@ export interface PlaceEntry {
 export interface ToolEntry {
   readonly itemId?: string;
   readonly itemRevision?: string;
+  readonly deferredWork?: import("@opensteer/protocol/transcript").TranscriptDeferredWork;
   arguments: unknown;
   callId: string;
   completedAt?: string | null | undefined;
@@ -1224,29 +1226,6 @@ export interface HostClient extends TabsClient {
     itemId: string,
     nodeId?: string,
   ): Promise<import("@opensteer/protocol/transcript").TranscriptItemResult | undefined>;
-  /**
-   * The view's one-shot measurement of the row in view (undefined at the latest messages), asked
-   * only when the client needs the reader's position: a repair, a subscription. Ordinary
-   * scrolling is never reported. Several views of one Thread each register theirs; the newest is
-   * asked, and releasing one (the returned function) gives the place back to the one before it.
-   */
-  setTranscriptPosition(threadId: string, measure: () => string | undefined | null): () => void;
-  /**
-   * Whether the reader follows the live latest, asked only when live rows must be bounded: a
-   * follower keeps the newest, and the window gives way above them; anyone else keeps all they
-   * loaded, and what arrives past it waits a page away. Registered as positions are: the newest
-   * view is asked, and its release gives the Thread back to the one before it.
-   */
-  setTranscriptFollowing(
-    threadId: string,
-    following: import("./thread-transcript-store.js").TranscriptFollowReader,
-  ): () => void;
-  /**
-   * The view has revealed the target of the reader's move under way (the linked message is on
-   * screen, or the foot after Return to latest): the move has landed and gives up the position.
-   * Until then a repair keeps centring on the move's target, and its page is read again.
-   */
-  revealedTranscriptMove(threadId: string): void;
   watchPersonalResource(
     kind: import("@opensteer/protocol/resources").PersonalResourceKind,
     listener: () => void,
@@ -1273,14 +1252,6 @@ export interface HostClient extends TabsClient {
     query: string;
     before?: string;
   }): Promise<ThreadMessagePage>;
-  /**
-   * A move of the reader's to a message, or to any row by its item id (a Request's receipt):
-   * resolves true once its page landed, or false when a newer move (a later jump, Return to
-   * latest, a scroll) superseded it, which then says nothing about the target. Only a move that
-   * landed may judge what its page holds; one whose target is gone rejects as not found.
-   */
-  loadTranscriptAround(threadId: string, target: string): Promise<boolean>;
-  loadLatestTranscript(threadId: string): Promise<boolean>;
   /**
    * What the Host decided this viewer should be told — a reply, a Request, a
    * failure — each delivered once while this client is attached. Nothing is
@@ -1335,8 +1306,16 @@ export interface HostClient extends TabsClient {
   /** A reader of its own (see `SnapshotReader`), for a client whose fields are read on demand. */
   readonly snapshotReader?: () => import("./host-snapshot-store.js").SnapshotReader;
   load(): Promise<void>;
-  loadEarlierTranscript(threadId: string): Promise<void>;
-  loadNewerTranscript(threadId: string): Promise<void>;
+  /**
+   * Extends the transcript backward while staying attached to the live tail. With `throughItemId`,
+   * extends backward until that item (or message id) is loaded, rejecting as not found when gone.
+   */
+  loadEarlierTranscript(
+    threadId: string,
+    options?: { readonly throughItemId?: string | undefined },
+  ): Promise<boolean>;
+  /** Hydrates completed work items folded into `workAnchorId`. */
+  loadDeferredWork(threadId: string, workAnchorId: string): Promise<boolean>;
   loadMoreOverlays(threadId: string, kind: "requests" | "tools" | "nodes"): Promise<void>;
   /**
    * Takes back one of the reader's own queued messages before any Run picks

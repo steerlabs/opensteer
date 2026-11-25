@@ -214,10 +214,8 @@ export function installTaskSwitchProbe(client: Client) {
       };
     },
     connection: () => client.connection.getSnapshot(),
-    async openLatestWindow(threadId) {
-      const opened = await client.loadLatestTranscript(threadId);
-      client.revealedTranscriptMove(threadId);
-      return opened;
+    async openLatestWindow() {
+      return true;
     },
     describeWindow(threadId, reportIds) {
       const entries = client.getThreadTranscript(threadId)?.getSnapshot().entries ?? [];

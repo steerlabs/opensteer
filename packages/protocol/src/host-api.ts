@@ -2256,6 +2256,10 @@ const transcriptPageInput = {
   before: TranscriptOrderCursorSchema.optional(),
   anchorItemId: TranscriptItemIdSchema.optional(),
   aroundMessageId: MessageIdSchema.optional(),
+  throughItemId: TranscriptItemIdSchema.optional(),
+  view: z.enum(["work"]).optional(),
+  workAnchorId: TranscriptItemIdSchema.optional(),
+  acceptDeferredWork: z.boolean().optional(),
   limit: z.int().min(1).max(100).optional(),
 };
 
@@ -2283,7 +2287,7 @@ const workspaceHostApi = defineRpc({
   ),
   "thread.snapshot.get": declaration(
     "GET",
-    z.strictObject(transcriptScopeInput),
+    z.strictObject({ ...transcriptScopeInput, acceptDeferredWork: z.boolean().optional() }),
     PersonalDetailSnapshotSchema,
   ),
   "thread.items.page": declaration(

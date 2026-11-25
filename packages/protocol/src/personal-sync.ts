@@ -115,6 +115,7 @@ const detailSubscription = z.strictObject({
   scope: detailScope,
   cursor: PersonalResumeCursorSchema.optional(),
   anchorItemId: TranscriptItemIdSchema.optional(),
+  acceptDeferredWork: z.boolean().optional(),
 });
 
 export const ScopedClientMessageSchema = z.discriminatedUnion("type", [
@@ -135,6 +136,7 @@ export const ScopedClientMessageSchema = z.discriminatedUnion("type", [
       scope: PersonalScopeSchema,
       cursor: PersonalResumeCursorSchema.optional(),
       anchorItemId: TranscriptItemIdSchema.optional(),
+      acceptDeferredWork: z.boolean().optional(),
     })
     .refine((value) => (value.subscriptionId === "shell") === (value.scope.kind === "shell")),
   z.strictObject({ type: z.literal("client.unsubscribe"), ...address }),

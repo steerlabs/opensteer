@@ -120,6 +120,7 @@ import {
   type ToolEntry,
   type TranscriptEntry,
   type Turn,
+  type TurnDeferredWork,
   type WorkEntry,
   type WorkRow,
   type WorkSummary,
@@ -943,7 +944,8 @@ function sameGroup(left: TranscriptGroup, right: TranscriptGroup): boolean {
     a.source === b.source &&
     same(a.work, b.work) &&
     same(a.assignments, b.assignments) &&
-    same(a.nodes, b.nodes)
+    same(a.nodes, b.nodes) &&
+    same(a.deferredWork, b.deferredWork)
   );
 }
 function TurnView({
@@ -1742,6 +1744,7 @@ export const ConversationActivity = memo(function ConversationActivity({
   browserSessions = noTabs,
   browserUses = noBrowserUses,
   entries,
+  hostClient = null,
   id,
   inputQueuePaused = false,
   live,
@@ -1758,6 +1761,7 @@ export const ConversationActivity = memo(function ConversationActivity({
   browserUses?: readonly BrowserSessionUseSummary[];
   /** The conversation as it is drawn. */
   entries: readonly TranscriptEntry[];
+  hostClient?: HostClient | null;
   /** The panel's id, for the `aria-controls` of the control that opened it. */
   id?: string;
   inputQueuePaused?: boolean;
@@ -1774,6 +1778,7 @@ export const ConversationActivity = memo(function ConversationActivity({
 }) {
   const narrow = useMediaQuery("(max-width: 620px)");
   const agents = useAgentSource(subagentReader, entries, threadId, live);
+  const speakers = useMemo(() => ({ threadId }), [threadId]);
   const titleId = useId();
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const groups = useMemo(
@@ -1806,25 +1811,31 @@ export const ConversationActivity = memo(function ConversationActivity({
         <AgentReader value={agents}>
           <AgentFolds>
             <QuietSteps value>
-              <TranscriptBrowserUses value={browserUses}>
-                <TranscriptBrowsers value={browserSessions}>
-                  <div className="activity__body" ref={bodyRef}>
-                    {activity !== null && activity.steps.length > 0 ? (
-                      <TurnContent
-                        reveal={reveal}
-                        entries={activity.steps}
-                        live={live}
-                        status={false}
-                        turn={activity.turn}
-                      />
-                    ) : (
-                      <p className="activity__empty">
-                        {activity?.live ? "Nothing to show yet." : "Nothing to show."}
-                      </p>
-                    )}
-                  </div>
-                </TranscriptBrowsers>
-              </TranscriptBrowserUses>
+              <TranscriptHostClientContext value={hostClient}>
+                <Speakers value={speakers}>
+                  <TranscriptBrowserUses value={browserUses}>
+                    <TranscriptBrowsers value={browserSessions}>
+                      <div className="activity__body" ref={bodyRef}>
+                        {activity !== null &&
+                        (activity.steps.length > 0 ||
+                          (activity.turn.deferredWork?.length ?? 0) > 0) ? (
+                          <TurnContent
+                            reveal={reveal}
+                            entries={activity.steps}
+                            live={live}
+                            status={false}
+                            turn={activity.turn}
+                          />
+                        ) : (
+                          <p className="activity__empty">
+                            {activity?.live ? "Nothing to show yet." : "Nothing to show."}
+                          </p>
+                        )}
+                      </div>
+                    </TranscriptBrowsers>
+                  </TranscriptBrowserUses>
+                </Speakers>
+              </TranscriptHostClientContext>
             </QuietSteps>
           </AgentFolds>
         </AgentReader>
@@ -1871,6 +1882,44 @@ export const ConversationActivity = memo(function ConversationActivity({
   );
 });
 
+function useDeferredWorkLoading(
+  hostClient: HostClient | null,
+  threadId: string | null,
+  deferredWork: readonly TurnDeferredWork[] | undefined,
+  enabled: boolean,
+) {
+  const [state, setState] = useState<"idle" | "loading" | "error">("idle");
+  const [attempt, setAttempt] = useState(0);
+  const anchorIds = useMemo(
+    () => (deferredWork ?? []).map((entry) => entry.itemId),
+    [deferredWork],
+  );
+  const anchorKey = anchorIds.join("\0");
+  useEffect(() => {
+    if (!enabled || !hostClient || !threadId || anchorIds.length === 0) {
+      setState("idle");
+      return;
+    }
+    let cancelled = false;
+    setState("loading");
+    void Promise.all(anchorIds.map((anchorId) => hostClient.loadDeferredWork(threadId, anchorId)))
+      .then((results) => {
+        if (!cancelled) setState(results.every(Boolean) ? "idle" : "error");
+      })
+      .catch(() => {
+        if (!cancelled) setState("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [anchorKey, attempt, enabled, hostClient, threadId]);
+  return {
+    loading: state === "loading" && anchorIds.length > 0,
+    error: state === "error" && anchorIds.length > 0,
+    retry: () => setAttempt((count) => count + 1),
+  };
+}
+
 function TurnContent({
   reveal = null,
   entries,
@@ -1897,8 +1946,11 @@ function TurnContent({
   turn: Turn;
 }) {
   const [showAll, setShowAll] = useState(false);
+  const hostClient = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
   const active = turnState(turn) !== "settled";
   const folded = fold !== undefined && !fold.open;
+  const deferred = useDeferredWorkLoading(hostClient, threadId, turn.deferredWork, !folded);
   const summary = useMemo(() => (status ? workSummary(turn) : null), [status, turn]);
   // A note keeps its row's key folded or not, so opening the steps never redraws it.
   // Folded, live helpers stand under the status line instead of after the words.
@@ -1923,6 +1975,15 @@ function TurnContent({
         />
       )}
       {folded && agents?.keptOutside ? <AgentGroupRow group={agents.keptOutside} /> : null}
+      {!folded && deferred.loading ? (
+        <div className="trace__earlier" role="status">
+          Loading steps…
+        </div>
+      ) : !folded && deferred.error ? (
+        <button className="trace__earlier" type="button" onClick={deferred.retry}>
+          Couldn’t load steps · Retry
+        </button>
+      ) : null}
       {trace.hidden > 0 ? (
         <button className="trace__earlier" type="button" onClick={() => setShowAll(true)}>
           Show {trace.hidden} earlier {trace.hidden === 1 ? "step" : "steps"}

@@ -101,9 +101,8 @@ function useRunLoad(
     if (!synchronized || anchor === null || foundNow.current) return;
     let current = true;
     setState("loading");
-    hostClient.loadTranscriptAround(threadId, anchor).then(
-      // A newer move of the reader's took over before this one landed: the Run's window is not
-      // what is loaded, so the sheet offers to read it again rather than claiming it loaded.
+    hostClient.loadEarlierTranscript(threadId, { throughItemId: anchor }).then(
+      // A newer read superseded this one before it landed: offer to try again rather than claiming it loaded.
       (landed) => current && setState(landed ? "loaded" : "failed"),
       // Gone or not the reader's is a fact about the run; anything else may pass.
       (error: unknown) =>
