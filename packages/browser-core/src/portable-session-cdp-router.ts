@@ -1456,19 +1456,21 @@ export class SessionCdpRouter {
     if (connection && isExtensionUrl(info.url)) {
       // An event's or a reply's projection is where a connection learns a target is an
       // extension's: from here its id is named to this state nowhere (G2).
-      this.#setTargetVisibility(state, targetId, false);
+      if (state.connection) this.#setTargetVisibility(state, targetId, false);
       return;
     }
     const projected: Record<string, unknown> = {
       ...info,
       ...(state.standard ? { browserContextId: state.session.sessionId } : {}),
     };
-    // A connection is told the id of a related target only where it may be told of that target.
-    const related = (id: string) =>
-      this.#canReach(state, id) && (!state.connection || this.#mayName(state, id));
     for (const key of ["openerId", "parentId"]) {
       const relatedId = readString(info, key);
-      if (relatedId && !related(relatedId)) {
+      if (
+        relatedId &&
+        (!this.#canReach(state, relatedId) ||
+          // A connection is told a related target's id only where it may be told of that target.
+          (state.connection && !this.#mayName(state, relatedId)))
+      ) {
         delete projected[key];
         if (key === "openerId") {
           delete projected.openerFrameId;
@@ -1479,20 +1481,30 @@ export class SessionCdpRouter {
       }
     }
     if (projected.openerId === undefined) delete projected.openerFrameId;
-    // A frame ID that is also a target's (a frame in its own process) follows that target's rule.
+    const parentFrameId = readString(projected, "parentFrameId");
+    if (parentFrameId) {
+      const frameClaim = this.#ownerByTargetId.get(parentFrameId);
+      if (frameClaim && frameClaim.sessionId !== state.session.sessionId)
+        delete projected.parentFrameId;
+    }
+    if (state.connection) this.#confineFrameIds(state, projected);
+    if (state.connection) this.#setTargetVisibility(state, targetId, true);
+    return projected;
+  }
+
+  /** A frame ID that is also a target's (a frame in its own process) follows that target's rule. */
+  #confineFrameIds(state: ConnectionState, projected: Record<string, unknown>): void {
     for (const key of ["openerFrameId", "parentFrameId"]) {
       const frameId = readString(projected, key);
-      const frameClaim = frameId ? this.#ownerByTargetId.get(frameId) : undefined;
+      if (!frameId) continue;
+      const frameClaim = this.#ownerByTargetId.get(frameId);
       if (
-        frameId &&
-        ((frameClaim && frameClaim.sessionId !== state.session.sessionId) ||
-          (state.connection &&
-            (state.hiddenTargets.has(frameId) || (frameClaim && !this.#mayName(state, frameId)))))
+        state.hiddenTargets.has(frameId) ||
+        (frameClaim &&
+          (frameClaim.sessionId !== state.session.sessionId || !this.#mayName(state, frameId)))
       )
         delete projected[key];
     }
-    if (state.connection) this.#setTargetVisibility(state, targetId, true);
-    return projected;
   }
 
   /**
@@ -2613,8 +2625,16 @@ export class SessionCdpRouter {
         const connection =
           state.connection ||
           (sessionId !== undefined && state.channels.get(sessionId)?.connection === true);
-        const info = this.#projectTargetInfo(state, asRecord(parameters.targetInfo), connection);
-        if (!info) return;
+        const rawInfo = asRecord(parameters.targetInfo);
+        const info = this.#projectTargetInfo(state, rawInfo, connection);
+        if (!info) {
+          // A state that is not a connection's hides only what a connection's channel on it was
+          // shown in an event, as before.
+          const hiddenId = readString(rawInfo, "targetId");
+          if (!state.connection && connection && hiddenId && isExtensionUrl(rawInfo.url))
+            this.#setTargetVisibility(state, hiddenId, false);
+          return;
+        }
         parameters = { ...parameters, targetInfo: info };
       } else {
         const targetId = readString(parameters, "targetId");
