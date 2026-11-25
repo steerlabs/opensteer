@@ -222,6 +222,7 @@ printf '0:%s\\n' "$mode"
   payload = CloudComputerBootResponseSchema.parse({
     ...payload,
     releaseManifestUrl: "https://release.example.test/home/stable.json",
+    portalOrigin: "https://portal.example.test",
   });
   await run("boot", output);
   assert.deepEqual(JSON.parse(readFileSync(output)), payload);
@@ -231,6 +232,25 @@ printf '0:%s\\n' "$mode"
     exec("bash", ["-c", `source deploy/home/common.sh; ${source}`, "proof", ...args], {
       cwd: root,
     });
+  // The install writes the account's portal into config.env from the boot answer it accepted.
+  assert.equal(
+    (await parseLocal('account_portal "$1"', output)).stdout,
+    "https://portal.example.test\n",
+  );
+  for (const portalOrigin of [
+    "http://portal.example.test",
+    "https://portal.example.test/home",
+    "https://portal.example.test\n",
+  ]) {
+    // The Account's schema never sends these (it trims the last to the bare origin); the Home
+    // refuses each one as it arrives.
+    const parsed = CloudComputerBootResponseSchema.safeParse({ ...accepted, portalOrigin });
+    assert.ok(!parsed.success || parsed.data.portalOrigin === "https://portal.example.test");
+    rawResponse = { ...accepted, portalOrigin };
+    await assert.rejects(run("boot", output), /invalid Home boot configuration/u);
+    assert.deepEqual(JSON.parse(readFileSync(output)), accepted);
+  }
+  rawResponse = undefined;
   const releasePath = resolve(temp, "release.json");
   const imagesEnv = resolve(temp, "images.env");
   for (const release of [

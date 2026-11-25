@@ -180,6 +180,7 @@ integration("Cloud Computer Account service", () => {
     onBillingAttention: billingAttention,
     config,
     accountOrigin: publicOrigin,
+    portalOrigin,
     cipher,
     stripe,
     now: () => now,
@@ -879,6 +880,8 @@ integration("Cloud Computer Account service", () => {
           expect(booted).toMatchObject({
             hostname: first!.hostname,
             accountOrigin: publicOrigin.origin,
+            // The account's portal, which the Home's own pages link to (Add a device).
+            portalOrigin: portalOrigin.origin,
             release: { version: "1.2.3" },
             // What the Home needs to accept its Account-bound claim and Account sign-in.
             managedHome: {
@@ -1673,6 +1676,7 @@ integration("Cloud Computer Account service", () => {
     // recipe of its release: the installer and SHA-256 pinned in the account's own config.
     expect(CloudComputerReleaseFeedResponseSchema.parse(answer.json())).toEqual({
       releaseManifestUrl,
+      portalOrigin: portalOrigin.origin,
       recipe: { url: "https://releases.example.test/install.sh", sha256: digest },
     });
     expect((await read()).statusCode).toBe(401);

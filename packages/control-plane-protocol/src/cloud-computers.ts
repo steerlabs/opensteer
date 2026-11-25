@@ -341,9 +341,19 @@ export const CloudComputerEgressResponseSchema = z.strictObject({
 });
 export const cloudComputerEgressPath = (id: CloudComputerId) => `/v1/cloud-computers/${id}/egress`;
 
+/**
+ * The account's portal, where its person manages their account and gets the apps: a Home's own
+ * pages link to it (Add a device's "Get Opensteer for Mac"). Navigation, not trust material.
+ */
+export const CloudComputerPortalOriginSchema = httpsUrl.refine(
+  (value) => new URL(value).origin === value,
+);
+
 /** The feed a booted Home updates from now: the account's, which may differ from its boot's. */
 export const CloudComputerReleaseFeedResponseSchema = z.strictObject({
   releaseManifestUrl: CloudComputerReleaseManifestUrlSchema,
+  /** The account's portal, as at boot: a Home made before it was in its boot answer gets it here. */
+  portalOrigin: CloudComputerPortalOriginSchema.optional(),
   /**
    * The Home's recipe (its scripts and Compose files) for the account's current release: the
    * standalone installer and its SHA-256, pinned in the account's own release config. A managed
@@ -413,6 +423,7 @@ export type CloudComputerManagedHome = z.infer<typeof CloudComputerManagedHomeSc
 export const CloudComputerBootResponseSchema = z.strictObject({
   hostname: CloudComputerHostnameSchema,
   accountOrigin: httpsUrl.refine((value) => new URL(value).origin === value),
+  portalOrigin: CloudComputerPortalOriginSchema.optional(),
   setupCodeDigest: CloudComputerInstallerSha256Schema,
   release: CloudComputerBootReleaseSchema,
   releaseManifestUrl: CloudComputerReleaseManifestUrlSchema.optional(),

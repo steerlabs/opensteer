@@ -629,6 +629,19 @@ describe("configuration", () => {
     ).toEqual(new URL("http://localhost:43100"));
   });
 
+  it("takes a Home's portal from Compose's mapping, which is empty on a Home with no account", () => {
+    // deploy/home/compose.yaml: OPENSTEER_PORTAL_ORIGIN: ${OPENSTEER_HOME_PORTAL_ORIGIN:-}
+    expect(parseHostConfig({ ...hostEnvironment, OPENSTEER_PORTAL_ORIGIN: "" }).portalOrigin).toBe(
+      undefined,
+    );
+    expect(
+      parseHostConfig({
+        ...hostEnvironment,
+        OPENSTEER_PORTAL_ORIGIN: "https://portal.example.test",
+      }).portalOrigin,
+    ).toEqual(new URL("https://portal.example.test"));
+  });
+
   it("requires normalized HTTP origins for canonical and runtime identity", () => {
     for (const [name, value] of [
       ["OPENSTEER_CANONICAL_ORIGIN", "https://host.example/path"],

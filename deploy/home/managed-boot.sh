@@ -67,6 +67,7 @@ jq -e --arg hostname "$(jq -r .hostname "$spec")" --arg origin "${origin%/}" --a
     (.oidc.clientId | type == "string" and test("^occ_[0-9a-f-]{36}$")) and
     (.oidc.clientSecret | type == "string" and test("^ocs_[A-Za-z0-9_-]{43}$")))) and
   (.accountOrigin | type == "string" and test("^https://[a-zA-Z0-9.-]+(:[0-9]+)?$")) and
+  (.portalOrigin == null or (.portalOrigin | type == "string" and test("^https://[a-zA-Z0-9.-]+(:[0-9]+)?\\z"))) and
   (.backup |
     (.endpoint | type == "string" and test("^https://[a-zA-Z0-9.-]+(:[0-9]+)?$")) and
     (.bucket | type == "string" and test("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")) and
