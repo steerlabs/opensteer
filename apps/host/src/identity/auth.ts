@@ -137,16 +137,21 @@ export class HostAuthenticator<Identity extends HostAuthenticatingIdentity = Ide
       };
     }
     if (options.mutation) requireSingletonOrigin(headers.origin);
-    // From here the credential is a cookie, which a browser attaches to whatever request a page
-    // makes (q1): in every scope, a read as much as a change and on every cookie socket, the
-    // request must come from the Home's own page. An Origin, when one is sent, is the Home's own
-    // (the route's, for a remote cookie), and Sec-Fetch-Site, when sent, is `same-origin` or
-    // `none` (an address typed or a bookmark): a page on another loopback port is same-site with a
-    // Mac Home, so `same-site` is refused. What this does NOT do: a program outside a browser that
-    // holds the cookie's value sets whatever headers it likes; keeping the value out of other
-    // hands is the browsers' part (the Home's own browsers never store it, M4).
-    requireOwnPageRequest(headers);
+    // Everything above is a credential the caller states (a Bearer or a PersonalRemote header):
+    // no page can attach one, so no page rule applies to it. From here the credential is a cookie,
+    // which a browser attaches to whatever request a page makes (q1, G2): in every scope, a read
+    // as much as a change and on every cookie socket, the request comes from the Home's own page.
+    // - An Origin, when sent, is the Home's own (the route's, for a remote cookie), checked below;
+    //   no other page can send it, so Sec-Fetch-Site is not asked then (the desktop app's main
+    //   process states the Home's origin, whatever Sec-Fetch-Site its engine adds).
+    // - With no Origin, Sec-Fetch-Site, when sent, is `same-origin` or `none` (an address typed or
+    //   a bookmark): a page on another loopback port is same-site with a Mac Home, so `same-site`
+    //   is refused.
+    // What this does NOT do: a program outside a browser that holds the cookie's value sets
+    // whatever headers it likes; keeping the value out of other hands is the browsers' part (the
+    // Home's own browsers never load the Home, so it never exists there, G1).
     const originSent = headers.origin !== undefined;
+    if (!originSent) requireOwnPageRequest(headers);
     const remote = await this.#personalRemote?.authenticateRemoteSession(headers, {
       mutation: (options.mutation ?? false) || originSent,
     });

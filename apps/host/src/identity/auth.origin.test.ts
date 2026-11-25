@@ -64,13 +64,22 @@ describe("a cookie's request comes from the Home's own page, in every scope (q1)
     ["a dev server on another loopback port", { origin: "http://127.0.0.1:5173" }],
     ["another loopback name", { origin: "http://localhost:4310" }],
     ["an opaque origin", { origin: "null" }],
+    // A read with no Origin (an image, a frame, a no-cors fetch): Sec-Fetch-Site decides.
     ["a same-site page (another loopback port)", { "sec-fetch-site": "same-site" }],
     ["a cross-site page", { "sec-fetch-site": "cross-site" }],
   ] as const;
   for (const [who, headers] of foreign) {
     it(`refuses a read from ${who}`, () => refused({ cookie, ...headers }));
+    // A change always states the origin of the page that makes it, which is not the Home's.
     it(`refuses a change from ${who}`, () =>
-      refused({ cookie, origin: loopbackHome, ...headers }, true));
+      refused(
+        {
+          cookie,
+          origin: "origin" in headers ? headers.origin : "http://127.0.0.1:5173",
+          ...headers,
+        },
+        true,
+      ));
   }
 
   it("keeps working for the Home's own pages, the app and the person's address bar", async () => {
@@ -102,10 +111,38 @@ describe("a cookie's request comes from the Home's own page, in every scope (q1)
     await refused({ cookie: remote, "sec-fetch-site": "same-site" });
   });
 
+  it("answers exactly what the desktop app's main process sends, whatever Sec-Fetch-Site its engine adds", async () => {
+    // `ElectronHostNetwork.request`: the transport's headers, the Home's own origin stated, the
+    // cookie from the app's own partition.
+    const app = {
+      cookie,
+      accept: "application/json",
+      origin: loopbackHome,
+      "content-type": "application/json",
+      "idempotency-key": "k",
+      "x-opensteer-api-version": "66",
+    };
+    for (const site of [undefined, "none", "same-origin", "same-site", "cross-site"]) {
+      const headers = site === undefined ? app : { ...app, "sec-fetch-site": site };
+      await accepted(headers);
+      await accepted(headers, true);
+    }
+    // The same headers from any other origin are refused, whatever the engine adds.
+    await refused({ ...app, origin: "http://127.0.0.1:5173", "sec-fetch-site": "none" });
+  });
+
   it("asks nothing of a credential that is not ambient: the phone's and the apps' bearer", async () => {
     await expect(
       home().authenticateSession({
         authorization: "Bearer native-token",
+        origin: "https://evil.example",
+        "sec-fetch-site": "cross-site",
+      }),
+    ).resolves.toEqual(session);
+    // A Cloud Computer's sign-in the Mac app holds as a header, not a cookie: no page rule either.
+    await expect(
+      home().authenticateSession({
+        authorization: "PersonalRemote remote-token",
         origin: "https://evil.example",
         "sec-fetch-site": "cross-site",
       }),
