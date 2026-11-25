@@ -175,6 +175,8 @@ export class CloudComputerClaimSupersededError extends Error {}
 interface StoreOptions {
   readonly config: CloudComputerConfig;
   readonly accountOrigin: URL;
+  /** The account's portal, which every Home it boots links to; sent only when it is HTTPS. */
+  readonly portalOrigin?: URL;
   readonly cipher: CloudComputerSecretCipher;
   readonly stripe: StripeBilling;
   readonly now?: () => Date;
@@ -1903,6 +1905,7 @@ export class CloudComputerStore {
         ...(row.restoreSnapshot ? { restoreSnapshot: row.restoreSnapshot } : {}),
         hostname: row.hostname,
         accountOrigin: this.#options.accountOrigin.origin,
+        ...this.#portal(),
         setupCodeDigest: row.setupCodeDigest,
         release: CloudComputerBootReleaseSchema.parse({
           version: row.release.version,
@@ -2079,12 +2082,19 @@ export class CloudComputerStore {
   }
 
   /** The feed this account gives now, to a booted Home that proves its credentials. */
+  /** The account's portal for a Home's answers, when it has an HTTPS one. */
+  #portal(): { portalOrigin?: string } {
+    const portal = this.#options.portalOrigin;
+    return portal?.protocol === "https:" ? { portalOrigin: portal.origin } : {};
+  }
+
   async releaseFeedForHome(id: CloudComputerId, authorization: string | undefined) {
     return this.#db.transaction().execute(async (tx) => {
       await this.#requireBootedHome(tx, id, authorization, "share");
       const { installerSha256, installerUrl } = this.#options.config.release;
       return {
         releaseManifestUrl: this.#options.config.releaseManifestUrl,
+        ...this.#portal(),
         recipe: { url: installerUrl, sha256: installerSha256 },
       };
     });

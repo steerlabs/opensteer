@@ -670,6 +670,8 @@ function candidate() {
     ),
   );
   writeFileSync(join(b, "images.env"), selection("1.2.4", "b"));
+  // The account does not answer unless a test says what it answers.
+  network(null);
   const prepare = (env: Record<string, string> = {}) =>
     spawnSync(
       "bash",
@@ -705,7 +707,15 @@ function candidate() {
         "prepare",
         b,
       ],
-      { encoding: "utf8", env: { ...process.env, OPENSTEER_HOME_DIR: home, ...env } },
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          OPENSTEER_HOME_DIR: home,
+          PATH: `${work}:${process.env.PATH}`,
+          ...env,
+        },
+      },
     );
   return { b, newPostgres, prepare };
 }
@@ -723,6 +733,64 @@ it("prepares a release with its own Compose files: PostgreSQL's image too, each 
   expect(inventory.filter((line) => line.startsWith("- "))).toHaveLength(7);
   expect(inventory.filter((line) => /^sha256:[0-9a-f]{64} /u.test(line))).toHaveLength(7);
   expect(readFileSync(join(b, "images.env"), "utf8")).toBe(selection("1.2.4", "b"));
+});
+
+const portalLines = () =>
+  readFileSync(join(home, "config.env"), "utf8")
+    .split("\n")
+    .filter((line) => line.startsWith("OPENSTEER_HOME_PORTAL_ORIGIN"));
+
+it("takes the account's portal into config.env when it prepares a release, before its gate starts it", () => {
+  // A Home installed before its account's boot answer named the portal: its config.env has none,
+  // and the code it runs does not ask for one. The release it updates to does, as it prepares.
+  const { b, prepare } = candidate();
+  const before = readFileSync(join(home, "config.env"), "utf8");
+  for (const answer of [
+    { releaseManifestUrl: "https://releases.example.test/stable.json" },
+    { portalOrigin: "http://portal.example.test" },
+    { portalOrigin: "https://portal.example.test/path" },
+    { portalOrigin: "https://portal.example.test'\nOPENSTEER_HOME_HOSTNAME='x" },
+    { portalOrigin: 7 },
+  ]) {
+    network(answer);
+    expect(prepare().status, JSON.stringify(answer)).toBe(0);
+    expect(readFileSync(join(home, "config.env"), "utf8"), JSON.stringify(answer)).toBe(before);
+  }
+  network({
+    releaseManifestUrl: "https://releases.example.test/stable.json",
+    portalOrigin: "https://portal.example.test",
+  });
+  const prepared = prepare();
+  expect(prepared.status, prepared.stderr).toBe(0);
+  expect(portalLines()).toEqual(["OPENSTEER_HOME_PORTAL_ORIGIN='https://portal.example.test'"]);
+  // Every other line stays as it was.
+  expect(
+    readFileSync(join(home, "config.env"), "utf8")
+      .split("\n")
+      .filter((line) => !line.startsWith("OPENSTEER_HOME_PORTAL_ORIGIN")),
+  ).toEqual(before.split("\n"));
+  // The release's own Compose file hands it to the Host its gate starts.
+  expect(readFileSync(join(b, "compose.yaml"), "utf8")).toContain(
+    "OPENSTEER_PORTAL_ORIGIN: ${OPENSTEER_HOME_PORTAL_ORIGIN:-}",
+  );
+  // A portal the account moves is followed; one it stops naming is kept.
+  network({ portalOrigin: "https://portal.example.test:8443" });
+  expect(prepare().status).toBe(0);
+  expect(portalLines()).toEqual([
+    "OPENSTEER_HOME_PORTAL_ORIGIN='https://portal.example.test:8443'",
+  ]);
+  network(null);
+  expect(prepare().status).toBe(0);
+  expect(portalLines()).toEqual([
+    "OPENSTEER_HOME_PORTAL_ORIGIN='https://portal.example.test:8443'",
+  ]);
+  // A self-hosted Home has no account to ask.
+  rmSync(join(home, "managed"));
+  network({ portalOrigin: "https://other.example.test" });
+  expect(prepare().status).toBe(0);
+  expect(portalLines()).toEqual([
+    "OPENSTEER_HOME_PORTAL_ORIGIN='https://portal.example.test:8443'",
+  ]);
 });
 
 it("names a release's tagged images by their ids, by tags no release can move", () => {
