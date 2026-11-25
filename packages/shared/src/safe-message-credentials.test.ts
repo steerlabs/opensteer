@@ -204,3 +204,16 @@ it("accepts a custom minimum value length for named credentials", () => {
   expect(engineDiagnosticSecrets(env)).toEqual([]);
   expect(engineDiagnosticSecrets(env, 4)).toEqual(["t0k3n"]);
 });
+
+it("never treats network bypass lists or proxy host settings as secrets (Y4)", () => {
+  const env = {
+    NO_PROXY: "*",
+    no_proxy: "localhost",
+    PROXY_HOST: "proxy.corp",
+    HTTP_PROXY: "http://proxy.corp:8080",
+  };
+  expect(engineDiagnosticSecrets(env, 4)).toEqual([]);
+  expect(
+    redactNetworkCredentials("could not connect to localhost", engineDiagnosticSecrets(env, 4)),
+  ).toBe("could not connect to localhost");
+});

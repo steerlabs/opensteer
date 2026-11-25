@@ -2385,22 +2385,15 @@ export async function assertThreadInputCapacity(
   const pendingUsage = await transaction
     .selectFrom("threadInputs")
     .innerJoin("messages", "messages.id", "threadInputs.messageId")
-    .leftJoin("runs", "runs.id", "threadInputs.runId")
     .select(({ fn }) => [
       fn.countAll<string>().as("count"),
       sql<string>`coalesce(sum(octet_length(messages.content::text)), 0)`.as("bytes"),
     ])
     .where("threadInputs.threadId", "=", threadId)
-    // Unknown inputs whose Run has ended are retained delivery history, not active inbox load.
-    .where((eb) =>
-      eb.or([
-        eb("threadInputs.state", "in", ["pending", "claimed"]),
-        eb.and([
-          eb("threadInputs.state", "=", "unknown"),
-          eb("runs.status", "in", nonTerminalRunStatuses),
-        ]),
-      ]),
-    )
+    // Capacity bounds work still waiting to be dispatched (`pending` / `claimed`).
+    // An `unknown` input is retained delivery history and is never dispatched again
+    // (at most one message in flight per steer while a Run is live), so it is never load.
+    .where("threadInputs.state", "in", ["pending", "claimed"])
     .where("threadInputs.policy", policy === "report" ? "=" : "!=", "report")
     .$if(replacingMessageId !== undefined, (query) =>
       query.where("threadInputs.messageId", "!=", replacingMessageId!),

@@ -7896,7 +7896,7 @@ class HeldHarnessSession implements HarnessSession {
 
   publish(event: HarnessEvent): void {
     this.#stream.publish(event, { delivery: "must-deliver" });
-    if (event.type === "run.completed") this.#released.resolve();
+    if (event.type === "run.completed" || event.type === "run.failed") this.#released.resolve();
   }
 
   async interrupt(): Promise<void> {
@@ -8925,6 +8925,182 @@ it("redacts named Run environment secrets and suppresses detail on short secrets
       const failedLog = logged.findLast((entry) => entry.message === "run.failed");
       expect(failedLog).toBeDefined();
       expect(String(failedLog?.details?.detail ?? "")).not.toContain(probe.forbidden);
+    } finally {
+      await runtime.close();
+      vi.unstubAllEnvs();
+    }
+  }
+});
+
+it("sanitizes driver-emitted run.failed (message and ownerMessage), run.retry, and logs with the per-Run sanitizer (Y1)", async () => {
+  const shortSecret = "Q7z";
+  const runOnlySecret = "run-only-secret-9K2M";
+  vi.stubEnv("TEST_SHORT_SECRET", shortSecret);
+  vi.stubEnv("TEST_RUN_ONLY_TOKEN", runOnlySecret);
+  const logged: Array<{ readonly message: string; readonly details?: Record<string, unknown> }> =
+    [];
+  const logger = {
+    error: (message: string, details?: Record<string, unknown>) => {
+      logged.push({ message, ...(details ? { details } : {}) });
+    },
+    info: () => undefined,
+  };
+  const messages: RunnerOperationalReport[] = [];
+  const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+  const registry = new HarnessRegistry();
+  const session = new HeldHarnessSession();
+  registry.registerDriver(new FakeHarnessDriver("test-driver", () => session));
+  const environmentId = createId("environment");
+  const command = executeCommand(environmentId);
+  const runtime = configuredRuntime({
+    environmentId,
+    logger,
+    registry,
+  });
+  try {
+    runtime.setHostRunRetryEvents(true);
+    await reconcile(registry, command);
+    await expect(runtime.handleCommand(command, sink)).resolves.toEqual({ status: "accepted" });
+    await waitUntil(() => hasEvent(messages, "run.started"));
+    session.publish({
+      data: {
+        attempt: 1,
+        code: "server_overloaded",
+        maxAttempts: 5,
+        message: `Retrying upstream with ${runOnlySecret}`,
+        status: "retrying",
+      },
+      type: "run.retry",
+    });
+    await waitUntil(() => hasEvent(messages, "run.retry"));
+    session.publish({
+      data: {
+        code: "harness_error",
+        message: `synthetic driver failure echoed ${shortSecret}`,
+        ownerMessage: `owner diagnostic echoed ${runOnlySecret} and ${shortSecret}`,
+        retryable: false,
+        status: "failed",
+      },
+      type: "run.failed",
+    });
+    await waitUntil(() => hasEvent(messages, "run.failed"));
+
+    const retry = messages.find(
+      (message): message is Extract<RunnerOperationalReport, { readonly type: "runner.event" }> =>
+        message.type === "runner.event" && message.event.type === "run.retry",
+    );
+    expect(retry?.event.type).toBe("run.retry");
+    if (retry?.event.type === "run.retry") {
+      expect(retry.event.data.message).not.toContain(runOnlySecret);
+      expect(retry.event.data.message).toContain("[REDACTED]");
+    }
+
+    const failed = messages.find(
+      (message): message is Extract<RunnerOperationalReport, { readonly type: "runner.event" }> =>
+        message.type === "runner.event" && message.event.type === "run.failed",
+    );
+    expect(failed?.event.type).toBe("run.failed");
+    if (failed?.event.type === "run.failed") {
+      expect(failed.event.data.code).toBe("harness_error");
+      expect(failed.event.data.message).not.toContain(shortSecret);
+      expect(failed.event.data.message).not.toContain("Runner operation failed");
+      expect(failed.event.data.message).toContain("credential");
+      expect(failed.event.data.ownerMessage).not.toContain(shortSecret);
+      expect(failed.event.data.ownerMessage).not.toContain(runOnlySecret);
+    }
+
+    const failedLog = logged.findLast((entry) => entry.message === "run.failed");
+    expect(failedLog).toBeDefined();
+    expect(String(failedLog?.details?.detail ?? "")).not.toContain(shortSecret);
+    expect(String(failedLog?.details?.detail ?? "")).not.toContain(runOnlySecret);
+  } finally {
+    await runtime.close();
+    vi.unstubAllEnvs();
+  }
+});
+
+it("keeps ordinary failures visible with NO_PROXY=* and suppresses short-secret detail only on match (Y4)", async () => {
+  const shortSecret = "Q7z";
+  for (const probe of [
+    {
+      env: { NO_PROXY: "*", no_proxy: "localhost" },
+      errorText: "Executable not found: could not connect to localhost",
+      expectSuppressed: false,
+    },
+    {
+      env: { TEST_SHORT_SECRET: shortSecret },
+      errorText: "Executable not found at /opt/missing/engine",
+      expectSuppressed: false,
+    },
+    {
+      env: { TEST_SHORT_SECRET: shortSecret },
+      errorText: `Engine exited after echoing ${shortSecret}`,
+      expectSuppressed: true,
+    },
+  ]) {
+    for (const [key, value] of Object.entries(probe.env)) {
+      vi.stubEnv(key, value);
+    }
+    const messages: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+    const driverKind = HarnessIdSchema.parse("short-secret-visibility-test");
+    const harnessInstanceId = createId("harnessInstance");
+    const registry = new HarnessRegistry();
+    registry.registerDriver({
+      ...catalogDriver(driverKind),
+      create: async () => ({
+        capabilities: {
+          approvals: true,
+          attachments: true,
+          interruption: true,
+          mcpImageContent: false,
+          resume: true,
+          steering: false,
+          toolCalls: true,
+          userInput: true,
+        },
+        close: async () => undefined,
+        instanceId: harnessInstanceId,
+        resumeSession: async () => {
+          throw new Error(probe.errorText);
+        },
+        startSession: async () => {
+          throw new Error(probe.errorText);
+        },
+      }),
+    });
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    try {
+      const baseCommand = executeCommand(environmentId, driverKind);
+      const command = {
+        ...baseCommand,
+        context: {
+          ...baseCommand.context,
+          harness: {
+            ...baseCommand.context.harness,
+            id: harnessInstanceId,
+          },
+          harnessInstanceId,
+        },
+      };
+      await reconcile(registry, command);
+      await runtime.handleCommand(command, sink);
+      await waitUntil(() => hasEvent(messages, "run.failed"));
+      const failed = messages.find(
+        (message): message is Extract<RunnerOperationalReport, { readonly type: "runner.event" }> =>
+          message.type === "runner.event" && message.event.type === "run.failed",
+      );
+      expect(failed?.event.type).toBe("run.failed");
+      if (failed?.event.type === "run.failed") {
+        if (probe.expectSuppressed) {
+          expect(failed.event.data.message).not.toContain(shortSecret);
+          expect(failed.event.data.message).not.toContain("Runner operation failed");
+          expect(failed.event.data.message).toContain("credential");
+        } else {
+          expect(failed.event.data.message).toBe(probe.errorText);
+        }
+      }
     } finally {
       await runtime.close();
       vi.unstubAllEnvs();
