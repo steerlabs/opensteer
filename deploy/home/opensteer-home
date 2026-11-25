@@ -110,6 +110,9 @@ case "${1:-}" in
     compose down
     ;;
   update|scheduled-update)
+    # update --retry: one more try of a release that failed its check here (a timer never retries).
+    retry_failed=false
+    if [[ $1 == update && ${2:-} == --retry ]]; then retry_failed=true; set -- update "${@:3}"; fi
     if [[ -f "$home_dir/managed" && $# != 1 ]]; then fail 'Managed Homes update only from the Account feed.'; fi
     lock_release
     recover_home
@@ -176,5 +179,5 @@ case "${1:-}" in
       echo "Stopped. Home data and configuration are retained in Docker volumes and $home_dir."
     fi
     ;;
-  *) fail "Usage: opensteer-home {status|setup-link|update|logs <service>|backup|snapshots|restore|uninstall [--purge]}" ;;
+  *) fail "Usage: opensteer-home {status|setup-link|update [--retry]|logs <service>|backup|snapshots|restore|uninstall [--purge]}" ;;
 esac

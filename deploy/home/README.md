@@ -328,17 +328,18 @@ are removed, `update.pending` goes, and the units are compared with what the new
 and rewritten only where they differ. None of these undoes the commit, and one that fails is
 tried again at the next start. A failed check stops the new release's containers with the running
 release's files, under the Home's own Compose project (`--remove-orphans`, volumes kept), and
-starts the running release again. Every start decides by `current` alone:
+starts the running release again. That release is remembered (`update.failed`, written before the running release starts again) and is not tried again by itself: a later check offered the same release changes nothing, records it as `not-retried`, and keeps that release's directory with the dump taken before its first attempt until another release commits. Another release is tried; `sudo opensteer-home update --retry` tries the same one once more. Every start decides by `current` alone:
 
-| Where the update stopped                  | At the next start                                                          |
-| ----------------------------------------- | -------------------------------------------------------------------------- |
-| while preparing                           | nothing: the next update removes the unfinished directory                  |
-| after `update.pending`, before the rename | `current` is the running release: the new one's containers stop, it starts |
-| after the rename                          | `current` is the new release: what follows the switch is finished          |
+| Where the update stopped                      | At the next start                                                                        |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| while preparing                               | nothing: the next update removes the unfinished directory                                |
+| after `update.pending`, before the rename     | `current` is the running release: the new one's containers stop, it starts               |
+| after a failed check, before it is remembered | `current` is the running release: it starts; the next check tries that release once more |
+| after the rename                              | `current` is the new release: what follows the switch is finished                        |
 
 A rollback deliberately keeps the database as the new release's migrations left it (they are
-expand-only, so the previous Host runs on it; the dump stays in the new release's directory until
-the next update, and is never replayed) and a feed address the Opensteer account moved. The dump
+expand-only, so the previous Host runs on it; the dump stays in the failed release's directory, and
+is never replayed) and a feed address the Opensteer account moved. The dump
 is a consistent, last-resort copy for manual recovery and does not include writes made after it.
 Managed updates take only digest-pinned images from the stored HTTPS feed from the Opensteer
 account and refuse a local manifest. Each fetch checks DNS again and connects only to the checked

@@ -22,11 +22,26 @@ release_waiting() {
   fi
 }
 
+# release_identity SELECTOR RECIPE_SHA: a release named by its images and its installer.
+release_identity() { { cat "$1"; printf '%s\n' "$2"; } | digest; }
+
+# remember_failed RELEASE: a release that failed its gate here is not tried again by itself. Kept:
+# the directory of its first failure, with the dump taken before it, and since when.
+remember_failed() {
+  local memory="$home_dir/update.failed" id=${1##*/} identity since known=''
+  identity=$(release_identity "$1/images.env" "$(cat "$1/recipe.sha256" 2>/dev/null)")
+  since=$(date -u +'%Y-%m-%dT%H:%M:00Z')
+  if [[ -f $memory ]]; then read -r id known since < "$memory"; fi
+  if [[ $known != "$identity" ]]; then id=${1##*/} since=$(date -u +'%Y-%m-%dT%H:%M:00Z'); fi
+  printf '%s %s %s\n' "$id" "$identity" "$since" > "$memory.new" && publish_file "$memory.new" "$memory" ||
+    echo 'The failed release could not be remembered: the next check tries it again.' >&2
+}
+
 # update_home [MANIFEST.json]: the Home's next release, prepared whole in its own directory beside
 # the running one (nothing outside it is written), then switched to by cutover.
 update_home() (
   [[ $# -le 2 ]] || fail "Usage: opensteer-home update [MANIFEST.json]"
-  local feed old_version new_version bundle_version change pinned=false unwritten='The release could not be written. Nothing was changed.'
+  local feed old_version new_version bundle_version change identity known since pinned=false unwritten='The release could not be written. Nothing was changed.'
   if [[ -f "$home_dir/managed" ]]; then
     pinned=true
     [[ $# == 1 ]] || fail 'Managed Homes update only from the Account feed.'
@@ -91,6 +106,14 @@ update_home() (
 
   # shellcheck source=deploy/home/backup.sh
   source "$release_dir/backup.sh"
+  # A release that failed its gate here waits for the next one, or the operator's `update --retry`.
+  identity=$(release_identity "$manifest.env" "$(if [[ -s "$manifest.recipe" ]]; then jq -r .sha256 "$manifest.recipe"; else cat "$from/recipe.sha256" 2>/dev/null; fi)")
+  if [[ ${retry_failed:-false} != true && -f "$home_dir/update.failed" ]] &&
+    read -r _ known since < "$home_dir/update.failed" && [[ $known == "$identity" ]]; then
+    echo "Release $new_version did not start here: waiting for the next one (sudo opensteer-home update --retry tries it again)."
+    record_update_result not-retried "$old_version" "$new_version" "$since"
+    return 0
+  fi
   if [[ $change == same ]]; then room_for_release; else room_for_release images; fi ||
     fail 'There is not enough room on this machine for the release. Nothing was changed.'
   to=$(new_release "$new_version") || fail "$unwritten"
@@ -132,9 +155,10 @@ update_home() (
       ;;
     1)
       printf '%s\n' "Home $new_version did not pass its check. Restoring $old_version." >&2
+      remember_failed "$to"
       if start_pod; then
         record_update_result rolled-back "$old_version" "$new_version"
-        fail "The update was rolled back. The database dump taken before it is kept in $to/database.dump until the next update."
+        fail "The update was rolled back. This release is not tried again by itself; the database dump taken before its first attempt is kept in $home_dir/releases/$(cut -d' ' -f1 "$home_dir/update.failed" 2>/dev/null || echo "${to##*/}")/database.dump until another release updates this Home."
       fi
       record_update_result failed "$old_version" "$new_version"
       fail "The update failed, and $old_version did not start again (sudo opensteer-home logs host)."

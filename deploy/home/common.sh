@@ -711,7 +711,7 @@ compose_down_home() {
 remove_home_files() {
   rm -rf -- "${home_dir:?}/"{secrets,boot,identity,releases,restore.pending,restore.pending.retired}
   rm -rf -- "$home_dir/"{install,backup,egress,images.placeholder,feed,config.env,pool-network}.??????
-  rm -f -- "$home_dir/"{current,current.new,previous,previous.new,update.pending,update.pending.new,update.waiting,config.env,volumes.env,tls.caddy,setup-link.pending,operation.lock,egress.pending,host.pid,managed,ipv6.enabled,browser-pool,pool-network,pool-network-asked,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
+  rm -f -- "$home_dir/"{current,current.new,previous,previous.new,update.pending,update.pending.new,update.waiting,update.failed,update.failed.new,config.env,volumes.env,tls.caddy,setup-link.pending,operation.lock,egress.pending,host.pid,managed,ipv6.enabled,browser-pool,pool-network,pool-network-asked,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
 }
 
 # Whether this Home was installed with --local-images.
@@ -891,7 +891,7 @@ finish_switch() {
   local pending="$home_dir/update.pending" from to
   [[ -f $pending ]] || return 0
   read -r from to < "$pending" && switch_link "releases/$from" "$home_dir/previous" || return
-  rm -f -- "$home_dir/releases/$from/database.dump"
+  rm -f -- "$home_dir/releases/$from/database.dump" "$home_dir/update.failed"
   prune_releases images
   rm -f -- "$pending" && sync "$home_dir"
 }
@@ -921,6 +921,8 @@ prune_releases() {
       kept+=$(release_named_images "$home_dir/$link")$'\n'
     fi
   done
+  # A release that failed its gate keeps its directory, with its dump, until another one commits.
+  if [[ -f "$home_dir/update.failed" ]]; then keep+=" releases/$(cut -d' ' -f1 "$home_dir/update.failed") "; fi
   rm -f -- "$home_dir/releases/".manifest.*
   for dir in "$home_dir/releases"/*/; do
     dir=${dir%/}

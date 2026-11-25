@@ -41,12 +41,15 @@ export const BackupFailureSchema = z.enum([
 /**
  * How a Home's last update check ended. `waiting`: the release's two halves (its installer and its
  * images) have named different releases at more than one check since the result's time.
+ * `not-retried`: the release offered failed its check on this Home at the result's time, and is not
+ * tried again until another release is offered or the operator retries it.
  */
 export const UpdateResultSchema = z.enum([
   "updated",
   "rolled-back",
   "feed-older",
   "waiting",
+  "not-retried",
   "failed",
 ]);
 

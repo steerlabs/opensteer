@@ -328,6 +328,10 @@ it.each([
   );
   expect(result.stderr).toContain(`releases/${b}/database.dump`);
   expect(lastUpdate()).toMatchObject({ result: "rolled-back" });
+  // It is remembered, by the directory of its first failure, before A starts again.
+  expect(readFileSync(join(home, "update.failed"), "utf8")).toMatch(
+    new RegExp(`^${b} [0-9a-f]{64} \\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:00Z\\n$`, "u"),
+  );
   expect(data()).toBe(before);
 });
 
@@ -561,7 +565,8 @@ function nextStart() {
       `source "$1"
        compose() { printf 'compose %s (%s)\\n' "$*" "\${release_dir##*/}" >> "${log}"; }
        docker() { printf 'docker %s\\n' "$*" >> "${log}"; }
-       recover_switch`,
+       start_pod() { printf 'start_pod (%s)\\n' "\${release_dir##*/}" >> "${log}"; }
+       recover_switch && start_pod`,
       "start",
       join(source, "common.sh"),
     ],
@@ -770,4 +775,75 @@ it("finishes a managed boot without touching the Home's release, and keeps the o
   // A command that waited for the lock while an update switched runs as the current release.
   const command = readFileSync(join(source, "opensteer-home"), "utf8");
   expect(command).toContain('exec "$current/opensteer-home" "${command_args[@]}"');
+});
+
+/** B failed its gate here at 08:00: its directory and the dump taken before it, and the memory. */
+const failedBefore = (sha256: string) => {
+  const failed = join(home, "releases", "1.2.4-failed");
+  mkdirSync(failed);
+  writeFileSync(join(failed, "database.dump"), "pre-migration dump\n");
+  const identity = createHash("sha256")
+    .update(`${selection("1.2.4", "b")}${sha256}\n`)
+    .digest("hex");
+  writeFileSync(join(home, "update.failed"), `1.2.4-failed ${identity} 2026-11-25T08:00:00Z\n`);
+  return failed;
+};
+
+it("does not try again by itself a release that failed its gate here, and keeps the dump from before it", () => {
+  const failed = failedBefore(pinned(release("B")).sha256);
+  const again = update(newer);
+  expect(again.status, again.stderr).toBe(0);
+  expect(again.stdout).toContain("Release 1.2.4 did not start here: waiting for the next one");
+  expect(said()).not.toContain("release B");
+  expect(said()).not.toContain("compose down");
+  expect(current()).toBe(`releases/${running}`);
+  expect(readFileSync(join(failed, "database.dump"), "utf8")).toBe("pre-migration dump\n");
+  expect(lastUpdate()).toEqual({
+    result: "not-retried",
+    at: "2026-11-25T08:00:00Z",
+    fromVersion: "1.2.3",
+    toVersion: "1.2.4",
+  });
+});
+
+it("tries another release, and forgets the failed one once that one is in", () => {
+  failedBefore(pinned(release("B")).sha256);
+  pinned(release("C"), "1.2.5");
+  writeFileSync(join(work, "present"), `${[...Object.values(images("a")), postgres].join("\n")}\n`);
+  const next = update({ version: "1.2.5", images: images("c") });
+  expect(next.status, next.stderr).toBe(0);
+  expect(said()).toContain("release C release-gate");
+  expect(current()).toMatch(/^releases\/1\.2\.5-/u);
+  expect(existsSync(join(home, "update.failed"))).toBe(false);
+  expect(releases()).not.toContain("1.2.4-failed");
+});
+
+it("tries the failed release once more when the operator asks (update --retry)", () => {
+  failedBefore(pinned(release("B")).sha256);
+  // As opensteer-home sets it for `update --retry`; a timer never does.
+  const retried = update(newer, "update", undefined, "retry_failed=true");
+  expect(retried.status, retried.stderr).toBe(0);
+  expect(said()).toContain("release B release-gate");
+  expect(current()).toMatch(/^releases\/1\.2\.4-/u);
+  expect(readFileSync(join(source, "opensteer-home"), "utf8")).toContain(
+    'if [[ $1 == update && ${2:-} == --retry ]]; then retry_failed=true; set -- update "${@:3}"; fi',
+  );
+});
+
+it("starts A when the update stops between the failed gate and remembering it, and tries once more at most", () => {
+  pinned(release("B", { gate: 1, says: "B fails its gate" }));
+  const stopped = update(
+    newer,
+    "scheduled-update",
+    undefined,
+    "remember_failed() { kill -KILL $BASHPID; }",
+  );
+  expect(stopped.status).not.toBe(0);
+  const next = nextStart();
+  expect(next.status, next.stderr).toBe(0);
+  expect(current()).toBe(`releases/${running}`);
+  expect(said()).toContain("start_pod (");
+  expect(existsSync(join(home, "update.pending"))).toBe(false);
+  // Not remembered: the next check tries B again, once, and then remembers it.
+  expect(existsSync(join(home, "update.failed"))).toBe(false);
 });

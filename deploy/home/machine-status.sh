@@ -35,7 +35,7 @@ record_backup_result() {
     > "$home_dir/last-backup.json.new" && mv -f -- "$home_dir/last-backup.json.new" "$home_dir/last-backup.json"
 }
 
-# record_update_result updated|rolled-back|feed-older|waiting|failed [FROM_VERSION] [TO_VERSION] [SINCE]
+# record_update_result updated|rolled-back|feed-older|waiting|not-retried|failed [FROM_VERSION] [TO_VERSION] [SINCE]
 # SINCE, a time to the minute, is when the result began (an update waiting since then).
 record_update_result() {
   local version='^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$' from=${2:-} to=${3:-} at=${4:-}
