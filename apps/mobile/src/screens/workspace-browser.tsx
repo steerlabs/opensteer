@@ -4,15 +4,12 @@ import {
   canRespondToRequests,
   placeAgentState,
   listedRowThreadId,
-  threadMark,
   tabSuccessor,
-  type BrowserTabDestination,
   type HostClient,
   type TabStrip,
   type HostSnapshot,
 } from "@opensteer/client/host";
 import {
-  useBrowserAgentFollow,
   useBrowserPopupFollow,
   useHostSelector,
   useHostSnapshot,
@@ -21,7 +18,6 @@ import {
   useTab,
   useTabStrip,
   useTabsSyncing,
-  useThreadAgentTab,
 } from "@opensteer/client/react";
 import { deviceElsewhere } from "@opensteer/client/computers";
 import {
@@ -72,7 +68,7 @@ import {
   type ReservedRegion,
 } from "react-native-reserved-regions";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { BrowserPage, type PageFollowing, type PagePairChrome } from "../browser/browser-page.js";
+import { BrowserPage, type PagePairChrome } from "../browser/browser-page.js";
 import {
   AppPill,
   appMenuSections,
@@ -572,25 +568,6 @@ function Focused(
       navigation.setParams({ editAddress: false, popup: false, tabId: TabIdSchema.parse(tabId) }),
     [navigation],
   );
-  /**
-   * Keeping up with the beside Thread's agent: the route moves in place to
-   * whichever tab it is on, until the person moves the page themselves. It
-   * waits while something is over the page, such as the tab sheet.
-   */
-  const shownTab =
-    viewer.kind === "page" ? { sessionId: viewer.sessionId, tabId: route.tabId } : null;
-  const showTab = useCallback(
-    (shown: BrowserTabDestination) => onSwitchTab(shown.tabId),
-    [onSwitchTab],
-  );
-  const agentTab = useThreadAgentTab(hostClient, besideId);
-  const follow = useBrowserAgentFollow({
-    agentTab,
-    held: !props.presence.interactive,
-    onFollow: showTab,
-    shownTab,
-    threadId: besideId,
-  });
   // Over the page that opened it, so Back and its ending both return there.
   const onPopup = useCallback(
     (tabId: string) => {
@@ -705,9 +682,6 @@ function Focused(
       : [],
   ];
   const pair: PagePairChrome | null = pairedChrome ? { menu: pairMenu } : null;
-  // The Thread's own mark, as web draws it: the page's occupants can lag the agent arriving.
-  const following: PageFollowing | null =
-    follow.following && besideId !== null ? { mark: threadMark(besideId, snapshot) } : null;
   const closeItem: NativeMenuOption = {
     destructive: true,
     disabled: closing.closing,
@@ -758,13 +732,11 @@ function Focused(
         deploymentId={deploymentId}
         hereId={hereId}
         editAddress={route.editAddress === true}
-        following={following}
         hostClient={hostClient}
         onOpenTab={onOpenTab}
         onPopup={onPopup}
         onReactivate={props.onReactivate}
         onShowTabs={onShowTabs}
-        onSteer={follow.steer}
         onSwitchTab={onSwitchTab}
         onTyping={setTyping}
         onViewing={setPage}
@@ -813,7 +785,7 @@ function Focused(
                   navigation.dispatch(StackActions.push("Thread", { deploymentId, threadId: id }))
                 }
                 requestId={null}
-                withPage={{ page: shownPage, showTab: shownTab === null ? null : showTab }}
+                withPage={{ page: shownPage, showTab: viewer.kind === "page" ? onSwitchTab : null }}
                 threadId={companion.threadId}
               />
             ),
@@ -908,14 +880,12 @@ function BrowserTab(props: {
   /** This phone's own device in the Deployment, which needs no name beside a page. */
   readonly hereId: string | null;
   readonly editAddress: boolean;
-  readonly following: PageFollowing | null;
   readonly hostClient: HostClient;
   readonly onOpenTab: (url: string) => void;
   readonly onPopup: (tabId: string) => void;
   /** Ask the Host to open this tab again, as the person's own Open. */
   readonly onReactivate: () => void;
   readonly onShowTabs: () => void;
-  readonly onSteer: () => void;
   readonly onSwitchTab: (tabId: string) => void;
   readonly onTyping: (typing: boolean) => void;
   readonly onViewing: (page: BrowserPageContentPart | null) => void;
@@ -1008,13 +978,11 @@ function BrowserTab(props: {
         arrival={shown.current.arrival}
         connected={props.connected}
         device={device}
-        following={props.following}
         hostClient={hostClient}
         key={pageKey}
         editAddress={props.editAddress}
         onOpenTab={props.onOpenTab}
         onShowTabs={props.onShowTabs}
-        onSteer={props.onSteer}
         onSwitchTab={props.onSwitchTab}
         pair={props.pair}
         onTyping={props.onTyping}
