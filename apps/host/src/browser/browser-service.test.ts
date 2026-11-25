@@ -11673,7 +11673,7 @@ describe("work under a connection's authority never uses the clipboard or change
     const service = freshService({ keys, runtime, repository });
     cleanups.push(async () => service.close());
     const profile = await repository.createBrowserProfile({ ownerId, name: "Disconnect Profile" });
-    const agentConnectionId = `acn_${randomUUID()}`;
+    let agentConnectionId = `acn_${randomUUID()}`;
     const connected = { agentBindingId: `run:${createId("run")}`, ownerId };
     const ownAgent = { agentBindingId: `run:${createId("run")}`, ownerId };
     const threadId = createId("thread");
@@ -11729,6 +11729,8 @@ describe("work under a connection's authority never uses the clipboard or change
         event: { method, parameters: {}, sequence: sequence++ },
       });
     for (const end of ["disconnect", "binding-ended"] as const) {
+      // A disconnected connection admits nothing more: each case its own connection.
+      agentConnectionId = `acn_${randomUUID()}`;
       const theirs = await attach(connected);
       const mine = await attach(ownAgent);
       send("Page.before");
@@ -11841,6 +11843,160 @@ describe("work under a connection's authority never uses the clipboard or change
         .map((e) => e.method),
     ).toEqual(["Target.targetInfoChanged", "Target.targetDestroyed"]);
     attached.close();
+  });
+
+  it("delivers nothing to a connection's work after its connection or binding ends, on every path (P1)", async () => {
+    // Every delivery function of a connection's shared-root subscription, against both ends.
+    const paths = [
+      "live event",
+      "buffered early detach",
+      "attach registering after the end",
+    ] as const;
+    const ends = ["connection ended", "binding ended"] as const;
+    for (const path of paths)
+      for (const end of ends) {
+        const ownerId = createId("user");
+        const repository = new MemoryBrowserRepository(ownerId);
+        const keys = generateKeyPairSync("ed25519");
+        const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+        const service = freshService({ keys, runtime, repository });
+        cleanups.push(async () => service.close());
+        const profile = await repository.createBrowserProfile({ ownerId, name: `${path} ${end}` });
+        const agentConnectionId = `acn_${randomUUID()}`;
+        const binding = { agentBindingId: `run:${createId("run")}`, ownerId };
+        const yourOwn = { agentBindingId: `run:${createId("run")}`, ownerId };
+        let asConnection = true;
+        repository.resolveResourceAccess = async () => ({
+          access: "read-write",
+          runAccess: "read-write",
+          grantAccess: "read-write",
+          execution: {
+            ownerUserId: ownerId,
+            subject: {
+              kind: "binding",
+              bindingId: asConnection ? binding.agentBindingId : yourOwn.agentBindingId,
+            },
+            actor: asConnection ? "agent" : "native",
+            threadId: createId("thread"),
+            runId: createId("run"),
+            agentConnection: asConnection
+              ? {
+                  agentConnectionId,
+                  grant: { scope: "everything" },
+                  grantRevision: 1,
+                  consentVersion: 1,
+                  accessMode: "full-access",
+                  bridgeSenders: null,
+                }
+              : null,
+            taskMode: "full-access",
+            runMode: "full-access",
+            mode: "full-access",
+          },
+        });
+        const opened = await service.openAgentSession({ ...binding, profileId: profile.id });
+        // One of your own agents on the same session: it hears every event, so it says when one
+        // has arrived.
+        asConnection = false;
+        const heard: string[] = [];
+        const observer = await service.attachCdpForAgent(
+          { ...yourOwn, sessionId: opened.session.id },
+          (event) => heard.push(event.method),
+        );
+        asConnection = true;
+        const arrived = (method: string) => vi.waitFor(() => expect(heard).toContain(method));
+        const events: string[] = [];
+        let closed = false;
+        const endIt = async () => {
+          if (end === "connection ended")
+            service.closeStandardCdpForConnection(
+              agentConnectionId,
+              "Agent connection authority ended.",
+            );
+          else await service.detachAgentSessionsForBinding(binding.agentBindingId);
+        };
+        let sequence = 1;
+        const send = (method: string, parameters: Record<string, unknown> = {}) =>
+          runtime.sendServer({
+            type: "cdp.event",
+            event: { method, parameters, sequence: sequence++ },
+          });
+        const attach = () =>
+          service.attachCdpForAgent(
+            { ...binding, sessionId: opened.session.id },
+            (event) => events.push(event.method),
+            () => {
+              closed = true;
+            },
+          );
+        if (path === "attach registering after the end") {
+          // The attach is admitted, then held inside #holdForAgent while the end happens.
+          const gate = Promise.withResolvers<void>();
+          const hold = repository.attachBrowserSession.bind(repository);
+          const held = vi
+            .spyOn(repository, "attachBrowserSession")
+            .mockImplementation(async (...args) => {
+              await gate.promise;
+              return hold(...args);
+            });
+          const attaching = attach().then(
+            (attached) => ({ attached }),
+            (error: unknown) => ({ error }),
+          );
+          await vi.waitFor(() => expect(held).toHaveBeenCalled());
+          await endIt();
+          gate.resolve();
+          const outcome = await attaching;
+          held.mockRestore();
+          send("Page.afterTheEnd");
+          await arrived("Page.afterTheEnd");
+          // It registers after the end: it fails closed, and nothing reaches it.
+          expect("error" in outcome, `${path} / ${end}`).toBe(true);
+        } else {
+          const attached = await attach();
+          if (path === "live event") {
+            await endIt();
+            send("Page.afterTheEnd");
+            await arrived("Page.afterTheEnd");
+          } else {
+            const request = attached.request({
+              method: "Target.attachToTarget",
+              parameters: { targetId: "own-tab", flatten: true },
+            });
+            const forward = await runtime.nextCommand();
+            send("Target.detachedFromTarget", { sessionId: "cdp_own", targetId: "own-tab" });
+            // It has reached the Host (and the connection's buffer) before the end.
+            await arrived("Target.detachedFromTarget");
+            // A binding's end is recorded at once; its sessions detach after a store write, which
+            // is held here so the attach's reply lands in between (when the buffer is flushed).
+            const gate = Promise.withResolvers<void>();
+            const detach = repository.detachBrowserSessionAttachments.bind(repository);
+            const held = vi
+              .spyOn(repository, "detachBrowserSessionAttachments")
+              .mockImplementation(async (...args) => {
+                await gate.promise;
+                return detach(...args);
+              });
+            const ending = endIt();
+            runtime.sendServer({
+              type: "cdp.result",
+              requestId: forward.requestId,
+              result: { sessionId: "cdp_own" },
+            });
+            await request.catch(() => undefined);
+            gate.resolve();
+            await ending;
+            held.mockRestore();
+          }
+          attached.close();
+        }
+        observer.close();
+        // The same session, attached by one of your own agents' work, hears what was sent after.
+        expect(events, `${path} / ${end}`).not.toContain("Page.afterTheEnd");
+        expect(events, `${path} / ${end}`).not.toContain("Target.detachedFromTarget");
+        if (end === "connection ended" && path !== "attach registering after the end")
+          expect(closed, `${path} / ${end}`).toBe(true);
+      }
   });
 
   it("keeps a subscriber's own child however many children a neighbour opens on the shared root (S2)", async () => {

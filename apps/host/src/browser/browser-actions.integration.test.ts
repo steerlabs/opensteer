@@ -741,6 +741,73 @@ integration("session-scoped browser agent backends", () => {
     cdp.close();
   });
 
+  it("closes a connection-led Run's actions attachment at its connection's Disconnect (P1)", async () => {
+    const f = await setup();
+    // The phone Run's task and Run join a connected agent's lineage.
+    const database = f.host.store.database;
+    const lineage = await new AgentConnectionStore(database).create({
+      userId: f.host.ownerId,
+      label: "Lineage",
+      clientName: "Fixture",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+      grant: AgentGrantSchema.parse({ scope: "everything" }),
+    });
+    expect(await new AgentConnectionStore(database).activate(lineage.id, randomUUID())).toBe(true);
+    const row = await database
+      .selectFrom("runs")
+      .innerJoin("threads", "threads.id", "runs.threadId")
+      .select(["runs.id as runId", "threads.id as threadId"])
+      .where("threads.title", "=", "Phone browser")
+      .executeTakeFirstOrThrow();
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: lineage.id })
+      .where("id", "=", row.threadId)
+      .execute();
+    await database
+      .updateTable("runs")
+      .set({ connectionId: lineage.id })
+      .where("id", "=", row.runId)
+      .execute();
+    // A connection's work runs only in a saved profile, never in Guest.
+    const profile = await f.host.store.createBrowserProfile({
+      name: "Phone profile",
+      ownerId: f.host.ownerId,
+      homeRunnerId: f.phone.runnerId,
+      idempotencyKey: "disconnect-phone-profile",
+    });
+    const opened = await f.host.runtime.browser.start({
+      ownerId: f.host.ownerId,
+      profileId: profile.id,
+    });
+    const socket = await f.actions(f.run.toolsToken, opened.session.id);
+    await vi.waitFor(
+      () =>
+        expect(f.phone.receivedCommands().some((message) => message.type === "agent.attach")).toBe(
+          true,
+        ),
+      { timeout: 2_000 },
+    );
+    const ended = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+    // Disconnect's own close: its actions attachment is closed with it, nothing more reaches it.
+    f.host.runtime.browser.closeStandardCdpForConnection(
+      lineage.id,
+      "Agent connection authority ended.",
+    );
+    await withTimeout(ended, 2_000, {
+      timeoutError: () => new Error("The actions attachment outlived its connection's Disconnect"),
+    });
+    await vi.waitFor(
+      () =>
+        expect(f.phone.receivedCommands().some((message) => message.type === "agent.detach")).toBe(
+          true,
+        ),
+      { timeout: 2_000 },
+    );
+  });
+
   it("relays attributed actions only within the admitted Run/session and fences suspension, stale provenance and revocation", async () => {
     const f = await setup();
     const socket = await f.actions();
