@@ -214,7 +214,7 @@ function createV1Client(
     });
   const pendingPromptWrites: (() => void)[] = [];
   const stream = acpV1.ndJsonStream(
-    Writable.toWeb(process.child.stdin),
+    stdinWritableStream(process.child.stdin),
     Readable.toWeb(Readable.from(stdout)) as ReadableStream<Uint8Array>,
   );
   const writable = observePromptWrites(
@@ -398,7 +398,7 @@ function createV2Client(
     });
   const pendingPromptWrites: (() => void)[] = [];
   const rawStream = acpV2.ndJsonStream(
-    Writable.toWeb(process.child.stdin),
+    stdinWritableStream(process.child.stdin),
     Readable.toWeb(Readable.from(stdout)) as ReadableStream<Uint8Array>,
   );
   const connection = app.connect({
@@ -532,6 +532,66 @@ function createV2Client(
       await agent.request(acpV2.methods.agent.session.close, { sessionId });
     },
   };
+}
+
+/**
+ * Wraps a Node `Writable` child stdin stream so each web `writer.write(chunk)`
+ * settles only when `stdin.write(chunk, callback)` invokes its callback (or
+ * the stream errors/closes). Unlike `Writable.toWeb`, this does not resolve
+ * early while buffered below `highWaterMark`, so an immediate or async EPIPE
+ * rejects the write before `observePromptWrites` reports the prompt written.
+ */
+function stdinWritableStream(stdin: Writable): WritableStream<Uint8Array> {
+  let streamError: unknown;
+  let hasStreamError = false;
+  const onError = (error: unknown) => {
+    if (!hasStreamError) {
+      hasStreamError = true;
+      streamError = error;
+    }
+  };
+  stdin.on("error", onError);
+  return new WritableStream<Uint8Array>({
+    write(chunk) {
+      if (hasStreamError) return Promise.reject(streamError);
+      if (stdin.destroyed || stdin.writableEnded) {
+        return Promise.reject(stdin.errored ?? new Error("ACP stdin is closed"));
+      }
+      return new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: Error | null) => {
+          if (settled) return;
+          settled = true;
+          stdin.off("error", onWriteError);
+          stdin.off("close", onClose);
+          if (error) reject(error);
+          else resolve();
+        };
+        const onWriteError = (error: Error) => finish(error);
+        const onClose = () => finish(stdin.errored ?? new Error("ACP stdin closed during write"));
+        stdin.once("error", onWriteError);
+        stdin.once("close", onClose);
+        try {
+          stdin.write(chunk, (error) => finish(error));
+        } catch (error) {
+          finish(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+    },
+    close() {
+      stdin.off("error", onError);
+      if (stdin.destroyed || stdin.writableEnded) return;
+      return new Promise<void>((resolve) => {
+        stdin.end(() => resolve());
+      });
+    },
+    abort(reason) {
+      stdin.off("error", onError);
+      if (!stdin.destroyed) {
+        stdin.destroy(reason instanceof Error ? reason : undefined);
+      }
+    },
+  });
 }
 
 function observePromptWrites<Message>(

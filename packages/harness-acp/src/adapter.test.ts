@@ -3536,7 +3536,7 @@ describe("ACP prompt steering, outcome inspection, and permission disposition", 
 
   it("publishes run.started only after session/prompt writes to stdin, never on a pre-write failure (Y5)", async () => {
     const f = await setup("replay");
-    for (const failBeforeWrite of [true, false] as const) {
+    for (const mode of ["pre-write-sync", "pre-write-async", "post-write"] as const) {
       const stdout = new PassThrough();
       const stderr = new EventEmitter();
       const exited = Promise.withResolvers<{
@@ -3588,8 +3588,14 @@ describe("ACP prompt steering, outcome inspection, and permission disposition", 
                 })}\n`,
               );
             } else if (request.method === "session/prompt") {
-              if (failBeforeWrite) {
+              if (mode === "pre-write-sync") {
                 callback(new Error("EPIPE: broken stdin before prompt write"));
+                return;
+              }
+              if (mode === "pre-write-async") {
+                process.nextTick(() => {
+                  callback(new Error("EPIPE: async broken stdin before prompt write"));
+                });
                 return;
               }
               callback();
@@ -3671,13 +3677,13 @@ describe("ACP prompt steering, outcome inspection, and permission disposition", 
 
       const session = await adapter.startSession(f.context);
       const observed = observe(session.events);
-      await session.execute(f.turn(`prompt-${String(failBeforeWrite)}`));
+      await session.execute(f.turn(`prompt-${mode}`));
       await session.stop();
       await observed.done;
       await adapter.close();
 
       const eventTypes = observed.events.map((event) => event.type);
-      if (failBeforeWrite) {
+      if (mode !== "post-write") {
         expect(eventTypes).not.toContain("run.started");
         expect(eventTypes).toContain("run.failed");
       } else {
