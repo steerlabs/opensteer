@@ -4138,16 +4138,6 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
 
         await vi.waitFor(() => expect(wakes).toHaveLength(1), { timeout: 5_000 });
         const trace = wakes[0]!;
-        console.info(
-          "wake.speed.sample",
-          JSON.stringify({
-            sessionCount,
-            totalMs: trace.totalMs,
-            afterResumeMs: trace.afterResumeMs,
-            handshakes: trace.relayHandshakes.length,
-            steps: trace.steps,
-          }),
-        );
         expect(trace.retainedSessions).toBe(sessionCount);
         expect(trace.adoptedSessions).toBe(sessionCount);
         expect(trace.lostSessions).toBe(0);

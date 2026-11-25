@@ -184,6 +184,7 @@ export interface BrowserPoolCoordinatorOptions {
   readonly aroundWait?: (
     kind: "idle" | "refused" | "pending" | "unknown" | "failed",
     wait: () => Promise<void>,
+    ms: number,
   ) => Promise<void>;
   /**
    * W8: this coordinator only drains a replaced target, of this instance and epoch: it asks it for
@@ -209,6 +210,11 @@ export interface BrowserPoolCoordinatorOptions {
   readonly unansweredRetryMaxMs?: number;
   /** How often a running guest's status is read when nothing else reads it (one minute). */
   readonly statusEveryMs?: number;
+  /**
+   * One early status read after a completed wake (six seconds) to catch a down egress proxy
+   * promptly without waiting for `statusEveryMs`.
+   */
+  readonly postWakeStatusCheckMs?: number;
   /**
    * How long the browser may sit open with nobody holding it (no reservation, no viewer, no
    * connected agent's work) before `tryPark()` is called; a vetoed park is asked again at the
@@ -315,6 +321,9 @@ export class BrowserPoolCoordinator {
   #proxyDown = false;
   /** When the host's status was last read. */
   #statusReadAt = 0;
+  /** One-shot early status check armed on a completed wake; dropped if the slot moves on. */
+  #postWakeStatusCheck:
+    { readonly instanceId: string; readonly epoch: number; readonly at: number } | undefined;
   /**
    * The one repair of a guest whose egress proxy is down: a park and a wake (only those, or a
    * fresh start, bring a proxy back). `wanted`: the status said down and no command is in flight
@@ -465,11 +474,12 @@ export class BrowserPoolCoordinator {
     kind: "idle" | "refused" | "pending" | "unknown" | "failed",
   ): Promise<void> {
     const wait = () => delay(ms, undefined, { signal }).catch(() => undefined);
-    return (this.#options.aroundWait?.(kind, wait) ?? wait()).catch(() => undefined);
+    return (this.#options.aroundWait?.(kind, wait, ms) ?? wait()).catch(() => undefined);
   }
 
   close(): void {
     this.#closed = true;
+    this.#postWakeStatusCheck = undefined;
     clearInterval(this.#pruning);
     this.#clearIdleTimer();
     this.#stopRelay();
@@ -955,6 +965,10 @@ export class BrowserPoolCoordinator {
           // Nothing to do until something changes, the next status read, or an active lost-channel
           // session's deadline expires while the relay is detached.
           let idleMs = this.#options.statusEveryMs ?? statusEveryMs;
+          if (this.#postWakeStatusCheck) {
+            const left = this.#postWakeStatusCheck.at - Date.now();
+            idleMs = Math.min(idleMs, Math.max(0, left));
+          }
           if (this.#lost.size) {
             const now = Date.now();
             for (const { since } of this.#lost.values()) {
@@ -1242,14 +1256,22 @@ export class BrowserPoolCoordinator {
     }
     // A running guest's host is asked how it is now and then: its egress proxy can go down under
     // it, which only its status says (the browser then cannot reach the internet).
+    const now = Date.now();
+    const postWakeCheck =
+      this.#postWakeStatusCheck && now >= this.#postWakeStatusCheck.at
+        ? this.#postWakeStatusCheck
+        : undefined;
     if (
       slot.phase === "running" &&
-      Date.now() - this.#statusReadAt >= (this.#options.statusEveryMs ?? statusEveryMs)
+      (postWakeCheck !== undefined ||
+        now - this.#statusReadAt >= (this.#options.statusEveryMs ?? statusEveryMs))
     )
       return {
         name: "check",
         run: async () => {
           const status = await this.#status();
+          if (postWakeCheck && this.#postWakeStatusCheck === postWakeCheck)
+            this.#postWakeStatusCheck = undefined;
           // A phase or a guest this Home did not ask for (the host stopped or paused it on its
           // own, say after a long silence): recovery reads what is there and goes on from it.
           if (status.phase !== "running" || !sameFence(statusFence(status), fenceOf(slot)))
@@ -1261,6 +1283,14 @@ export class BrowserPoolCoordinator {
 
   /** The gate's facts, from the durable state and what is wanted; nothing else sets them. */
   #publish(slot: BrowserPoolSlot | undefined): void {
+    if (
+      this.#postWakeStatusCheck &&
+      (slot?.phase !== "running" ||
+        slot.instanceId !== this.#postWakeStatusCheck.instanceId ||
+        slot.epoch !== this.#postWakeStatusCheck.epoch)
+    ) {
+      this.#postWakeStatusCheck = undefined;
+    }
     // A down egress proxy is a fact of a running instance: it ends when the slot leaves running
     // (W4), and clients learn it at once.
     if (this.#proxyDown && slot?.phase !== "running") {
@@ -1396,6 +1426,7 @@ export class BrowserPoolCoordinator {
    * sessions is the loop's next step, under its bound, until it has succeeded.
    */
   #beginOver(reason: string, settle = false): PromiseWithResolvers<void> {
+    this.#postWakeStatusCheck = undefined;
     this.#clearUnanswered();
     this.#relayUnknownSince = undefined;
     this.#relayUnreachable = false;
@@ -2182,6 +2213,7 @@ export class BrowserPoolCoordinator {
     const saved = slot.savedState as { id?: string } | null;
     let status = read ?? (await this.#status());
     let resumed = await this.#appliedResume(slot);
+    let resumeAnsweredAt: number | undefined;
     if (!resumed) {
       if (
         status.phase !== "paused" ||
@@ -2213,6 +2245,7 @@ export class BrowserPoolCoordinator {
         if (slot.phase === "waking") await this.#advance(slot, { phase: "parked" });
         throw new BrowserPoolNotStarted(result.reason ?? "resume-refused", false);
       }
+      resumeAnsweredAt = Date.now();
       resumed = result;
       status = result.status;
     }
@@ -2256,7 +2289,7 @@ export class BrowserPoolCoordinator {
       throw new Error("The runtime has not adopted yet.");
     if (!sameFence(state.fence, fenceOf(slot))) return this.#discard(slot, "guest-changed");
     if (sameIntent(state, slot) && (state.phase === "adopting" || state.adoption?.outcome))
-      return this.#readopt(slot, state);
+      return this.#readopt(slot, state, resumeAnsweredAt);
     throw new Error(`The runtime did not adopt: ${state.phase}.`);
   }
 
@@ -2272,7 +2305,11 @@ export class BrowserPoolCoordinator {
   }
 
   /** Adoption per session: the runtime decides who was reattached; the rest are lost. */
-  async #readopt(slot: BrowserPoolSlot, state: BrowserPoolRuntimeState): Promise<void> {
+  async #readopt(
+    slot: BrowserPoolSlot,
+    state: BrowserPoolRuntimeState,
+    resumeAnsweredAt?: number,
+  ): Promise<void> {
     const retained = retainedOf(slot) ?? {
       documents: state.retired?.documents ?? [],
       sessions: state.adoption?.sessions ?? [],
@@ -2384,6 +2421,15 @@ export class BrowserPoolCoordinator {
       { losses, closing: { kind: "runtime-ended" } },
       { adopted: outcome.adopted, lost: outcome.lost },
     );
+    if (this.#slot?.phase === "running") {
+      this.#postWakeStatusCheck = {
+        instanceId: this.#slot.instanceId,
+        epoch: this.#slot.epoch,
+        at:
+          (resumeAnsweredAt ?? Date.now()) +
+          (this.#options.postWakeStatusCheckMs ?? postWakeStatusCheckMs),
+      };
+    }
     this.#markWakeStep("finishRunning");
   }
 
@@ -2921,6 +2967,8 @@ const unansweredRetryMaxMs = 30_000;
 const unreachableAfterMs = 120_000;
 /** A running guest's status is read at least this often (its egress proxy can go down). */
 const statusEveryMs = 60_000;
+/** One early status read after a completed wake to catch a down proxy promptly. */
+const postWakeStatusCheckMs = 6_000;
 /** The bound of a refusal's announcement to clients, outside any step. */
 const announceMs = 5_000;
 const restartKeysKept = 64;

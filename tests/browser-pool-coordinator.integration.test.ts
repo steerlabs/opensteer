@@ -3248,3 +3248,153 @@ it("clears a prior refusal and reports waking as soon as a retry resume applies,
     await f.close();
   }
 });
+
+it("checks status once shortly after a completed wake to catch a down proxy without waiting for statusEveryMs", async () => {
+  const f = await poolFixture("post-wake-proxy-check");
+  const agent = poolControllerKind() === "agent";
+  try {
+    let postWakeStatusReads = 0;
+    let wakeApplied = false;
+    const physical: BrowserPoolPhysicalController = {
+      status: async (slot, term) => {
+        const status = await f.controller.status(slot, term);
+        if (wakeApplied && status.phase === "running" && status.epoch === 2) {
+          postWakeStatusReads++;
+        }
+        return status;
+      },
+      result: (slot, term, id) => f.controller.result(slot, term, id),
+      apply: async (call) => {
+        if (call.kind === "resume" && call.expect.epoch === 2) {
+          f.controller.setProxyUnhealthy?.(false);
+          if (!agent) f.controller.observe({ proxy: "up" as never });
+        }
+        const result = await f.controller.apply(call);
+        if (call.kind === "resume" && call.expect.epoch === 1 && result.applied) {
+          wakeApplied = true;
+          if (!agent) f.controller.observe({ proxy: "down" });
+        }
+        return result;
+      },
+    };
+    const home = f.home(undefined, physical, {
+      statusEveryMs: 60_000,
+      postWakeStatusCheckMs: 80,
+    });
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+
+    f.controller.setProxyUnhealthy?.(true);
+    (await home.gate.reserve(AbortSignal.timeout(15_000))).release();
+
+    await vi.waitFor(
+      async () =>
+        expect(await f.slot()).toMatchObject({
+          phase: "running",
+          epoch: 3,
+          failedStarts: 0,
+        }),
+      { timeout: 10_000 },
+    );
+    expect(postWakeStatusReads).toBeGreaterThanOrEqual(1);
+    expect(f.controller.effects).toEqual(["start", "pause", "resume", "pause", "resume"]);
+  } finally {
+    await f.close();
+  }
+});
+
+it("runs the post-wake status check at most once, creates no demand, and does not hold or block parking", async () => {
+  const f = await poolFixture("post-wake-status-once");
+  try {
+    let track = false;
+    let statusReads = 0;
+    const idleAfterCheck: number[] = [];
+    const physical: BrowserPoolPhysicalController = {
+      status: async (slot, term) => {
+        if (track) statusReads++;
+        return f.controller.status(slot, term);
+      },
+      result: (slot, term, id) => f.controller.result(slot, term, id),
+      apply: (call) => f.controller.apply(call),
+    };
+    const home = f.home(undefined, physical, {
+      statusEveryMs: 60_000,
+      postWakeStatusCheckMs: 60,
+      aroundWait: (kind, wait, ms) => {
+        if (kind === "idle" && statusReads >= 1) idleAfterCheck.push(ms);
+        return wait();
+      },
+    });
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+
+    (await home.gate.reserve(AbortSignal.timeout(15_000))).release();
+    expect((await f.slot())?.epoch).toBe(2);
+    track = true;
+
+    await vi.waitFor(() => expect(statusReads).toBe(1), { timeout: 3_000 });
+    await vi.waitFor(() => expect(idleAfterCheck.length).toBeGreaterThanOrEqual(1), {
+      timeout: 3_000,
+    });
+    expect(idleAfterCheck[0]).toBe(60_000);
+    expect(statusReads).toBe(1);
+    expect(home.gate.demand).toBe(false);
+    expect(home.gate.held).toBe(0);
+    expect(await home.tryPark()).toBe("parked");
+  } finally {
+    await f.close();
+  }
+});
+
+it("drops a pending post-wake status check when the slot parks or moves to a new instance", async () => {
+  const f = await poolFixture("post-wake-status-dropped");
+  try {
+    let trackStatus = false;
+    let statusReads = 0;
+    let lastIdleMs: number | undefined;
+    const physical: BrowserPoolPhysicalController = {
+      status: async (slot, term) => {
+        if (trackStatus) statusReads++;
+        return f.controller.status(slot, term);
+      },
+      result: (slot, term, id) => f.controller.result(slot, term, id),
+      apply: (call) => f.controller.apply(call),
+    };
+    const home = f.home(undefined, physical, {
+      statusEveryMs: 60_000,
+      postWakeStatusCheckMs: 400,
+      aroundWait: (kind, wait, ms) => {
+        if (kind === "idle") lastIdleMs = ms;
+        return wait();
+      },
+    });
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+
+    // Park before the early check fires: it must be dropped and never wake or read status while parked.
+    (await home.gate.reserve(AbortSignal.timeout(15_000))).release();
+    lastIdleMs = undefined;
+    expect(await home.tryPark()).toBe("parked");
+    trackStatus = true;
+    await vi.waitFor(() => expect(lastIdleMs).toBe(60_000), { timeout: 3_000 });
+    expect(statusReads).toBe(0);
+    expect(home.gate.phase).toBe("parked");
+
+    // Wake again, then replace the instance via restart before the early check fires: dropped.
+    trackStatus = false;
+    (await home.gate.reserve(AbortSignal.timeout(15_000))).release();
+    const wokeInstance = (await f.slot())?.instanceId;
+    lastIdleMs = undefined;
+    await home.restart();
+    expect((await f.slot())?.instanceId).not.toBe(wokeInstance);
+    statusReads = 0;
+    trackStatus = true;
+    await vi.waitFor(() => expect(lastIdleMs).toBe(60_000), { timeout: 3_000 });
+    expect(statusReads).toBe(0);
+  } finally {
+    await f.close();
+  }
+});

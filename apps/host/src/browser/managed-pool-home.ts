@@ -382,6 +382,7 @@ export function managedBrowserPoolCoordinator(input: {
   readonly beginWakeTiming?: () => () => readonly number[];
   readonly idleParkMs?: number | null;
   readonly statusEveryMs?: number;
+  readonly postWakeStatusCheckMs?: number;
   readonly retryMs?: number;
   readonly unansweredRetryMaxMs?: number;
   readonly unreachableAfterMs?: number;
@@ -409,6 +410,9 @@ export function managedBrowserPoolCoordinator(input: {
     ...(input.beginWakeTiming ? { beginWakeTiming: input.beginWakeTiming } : {}),
     ...(input.idleParkMs !== undefined ? { idleParkMs: input.idleParkMs } : {}),
     ...(input.statusEveryMs !== undefined ? { statusEveryMs: input.statusEveryMs } : {}),
+    ...(input.postWakeStatusCheckMs !== undefined
+      ? { postWakeStatusCheckMs: input.postWakeStatusCheckMs }
+      : {}),
     ...(input.retryMs !== undefined ? { retryMs: input.retryMs } : {}),
     ...(input.unansweredRetryMaxMs !== undefined
       ? { unansweredRetryMaxMs: input.unansweredRetryMaxMs }
@@ -463,6 +467,7 @@ export async function startManagedBrowserPool(input: {
   readonly isAgentsStopped?: (runnerId: RunnerId) => boolean;
   readonly idleParkMs?: number | null;
   readonly statusEveryMs?: number;
+  readonly postWakeStatusCheckMs?: number;
   readonly firstDelayMs?: number;
   readonly maxDelayMs?: number;
   readonly account:
@@ -729,6 +734,9 @@ export async function startManagedBrowserPool(input: {
       idleParkMs:
         input.idleParkMs === undefined ? defaultManagedBrowserPoolIdleMs : input.idleParkMs,
       ...(input.statusEveryMs !== undefined ? { statusEveryMs: input.statusEveryMs } : {}),
+      ...(input.postWakeStatusCheckMs !== undefined
+        ? { postWakeStatusCheckMs: input.postWakeStatusCheckMs }
+        : {}),
       ...(relay
         ? {
             relay: {
