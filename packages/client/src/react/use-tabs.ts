@@ -7,7 +7,7 @@ import {
   threadAgentPlace,
   type BrowserTabDestination,
   type ThreadAgentPlace,
-} from "../host/browser-agent-follow.js";
+} from "../host/agent-place-links.js";
 import { hostSnapshotStore } from "../host/host-snapshot-store.js";
 import type { PlaceListSource } from "../host/places.js";
 import type { TabStrip } from "../host/tab-strip.js";

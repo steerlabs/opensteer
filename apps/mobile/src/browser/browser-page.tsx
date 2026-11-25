@@ -22,7 +22,6 @@ import {
   type BrowserCommand,
   type BrowserSessionSummary,
   type HostClient,
-  type TaskMark,
 } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, type BrowserPageContentPart } from "@opensteer/core";
 import { browserViewportFits } from "@opensteer/protocol";
@@ -116,14 +115,6 @@ export interface PagePairChrome {
   readonly menu: readonly NativeMenuSection[];
 }
 
-/**
- * The Thread's agent, while the page keeps up with it from tab to tab. Where
- * the agent is otherwise is the Thread's live card.
- */
-export interface PageFollowing {
-  /** The Thread's task mark; null for one that wears the agent orb. */
-  readonly mark: TaskMark | null;
-}
 /** Room left beside or under a page that is worth offering Fit for, as a share of its place. */
 const fitBand = 0.15;
 /** A gutter this wide holds Fit's words; a narrower one holds only its glyph. */
@@ -171,10 +162,7 @@ export function BrowserPage(props: {
   readonly arrival?: -1 | 0 | 1;
   /** The device the page runs on, where that is not this one. */
   readonly device?: PageDevice | null;
-  readonly following?: PageFollowing | null;
   readonly pair?: PagePairChrome | null;
-  /** The person moved this page themselves: back, forward, an address, a new tab. */
-  readonly onSteer?: () => void;
 }): ReactNode {
   const { hostClient, onSwitchTab, onTyping, onViewing, session, tabId } = props;
   const { interactive } = props.presence;
@@ -525,12 +513,6 @@ export function BrowserPage(props: {
       setInputEpoch((value) => value + 1);
       editing.dismissMenu();
     }
-    if (
-      command.type === "navigation.back" ||
-      command.type === "navigation.forward" ||
-      command.type === "navigation.go"
-    )
-      props.onSteer?.();
     const targeted = { ...command, surfaceId };
     const taken = submitBrowserCommand(hostClient, session.id, targeted);
     if (!taken) setRefusals((count) => count + 1);
@@ -582,7 +564,6 @@ export function BrowserPage(props: {
       .catch((error: unknown) => setProblem(failureWords(error, tabActionSpecs.close)));
   };
   const openTab = () => {
-    props.onSteer?.();
     props.onOpenTab("about:blank");
   };
   // Fit takes away a size an agent chose for its own work, so it asks first.
@@ -888,7 +869,6 @@ export function BrowserPage(props: {
       }
       device={props.device ?? null}
       favicon={liveTab?.favicon ?? null}
-      following={props.following ?? null}
       forward={
         regular
           ? {
