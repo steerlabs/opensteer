@@ -1,4 +1,5 @@
 import { pluginEngineEntry, pluginEngineUnavailableReason } from "./engine-resources.js";
+import { firstToGoUnderMemoryPressure, memoryKills } from "./memory-pressure.js";
 import { PluginSkillCache } from "./plugin-skill-cache.js";
 import { fork, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
@@ -395,6 +396,9 @@ export class PluginService {
       stdio: ["ignore", "ignore", "ignore", "ipc"],
       serialization: "json",
     });
+    // A script that outgrows the Host's memory limit ends the engine, not the Host.
+    firstToGoUnderMemoryPressure(child.pid);
+    const killsBefore = memoryKills();
     this.#child = child;
     const launchId = randomUUID();
     this.#engine =
@@ -486,8 +490,17 @@ export class PluginService {
     });
     child.once("error", (error) => rejectReady(error));
     child.once("exit", (_code, signal) => {
+      // Any SIGKILL ends the automatic relaunch (below). It is said as a memory kill only on the
+      // kernel's own record of one, made while this engine ran; either way what earlier calls
+      // did stays unknown.
       const killed = signal === "SIGKILL";
-      const killedReason = "The plugin engine was killed before it replied.";
+      const killsAfter =
+        killed && !this.#closed && this.#idleStop?.child !== child ? memoryKills() : undefined;
+      const outOfMemory =
+        killsBefore !== undefined && killsAfter !== undefined && killsAfter > killsBefore;
+      const killedReason = outOfMemory
+        ? "The plugin engine ran out of memory and was killed before it replied."
+        : "The plugin engine was killed before it replied.";
       const error = new PluginServiceError(
         "interrupted",
         killed
@@ -532,7 +545,13 @@ export class PluginService {
       // A SIGKILL may be an OOM kill. With no proof of headroom, another fork
       // can put the whole Home back under the same pressure.
       if (killed) {
-        this.#set({ status: "unavailable", generation, reason: "The plugin engine was killed." });
+        this.#set({
+          status: "unavailable",
+          generation,
+          reason: outOfMemory
+            ? "The plugin engine ran out of memory and was killed."
+            : "The plugin engine was killed.",
+        });
         return;
       }
       this.#failures = healthy ? 1 : this.#failures + 1;
