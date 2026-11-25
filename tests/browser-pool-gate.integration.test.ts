@@ -5059,17 +5059,22 @@ it("V8 & V9 (Sol Round 6): tab_open hides ungranted profiles with identical read
     };
     const caller = {
       kind: "run" as const,
+      key: `run:${j.task.runId}`,
       userId: j.task.userId,
+      accessMode: "full-access" as const,
+      thread: { id: j.task.threadId } as never,
       claims,
-      lineage: {
-        connectionId: connection.id,
+      agentConnection: {
+        agentConnectionId: connection.id,
+        accessMode: "full-access" as const,
         grant: {
           scope: "selected" as const,
           tasks: true as const,
           resources: [{ kind: "browser-profile" as const, profileId: j.profile!.id }],
         },
-        accessMode: "full-access" as const,
         grantRevision,
+        consentVersion: 1,
+        sourceKind: "mcp" as const,
       },
     };
 
