@@ -645,6 +645,11 @@ export const CommandRequestPartSchema = z.object({
   gives: z.string().max(1_000).nullable(),
   /** The command as proposed, without its key and without anything only the person types. */
   command: RequestJsonObjectSchema,
+  /**
+   * Arguments the Home added to `command` so the card shows, and the approval acts on, exactly
+   * what it will (a tab group's members): never read back to the agent as what it sent.
+   */
+  homeAdded: z.array(z.string().min(1).max(64)).max(8).optional(),
   /** Input paths the person types on the card before approving. */
   secretPaths: z.array(z.string().min(1).max(200)).max(8),
   governs: z.object({
@@ -667,6 +672,8 @@ export const CommandRequestPartSchema = z.object({
     key: z.string().min(1).max(300),
     /** The connection whose lineage it works in, re-admitted when the person approves. */
     connectionId: z.string().min(1).max(300).optional(),
+    /** That connection as the person named it, for a Run or automation working under it. */
+    connectionName: z.string().min(1).max(200).optional(),
     /** That connection's grant revision when it asked: a narrowing below it closes the ask. */
     grantRevision: z.number().int().nonnegative().optional(),
   }),
@@ -702,16 +709,19 @@ export type CommandRequestPart = z.infer<typeof CommandRequestPartSchema>;
  * looked up. `person-says-done` is the person's statement; `done-by-person` is the Home's own
  * record that the person's command did what was asked.
  */
-export type CommandAgentStatus =
-  | "pending"
-  | "approved-running"
-  | "approved-done"
-  | "approved-failed"
-  | "approved-unknown"
-  | "declined"
-  | "person-says-done"
-  | "done-by-person"
-  | "closed";
+/** Where a command Request stands, value-free: the one status every agent surface reads. */
+export const CommandAgentStatusSchema = z.enum([
+  "pending",
+  "approved-running",
+  "approved-done",
+  "approved-failed",
+  "approved-unknown",
+  "declined",
+  "person-says-done",
+  "done-by-person",
+  "closed",
+]);
+export type CommandAgentStatus = z.infer<typeof CommandAgentStatusSchema>;
 
 export function commandAgentStatus(request: {
   readonly status: string;

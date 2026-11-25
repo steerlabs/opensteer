@@ -13,6 +13,7 @@ import {
   admitCommand,
   beginAgentSession,
   CommandRequestStore,
+  endAgentSessions,
   TriggerStore,
   commandSubject,
   needsYouPage,
@@ -24,7 +25,7 @@ import {
 } from "@opensteer/database/test-support/store";
 import { hostApi, type HostApiCommand, type HostApiServerContext } from "@opensteer/protocol";
 import { commandTable, type CommandType } from "@opensteer/protocol/command-table";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import { commandContinuation } from "../agents/continuation-service.js";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 import { personActor, type PersonActor } from "./actor.js";
@@ -59,6 +60,8 @@ describeStore("command Requests at the Home", (it) => {
       store: commandStore,
       database,
       requests: store.requests,
+      // A lost receipt is read again from its attempt this soon after, with no read asking.
+      reconcileDelayMs: 100,
     });
     // Every handler the person's: what ran, and as whom.
     const ran: { actor: PersonActor; command: HostApiCommand }[] = [];
@@ -2048,6 +2051,352 @@ describeStore("command Requests at the Home", (it) => {
     expect(await dispatchCommand(run, rename("Work, three", thing), door(run))).toMatchObject({
       status: "declined",
     });
+  });
+
+  it("re-admits an ask from a Run under a connection as that connection now: after the Run ends, a narrowed grant closes it, and an approval runs nothing (M1)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, store, service, ran, rename, approve } = await setup(storeFixture);
+    const connections = new AgentConnectionStore(database);
+    const everything = async (label: string) => {
+      const connection = await connections.create({
+        userId: f.userId,
+        label,
+        clientName: label,
+        accessMode: "full-access",
+        resource: "http://localhost/mcp",
+        expiresAt: new Date(Date.now() + 60 * 60_000),
+        grant: { scope: "everything" },
+      });
+      await connections.activate(connection.id, `hash-${randomUUID()}`);
+      return connection;
+    };
+    const narrow = (connectionId: string) =>
+      connections.update(f.userId, {
+        connectionId,
+        expectedRevision: 1,
+        grant: { scope: "selected", tasks: true, resources: [] },
+      });
+    const proposer = (kind: "run" | "program", connectionId: string) => ({
+      kind,
+      name: "Claude Code",
+      taskTitle: null,
+      key: `connection:${connectionId}` as ProposerLineageKey,
+      connectionId,
+      grantRevision: 1,
+      connectionName: "Agent",
+    });
+    // A connection with `everything` works in the person's own task: the task's origin stays the
+    // person's, the Run is the connection's.
+    const agent = await everything("Agent");
+    await database
+      .updateTable("runs")
+      .set({ connectionId: agent.id })
+      .where("id", "=", f.run.id)
+      .execute();
+    expect(
+      (
+        await database
+          .selectFrom("threads")
+          .select("originConnectionId")
+          .where("id", "=", f.threadId)
+          .executeTakeFirstOrThrow()
+      ).originConnectionId,
+    ).toBeNull();
+    const fromRun = (await service.propose({
+      ownerUserId: f.userId,
+      command: rename("Work", "hin_00000000-0000-4000-8000-000000003001"),
+      ask: { status: "ask", reason: "approval" },
+      face: undefined,
+      proposer: proposer("run", agent.id),
+      origin: { runId: f.run.id },
+      originatingThreadId: f.threadId,
+      callKey: randomUUID(),
+    })) as { status: string; requestId: string };
+    expect(fromRun.status).toBe("pending");
+    await database
+      .updateTable("runs")
+      .set({ status: "completed", completedAt: new Date() })
+      .where("id", "=", f.run.id)
+      .execute();
+    await narrow(agent.id);
+    expect(await store.requests.get(fromRun.requestId as never)).toMatchObject({
+      status: "cancelled",
+      cancellationReason: "authority-revoked",
+    });
+    // Nothing is said to the connection's Run about it.
+    expect(
+      await database
+        .selectFrom("requestContinuations")
+        .select("requestId")
+        .where("requestId", "=", fromRun.requestId as never)
+        .execute(),
+    ).toEqual([]);
+    const asked = (await store.requests.get(fromRun.requestId as never))!;
+    await expect(approve(fromRun.requestId, asked.command!.command)).rejects.toBeInstanceOf(
+      OpensteerError,
+    );
+    expect(ran).toEqual([]);
+    // The same for the connection's automation anchored on a person-origin task.
+    const other = await everything("Automation agent");
+    const triggers = new TriggerStore(database);
+    const automation = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: f.threadId,
+      createdBy: f.userId,
+      idempotencyKey: randomUUID(),
+      name: "Morning plan",
+      source: {
+        kind: "schedule",
+        schedule: { kind: "cron", expression: "0 0 * * *", timezone: "UTC" },
+      },
+      script: { interpreter: null, text: "console.log('ok');" },
+    });
+    await database
+      .updateTable("triggers")
+      .set({ originConnectionId: other.id })
+      .where("id", "=", automation.trigger.id)
+      .execute();
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: f.userId,
+      triggerId: automation.trigger.id,
+      idempotencyKey: randomUUID(),
+    });
+    await database
+      .updateTable("triggerOccurrences")
+      .set({ status: "running", startedAt: new Date() })
+      .where("id", "=", occurrence.id)
+      .execute();
+    const fromAutomation = (await service.propose({
+      ownerUserId: f.userId,
+      command: rename("Work", "hin_00000000-0000-4000-8000-000000003002"),
+      ask: { status: "ask", reason: "approval" },
+      face: undefined,
+      proposer: proposer("program", other.id),
+      origin: { occurrenceId: occurrence.id },
+      originatingThreadId: f.threadId,
+      callKey: randomUUID(),
+    })) as { status: string; requestId: string };
+    expect(fromAutomation.status).toBe("pending");
+    await database
+      .updateTable("triggerOccurrences")
+      .set({ status: "succeeded", completedAt: new Date() })
+      .where("id", "=", occurrence.id)
+      .execute();
+    await narrow(other.id);
+    expect(await store.requests.get(fromAutomation.requestId as never)).toMatchObject({
+      status: "cancelled",
+      cancellationReason: "authority-revoked",
+    });
+  });
+
+  it("keeps a connected agent's ask after its direct session ends on its own, and ends it on the person's Stop of the session", async ({
+    storeFixture,
+  }) => {
+    const { f, database, store, service, ran, rename, approve } = await setup(storeFixture);
+    const connections = new AgentConnectionStore(database);
+    const connection = await connections.create({
+      userId: f.userId,
+      label: "Agent",
+      clientName: "Agent",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+      grant: { scope: "everything" },
+    });
+    await connections.activate(connection.id, `hash-${randomUUID()}`);
+    const askIn = async (id: string) => {
+      const { session } = await beginAgentSession(database, {
+        userId: f.userId,
+        agentConnectionId: connection.id,
+      });
+      const asked = (await service.propose({
+        ownerUserId: f.userId,
+        command: rename("Work", id),
+        ask: { status: "ask", reason: "approval" },
+        face: undefined,
+        proposer: {
+          kind: "connection",
+          name: "Agent",
+          taskTitle: null,
+          key: `connection:${connection.id}` as ProposerLineageKey,
+          connectionId: connection.id,
+          grantRevision: 1,
+        },
+        origin: { agentSessionId: session.id },
+        originatingThreadId: session.threadId,
+        callKey: randomUUID(),
+      })) as { status: string; requestId: string };
+      expect(asked.status).toBe("pending");
+      return { session, requestId: asked.requestId };
+    };
+    // Its session ends on its own: the connection still stands, and the ask waits.
+    const quiet = await askIn("hin_00000000-0000-4000-8000-000000003101");
+    await endAgentSessions(database, {
+      userId: f.userId,
+      sessionIds: [quiet.session.id],
+      reason: "expired",
+    });
+    expect((await store.requests.get(quiet.requestId as never))!.status).toBe("pending");
+    const asked = (await store.requests.get(quiet.requestId as never))!;
+    expect(await approve(quiet.requestId, asked.command!.command)).toMatchObject({
+      status: "done",
+    });
+    expect(ran).toHaveLength(1);
+    // The person's Stop of the session ends it.
+    const stopped = await askIn("hin_00000000-0000-4000-8000-000000003102");
+    await endAgentSessions(database, {
+      userId: f.userId,
+      sessionIds: [stopped.session.id],
+      reason: "stopped",
+    });
+    expect((await store.requests.get(stopped.requestId as never))!.status).toBe("cancelled");
+  });
+
+  it("closes the asks of the Runs an automation's firings started when the automation is paused", async ({
+    storeFixture,
+  }) => {
+    const { f, database, store, run, door, rename } = await setup(storeFixture);
+    const triggers = new TriggerStore(database);
+    const automation = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: f.threadId,
+      createdBy: f.userId,
+      idempotencyKey: randomUUID(),
+      name: "Morning plan",
+      source: {
+        kind: "schedule",
+        schedule: { kind: "cron", expression: "0 0 * * *", timezone: "UTC" },
+      },
+      script: { interpreter: null, text: "console.log('ok');" },
+    });
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: f.userId,
+      triggerId: automation.trigger.id,
+      idempotencyKey: randomUUID(),
+    });
+    // The firing started this Run: they share its causal chain.
+    const { causalChainId } = await database
+      .selectFrom("runs")
+      .select("causalChainId")
+      .where("id", "=", f.run.id)
+      .executeTakeFirstOrThrow();
+    await database
+      .updateTable("triggerOccurrences")
+      .set({ causalChainId })
+      .where("id", "=", occurrence.id)
+      .execute();
+    const proposed = (await dispatchCommand(run, rename("Work"), door(run))) as {
+      requestId: string;
+    };
+    expect((await store.requests.get(proposed.requestId as never))!.status).toBe("pending");
+    await triggers.setStatus({
+      actorThreadId: null,
+      ownerId: f.userId,
+      status: "paused",
+      triggerId: automation.trigger.id,
+    });
+    expect(await store.requests.get(proposed.requestId as never)).toMatchObject({
+      status: "cancelled",
+      cancellationReason: "authority-revoked",
+    });
+  });
+
+  it("ends an ask when the person marks its task Done", async ({ storeFixture }) => {
+    const { f, store, run, door, rename } = await setup(storeFixture);
+    const proposed = (await dispatchCommand(run, rename("Work"), door(run))) as {
+      requestId: string;
+    };
+    await store.setThreadDone({
+      done: true,
+      threadId: f.threadId,
+      requestedBy: f.userId,
+      idempotencyKey: randomUUID(),
+    });
+    expect(await store.requests.get(proposed.requestId as never)).toMatchObject({
+      status: "cancelled",
+    });
+  });
+
+  it("answers the person's own command with what it did when settling the asks it answers fails, leaving them pending (M4)", async ({
+    storeFixture,
+  }) => {
+    const { f, store, service, ran, context, registry } = await setup(storeFixture);
+    const submit = (value?: string) =>
+      ({
+        type: "harness.authentication.submit",
+        idempotencyKey: randomUUID(),
+        environmentId: f.environmentId,
+        harnessInstanceId: "hin_00000000-0000-4000-8000-000000003201",
+        ...(value ? { value } : {}),
+      }) as unknown as HostApiCommand;
+    const asked = (await service.propose({
+      ownerUserId: f.userId,
+      command: submit("typed-by-the-agent"),
+      ask: { status: "ask", reason: "secret" },
+      face: 0,
+      proposer: {
+        kind: "run",
+        name: "Claude Code",
+        taskTitle: null,
+        key: `task:${f.threadId}` as ProposerLineageKey,
+      },
+      origin: { runId: f.run.id },
+      originatingThreadId: f.threadId,
+      callKey: randomUUID(),
+    })) as { requestId: string };
+    const output = await dispatchCommand(
+      personActor(context),
+      submit("the-persons-value"),
+      {
+        registry,
+        afterPerson: async () => {
+          throw new Error("fixture: the receipt could not be written");
+        },
+      },
+      context,
+    );
+    expect(output).toMatchObject({ type: "harness.authentication.submit" });
+    expect(ran).toHaveLength(1);
+    expect((await store.requests.get(asked.requestId as never))!.status).toBe("pending");
+  });
+
+  it("answers an approval whose receipt cannot be written with what is known, runs nothing twice, and settles the record later with no read (M4)", async ({
+    storeFixture,
+  }) => {
+    const { store, ran, run, door, rename, approve, commandStore } = await setup(storeFixture);
+    const proposed = (await dispatchCommand(run, rename("Work"), door(run))) as {
+      requestId: string;
+    };
+    const asked = (await store.requests.get(proposed.requestId as never))!;
+    const settle = commandStore.settle.bind(commandStore);
+    let lose = 2;
+    commandStore.settle = async (...args) => {
+      if (lose > 0) {
+        lose -= 1;
+        throw new Error("fixture: lost receipt");
+      }
+      return settle(...args);
+    };
+    const key = randomUUID();
+    expect(await approve(proposed.requestId, asked.command!.command, key)).toEqual({
+      status: "done",
+      result: expect.anything(),
+    });
+    expect(ran).toHaveLength(1);
+    // With no read asking, the record is read again from its attempt.
+    await vi.waitFor(
+      async () =>
+        expect(
+          (await store.requests.get(proposed.requestId as never))!.command!.outcome,
+        ).not.toEqual({ status: "running" }),
+      { timeout: 5_000 },
+    );
+    // A second press runs nothing again.
+    await approve(proposed.requestId, asked.command!.command, key);
+    expect(ran).toHaveLength(1);
   });
 
   it.for([

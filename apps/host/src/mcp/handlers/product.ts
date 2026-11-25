@@ -1,5 +1,5 @@
 import { sql } from "kysely";
-import { agentGrantAccess, RunnerIdSchema, utf8Prefix } from "@opensteer/core";
+import { agentGrantAccess, commandAgentStatus, RunnerIdSchema, utf8Prefix } from "@opensteer/core";
 import { requestResult } from "../request-result.js";
 import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
 import {
@@ -2353,24 +2353,19 @@ function agentRequest(request: Request, detail: "full" | "list" = "full") {
   // A command an agent proposed reads as what was sent and where it stands: never the Home's
   // sentence, card or anything it looked up (rule 5).
   if (request.command) {
+    // The one value-free status every agent surface reads, and nothing of who answered or on
+    // which of the person's devices.
     const title = `Proposal: ${request.command.type}`;
     return {
       id: request.id,
       link: formatReferenceLink(request.id, title),
       kind: request.kind,
-      status: request.status,
+      status: request.status === "withdrawn" ? request.status : commandAgentStatus(request),
       title,
       reason: request.command.agentReason,
       originatingThreadId: request.originatingThreadId,
       createdAt: request.createdAt,
       resolvedAt: request.resolvedAt,
-      settlementProvenance: request.settlementProvenance
-        ? toolRequestAnswerer(
-            "kind" in request.settlementProvenance
-              ? request.settlementProvenance
-              : { deviceLabel: request.settlementProvenance.deviceLabel },
-          )
-        : request.settlementProvenance,
     };
   }
   const rawQuestion = personQuestionRecord(request);

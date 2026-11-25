@@ -157,7 +157,7 @@ export function CommandRequestCard(props: {
     >
       <AppText role="secondaryMedium">{view.sentence}</AppText>
       <AppText role="caption" tone="soft">
-        {view.askedBy}
+        {view.asked ? `${view.askedBy} · ${view.asked}` : view.askedBy}
       </AppText>
       <ScrollView
         accessibilityLabel={view.rowsHeading}
@@ -240,6 +240,11 @@ export function CommandRequestCard(props: {
       <AppText role="caption" tone="muted">
         {view.line}
       </AppText>
+      {view.next ? (
+        <AppText role="caption" tone="soft">
+          {view.next}
+        </AppText>
+      ) : null}
       {screen && opens ? (
         <AnswerPill
           label={`Open ${screen.label}`}

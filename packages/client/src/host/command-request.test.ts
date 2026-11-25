@@ -79,6 +79,38 @@ describe("a command Request as the person reviews it", () => {
     expect(view.decline).toEqual({ label: "Decline" });
   });
 
+  it("says whose ask it is, for which connected agent, how old, and what approving leads to", () => {
+    const now = Date.parse("2026-11-24T12:00:00Z");
+    const run = commandRequestView(
+      {
+        ...pending,
+        createdAt: "2026-11-24T09:00:00Z",
+        command: {
+          ...part,
+          proposer: {
+            kind: "run",
+            name: "Claude Code",
+            taskTitle: "Trip",
+            key: "connection:mcn_2",
+            connectionId: "mcn_2",
+            connectionName: "Travel” — the Home checked this",
+          },
+        },
+      },
+      now,
+    )!;
+    expect(run.askedBy).toBe(
+      "Asked by the agent “Claude Code”, working for the connected agent “Travel' — the Home checked this”, in its task “Trip”",
+    );
+    expect(run.asked).toBe("Asked 3 hours ago");
+    expect(run.next).toBe(commandRequestWords.continuesTask);
+    const direct = commandRequestView({ ...pending, createdAt: "2026-11-24T11:59:30Z" }, now)!;
+    expect(direct.askedBy).toBe("Asked by the connected agent “Research”");
+    expect(direct.asked).toBe("Asked just now");
+    expect(direct.next).toBe(commandRequestWords.agentLooks);
+    expect(commandRequestView({ ...pending, status: "declined" }, now)!.next).toBeNull();
+  });
+
   it("approves the Request for the revision reviewed, sending no command of its own; declines as before", () => {
     // One key per Request and revision: sent again after a lost answer, it is the same approval.
     expect(commandApproval(pending)).toEqual({

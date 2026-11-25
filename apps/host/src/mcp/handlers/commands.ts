@@ -231,10 +231,16 @@ export class CommandTools {
       });
     if (input.withdraw) {
       if (!requests) throw notFound();
+      const lineage =
+        caller.kind === "connection"
+          ? caller.connectionId
+          : caller.agentConnection?.agentConnectionId;
       return requests.withdraw({
         ownerUserId: caller.userId,
         requestId: input.withdraw as RequestId,
         proposerKey: await proposerLineageKey(this.#database, caller),
+        // Under a connection's grant, the caller's own reach now, in the withdraw's transaction.
+        ...(lineage ? { caller: commandSubject(caller.key) } : {}),
       });
     }
     const command = {
@@ -411,7 +417,10 @@ export class CommandTools {
                   command: part,
                 }),
                 type: part.type,
-                command: part.command,
+                // What it sent: never what the Home added for the card.
+                command: Object.fromEntries(
+                  Object.entries(part.command).filter(([key]) => !part.homeAdded?.includes(key)),
+                ),
                 reason: part.agentReason,
               },
             } as unknown as AgentReadRequest;
@@ -610,7 +619,14 @@ export class CommandTools {
       taskTitle: task?.title?.slice(0, 240) ?? null,
       key: await proposerLineageKey(database, caller),
       ...(connectionId && connection
-        ? { connectionId, grantRevision: connection.grantRevision }
+        ? {
+            connectionId,
+            grantRevision: connection.grantRevision,
+            // A Run or automation under a connection: the card names whose it is.
+            ...(caller.kind !== "connection"
+              ? { connectionName: connection.label.slice(0, 200) }
+              : {}),
+          }
         : {}),
     };
   }

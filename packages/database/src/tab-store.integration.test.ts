@@ -194,24 +194,25 @@ integration("workspace tabs", () => {
     for (const id of closed.tabIds) expect(await tabs.get(ownerId, id)).toBeNull();
   });
 
-  it("closes only the members the person was shown, and none if one of them left the group (D4)", async () => {
+  it("closes the group only while it holds exactly the members the person was shown: a tab that joined since refuses it (D4)", async () => {
     const { tabs, ownerId, members, groupId, write } = await groupOf(2);
     const shown = members.map((tab) => tab.id);
-    // A third tab joins after the person read the card: it is left open, in its group.
+    // A third tab joins after the person read the card: the group changed, and nothing closes.
     const late = write("app", { appId: `app_${randomUUID()}` });
     await tabs.open(late, "late");
     await tabs.organize(ownerId, { tabIds: [late.id], group: { groupId } }, "join");
-    const closed = await tabs.closeGroup(
-      ownerId,
-      groupId,
-      "close-shown",
-      undefined,
-      undefined,
-      shown,
-    );
-    expect([...closed.tabIds].sort()).toEqual([...shown].sort());
-    expect(await tabs.get(ownerId, late.id)).not.toBeNull();
-    expect(groupIn(closed.layout, groupId)).toMatchObject({ group: { tabIds: [late.id] } });
+    await expect(
+      tabs.closeGroup(ownerId, groupId, "close-shown", undefined, undefined, shown),
+    ).rejects.toMatchObject({ code: "conflict" });
+    for (const id of [...shown, late.id])
+      expect(await tabs.get(ownerId, id)).toMatchObject({ closedAt: null });
+    // As shown, it closes whole.
+    const closed = await tabs.closeGroup(ownerId, groupId, "close-all", undefined, undefined, [
+      ...shown,
+      late.id,
+    ]);
+    expect([...closed.tabIds].sort()).toEqual([...shown, late.id].sort());
+    expect(groupIn(closed.layout, groupId)).toBeUndefined();
   });
 
   it("refuses a close of shown members when the group no longer holds them all", async () => {

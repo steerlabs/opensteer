@@ -193,8 +193,16 @@ export async function dispatchCommand(
       : handler.run(actor, command as never, { context, authority: null }));
     // Only after the handler, and only for a type whose row declares values only the person
     // types: the person did what proposals of the same command asked (D3). Nothing before it.
+    // It is a receipt of what already happened: if it cannot be written, the person's command
+    // still answers what it did (so they never do it twice), and the asks stay pending, to be
+    // answered still (rule 4).
     if (door.afterPerson && (commandRow(command.type) as CommandRow).secretFields?.length)
-      await door.afterPerson(actor, command);
+      await door.afterPerson(actor, command).catch((error: unknown) => {
+        console.warn("The person's command ran; settling the asks it answers failed", {
+          type: command.type,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     return output;
   }
   if (!("admit" in door))

@@ -147,7 +147,9 @@ export function CommandRequestPanel({
       disabled={disabled}
     >
       <p className="action-panel__title">{shown.sentence}</p>
-      <p className="operation-request__summary">{shown.askedBy}</p>
+      <p className="operation-request__summary">
+        {shown.asked ? `${shown.askedBy} · ${shown.asked}` : shown.askedBy}
+      </p>
       <div
         className="command-request__scroll"
         onScroll={check}
@@ -214,6 +216,7 @@ export function CommandRequestPanel({
       >
         {shown.line}
       </p>
+      {shown.next ? <p className="command-request__next">{shown.next}</p> : null}
       {shown.decline ? (
         <div className="operation-request__answers">
           {screen && screenPath ? (

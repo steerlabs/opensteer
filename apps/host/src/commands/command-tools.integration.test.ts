@@ -764,6 +764,39 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
       status: "cancelled",
       cancellationReason: "authority-revoked",
     });
+    // M2: nor does withdrawing it tell the agent the ask exists: it reads exactly like an id that
+    // never existed (rule 5). And nothing is said to it of the close.
+    const neverAsked = `req_${randomUUID()}`;
+    const withdrawGone = await call(holdsAWithTasks.client, "opensteer_command", {
+      withdraw: renameRequest,
+    });
+    const withdrawNever = await call(holdsAWithTasks.client, "opensteer_command", {
+      withdraw: neverAsked,
+    });
+    expect(withdrawNever.isError).toBe(true);
+    expect(withdrawGone.isError).toBe(true);
+    expect(JSON.stringify(withdrawGone.content)).toBe(JSON.stringify(withdrawNever.content));
+    expect(
+      await host.store.database
+        .selectFrom("requestContinuations")
+        .select("requestId")
+        .where("requestId", "=", renameRequest as never)
+        .execute(),
+    ).toEqual([]);
+    // M3: an answered ask reads, on every agent surface, as one value-free status, with nothing
+    // of who answered or on which of the person's devices: here a Run's Request tools, on the
+    // ask the person approved above.
+    const readAnswered = await call(full, "opensteer_request_read", { requestId: first.id });
+    expect(readAnswered.isError, JSON.stringify(readAnswered.content)).not.toBe(true);
+    const answered = (readAnswered.structuredContent as { request: Record<string, unknown> })
+      .request;
+    expect(answered.status).toBe("approved-done");
+    expect(answered).not.toHaveProperty("settlementProvenance");
+    const fullList = JSON.stringify(
+      (await call(full, "opensteer_request_list", {})).structuredContent,
+    );
+    expect(fullList).toContain(first.id);
+    expect(fullList).not.toMatch(/deviceLabel|settlementProvenance/u);
 
     // The reads sent as POST write nothing (AD10 2d): every statement the Home issues while the
     // person makes each is a read, apart from what signing a request in does for any call, which

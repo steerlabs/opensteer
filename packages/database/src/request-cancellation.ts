@@ -18,6 +18,8 @@ interface Cancellation {
   readonly cancelHandedOffPlugins?: boolean;
   /** A Run stopped: the commands it proposed close too, as nothing it asked may run after. */
   readonly cancelProposals?: boolean;
+  /** Closed with nothing said to the proposer: a connection's lineage that lost its reach. */
+  readonly withoutContinuation?: true;
   readonly originatingThreadId?: ThreadId;
   readonly requestIds?: readonly RequestId[];
   readonly requestedBy?: UserId;
@@ -79,6 +81,7 @@ export async function preparePendingCancellation(
   const pending = pendingCancellationQuery(transaction, input);
   const refresh = !isOfflineSettlement(transaction);
   if (
+    !input.withoutContinuation &&
     ["resource-deleted", "authority-revoked", "plugin-interrupted", "plugin-expired"].includes(
       input.reason,
     )

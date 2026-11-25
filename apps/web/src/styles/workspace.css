@@ -4344,7 +4344,8 @@ html[data-tab-sorting] * {
 }
 
 .command-request__heading,
-.command-request__more {
+.command-request__more,
+.command-request__next {
   margin: 0;
   color: var(--text-soft);
   font-size: var(--text-sm);

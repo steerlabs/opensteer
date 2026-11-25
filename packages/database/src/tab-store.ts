@@ -811,8 +811,9 @@ export class TabStore {
     authorize?: TabAuthorization,
     canClose?: (row: TabRecord) => boolean,
     /**
-     * The members the person was shown: only these close, and none if one of them is no longer
-     * in the group (it changed since). A member that joined later is untouched.
+     * The members the person was shown. The group closes only if it holds exactly these now: a
+     * tab that left it or one that joined it since means it changed, and nothing closes. The card
+     * said "close this group and its tabs"; that is what happens, or nothing.
      */
     only?: readonly TabId[],
   ): Promise<TabMutation> {
@@ -828,7 +829,12 @@ export class TabStore {
         );
         if (item?.kind !== "group") failure("not_found", "Tab group not found.");
         const members = new Set(item.group.tabIds);
-        if (only && only.some((tabId) => !members.has(tabId)))
+        if (
+          only &&
+          (only.length !== members.size ||
+            new Set(only).size !== members.size ||
+            only.some((tabId) => !members.has(tabId)))
+        )
           failure("conflict", "This group changed since you read it. Look at it again.");
         const shown = only ? new Set(only) : members;
         const open = rows.filter(

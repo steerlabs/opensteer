@@ -49,8 +49,12 @@ export interface CommandRequestView {
   readonly identity: string;
   /** The change in the Home's words: the card's heading. */
   readonly sentence: string;
-  /** Who asked, as the Home names it. */
+  /** Who asked, as the Home names it, and for which connected agent when it works for one. */
   readonly askedBy: string;
+  /** How long ago it was asked, in plain words; null when the Request does not say. */
+  readonly asked: string | null;
+  /** What approving leads to for whoever asked, true whether or not its turn has ended. */
+  readonly next: string | null;
   /** What it gives to whom, in the Home's words, when it widens something. */
   readonly gives: string | null;
   /** The agent's own reason, labelled as its words and never as the Home's. */
@@ -95,6 +99,8 @@ export const commandRequestWords = {
   "done-by-person":
     "You did it yourself in Opensteer. The agent was told, and its proposal did not run.",
   closed: "This ask closed before it was answered, so nothing changed.",
+  continuesTask: "Approving it continues the task, even after the agent's turn has ended.",
+  agentLooks: "The connected agent sees your answer the next time it looks.",
   now: "Now",
   needs: "Needs",
   more: "More below. Scroll to the end to approve.",
@@ -167,11 +173,27 @@ function who(proposer: CommandRequestPart["proposer"]): string {
 }
 
 function askedBy(proposer: CommandRequestPart["proposer"]): string {
-  // As the Home names it on the card's own title.
+  // As the Home names it on the card's own title; a Run or automation working for a connected
+  // agent says which, by the name the person gave it (outside text, quoted and cleaned).
   const name = `${who(proposer)} “${outsideName(proposer.name)}”`;
+  const working =
+    proposer.kind !== "connection" && proposer.connectionId
+      ? `, working for the connected agent “${outsideName(proposer.connectionName ?? "A connected agent")}”`
+      : "";
   return proposer.taskTitle
-    ? `Asked by ${name}, in its task “${outsideName(proposer.taskTitle)}”`
-    : `Asked by ${name}`;
+    ? `Asked by ${name}${working}, in its task “${outsideName(proposer.taskTitle)}”`
+    : `Asked by ${name}${working}`;
+}
+
+/** How long ago, in plain words: a card left for hours says so. */
+export function commandAskedAgo(createdAt: string | Date, now: number = Date.now()): string {
+  const minutes = Math.max(0, Math.floor((now - new Date(createdAt).getTime()) / 60_000));
+  const ago = (count: number, unit: string) => `${count} ${unit}${count === 1 ? "" : "s"} ago`;
+  if (minutes < 1) return "Asked just now";
+  if (minutes < 60) return `Asked ${ago(minutes, "minute")}`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `Asked ${ago(hours, "hour")}`;
+  return `Asked ${ago(Math.floor(hours / 24), "day")}`;
 }
 
 function capital(text: string): string {
@@ -210,7 +232,9 @@ export function commandRequestView(
   request: Pick<Request, "id" | "status" | "command"> & {
     readonly response?: Request["response"] | undefined;
     readonly reviewedRevision?: string | undefined;
+    readonly createdAt?: string | undefined;
   },
+  now: number = Date.now(),
 ): CommandRequestView | null {
   const part = request.command;
   if (!part) return null;
@@ -235,6 +259,12 @@ export function commandRequestView(
     identity: `${request.id}:${request.reviewedRevision ?? ""}`,
     sentence: outsideProse(part.sentence ?? part.summary).replace(/\n/gu, " "),
     askedBy: askedBy(part.proposer),
+    asked: request.createdAt ? commandAskedAgo(request.createdAt, now) : null,
+    next: pending
+      ? part.proposer.kind === "connection"
+        ? commandRequestWords.agentLooks
+        : commandRequestWords.continuesTask
+      : null,
     gives: part.gives === null ? null : outsideProse(part.gives).replace(/\n/gu, " "),
     agentWords: part.agentReason
       ? {

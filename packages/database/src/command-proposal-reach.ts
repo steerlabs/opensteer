@@ -38,22 +38,27 @@ export function proposalSubject(row: {
 }
 
 /**
- * Who stands behind a proposal after it was written: what the approval, and a later change to a
- * connection's grant, admit it as. A connected agent's direct session as itself; the work of a
- * task (a Run's, or an automation firing's) as that task (`thread:<id>`), so the end of the Run
- * or the firing that sent it does not end the ask. A task binding still speaks for the task's own
- * lineage: under a connection, that connection's grant as it is now.
+ * Who stands behind a proposal after it was written, by the lineage of its proposer: what the
+ * approval, its attempt and a later change to a connection's grant admit it as.
+ * - A connection's lineage (its direct session, or a Run or automation working under it): that
+ *   connection as it stands now: its live grant, and for a task's work its Tasks switch. Never
+ *   the task's own origin, which is the person's when a connection with `everything` works in
+ *   the person's own task. The end of the session, Run or firing that sent it ends nothing.
+ * - The person's own agents (no connection in the lineage): the task it came from
+ *   (`thread:<id>`), so the end of the Run or firing that sent it does not end the ask.
  */
 export function standingSubject(row: {
   readonly originatingAgentSessionId?: string | null | undefined;
   readonly originatingThreadId?: string | null | undefined;
   readonly connectionId?: string | null | undefined;
 }): AuthoritySubject | null {
-  if (row.originatingAgentSessionId)
-    return { kind: "binding", bindingId: `session:${row.originatingAgentSessionId}` };
+  if (row.connectionId)
+    return row.originatingAgentSessionId
+      ? { kind: "connection", agentConnectionId: row.connectionId }
+      : { kind: "connection", agentConnectionId: row.connectionId, delegated: true };
   if (row.originatingThreadId)
     return { kind: "binding", bindingId: `thread:${row.originatingThreadId}` };
-  return row.connectionId ? { kind: "connection", agentConnectionId: row.connectionId } : null;
+  return null;
 }
 
 /** The stored proposal as the command it is, or null when it no longer reads as one. */
@@ -82,12 +87,17 @@ const pendingProposals = (transaction: Kysely<DatabaseSchema>) =>
     .where("status", "=", "pending")
     .where("command", "is not", null);
 
-async function close(transaction: Transaction<DatabaseSchema>, ids: readonly RequestId[]) {
+async function close(
+  transaction: Transaction<DatabaseSchema>,
+  ids: readonly RequestId[],
+  options: { readonly withoutContinuation?: true } = {},
+) {
   if (ids.length)
     await cancelPending(transaction, {
       reason: "authority-revoked",
       resolvedAt: new Date(),
       requestIds: [...ids],
+      ...options,
     });
 }
 
@@ -121,25 +131,57 @@ export async function closeLostConnectionProposals(
     )
       lost.push(row.id);
   }
-  await close(transaction, lost);
+  // Nothing is said to the connection's Runs or automations about an ask its lost reach closed:
+  // that would tell them their access changed (rule 5). Its own reads find nothing there.
+  await close(transaction, lost, { withoutContinuation: true });
 }
 
-/** An automation was paused or archived: what its runs proposed closes. */
+/**
+ * An automation was paused or archived: a paused automation acts no more, so what its lineage
+ * proposed closes: its firings' and watches' own asks, and those of the Runs its firings started
+ * or steered (joined to them by their causal chain, as the automation's own run list is).
+ */
 export async function closeAutomationProposals(
   transaction: Transaction<DatabaseSchema>,
   triggerId: string,
 ): Promise<void> {
-  const rows = await pendingProposals(transaction)
-    .where(
-      sql<boolean>`(originating_occurrence_id in (select id from trigger_occurrences where trigger_id = ${triggerId})
-        or originating_watch_activation_id in (select id from trigger_watch_activations where trigger_id = ${triggerId}))`,
-    )
-    .orderBy("id")
-    .execute();
+  const rows = await automationLineage(transaction, triggerId).select("id").orderBy("id").execute();
   await close(
     transaction,
     rows.map(({ id }) => id),
   );
+}
+
+/** The tasks the automation's lineage asked from: locked, as every task is, before the trigger. */
+export async function automationProposalThreads(
+  transaction: Kysely<DatabaseSchema>,
+  triggerId: string,
+): Promise<readonly string[]> {
+  return (
+    await automationLineage(transaction, triggerId)
+      .select("originatingThreadId")
+      .distinct()
+      .execute()
+  ).map(({ originatingThreadId }) => originatingThreadId);
+}
+
+function automationLineage(transaction: Kysely<DatabaseSchema>, triggerId: string) {
+  return transaction
+    .selectFrom("requests")
+    .where("status", "=", "pending")
+    .where("command", "is not", null)
+    .where(
+      sql<boolean>`(originating_occurrence_id in (select id from trigger_occurrences where trigger_id = ${triggerId})
+        or originating_watch_activation_id in (select id from trigger_watch_activations where trigger_id = ${triggerId})
+        or originating_run_id in (
+          select runs.id from runs
+            join trigger_occurrences on trigger_occurrences.causal_chain_id = runs.causal_chain_id
+            where trigger_occurrences.trigger_id = ${triggerId}
+          union
+          select thread_inputs.run_id from thread_inputs
+            join trigger_occurrences on trigger_occurrences.causal_chain_id = thread_inputs.causal_chain_id
+            where trigger_occurrences.trigger_id = ${triggerId} and thread_inputs.run_id is not null))`,
+    );
 }
 
 /** Whether a proposer, as it asked, could still ask for this command now. */

@@ -481,17 +481,36 @@ export class CommandRequestStore {
     readonly ownerUserId: UserId;
     readonly requestId: RequestId;
     readonly proposerKey: string;
+    /**
+     * Under a connection's grant: whether the caller still reaches what the ask governs, read in
+     * this transaction. One it no longer reaches reads as one that never existed (rule 5).
+     */
+    readonly reaches?: (
+      transaction: Kysely<DatabaseSchema>,
+      part: CommandRequestPart,
+    ) => Promise<boolean>;
   }): Promise<
     | { readonly status: "withdrawn"; readonly requestId: RequestId }
     | Exclude<CommandRequestOpened, { readonly status: "pending" }>
   > {
     return commitPersonalMutation(this.#database, async (transaction) => {
-      const origin = await transaction
+      const asked = await transaction
         .selectFrom("requests")
-        .select("originatingThreadId")
+        .select(["originatingThreadId", "command"])
         .where("id", "=", input.requestId)
+        .where("requestedBy", "=", input.ownerUserId)
+        .where("command", "is not", null)
         .executeTakeFirst();
-      if (origin) await lockRequestThreads(transaction, [origin.originatingThreadId]);
+      const askedPart = asked ? CommandRequestPartSchema.parse(asked.command) : null;
+      // The caller's reach first, in this transaction: a connection is taken before any task.
+      if (
+        !asked ||
+        !askedPart ||
+        askedPart.proposer.key !== input.proposerKey ||
+        (input.reaches && !(await input.reaches(transaction, askedPart)))
+      )
+        throw unavailable();
+      await lockRequestThreads(transaction, [asked.originatingThreadId]);
       const row = await transaction
         .selectFrom("requests")
         .selectAll()
@@ -500,8 +519,8 @@ export class CommandRequestStore {
         .where("command", "is not", null)
         .forNoKeyUpdate()
         .executeTakeFirst();
-      if (!row || CommandRequestPartSchema.parse(row.command).proposer.key !== input.proposerKey)
-        throw new OpensteerError({ code: "not_found", message: "That item is unavailable." });
+      const part = row ? CommandRequestPartSchema.parse(row.command) : null;
+      if (!row || !part || part.proposer.key !== input.proposerKey) throw unavailable();
       const settled = commandRequestState(row);
       if (settled) return settled;
       const now = this.#now();

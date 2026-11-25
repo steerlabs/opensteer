@@ -22,6 +22,7 @@ import {
   standingSubject,
   stillReaches,
   storedProposal,
+  type AuthoritySubject,
   type CommandRequestOrigin,
   type CommandRequestStore,
   type DatabaseSchema,
@@ -183,6 +184,8 @@ export class CommandRequestService {
   readonly #database: Kysely<DatabaseSchema>;
   readonly #requests: { get(id: RequestId): Promise<Request | null> };
   readonly #homeKind: HostHomeKind | undefined;
+  /** How long after a lost receipt the record is read again from its attempt. */
+  readonly #reconcileDelayMs: number;
   /**
    * Approvals in flight in this process, counted from before the approval begins until its
    * receipt is written or given up: a read leaves their receipt alone. A count, so a second
@@ -203,11 +206,29 @@ export class CommandRequestService {
     readonly requests: { get(id: RequestId): Promise<Request | null> };
     /** What this Home's own computer is (its configuration): where its own work runs. */
     readonly homeKind?: HostHomeKind | undefined;
+    readonly reconcileDelayMs?: number;
   }) {
     this.#store = options.store;
     this.#database = options.database;
     this.#requests = options.requests;
     this.#homeKind = options.homeKind;
+    this.#reconcileDelayMs = options.reconcileDelayMs ?? 30_000;
+  }
+
+  /**
+   * One later read of a lost receipt from its attempt, so the person's card settles without a
+   * restart; the reads the person's apps make stay as they are (rule 7).
+   */
+  #reconcileLater(requestId: RequestId) {
+    const timer = setTimeout(() => {
+      void this.reconcile(requestId).catch((error: unknown) =>
+        console.warn("A lost receipt could not be read from its attempt", {
+          requestId,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }, this.#reconcileDelayMs);
+    timer.unref?.();
   }
 
   /** Opens the person's Request for a command the door put to the person. */
@@ -263,6 +284,9 @@ export class CommandRequestService {
       sentence: words.sentence,
       gives: words.gives,
       command: RequestJsonObjectSchema.parse(JSON.parse(JSON.stringify(stored))),
+      ...(command !== input.command && command.type === "tab.group.close"
+        ? { homeAdded: ["tabIds"] }
+        : {}),
       secretPaths: [...(row.secretFields ?? [])],
       governs: JSON.parse(JSON.stringify(governs)) as CommandRequestPart["governs"],
       askKey,
@@ -330,8 +354,23 @@ export class CommandRequestService {
     readonly ownerUserId: UserId;
     readonly requestId: RequestId;
     readonly proposerKey: ProposerLineageKey;
+    /** Under a connection's grant, the caller as it stands: an ask it no longer reaches is unknown. */
+    readonly caller?: AuthoritySubject;
   }): Promise<CommandProposed> {
-    return this.#store.withdraw(input);
+    const { caller, ...rest } = input;
+    return this.#store.withdraw({
+      ...rest,
+      ...(caller
+        ? {
+            reaches: async (transaction, part) => {
+              const command = storedProposal(part);
+              return command
+                ? stillReaches(transaction, input.ownerUserId, caller, command)
+                : false;
+            },
+          }
+        : {}),
+    });
   }
 
   /**
@@ -542,12 +581,22 @@ export class CommandRequestService {
           };
         } else outcome = { status: "unknown" };
       }
-      // The receipt: written again if writing it fails once; if it still fails, the next read of
-      // the Request takes it from the attempt. The effect itself never runs again.
+      // The receipt: written again if writing it fails once. If it still fails, the person is
+      // told what is known of the effect, never an error for an approval that ran (rule 4): the
+      // record is read from the attempt on the next read, and once more a little later for the
+      // person, whose own reads do not repair it. The effect itself never runs again.
       try {
         await this.#store.settle(input.requestId, outcome);
       } catch {
-        await this.#store.settle(input.requestId, outcome);
+        try {
+          await this.#store.settle(input.requestId, outcome);
+        } catch (error) {
+          console.warn("An approval's receipt could not be written; it is read from its attempt", {
+            requestId: input.requestId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          this.#reconcileLater(input.requestId);
+        }
       }
       return outcome;
     } finally {

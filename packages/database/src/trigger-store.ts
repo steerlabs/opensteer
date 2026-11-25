@@ -1,4 +1,4 @@
-import { closeAutomationProposals } from "./command-proposal-reach.js";
+import { automationProposalThreads, closeAutomationProposals } from "./command-proposal-reach.js";
 import { lockRequestThreads } from "./request-persistence.js";
 import { outsideName } from "@opensteer/shared/outsideName";
 import { personalSettings, requirePersonalOwner } from "./personal-settings-store.js";
@@ -817,7 +817,11 @@ export class TriggerStore {
             .select("anchorThreadId")
             .where("id", "=", input.triggerId)
             .executeTakeFirst();
-          if (anchor) await lockRequestThreads(transaction, [anchor.anchorThreadId]);
+          if (anchor)
+            await lockRequestThreads(transaction, [
+              anchor.anchorThreadId,
+              ...((await automationProposalThreads(transaction, input.triggerId)) as ThreadId[]),
+            ]);
         }
         const trigger = await lockTriggerForMutation(transaction, input);
         await requireTriggerExecutionAuthority(transaction, trigger);
@@ -960,6 +964,9 @@ export class TriggerStore {
             }
           }
         }
+        // Paused or archived, what its lineage proposed closes with it (D5), before a firing's
+        // command is taken (requests come before commands); resuming revives none.
+        if (ending) await closeAutomationProposals(transaction, updatedRow.id);
         const canceledOccurrenceIds: TriggerOccurrenceId[] = [];
         const runningFirings: RunningFiringRef[] = [];
         if (ending && activeOccurrences.length > 0) {
@@ -1064,8 +1071,6 @@ export class TriggerStore {
             }
           }
         }
-        // Paused or archived, what its runs proposed closes with it (D5); resuming revives none.
-        if (ending) await closeAutomationProposals(transaction, updatedRow.id);
         return {
           canceledOccurrenceIds,
           runningFirings,
