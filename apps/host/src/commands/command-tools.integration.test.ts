@@ -1406,7 +1406,7 @@ const doorRoutes = new Map<string, DoorRoute>([
 
 it("keeps the plugin engine idle when a connected agent discovers an empty inventory", async () => {
   const database = await cloneTestDatabase("host");
-  const client = new Client({ name: "empty-plugin-discovery", version: "1" });
+  const clients: Client[] = [];
   let host: Awaited<ReturnType<typeof startPrivateMachineHost>> | undefined;
   try {
     host = await startPrivateMachineHost(database.url, { logger: false });
@@ -1414,25 +1414,55 @@ it("keeps the plugin engine idle when a connected agent discovers an empty inven
     const idle = host.runtime.plugins.state();
     const url = new URL(mcpResourcePath, host.origin);
     const connections = new AgentConnectionStore(host.store.database);
-    const record = await connections.create({
-      userId: host.ownerId,
-      label: "Discovery agent",
-      clientName: "Discovery agent",
-      accessMode: "full-access",
-      resource: url.href,
-      expiresAt: new Date(Date.now() + 60_000),
-      grant: { scope: "everything" },
-    });
-    const token = `${connectionCredentialPrefix}${randomBytes(32).toString("base64url")}`;
-    expect(await connections.activate(record.id, credentialHash(token))).toBe(true);
-    await client.connect(
-      new StreamableHTTPClientTransport(url, {
-        requestInit: { headers: { authorization: `Bearer ${token}` } },
-      }) as unknown as Transport,
-    );
-    const found = await client.callTool({ name: "discover", arguments: {} });
-    expect(found.isError).not.toBe(true);
-    expect(host.runtime.plugins.state()).toEqual(idle);
+    const grants: AgentGrant[] = [
+      { scope: "everything" },
+      {
+        scope: "selected",
+        tasks: false,
+        resources: [
+          {
+            kind: "plugin",
+            target: { kind: "installed", pluginId: "absent-plugin" },
+            access: "read",
+          },
+        ],
+      },
+      {
+        scope: "selected",
+        tasks: false,
+        resources: [
+          {
+            kind: "plugin",
+            target: { kind: "local-server", serverId: `isv_${randomUUID()}` },
+            access: "read",
+          },
+        ],
+      },
+      { scope: "selected", tasks: true, resources: [] },
+    ];
+    for (const grant of grants) {
+      const record = await connections.create({
+        userId: host.ownerId,
+        label: "Discovery agent",
+        clientName: "Discovery agent",
+        accessMode: "full-access",
+        resource: url.href,
+        expiresAt: new Date(Date.now() + 60_000),
+        grant,
+      });
+      const token = `${connectionCredentialPrefix}${randomBytes(32).toString("base64url")}`;
+      expect(await connections.activate(record.id, credentialHash(token))).toBe(true);
+      const client = new Client({ name: "empty-plugin-discovery", version: "1" });
+      clients.push(client);
+      await client.connect(
+        new StreamableHTTPClientTransport(url, {
+          requestInit: { headers: { authorization: `Bearer ${token}` } },
+        }) as unknown as Transport,
+      );
+      const found = await client.callTool({ name: "discover", arguments: {} });
+      expect(found.isError, JSON.stringify(found.content)).not.toBe(true);
+      expect(host.runtime.plugins.state()).toEqual(idle);
+    }
     expect(
       await testRpcData(host.origin, "plugins.installed.list", {}, { headers: host.ownerHeaders }),
     ).toMatchObject({ plugins: [], engine: { status: "idle" } });
@@ -1457,15 +1487,20 @@ it("keeps the plugin engine idle when a connected agent discovers an empty inven
     await expect(host.runtime.plugins.health({}, context)).rejects.toThrow(
       "The plugin engine was killed.",
     );
-    const partial = await client.callTool({ name: "discover", arguments: {} });
-    expect(partial.isError).not.toBe(true);
-    expect(partial.structuredContent).toMatchObject({
-      items: expect.any(Array),
-      next: "Installed plugins are currently unavailable.",
-    });
+    for (const [index, client] of clients.entries()) {
+      const partial = await client.callTool({ name: "discover", arguments: {} });
+      expect(partial.isError, JSON.stringify(partial.content)).not.toBe(true);
+      expect(partial.structuredContent).toMatchObject({ items: expect.any(Array) });
+      if (index < 2)
+        expect(partial.structuredContent).toHaveProperty(
+          "next",
+          "Installed plugins are currently unavailable.",
+        );
+      else expect(partial.structuredContent).not.toHaveProperty("next");
+    }
     expect(host.runtime.plugins.state().generation).toBe(idle.generation + 1);
   } finally {
-    await client.close();
+    await Promise.all(clients.map((client) => client.close()));
     await host?.close();
     await database.drop();
   }

@@ -26,6 +26,7 @@ import {
   type PageGoneCause,
   type RendererGoneCause,
   readImageDimensions,
+  screenshotImageLimit,
   viewportCapturePlan,
   viewportImageScript,
   type ViewportCapture,
@@ -2979,9 +2980,7 @@ class PlaywrightPageHandle implements BrowserPage {
     const decodedBytes =
       (data.length / 4) * 3 - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
     if (maxImageBytes !== undefined && decodedBytes > maxImageBytes && !clip && direct === format)
-      throw new BrowserRuntimeError("bad_message", "Screenshot exceeds its image budget.", {
-        reason: "browser-reply-limit",
-      });
+      throw screenshotImageLimit(decodedBytes, maxImageBytes);
     const bitmap = readImageDimensions(Buffer.from(data, "base64"), direct);
     if (!bitmap) throw new Error("Chromium returned an unreadable screenshot.");
     const visible = {
@@ -3003,10 +3002,10 @@ class PlaywrightPageHandle implements BrowserPage {
         ...(maxImageBytes === undefined ? {} : { maxImageBytes }),
       }),
     );
-    if (encoded === null)
-      throw new BrowserRuntimeError("bad_message", "Screenshot exceeds its image budget.", {
-        reason: "browser-reply-limit",
-      });
+    if (typeof encoded === "number") {
+      if (maxImageBytes === undefined) throw new Error("The page returned no screenshot.");
+      throw screenshotImageLimit(encoded, maxImageBytes);
+    }
     return { data: encoded };
   }
 
@@ -3014,7 +3013,7 @@ class PlaywrightPageHandle implements BrowserPage {
   private async inCaptureWorld(
     session: PlaywrightCdpSession,
     expression: string,
-  ): Promise<string | null> {
+  ): Promise<string | number> {
     for (let attempt = 0; ; attempt++) {
       try {
         const { frameTree } = await session.send("Page.getFrameTree");
@@ -3031,7 +3030,7 @@ class PlaywrightPageHandle implements BrowserPage {
           returnByValue: true,
         });
         if (exceptionDetails) throw new Error("The page could not encode the screenshot.");
-        return z.string().nullable().parse(result.value);
+        return z.union([z.string(), z.number().int().positive()]).parse(result.value);
       } catch (error) {
         // A navigation takes the world with it.
         this.captureWorld = undefined;

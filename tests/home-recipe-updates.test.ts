@@ -830,6 +830,65 @@ it("starts each release with the limits its own code computes: an update brings 
   expect(readdirSync(home).filter((name) => /limit/iu.test(name))).toEqual([]);
   // The gate is the new release's own command, which reads its own common.sh.
   expect(readFileSync(join(b, "opensteer-home"), "utf8")).toContain('source "${own%/*}/common.sh"');
+
+  // The update's own path: A's code switches to B (cutover), B's gate runs in a process of its own
+  // from B's code (run_release, as `opensteer-home release-gate` runs it once its root and
+  // directory checks pass, which a test cannot), and B's start gives Compose B's limits. Docker
+  // and the machine's size are stood in for; Compose is told what each start asked for, and
+  // refuses to start, so B's gate fails and A comes back with A's own limits.
+  const composed = join(work, "composed");
+  const stubs = `machine_size() { echo 3908 2; }
+sync() { :; }
+${dockerStub(work, log)}
+env() {
+  local limits=() file='' sub=''
+  while [[ $1 != docker ]]; do [[ $1 != OPENSTEER_HOME_LIMIT_HOST_MEMORY=* ]] || limits+=("$1"); shift; done
+  shift 2
+  while (($#)); do
+    case $1 in
+      -f) [[ -n $file ]] || file=$2; shift 2 ;;
+      --env-file | --project-name | --project-directory) shift 2 ;;
+      *) sub=$1; break ;;
+    esac
+  done
+  printf '%s %s %s\n' "$(basename "$(dirname "$file")")" "$sub" "\${limits[*]}" >> "${composed}"
+  case $sub in
+    config) echo '{"name":"recipe-test"}' ;;
+    up) return 1 ;;
+  esac
+}`;
+  writeFileSync(join(work, "stubs.sh"), stubs);
+  const update = spawnSync(
+    "bash",
+    [
+      "-c",
+      `stubs=$3; source "$1/common.sh"; release_dir=$1; source "$stubs"
+       run_release() {
+         OPENSTEER_HOME_SWITCHING=\${1##*/} bash -c 'source "$1/common.sh"; source "$2"; "$3"' gate "$1" "$stubs" "\${2/release-/}_release"
+       }
+       status=0; cutover "$1" "$2" || status=$?
+       echo "cutover $status"
+       start_pod || :`,
+      "update",
+      a,
+      b,
+      join(work, "stubs.sh"),
+    ],
+    { encoding: "utf8", env: { ...process.env, OPENSTEER_HOME_DIR: home } },
+  );
+  expect(update.stdout, update.stderr).toContain("cutover 1");
+  expect(update.stderr).toContain("The new release did not start.");
+  const starts = readFileSync(composed, "utf8")
+    .trim()
+    .split("\n")
+    .filter((line) => / up /u.test(line));
+  expect(starts).toEqual([
+    // B's gate, with B's split.
+    "1.2.4-bbbbbb up OPENSTEER_HOME_LIMIT_HOST_MEMORY=1536m",
+    // A again, after B's gate failed, with A's.
+    `${running} up OPENSTEER_HOME_LIMIT_HOST_MEMORY=640m`,
+  ]);
+  expect(current()).toBe(`releases/${running}`);
 });
 
 it("names a release's tagged images by their ids, by tags no release can move", () => {

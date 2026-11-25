@@ -30,6 +30,16 @@ export interface ViewportCapture {
   readonly data: string;
 }
 
+export function screenshotImageLimit(bytes: number, limit: number): BrowserRuntimeError {
+  const imageKiB = Math.ceil(bytes / 1024);
+  const limitKiB = Number((limit / 1024).toFixed(1));
+  return new BrowserRuntimeError(
+    "bad_message",
+    `Screenshot was ${imageKiB} KiB and the limit is ${limitKiB} KiB. Capture a smaller viewport clip or use JPEG via CDP.`,
+    { reason: "browser-screenshot-limit" },
+  );
+}
+
 interface BitmapRegion {
   readonly height: number;
   readonly width: number;
@@ -106,7 +116,7 @@ export function viewportImageScript(
     canvas.getContext("2d").drawImage(bitmap, source.x, source.y, source.width, source.height, 0, 0, output.width, output.height);
     bitmap.close();
     const blob = await canvas.convertToBlob({ type, quality });
-    if (maxImageBytes !== undefined && blob.size > maxImageBytes) return null;
+    if (maxImageBytes !== undefined && blob.size > maxImageBytes) return blob.size;
     const encoded = new Uint8Array(await blob.arrayBuffer());
     let binary = "";
     for (let at = 0; at < encoded.length; at += 8192)

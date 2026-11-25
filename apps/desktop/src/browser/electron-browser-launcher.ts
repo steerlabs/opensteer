@@ -18,6 +18,7 @@ import {
   pageViewport,
   pageWithTarget,
   normalizeElectronCursor,
+  screenshotImageLimit,
   siteCookieReplacementBatch,
   viewportCapturePlan,
   viewportImageScript,
@@ -2666,33 +2667,29 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     signal?: AbortSignal,
   ): Promise<string> {
     signal?.throwIfAborted();
-    const exceeds = () =>
-      new BrowserRuntimeError("bad_message", "Screenshot exceeds its image budget.", {
-        reason: "browser-reply-limit",
-      });
     const bytes = format === "jpeg" ? image.toJPEG(quality ?? 80) : image.toPNG();
     if (format !== "webp" && maxImageBytes !== undefined && bytes.length > maxImageBytes)
-      throw exceeds();
+      throw screenshotImageLimit(bytes.length, maxImageBytes);
     const data = bytes.toString("base64");
     if (format !== "webp") return data;
     const size = image.getSize();
     const plan = { output: size, source: { x: 0, y: 0, ...size } };
     // nativeImage has no WebP encoder; the page's own does.
-    const encoded = z
-      .string()
-      .nullable()
-      .parse(
-        await this.#inFrameWorld(
-          cdp,
-          viewportImageScript(data, plan, {
-            format,
-            ...(maxImageBytes === undefined ? {} : { maxImageBytes }),
-            ...(quality === undefined ? {} : { quality }),
-          }),
-          signal,
-        ),
-      );
-    if (encoded === null) throw exceeds();
+    const encoded = z.union([z.string(), z.number().int().positive()]).parse(
+      await this.#inFrameWorld(
+        cdp,
+        viewportImageScript(data, plan, {
+          format,
+          ...(maxImageBytes === undefined ? {} : { maxImageBytes }),
+          ...(quality === undefined ? {} : { quality }),
+        }),
+        signal,
+      ),
+    );
+    if (typeof encoded === "number") {
+      if (maxImageBytes === undefined) throw new Error("The page returned no screenshot.");
+      throw screenshotImageLimit(encoded, maxImageBytes);
+    }
     return encoded;
   }
 
