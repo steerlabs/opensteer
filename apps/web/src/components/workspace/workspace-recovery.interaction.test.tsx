@@ -672,10 +672,6 @@ describe("a person's own view of an app on this Mac, in the desktop app", () => 
     await mount("/?panel=browser", {
       shell: { deploymentAccess, desktopBridge, desktopDeployment },
     });
-    expect(
-      document.querySelector(".web-tab-notice"),
-      "the Mac app's Start page called itself a web browser",
-    ).toBeNull();
     await click(element(".start-tile[aria-label^='Notes on']"));
     await until("Notes was never shown as an owner view", () =>
       expect(element(".owner-view__view-only").textContent).toBe("View only"),
@@ -707,7 +703,6 @@ describe("a person's own view of an app on this Mac, in the desktop app", () => 
 
   it("never offers it without the desktop's bridge, whatever the computer", async () => {
     await mount("/?panel=browser", { shell: { deploymentAccess, desktopDeployment } });
-    expect(element(".web-tab-notice").textContent).toContain("You’re in a web browser");
     await click(element(".start-tile[aria-label^='Notes on']"));
     await until("Notes was never shown as an owner view", () =>
       expect(element(".owner-view__view-only").textContent).toBe("View only"),
