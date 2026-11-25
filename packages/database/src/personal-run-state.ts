@@ -111,8 +111,6 @@ export async function readFinishChildren(
           .where((eb) =>
             eb.or([
               eb("mode", "=", "live"),
-              // A command the Run proposed ends with it: its proposer no longer stands (D5).
-              eb("command", "is not", null),
               eb.and([
                 eb("kind", "in", ["plugin.approval", "plugin.input"]),
                 eb.not(

@@ -2019,7 +2019,8 @@ describeStore("command Requests at the Home", (it) => {
     await expect(dispatchCommand(run, rename("Work", ids[5]), door(run))).rejects.toMatchObject({
       code: "conflict",
       reason: "too-many-asks",
-      message: "You have 5 asks waiting for the person. Withdraw one before asking again.",
+      message:
+        "You already have 5 asks waiting for the person, earlier ones included. See them with opensteer_state, area requests, and withdraw one before asking again.",
     });
     // Three noes about one thing: after them, further asks about it are answered no for a day,
     // whatever their arguments.
@@ -2049,7 +2050,59 @@ describeStore("command Requests at the Home", (it) => {
     });
   });
 
-  it("ends an ask when its proposer's reach ends: a narrowed grant, a paused automation, a finished Run; none comes back (D5)", async ({
+  it.for([
+    ["completed", { status: "completed" }],
+    [
+      "failed",
+      { status: "failed", code: "harness_error", message: "Engine failed", retryable: false },
+    ],
+  ] as const)(
+    "keeps your own agent's ask waiting when its Run ends on its own (%s): the person approves, it runs, the task continues (D5)",
+    async ([end, data], { storeFixture }) => {
+      const { f, database, store, ran, run, door, rename, approve } = await setup(storeFixture);
+      const proposed = (await dispatchCommand(run, rename("Work"), door(run))) as {
+        requestId: string;
+      };
+      const asked = (await store.requests.get(proposed.requestId as never))!;
+      // The Run tells the person and its turn ends on its own: its Runner says so.
+      await store.commitRunnerEvent({
+        environmentId: f.environmentId,
+        runnerId: f.runnerId,
+        runnerBootId: f.runnerBootId,
+        event: pendingEvent({
+          type: end === "completed" ? "run.completed" : "run.failed",
+          environmentId: f.environmentId,
+          bindingGeneration: f.bindingGeneration,
+          ordinal: 1,
+          runId: f.run.id,
+          threadId: f.threadId,
+          data,
+        } as never),
+      });
+      const ended = await database
+        .selectFrom("runs")
+        .select("status")
+        .where("id", "=", f.run.id)
+        .executeTakeFirstOrThrow();
+      expect(ended.status).toBe(end);
+      // The ask is the task's, not the Run's: it waits for the person.
+      expect((await store.requests.get(proposed.requestId as never))!.status).toBe("pending");
+      expect(await approve(proposed.requestId, asked.command!.command)).toMatchObject({
+        status: "done",
+      });
+      expect(ran.map(({ command }) => command.type)).toEqual([asked.command!.type]);
+      // Approving it continues the task.
+      expect(
+        await database
+          .selectFrom("requestContinuations")
+          .select("status")
+          .where("requestId", "=", proposed.requestId as never)
+          .execute(),
+      ).toHaveLength(1);
+    },
+  );
+
+  it("ends an ask when its proposer's reach ends: a narrowed grant, a paused automation; none comes back (D5)", async ({
     storeFixture,
   }) => {
     const { f, database, store, service, rename } = await setup(storeFixture);
@@ -2165,30 +2218,5 @@ describeStore("command Requests at the Home", (it) => {
       triggerId: automation.trigger.id,
     });
     expect((await store.requests.get(fromAutomation.requestId as never))!.status).toBe("cancelled");
-    // A Run whose turn finished.
-    const fromRun = await propose(
-      { kind: "run", name: "Claude Code", taskTitle: null, key: `task:${f.threadId}` },
-      { runId: f.run.id },
-      "hin_00000000-0000-4000-8000-000000002003",
-    );
-    // The Run's turn ends on its own: its Runner says it completed.
-    await store.commitRunnerEvent({
-      environmentId: f.environmentId,
-      runnerId: f.runnerId,
-      runnerBootId: f.runnerBootId,
-      event: pendingEvent({
-        type: "run.completed",
-        environmentId: f.environmentId,
-        bindingGeneration: f.bindingGeneration,
-        ordinal: 1,
-        runId: f.run.id,
-        threadId: f.threadId,
-        data: { status: "completed" },
-      }),
-    });
-    expect(await store.requests.get(fromRun.requestId as never)).toMatchObject({
-      status: "cancelled",
-      cancellationReason: "run-ended",
-    });
   });
 });

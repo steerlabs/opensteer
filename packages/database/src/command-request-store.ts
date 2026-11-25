@@ -229,7 +229,8 @@ async function answeredBeforeAsking(
     throw new OpensteerError({
       code: "conflict",
       reason: "too-many-asks",
-      message: `You have ${commandAskLimits.pendingPerProposer} asks waiting for the person. Withdraw one before asking again.`,
+      // Counted for the whole lineage: in a later Run of the same task, earlier asks are its own.
+      message: `You already have ${commandAskLimits.pendingPerProposer} asks waiting for the person, earlier ones included. See them with opensteer_state, area requests, and withdraw one before asking again.`,
     });
   return null;
 }

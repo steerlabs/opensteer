@@ -19,6 +19,7 @@ import { commandAttempts, runCommandEffect } from "./command-effect.js";
 import {
   AgentConnectionStore,
   proposalSubject,
+  standingSubject,
   stillReaches,
   storedProposal,
   type CommandRequestOrigin,
@@ -644,7 +645,9 @@ export class CommandRequestService {
       ).executeTakeFirst();
       if (trigger?.status !== "active") return false;
     }
-    const subject = proposalSubject({
+    // As the task it came from, not the Run or firing that sent it: one that ended on its own
+    // leaves its ask standing (D5).
+    const subject = standingSubject({
       ...request,
       connectionId: request.command?.proposer.connectionId,
     });
