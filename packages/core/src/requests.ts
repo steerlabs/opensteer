@@ -604,6 +604,21 @@ export const RequestAnswererViewSchema = z.union([
  * types), who proposed it, and the agent's own reason, kept apart. A client that knows it shows
  * the change and the screen that performs it; one that does not shows the Request's form.
  */
+/**
+ * The person's answers to a command Request on its form field (`decision`), besides Approve:
+ * a no, or, for a command only the person can do (one that carries a value only they type),
+ * that they did it themselves on its own screen. Either settles the Request as declined: the
+ * proposal itself never runs.
+ */
+export const commandRequestAnswers = {
+  field: "decision",
+  decline: "decline",
+  /** The person's statement that they did it: nothing claims it happened. */
+  doneMyself: "done-myself",
+  /** Written by the Home alone, when the person's own command did what was asked. */
+  doneByPerson: "done-by-person",
+} as const;
+
 export const commandRequestOutcomeSchema = z.discriminatedUnion("status", [
   /** The person approved it and it is running. */
   z.object({ status: z.literal("running") }),
@@ -630,6 +645,11 @@ export const CommandRequestPartSchema = z.object({
   gives: z.string().max(1_000).nullable(),
   /** The command as proposed, without its key and without anything only the person types. */
   command: RequestJsonObjectSchema,
+  /**
+   * Arguments the Home added to `command` so the card shows, and the approval acts on, exactly
+   * what it will (a tab group's members): never read back to the agent as what it sent.
+   */
+  homeAdded: z.array(z.string().min(1).max(64)).max(8).optional(),
   /** Input paths the person types on the card before approving. */
   secretPaths: z.array(z.string().min(1).max(200)).max(8),
   governs: z.object({
@@ -652,26 +672,80 @@ export const CommandRequestPartSchema = z.object({
     key: z.string().min(1).max(300),
     /** The connection whose lineage it works in, re-admitted when the person approves. */
     connectionId: z.string().min(1).max(300).optional(),
+    /** That connection as the person named it, for a Run or automation working under it. */
+    connectionName: z.string().min(1).max(200).optional(),
     /** That connection's grant revision when it asked: a narrowing below it closes the ask. */
     grantRevision: z.number().int().nonnegative().optional(),
   }),
   /** The agent's own words, not checked. */
   agentReason: z.string().max(500).nullable(),
+  /**
+   * What the Home knows beside a proposed value (`command-review` in the protocol), by the value's
+   * path: what an id names and what the value is now. Never a value itself: every value the
+   * person approves is read from `command`, whole.
+   */
+  notes: z
+    .array(
+      z.object({
+        path: z.string().min(1).max(400),
+        name: z.string().min(1).max(240).optional(),
+        current: z.string().min(1).max(16_000).optional(),
+      }),
+    )
+    .max(200)
+    .optional(),
   /** The screen that performs it, filled in; null where only this card can. */
   editor: z.object({ screen: z.string().min(1).max(60) }).nullable(),
   outcome: commandRequestOutcomeSchema.optional(),
-  /** What the person approved and the Home ran, kept apart from what was proposed. */
-  approved: z
-    .object({
-      command: RequestJsonObjectSchema,
-      /** The person changed it before approving. */
-      changed: z.boolean(),
-    })
-    .optional(),
+  /** What the Home ran when the person approved: the stored proposal, exactly. */
+  approved: z.object({ command: RequestJsonObjectSchema }).optional(),
   /** The approving call's own key: the same approval again answers with its outcome. */
   approvalKey: z.string().min(1).max(200).optional(),
 });
 export type CommandRequestPart = z.infer<typeof CommandRequestPartSchema>;
+
+/**
+ * What became of a command Request, as an agent may read it: a status and nothing the Home
+ * looked up. `person-says-done` is the person's statement; `done-by-person` is the Home's own
+ * record that the person's command did what was asked.
+ */
+/** Where a command Request stands, value-free: the one status every agent surface reads. */
+export const CommandAgentStatusSchema = z.enum([
+  "pending",
+  "approved-running",
+  "approved-done",
+  "approved-failed",
+  "approved-unknown",
+  "declined",
+  "person-says-done",
+  "done-by-person",
+  "closed",
+]);
+export type CommandAgentStatus = z.infer<typeof CommandAgentStatusSchema>;
+
+export function commandAgentStatus(request: {
+  readonly status: string;
+  readonly response?: RequestResponse | null | undefined;
+  readonly command?: { readonly outcome?: CommandRequestOutcome | undefined } | null | undefined;
+}): CommandAgentStatus {
+  const answers =
+    request.response?.kind === "form" ? Object.values(request.response.answers).flat() : [];
+  if (request.status === "pending") return "pending";
+  if (answers.includes(commandRequestAnswers.doneByPerson)) return "done-by-person";
+  if (request.status === "declined")
+    return answers.includes(commandRequestAnswers.doneMyself) ? "person-says-done" : "declined";
+  if (request.status !== "fulfilled") return "closed";
+  switch (request.command?.outcome?.status) {
+    case "done":
+      return "approved-done";
+    case "failed":
+      return "approved-failed";
+    case "unknown":
+      return "approved-unknown";
+    default:
+      return "approved-running";
+  }
+}
 export type CommandRequestOutcome = z.infer<typeof commandRequestOutcomeSchema>;
 
 const requestBaseShape = {

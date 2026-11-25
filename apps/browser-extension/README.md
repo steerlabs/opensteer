@@ -16,8 +16,9 @@ The manifest's public `key` fixes the extension ID to `opensteerChromeExtensionI
 `@opensteer/protocol/browser-sources`, and the build fails if they disagree. Web pages detect the
 extension by loading `icons/probe.png` and hand it a pairing link by opening `connect.html`; those
 are its only web-accessible resources. Other files live under a content-hashed `b/` directory.
-Replacing the unpacked folder’s files reloads the extension automatically within a minute,
-when no pairing or storage mutation is in progress. Saved connections are preserved.
+Replacing the unpacked folder’s files reloads the extension automatically: the worker looks
+once a minute, and reloads as soon as any pairing and storage operation in progress has ended.
+Saved connections are preserved.
 
 ## What the extension enforces
 

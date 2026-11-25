@@ -1,3 +1,5 @@
+import { automationProposalThreads, closeAutomationProposals } from "./command-proposal-reach.js";
+import { lockRequestThreads } from "./request-persistence.js";
 import { outsideName } from "@opensteer/shared/outsideName";
 import { personalSettings, requirePersonalOwner } from "./personal-settings-store.js";
 import {
@@ -806,6 +808,21 @@ export class TriggerStore {
           : [];
         const heldOccurrences = new Set(observedActive.map(({ id }) => id));
         await lockWatchAnchorPlacementForTrigger(transaction, input.triggerId);
+        // Pausing or archiving closes what its runs proposed (D5): those Requests' task, its
+        // anchor, is taken here, in the order every lock is taken (occurrences, the watch's
+        // computer, threads, then the trigger).
+        if (ending) {
+          const anchor = await transaction
+            .selectFrom("triggers")
+            .select("anchorThreadId")
+            .where("id", "=", input.triggerId)
+            .executeTakeFirst();
+          if (anchor)
+            await lockRequestThreads(transaction, [
+              anchor.anchorThreadId,
+              ...((await automationProposalThreads(transaction, input.triggerId)) as ThreadId[]),
+            ]);
+        }
         const trigger = await lockTriggerForMutation(transaction, input);
         await requireTriggerExecutionAuthority(transaction, trigger);
         // Resumed, it would launch in the person's Agent home: refused now, in the launch's words.
@@ -947,6 +964,9 @@ export class TriggerStore {
             }
           }
         }
+        // Paused or archived, what its lineage proposed closes with it (D5), before a firing's
+        // command is taken (requests come before commands); resuming revives none.
+        if (ending) await closeAutomationProposals(transaction, updatedRow.id);
         const canceledOccurrenceIds: TriggerOccurrenceId[] = [];
         const runningFirings: RunningFiringRef[] = [];
         if (ending && activeOccurrences.length > 0) {
@@ -2331,7 +2351,10 @@ export class TriggerStore {
       .limit(1)
       .executeTakeFirst();
     if (!candidate) return { occurrences: [], changed: false, failures: [], runningFirings: [] };
-    return commitPersonalMutation(this.#database, async (transaction) => {
+    // Schedules this pass paused on its own: what their lineage asked closes once it commits.
+    const paused: TriggerId[] = [];
+    const pass = await commitPersonalMutation(this.#database, async (transaction) => {
+      paused.length = 0;
       const due = await dueSchedules(transaction)
         .selectAll("triggers")
         .orderBy("triggers.nextFireAt", "asc")
@@ -2372,6 +2395,7 @@ export class TriggerStore {
                 : triggerAuthorityLossPauseReason,
             pausedBy: "system",
           });
+          paused.push(trigger.id);
           const running = await transaction
             .selectFrom("triggerOccurrences")
             .select([
@@ -2483,6 +2507,37 @@ export class TriggerStore {
         runningFirings,
       };
     });
+    await this.#closeEndedAutomationAsks(paused);
+    return pass;
+  }
+
+  /**
+   * An automation the scheduler paused for its lost standing acts no more: after the pass
+   * commits, what its lineage asked closes, its tasks locked first as every task is. One active
+   * again by then (a resume meanwhile, or a claim rolled back) keeps its asks. This is tidying,
+   * not the decision: the click refuses such an ask on its own (`automationLineageStands`), so a
+   * failure here is logged and not retried.
+   */
+  async #closeEndedAutomationAsks(triggerIds: readonly TriggerId[]): Promise<void> {
+    for (const triggerId of new Set(triggerIds))
+      await commitPersonalMutation(this.#database, async (transaction) => {
+        await lockRequestThreads(
+          transaction,
+          (await automationProposalThreads(transaction, triggerId)) as ThreadId[],
+        );
+        const trigger = await transaction
+          .selectFrom("triggers")
+          .select("status")
+          .where("id", "=", triggerId)
+          .executeTakeFirst();
+        if (trigger && trigger.status !== "active")
+          await closeAutomationProposals(transaction, triggerId);
+      }).catch((error: unknown) =>
+        console.warn("An ended automation's asks could not be closed now", {
+          triggerId,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
   }
   async listPausedRunningFirings(): Promise<readonly RunningFiringRef[]> {
     const rows = await this.#database
@@ -2865,9 +2920,14 @@ export class TriggerStore {
                     overrunNotifiedAt: null,
                   }
                 : {}),
+              // A one-shot that archives itself because its one firing completed: bookkeeping, not
+              // a decision. `pausedBy: "system"` on an archived automation says exactly that (a
+              // person's or an agent's archive clears it), and its lineage's asks stay: a person
+              // may approve tomorrow what it asked today.
               ...(finished
                 ? {
                     pauseReason: null,
+                    pausedBy: "system" as const,
                     status: "archived" as const,
                   }
                 : {}),

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  commandRequestAnswers,
   OpensteerError,
   raisedBeforeEffect,
   RequestJsonObjectSchema,
@@ -16,13 +17,18 @@ import {
 } from "@opensteer/core";
 import { commandAttempts, runCommandEffect } from "./command-effect.js";
 import {
-  admitCommand,
-  commandSubject,
+  AgentConnectionStore,
+  automationLineageStands,
+  proposalSubject,
+  standingSubject,
+  stillReaches,
+  storedProposal,
+  type AuthoritySubject,
   type CommandRequestOrigin,
   type CommandRequestStore,
   type DatabaseSchema,
 } from "@opensteer/database";
-import { hostApi, type HostApiCommand, type HostApiCommandOutput } from "@opensteer/protocol";
+import type { HostApiCommand, HostApiCommandOutput } from "@opensteer/protocol";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import {
   commandAgentOutput,
@@ -38,6 +44,14 @@ import {
   commandSentence,
   type CommandScriptPlace,
 } from "@opensteer/protocol/command-words";
+import {
+  commandPath,
+  commandReviewFields,
+  commandReviewText,
+  outsideName,
+  outsideProse,
+  type CommandReviewNote,
+} from "@opensteer/protocol/command-review";
 import { sql, type Kysely } from "kysely";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 import type { CommandAsk } from "./dispatch.js";
@@ -113,6 +127,10 @@ export type CommandProposed =
       readonly existing: boolean;
     }
   | { readonly status: "declined"; readonly requestId: RequestId }
+  /** The person says they did it themselves; nothing claims it happened. */
+  | { readonly status: "person-says-done"; readonly requestId: RequestId }
+  /** The person's own command did what was asked: the Home's record. */
+  | { readonly status: "done-by-person"; readonly requestId: RequestId }
   | { readonly status: "withdrawn"; readonly requestId: RequestId }
   /** Closed without an answer: the agent could no longer ask for it, or its task ended. */
   | { readonly status: "closed"; readonly requestId: RequestId }
@@ -124,21 +142,20 @@ export type CommandProposed =
     };
 
 /** The form field an app without the command part answers; whatever it sends declines. */
-export const commandDecisionFieldId = "decision";
+export const commandDecisionFieldId = commandRequestAnswers.field;
 const maxResultBytes = 64 * 1_024;
-/** A name inside the Home's sentence is cut, so the sentence itself always fits whole. */
-const maxNameLength = 80;
 /** Where a script runs on this Home's own computer, by what this Home is (T4). */
 const homeScriptPlaces: Readonly<Record<HostHomeKind, CommandScriptPlace>> = {
   mac: { where: "on your Mac", name: null, as: "you" },
   "cloud-computer": { where: "on this Cloud Computer", name: null, as: "its user" },
   server: { where: "on this server", name: null, as: "its user" },
 };
-/** A name from outside the Home, as every approval sentence carries one: quoted and bounded. */
-const quotedName = (value: string | null | undefined) =>
-  value
-    ? `“${value.length > maxNameLength ? `${value.slice(0, maxNameLength - 1)}…` : value}”`
-    : null;
+/**
+ * A name from outside the Home, as every approval sentence carries one: quoted, bounded, on one
+ * line, with nothing in it that closes the quotes or turns the text around. The shared cleaner,
+ * at the shared limit, cuts only where a character starts, and nothing cuts it again.
+ */
+const quotedName = (value: string | null | undefined) => (value ? `“${outsideName(value)}”` : null);
 /** What the proposer is told of a refusal: the Home's words, never the handler's. */
 export const commandRefusedWords = "The Home refused it, so nothing changed.";
 
@@ -168,17 +185,51 @@ export class CommandRequestService {
   readonly #database: Kysely<DatabaseSchema>;
   readonly #requests: { get(id: RequestId): Promise<Request | null> };
   readonly #homeKind: HostHomeKind | undefined;
+  /** How long after a lost receipt the record is read again from its attempt. */
+  readonly #reconcileDelayMs: number;
+  /**
+   * Approvals in flight in this process, counted from before the approval begins until its
+   * receipt is written or given up: a read leaves their receipt alone. A count, so a second
+   * approval of the same Request ending first never clears the first's.
+   */
+  readonly #inFlight = new Map<RequestId, number>();
+  #enter(requestId: RequestId) {
+    this.#inFlight.set(requestId, (this.#inFlight.get(requestId) ?? 0) + 1);
+  }
+  #leave(requestId: RequestId) {
+    const left = (this.#inFlight.get(requestId) ?? 1) - 1;
+    if (left > 0) this.#inFlight.set(requestId, left);
+    else this.#inFlight.delete(requestId);
+  }
   constructor(options: {
     readonly store: CommandRequestStore;
     readonly database: Kysely<DatabaseSchema>;
     readonly requests: { get(id: RequestId): Promise<Request | null> };
     /** What this Home's own computer is (its configuration): where its own work runs. */
     readonly homeKind?: HostHomeKind | undefined;
+    readonly reconcileDelayMs?: number;
   }) {
     this.#store = options.store;
     this.#database = options.database;
     this.#requests = options.requests;
     this.#homeKind = options.homeKind;
+    this.#reconcileDelayMs = options.reconcileDelayMs ?? 30_000;
+  }
+
+  /**
+   * One later read of a lost receipt from its attempt, so the person's card settles without a
+   * restart; the reads the person's apps make stay as they are (rule 7).
+   */
+  #reconcileLater(requestId: RequestId) {
+    const timer = setTimeout(() => {
+      void this.reconcile(requestId).catch((error: unknown) =>
+        console.warn("A lost receipt could not be read from its attempt", {
+          requestId,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }, this.#reconcileDelayMs);
+    timer.unref?.();
   }
 
   /** Opens the person's Request for a command the door put to the person. */
@@ -196,44 +247,107 @@ export class CommandRequestService {
   }): Promise<CommandProposed> {
     const row = commandRow(input.command.type) as CommandRow;
     const face = commandAskedFace(input.command.type, input.face);
-    const governs = (row.governs as (c: HostApiCommand) => CommandResource)(input.command);
-    const stored = proposedCommand(row, input.command);
-    const names = await this.name(governs, input.ownerUserId);
-    const named = commandSentence(input.command, () => names).slice(0, requestTitleMaxLength);
-    const asker = askedBy(input.proposer);
-    const summary = titleFirst(named, ` · ${asker}`);
-    const gives = commandGives(
-      input.command,
-      face,
-      await this.#scriptPlace(input.command, input.ownerUserId),
-    );
+    // A close of a group's members names the members the person will be shown, and closes only
+    // those: one that joins later is untouched (D4).
+    const command = await this.#withShownMembers(input.command, input.ownerUserId);
+    const governs = (row.governs as (c: HostApiCommand) => CommandResource)(command);
+    const stored = proposedCommand(row, command);
+    const callId = `command:${input.proposer.key}:${input.callKey}`.slice(0, 512);
+    const askKey = digest([input.proposer.key, command.type, commandResourceKey(governs)]);
+    const argumentsDigest = digest(stored);
+    // The same call, the same ask, a remembered no and the proposer's waiting asks answer it
+    // before the Home looks anything up for it.
+    const early = await this.#store.answerBeforeAsking({
+      ownerUserId: input.ownerUserId,
+      callId,
+      part: { askKey, argumentsDigest, proposer: input.proposer },
+    });
+    if (early?.status === "answered" && early.outcome.status === "running") {
+      await this.reconcile(early.requestId);
+      const settled = await this.#store.answerBeforeAsking({
+        ownerUserId: input.ownerUserId,
+        callId,
+        part: { askKey, argumentsDigest, proposer: input.proposer },
+      });
+      if (settled && settled.status !== "pending") return settled;
+    }
+    if (early) {
+      if (early.status !== "pending") return early;
+      return { status: "pending", requestId: early.request.id, existing: early.replayed };
+    }
+    const words = await this.#words(command, face, input.proposer, input.ownerUserId);
     const reason = input.reason?.trim().slice(0, 500) || null;
     const part: CommandRequestPart = {
-      type: input.command.type,
+      type: command.type,
       family: row.family,
       face: row.faces[face]!.class,
-      summary,
-      sentence: named,
-      gives,
+      summary: words.summary,
+      sentence: words.sentence,
+      gives: words.gives,
       command: RequestJsonObjectSchema.parse(JSON.parse(JSON.stringify(stored))),
+      ...(command !== input.command && command.type === "tab.group.close"
+        ? { homeAdded: ["tabIds"] }
+        : {}),
       secretPaths: [...(row.secretFields ?? [])],
       governs: JSON.parse(JSON.stringify(governs)) as CommandRequestPart["governs"],
-      askKey: digest([input.proposer.key, input.command.type, commandResourceKey(governs)]),
-      argumentsDigest: digest(stored),
+      askKey,
+      argumentsDigest,
       proposer: { ...input.proposer },
       agentReason: reason,
-      editor: commandEditor(input.command.type),
+      notes: words.notes,
+      editor: commandEditor(command.type),
     };
+    const subject = proposalSubject({
+      originatingAgentSessionId:
+        "agentSessionId" in input.origin ? input.origin.agentSessionId : null,
+      originatingRunId: "runId" in input.origin ? input.origin.runId : null,
+      originatingOccurrenceId: "occurrenceId" in input.origin ? input.origin.occurrenceId : null,
+      originatingWatchActivationId:
+        "watchActivationId" in input.origin ? input.origin.watchActivationId : null,
+      connectionId: input.proposer.connectionId,
+    });
     const opened = await this.#store.open({
       ownerUserId: input.ownerUserId,
-      callId: `command:${input.proposer.key}:${input.callKey}`.slice(0, 512),
+      callId,
       origin: input.origin,
       originatingThreadId: input.originatingThreadId,
       part,
-      presentation: commandPresentation(part, named, asker),
+      presentation: commandPresentation(part, words.sentence, words.asker),
+      // A connection's grant is read once more as the Request is written: narrowed since the door
+      // admitted it, what it asked about reads like nothing there and no Request opens, so no name
+      // of it is written for that connection to read (rule 5).
+      ...(input.proposer.connectionId && subject
+        ? {
+            stillAsks: (transaction: Kysely<DatabaseSchema>) =>
+              stillReaches(transaction, input.ownerUserId, subject, command),
+          }
+        : {}),
     });
     if (opened.status !== "pending") return opened;
     return { status: "pending", requestId: opened.request.id, existing: opened.replayed };
+  }
+
+  /**
+   * A group close names the members it closes: the ones the group has as the agent asks, unless
+   * the agent named them itself. The card lists them; the close acts on those alone.
+   */
+  async #withShownMembers(command: HostApiCommand, owner: UserId): Promise<HostApiCommand> {
+    if (command.type !== "tab.group.close" || command.tabIds) return command;
+    const row = await this.#database
+      .selectFrom("tabLayouts")
+      .select("items")
+      .where("ownerId", "=", owner)
+      .executeTakeFirst();
+    const items = (row?.items ?? []) as readonly {
+      readonly kind?: string;
+      readonly group?: { readonly groupId?: string; readonly tabIds?: readonly string[] };
+    }[];
+    const group = items.find(
+      (item) => item.kind === "group" && item.group?.groupId === command.groupId,
+    );
+    return group?.group?.tabIds
+      ? ({ ...command, tabIds: [...group.group.tabIds] } as HostApiCommand)
+      : command;
   }
 
   /** An agent withdraws its own ask; another's is not there for it. */
@@ -241,203 +355,384 @@ export class CommandRequestService {
     readonly ownerUserId: UserId;
     readonly requestId: RequestId;
     readonly proposerKey: ProposerLineageKey;
+    /** Under a connection's grant, the caller as it stands: an ask it no longer reaches is unknown. */
+    readonly caller?: AuthoritySubject;
   }): Promise<CommandProposed> {
-    return this.#store.withdraw(input);
+    const { caller, ...rest } = input;
+    return this.#store.withdraw({
+      ...rest,
+      ...(caller
+        ? {
+            reaches: async (transaction, part) => {
+              const command = storedProposal(part);
+              return command
+                ? stillReaches(transaction, input.ownerUserId, caller, command)
+                : false;
+            },
+          }
+        : {}),
+    });
   }
 
   /**
    * The person declines. Whatever an app sends through `request.respond` on a command Request,
    * a choice, a form, free text, is a decline: approving is never a form answer.
    */
-  decline(input: {
+  async decline(input: {
     readonly requestId: RequestId;
     readonly expectedRevision: string;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
   }) {
-    return this.#store.decline(input);
+    // A command Request has fixed answers and no words: whatever is sent is the plain decline,
+    // or, where the card offers it, that the person did it themselves. Nothing typed is kept, and
+    // nothing typed reaches the agent (an agent's reason may ask for a secret in the box).
+    const pending = await this.#requests.get(input.requestId);
+    const doneMyself =
+      (pending?.command?.secretPaths.length ?? 0) > 0 &&
+      input.response.kind === "form" &&
+      input.response.answers[commandRequestAnswers.field]?.[0] === commandRequestAnswers.doneMyself;
+    return this.#store.decline({
+      ...input,
+      response: {
+        kind: "form",
+        answers: {
+          [commandRequestAnswers.field]: [
+            doneMyself ? commandRequestAnswers.doneMyself : commandRequestAnswers.decline,
+          ],
+        },
+      },
+    });
   }
 
   /**
-   * The person approves the command, as proposed or as they changed it on its screen. It must be
-   * the same type and change the same thing; it runs as the person through `run`, the door. The
-   * answer is recorded before it runs and its outcome after; an outcome lost in between is
-   * `unknown`, and nothing runs it again.
+   * The person approves the proposal: the Home runs the command it stored, exactly, for the
+   * revision the person reviewed. The approval carries no command of its own, so what the card
+   * showed is what runs. A command that carries a value only the person types is never approved
+   * here; it is done on its own screen. In the approval's own transaction, under the Request's
+   * lock, its proposer must still be able to ask for it as it asked, and the Home's words must
+   * still read as the person reviewed them; the proposer is admitted once more where the
+   * effect's attempt is recorded. It runs as the person through `run`, the door. The answer is
+   * recorded before it runs and its outcome after; an outcome lost in between is read back from
+   * the attempt, and nothing runs it again.
    */
   async approve(
     actor: PersonActor,
     input: {
       readonly requestId: RequestId;
       readonly expectedRevision: string;
-      readonly command: Readonly<Record<string, unknown>>;
       /** The approving call's own key: the same approval again answers with its outcome. */
       readonly idempotencyKey: string;
     },
     run: (person: PersonActor, command: HostApiCommand) => Promise<HostApiCommandOutput>,
     person: (proposal: NonNullable<PersonActor["proposal"]>) => PersonActor,
   ): Promise<CommandRequestOutcome> {
-    const pending = await this.#requests.get(input.requestId);
+    let pending = await this.#requests.get(input.requestId);
     if (!pending?.command || pending.requestedBy !== actor.userId)
       throw new OpensteerError({ code: "not_found", message: "Request not found" });
-    // The same approval again: what the first one came to, and nothing runs twice.
-    if (pending.status !== "pending" && pending.command.approvalKey === input.idempotencyKey)
-      return pending.command.outcome ?? { status: "running" };
-    const parsed = hostApi["commands.dispatch"].payload.safeParse({
-      ...input.command,
-      type: pending.command.type,
-      idempotencyKey: `command-request:${input.requestId}`,
-    });
-    if (!parsed.success)
+    // A value only the person types is never approved here, whatever is sent.
+    if (pending.command.secretPaths.length > 0)
       throw new OpensteerError({
-        code: "bad_request",
-        message: "That command is not valid as changed. Check its fields and approve again.",
+        code: "conflict",
+        reason: "command-needs-person-screen",
+        message: "This needs something only you type. Do it on its own screen in Opensteer.",
       });
-    const command = parsed.data;
-    if (input.command.type !== undefined && input.command.type !== pending.command.type)
-      throw changesWhatWasAsked();
+    // The same approval again: what the first one came to, read back from its attempt if its
+    // receipt was lost, and nothing runs twice.
+    if (pending.status !== "pending" && pending.command.approvalKey === input.idempotencyKey) {
+      if (pending.command.outcome?.status === "running" && !this.#inFlight.has(input.requestId))
+        pending = (await this.#store.reconcileRunning(input.requestId)) ?? pending;
+      return pending.command!.outcome ?? { status: "running" };
+    }
+    const command = storedProposal(pending.command);
+    if (!command)
+      throw new OpensteerError({
+        code: "conflict",
+        reason: "command-changed",
+        message:
+          "This proposal no longer reads as a command this Home runs, so it cannot be approved.",
+      });
     const row = commandRow(command.type) as CommandRow;
-    const governs = (row.governs as (c: HostApiCommand) => CommandResource)(command);
-    // A connection's ask is answerable only while it could still ask for this: a Disconnect or a
-    // narrowing since closes it, and nothing runs.
-    const connectionId = pending.command.proposer.connectionId;
-    const approved = RequestJsonObjectSchema.parse(
-      JSON.parse(JSON.stringify(proposedCommand(row, command))),
+    const stored = pending as Request & { readonly command: CommandRequestPart };
+    const askedFace = Math.max(
+      0,
+      row.faces.findIndex((shape) => shape.class === stored.command!.face),
     );
-    const begun = await this.#store.beginApproval({
-      ...(connectionId
-        ? {
-            // As the connection the door admitted it under (`connection:<id>`), in the approval's
-            // own transaction.
-            stillAsks: (transaction) =>
-              this.#stillAsks(
-                transaction,
-                actor.userId,
-                connectionId,
-                pending.originatingAgentSessionId ?? null,
-                command,
-              ),
-          }
-        : {}),
-      requestId: input.requestId,
-      expectedRevision: input.expectedRevision,
-      resolvedBy: actor.userId,
-      settlementSessionId: actor.session.id,
-      approvalKey: input.idempotencyKey,
-      approved: {
-        command: approved,
-        changed: digest(approved) !== pending.command.argumentsDigest,
-      },
-      accept: (part) => {
-        if (part.type !== command.type) throw changesWhatWasAsked();
-        if (
-          commandResourceKey(governs) !==
-          commandResourceKey(part.governs as unknown as CommandResource)
-        )
-          throw changesWhatWasAsked();
-      },
-    });
-    // The same approval twice at once: the second reads what the first came to; nothing runs twice.
-    if (begun.replayed) return begun.replayed;
-    if (begun.closed)
-      throw new OpensteerError({
-        code: "forbidden",
-        reason: "proposer-gone",
-        message: "The agent that asked can no longer ask for this, so its Request closed.",
+    const stillAsks = (transaction: Kysely<DatabaseSchema>) =>
+      this.#proposerStillAsks(transaction, actor.userId, stored, command);
+    this.#enter(input.requestId);
+    try {
+      const begun = await this.#store.beginApproval({
+        // Whoever asked must still be able to ask for this, as it asked, in the approval's own
+        // transaction: a Disconnect, a narrowing or a paused automation since closes the ask, and
+        // nothing runs.
+        stillAsks,
+        // The Home's words as they are true now, read under the same lock: if they no longer read
+        // as the person reviewed them, the card is written anew and nothing is approved.
+        checkWords: async (transaction, part) => {
+          const words = await this.#words(
+            command,
+            askedFace,
+            part.proposer as CommandProposer,
+            actor.userId,
+            transaction,
+          );
+          if (
+            words.sentence === (part.sentence ?? part.summary) &&
+            words.gives === part.gives &&
+            canonicalJson(words.notes) === canonicalJson(part.notes ?? [])
+          )
+            return null;
+          const rewritten: CommandRequestPart = {
+            ...part,
+            summary: words.summary,
+            sentence: words.sentence,
+            gives: words.gives,
+            notes: words.notes,
+          };
+          return {
+            part: rewritten,
+            presentation: commandPresentation(rewritten, words.sentence, words.asker),
+          };
+        },
+        requestId: input.requestId,
+        expectedRevision: input.expectedRevision,
+        resolvedBy: actor.userId,
+        settlementSessionId: actor.session.id,
+        approvalKey: input.idempotencyKey,
+        approved: { command: RequestJsonObjectSchema.parse(stored.command.command) },
+        accept: () => undefined,
       });
-    const approver = person({
-      requestId: input.requestId,
-      revision: input.expectedRevision,
-      proposedBy: { ...pending.command.proposer },
-      // Where the store makes the change in a transaction it shares (a tab group's), the
-      // proposer's admission is run once more there: a group that gained a tab it does not hold
-      // since is refused, and nothing changes.
-      ...(connectionId
-        ? {
-            readmit: async (transaction: Kysely<DatabaseSchema>) => {
-              if (
-                !(await this.#stillAsks(
-                  transaction,
-                  actor.userId,
-                  connectionId,
-                  pending.originatingAgentSessionId ?? null,
-                  command,
-                ))
-              )
-                throw raisedBeforeEffect(
-                  new OpensteerError({
-                    code: "forbidden",
-                    reason: "proposer-gone",
-                    message: "The agent that asked can no longer ask for this, so nothing changed.",
-                  }),
-                );
-            },
-          }
-        : {}),
-    });
-    // The one way a command acts (G4): its attempt in the proposer's Disconnect set, the act,
-    // then what is known of it. Its last admission is the approval's own (#stillAsks above).
-    const effect = await runCommandEffect({
-      row,
-      attempts: commandAttempts(this.#database),
-      attempt: {
-        requestedBy: actor.userId,
-        callerKey: `request:${input.requestId}`,
-        connectionId: connectionId ?? null,
-        type: command.type,
-        idempotencyKey: (command as { readonly idempotencyKey: string }).idempotencyKey,
-      },
-      act: () => run(approver, command),
-    });
-    let outcome: CommandRequestOutcome;
-    if (effect.status === "done") {
-      // Exactly what the door gives that agent for this command when it runs it itself; what
-      // ran is done even if its result cannot be kept.
-      let result: unknown = null;
-      try {
-        result = JSON.parse(JSON.stringify(commandAgentOutput(command, effect.output) ?? null));
-      } catch {
-        result = undefined;
-      }
-      outcome =
-        result !== undefined && JSON.stringify(result).length <= maxResultBytes
-          ? { status: "done", result: result as never }
-          : { status: "done" };
-    } else if (effect.status === "failed") {
-      // The proposer reads the Home's words only.
-      outcome = {
-        status: "failed",
-        code: effect.error instanceof OpensteerError ? effect.error.code : "internal",
-        message: commandRefusedWords,
+      // The same approval twice at once: the second reads what the first came to; nothing runs twice.
+      if (begun.replayed) return begun.replayed;
+      if (begun.changed)
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "request-changed",
+          message: "This changed since you read it. Look at it again before approving.",
+        });
+      if (begun.closed) throw proposerGone();
+      const connectionId = stored.command.proposer.connectionId;
+      // The proposer once more, where the store makes the change in a transaction it shares (a
+      // tab group's): a group that gained a tab it does not hold since is refused, nothing changes.
+      const readmit = async (transaction: Kysely<DatabaseSchema>) => {
+        if (!(await stillAsks(transaction))) throw raisedBeforeEffect(proposerGone());
       };
-    } else outcome = { status: "unknown" };
-    await this.#store.settle(input.requestId, outcome);
-    return outcome;
+      const approver = person({
+        requestId: input.requestId,
+        revision: input.expectedRevision,
+        proposedBy: { ...stored.command.proposer },
+        readmit,
+      });
+      let outcome: CommandRequestOutcome;
+      {
+        // The one way a command acts (G4): its attempt in the proposer's Disconnect set, recorded
+        // in one transaction with the proposer's last admission (`readmit`), the act, then what is
+        // known of it.
+        const effect = await runCommandEffect({
+          row,
+          attempts: commandAttempts(this.#database),
+          attempt: {
+            requestedBy: actor.userId,
+            callerKey: `request:${input.requestId}`,
+            connectionId: connectionId ?? null,
+            type: command.type,
+            idempotencyKey: `command-request:${input.requestId}`,
+          },
+          readmit,
+          receiptRetryMs: this.#reconcileDelayMs,
+          act: () =>
+            run(approver, {
+              ...command,
+              idempotencyKey: `command-request:${input.requestId}`,
+            } as HostApiCommand),
+        }).catch((error: unknown) => {
+          // Refused at the last admission: nothing was recorded or run.
+          if (error instanceof OpensteerError && error.reason === "proposer-gone")
+            return { status: "refused" as const, error };
+          throw error;
+        });
+        if (effect.status === "refused") {
+          await this.#store.closeRefusedApproval(input.requestId);
+          throw proposerGone();
+        }
+        if (effect.status === "done") {
+          // What a proposer reads of a person's command: everything for your own agents' Runs;
+          // under a connection's grant only that it ran (rule 5).
+          let result: unknown = null;
+          try {
+            result = JSON.parse(
+              JSON.stringify(
+                commandAgentOutput(command, effect.output, connectionId !== undefined) ?? null,
+              ),
+            );
+          } catch {
+            result = undefined;
+          }
+          outcome =
+            result !== undefined && JSON.stringify(result).length <= maxResultBytes
+              ? { status: "done", result: result as never }
+              : { status: "done" };
+        } else if (effect.status === "failed") {
+          // The proposer reads the Home's words only.
+          outcome = {
+            status: "failed",
+            code: effect.error instanceof OpensteerError ? effect.error.code : "internal",
+            message: commandRefusedWords,
+          };
+        } else outcome = { status: "unknown" };
+      }
+      // The receipt: written again if writing it fails once. If it still fails, the person is
+      // told what is known of the effect, never an error for an approval that ran (rule 4): the
+      // record is read from the attempt on the next read, and once more a little later for the
+      // person, whose own reads do not repair it. The effect itself never runs again.
+      try {
+        await this.#store.settle(input.requestId, outcome);
+      } catch {
+        try {
+          await this.#store.settle(input.requestId, outcome);
+        } catch (error) {
+          console.warn("An approval's receipt could not be written; it is read from its attempt", {
+            requestId: input.requestId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          this.#reconcileLater(input.requestId);
+        }
+      }
+      return outcome;
+    } finally {
+      this.#leave(input.requestId);
+    }
   }
 
-  /** Whether the proposing connection could still ask for this command, as it is now. */
-  async #stillAsks(
+  /**
+   * An approval left running with no approval of it in flight in this process (its receipt was
+   * lost): its outcome is read from the attempt it recorded, done or unknown, and only the record
+   * is written. The proposer's reads (the same call again, its requests, its activity) and the
+   * person's call this first; startup does it for every one.
+   */
+  async reconcile(requestId: RequestId): Promise<void> {
+    if (!this.#inFlight.has(requestId)) await this.#store.reconcileRunning(requestId);
+  }
+
+  /** `reconcile` for each Request shown that reads as running; nothing for any other. */
+  async reconcileShown(
+    requests: readonly { readonly id: string; readonly command?: unknown }[],
+  ): Promise<void> {
+    for (const request of requests) {
+      const outcome = (request.command as { readonly outcome?: { readonly status?: unknown } })
+        ?.outcome;
+      if (outcome?.status === "running") await this.reconcile(request.id as RequestId);
+    }
+  }
+
+  /**
+   * The person's own command succeeded (the door calls this, after the handler, for a type
+   * whose row declares values only the person types): every pending proposal of that owner with
+   * the same type and arguments digest (which leaves out the key and those values) is settled as
+   * done by the person. Any proposer; no other matching.
+   */
+  async settleDoneByPerson(owner: UserId, command: HostApiCommand): Promise<void> {
+    const row = commandRow(command.type) as CommandRow;
+    if (!row.secretFields?.length) return;
+    await this.#store.settleDoneByPerson({
+      ownerUserId: owner,
+      type: command.type,
+      argumentsDigest: digest(proposedCommand(row, command)),
+    });
+  }
+
+  /**
+   * The Home's own words for a proposal, as they are true now: its sentence (what it is done to,
+   * named), the card's title, what it gives to whom, and the notes beside its values. Computed
+   * when the agent asks, and again inside the approval's transaction.
+   */
+  async #words(
+    command: HostApiCommand,
+    face: number,
+    proposer: CommandProposer,
+    owner: UserId,
+    database: Kysely<DatabaseSchema> = this.#database,
+  ) {
+    const row = commandRow(command.type) as CommandRow;
+    const governs = (row.governs as (c: HostApiCommand) => CommandResource)(command);
+    const names = await this.name(governs, owner, database);
+    const sentence = commandSentence(command, () => names).slice(0, requestTitleMaxLength);
+    const asker = askedBy(proposer);
+    return {
+      sentence,
+      asker,
+      summary: titleFirst(sentence, ` · ${asker}`),
+      gives: commandGives(command, face, await this.#scriptPlace(command, owner, database)),
+      notes: await this.#notes(command, proposedCommand(row, command), owner, database),
+    };
+  }
+
+  /**
+   * Whether the proposer of a Request could still ask for this command, as it asked: in its
+   * direct session, its Run, its automation's run (never the bare connection), and an automation
+   * only while it is on, a connected one too.
+   */
+  async #proposerStillAsks(
     database: Kysely<DatabaseSchema>,
     owner: UserId,
-    connectionId: string,
-    sessionId: string | null,
+    request: Request,
     command: HostApiCommand,
   ): Promise<boolean> {
-    try {
-      // As the door admitted it: in its direct session when it asked from one (G2d).
-      const admission = await admitCommand(database, {
-        ownerUserId: owner,
-        subject: sessionId
-          ? { kind: "binding", bindingId: `session:${sessionId}` }
-          : commandSubject(`connection:${connectionId}`),
-        command,
-      });
-      return admission.answer !== "not_found";
-    } catch (error) {
-      if (error instanceof OpensteerError && ["forbidden", "not_found"].includes(error.code))
-        return false;
-      throw error;
+    // An automation's lineage (its firing's own ask, or a Run its firings started) stands only
+    // while the automation does: refused here, at the click, whatever any later sweep tidies.
+    if (!(await automationLineageStands(database, request))) return false;
+    // As the task it came from, not the Run or firing that sent it: one that ended on its own
+    // leaves its ask standing (D5).
+    const subject = standingSubject({
+      ...request,
+      connectionId: request.command?.proposer.connectionId,
+    });
+    return subject ? stillReaches(database, owner, subject, command) : false;
+  }
+
+  /**
+   * What the Home knows beside the proposed values, in its own words: what each id it can name
+   * names, and, for a connected agent's settings, what each changed value is now. A value itself
+   * is never copied: the card reads every value from the proposed command.
+   */
+  async #notes(
+    command: HostApiCommand,
+    stored: Readonly<Record<string, unknown>>,
+    owner: UserId,
+    database: Kysely<DatabaseSchema> = this.#database,
+  ): Promise<CommandReviewNote[]> {
+    // Within what the part holds (its bounds, checked before anything is looked up): a path the
+    // part could not carry, or a note past its count, is left out, never failing the proposal.
+    const notes = new Map<string, { name?: string; current?: string }>();
+    const room = (path: string) => path.length <= notePathLimit && notes.size < noteLimit;
+    for (const field of commandReviewFields(stored)) {
+      const key = field.path.split("/").at(-1)!;
+      const kind = Object.hasOwn(idKinds, key) ? idKinds[key] : undefined;
+      if (!kind || field.value === null || !room(field.path)) continue;
+      const id = JSON.parse(field.value) as unknown;
+      if (typeof id !== "string") continue;
+      const name = await this.name({ kind, id }, owner, database);
+      if (name) notes.set(field.path, { name });
     }
+    if (command.type === "connection.update") {
+      // As the person's own list of connections draws it: shown to the person, never admitted by.
+      const now = (await new AgentConnectionStore(database).list(owner)).find(
+        ({ id }) => id === command.connectionId,
+      );
+      if (now)
+        for (const key of ["label", "accessMode", "grant"] as const) {
+          const proposed = command[key];
+          if (proposed === undefined || canonicalJson(proposed) === canonicalJson(now[key]))
+            continue;
+          const path = commandPath([key]);
+          const current = commandReviewText(now[key]);
+          if (current.length > noteCurrentLimit || (!notes.has(path) && !room(path))) continue;
+          notes.set(path, { ...notes.get(path), current });
+        }
+    }
+    return [...notes].map(([path, note]) => ({ path, ...note }));
   }
 
   /**
@@ -445,7 +740,11 @@ export class CommandRequestService {
    * Home's own computer is what this Home is; another computer is its device, by its own name,
    * quoted as every outside name is. Null for every other command.
    */
-  async #scriptPlace(command: HostApiCommand, owner: UserId): Promise<CommandScriptPlace | null> {
+  async #scriptPlace(
+    command: HostApiCommand,
+    owner: UserId,
+    database: Kysely<DatabaseSchema> = this.#database,
+  ): Promise<CommandScriptPlace | null> {
     if (!["trigger.create", "trigger.update", "trigger.run"].includes(command.type)) return null;
     const input = command as unknown as {
       readonly triggerId?: string;
@@ -455,7 +754,7 @@ export class CommandRequestService {
       command.type === "trigger.create"
         ? (input.input?.anchorThreadId ?? null)
         : ((
-            await this.#database
+            await database
               .selectFrom("triggers")
               .select("anchorThreadId")
               .where("id", "=", (input.triggerId ?? "") as never)
@@ -463,7 +762,7 @@ export class CommandRequestService {
               .executeTakeFirst()
           )?.anchorThreadId ?? null);
     if (anchor === null) return null;
-    const device = await this.#database
+    const device = await database
       .selectFrom("threads")
       .innerJoin("executionEnvironments", "executionEnvironments.id", "threads.environmentId")
       .leftJoin("runners", "runners.id", "executionEnvironments.runnerId")
@@ -489,9 +788,12 @@ export class CommandRequestService {
   }
 
   /** The governed thing as the person's apps name it, where the Home can tell cheaply. */
-  async name(resource: CommandResource, owner: UserId): Promise<string | null> {
+  async name(
+    resource: CommandResource,
+    owner: UserId,
+    database: Kysely<DatabaseSchema> = this.#database,
+  ): Promise<string | null> {
     const id = resource.id;
-    const database = this.#database;
     const quoted = quotedName;
     if (id === null) return null;
     switch (resource.kind) {
@@ -582,11 +884,31 @@ export class CommandRequestService {
   }
 }
 
+/** What a part's notes may hold (`CommandRequestPartSchema`'s bounds). */
+const noteLimit = 200;
+const notePathLimit = 400;
+const noteCurrentLimit = 16_000;
+
+/** The ids inside a command the Home names, by the field that holds one. */
+const idKinds: Readonly<Record<string, CommandResource["kind"]>> = {
+  agentConnectionId: "connection",
+  automationId: "automation",
+  connectionId: "connection",
+  deviceId: "device",
+  harnessInstanceId: "engine",
+  machineId: "device",
+  profileId: "browser-profile",
+  taskId: "task",
+  threadId: "task",
+  triggerId: "automation",
+};
+
 /** Who asked, marked as the agent's own: its name and its task's title are its words. */
 function askedBy(proposer: CommandProposer): string {
+  const who = proposer.kind === "connection" ? "the connected agent" : "the agent";
   return proposer.taskTitle
-    ? `Asked by the agent “${proposer.name}”, in its task “${proposer.taskTitle}”`
-    : `Asked by the agent “${proposer.name}”`;
+    ? `Asked by ${who} ${quotedName(proposer.name)}, in its task ${quotedName(proposer.taskTitle)}`
+    : `Asked by ${who} ${quotedName(proposer.name)}`;
 }
 
 /** The Home's sentence first and whole; whatever follows is cut to fit the title. */
@@ -609,7 +931,9 @@ export function commandPresentation(
   ];
   if (part.gives) lines.push(part.gives);
   if (part.agentReason)
-    lines.push(`The agent's own reason (its words, not checked): ${part.agentReason}`);
+    lines.push(
+      `The agent's own reason (its words, not checked): ${outsideProse(part.agentReason).replace(/\n/gu, " ")}`,
+    );
   return {
     kind: "form",
     title: part.summary,
@@ -618,9 +942,21 @@ export function commandPresentation(
     fields: [
       {
         id: commandDecisionFieldId,
-        prompt: "Decline it here, or approve it on its own screen.",
-        choices: [{ label: "Decline", value: "decline" }],
-        custom: true,
+        ...(part.secretPaths.length > 0
+          ? {
+              prompt:
+                "It needs something only you type, so it is not approved here. Do it yourself on its own screen, then say so here, or decline.",
+              choices: [
+                { label: "I did it myself", value: commandRequestAnswers.doneMyself },
+                { label: "Decline", value: commandRequestAnswers.decline },
+              ],
+            }
+          : {
+              prompt: "Approve runs it as you, exactly as shown. Decline tells the agent no.",
+              choices: [{ label: "Decline", value: commandRequestAnswers.decline }],
+            }),
+        // Fixed answers only: nothing typed here could reach the agent.
+        custom: false,
         multiSelect: false,
         secret: false,
       },
@@ -628,10 +964,10 @@ export function commandPresentation(
   };
 }
 
-function changesWhatWasAsked(): OpensteerError {
+function proposerGone(): OpensteerError {
   return new OpensteerError({
-    code: "conflict",
-    reason: "command-changed",
-    message: "That changes what was asked. Change only how, not what.",
+    code: "forbidden",
+    reason: "proposer-gone",
+    message: "The agent that asked can no longer ask for this, so its Request closed.",
   });
 }

@@ -1,4 +1,4 @@
-import { AgentOperationIdSchema } from "@opensteer/core";
+import { AgentOperationIdSchema, CommandAgentStatusSchema } from "@opensteer/core";
 import { TabIdSchema } from "@opensteer/core";
 import { AppSchema, AppListItemSchema } from "@opensteer/core";
 import { AgentBrowserSessionSummarySchema } from "@opensteer/protocol";
@@ -283,7 +283,8 @@ export const RequestOutputSchema = z.object({
   link: AgentLinkSchema.optional(),
   id: RequestIdSchema,
   kind: RequestKindSchema,
-  status: RequestStatusSchema,
+  // A command Request reads its value-free status, as every agent surface does.
+  status: z.union([RequestStatusSchema, CommandAgentStatusSchema]),
   reason: z.string().nullable().optional(),
   originatingTaskId: ThreadIdSchema.nullable().optional(),
   createdAt: z.string(),
@@ -469,7 +470,15 @@ export const TriggerOutputSchema = z.object({
 
 export const TriggerWriteOutputSchema = z.union([
   z.object({
-    status: z.enum(["pending", "declined", "withdrawn", "closed", "answered"]),
+    status: z.enum([
+      "pending",
+      "declined",
+      "withdrawn",
+      "closed",
+      "answered",
+      "person-says-done",
+      "done-by-person",
+    ]),
     requestId: RequestIdSchema,
     next: z.string().optional(),
     outcome: z.unknown().optional(),

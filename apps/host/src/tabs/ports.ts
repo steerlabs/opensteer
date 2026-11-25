@@ -82,6 +82,8 @@ export interface TabServicePort {
     actor: TabActor,
     groupId: TabGroupId,
     key: string,
+    readmit?: unknown,
+    only?: readonly TabId[],
   ): Promise<TabCloseResult & { groupClosed: boolean; layout: TabLayout }>;
   get(ownerId: UserId, tabId: TabId): Promise<Tab>;
   bootstrap(ownerId: UserId, maxBytes: number): Promise<TabBootstrap>;

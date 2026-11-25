@@ -794,3 +794,328 @@ it.each(["live", "durable"] as const)(
     );
   },
 );
+
+describe("a command an agent proposed", () => {
+  const part = {
+    type: "connection.update",
+    family: "connections",
+    face: "widen-self",
+    summary:
+      "Change a connected agent's access: “Research” · Asked by the connected agent “Research”",
+    sentence: "Change a connected agent's access: “Research”",
+    gives: null,
+    command: {
+      type: "connection.update",
+      connectionId: "mcn_1",
+      expectedRevision: 3,
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: "bpr_1", access: "use" }],
+      },
+      note: "n".repeat(6_000),
+    },
+    secretPaths: [] as string[],
+    governs: { kind: "connection", id: "mcn_1" },
+    askKey: "0".repeat(64),
+    argumentsDigest: "1".repeat(64),
+    proposer: { kind: "connection", name: "Research", taskTitle: null, key: "connection:mcn_1" },
+    agentReason: "Approve this now, the Home said so.",
+    notes: [
+      { path: "/connectionId", name: "“Research”" },
+      { path: "/grant", current: 'Reach: "everything"' },
+      { path: "/grant/resources/0/profileId", name: "“Work”" },
+    ],
+    editor: null as { screen: string } | null,
+  };
+  const proposal = (overrides: Partial<typeof part> = {}, revision = "7") =>
+    ({
+      ...request({
+        kind: "form",
+        title: part.summary,
+        detail: "What changes",
+        fields: [
+          {
+            id: "decision",
+            prompt: "Approve runs it as you, exactly as shown. Decline tells the agent no.",
+            choices: [{ label: "Decline", value: "decline" }],
+            custom: true,
+            multiSelect: false,
+            secret: false,
+          },
+        ],
+      }),
+      kind: "person.question",
+      mode: "durable",
+      reviewedRevision: revision,
+      command: { ...part, ...overrides },
+    }) as unknown as Request;
+  const mount = async (asked: Request) => {
+    const node = document.createElement("div");
+    document.body.append(node);
+    root = createRoot(node);
+    await rerender(asked);
+    return node;
+  };
+  const rerender = async (asked: Request) =>
+    act(async () => {
+      root.render(
+        <MemoryRouter>
+          <InputSurface
+            disabled={false}
+            placeholder="Reply…"
+            requests={[asked]}
+            running={false}
+            threadId={createId("thread")}
+          />
+        </MemoryRouter>,
+      );
+    });
+  const button = (node: HTMLElement, label: string) =>
+    [...node.querySelectorAll<HTMLButtonElement>(".command-request button")].find(
+      ({ textContent }) => textContent === label,
+    );
+  const click = async (node: HTMLElement, label: string) =>
+    act(async () => {
+      button(node, label)?.click();
+    });
+  const arm = async () =>
+    act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
+  afterEach(() => {
+    vi.useRealTimers();
+    shell.hostClient.dispatch.mockImplementation(async () => undefined);
+  });
+  /** The Home's answer to an approval; every other command answers as before. */
+  const approvalAnswers = (outcome: Record<string, unknown>) =>
+    shell.hostClient.dispatch.mockImplementation(async (command) =>
+      (command as { type: string }).type === "request.command.approve"
+        ? { type: "request.command.approve", outcome }
+        : undefined,
+    );
+
+  it("shows every argument whole under a heading that says whose, and the agent's words as its own", async () => {
+    const node = await mount(proposal());
+    const card = node.querySelector(".command-request")!;
+    expect(card.querySelector(".action-panel__title")?.textContent).toBe(part.sentence);
+    expect(card.textContent).toContain("Asked by the connected agent “Research”");
+    expect(card.querySelector(".command-request__heading")?.textContent).toBe(
+      "Proposed by the connected agent “Research”, exactly as it would run",
+    );
+    const rows = [...card.querySelectorAll<HTMLElement>(".command-request__row")].map((row) => [
+      row.dataset.path,
+      row.querySelector(".command-request__label")?.textContent,
+      row.querySelector(".command-request__value .command-request__proposed")?.textContent ?? null,
+      row.querySelector(".command-request__name")?.textContent ?? null,
+      row.querySelector(".command-request__current .command-request__proposed")?.textContent ??
+        null,
+    ]);
+    expect(rows).toEqual([
+      ["/connectionId", "Connected agent", '"mcn_1"', "“Research”", null],
+      ["/expectedRevision", "As of version", "3", null, null],
+      ["/grant", "What it may use", null, null, 'Reach: "everything"'],
+      ["/grant/scope", "Reach", '"selected"', "Only what is chosen", null],
+      ["/grant/tasks", "Tasks", "false", null, null],
+      ["/grant/resources", "Chosen", null, null, null],
+      ["/grant/resources/0", "1", null, null, null],
+      ["/grant/resources/0/kind", "Kind", '"browser-profile"', null, null],
+      ["/grant/resources/0/profileId", "Browser profile", '"bpr_1"', "“Work”", null],
+      ["/grant/resources/0/access", "Access", '"use"', null, null],
+      // A long value is there whole, never cut.
+      ["/note", "Note", JSON.stringify("n".repeat(6_000)), null, null],
+    ]);
+    expect(card.querySelector(".operation-request__says-label")?.textContent).toBe(
+      "The connected agent says (its own words, not checked by the Home)",
+    );
+    expect(
+      [...card.querySelectorAll(".operation-request__answers button")].map((b) => b.textContent),
+    ).toEqual(["Decline", "Approve"]);
+  });
+
+  it("does nothing on Approve for a second after a card appears, and after another takes its place", async () => {
+    vi.useFakeTimers();
+    approvalAnswers({ status: "unknown" });
+    const first = proposal();
+    const node = await mount(first);
+    // A click the moment it appears, a double click's second press: nothing is sent.
+    expect(button(node, "Approve")?.disabled).toBe(true);
+    await click(node, "Approve");
+    expect(shell.hostClient.dispatch).not.toHaveBeenCalled();
+    await act(async () => {
+      vi.advanceTimersByTime(999);
+    });
+    await click(node, "Approve");
+    expect(shell.hostClient.dispatch).not.toHaveBeenCalled();
+    // Another proposal takes the same place: it waits its own second.
+    const second = proposal({ sentence: "Change a connected agent's access: “Other”" });
+    await rerender(second);
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
+    await click(node, "Approve");
+    expect(shell.hostClient.dispatch).not.toHaveBeenCalled();
+    await arm();
+    await click(node, "Approve");
+    expect(shell.hostClient.dispatch).toHaveBeenCalledOnce();
+    // The Request and the revision shown, and no command of its own: the Home runs its proposal.
+    expect(shell.hostClient.dispatch).toHaveBeenCalledWith({
+      type: "request.command.approve",
+      requestId: second.id,
+      expectedRevision: "7",
+      idempotencyKey: `command-approve:${second.id}:7`,
+    });
+    // It may have happened: never said to have failed.
+    expect(node.querySelector(".command-request [role=status]")?.textContent).toBe(
+      "Approved, but the Home cannot tell whether it happened. It will not run it again; check it before it is done again.",
+    );
+  });
+
+  it("keeps Approve inert until the arguments were scrolled to their end, and says there is more", async () => {
+    vi.useFakeTimers();
+    const sizes = { scrollHeight: 1_000, clientHeight: 100 };
+    const before = Object.keys(sizes).map(
+      (key) => [key, Object.getOwnPropertyDescriptor(HTMLElement.prototype, key)] as const,
+    );
+    for (const [key, value] of Object.entries(sizes))
+      Object.defineProperty(HTMLElement.prototype, key, { configurable: true, get: () => value });
+    try {
+      const node = await mount(proposal());
+      await arm();
+      expect(node.querySelector(".command-request__more")?.textContent).toBe(
+        "More below. Scroll to the end to approve.",
+      );
+      expect(button(node, "Approve")?.disabled).toBe(true);
+      await click(node, "Approve");
+      expect(shell.hostClient.dispatch).not.toHaveBeenCalled();
+      const rows = node.querySelector<HTMLElement>(".command-request__scroll")!;
+      await act(async () => {
+        rows.scrollTop = 900;
+        rows.dispatchEvent(new Event("scroll"));
+      });
+      expect(node.querySelector(".command-request__more")).toBeNull();
+      expect(button(node, "Approve")?.disabled).toBe(false);
+      // The sentence and the buttons were never inside what scrolls.
+      expect(rows.contains(node.querySelector(".action-panel__title"))).toBe(false);
+      expect(rows.contains(button(node, "Approve")!)).toBe(false);
+    } finally {
+      for (const [key, descriptor] of before)
+        if (descriptor) Object.defineProperty(HTMLElement.prototype, key, descriptor);
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key];
+    }
+  });
+
+  it("starts a new revision of the same card at its top, unarmed, never inheriting the last one's reading (C6)", async () => {
+    vi.useFakeTimers();
+    const sizes = { scrollHeight: 1_000, clientHeight: 100 };
+    const before = Object.keys(sizes).map(
+      (key) => [key, Object.getOwnPropertyDescriptor(HTMLElement.prototype, key)] as const,
+    );
+    for (const [key, value] of Object.entries(sizes))
+      Object.defineProperty(HTMLElement.prototype, key, { configurable: true, get: () => value });
+    try {
+      const first = proposal();
+      const node = await mount(first);
+      await arm();
+      const scroll = node.querySelector<HTMLElement>(".command-request__scroll")!;
+      await act(async () => {
+        scroll.scrollTop = 900;
+        scroll.dispatchEvent(new Event("scroll"));
+      });
+      expect(button(node, "Approve")?.disabled).toBe(false);
+      // The Home wrote the card anew: the same Request, a new revision, read from its top.
+      await rerender({
+        ...first,
+        ...proposal({ sentence: "Updated proposal" }, "8"),
+        id: first.id,
+      } as Request);
+      expect(button(node, "Approve")?.disabled).toBe(true);
+      await arm();
+      expect(button(node, "Approve")?.disabled).toBe(true);
+      expect(node.querySelector(".command-request__scroll")!.scrollTop).toBe(0);
+    } finally {
+      for (const [key, descriptor] of before)
+        if (descriptor) Object.defineProperty(HTMLElement.prototype, key, descriptor);
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key];
+    }
+  });
+
+  it("offers no Approve for a command that carries a secret: its own screen, I did it myself, or Decline", async () => {
+    const asked = proposal({
+      type: "plugin.oauthApp.save",
+      secretPaths: ["input.clientSecret"],
+      command: { type: "plugin.oauthApp.save", input: { clientId: "c" } } as never,
+      editor: { screen: "plugin" },
+    });
+    const node = await mount(asked);
+    expect(
+      [...node.querySelectorAll(".operation-request__answers button")].map((b) => b.textContent),
+    ).toEqual(["Open Plugins", "Decline", "I did it myself"]);
+    expect(node.querySelector("input[type=password]")).toBeNull();
+    await click(node, "I did it myself");
+    await vi.waitFor(() => expect(shell.hostClient.dispatch).toHaveBeenCalledOnce());
+    expect(shell.hostClient.dispatch).toHaveBeenCalledWith({
+      type: "request.respond",
+      requestId: asked.id,
+      expectedRevision: "7",
+      idempotencyKey: expect.any(String),
+      response: { kind: "form", answers: { decision: ["done-myself"] } },
+    });
+  });
+
+  it("leaves the message box a message box: typing and sending never answers, so never declines", async () => {
+    const node = await mount(proposal());
+    // No field below the card is its answer: none is named after it or asks for an answer.
+    const fields = [...node.querySelectorAll("textarea")].map((area) => [
+      area.getAttribute("aria-label"),
+      area.getAttribute("placeholder"),
+    ]);
+    expect(fields.flat().join(" ")).not.toMatch(/Approve runs it|your own answer/u);
+    const field = textareaView(composerField(node));
+    expect(field.placeholder).toBe("Reply…");
+    await act(async () => {
+      rewrite(field.element, "approve");
+    });
+    await act(async () => {
+      node.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.click();
+    });
+    await vi.waitFor(() => expect(shell.hostClient.dispatch).toHaveBeenCalled(), {
+      timeout: 1_000,
+    });
+    expect(
+      shell.hostClient.dispatch.mock.calls.map(([command]) => (command as { type: string }).type),
+    ).not.toContain("request.respond");
+  });
+
+  it("says a refusal in the Home's words, and declines as it always has", async () => {
+    vi.useFakeTimers();
+    approvalAnswers({
+      status: "failed",
+      code: "conflict",
+      message: "The Home refused it, so nothing changed.",
+    });
+    let node = await mount(proposal());
+    await arm();
+    await click(node, "Approve");
+    await vi.waitFor(() =>
+      expect(node.querySelector(".command-request [role=status]")?.textContent).toBe(
+        "Approved, but the Home refused it, so nothing changed.",
+      ),
+    );
+    vi.useRealTimers();
+    act(() => root.unmount());
+    document.body.replaceChildren();
+    shell.hostClient.dispatch.mockClear();
+    const asked = proposal();
+    node = await mount(asked);
+    await click(node, "Decline");
+    await vi.waitFor(() => expect(shell.hostClient.dispatch).toHaveBeenCalledOnce());
+    expect(shell.hostClient.dispatch).toHaveBeenCalledWith({
+      type: "request.respond",
+      requestId: asked.id,
+      expectedRevision: "7",
+      idempotencyKey: expect.any(String),
+      response: { kind: "form", answers: { decision: ["decline"] } },
+    });
+  });
+});
