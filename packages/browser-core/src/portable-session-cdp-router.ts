@@ -297,12 +297,21 @@ interface ConnectionState extends TargetRoot {
 
 const standardJsonBudget = { maxBytes: Infinity, maxDepth: 32, maxEntries: 16_384 };
 
-/** Whether any string in a (bounded) CDP value is an extension's address. */
-function mentionsExtensionUrl(value: unknown, depth: number): boolean {
-  if (typeof value === "string") return isExtensionUrl(value);
+/**
+ * Whether any string in a (bounded) CDP value is an extension's address (when `extensions`) or an
+ * address of this Home.
+ */
+function mentionsHiddenUrl(
+  value: unknown,
+  depth: number,
+  home: ThisHomeAddressSet,
+  extensions = true,
+): boolean {
+  if (typeof value === "string")
+    return (extensions && isExtensionUrl(value)) || home.includesReported(value);
   if (depth > 16 || value === null || typeof value !== "object") return false;
   for (const entry of Array.isArray(value) ? value : Object.values(value))
-    if (mentionsExtensionUrl(entry, depth + 1)) return true;
+    if (mentionsHiddenUrl(entry, depth + 1, home, extensions)) return true;
   return false;
 }
 
@@ -399,6 +408,14 @@ export class SessionCdpRouter {
   #home = new ThisHomeAddressSet(noHomeAddresses);
   /** Targets whose page the browser last reported on an address of this Home. */
   readonly #homeTargets = new Set<string>();
+  /**
+   * Pages one of whose frames committed an address of this Home, with the page's address then
+   * (C3): refused like a page on one until its frame tree holds no such frame or the page goes
+   * elsewhere.
+   */
+  readonly #homeFramePages = new Map<string, unknown>();
+  /** The address each target last reported, while this Home's addresses are known. */
+  readonly #targetUrls = new Map<string, unknown>();
   readonly #workByTarget = new Map<string, Set<Promise<unknown>>>();
   #exclusive: ConnectionState | undefined;
   readonly #removeBackendListener: () => void;
@@ -663,6 +680,12 @@ export class SessionCdpRouter {
     if (this.#home.empty) return;
     const targetId = readString(info, "targetId");
     if (!targetId) return;
+    if (this.#targetUrls.size >= 4_096 && !this.#targetUrls.has(targetId))
+      this.#targetUrls.delete(this.#targetUrls.keys().next().value!);
+    this.#targetUrls.set(targetId, info.url);
+    // The page went elsewhere: the frames it held are gone with its document.
+    if (this.#homeFramePages.has(targetId) && this.#homeFramePages.get(targetId) !== info.url)
+      this.#homeFramePages.delete(targetId);
     if (!this.#home.includesReported(info.url)) {
       this.#homeTargets.delete(targetId);
       return;
@@ -1388,9 +1411,11 @@ export class SessionCdpRouter {
             );
           return this.#attachTarget(state, targetId, targetInfo, undefined, root, connection);
         }
-        if (connection) {
+        // A connection's attach, and any agent's once this Home's addresses are known, reads the
+        // target as it is now: a page on this Home is not there to attach (C4).
+        if (connection || !this.#home.empty) {
           const claim = this.#assertOwnedTarget(state, targetId);
-          await this.#readTargetInfo(state, targetId, claim, undefined, true);
+          await this.#readTargetInfo(state, targetId, claim, undefined, connection);
           this.#assertCurrentClaim(state, targetId, claim);
         }
         return this.#attachTarget(state, targetId, undefined, undefined, root, connection);
@@ -1561,6 +1586,9 @@ export class SessionCdpRouter {
       await this.#backend.send("Target.getTargetInfo", { ...parameters, targetId }),
     );
     this.#assertCurrentClaim(state, targetId, claim);
+    // A read only adds what it shows: the browser's events say when a page left the Home.
+    if (this.#home.includesReported(asRecord(response.targetInfo).url))
+      this.#noteTargetAddress(asRecord(response.targetInfo));
     if (response.targetInfo === undefined && !state.standard) {
       return { ...response, targetInfo: asRecord(response.targetInfo) };
     }
@@ -1580,15 +1608,15 @@ export class SessionCdpRouter {
   ): CdpParameters | undefined {
     const targetId = readString(info, "targetId");
     if (!targetId || !this.#canReach(state, targetId)) return;
-    if (
-      (connection && isExtensionUrl(info.url)) ||
-      this.#homeTargets.has(targetId) ||
-      this.#home.includesReported(info.url)
-    ) {
+    // A page that holds a frame on this Home's address is listed (its own address is the web's)
+    // and refused at attach until its frame tree holds none (C3).
+    const onHome = this.#homeTargets.has(targetId) || this.#home.includesReported(info.url);
+    if ((connection && isExtensionUrl(info.url)) || onHome) {
       // An event's or a reply's projection is where a connection learns a target is an
       // extension's: from here its id is named to this state nowhere (G2). A page on an address
-      // of this Home is no agent's to be told of, a connection's or the person's own agent's.
-      if (state.connection) this.#setTargetVisibility(state, targetId, false);
+      // of this Home is no agent's to be told of, a connection's or the person's own agent's:
+      // its id is named to no state from here, its end included (C2).
+      if (state.connection || onHome) this.#setTargetVisibility(state, targetId, false);
       return;
     }
     const projected: Record<string, unknown> = {
@@ -1621,6 +1649,8 @@ export class SessionCdpRouter {
     }
     if (state.connection) this.#confineFrameIds(state, projected);
     if (state.connection) this.#setTargetVisibility(state, targetId, true);
+    // A page told again once it left this Home's address is named again (C2).
+    else state.hiddenTargets.delete(targetId);
     return projected;
   }
 
@@ -1769,6 +1799,16 @@ export class SessionCdpRouter {
       Boolean(state.standard),
       state.standard ? state.closed.signal : undefined,
     );
+    // A page that held a frame on this Home's address is refused like a page on one until its
+    // frame tree holds none (C3).
+    if (this.#homeFramePages.has(targetId)) {
+      const tree = await channel.send("Page.getFrameTree").catch(() => undefined);
+      if (tree === undefined || mentionsHiddenUrl(tree, 0, this.#home, false)) {
+        await channel.close().catch(() => undefined);
+        throw new SessionCdpRouterError("not_found", "The target is no longer available.");
+      }
+      this.#homeFramePages.delete(targetId);
+    }
     try {
       this.#assertCurrentClaim(state, targetId, claim);
       if (current && !current())
@@ -1861,6 +1901,11 @@ export class SessionCdpRouter {
     ) {
       if (asRecord(parameters.frame).parentId === undefined)
         this.#homeTargets.add(attached.physicalTargetId);
+      else
+        this.#homeFramePages.set(
+          attached.physicalTargetId,
+          this.#targetUrls.get(attached.physicalTargetId),
+        );
       this.#endHomeChannels(attached.physicalTargetId);
       return;
     }
@@ -2405,8 +2450,10 @@ export class SessionCdpRouter {
     if (this.#closed) return;
     if (!method.startsWith("Target.")) {
       const targetId = readString(parameters, "targetId") ?? readString(parameters, "frameId");
-      // A page on an address of this Home is no agent's: no agent hears of it.
+      // A page on an address of this Home is no agent's: no agent hears of it, nor of the address
+      // (a download from it, say) on any other page (C1).
       if (targetId && this.#homeTargets.has(targetId)) return;
+      if (!this.#home.empty && mentionsHiddenUrl(parameters, 0, this.#home, false)) return;
       const owner = targetId
         ? this.#sessions.get(this.#ownerByTargetId.get(targetId)?.sessionId ?? "")
         : undefined;
@@ -2432,7 +2479,11 @@ export class SessionCdpRouter {
     if (!targetId) return;
     if (method === "Target.targetCreated" || method === "Target.targetInfoChanged")
       this.#noteTargetAddress(info);
-    else if (method === "Target.targetDestroyed") this.#homeTargets.delete(targetId);
+    else if (method === "Target.targetDestroyed") {
+      this.#homeTargets.delete(targetId);
+      this.#homeFramePages.delete(targetId);
+      this.#targetUrls.delete(targetId);
+    }
 
     if (method === "Target.targetCreated") {
       const parentId = readString(info, "openerId") ?? readString(info, "parentId");
@@ -2525,12 +2576,14 @@ export class SessionCdpRouter {
           seen.has(targetId) ||
           !this.#canReach(state, targetId) ||
           !targetMatchesFilter(asRecord(parameters.targetInfo), root.discoveryFilter) ||
-          (state.connection && isExtensionUrl(asRecord(parameters.targetInfo).url))
+          (state.connection && isExtensionUrl(asRecord(parameters.targetInfo).url)) ||
+          this.#home.includesReported(asRecord(parameters.targetInfo).url)
         ) {
+          // Hidden, not seen: told as created when it first shows on the web (C2).
           if (
-            state.connection &&
             this.#canReach(state, targetId) &&
-            isExtensionUrl(asRecord(parameters.targetInfo).url)
+            ((state.connection && isExtensionUrl(asRecord(parameters.targetInfo).url)) ||
+              this.#home.includesReported(asRecord(parameters.targetInfo).url))
           ) {
             this.#setTargetVisibility(state, targetId, false);
           }
@@ -2543,9 +2596,10 @@ export class SessionCdpRouter {
         this.#home.includesReported(asRecord(parameters.targetInfo).url)
       ) {
         // A page the person's own agent discovered went to an address of this Home: to that
-        // agent it is gone, as a page that closed.
+        // agent it is gone, as a page that closed, and hidden until it shows on the web again.
         if (seen.delete(targetId))
           this.#appendEvent(state, "Target.targetDestroyed", { targetId }, root.aliasId);
+        this.#setTargetVisibility(state, targetId, false);
         return;
       } else if (!seen.has(targetId)) {
         // A connection's target that was hidden when it was created (an extension page) is
@@ -2562,7 +2616,6 @@ export class SessionCdpRouter {
           return;
         }
         if (
-          !state.connection ||
           method !== "Target.targetInfoChanged" ||
           !state.hiddenTargets.has(targetId) ||
           isExtensionUrl(info.url) ||
@@ -2895,7 +2948,7 @@ export class SessionCdpRouter {
   #connectionMayHearBrowserEvent(state: ConnectionState, parameters: CdpParameters): boolean {
     const subject = readString(parameters, "targetId") ?? readString(parameters, "frameId");
     if (subject !== null && !this.#mayName(state, subject)) return false;
-    return !mentionsExtensionUrl(parameters, 0);
+    return !mentionsHiddenUrl(parameters, 0, this.#home);
   }
 
   #nestedMethod(state: ConnectionState, method: string): string {

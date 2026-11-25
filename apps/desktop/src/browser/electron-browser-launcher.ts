@@ -1670,11 +1670,18 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     view.webContents.on("will-navigate", (event, url) => {
       if (
         !isAllowedBrowserNavigation(url, false, !this.#connectionControlled) ||
-        !mayPageReachExtension(pageContents, url, [event.initiator])
+        !mayPageReachExtension(pageContents, url, [event.initiator]) ||
+        // A page an agent holds goes to no address of this Home, a navigation that makes no
+        // request (a back-forward-cache history step) included (C5).
+        this.#agentOnHome(url)
       )
         event.preventDefault();
     });
     view.webContents.on("will-frame-navigate", (details) => {
+      if (this.#agentOnHome(details.url)) {
+        details.preventDefault();
+        return;
+      }
       if (!isExtensionUrl(details.url)) return;
       if (
         this.#connectionControlled ||
@@ -1727,6 +1734,10 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       if (pageSession) forgetExtensionNavigations(pageSession, pageId);
     });
     view.webContents.on("will-redirect", (event, url) => {
+      if (this.#agentOnHome(url)) {
+        event.preventDefault();
+        return;
+      }
       if (!isExtensionUrl(url)) return;
       const session = navigationSession();
       const frameTreeNodeId = frameTreeNodeIdOf(event.frame);
@@ -2946,6 +2957,11 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
 
   isAgentControlled(): boolean {
     return this.#agentControlled;
+  }
+
+  /** This page is one an agent holds, and the address is one of this Home's. */
+  #agentOnHome(url: string): boolean {
+    return this.#agentControlled && this.#agent?.home().includes(url) === true;
   }
 
   /**

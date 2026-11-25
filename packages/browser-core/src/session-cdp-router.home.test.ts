@@ -271,6 +271,114 @@ describe("SessionCdpRouter: a tab an agent drives may not be on an address of th
     });
   }
 
+  describe("the same call sites ask both rules (C)", () => {
+    for (const [who, connection] of agents) {
+      it(`${who}: hears no browser-level event naming this Home (C1)`, async () => {
+        const { backend, client, events } = await setup(connection);
+        await attach(client);
+        events.length = 0;
+        backend.emit("Browser.downloadWillBegin", {
+          frameId: "seed",
+          guid: "g-1",
+          url: "http://127.0.0.1:4310/v1/secret",
+          suggestedFilename: "f.txt",
+        });
+        backend.emit("Browser.downloadWillBegin", {
+          frameId: "seed",
+          guid: "g-2",
+          url: "https://web.test/file",
+          suggestedFilename: "f.txt",
+        });
+        await Promise.resolve();
+        expect(JSON.stringify(events)).not.toContain("4310");
+        expect(JSON.stringify(events)).toContain("g-2");
+      });
+
+      it(`${who}: is not told the end of a page it was never shown on the Home, and is told it once it leaves (C2)`, async () => {
+        const { backend, client, events } = await setup(connection);
+        await client.send({ method: "Target.setDiscoverTargets", parameters: { discover: true } });
+        const onHome = (targetId: string) => ({
+          targetInfo: {
+            targetId,
+            type: "page",
+            url: "http://localhost:4310/",
+            openerId: "seed",
+            attached: false,
+          },
+        });
+        events.length = 0;
+        backend.emit("Target.targetCreated", onHome("pop-1"));
+        backend.emit("Target.targetDestroyed", { targetId: "pop-1" });
+        backend.emit("Target.targetCreated", onHome("pop-2"));
+        backend.emit("Target.targetInfoChanged", {
+          targetInfo: {
+            targetId: "pop-2",
+            type: "page",
+            url: "https://web.test/",
+            attached: false,
+          },
+        });
+        await Promise.resolve();
+        expect(JSON.stringify(events)).not.toContain("pop-1");
+        expect(JSON.stringify(events)).not.toContain("4310");
+        expect(
+          events.filter((event) => JSON.stringify(event).includes("pop-2")).map((e) => e.method),
+        ).toEqual(["Target.targetCreated"]);
+      });
+
+      it(`${who}: cannot attach again to a page that holds a frame on the Home until it holds none (C3)`, async () => {
+        const { backend, client } = await setup(connection);
+        await attach(client);
+        backend.channels.get("seed")!.emit("Page.frameNavigated", {
+          frame: { id: "child", parentId: "seed", url: "http://127.0.0.1:4310/" },
+        });
+        await Promise.resolve();
+        const tree = (url: string) => ({
+          frameTree: {
+            frame: { id: "seed", url: "https://web.test/" },
+            childFrames: [{ frame: { id: "child", parentId: "seed", url } }],
+          },
+        });
+        const prepare = backend.attach.bind(backend);
+        let frameUrl = "http://127.0.0.1:4310/";
+        backend.attach = async (targetId: string) => {
+          const channel = (await prepare(targetId)) as Channel;
+          channel.results.set("Page.getFrameTree", tree(frameUrl));
+          return channel;
+        };
+        expect((await refusal(attach(client))).code).toBe("not_found");
+        frameUrl = "https://web.test/frame";
+        await expect(attach(client)).resolves.toBeTruthy();
+      });
+    }
+
+    it("refuses a Run's own attach to a page on the Home before the browser's list arrives (C4)", async () => {
+      const backend = new Backend();
+      backend.targetInfos = [
+        { targetId: "seed", type: "page", url: "https://web.test/" },
+        { targetId: "other", type: "page", url: "http://localhost:4310/" },
+      ];
+      const router = new SessionCdpRouter(backend);
+      router.registerSession("s", "seed", async () => true, "/files/s");
+      router.claimTarget("s", "other");
+      router.setHomeAddresses(home);
+      // No turn has passed: the background list has not arrived.
+      const refused = await refusal(
+        router.send("s", {
+          method: "Target.attachToTarget",
+          parameters: { targetId: "other", flatten: true },
+        }),
+      );
+      expect(refused.code).toBe("not_found");
+      await expect(
+        router.send("s", {
+          method: "Target.attachToTarget",
+          parameters: { targetId: "seed", flatten: true },
+        }),
+      ).resolves.toBeTruthy();
+    });
+  });
+
   describe("a page is agent-controlled from its first instant to the end of the hold (A)", () => {
     const budget = { maxBytes: 65_536, maxDepth: 16, maxEntries: 256 };
     const popup = (targetId: string, openerId: string) => ({
@@ -290,7 +398,7 @@ describe("SessionCdpRouter: a tab an agent drives may not be on an address of th
       // Long past any setImmediate: nothing but the script's end lets it go.
       for (let turn = 0; turn < 5; turn += 1) await new Promise((done) => setImmediate(done));
       expect(marks(backend, "pop")).toEqual([true]);
-      await router.closeScriptAttachment("s", "script");
+      await router.closeScriptAttachment("s", "script", Promise.resolve());
       expect(marks(backend, "pop")).toEqual([true, false]);
     });
 

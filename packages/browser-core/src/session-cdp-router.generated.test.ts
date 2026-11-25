@@ -19,7 +19,7 @@
  *
  * A page on an address of this Home is no agent's: every client's sessions on it end when it goes
  * there (each connection told once), no client attaches it, and no client, a connection or the
- * person's own agent, is ever given its address.
+ * person's own agent, is ever given its address, nor its id while it is there (its end included).
  * - E2: a script attachment ends with its root's `Target.targetDestroyed`; its channels' detaches
  *   after that are not sent (the attachment itself has ended).
  * - E3: a child session whose parent session the client detached itself ends with that parent.
@@ -329,10 +329,22 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
   const isHome = (target: Target) => target.url.includes(homeHost);
   /** What a connection is not told of: an extension's page, or a page of this Home. */
   const hiddenPage = (target: Target) => isExtension(target) || isHome(target);
+  // Targets the person's own agent is not told of: on this Home's address since it was last
+  // reported elsewhere (C2), their ends included.
+  const ownHidden = new Set<string>();
   const emit = (method: string, parameters: CdpParameters, subject?: Target) => {
     trace.push(`browser ${method} ${JSON.stringify(parameters)}`);
-    // Every event about its session's targets, except one that names this Home's address.
-    if (claimedByA(subject) && !JSON.stringify(parameters).includes(homeHost))
+    if (subject && (method === "Target.targetCreated" || method === "Target.targetInfoChanged")) {
+      if (isHome(subject)) ownHidden.add(subject.id);
+      else ownHidden.delete(subject.id);
+    }
+    // Every event about its session's targets, except one that names this Home's address or a
+    // target hidden on it.
+    if (
+      claimedByA(subject) &&
+      !JSON.stringify(parameters).includes(homeHost) &&
+      !(subject && ownHidden.has(subject.id))
+    )
       ownExpected.push(JSON.stringify({ method, parameters }));
     backend.emit(method, parameters);
   };

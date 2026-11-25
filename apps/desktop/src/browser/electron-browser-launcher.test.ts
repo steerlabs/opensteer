@@ -5506,6 +5506,13 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
         new ThisHomeAddressSet({ origins: ["https://home.test"], loopbackPorts: [4310] }),
       );
       // The person's own page: the Home is theirs to open.
+      const personNavigation = vi.fn();
+      (
+        view.webContents.on.mock.calls.find(([event]) => event === "will-navigate")![1] as (
+          ...args: unknown[]
+        ) => void
+      )({ preventDefault: personNavigation }, homeUrls[0]);
+      expect(personNavigation).not.toHaveBeenCalled();
       for (const url of homeUrls) {
         expect(cancelled(id, url), url).toBe(false);
         expect(sentCookie(id, url), url).toBe(true);
@@ -5520,6 +5527,26 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
         expect(sentCookie(id, url), url).toBe(false);
         expect(popupHandler({ url }), url).toMatchObject({ action: "deny" });
       }
+      // A navigation that makes no request (a back-forward-cache history step) is refused at the
+      // page too, as are a frame navigation and a redirect (C5).
+      const handler = (name: string) =>
+        view.webContents.on.mock.calls.find(([event]) => event === name)![1] as (
+          ...args: unknown[]
+        ) => void;
+      for (const url of homeUrls) {
+        const navigation = vi.fn();
+        handler("will-navigate")({ preventDefault: navigation, initiator: undefined }, url);
+        expect(navigation, url).toHaveBeenCalledOnce();
+        const frame = vi.fn();
+        handler("will-frame-navigate")({ url, preventDefault: frame });
+        expect(frame, url).toHaveBeenCalledOnce();
+        const redirect = vi.fn();
+        handler("will-redirect")({ preventDefault: redirect, frame: { frameTreeNodeId: 1 } }, url);
+        expect(redirect, url).toHaveBeenCalledOnce();
+      }
+      const toDevServer = vi.fn();
+      handler("will-navigate")({ preventDefault: toDevServer }, "http://localhost:5173/");
+      expect(toDevServer).not.toHaveBeenCalled();
       // A dev server on another loopback port is the agent's to use.
       expect(cancelled(id, "http://localhost:5173/")).toBe(false);
       expect(sentCookie(id, "http://localhost:5173/")).toBe(true);
