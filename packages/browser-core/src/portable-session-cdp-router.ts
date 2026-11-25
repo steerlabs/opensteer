@@ -1514,7 +1514,9 @@ export class SessionCdpRouter {
    * The one rule for what a connection state may be told of (M1, G2): a target it was shown and
    * that is not hidden from it, its script's root, or a target one of its own channels is on.
    * Terminal events, browser-level events naming a target or frame, and every target-valued
-   * field of a projected `targetInfo` go through it.
+   * field of a projected `targetInfo` go through it. Every other door through which a connection
+   * is given a target, frame, session, address or title is listed at `isExtensionUrl`
+   * (`extension-url.ts`), with where the same rule is applied there.
    */
   #mayName(state: ConnectionState, targetId: string): boolean {
     if (state.hiddenTargets.has(targetId)) return false;
