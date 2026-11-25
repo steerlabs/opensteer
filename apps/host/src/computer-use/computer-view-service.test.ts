@@ -32,6 +32,7 @@ function harness(phone = false) {
   let wrongWindow = false;
   let inAdmission = false;
   let windowRequests = 0;
+  let viewing: "supported" | "unsupported" | "unreported" = "supported";
   const logs: { event: string; details: Readonly<Record<string, unknown>> }[] = [];
   const service = new ComputerViewService({
     selfDeviceId: async (id: unknown) => DeviceIdSchema.parse(id),
@@ -51,7 +52,8 @@ function harness(phone = false) {
     changed: (_owner, notice) => notices.push(notice),
     hub: {
       attached: () => true,
-      ownerViewSupported: () => true,
+      ownerViewSupported: () => viewing === "supported",
+      ownerViewReported: () => viewing !== "unreported",
       ownerWindows: async () => {
         windowRequests++;
         await answer;
@@ -111,6 +113,9 @@ function harness(phone = false) {
     },
     revoke: () => {
       approved = false;
+    },
+    setViewing: (next: typeof viewing) => {
+      viewing = next;
     },
     open: (window = focused, generation = 1) =>
       service.openForTab(
@@ -254,6 +259,22 @@ describe("owner windows", () => {
 });
 
 describe("independent Mac control authorization", () => {
+  it("answers a Mac that has not yet reported since it connected as connecting, never as unable to show views", async () => {
+    const h = harness();
+    try {
+      // Between a Mac's reconnect and its first status, the Home does not know its versions:
+      // the page retries an unavailable view, and stops for good on an unsupported one.
+      h.setViewing("unreported");
+      await expect(h.open(11)).rejects.toMatchObject({ reason: "computer-view-unavailable" });
+      h.setViewing("unsupported");
+      await expect(h.open(11)).rejects.toMatchObject({ reason: "computer-view-unsupported" });
+      h.setViewing("supported");
+      await expect(h.open(11)).resolves.toMatchObject({ state: "ready" });
+    } finally {
+      h.service.shutdown();
+    }
+  });
+
   it("requires the effective owner and a current read-write app approval", async () => {
     const h = harness();
     try {
@@ -419,6 +440,7 @@ it("keeps owner views on separate Devices and refuses a replaced driver generati
     changed: () => undefined,
     hub: {
       attached: () => true,
+      ownerViewReported: () => true,
       ownerViewSupported: () => true,
       withRunnerAdmission: async (_id, action) => action(),
       withDeviceAdmission: async (_id, action) => action(),

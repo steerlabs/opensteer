@@ -53,7 +53,10 @@ export interface PhoneViewDiagnostic {
 interface Options {
   readonly selfDeviceId?: (runnerId: import("@opensteer/core").RunnerId) => Promise<DeviceId>;
   readonly onPhoneView?: (status: PhoneViewDiagnostic) => void;
-  readonly hub: Pick<ComputerAppHub, "ownerViewSupported" | "withRunnerAdmission" | "attached"> &
+  readonly hub: Pick<
+    ComputerAppHub,
+    "ownerViewReported" | "ownerViewSupported" | "withRunnerAdmission" | "attached"
+  > &
     Partial<Pick<ComputerAppHub, "withDeviceAdmission" | "captureRoute" | "routeCurrent">> & {
       sendComputerView(input: {
         runnerId: ComputerTargetId;
@@ -640,10 +643,14 @@ export class ComputerViewService {
     if (!this.#options.hub.attached(machine))
       throw this.#refusal("computer-view-unavailable", "This computer is offline.");
     if (!this.#options.hub.ownerViewSupported(machine))
-      throw this.#refusal(
-        "computer-view-unsupported",
-        "Update this computer to view apps and devices.",
-      );
+      // A computer that just connected has not said yet what it supports: it is still
+      // connecting, which the page waits out, never unable to show views.
+      throw this.#options.hub.ownerViewReported(machine)
+        ? this.#refusal(
+            "computer-view-unsupported",
+            "Update this computer to view apps and devices.",
+          )
+        : this.#refusal("computer-view-unavailable", "This computer is still connecting.");
     return app;
   }
   async #authorize(view: HeldView, owner: UserId): Promise<void> {
