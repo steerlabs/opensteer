@@ -15,7 +15,7 @@ import {
   type ThreadSummary,
 } from "./client.js";
 import { startOfDay } from "./automation-presentation.js";
-import { threadStartHold } from "./thread-activity.js";
+import { threadStartWait } from "./thread-activity.js";
 import { compareTaskOrder, mergeTaskEntries } from "./task-entries.js";
 import { conversationSurfaces, type SurfaceItem } from "./surfaces.js";
 import { formatRelativeTime } from "./thread-list-model.js";
@@ -580,7 +580,7 @@ export function taskWaitingReason(
       ? [queuedRun(thread)]
       : [];
   if (own.length === 0) return null;
-  const preparing = threadStartHold({
+  const wait = threadStartWait({
     thread: {
       ...thread,
       runStartHoldReason: thread.runStartHoldReason ?? shellRow?.runStartHoldReason ?? null,
@@ -592,22 +592,10 @@ export function taskWaitingReason(
     runQueue: own,
     environments: snapshot.environments,
   });
-  if (preparing) {
-    const unconfirmed =
-      (thread.runStartHoldReason ?? shellRow?.runStartHoldReason) === "previous-stop-unconfirmed" ||
-      own.some(
-        (entry) =>
-          entry.threadId === threadId && entry.startHoldReason === "previous-stop-unconfirmed",
-      );
-    const waiting =
-      (thread.runStartHoldReason ?? shellRow?.runStartHoldReason) === "waiting-for-run" ||
-      own.some(
-        (entry) => entry.threadId === threadId && entry.startHoldReason === "waiting-for-run",
-      );
-    return {
-      kind: unconfirmed ? "stop-unconfirmed" : waiting ? "waiting-for-run" : "account-preparing",
-      label: preparing,
-    };
+  if (wait) {
+    // The task list names an account getting ready, and its agents stopped, as it always has.
+    const kind = wait.kind === "agents-stopped" ? "account-preparing" : wait.kind;
+    return { kind, label: wait.label };
   }
   const environment = snapshot.environments.find(
     (environment) => environment.id === thread.environmentId,
