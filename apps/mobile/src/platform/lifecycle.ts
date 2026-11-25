@@ -49,6 +49,10 @@ export function createMobileLifecycle(options: {
   const onReadFailure = options.onReadFailure ?? (() => undefined);
   const backgroundListeners = new Set<() => void>();
   const foregroundListeners = new Set<() => void>();
+  // In the background the system may suspend the app at any moment, with no word first: a timer
+  // set there may never fire, so the background is also the last chance to let go of things.
+  const freezeListeners = new Set<() => void>();
+  const resumeListeners = new Set<() => void>();
   const networkListeners = new Set<(state: ClientNetworkState, path: ClientNetworkPath) => void>();
 
   let snapshot: ClientLifecycleSnapshot = {
@@ -100,10 +104,12 @@ export function createMobileLifecycle(options: {
     snapshot = { ...snapshot, visibility };
     if (visibility === "foreground") {
       readNetwork(true);
+      for (const listener of resumeListeners) listener();
       for (const listener of foregroundListeners) listener();
       return;
     }
     for (const listener of backgroundListeners) listener();
+    for (const listener of freezeListeners) listener();
   });
 
   readNetwork();
@@ -114,6 +120,8 @@ export function createMobileLifecycle(options: {
       networkSubscription.remove();
       backgroundListeners.clear();
       foregroundListeners.clear();
+      freezeListeners.clear();
+      resumeListeners.clear();
       networkListeners.clear();
     },
     getSnapshot: () => snapshot,
@@ -124,6 +132,14 @@ export function createMobileLifecycle(options: {
     onForeground(listener) {
       foregroundListeners.add(listener);
       return () => foregroundListeners.delete(listener);
+    },
+    onFreeze(listener) {
+      freezeListeners.add(listener);
+      return () => freezeListeners.delete(listener);
+    },
+    onResume(listener) {
+      resumeListeners.add(listener);
+      return () => resumeListeners.delete(listener);
     },
     onNetworkChange(listener) {
       networkListeners.add(listener);

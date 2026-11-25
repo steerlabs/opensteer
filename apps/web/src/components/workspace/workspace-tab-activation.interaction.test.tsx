@@ -137,3 +137,30 @@ it("shows a tab its answer found asleep with Try again, and asks nothing by itse
   );
   expect(again).toHaveBeenCalledTimes(1);
 });
+
+it("never wakes a tab while the page is hidden, and asks for it the moment the page is seen", async () => {
+  let activate!: MockInstance<MockHostClient["activateTab"]>;
+  let tabId = "";
+  await mount((source) => {
+    const page = placeList(source.getSnapshot()).find((place) => place.kind === "page")!;
+    tabId = page.key;
+    activate = vi.spyOn(source, "activateTab");
+    return `/?panel=browser&tab=${tabId}`;
+  });
+  await vi.waitFor(() => expect(activate).toHaveBeenCalledTimes(1));
+  const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+  try {
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    // Left in a background tab, the client lets its viewer go and the Home puts the tab to sleep.
+    await act(async () => client.setBrowserTabState(tabId, "suspended"));
+    for (let turn = 0; turn < 4; turn++) await act(async () => {});
+    expect(activate, "a hidden page woke the tab nobody can see").toHaveBeenCalledTimes(1);
+    visibility.mockReturnValue("visible");
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await vi.waitFor(() => expect(activate).toHaveBeenCalledTimes(2));
+    expect(activate).toHaveBeenLastCalledWith(tabId, asked(false));
+  } finally {
+    visibility.mockRestore();
+    document.dispatchEvent(new Event("visibilitychange"));
+  }
+});
