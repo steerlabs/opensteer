@@ -503,6 +503,8 @@ async function applyEventProjection(
         await transaction
           .updateTable("runs")
           .set({
+            // A Run that waited for another has started: the wait is over.
+            startHoldReason: null,
             startedAt: sql`coalesce(started_at, ${now})`,
             status: "running",
           })

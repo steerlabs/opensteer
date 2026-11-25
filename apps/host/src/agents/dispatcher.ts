@@ -131,6 +131,8 @@ const ControlPayloadSchema = z.discriminatedUnion("type", [
     })
     .passthrough(),
 ]);
+/** How many held Runs a Home remembers holding (older ones may be written once more). */
+const heldForAnotherRunKept = 1_024;
 const supportedCommandTypes = new Set([
   "request.respond",
   "node.stop",
@@ -165,6 +167,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #executionLeaseMs: number;
   readonly #executionNow: () => number;
   readonly #store: OpensteerStore;
+  /** Runs this Home has already held as waiting for another Run, so a pass writes nothing more. */
+  readonly #heldForAnotherRun = new Set<NonNullable<PendingCommandRow["runId"]>>();
   readonly #catalogs: HarnessCatalogRecorder;
   readonly #automationSecrets: Pick<AutomationSecrets, "values"> | undefined;
   readonly #triggerControlTokens: TriggerControlTokenService;
@@ -265,7 +269,24 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     ) {
       return false;
     }
-    return this.#runners.hasRunCapacity(command.environmentId, dispatchingRuns);
+    if (this.#runners.hasRunCapacity(command.environmentId, dispatchingRuns)) return true;
+    // Its computer's Runner runs as many Runs as it may: the Run waits for one of them to end,
+    // and says so. Held once per Run (the store writes nothing for a Run already held).
+    if (command.runId && this.#runners.isAttached(command.environmentId))
+      this.#holdForAnotherRun(command.runId);
+    return false;
+  }
+  #holdForAnotherRun(runId: NonNullable<PendingCommandRow["runId"]>): void {
+    if (this.#heldForAnotherRun.has(runId)) return;
+    this.#heldForAnotherRun.add(runId);
+    if (this.#heldForAnotherRun.size > heldForAnotherRunKept) {
+      const oldest = this.#heldForAnotherRun.values().next().value;
+      if (oldest !== undefined) this.#heldForAnotherRun.delete(oldest);
+    }
+    void this.#store.holdRunForAnotherRun(runId).catch(() => {
+      // Shown on a later pass: a failed write only delays the words.
+      this.#heldForAnotherRun.delete(runId);
+    });
   }
   async dispatch(command: CommandRow, signal: AbortSignal): Promise<void> {
     if (!command.environmentId) {

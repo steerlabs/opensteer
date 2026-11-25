@@ -75,6 +75,7 @@ import {
   lockCommandIdempotency,
   findCommandByIdempotency,
   idempotencyConflict,
+  holdRunForAnotherRun,
   principalIdForUser,
   returnRunToQueue,
   safeError,
@@ -514,7 +515,6 @@ async function claimObservedCommand(
     const started = await transaction
       .updateTable("runs")
       .set({
-        startHoldReason: null,
         status: "starting",
       })
       .where("id", "=", run.id)
@@ -1784,6 +1784,15 @@ export async function markCommandFrameSent(
   });
 }
 
+/** Holds a queued Run as waiting for another Run on its computer (the Home's capacity decision). */
+export async function holdQueuedRunForAnotherRun(
+  database: Kysely<DatabaseSchema>,
+  runId: RunId,
+): Promise<boolean> {
+  return commitPersonalMutation(database, (transaction) =>
+    holdRunForAnotherRun(transaction, runId),
+  );
+}
 export async function retryCommand(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
