@@ -11108,9 +11108,465 @@ describe("work under a connection's authority never uses the clipboard or change
     // Nothing pending: an unknown target's end is dropped, not kept.
     send("Target.targetDestroyed", { targetId: "late-unknown" });
     send("Target.targetDestroyed", { targetId: "created-tab" });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(events).toHaveLength(4);
+    send("Page.marker", {});
+    await vi.waitFor(() => expect(events.at(-1)?.method).toBe("Page.marker"));
+    expect(events).toHaveLength(5);
     attached.close();
+  });
+
+  /*
+   * Generated sequences on one shared root: two connected subscribers on one Browser Session,
+   * random attaches, creates and resumes answered or refused in any order, their own terminal
+   * events before and after the reply, auto-attached children, browser-level events, and foreign
+   * churn (extension targets and pages, other targets' and sessions' ends). After every step:
+   * (1) a subscriber receives no id of the other's sessions or unannounced targets, of an
+   * extension's target, nor any extension address; at the end (2) each of its own sessions'
+   * detaches and targets' destroys and crashes arrived exactly as often as they happened, and
+   * none of a refused command's. Bounds: churn stays below 4,096 terminal events inside any one
+   * create's or resume's wait (the next test pins what happens above it).
+   */
+  it("keeps both invariants for generated sequences on a shared root", async () => {
+    const prng = (seed: number) => {
+      let a = seed >>> 0;
+      return () => {
+        a = (a + 0x6d2b79f5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+      };
+    };
+    const { runtime, attach } = await connectedRootAttachment("Generated Profile", true);
+    const nextCdp = async () => {
+      for (;;) {
+        const command = await runtime.nextCommand();
+        if (command.type === "cdp.command") return command;
+      }
+    };
+    const failures: string[] = [];
+    for (let seed = 1; seed <= 30 && failures.length === 0; seed += 1) {
+      const random = prng(seed);
+      const pick = <T>(values: readonly T[]): T | undefined =>
+        values[Math.floor(random() * values.length)];
+      const trace: string[] = [];
+      let serial = 0;
+      let sequence = 1;
+      let marker = 0;
+      const subscribers = await Promise.all(
+        ["s1", "s2"].map(async (name) => {
+          const attached = await attach();
+          return {
+            name,
+            ...attached,
+            checked: 0,
+            own: new Set<string>(),
+            expected: new Map<string, number>(),
+            pending: [] as {
+              kind: "attach" | "create" | "resume";
+              requestId: string;
+              target: string;
+              session?: string;
+              result: Promise<unknown>;
+            }[],
+            sessions: [] as { id: string; target: string; ended: boolean }[],
+            targets: [] as { id: string; destroyed: boolean }[],
+          };
+        }),
+      );
+      type Subscriber = (typeof subscribers)[number];
+      // Terminal events sent for a pending command's ids, delivered only if it succeeds.
+      const early = new Map<Subscriber["pending"][number], string[]>();
+      const send = (method: string, parameters: Record<string, unknown>, sessionId?: string) => {
+        trace.push(`runtime ${method} ${sessionId ?? ""} ${JSON.stringify(parameters)}`);
+        runtime.sendServer({
+          type: "cdp.event",
+          event: { method, parameters, sequence: sequence++, ...(sessionId ? { sessionId } : {}) },
+        });
+      };
+      const bump = (sub: Subscriber, key: string) =>
+        sub.expected.set(key, (sub.expected.get(key) ?? 0) + 1);
+      const terminal = (
+        sub: Subscriber,
+        key: string,
+        method: string,
+        parameters: Record<string, unknown>,
+        pending?: Subscriber["pending"][number],
+      ) => {
+        if (pending) early.set(pending, [...(early.get(pending) ?? []), key]);
+        else bump(sub, key);
+        send(method, parameters);
+      };
+      let churn = 0;
+      const steps: ((sub: Subscriber) => Promise<void> | void)[] = [
+        async (sub) => {
+          const kind = pick(["attach", "create", "resume"] as const)!;
+          const id = ++serial;
+          const target = `tgt-${sub.name}-${id}`;
+          const command =
+            kind === "attach"
+              ? { method: "Target.attachToTarget", parameters: { targetId: target, flatten: true } }
+              : kind === "create"
+                ? { method: "Target.createTarget", parameters: { url: `https://new-${id}.test/` } }
+                : {
+                    method: browserHostMethods.resumeTab,
+                    parameters: {
+                      surfaceId: BrowserSurfaceIdSchema.parse(`tab_${sub.name}_${id}`),
+                    },
+                  };
+          const result = sub.attached.request(command).then(
+            (value) => value,
+            (error: unknown) => ({ refused: String(error) }),
+          );
+          const forward = await nextCdp();
+          trace.push(`${sub.name} ${kind} ${target}`);
+          sub.pending.push({
+            kind,
+            requestId: String(forward.requestId),
+            target,
+            ...(kind === "attach" ? { session: `cdp_${sub.name}_${id}` } : {}),
+            result,
+          });
+        },
+        async (sub) => {
+          const pending = pick(sub.pending);
+          if (!pending) return;
+          sub.pending.splice(sub.pending.indexOf(pending), 1);
+          const refused = random() < 0.2;
+          trace.push(
+            `${sub.name} reply ${pending.kind} ${pending.target} ${refused ? "refused" : "ok"}`,
+          );
+          runtime.sendServer(
+            refused
+              ? {
+                  type: "cdp.error",
+                  requestId: pending.requestId,
+                  error: {
+                    code: "not_found",
+                    message: "Not here.",
+                    retryable: false,
+                    unsent: true,
+                  },
+                }
+              : {
+                  type: "cdp.result",
+                  requestId: pending.requestId,
+                  result:
+                    pending.kind === "attach"
+                      ? { sessionId: pending.session }
+                      : { targetId: pending.target },
+                },
+          );
+          await pending.result;
+          if (refused) return;
+          for (const key of early.get(pending) ?? []) bump(sub, key);
+          sub.own.add(pending.target);
+          if (!sub.targets.some((t) => t.id === pending.target))
+            sub.targets.push({
+              id: pending.target,
+              destroyed: (early.get(pending) ?? []).includes(`destroy:${pending.target}`),
+            });
+          if (pending.session) {
+            sub.own.add(pending.session);
+            sub.sessions.push({
+              id: pending.session,
+              target: pending.target,
+              ended: (early.get(pending) ?? []).includes(`detach:${pending.session}`),
+            });
+          }
+        },
+        // Its own terminal event, before or after the reply.
+        (sub) => {
+          const before = random() < 0.5 && sub.pending.length > 0;
+          if (before) {
+            const pending = pick(sub.pending)!;
+            if ((early.get(pending) ?? []).length) return;
+            if (pending.session && random() < 0.5)
+              terminal(
+                sub,
+                `detach:${pending.session}`,
+                "Target.detachedFromTarget",
+                {
+                  sessionId: pending.session,
+                  targetId: pending.target,
+                },
+                pending,
+              );
+            else if (random() < 0.5)
+              terminal(
+                sub,
+                `crash:${pending.target}`,
+                "Target.targetCrashed",
+                {
+                  targetId: pending.target,
+                  status: "crashed",
+                  errorCode: 1,
+                },
+                pending,
+              );
+            else
+              terminal(
+                sub,
+                `destroy:${pending.target}`,
+                "Target.targetDestroyed",
+                {
+                  targetId: pending.target,
+                },
+                pending,
+              );
+            return;
+          }
+          const session = pick(sub.sessions.filter((s) => !s.ended));
+          const target = pick(sub.targets.filter((t) => !t.destroyed));
+          if (session && random() < 0.5) {
+            session.ended = true;
+            terminal(sub, `detach:${session.id}`, "Target.detachedFromTarget", {
+              sessionId: session.id,
+              targetId: session.target,
+            });
+          } else if (target && random() < 0.4) {
+            terminal(sub, `crash:${target.id}`, "Target.targetCrashed", {
+              targetId: target.id,
+              status: "crashed",
+              errorCode: 1,
+            });
+          } else if (target) {
+            target.destroyed = true;
+            terminal(sub, `destroy:${target.id}`, "Target.targetDestroyed", {
+              targetId: target.id,
+            });
+          }
+        },
+        // An auto-attached child of one of its sessions, and later its end.
+        (sub) => {
+          const parent = pick(sub.sessions.filter((s) => !s.ended));
+          if (!parent) return;
+          const id = ++serial;
+          const child = {
+            id: `cdp_${sub.name}_child_${id}`,
+            target: `tgt-${sub.name}-frame-${id}`,
+          };
+          send(
+            "Target.attachedToTarget",
+            {
+              sessionId: child.id,
+              targetInfo: {
+                targetId: child.target,
+                type: "iframe",
+                url: `https://frame-${id}.test/`,
+              },
+              waitingForDebugger: false,
+            },
+            parent.id,
+          );
+          sub.own.add(child.id);
+          sub.own.add(child.target);
+          sub.sessions.push({ ...child, ended: false });
+          if (random() < 0.5) {
+            sub.sessions.at(-1)!.ended = true;
+            bump(sub, `detach:${child.id}`);
+            send(
+              "Target.detachedFromTarget",
+              { sessionId: child.id, targetId: child.target },
+              parent.id,
+            );
+          }
+        },
+        // A page event on one of its sessions, and a nested reply to it: its own, the other's not.
+        (sub) => {
+          const session = pick(sub.sessions.filter((s) => !s.ended));
+          if (!session) return;
+          bump(sub, `page:${session.id}`);
+          send("Page.loadEventFired", { timestamp: ++serial }, session.id);
+          bump(sub, `nested:${session.id}`);
+          send("Target.receivedMessageFromTarget", {
+            sessionId: session.id,
+            message: JSON.stringify({ id: serial, result: {} }),
+          });
+        },
+        // Foreign churn: extension targets and pages, their sessions and ends, other ids' ends.
+        () => {
+          const count = Math.floor(random() * (churn > 2_000 ? 10 : 200));
+          churn += count;
+          for (let index = 0; index < count; index += 1) {
+            const id = ++serial;
+            const ext = `chrome-extension://${"e".repeat(32)}/p-${id}.html`;
+            switch (index % 6) {
+              case 0:
+                send("Target.targetCreated", {
+                  targetInfo: { targetId: `tgt-ext-${id}`, type: "page", url: ext },
+                });
+                break;
+              case 1:
+                send("Target.attachedToTarget", {
+                  sessionId: `cdp_ext_${id}`,
+                  targetInfo: { targetId: `tgt-ext-${id}`, type: "service_worker", url: ext },
+                  waitingForDebugger: false,
+                });
+                break;
+              case 2:
+                send("Target.detachedFromTarget", {
+                  sessionId: `cdp_churn_${id}`,
+                  targetId: `tgt-churn-${id}`,
+                });
+                break;
+              case 3:
+                send("Target.targetDestroyed", { targetId: `tgt-churn-${id}` });
+                break;
+              case 4:
+                send("Browser.downloadWillBegin", {
+                  frameId: `tgt-ext-${id}`,
+                  guid: `g-${id}`,
+                  url: ext,
+                  suggestedFilename: "f.txt",
+                });
+                break;
+              default:
+                send("Target.targetCrashed", {
+                  targetId: `tgt-churn-${id}`,
+                  status: "crashed",
+                  errorCode: 1,
+                });
+            }
+          }
+        },
+      ];
+      // Every message before a marker has been handled once both subscribers hear the marker.
+      const settle = async () => {
+        const n = ++marker;
+        send("Page.marker", { n });
+        await vi.waitFor(
+          () => {
+            for (const sub of subscribers)
+              expect(
+                sub.events.some((e) => e.method === "Page.marker" && e.parameters.n === n),
+              ).toBe(true);
+          },
+          { interval: 2 },
+        );
+      };
+      const check = (step: string) => {
+        for (const sub of subscribers) {
+          const other = subscribers.find((x) => x !== sub)!;
+          const fresh = JSON.stringify(sub.events.slice(sub.checked));
+          sub.checked = sub.events.length;
+          const leaked =
+            (fresh.includes("chrome-extension:") && "an extension's address") ||
+            [/"tgt-ext-\d+"/u, /"cdp_ext_\d+"/u, /"tgt-churn-\d+"/u, /"cdp_churn_\d+"/u]
+              .map((pattern) => fresh.match(pattern)?.[0])
+              .find(Boolean) ||
+            [...other.own, ...other.pending.flatMap((p) => [p.target, p.session ?? ""])]
+              .filter(Boolean)
+              .find((id) => fresh.includes(`"${id}"`));
+          if (leaked)
+            failures.push(
+              `seed ${seed} at ${step}: ${sub.name} received ${leaked}\n${trace.join("\n")}`,
+            );
+        }
+      };
+      try {
+        for (let step = 0; step < 30 && failures.length === 0; step += 1) {
+          await pick(steps)!(pick(subscribers)!);
+          await settle();
+          check(`step ${step}`);
+        }
+        // The end: every pending command is answered.
+        for (const sub of subscribers)
+          while (sub.pending.length) {
+            const pending = sub.pending.shift()!;
+            runtime.sendServer({
+              type: "cdp.result",
+              requestId: pending.requestId,
+              result:
+                pending.kind === "attach"
+                  ? { sessionId: pending.session }
+                  : { targetId: pending.target },
+            });
+            await pending.result;
+            for (const key of early.get(pending) ?? []) bump(sub, key);
+          }
+        await settle();
+        check("end");
+        for (const sub of subscribers) {
+          const counted = new Map<string, number>();
+          for (const event of sub.events) {
+            const p = event.parameters as { targetId?: unknown; sessionId?: unknown };
+            const key =
+              event.method === "Target.targetCrashed"
+                ? `crash:${String(p.targetId)}`
+                : event.method === "Target.targetDestroyed"
+                  ? `destroy:${String(p.targetId)}`
+                  : event.method === "Target.detachedFromTarget"
+                    ? `detach:${String(p.sessionId)}`
+                    : event.method === "Page.loadEventFired"
+                      ? `page:${String(event.sessionId)}`
+                      : event.method === "Target.receivedMessageFromTarget"
+                        ? `nested:${String(p.sessionId)}`
+                        : undefined;
+            if (key) counted.set(key, (counted.get(key) ?? 0) + 1);
+          }
+          for (const key of new Set([...counted.keys(), ...sub.expected.keys()]))
+            if ((counted.get(key) ?? 0) !== (sub.expected.get(key) ?? 0))
+              failures.push(
+                `seed ${seed}: ${sub.name} expected ${sub.expected.get(key) ?? 0} of ${key}, received ${counted.get(key) ?? 0}\n${trace.join("\n")}`,
+              );
+        }
+      } finally {
+        for (const sub of subscribers) sub.attached.close();
+      }
+    }
+    expect(failures.slice(0, 1)).toEqual([]);
+  });
+
+  it("keeps a created tab's own early end below 4,096 other ends in its wait, and only there (bound)", async () => {
+    const { runtime, attach } = await connectedRootAttachment("Bound Profile");
+    const nextCdp = async () => {
+      for (;;) {
+        const command = await runtime.nextCommand();
+        if (command.type === "cdp.command") return command;
+      }
+    };
+    let sequence = 1;
+    for (const [others, kept] of [
+      [4_095, true],
+      [4_096, false],
+    ] as const) {
+      const { attached, events } = await attach();
+      const create = attached.request({
+        method: "Target.createTarget",
+        parameters: { url: "https://bound.test/" },
+      });
+      const forward = await nextCdp();
+      const own = `bound-tab-${others}`;
+      const send = (targetId: string) =>
+        runtime.sendServer({
+          type: "cdp.event",
+          event: {
+            method: "Target.targetDestroyed",
+            parameters: { targetId },
+            sequence: sequence++,
+          },
+        });
+      send(own);
+      for (let index = 0; index < others; index += 1) send(`bound-other-${others}-${index}`);
+      runtime.sendServer({
+        type: "cdp.result",
+        requestId: forward.requestId,
+        result: { targetId: own },
+      });
+      await create;
+      runtime.sendServer({
+        type: "cdp.event",
+        event: { method: "Page.boundMarker", parameters: { others }, sequence: sequence++ },
+      });
+      await vi.waitFor(() =>
+        expect(events.some((e) => e.method === "Page.boundMarker")).toBe(true),
+      );
+      expect(
+        events
+          .filter((e) => e.method === "Target.targetDestroyed")
+          .map((e) => e.parameters.targetId),
+      ).toEqual(kept ? [own] : []);
+      attached.close();
+    }
   });
 
   it("keeps a subscriber's own child however many children a neighbour opens on the shared root (S2)", async () => {

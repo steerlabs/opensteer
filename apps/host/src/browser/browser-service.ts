@@ -276,6 +276,15 @@ function connectedAgentBinding(agentBindingId: string | undefined): boolean {
   return agentBindingId?.startsWith("session:") === true;
 }
 
+/** Whether any string in a (bounded) CDP value is an extension's address. */
+function mentionsChromeExtensionUrl(value: unknown, depth: number): boolean {
+  if (typeof value === "string") return isChromeExtensionUrl(value);
+  if (depth > 16 || value === null || typeof value !== "object") return false;
+  for (const entry of Array.isArray(value) ? value : Object.values(value))
+    if (mentionsChromeExtensionUrl(entry, depth + 1)) return true;
+  return false;
+}
+
 export class BrowserCdpConnectionEnded extends Error {
   override readonly name = "BrowserCdpConnectionEnded";
 }
@@ -6272,6 +6281,35 @@ export class BrowserService {
     };
     const unsubscribe = broker.subscribeCdp((event) => {
       if (event.scriptAttachmentId !== scriptAttachmentId) return;
+      // On a shared root every attachment hears every other's events. A connection's subscriber
+      // hears only its own sessions' (H1), and a browser-level event only of a target or frame it
+      // may know, never with an extension's address (H2).
+      if (
+        filterTargetEvents &&
+        event.sessionId !== undefined &&
+        !attachedSessions.has(event.sessionId)
+      )
+        return;
+      if (
+        filterTargetEvents &&
+        !event.method.startsWith("Target.") &&
+        event.sessionId === undefined
+      ) {
+        const params = event.parameters as { targetId?: unknown; frameId?: unknown } | undefined;
+        const subject =
+          typeof params?.targetId === "string"
+            ? params.targetId
+            : typeof params?.frameId === "string"
+              ? params.frameId
+              : undefined;
+        if (
+          subject !== undefined &&
+          !attachedTargets.has(subject) &&
+          !visibleRootTargets.has(subject)
+        )
+          return;
+        if (mentionsChromeExtensionUrl(event.parameters, 0)) return;
+      }
       if (filterTargetEvents && event.method.startsWith("Target.")) {
         const params = event.parameters as
           | {
@@ -6295,26 +6333,28 @@ export class BrowserService {
           // S2: learn only from this subscriber's own root discovery (no envelope) or from a
           // session it already holds, so another attachment's children on a shared root cannot
           // evict its own. Its own page sessions come from its attach replies.
+          // (H1 already dropped any envelope that is not its own.)
           const envelope = event.sessionId;
-          if (envelope === undefined || attachedSessions.has(envelope)) {
-            if (targetId) rememberBounded(visibleRootTargets, targetId);
-            if (event.method === "Target.attachedToTarget" && eventSessionId && envelope) {
-              rememberBounded(attachedSessions, eventSessionId);
-            }
+          // A root-level attach names a session this subscriber did not open.
+          if (event.method === "Target.attachedToTarget" && envelope === undefined) {
+            if (!eventSessionId || !attachedSessions.has(eventSessionId)) return;
+          }
+          if (targetId) rememberBounded(visibleRootTargets, targetId);
+          if (event.method === "Target.attachedToTarget" && eventSessionId && envelope) {
+            rememberBounded(attachedSessions, eventSessionId);
           }
         } else if (event.method === "Target.detachedFromTarget") {
+          // A detach names its session: only this subscriber's own is told to it (H3).
           if (eventSessionId && attachedSessions.has(eventSessionId)) {
             attachedSessions.delete(eventSessionId);
-          } else if (
-            targetId &&
-            (attachedTargets.has(targetId) || visibleRootTargets.has(targetId))
-          ) {
-            // Terminal detach for a discovered or attached target passes through.
           } else {
             if (targetId !== undefined || eventSessionId !== undefined)
               recordTerminalCandidate(event, targetId, eventSessionId);
             return;
           }
+        } else if (event.method === "Target.receivedMessageFromTarget") {
+          // A nested reply answers the subscriber whose session sent the message (H3).
+          if (!eventSessionId || !attachedSessions.has(eventSessionId)) return;
         } else if (event.method === "Target.targetDestroyed") {
           if (targetId && (attachedTargets.has(targetId) || visibleRootTargets.has(targetId))) {
             attachedTargets.delete(targetId);
