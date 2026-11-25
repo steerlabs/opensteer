@@ -128,7 +128,7 @@ overrides:
 
 patchedDependencies:
   '@alchemy.run/cloudflare-runtime@2.0.0-beta.80':
-    hash: 87a375aeb28555699f2a51f6c58a807e230a73193394e39402bd7ceb6034641c
+    hash: bbb5281787d4ed0911280ad816761d50b70d6a56cc8e3ae809f7ebcad7c82583
     path: patches/plugin-engine-@alchemy.run__cloudflare-runtime@2.0.0-beta.80.patch
   '@cfworker/json-schema@4.1.1':
     hash: 1d30613a7216191fa8540fd90e104d5be88e4ac44528ed16072b384856a7beea
@@ -716,7 +716,7 @@ importers:
     dependencies:
       '@alchemy.run/cloudflare-runtime':
         specifier: 2.0.0-beta.80
-        version: 2.0.0-beta.80(patch_hash=87a375aeb28555699f2a51f6c58a807e230a73193394e39402bd7ceb6034641c)(@distilled.cloud/cloudflare@1.0.0-rc.13(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@effect/platform-node@4.1.4(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@types/node@26.2.0)(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64))(rolldown@1.2.5)(typescript@7.0.2)(vite@8.2.4(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.1))
+        version: 2.0.0-beta.80(patch_hash=bbb5281787d4ed0911280ad816761d50b70d6a56cc8e3ae809f7ebcad7c82583)(@distilled.cloud/cloudflare@1.0.0-rc.13(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@effect/platform-node@4.1.4(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@types/node@26.2.0)(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64))(rolldown@1.2.5)(typescript@7.0.2)(vite@8.2.4(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.1))
       '@distilled.cloud/cloudflare':
         specifier: 1.0.0-rc.13
         version: 1.0.0-rc.13(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64))
@@ -2775,7 +2775,7 @@ importers:
     dependencies:
       '@alchemy.run/cloudflare-runtime':
         specifier: 2.0.0-beta.80
-        version: 2.0.0-beta.80(patch_hash=87a375aeb28555699f2a51f6c58a807e230a73193394e39402bd7ceb6034641c)(@distilled.cloud/cloudflare@1.0.0-rc.13(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@effect/platform-node@4.1.4(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@types/node@26.2.0)(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64))(rolldown@1.2.5)(typescript@7.0.2)(vite@8.2.4(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.1))
+        version: 2.0.0-beta.80(patch_hash=bbb5281787d4ed0911280ad816761d50b70d6a56cc8e3ae809f7ebcad7c82583)(@distilled.cloud/cloudflare@1.0.0-rc.13(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@effect/platform-node@4.1.4(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@types/node@26.2.0)(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64))(rolldown@1.2.5)(typescript@7.0.2)(vite@8.2.4(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.1))
       '@cfworker/json-schema':
         specifier: 4.1.1
         version: 4.1.1(patch_hash=1d30613a7216191fa8540fd90e104d5be88e4ac44528ed16072b384856a7beea)
@@ -11094,7 +11094,7 @@ snapshots:
     dependencies:
       zod: 4.6.7
 
-  '@alchemy.run/cloudflare-runtime@2.0.0-beta.80(patch_hash=87a375aeb28555699f2a51f6c58a807e230a73193394e39402bd7ceb6034641c)(@distilled.cloud/cloudflare@1.0.0-rc.13(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@effect/platform-node@4.1.4(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@types/node@26.2.0)(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64))(rolldown@1.2.5)(typescript@7.0.2)(vite@8.2.4(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.1))':
+  '@alchemy.run/cloudflare-runtime@2.0.0-beta.80(patch_hash=bbb5281787d4ed0911280ad816761d50b70d6a56cc8e3ae809f7ebcad7c82583)(@distilled.cloud/cloudflare@1.0.0-rc.13(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@effect/platform-node@4.1.4(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64)))(@types/node@26.2.0)(effect@4.1.4(patch_hash=d3dd52230f18736912b3a1538980466a1fb6dad19a2248f77ada49d3a8013d64))(rolldown@1.2.5)(typescript@7.0.2)(vite@8.2.4(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.1))':
     dependencies:
       '@alchemy.run/node-utils': 2.0.0-beta.80
       '@cloudflare/unenv-preset': 2.16.2(unenv@2.0.0-rc.25)(workerd@1.20260918.1)

@@ -232,7 +232,7 @@ async function main(): Promise<void> {
       repositoryRoot,
     );
     await rm(path.join(staging, `${layout.pluginBridge}.map`), { force: true });
-    artifacts.push({ mode: "data", path: layout.pluginBridge });
+    artifacts.push(...(await pluginBridgeArtifacts(staging)));
     await timePhase("runtime.extension", () =>
       run(
         process.platform === "win32" ? "pnpm.cmd" : "pnpm",
@@ -524,6 +524,20 @@ export async function stageDataTree(
     }
   };
   await walk(source, prefix);
+  return artifacts;
+}
+
+/** Every raw worker module must be in the hashed Personal runtime manifest. */
+export async function pluginBridgeArtifacts(staging: string): Promise<readonly StagedArtifact[]> {
+  const root = `${layout.pluginBridge}.modules`;
+  const artifacts: StagedArtifact[] = [{ mode: "data", path: layout.pluginBridge }];
+  for (const worker of ["runtime", "compiler"]) {
+    const prefix = `${root}/${worker}`;
+    for (const entry of await readdir(path.join(staging, prefix), { withFileTypes: true })) {
+      if (!entry.isFile()) throw new Error(`Invalid plugin runtime artifact ${entry.name}`);
+      artifacts.push({ mode: "data", path: `${prefix}/${entry.name}` });
+    }
+  }
   return artifacts;
 }
 

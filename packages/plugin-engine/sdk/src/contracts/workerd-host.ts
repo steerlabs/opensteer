@@ -75,15 +75,16 @@ export const CompiledWorkerApp = Schema.Struct({
 });
 export type CompiledWorkerApp = typeof CompiledWorkerApp.Type;
 /** Expected build failures cross the RPC boundary typed, so the deploy can explain them. */
+export const CompilerFailure = Schema.Union([
+  RuntimeBuildFailed,
+  RuntimeProtocolUnsupported,
+  RuntimeAppsDependencyMissing,
+]);
 export const CompileWorkerResult = Schema.Union([
   Schema.Struct({ ok: Schema.Literal(true), value: CompiledWorkerApp }),
   Schema.Struct({
     ok: Schema.Literal(false),
-    error: Schema.Union([
-      RuntimeBuildFailed,
-      RuntimeProtocolUnsupported,
-      RuntimeAppsDependencyMissing,
-    ]),
+    error: CompilerFailure,
   }),
 ]);
 /** RPC surface hosted by a trusted Worker; authored modules receive no host bindings. */
