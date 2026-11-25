@@ -47,6 +47,31 @@ export const TabOpenedBySchema = z.union([
   z.strictObject({ taskId: ThreadIdSchema }),
 ]);
 export type TabOpenedBy = z.infer<typeof TabOpenedBySchema>;
+/** The one test for an extension's address (see `@opensteer/shared/extensionUrl`). */
+export { isExtensionUrl } from "@opensteer/shared/extensionUrl";
+
+/**
+ * Whether a page-open URL is allowed for a connected agent (`about:blank` or credential-free
+ * HTTP(S)), judged strictly by the parsed WHATWG URL protocol.
+ */
+export function isAllowedConnectionPageUrl(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  if (value === "about:blank") return true;
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Canonical WHATWG serialization of a page-open URL, preserving `about:blank`. */
+export function normalizePageOpenUrl(value: string): string {
+  return value === "about:blank" ? value : new URL(value).href;
+}
+
 export const PageOpenUrlSchema = z
   .string()
   .min(1)
@@ -55,11 +80,16 @@ export const PageOpenUrlSchema = z
     if (value === "about:blank") return true;
     try {
       const url = new URL(value);
-      return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password;
+      // Extension pages (an options page, a popup) open as tabs, as in Chrome.
+      return (
+        ["http:", "https:", "chrome-extension:"].includes(url.protocol) &&
+        !url.username &&
+        !url.password
+      );
     } catch {
       return false;
     }
-  }, "Use about:blank or an HTTP(S) URL without credentials.");
+  }, "Use about:blank, an HTTP(S) URL without credentials, or an extension page.");
 export const DeviceTabTargetSchema = z.union([
   z.strictObject({
     kind: z.literal("page"),

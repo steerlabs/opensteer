@@ -1,6 +1,8 @@
 import { personTaskReader } from "@opensteer/database";
 import { TriggerOccurrenceIdSchema, OpensteerError, type UserId } from "@opensteer/core";
+import { commandRow } from "@opensteer/protocol/command-table";
 import { MAX_WEBHOOK_BODY_BYTES } from "@opensteer/triggers";
+import { sanitizeCommandRequestWithSecretDigests } from "../commands/secret-digest.js";
 import {
   hostApi,
   rpcSuccess,
@@ -75,7 +77,8 @@ export async function handleTriggerCommand(
   triggers: TriggerService,
   command: TriggerCommand,
   context: HostApiServerContext,
-  actor?: PersonActor,
+  actor: PersonActor | undefined,
+  secretDigestKey: Buffer,
 ): Promise<HostApiCommandOutput> {
   const ownerId = requireUserId(context);
   // Brief T11: approving an agent's proposal runs the command in the proposing lineage,
@@ -169,6 +172,41 @@ export async function handleTriggerCommand(
         ],
         type: command.type,
       };
+    case "trigger.secrets.set": {
+      const { type, idempotencyKey, ...requestFields } = command;
+      const requestSummary = sanitizeCommandRequestWithSecretDigests({
+        commandType: type,
+        idempotencyKey,
+        key: secretDigestKey,
+        request: requestFields as Record<string, unknown>,
+        secretFields: commandRow(type).secretFields ?? [],
+        userId: ownerId,
+      });
+      return {
+        secretNames: [
+          ...(
+            await triggers.setSecrets(
+              ownerId,
+              {
+                ...(command.clearAll === true ? { clearAll: true as const } : {}),
+                ...(command.remove === undefined ? {} : { remove: command.remove }),
+                ...(command.set === undefined ? {} : { set: command.set }),
+                triggerId: command.triggerId,
+              },
+              null,
+              {
+                requestedBy: ownerId,
+                idempotencyKey,
+                type,
+                request: requestSummary,
+                authoritySource: { kind: "person" },
+              },
+            )
+          ).secretNames,
+        ],
+        type,
+      };
+    }
   }
 }
 export function registerTriggerRoutes(

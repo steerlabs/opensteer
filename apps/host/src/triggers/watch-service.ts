@@ -58,6 +58,8 @@ export class WatchService {
   readonly #knownEnvironments = new Set<EnvironmentId>();
   readonly #reconcileRetryAttempts = new Map<EnvironmentId, number>();
   readonly #reconcileRetryTimers = new Map<EnvironmentId, NodeJS.Timeout>();
+  readonly #triggerLookupRetryAttempts = new Map<TriggerId, number>();
+  readonly #triggerLookupRetryTimers = new Map<TriggerId, NodeJS.Timeout>();
   readonly #startRetryTimers = new Map<EnvironmentId, NodeJS.Timeout>();
   #closed = false;
   constructor(options: WatchServiceOptions) {
@@ -83,6 +85,9 @@ export class WatchService {
     for (const timer of this.#reconcileRetryTimers.values()) clearTimeout(timer);
     this.#reconcileRetryTimers.clear();
     this.#reconcileRetryAttempts.clear();
+    for (const timer of this.#triggerLookupRetryTimers.values()) clearTimeout(timer);
+    this.#triggerLookupRetryTimers.clear();
+    this.#triggerLookupRetryAttempts.clear();
     await Promise.allSettled(this.#pending.values());
   }
   changed(environmentId: EnvironmentId): void {
@@ -115,8 +120,15 @@ export class WatchService {
     return next;
   }
   async triggerChanged(triggerId: TriggerId): Promise<void> {
-    const environmentId = await this.#store.watchEnvironmentForTrigger(triggerId);
-    if (environmentId) this.changed(environmentId);
+    if (this.#closed) return;
+    this.#clearTriggerLookupRetry(triggerId);
+    try {
+      const environmentId = await this.#store.watchEnvironmentForTrigger(triggerId);
+      this.#triggerLookupRetryAttempts.delete(triggerId);
+      if (environmentId) this.changed(environmentId);
+    } catch {
+      this.#scheduleTriggerLookupRetry(triggerId);
+    }
   }
   async deploymentChanged(): Promise<void> {
     const environmentIds = await this.#store.watchEnvironments();
@@ -275,5 +287,25 @@ export class WatchService {
     const timer = this.#reconcileRetryTimers.get(environmentId);
     if (timer) clearTimeout(timer);
     this.#reconcileRetryTimers.delete(environmentId);
+  }
+  #scheduleTriggerLookupRetry(triggerId: TriggerId): void {
+    if (this.#closed || this.#triggerLookupRetryTimers.has(triggerId)) return;
+    const attempt = (this.#triggerLookupRetryAttempts.get(triggerId) ?? 0) + 1;
+    this.#triggerLookupRetryAttempts.set(triggerId, attempt);
+    const delayMs = Math.min(
+      watchReconcileRetryMaximumMs,
+      watchReconcileRetryInitialMs * 2 ** Math.min(attempt - 1, 4),
+    );
+    const timer = setTimeout(() => {
+      this.#triggerLookupRetryTimers.delete(triggerId);
+      void this.triggerChanged(triggerId);
+    }, delayMs);
+    timer.unref();
+    this.#triggerLookupRetryTimers.set(triggerId, timer);
+  }
+  #clearTriggerLookupRetry(triggerId: TriggerId): void {
+    const timer = this.#triggerLookupRetryTimers.get(triggerId);
+    if (timer) clearTimeout(timer);
+    this.#triggerLookupRetryTimers.delete(triggerId);
   }
 }

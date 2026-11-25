@@ -1895,6 +1895,9 @@ integration("IdentityService", () => {
     expect(setCookie).toContain("Secure");
     expect(setCookie).toContain("SameSite=Lax");
     expect(setCookie).not.toContain("Domain=");
+    // The cookie outlives the idle deadline the Host renews on use, and ends
+    // with the session's absolute deadline.
+    expect(setCookie).toContain(`Max-Age=${30 * 24 * 60 * 60}`);
 
     const cookie = setCookie!.split(";", 1)[0]!;
     await expect(

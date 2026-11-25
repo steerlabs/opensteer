@@ -16,6 +16,8 @@ export type ThreadView = Pick<ThreadSummary, "title" | "icon"> &
       | "returnHint"
       | "endedOrigin"
       | "retry"
+      | "agentSessionId"
+      | "externalWork"
     >
   >;
 
@@ -23,6 +25,8 @@ type ThreadState = {
   returnHint?: ThreadSummary["returnHint"];
   endedOrigin?: ThreadSummary["endedOrigin"];
   retry?: ThreadSummary["retry"];
+  agentSessionId?: ThreadSummary["agentSessionId"];
+  externalWork?: ThreadSummary["externalWork"];
 } & Pick<ThreadSummary, "status" | "pendingRequests" | "updatedAt"> & {
     readonly inputQueuePaused?: boolean | undefined;
     readonly compact?: boolean | undefined;
@@ -87,6 +91,8 @@ export class ThreadStateProjection {
       status: state.status,
       inputQueuePaused: state.inputQueuePaused ?? summary.inputQueuePaused,
       ...(state.retry !== undefined ? { retry: state.retry } : {}),
+      ...(state.agentSessionId !== undefined ? { agentSessionId: state.agentSessionId } : {}),
+      ...(state.externalWork !== undefined ? { externalWork: state.externalWork } : {}),
       pendingRequests: state.pendingRequests,
       updatedAt,
     };
@@ -111,6 +117,8 @@ export class ThreadStateProjection {
         returnHint: state.returnHint === undefined ? thread.returnHint : state.returnHint,
         endedOrigin: state.endedOrigin === undefined ? thread.endedOrigin : state.endedOrigin,
         ...(state.retry !== undefined ? { retry: state.retry } : {}),
+        ...(state.agentSessionId !== undefined ? { agentSessionId: state.agentSessionId } : {}),
+        ...(state.externalWork !== undefined ? { externalWork: state.externalWork } : {}),
       }),
     };
   }
@@ -154,6 +162,10 @@ export class ThreadStateProjection {
       endedOrigin:
         incoming.endedOrigin === undefined ? previous?.endedOrigin : incoming.endedOrigin,
       retry: incoming.retry === undefined ? previous?.retry : incoming.retry,
+      agentSessionId:
+        incoming.agentSessionId === undefined ? previous?.agentSessionId : incoming.agentSessionId,
+      externalWork:
+        incoming.externalWork === undefined ? previous?.externalWork : incoming.externalWork,
       status: incoming.status,
       inputQueuePaused: incoming.inputQueuePaused ?? previous?.inputQueuePaused,
       compact: incoming.compact,

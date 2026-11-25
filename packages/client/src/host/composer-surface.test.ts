@@ -69,6 +69,34 @@ describe("deriveSurface", () => {
     expect(surface?.textRole).toBe("message");
   });
 
+  it("never makes the textarea an answer to a command an agent proposed: only its buttons answer it", () => {
+    const proposal = pendingRequest({
+      kind: "person.question",
+      mode: "durable",
+      payload: { kind: "person.question" },
+      presentation: {
+        kind: "form",
+        title: "Rename an AI engine account · Asked by the agent “Claude Code”",
+        fields: [
+          {
+            id: "decision",
+            prompt: "Approve runs it as you, exactly as shown. Decline tells the agent no.",
+            choices: [{ label: "Decline", value: "decline" }],
+            custom: true,
+            multiSelect: false,
+            secret: false,
+          },
+        ],
+      },
+      requiredActor: "owner",
+      command: { type: "harness.rename" } as never,
+    });
+    expect(deriveSurface([proposal], viewer)?.textRole).toBe("message");
+    // The same form without the command part is a question, answered in the textarea.
+    const { command: _command, ...question } = proposal;
+    expect(deriveSurface([question as typeof proposal], viewer)?.textRole).toBe("answer");
+  });
+
   it("makes the textarea a question's answer, and hides it while a form takes a secret", () => {
     const question = (secret: boolean, kind: "harness.input" | "person.question") =>
       pendingRequest({

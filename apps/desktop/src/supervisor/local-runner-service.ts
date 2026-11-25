@@ -334,6 +334,17 @@ export class LocalRunnerService {
   readonly #obligations = new Map<DeploymentId, Promise<void>>();
   readonly #leaveTimers = new Map<DeploymentId, ReturnType<typeof setTimeout>>();
   readonly #fenced = new Set<DeploymentId>();
+  /**
+   * Deployments whose membership the Runner confirmed after a session loss,
+   * and that have not proved a working Host session since. Another session
+   * loss here is about the session alone: the device is still a member, so it
+   * asks for sign-in instead of confirming the membership again. Without this,
+   * a reopened Deployment that still has no session is refused, confirmed and
+   * reopened forever.
+   */
+  readonly #awaitingSession = new Set<DeploymentId>();
+  /** One session-loss transition per Deployment at a time; overlapping reports join it. */
+  readonly #sessionLosses = new Map<DeploymentId, Promise<void>>();
   readonly #profileErasure: DesktopBrowserProfileErasure;
   readonly #config: DesktopConfiguration;
   readonly #browser: LocalRunnerServiceDependencies["browser"];
@@ -837,10 +848,11 @@ export class LocalRunnerService {
     };
     if (parsed.enrollmentToken && existing && existing.state !== "active")
       throw new Error("Resume device setup before handing off an enrollment.");
-    if (existing?.confirmingSession)
+    if (existing?.state === "active" && existing.confirmingSession)
       throw new Error("Waiting for the Runner to confirm this Mac is still a device.");
     if (existing?.state === "leaving") throw new Error("This Mac's leave is still unconfirmed.");
     if (existing?.state === "removed") {
+      this.#awaitingSession.delete(parsed.deploymentId);
       await this.#finishObligation(parsed.deploymentId);
       await this.#profileErasure.prepare(parsed.deploymentId);
       await this.#mutatePreference((preference) => {
@@ -1000,6 +1012,7 @@ export class LocalRunnerService {
       };
     });
     if (!recorded) throw new Error("This Mac left before session binding completed.");
+    this.#awaitingSession.delete(deploymentId);
     return outcome;
   }
 
@@ -1229,10 +1242,29 @@ export class LocalRunnerService {
     );
   }
 
-  async sessionLost(deploymentIdInput: string): Promise<void> {
+  sessionLost(deploymentIdInput: string): Promise<void> {
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
+    // Main hears one loss from every HostSession and from both the ended and
+    // the unauthorized report. They are one event: the second must not see the
+    // first half-applied and start a confirmation of its own.
+    const pending = this.#sessionLosses.get(deploymentId);
+    if (pending) return pending;
+    const loss = this.#sessionLostNow(deploymentId).finally(() => {
+      if (this.#sessionLosses.get(deploymentId) === loss) this.#sessionLosses.delete(deploymentId);
+    });
+    this.#sessionLosses.set(deploymentId, loss);
+    return loss;
+  }
+
+  async #sessionLostNow(deploymentId: DeploymentId): Promise<void> {
     const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
     if (row?.state !== "active" || !row.runnerId || row.confirmingSession) return;
+    // Already fenced and waiting for sign-in: there is nothing to confirm.
+    if (row.needsSignIn) return;
+    if (this.#awaitingSession.has(deploymentId)) {
+      await this.#requireSignIn(deploymentId, row.generation);
+      return;
+    }
     this.#fenceDeployment(deploymentId);
     await this.#mutatePreference((preference) => {
       const current = preference.runners[deploymentId];
@@ -1261,6 +1293,28 @@ export class LocalRunnerService {
     this.#emit();
   }
 
+  /**
+   * The membership was confirmed and the session still failed: keep the
+   * Runner and its identity, stop this Deployment's requests, and ask for
+   * sign-in once rather than confirming the membership again.
+   */
+  async #requireSignIn(deploymentId: DeploymentId, generation: number): Promise<void> {
+    this.#fenceDeployment(deploymentId);
+    await this.#mutatePreference((preference) => {
+      const current = preference.runners[deploymentId];
+      if (current?.state !== "active" || current.generation !== generation || current.needsSignIn)
+        return preference;
+      return {
+        ...preference,
+        runners: { ...preference.runners, [deploymentId]: { ...current, needsSignIn: true } },
+      };
+    });
+    this.#awaitingSession.delete(deploymentId);
+    await this.#clearSession(deploymentId);
+    this.#log("desktop.device.session-unrecovered", { deploymentId });
+    this.#emit();
+  }
+
   async retryDeviceConnection(input: { deploymentId: string }): Promise<void> {
     const id = DeploymentIdSchema.parse(input.deploymentId);
     const row = (await readMemberships(this.#preferencePath)).runners[id];
@@ -1273,6 +1327,7 @@ export class LocalRunnerService {
 
   async markRemoved(deploymentIdInput: string): Promise<void> {
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
+    this.#awaitingSession.delete(deploymentId);
     if (this.#fenced.has(deploymentId)) this.#disableIntent(this.#slot(deploymentId));
     this.#fence(deploymentId);
     await this.#mutatePreference((preference) => {
@@ -1957,10 +2012,12 @@ export class LocalRunnerService {
                     return;
                   }
                   await this.#sessionCleanups.get(target.deploymentId);
+                  let confirmedNow = false;
                   await this.#mutatePreference((preference) => {
                     const row = preference.runners[target.deploymentId];
                     if (row?.state !== "active" || !this.#intentIsCurrent(slot, intentGeneration))
                       return preference;
+                    confirmedNow = row.confirmingSession;
                     return {
                       ...preference,
                       runners: {
@@ -1975,8 +2032,12 @@ export class LocalRunnerService {
                   if (
                     !(await readMemberships(this.#preferencePath)).runners[target.deploymentId]
                       ?.needsSignIn
-                  )
+                  ) {
+                    // Reopened on the membership alone: until a session works
+                    // again, the next session loss asks for sign-in.
+                    if (confirmedNow) this.#awaitingSession.add(target.deploymentId);
                     await this.#allowDeployment(target.deploymentId);
+                  }
                   if (!this.#intentIsCurrent(slot, intentGeneration)) {
                     cancel();
                     return;

@@ -1931,11 +1931,13 @@ export async function settleSteer(
     .where("id", "=", commandId)
     .forNoKeyUpdate()
     .executeTakeFirst();
-  if (
-    !command ||
-    (command.status !== "pending" && (pendingOnly || command.status !== "dispatched"))
-  )
-    return;
+  const acceptableStatus =
+    command !== undefined &&
+    (command.status === "pending" ||
+      (!pendingOnly &&
+        (command.status === "dispatched" ||
+          (outcome === "unknown" && command.status === "unknown"))));
+  if (!acceptableStatus) return;
   const now = new Date();
   // A refusal proves the message never reached a reply the person stopped.
   const stopped =
@@ -1988,12 +1990,13 @@ export async function settleSteer(
                 updatedAt: now,
               }
           : {
+              cancelReason: null,
               state: "unknown",
               updatedAt: now,
             },
     )
     .where("messageId", "=", observed.messageId)
-    .where("state", "=", "claimed")
+    .where("state", "in", outcome === "unknown" ? ["claimed", "unknown"] : ["claimed"])
     .returningAll()
     .executeTakeFirst();
   if (!inputRow) return;
@@ -2099,7 +2102,7 @@ async function returnHandOffsBehind(
 export async function settleOutstandingSteersForRun(
   transaction: Transaction<DatabaseSchema>,
   runId: RunId,
-  recoveringLostExecution = false,
+  _recoveringLostExecution = false,
 ): Promise<void> {
   // finalizeRunTransaction already owns the prefix in ./lock-order.ts. Commands
   // are locked only after those scope locks, matching settleSteer and the ACK
@@ -2164,10 +2167,13 @@ export async function settleOutstandingSteersForRun(
                 state: "cancelled",
                 updatedAt: now,
               }
-            : command.policy === "queue" ||
-                command.state === "unknown" ||
-                (recoveringLostExecution && !provedNotDispatched)
-              ? provedNotDispatched
+            : !provedNotDispatched || command.state === "unknown"
+              ? {
+                  cancelReason: null,
+                  state: "unknown",
+                  updatedAt: now,
+                }
+              : command.policy === "queue"
                 ? {
                     cancelReason: null,
                     state: "pending",
@@ -2176,28 +2182,17 @@ export async function settleOutstandingSteersForRun(
                     updatedAt: now,
                   }
                 : {
-                    state: "unknown",
+                    cancelReason: "steer-not-delivered",
+                    state: "cancelled",
                     updatedAt: now,
-                  }
-              : {
-                  cancelReason: provedNotDispatched
-                    ? "steer-not-delivered"
-                    : "run-ended-delivery-unknown",
-                  state: "cancelled",
-                  updatedAt: now,
-                },
+                  },
       )
       .where("messageId", "=", command.messageId)
       .where("state", "in", ["claimed", "unknown"])
       .returningAll()
       .executeTakeFirst();
     // Finalization fails a restart that never reached the Runner itself.
-    if (
-      !restart &&
-      (command.status === "pending" ||
-        command.status === "dispatched" ||
-        command.status === "unknown")
-    ) {
+    if (!restart && (command.status === "pending" || command.status === "dispatched")) {
       await transaction
         .updateTable("commands")
         .set({
@@ -2206,11 +2201,11 @@ export async function settleOutstandingSteersForRun(
               ? "The Run ended before this input could be dispatched"
               : "The Run ended before delivery could be confirmed",
           }),
-          status: command.policy === "queue" && !provedNotDispatched ? "unknown" : "failed",
+          status: !provedNotDispatched ? "unknown" : "failed",
           updatedAt: now,
         })
         .where("id", "=", command.id)
-        .where("status", "in", ["pending", "dispatched", "unknown"])
+        .where("status", "in", ["pending", "dispatched"])
         .execute();
     }
     if (!row) continue;
@@ -2395,7 +2390,15 @@ export async function assertThreadInputCapacity(
       sql<string>`coalesce(sum(octet_length(messages.content::text)), 0)`.as("bytes"),
     ])
     .where("threadInputs.threadId", "=", threadId)
-    .where("threadInputs.state", "in", ["pending", "claimed", "unknown"])
+    // Capacity bounds deliverable backlog: `pending` and `claimed` for work
+    // inputs (an `unknown` work input is retained delivery history and is never
+    // dispatched again), plus `unknown` for passive `report` inputs (which a
+    // later Run claims again).
+    .where(
+      "threadInputs.state",
+      "in",
+      policy === "report" ? ["pending", "claimed", "unknown"] : ["pending", "claimed"],
+    )
     .where("threadInputs.policy", policy === "report" ? "=" : "!=", "report")
     .$if(replacingMessageId !== undefined, (query) =>
       query.where("threadInputs.messageId", "!=", replacingMessageId!),

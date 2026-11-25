@@ -26,6 +26,9 @@ import {
   smokeProtectedStorageUnavailablePrefix,
 } from "./test-support/require-smoke-protected-storage.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("profile-restore", 300000);
 const phase = process.env.PROFILE_VM_PHASE ?? "native-create";
 const state = realpathSync(
   process.env.PROFILE_VM_STATE ?? mkdtempSync(path.join(tmpdir(), "native-profile-")),

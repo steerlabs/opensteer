@@ -5,7 +5,7 @@ import { mockConnectedAgents } from "../mock/mock-connected-agents.js";
 import { describe, expect, it } from "vitest";
 import { agentClaim } from "./agent-identity.js";
 import { chatFacts, chatTasksNow, messagingAccountView } from "./chat-view.js";
-import { plainSentence, type SentencePart } from "./sentence-parts.js";
+import { isolatedPlainSentence, plainSentence, type SentencePart } from "./sentence-parts.js";
 import {
   agentAppOptions,
   agentBrowserOptions,
@@ -28,6 +28,7 @@ import {
   sameGrant,
   setDraftPluginAccess,
   toggleDraftResource,
+  taskOriginLabels,
   type AgentGrantDraft,
 } from "./connected-agent-view.js";
 import type { ThreadSummary } from "./client.js";
@@ -67,6 +68,34 @@ function connection(patch: Partial<AgentConnection> = {}): AgentConnection {
     ...patch,
   };
 }
+
+it("names a task's held connected agent and leaves bridges, ended agents and unknown IDs unresolved", () => {
+  const { connections } = mockConnectedAgents("seeded", now);
+  const verified = connections.find(({ label }) => label === "ChatGPT")!;
+  const declared = connection({ label: "Opensteer" });
+  const blank = connection({
+    id: "mcn_00000000-0000-4000-8000-0000000000ae",
+    label: " \t ",
+    clientName: "Research helper",
+  });
+  const bridge = mockConnectedAgents("chats", now).connections.find(({ bridge }) => bridge)!;
+  const revoked = connection({
+    id: "mcn_00000000-0000-4000-8000-0000000000af",
+    state: "stopped",
+  });
+  const labels = taskOriginLabels([verified, declared, blank, bridge, revoked], new Set(), now);
+  expect(isolatedPlainSentence(labels.get(verified.id)!)).toBe("started by ChatGPT");
+  expect(isolatedPlainSentence(labels.get(declared.id)!)).toBe(
+    "started by “\u2068Opensteer\u2069”",
+  );
+  expect(isolatedPlainSentence(labels.get(blank.id)!)).toBe(
+    "started by “\u2068Research helper\u2069”",
+  );
+  expect(labels.has(bridge.id)).toBe(false);
+  expect(labels.has(revoked.id)).toBe(false);
+  expect(labels.has("unknown")).toBe(false);
+  expect(taskOriginLabels([verified], new Set([verified.id]), now).size).toBe(0);
+});
 
 describe("a chat's tasks as they are now", () => {
   it("reads the chat's list again for a running task no live update holds", () => {
@@ -874,4 +903,9 @@ describe("a client-chosen name as a claim", () => {
     expect(agentClaim("a".repeat(41), 40)).toBe(`${"a".repeat(39)}…`);
     expect(agentClaim("Helper", 40)).toBe("Helper");
   });
+});
+
+it("falls back to the product's unnamed connected agent when both names are blank", () => {
+  const identity = connectedAgentIdentity({ label: "  \t ", clientName: "   " });
+  expect(identity).toMatchObject({ label: "A connected agent", initial: "A", providerId: null });
 });

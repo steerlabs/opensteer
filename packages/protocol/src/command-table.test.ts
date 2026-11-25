@@ -8,6 +8,7 @@ import {
   commandResourceKey,
   commandTable,
   effectClasses,
+  redactToolArgumentsForStorage,
   type CommandResource,
   type CommandStep,
   type CommandType,
@@ -21,6 +22,7 @@ import {
   commandTitles,
 } from "./command-words.js";
 import { decidingInputPaths } from "./command-inputs.test-support.js";
+import { sampleCommand } from "./command-samples.test-support.js";
 import expected from "./command-table.rows.json" with { type: "json" };
 
 interface ExpectedFace {
@@ -85,7 +87,7 @@ describe("the command table", () => {
     const types = [...unionMembers().keys()].sort();
     expect(Object.keys(commandTable).sort()).toEqual(types);
     expect(rows.map((row) => row.type).sort()).toEqual(types);
-    expect(types).toHaveLength(141);
+    expect(types).toHaveLength(142);
   });
 
   it("says what the data file says, row by row and face by face", () => {
@@ -281,6 +283,496 @@ describe("the command table", () => {
     );
   });
 
+  it("enforces separate proposal, patch, and clearAll shapes for trigger.secrets.set and forbids prototype keys", () => {
+    const parse = (extra: Record<string, unknown>) =>
+      hostApi["commands.dispatch"].payload.safeParse({
+        type: "trigger.secrets.set",
+        idempotencyKey: "k",
+        triggerId: "trg_00000000-0000-4000-8000-000000000001",
+        ...extra,
+      }).success;
+    expect(parse({ names: ["API_TOKEN"] })).toBe(true);
+    expect(parse({ set: { API_TOKEN: "val" } })).toBe(true);
+    expect(parse({ remove: ["API_TOKEN"] })).toBe(true);
+    expect(parse({ set: { A: "1" }, remove: ["B"] })).toBe(true);
+    expect(parse({ clearAll: true })).toBe(true);
+    // Mixed shapes are refused at the parser.
+    expect(parse({ names: ["A"], set: { A: "1" } })).toBe(false);
+    expect(parse({ names: ["A"], remove: ["B"] })).toBe(false);
+    expect(parse({ names: ["A"], clearAll: true })).toBe(false);
+    expect(parse({ clearAll: true, set: { A: "1" } })).toBe(false);
+    expect(parse({ clearAll: true, remove: ["A"] })).toBe(false);
+    // Prototype-pollution keys are refused in both `set` (even via JSON.parse) and `names`.
+    expect(parse({ set: JSON.parse('{"__proto__":"marker"}') as Record<string, string> })).toBe(
+      false,
+    );
+    expect(parse({ set: { constructor: "x" } })).toBe(false);
+    expect(parse({ set: { prototype: "x" } })).toBe(false);
+    expect(parse({ names: ["__proto__"] })).toBe(false);
+    // A patch whose only effect is removal is classed `destroy` even when `set: {}` is present.
+    const row = commandTable["trigger.secrets.set"];
+    expect(
+      row.face!({
+        type: "trigger.secrets.set",
+        idempotencyKey: "k",
+        triggerId: "trg_00000000-0000-4000-8000-000000000001" as never,
+        remove: ["API_TOKEN"],
+        set: {},
+      }),
+    ).toBe(0);
+  });
+
+  it("redacts malformed opensteer_command payloads while leaving every non-command tool byte-identical (M1, R4)", () => {
+    const commandTool = { namespace: "opensteer", name: "opensteer_command" } as const;
+    const triggerId = "trg_00000000-0000-4000-8000-000000000001";
+    const mStr = "M1_STR_CMD_MARKER";
+    const mTrunc = "M1_TRUNC_CMD_MARKER";
+    const mCase = "M1_CASE_KEY_MARKER";
+    const mTypo = "M1_TYPO_KEY_MARKER";
+    const mNestedInCmd = "M1_NESTED_IN_CMD_MARKER";
+    const mNestedWrap = "M1_NESTED_WRAP_MARKER";
+    const mNestedOAuth = "M1_NESTED_OAUTH_MARKER";
+    const mTypoType = "M5_TYPOTYPE_MARKER";
+    const mMissingType = "M5_MISSINGTYPE_MARKER";
+    const mBom = "M5_BOM_MARKER";
+    const mNbsp = "M5_NBSP_MARKER";
+    const mArrStr = "M5_ARRSTR_MARKER";
+    const mDblEnc = "M5_DBLENC_MARKER";
+    const mTopArr = "M5_TOPARR_MARKER";
+    const mDeep = "M5_DEEP_MARKER";
+    const mSetFirst = "M5_SETFIRST_MARKER";
+
+    // Variant (b): `command` sent as a JSON string, and unparseable/truncated JSON.
+    const fromJsonString = redactToolArgumentsForStorage(
+      {
+        command: JSON.stringify({ type: "trigger.secrets.set", triggerId, set: { A: mStr } }),
+      },
+      commandTool,
+    );
+    expect(JSON.stringify(fromJsonString)).not.toContain(mStr);
+    expect(JSON.stringify(fromJsonString)).toContain("[redacted]");
+
+    const fromTruncated = redactToolArgumentsForStorage(
+      {
+        command: `{"type":"trigger.secrets.set","triggerId":"${triggerId}","set":{"A":"${mTrunc}"`,
+      },
+      commandTool,
+    );
+    expect(JSON.stringify(fromTruncated)).not.toContain(mTrunc);
+    expect(fromTruncated).toEqual({ command: "[redacted]" });
+
+    // Variant (c): allow-list redacts misspelled/cased/invented keys on any secret-bearing command.
+    const fromMisspelled = redactToolArgumentsForStorage(
+      {
+        command: {
+          type: "trigger.secrets.set",
+          triggerId,
+          Set: { A: mCase },
+          sett: { B: mTypo },
+          input: { set: { C: mNestedInCmd } },
+          names: ["SAFE_NAME"],
+        },
+        reason: "rotate api key",
+      },
+      commandTool,
+    );
+    expect(JSON.stringify(fromMisspelled)).not.toContain(mCase);
+    expect(JSON.stringify(fromMisspelled)).not.toContain(mTypo);
+    expect(JSON.stringify(fromMisspelled)).not.toContain(mNestedInCmd);
+    expect(fromMisspelled).toEqual({
+      command: {
+        type: "trigger.secrets.set",
+        triggerId,
+        Set: "[redacted]",
+        sett: "[redacted]",
+        input: "[redacted]",
+        names: ["SAFE_NAME"],
+      },
+      reason: "rotate api key",
+    });
+
+    // Nested undeclared top-level wrapper on opensteer_command.
+    const fromNestedWrapper = redactToolArgumentsForStorage(
+      {
+        input: { command: { type: "trigger.secrets.set", triggerId, set: { A: mNestedWrap } } },
+      },
+      commandTool,
+    );
+    expect(JSON.stringify(fromNestedWrapper)).not.toContain(mNestedWrap);
+
+    const fromNestedOAuth = redactToolArgumentsForStorage(
+      {
+        command: {
+          type: "plugin.oauthApp.save",
+          input: {
+            pluginId: "plg_1",
+            clientId: "cid_1",
+            clientSecret: mNestedOAuth,
+            ClientSecret: mNestedOAuth,
+          },
+        },
+      },
+      commandTool,
+    );
+    expect(JSON.stringify(fromNestedOAuth)).not.toContain(mNestedOAuth);
+    expect(fromNestedOAuth).toMatchObject({
+      command: {
+        type: "plugin.oauthApp.save",
+        input: { clientId: "cid_1", clientSecret: "[redacted]", ClientSecret: "[redacted]" },
+      },
+    });
+
+    // Known non-secret command type on opensteer_command: kept byte-identical (same reference).
+    const knownNonSecret = {
+      command: { type: "thread.rename", threadId: "thr_1", title: "New title" },
+      reason: "rename",
+    };
+    expect(redactToolArgumentsForStorage(knownNonSecret, commandTool)).toBe(knownNonSecret);
+
+    // Unknown/misspelled or missing `type` on opensteer_command: keep string `type`, redact the rest.
+    const fromTypoType = redactToolArgumentsForStorage(
+      { command: { type: "trigger.secret.set", set: { K: mTypoType } }, reason: "typo" },
+      commandTool,
+    );
+    expect(JSON.stringify(fromTypoType)).not.toContain(mTypoType);
+    expect(fromTypoType).toEqual({
+      command: { type: "trigger.secret.set", set: "[redacted]" },
+      reason: "typo",
+    });
+
+    const fromMissingType = redactToolArgumentsForStorage(
+      { command: { set: { K: mMissingType } } },
+      commandTool,
+    );
+    expect(JSON.stringify(fromMissingType)).not.toContain(mMissingType);
+    expect(fromMissingType).toEqual({ command: { set: "[redacted]" } });
+
+    // Item-4 string/nesting evasions on opensteer_command: every one leaves zero markers.
+    const evasionCases: ReadonlyArray<readonly [string, unknown, string]> = [
+      [
+        "BOM",
+        {
+          command: `\uFEFF{"type":"trigger.secrets.set","triggerId":"${triggerId}","set":{"K":"${mBom}"}}`,
+        },
+        mBom,
+      ],
+      [
+        "NBSP",
+        {
+          command: `\u00A0{"type":"trigger.secrets.set","triggerId":"${triggerId}","set":{"K":"${mNbsp}"}}`,
+        },
+        mNbsp,
+      ],
+      [
+        "ARRSTR",
+        {
+          command: `[{"type":"trigger.secrets.set","triggerId":"${triggerId}","set":{"K":"${mArrStr}"}}]`,
+        },
+        mArrStr,
+      ],
+      [
+        "DBLENC",
+        {
+          command: JSON.stringify(
+            JSON.stringify({ type: "trigger.secrets.set", triggerId, set: { K: mDblEnc } }),
+          ),
+        },
+        mDblEnc,
+      ],
+      [
+        "TOPARR",
+        `[{"command":{"type":"trigger.secrets.set","triggerId":"${triggerId}","set":{"K":"${mTopArr}"}}}]`,
+        mTopArr,
+      ],
+      [
+        "DEEP",
+        {
+          command: {
+            a: {
+              b: {
+                c: { d: { e: { f: { g: { type: "trigger.secrets.set", set: { K: mDeep } } } } } },
+              },
+            },
+          },
+        },
+        mDeep,
+      ],
+      [
+        "SETFIRST",
+        { command: `{"set":{"K":"${mSetFirst}"},"triggerId":"${triggerId}","ty` },
+        mSetFirst,
+      ],
+    ];
+    for (const [label, payload, marker] of evasionCases) {
+      const redacted = redactToolArgumentsForStorage(payload, commandTool);
+      expect(JSON.stringify(redacted), label).not.toContain(marker);
+    }
+
+    // Reviewer's two ordinary-tool regression cases: recorded byte-identical.
+    const editArgs = {
+      file_path: "/repo/a.ts",
+      old_string: '{\n  const dash = "\\u2014";\n  return dash;\n}',
+    };
+    expect(redactToolArgumentsForStorage(editArgs, { namespace: "claude", name: "Edit" })).toBe(
+      editArgs,
+    );
+    const bashArgs = { command: '{ printf "\\u00e9"; echo done; } > out.txt' };
+    expect(redactToolArgumentsForStorage(bashArgs, { namespace: "claude", name: "Bash" })).toBe(
+      bashArgs,
+    );
+
+    // Property check: for every non-command tool, redact(args) returns args untouched (deep-equal & same ref).
+    const nonCommandTools = [
+      { namespace: "claude", name: "Bash" },
+      { namespace: "claude", name: "Edit" },
+      { namespace: "codex", name: "shell" },
+      { namespace: "cursor", name: "edit_file" },
+      { namespace: "opencode", name: "bash" },
+      { namespace: "pi", name: "bash" },
+      { namespace: "antigravity", name: "run_command" },
+      { namespace: "muse", name: "shell" },
+      { namespace: "opensteer", name: "opensteer_task_read" },
+      { namespace: "opensteer", name: "plugin_call" },
+    ] as const;
+    const variedInputs: readonly unknown[] = [
+      editArgs,
+      bashArgs,
+      { command: '{"type":"trigger.secrets.set","set":{"K":"v"}}' },
+      { command: '{"type":"trigger.secrets.set","set":{"K":"truncated' },
+      { text: `{ "${"x".repeat(80_000)}": "\\u2014", "type": "trigger.secrets.set"` },
+      { payload: '\uFEFF{"type":"trigger.secrets.set"}' },
+      { items: ['{"type":"trigger.secrets.set","set":{"K":"v"}', "{ \\u00e9 }"] },
+    ];
+    for (const tool of nonCommandTools) {
+      for (const input of variedInputs) {
+        const result = redactToolArgumentsForStorage(input, tool);
+        expect(result, `${tool.namespace}/${tool.name}`).toBe(input);
+        expect(result, `${tool.namespace}/${tool.name}`).toEqual(input);
+      }
+    }
+  });
+
+  it("redacts undeclared keys on known non-secret commands (R6-1), keeps every valid command type byte-identical, and enforces the identity-independent backstop (R6-2)", () => {
+    const commandTool = { namespace: "opensteer", name: "opensteer_command" } as const;
+    const triggerId = "trg_00000000-0000-4000-8000-000000000001";
+    const revisionId = "trv_00000000-0000-4000-8000-000000000001";
+    const threadId = "thr_00000000-0000-4000-8000-000000000001";
+
+    // R6-1: Known non-secret types redact undeclared top-level and nested keys while preserving declared ones + reason.
+    const createTopMarker = "R6_KNOWNNONSECRET_CREATE_TOP";
+    const createNestedMarker = "R6_KNOWNNONSECRET_CREATE_NESTED";
+    const updateTopMarker = "R6_KNOWNNONSECRET_UPDATE_TOP";
+    const updateNestedMarker = "R6_KNOWNNONSECRET_UPDATE_NESTED";
+
+    const createRedacted = redactToolArgumentsForStorage(
+      {
+        command: {
+          type: "trigger.create",
+          secrets: { K: createTopMarker },
+          input: {
+            anchorThreadId: threadId,
+            name: "Morning digest",
+            secrets: { OPENAI_API_KEY: createNestedMarker },
+          },
+        },
+        reason: "keep reason by design",
+      },
+      commandTool,
+    );
+    expect(JSON.stringify(createRedacted)).not.toContain(createTopMarker);
+    expect(JSON.stringify(createRedacted)).not.toContain(createNestedMarker);
+    expect(createRedacted).toEqual({
+      command: {
+        type: "trigger.create",
+        secrets: "[redacted]",
+        input: {
+          anchorThreadId: threadId,
+          name: "Morning digest",
+          secrets: "[redacted]",
+        },
+      },
+      reason: "keep reason by design",
+    });
+
+    const updateRedacted = redactToolArgumentsForStorage(
+      {
+        command: {
+          type: "trigger.update",
+          triggerId,
+          set: { K: updateTopMarker },
+          input: {
+            expectedRevisionId: revisionId,
+            name: "Updated name",
+            secrets: { OPENAI_API_KEY: updateNestedMarker },
+          },
+        },
+      },
+      commandTool,
+    );
+    expect(JSON.stringify(updateRedacted)).not.toContain(updateTopMarker);
+    expect(JSON.stringify(updateRedacted)).not.toContain(updateNestedMarker);
+    expect(updateRedacted).toEqual({
+      command: {
+        type: "trigger.update",
+        triggerId,
+        set: "[redacted]",
+        input: {
+          expectedRevisionId: revisionId,
+          name: "Updated name",
+          secrets: "[redacted]",
+        },
+      },
+    });
+
+    // R6-1 byte-identical proof across EVERY command type in commandTable (all 142 types):
+    // 136 valid directly from sampleCommand(type); 6 have custom string refinements fixed below.
+    const validOverrides: Partial<
+      Record<CommandType, (c: Record<string, unknown>) => Record<string, unknown>>
+    > = {
+      "notification.preview.register": (c) => ({
+        ...c,
+        keyId: Buffer.alloc(16, 1).toString("base64url"),
+        key: Buffer.alloc(32, 2).toString("base64url"),
+      }),
+      "machine.access.update": (c) => ({
+        ...c,
+        policy: { ...(c.policy as Record<string, unknown>), shares: [] },
+      }),
+      "integration.computer.setup.request": (c) => ({
+        ...c,
+        input: {
+          ...(c.input as Record<string, unknown>),
+          app: {
+            ...((c.input as Record<string, unknown>).app as Record<string, unknown>),
+            teamId: "AB12CD34EF",
+          },
+        },
+      }),
+      "integration.computer.setup.set": (c) => ({
+        ...c,
+        input: {
+          ...(c.input as Record<string, unknown>),
+          app: {
+            ...((c.input as Record<string, unknown>).app as Record<string, unknown>),
+            teamId: "AB12CD34EF",
+          },
+        },
+      }),
+      "personal.accountLink.approve": (c) => {
+        const challenge = c.challenge as Record<string, unknown>;
+        const env = challenge.authorityEnvelope as Record<string, unknown>;
+        const doc = env.document as Record<string, unknown>;
+        return {
+          ...c,
+          challenge: {
+            ...challenge,
+            challengeCredential: `olc_${"A".repeat(43)}`,
+            authorityEnvelope: {
+              ...env,
+              document: { ...doc, canonicalOrigin: "https://home.example.com" },
+            },
+          },
+        };
+      },
+      "plugin.authorization.begin": (c) => ({
+        ...c,
+        input: { ...(c.input as Record<string, unknown>), returnPath: "/settings/plugins" },
+      }),
+    };
+
+    const stripPath = (obj: Record<string, unknown>, path: string): void => {
+      const parts = path.split(".");
+      let cur: unknown = obj;
+      for (const seg of parts.slice(0, -1)) {
+        if (typeof cur !== "object" || cur === null || !Object.hasOwn(cur, seg)) return;
+        cur = (cur as Record<string, unknown>)[seg];
+      }
+      if (typeof cur === "object" && cur !== null) {
+        delete (cur as Record<string, unknown>)[parts.at(-1)!];
+      }
+    };
+
+    const allTypes = Object.keys(commandTable) as CommandType[];
+    expect(allTypes.length).toBeGreaterThan(100);
+    for (const type of allTypes) {
+      const sample = sampleCommand(type);
+      const fix = validOverrides[type];
+      const command = fix ? fix({ ...sample.command }) : { ...sample.command };
+      // Confirm every example is actually valid against hostApi["commands.dispatch"].payload.
+      const parsed = hostApi["commands.dispatch"].payload.safeParse(command);
+      expect(parsed.success, `${type} fixture should parse`).toBe(true);
+
+      const secretFields = commandTable[type].secretFields ?? [];
+      if (secretFields.length === 0) {
+        // Every valid non-secret command call stays byte-identical (exact same object reference).
+        const wrapped = { command, reason: "valid call" };
+        expect(redactToolArgumentsForStorage(wrapped, commandTool), type).toBe(wrapped);
+      } else {
+        // For secret-bearing types, stripping declared secret leaves yields a byte-identical call
+        // (proving every declared non-secret field is allowed and nothing valid is over-redacted).
+        const withoutSecrets = structuredClone(command);
+        for (const path of secretFields) stripPath(withoutSecrets, path);
+        const wrapped = { command: withoutSecrets };
+        expect(redactToolArgumentsForStorage(wrapped, commandTool), type).toBe(wrapped);
+      }
+    }
+
+    // R6-2: Identity-independent backstop for any foreign/unrecognised tool identity whose args are
+    // an object with `command` an object carrying a known commandTable `type`.
+    const foreignMarker = "R6_X_FOREIGNIDENTITY_MARKER";
+    const foreignUpdateMarker = "R6_X_FOREIGN_UPDATE_MARKER";
+    for (const foreignTool of [
+      { namespace: "mcp:plugin-opensteer-opensteer", name: "opensteer_command" },
+      { namespace: "acp", name: "other" },
+      { namespace: "acp", name: "mcp__opensteer__opensteer_command" },
+    ]) {
+      const secretRes = redactToolArgumentsForStorage(
+        {
+          command: { type: "trigger.secrets.set", triggerId, set: { K: foreignMarker } },
+          reason: "foreign ok",
+        },
+        foreignTool,
+      );
+      expect(
+        JSON.stringify(secretRes),
+        `${foreignTool.namespace}/${foreignTool.name}`,
+      ).not.toContain(foreignMarker);
+      expect(secretRes).toEqual({
+        command: { type: "trigger.secrets.set", triggerId, set: "[redacted]" },
+        reason: "foreign ok",
+      });
+
+      const nonSecretUndeclaredRes = redactToolArgumentsForStorage(
+        {
+          command: {
+            type: "trigger.update",
+            triggerId,
+            set: { K: foreignUpdateMarker },
+            input: { expectedRevisionId: revisionId, secrets: { K: foreignUpdateMarker } },
+          },
+        },
+        foreignTool,
+      );
+      expect(
+        JSON.stringify(nonSecretUndeclaredRes),
+        `${foreignTool.namespace}/${foreignTool.name} update`,
+      ).not.toContain(foreignUpdateMarker);
+    }
+
+    // Backstop is object-checks-only: non-object `command` (Bash) or unknown `command.type` on a
+    // foreign tool stays byte-identical (exact same reference).
+    const foreignUnknownType = { command: { type: "not.a.real.command", set: { K: "stay" } } };
+    expect(
+      redactToolArgumentsForStorage(foreignUnknownType, { namespace: "acp", name: "custom" }),
+    ).toBe(foreignUnknownType);
+    const bashWithSecretTypeText = {
+      command: '{"type":"trigger.secrets.set","set":{"K":"stay"}}',
+    };
+    expect(
+      redactToolArgumentsForStorage(bashWithSecretTypeText, { namespace: "claude", name: "Bash" }),
+    ).toBe(bashWithSecretTypeText);
+  });
+
   it("has a verdict for every input that could decide a command, and none for a gone one (D0b)", () => {
     const verdicts = (expected as unknown as { inputs: Record<string, string> }).inputs;
     const paths = decidingInputPaths();
@@ -346,6 +838,73 @@ describe("the command table", () => {
     // Only the stored policy says whether a switch goes up.
     expect(commandTable["machine.access.update"].face?.({} as never)).toBeUndefined();
     expect(commandTable["connection.update"].face?.({} as never)).toBeUndefined();
+  });
+
+  it("parses secret-omitted proposals with parseCommandArguments while keeping superRefine rules intact", async () => {
+    const { parseCommandArguments } = await import("./command-arguments.js");
+    const triggerId = "trg_00000000-0000-4000-8000-000000000001";
+    // Valid proposals with `set` absent pass cleanly.
+    expect(
+      parseCommandArguments({
+        type: "trigger.secrets.set",
+        idempotencyKey: "proposal",
+        triggerId,
+        names: ["API_KEY"],
+      }).success,
+    ).toBe(true);
+    expect(
+      parseCommandArguments({
+        type: "trigger.secrets.set",
+        idempotencyKey: "proposal",
+        triggerId,
+        remove: ["API_KEY"],
+      }).success,
+    ).toBe(true);
+    expect(
+      parseCommandArguments({
+        type: "trigger.secrets.set",
+        idempotencyKey: "proposal",
+        triggerId,
+        clearAll: true,
+      }).success,
+    ).toBe(true);
+    // Cross-field `.superRefine(...)` still rejects invalid combinations when `set` is absent.
+    expect(
+      parseCommandArguments({
+        type: "trigger.secrets.set",
+        idempotencyKey: "proposal",
+        triggerId,
+        names: ["API_KEY"],
+        clearAll: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      parseCommandArguments({
+        type: "trigger.secrets.set",
+        idempotencyKey: "proposal",
+        triggerId,
+        clearAll: true,
+        remove: ["API_KEY"],
+      }).success,
+    ).toBe(false);
+    // Required nested secret fields (e.g. `plugin.oauthApp.save.input.clientSecret`) remain omissible.
+    expect(
+      parseCommandArguments({
+        type: "plugin.oauthApp.save",
+        idempotencyKey: "proposal",
+        input: {
+          issuer: "https://oauth.example.test",
+          clientId: "client_123",
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      parseCommandArguments({
+        type: "integration.server.secrets.set",
+        idempotencyKey: "proposal",
+        serverId: "isv_00000000-0000-4000-8000-000000000001",
+      }).success,
+    ).toBe(true);
   });
 });
 

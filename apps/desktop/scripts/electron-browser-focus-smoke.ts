@@ -22,6 +22,9 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launcher.js";
 import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("focus", 180000);
 
 const smokeDownloads = smokeDesktopDownloads();
 

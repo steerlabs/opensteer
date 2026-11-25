@@ -1,6 +1,7 @@
 import { outsideName } from "@opensteer/shared/outsideName";
 import { chatParityProvider } from "./chat-parity.js";
 import { ItemTextStore } from "../host/item-text-store.js";
+import { isConnectedAgentTask } from "../host/agent-work.js";
 import { taskOriginEndedMessage } from "../host/connected-agents-copy.js";
 import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import {
@@ -277,6 +278,7 @@ import {
   machineAccessPolicyDefault,
   previousReleaseEligibility,
   rpcSuccess,
+  taskPageEntryView,
   taskLineMaxLength,
   type ComputerUseInstalledApp,
   type HarnessInstanceCatalog,
@@ -385,7 +387,11 @@ import {
 } from "./mock-automations.js";
 import { MockChromeSignIns } from "./mock-chrome-sign-ins.js";
 import { personalResourceKinds } from "@opensteer/protocol/resources";
-import { mockAgentWork, mockAgentWorkThreads } from "./mock-agent-work.js";
+import {
+  mockAgentWork,
+  mockAgentWorkThreads,
+  type MockAgentWorkLiveScene,
+} from "./mock-agent-work.js";
 import { mockComputerUseMessageId, mockComputerUseTurn } from "./mock-computer-use-transcript.js";
 import { MockComputerViews } from "./mock-computer-views.js";
 import {
@@ -2735,12 +2741,11 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     // The preview holds every task, so a page is a slice of what it holds.
     "tasks.list": async (input) => {
       const snapshot = client.getSnapshot();
-      const entries = (snapshot.tasks?.entries ?? []).filter(
-        ({ thread }) =>
-          (!input.active || thread.status === "running" || thread.status === "waiting") &&
-          (!input.done || thread.doneAt !== null),
-      );
-      if (input.done) entries.sort(newestDone);
+      const entries = input.done
+        ? mockDoneTasks(snapshot.tasks?.entries ?? [])
+        : input.active
+          ? snapshot.activeTasks
+          : (snapshot.tasks?.entries ?? []).filter(({ thread }) => mockRecentTask(thread));
       const start = input.before ? Number(input.before) : 0;
       if (!Number.isInteger(start) || start < 0 || start > entries.length) {
         return mockRefusal(
@@ -2756,10 +2761,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       return rpcSuccess(
         hostApi["tasks.list"].success.parse({
           asOfSequence: SequenceSchema.parse(String(client.getSnapshot().revision)),
-          tasks: page.map((entry) => ({
-            ...entry,
-            thread: mockThread(entry.thread),
-          })),
+          tasks: page.map(mockTaskPageEntry),
           window: {
             byteCount: 2,
             hasMore: end < entries.length,
@@ -3769,6 +3771,17 @@ async function executeMockCommand(
           type: command.type,
         }),
       );
+    case "trigger.secrets.set":
+      return rpcSuccess(
+        hostApi["commands.dispatch"].success.parse({
+          secretNames: client.setTriggerSecrets(command.triggerId, {
+            ...(command.clearAll ? { clearAll: true as const } : {}),
+            ...(command.remove ? { remove: command.remove } : {}),
+            ...(command.set ? { set: command.set } : {}),
+          }),
+          type: command.type,
+        }),
+      );
   }
   return unsupportedMockRpc();
 }
@@ -3799,6 +3812,33 @@ function mockAuthenticatedSession(snapshot: HostSnapshot) {
     lastSeenAt: "2026-08-01T00:00:00.000Z",
     user: snapshot.user,
   };
+}
+
+function mockTaskPageEntry({ thread, failure, lastReply }: TaskEntry) {
+  return taskPageEntryView({
+    thread: mockThread(thread),
+    failure,
+    lastReply,
+    originConnectionId: thread.originConnectionId,
+    externalWork: thread.externalWork,
+    runQueued: thread.runQueued,
+    retry: thread.retry ?? null,
+  });
+}
+
+function mockRecentTask(thread: ThreadSummary) {
+  return (
+    thread.doneAt === null &&
+    thread.status !== "running" &&
+    thread.status !== "waiting" &&
+    !isConnectedAgentTask(thread)
+  );
+}
+
+function mockDoneTasks(entries: readonly TaskEntry[]) {
+  return entries
+    .filter(({ thread }) => thread.doneAt !== null && !isConnectedAgentTask(thread))
+    .sort(newestDone);
 }
 
 function mockThread(thread: ThreadSummary): Thread {
@@ -4060,10 +4100,7 @@ export class MockHostClient implements HostClient {
     const snapshot = this.getSnapshot(),
       page = (entries: readonly TaskEntry[]) => ({
         asOfSequence: SequenceSchema.parse(sequence),
-        tasks: entries.slice(0, 100).map((entry) => ({
-          ...entry,
-          thread: mockThread(entry.thread),
-        })),
+        tasks: entries.slice(0, 100).map(mockTaskPageEntry),
         window: {
           ...mockWindow(Math.min(100, entries.length)),
           hasMore: entries.length > 100,
@@ -4085,9 +4122,9 @@ export class MockHostClient implements HostClient {
       pendingRequestWindow: mockWindow(snapshot.waitingRequests.length),
       runQueue: [],
       tasks: {
-        recent: page(recent),
+        recent: page(recent.filter(({ thread }) => mockRecentTask(thread))),
         active: page(snapshot.activeTasks),
-        done: page(recent.filter(({ thread }) => thread.doneAt !== null)),
+        done: page(mockDoneTasks(recent)),
       },
       needsYou: mockNeedsYou(snapshot, undefined, undefined),
       resources: (({ tabs, browser }) => ({ tabs, browser }))(this.#state.bootstrap()),
@@ -5181,9 +5218,15 @@ export class MockHostClient implements HostClient {
       readonly long?: boolean;
       readonly question?: boolean;
       readonly questionChoices?: readonly string[];
+      readonly livePanel?: MockAgentWorkLiveScene;
     } = {},
   ): void {
     this.#state.mockAgentWork(options);
+  }
+
+  /** A task their own agents can run under a connected agent's lineage. */
+  mockStartedTask(originConnectionId: string, title = "Summarize my notes"): string {
+    return this.#state.mockStartedTask(originConnectionId, title);
   }
 
   /** The person's Stop on a connected agent's task, bound to the session they saw. */
@@ -7841,6 +7884,7 @@ class MockHostState {
       readonly long?: boolean;
       readonly question?: boolean;
       readonly questionChoices?: readonly string[];
+      readonly livePanel?: MockAgentWorkLiveScene;
     } = {},
   ): void {
     const template = this.snapshot.threads.find(({ purpose }) => purpose === "task");
@@ -7852,25 +7896,38 @@ class MockHostState {
       template,
       connections: this.connections,
       ...(options.long ? { long: true } : {}),
+      ...(options.livePanel ? { livePanel: options.livePanel } : {}),
       ...(options.question ? { question: true } : {}),
       ...(options.questionChoices ? { questionChoices: options.questionChoices } : {}),
     });
     this.#agentOperations = seed.operations;
-    this.connections = this.connections.map((connection) =>
-      connection.label === "ChatGPT"
-        ? {
-            ...connection,
-            verificationWithdrawnAt: new Date(this.now().getTime() - 3 * 86_400_000).toISOString(),
-          }
-        : connection,
-    );
+    if (!options.livePanel)
+      this.connections = this.connections.map((connection) =>
+        connection.label === "ChatGPT"
+          ? {
+              ...connection,
+              verificationWithdrawnAt: new Date(
+                this.now().getTime() - 3 * 86_400_000,
+              ).toISOString(),
+            }
+          : connection,
+      );
     this.tabCatalog.markSharedFromChrome(TabIdSchema.parse("mock-tab-0-0"));
     const at = this.now().toISOString();
     // The working agent uses a tab of its own; the waiting one, a tab the person shares.
-    const placed: Readonly<Record<string, string>> = {
-      "mock-tab-1-0": mockAgentWorkThreads.working,
-      "mock-tab-0-0": mockAgentWorkThreads.waiting,
-    };
+    const placed: Readonly<Record<string, string>> =
+      options.livePanel === "one" ||
+      options.livePanel === "long-one" ||
+      options.livePanel === "long-place" ||
+      options.livePanel === "one-history"
+        ? { "mock-tab-1-0": mockAgentWorkThreads.shopping }
+        : options.livePanel === "history"
+          ? {}
+          : {
+              "mock-tab-1-0": mockAgentWorkThreads.working,
+              "mock-tab-0-0": mockAgentWorkThreads.waiting,
+              ...(options.livePanel ? { "mock-tab-1-1": mockAgentWorkThreads.shopping } : {}),
+            };
     const browserSessions = this.snapshot.browserSessions.map((session) => {
       if (!session.catalog?.tabs.some(({ id }) => id in placed)) return session;
       const tabs = session.catalog.tabs.map((tab) =>
@@ -7881,7 +7938,9 @@ class MockHostState {
                 {
                   threadId: ThreadIdSchema.parse(placed[tab.id]!),
                   holding: true,
-                  acting: placed[tab.id] === mockAgentWorkThreads.working,
+                  acting: seed.threads.some(
+                    ({ id, status }) => id === placed[tab.id] && status === "running",
+                  ),
                   lastActiveAt: at,
                 },
               ],
@@ -7894,12 +7953,43 @@ class MockHostState {
         threadIds: [...new Set(tabs.flatMap(({ occupants }) => occupants.map((o) => o.threadId)))],
       };
     });
+    const seededIds = new Set(seed.threads.map(({ id }) => id));
     this.update({
       ...this.snapshot,
-      threads: [...this.snapshot.threads, ...seed.threads],
+      threads: [...this.snapshot.threads.filter(({ id }) => !seededIds.has(id)), ...seed.threads],
       requests: { ...this.snapshot.requests, ...seed.requests } as typeof this.snapshot.requests,
       browserSessions,
     });
+  }
+
+  mockStartedTask(originConnectionId: string, title: string): string {
+    const template = this.snapshot.threads.find(
+      ({ purpose, listed }) => purpose === "task" && listed,
+    );
+    if (!template) throw new Error("No mock task to copy.");
+    const id = createId("thread");
+    const at = this.now().toISOString();
+    const task: ThreadSummary = {
+      ...template,
+      id,
+      title,
+      originConnectionId,
+      startedByOther: true,
+      parentThreadId: null,
+      status: "idle",
+      pendingRequests: 0,
+      doneAt: null,
+      doneReason: null,
+      askedAt: at,
+      createdAt: at,
+      updatedAt: at,
+      latestRunCompletedAt: null,
+      lastVisitedAt: null,
+      runQueued: false,
+      unread: false,
+    };
+    this.update({ ...this.snapshot, threads: [...this.snapshot.threads, task] });
+    return id;
   }
 
   mockDeviceStates(): void {
@@ -9346,7 +9436,57 @@ class MockHostState {
       createdByThreadTitle:
         this.snapshot.threads.find(({ id }) => id === record.trigger.createdByThreadId)?.title ??
         null,
+      secretNames: [...(record.secretNames ?? [])],
+      secretsUnreadable: record.secretsUnreadable === true,
     };
+  }
+
+  setTriggerSecrets(
+    triggerId: string,
+    patch: {
+      readonly clearAll?: true;
+      readonly remove?: readonly string[];
+      readonly set?: Readonly<Record<string, string>>;
+    },
+  ): readonly string[] {
+    const record = this.getTrigger(triggerId);
+    if (record.trigger.systemRole) {
+      throw new HostClientRequestError({
+        code: "conflict",
+        message: "Opensteer manages this memory pass.",
+        status: rpcErrorStatus("conflict"),
+      });
+    }
+    const setsEntries = Object.keys(patch.set ?? {}).length > 0;
+    if (record.trigger.status === "archived" && setsEntries) {
+      throw new HostClientRequestError({
+        code: "conflict",
+        message: "Archived automations cannot be changed",
+        status: rpcErrorStatus("conflict"),
+      });
+    }
+    if (record.secretsUnreadable && !patch.clearAll) {
+      throw new HostClientRequestError({
+        code: "conflict",
+        message: "Stored secrets can no longer be read. Clear all secrets before adding new ones.",
+        reason: "automation-secrets-unreadable",
+        status: rpcErrorStatus("conflict"),
+      });
+    }
+    const next = patch.clearAll ? new Set<string>() : new Set(record.secretNames ?? []);
+    if (!patch.clearAll) {
+      for (const name of patch.remove ?? []) next.delete(name);
+      for (const name of Object.keys(patch.set ?? {})) next.add(name);
+    }
+    const secretNames = [...next].sort();
+    this.triggers.set(triggerId, {
+      ...record,
+      secretNames,
+      secretsUnreadable: patch.clearAll ? false : record.secretsUnreadable === true,
+      trigger: { ...record.trigger, updatedAt: this.now().toISOString() },
+    });
+    this.triggersChanged();
+    return secretNames;
   }
 
   getTrigger(triggerId: string): MockTriggerRecord {
@@ -13880,11 +14020,9 @@ class MockHostState {
     _held: Record<string, TaskListState>,
   ): Record<string, TaskListState> {
     if (!tasks) return {};
+    const entries = mockDoneTasks(tasks.entries);
     return {
-      [mainDoneTasks]: {
-        entries: tasks.entries.filter(({ thread }) => thread.doneAt !== null).sort(newestDone),
-        window: mockWindow(tasks.entries.filter(({ thread }) => thread.doneAt !== null).length),
-      },
+      [mainDoneTasks]: { entries, window: mockWindow(entries.length) },
     };
   }
 

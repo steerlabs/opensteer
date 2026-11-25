@@ -1,4 +1,4 @@
-import { requestDecision } from "@opensteer/client/host";
+import { commandRequestView, requestDecision } from "@opensteer/client/host";
 import { clientScopeKey } from "@opensteer/client/connections";
 import { assertMessageLogin, enqueueDraftReply, hostMessageOutbox } from "@opensteer/client/host";
 import { presentClientIssue } from "@opensteer/client/feedback";
@@ -45,6 +45,7 @@ import { TaskMark, TaskBadge } from "./workspace/task-mark.js";
 import { sendMessageCommand, storageUnavailable } from "../host/message-outbox.js";
 import { ActionLine } from "./action-line.js";
 import { OperationRequestPanel, useOperationRequest } from "./agent-work.js";
+import { CommandRequestPanel } from "./command-request-panel.js";
 import { requestAnswer, useAction } from "./use-action.js";
 import { VoiceButton, VoiceDock } from "./voice.js";
 import { ThreadBrowserRequestAction } from "./thread-browser-access-action.js";
@@ -62,6 +63,9 @@ import {
   browserSiteLabel,
   deriveSurface,
   isQuestionRequest,
+  isolatedPlainSentence,
+  sessionQuestionTitleParts,
+  threadInDirectory,
   mutationIdempotencyKey,
   requestsWaitingOn,
   waitingRequestSource,
@@ -72,6 +76,7 @@ import {
   type WaitingRequestView,
 } from "@opensteer/client/host";
 import { AnswerField, QuestionBody, untitledQuestion } from "./question-answer.js";
+import { SentenceText } from "../ui/address-text.js";
 import { useAnswersInComposer, useQuestionSessionKey } from "./question-session.js";
 
 export function InputSurface({
@@ -658,8 +663,10 @@ function RequestRow({
   readonly item: DockedRequest;
   readonly onOpen: (requestId: string) => void;
 }) {
+  const { snapshot } = useShell();
   const { request } = item.surface;
-  const title = requestTitle(request);
+  const titleParts = connectedQuestionTitle(request, snapshot);
+  const title = titleParts ? isolatedPlainSentence(titleParts) : requestTitle(request);
   const choices = request.presentation.kind === "choice" ? request.presentation.options.length : 0;
   const count = choices > 0 ? `${choices} ${choices === 1 ? "choice" : "choices"}` : null;
   return (
@@ -682,7 +689,9 @@ function RequestRow({
           <Icon name={requestIcon(request)} />
         )}
       </span>
-      <span className="request-row__title">{title}</span>
+      <span className="request-row__title">
+        {titleParts ? <SentenceText parts={titleParts} /> : title}
+      </span>
       {count ? <span className="request-row__count">{count}</span> : null}
       <Icon className="request-row__chevron" name="chevron-down" />
     </button>
@@ -700,6 +709,12 @@ function inputSurfaceClass(surface: SurfaceModel | null): string {
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+function connectedQuestionTitle(request: Request, snapshot: HostSnapshot) {
+  return request.kind === "person.question" && request.originatingAgentSessionId
+    ? sessionQuestionTitleParts(request, threadInDirectory(request.originatingThreadId, snapshot))
+    : null;
 }
 
 /** A request's name as the reader answers it; a sign-in names its site, whatever the wording. */
@@ -723,9 +738,21 @@ function requestTitle(request: Request): string {
 
 /* ---- The focused Request ---- */
 
-/** A connected agent's direct operation gets its own card; every other request, the panel. */
+/**
+ * A command an agent proposed and a connected agent's direct operation each get their own card;
+ * every other request, the panel.
+ */
 function DockedRequestPanel(props: Parameters<typeof RequestPanel>[0]) {
   const operation = useOperationRequest(props.surface.request);
+  const command = commandRequestView(props.surface.request);
+  if (command)
+    return (
+      <CommandRequestPanel
+        disabled={props.disabled}
+        request={props.surface.request}
+        view={command}
+      />
+    );
   return operation ? (
     <OperationRequestPanel
       disabled={props.disabled}
@@ -751,7 +778,7 @@ function RequestPanel({
   /** The task on screen, whose composer sits below. */
   viewThreadId: string;
 }) {
-  const { hostClient } = useShell();
+  const { hostClient, snapshot } = useShell();
   const { request } = surface;
   const asker = useRequestAsker(hostClient, request);
   // An agent's app request reads as the title and the model's own reason; the
@@ -766,7 +793,8 @@ function RequestPanel({
           request.payload.kind === "device.access"
         ? request.payload.reason
         : request.presentation.detail;
-  const title = requestTitle(request);
+  const titleParts = connectedQuestionTitle(request, snapshot);
+  const title = titleParts ? isolatedPlainSentence(titleParts) : requestTitle(request);
   // An access card names the app and the reason itself, so the panel's own
   // head would only say them twice.
   const ownHead = request.kind === "integration.access" && !surface.denied;
@@ -785,7 +813,9 @@ function RequestPanel({
           <span aria-hidden className="action-panel__icon">
             <Icon name={requestIcon(request)} />
           </span>
-          <span className="action-panel__title">{title}</span>
+          <span className="action-panel__title">
+            {titleParts ? <SentenceText parts={titleParts} /> : title}
+          </span>
         </div>
       )}
       <div className="action-panel__content" data-scroll-edges="" ref={contentRef}>

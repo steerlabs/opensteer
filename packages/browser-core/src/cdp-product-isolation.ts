@@ -55,12 +55,18 @@ export class CdpProductIsolation {
       for (const frame of Array.isArray(params.callFrames) ? params.callFrames : []) {
         const record = frame as Record<string, unknown>;
         const location = record.location as Record<string, unknown> | undefined;
-        if (this.#scripts.get(String(location?.scriptId)) !== false) return false;
+        if (this.#scripts.get(String(location?.scriptId)) !== false) {
+          this.#frames.clear();
+          return false;
+        }
         this.#frames.add(String(record.callFrameId));
       }
     }
-    if (context && internalName(context.description.name)) return false;
-    return !this.#referencesInternal(params, true);
+    const allowed =
+      !(context && internalName(context.description.name)) &&
+      !this.#referencesInternal(params, true);
+    if (!allowed && method === "Debugger.paused") this.#frames.clear();
+    return allowed;
   }
   observeResult(method: string, params: CdpParameters, result: unknown): void {
     if (!result || typeof result !== "object") return;
@@ -84,6 +90,13 @@ export class CdpProductIsolation {
       this.#scripts.set(record.scriptId, false);
     if (method === "Page.addScriptToEvaluateOnNewDocument" && typeof record.identifier === "string")
       this.#newDocumentScripts.add(record.identifier);
+    if (method === "Debugger.setBreakpointByUrl" && Array.isArray(record.locations)) {
+      // Strip locations outside page scripts rather than throwing after V8 sets the breakpoint.
+      record.locations = record.locations.filter(
+        (loc) => this.#scripts.get(String(asRecord(loc).scriptId)) === false,
+      );
+      return;
+    }
     if (method === "Profiler.stop") {
       const refusal = this.#profileRefusal(result);
       if (refusal) throw profileRefused(refusal);
@@ -146,6 +159,26 @@ export class CdpProductIsolation {
         "forbidden",
         "Page script registration belongs to another channel or Opensteer platform code.",
       );
+    if (method === "Debugger.setBreakpointByUrl") {
+      // S2: only a non-empty `condition` runs agent JavaScript in a matched script's world before
+      // `Debugger.paused` can be filtered; conditionless breakpoints in preload worlds are dropped
+      // and auto-resumed. Refuse a non-empty condition unless `url` parses to http(s) or
+      // `chrome-extension:` (with neither `urlRegex` nor `scriptHash`).
+      const hasCondition =
+        typeof params.condition === "string"
+          ? params.condition.trim().length > 0
+          : params.condition !== undefined;
+      if (
+        hasCondition &&
+        (params.urlRegex !== undefined ||
+          params.scriptHash !== undefined ||
+          !isAllowedProductBreakpointUrl(params.url))
+      )
+        throw new SessionCdpRouterError(
+          "forbidden",
+          "Debugger.setBreakpointByUrl with a condition requires an explicit http(s) or extension URL without urlRegex or scriptHash so conditions cannot run in Opensteer's preload or platform worlds.",
+        );
+    }
     if (
       method.startsWith("HeapProfiler.") ||
       method.startsWith("Memory.") ||
@@ -214,6 +247,16 @@ export class CdpProductIsolation {
     return false;
   }
 }
+function isAllowedProductBreakpointUrl(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  try {
+    const protocol = new URL(value).protocol;
+    return protocol === "http:" || protocol === "https:" || protocol === "chrome-extension:";
+  } catch {
+    return false;
+  }
+}
+
 function internalName(value: unknown): boolean {
   return (
     typeof value === "string" &&

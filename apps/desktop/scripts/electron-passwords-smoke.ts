@@ -60,6 +60,9 @@ import {
   verifySameUserPeer,
 } from "../src/passwords/test-support/fake-broker-server.js";
 import { PasswordLoginFixture } from "./electron-passwords-fixture.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("passwords", 300000);
 
 const smokeDownloads = smokeDesktopDownloads();
 

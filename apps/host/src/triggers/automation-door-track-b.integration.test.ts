@@ -86,6 +86,7 @@ describeStore("Track B: automation commands through the one door (brief section 
       registry: agentCommandRegistry({} as AdministrationService, handlers),
       requests: () => commandRequests,
       administration: {} as AdministrationToolHandlers,
+      secretDigestKey: Buffer.alloc(32, 0x33),
     });
     const sessionId = `ses_${randomUUID()}`;
     await database
@@ -127,11 +128,16 @@ describeStore("Track B: automation commands through the one door (brief section 
         {
           requestId,
           expectedRevision: String(row.revision),
-          command: req.command.command,
           idempotencyKey: `approve-${requestId}`,
         },
         async (approver, command) =>
-          handleTriggerCommand(triggers, command as never, context, approver),
+          handleTriggerCommand(
+            triggers,
+            command as never,
+            context,
+            approver,
+            Buffer.alloc(32, 0x33),
+          ),
         (proposal) => personActor(context, proposal),
       );
       return approved;

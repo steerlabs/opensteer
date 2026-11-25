@@ -918,6 +918,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
           },
         } as unknown as HostApiServerContext;
         const rpc = createTriggerRpcHandlers(triggers);
+        const testDigestKey = Buffer.alloc(32, 0x33);
         const created = createdSchema.parse(
           await handleTriggerCommand(
             triggers,
@@ -932,6 +933,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
               type: "trigger.create",
             },
             context,
+            undefined,
+            testDigestKey,
           ),
         );
         expect(created.trigger.createdByThreadId).toBeNull();
@@ -951,6 +954,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
               type: "trigger.update",
             },
             context,
+            undefined,
+            testDigestKey,
           ),
         );
         expect(updated.revision.createdByThreadId).toBeNull();
@@ -964,6 +969,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
               type: "trigger.status.set",
             },
             context,
+            undefined,
+            testDigestKey,
           );
         }
         const runCommand = {
@@ -975,8 +982,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
           type: "trigger.run" as const,
         };
         const [firstRun, retriedRun] = await Promise.all([
-          handleTriggerCommand(triggers, runCommand, context),
-          handleTriggerCommand(triggers, runCommand, context),
+          handleTriggerCommand(triggers, runCommand, context, undefined, testDigestKey),
+          handleTriggerCommand(triggers, runCommand, context, undefined, testDigestKey),
         ]);
         expect(retriedRun).toEqual(firstRun);
         const runDetail = await triggers.get(f.ownerId, created.trigger.id, 25, personTaskReader);
@@ -989,6 +996,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
             type: "trigger.cancel",
           },
           context,
+          undefined,
+          testDigestKey,
         );
         const listed = await rpc["triggers.list"]({}, context);
         if (!listed.ok) throw new Error(listed.error.message);
@@ -1010,6 +1019,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
             type: "trigger.status.set",
           },
           context,
+          undefined,
+          testDigestKey,
         );
         const archived = await personDetail(f, created.trigger.id);
         expect(archived.trigger.status).toBe("archived");
@@ -2282,6 +2293,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       "create/update",
       "script retained",
       async () => {
+        const testDigestKey = Buffer.alloc(32, 0x33);
         const person = createdSchema.parse(
           await handleTriggerCommand(
             triggers,
@@ -2296,6 +2308,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
               },
             },
             context,
+            undefined,
+            testDigestKey,
           ),
         );
         const updated = createdSchema.parse(
@@ -2314,6 +2328,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
               },
             },
             context,
+            undefined,
+            testDigestKey,
           ),
         );
         expect(updated.revision.script).toEqual({
@@ -2385,6 +2401,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       const endpoint = await mcpEndpoint();
       const client = await connectMcp(endpoint, f.rootToken);
       await check("old Runner admission", "person and agent", "create/update", reason, async () => {
+        const testDigestKey = Buffer.alloc(32, 0x33);
         await expect(
           handleTriggerCommand(
             triggers,
@@ -2399,6 +2416,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
               },
             },
             context,
+            undefined,
+            testDigestKey,
           ),
         ).rejects.toMatchObject({
           message: reason,
@@ -2454,6 +2473,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
               },
             },
             context,
+            undefined,
+            testDigestKey,
           ),
         ).rejects.toMatchObject({
           message: reason,

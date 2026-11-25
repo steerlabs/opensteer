@@ -1583,6 +1583,10 @@ importers:
   packages/apple-dictation: {}
 
   packages/browser-core:
+    dependencies:
+      '@opensteer/shared':
+        specifier: workspace:*
+        version: link:../shared
     devDependencies:
       '@opensteer/protocol':
         specifier: workspace:*

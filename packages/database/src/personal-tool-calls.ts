@@ -1,3 +1,4 @@
+import { redactToolArgumentsForStorage } from "@opensteer/protocol/command-table";
 import { outsideName } from "@opensteer/shared/outsideName";
 import { assignmentWasCancelled } from "./execution-authority.js";
 import {
@@ -249,6 +250,8 @@ export async function startPersonalToolCall(
   input: ToolKey & {
     readonly tool: ToolIdentity;
     readonly arguments: unknown;
+    /** Optional precomputed private Host-keyed digest when `arguments` was redacted before storage. */
+    readonly argumentDigest?: Buffer;
     readonly integration?: IntegrationCallSubject;
     readonly provisional?: true;
   },
@@ -267,14 +270,14 @@ export async function startPersonalToolCall(
     : null;
   const id = toolCallId(input);
   const existing = await currentCall(tx, id);
-  const normalized = storableJson(input.arguments ?? null);
+  const normalized = storableJson(redactToolArgumentsForStorage(input.arguments ?? null, tool));
   const args = JSON.stringify(normalized);
   if (Buffer.byteLength(args) > 480 * 1024)
     throw new OpensteerError({
       code: "resource_exhausted",
       message: "Tool arguments exceed their retained limit",
     });
-  const digest = personalArgumentDigest(normalized);
+  const digest = input.argumentDigest ?? personalArgumentDigest(normalized);
   if (existing) {
     if (
       existing.origin !== input.origin ||

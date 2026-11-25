@@ -46,6 +46,8 @@ export default defineConfig([
       "glass-preload": "src/browser/glass-preload.ts",
       "menu-bar-preload": "src/app/menu-bar-preload.ts",
       "browser-page-preload": "src/browser/browser-page-preload.ts",
+      "chrome-extension-api-preload": "src/browser/extensions/chrome-extension-api-preload.ts",
+      "chrome-web-store-preload": "src/browser/extensions/chrome-web-store-preload.ts",
       preload: "src/preload.ts",
     },
     // A sandboxed preload cannot resolve ordinary Node packages. Keep this

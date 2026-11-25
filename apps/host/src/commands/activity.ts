@@ -1,5 +1,11 @@
-import type { AgentCommandActivity, ThreadId, UserId } from "@opensteer/core";
-import { CommandRequestPartSchema } from "@opensteer/core";
+import type {
+  AgentCommandActivity,
+  CommandAgentStatus,
+  RequestResponse,
+  ThreadId,
+  UserId,
+} from "@opensteer/core";
+import { CommandRequestPartSchema, commandAgentStatus } from "@opensteer/core";
 import { commandRequestState, type DatabaseSchema } from "@opensteer/database";
 import {
   commandTable,
@@ -29,16 +35,61 @@ const pageLimit = 100;
 const sentenceLimit = 600;
 
 /**
+ * A row of the activity: the person's list of statuses, or for an agent, an ask's one value-free
+ * status (`commandAgentStatus`) as every agent surface reads it.
+ */
+export type CommandActivityEntry = Omit<AgentCommandActivity, "status"> & {
+  readonly status: AgentCommandActivity["status"] | CommandAgentStatus;
+};
+
+/**
  * The commands an agent sent through the door, as the person's activity shows them beside its
  * operations (C5): the door's own records, read as a second source. A command that ran at once
  * is its ledger row; one that asked is its Request, asked, then approved or ended. Each says,
  * in the Home's words, who sent it and from which task.
  */
+interface ActivityNaming {
+  name(resource: CommandResource, owner: UserId): Promise<string | null>;
+  /** An approval whose receipt was lost reads as what its attempt says, before it is shown. */
+  reconcileShown?(
+    requests: readonly { readonly id: string; readonly command?: unknown }[],
+  ): Promise<void>;
+}
+type ActivityInput = { readonly userId: UserId } & CommandActivityOf & CommandActivitySpan;
+interface ActivityAgent {
+  readonly reaches: (command: Command) => Promise<boolean>;
+}
+
+/** The person's activity: its own list of statuses. */
 export async function commandActivity(
   database: Kysely<DatabaseSchema>,
-  naming: { name(resource: CommandResource, owner: UserId): Promise<string | null> },
+  naming: ActivityNaming,
+  input: ActivityInput,
+): Promise<readonly AgentCommandActivity[]>;
+/** An agent's activity: an ask reads its one value-free status. */
+export async function commandActivity(
+  database: Kysely<DatabaseSchema>,
+  naming: ActivityNaming,
+  input: ActivityInput,
+  agent: ActivityAgent,
+): Promise<readonly CommandActivityEntry[]>;
+export async function commandActivity(
+  database: Kysely<DatabaseSchema>,
+  naming: {
+    name(resource: CommandResource, owner: UserId): Promise<string | null>;
+    /** An approval whose receipt was lost reads as what its attempt says, before it is shown. */
+    reconcileShown?(
+      requests: readonly { readonly id: string; readonly command?: unknown }[],
+    ): Promise<void>;
+  },
   input: { readonly userId: UserId } & CommandActivityOf & CommandActivitySpan,
-): Promise<readonly AgentCommandActivity[]> {
+  /**
+   * The page as an agent reads it (rule 5): no name is looked up and no Home sentence is shown
+   * (a row reads as its command's type and status), and a row is there only while the caller
+   * still reaches its command now.
+   */
+  agent?: { readonly reaches: (command: Command) => Promise<boolean> },
+): Promise<readonly CommandActivityEntry[]> {
   const callerKey = sql<string>`commands.authority_source->>'callerKey'`;
   let ledger = database
     .selectFrom("commands")
@@ -58,7 +109,7 @@ export async function commandActivity(
       );
   let asks = database
     .selectFrom("requests")
-    .select(["id", "status", "command", "createdAt"])
+    .select(["id", "status", "command", "createdAt", "response"])
     .where("requestedBy", "=", input.userId)
     .where("command", "is not", null);
   asks = input.connectionId
@@ -72,10 +123,19 @@ export async function commandActivity(
     ledger = ledger.where("commands.createdAt", ">=", input.since);
     asks = asks.where("createdAt", ">=", input.since);
   }
-  const [done, asked] = await Promise.all([
+  const askPage = () => asks.orderBy("createdAt", "desc").limit(pageLimit).execute();
+  const [done, firstAsked] = await Promise.all([
     ledger.orderBy("commands.createdAt", "desc").limit(pageLimit).execute(),
-    asks.orderBy("createdAt", "desc").limit(pageLimit).execute(),
+    askPage(),
   ]);
+  let asked = firstAsked;
+  const running = (row: (typeof asked)[number]) =>
+    (row.command as { readonly outcome?: { readonly status?: unknown } } | null)?.outcome
+      ?.status === "running";
+  if (naming.reconcileShown && asked.some(running)) {
+    await naming.reconcileShown(asked);
+    asked = await askPage();
+  }
 
   // Who sent what ran at once: the connection by its own name, or the engine of the task's Run.
   const sender = done.length ? await senderOf(database, input) : null;
@@ -91,7 +151,7 @@ export async function commandActivity(
     }
   };
 
-  const entries: AgentCommandActivity[] = [];
+  const entries: CommandActivityEntry[] = [];
   for (const row of done) {
     if (!Object.hasOwn(commandTable, row.type)) continue;
     const type = row.type as CommandType;
@@ -100,11 +160,12 @@ export async function commandActivity(
     const input =
       payload.request && typeof payload.request === "object" ? payload.request : payload;
     const command = { ...(input as object), type } as Command;
-    const what = await named(command, type);
+    if (agent && !(await agent.reaches(command))) continue;
+    const what = agent ? null : await named(command, type);
     entries.push({
       id: row.id,
       type,
-      sentence: sentence(sender, commandDoneWords(command), what),
+      sentence: agent ? type : sentence(sender, commandDoneWords(command), what),
       status:
         row.status === "succeeded"
           ? "done"
@@ -127,19 +188,41 @@ export async function commandActivity(
     const stored = part.data.sentence ?? "";
     const what = stored.startsWith(`${title}: `) ? stored.slice(title.length + 2) : null;
     const state = commandRequestState(row);
+    if (agent && !(await agent.reaches({ ...part.data.command, type } as Command))) continue;
     entries.push({
       id: row.id,
       type,
-      sentence: sentence(
-        {
-          name: part.data.proposer.name,
-          // A connected agent is named by its own name: its direct-work task is only where it asks.
-          taskTitle: part.data.proposer.kind === "connection" ? null : part.data.proposer.taskTitle,
-        },
-        commandAskedWords({ ...part.data.command, type } as Command),
-        what,
-      ),
-      status: !state ? "asked" : state.status === "answered" ? "approved" : state.status,
+      sentence: agent
+        ? type
+        : sentence(
+            {
+              name: part.data.proposer.name,
+              // A connected agent is named by its own name: its direct-work task is only where it asks.
+              taskTitle:
+                part.data.proposer.kind === "connection" ? null : part.data.proposer.taskTitle,
+            },
+            commandAskedWords({ ...part.data.command, type } as Command),
+            what,
+          ),
+      // An agent reads an ask's one value-free status, as on every agent surface: the person's
+      // own answers stay distinct. The person's activity keeps its own list.
+      status: agent
+        ? row.status === "withdrawn"
+          ? "withdrawn"
+          : commandAgentStatus({
+              status: row.status,
+              response: (row.response ?? null) as RequestResponse | null,
+              command: part.data,
+            })
+        : !state
+          ? "asked"
+          : state.status === "answered"
+            ? "approved"
+            : state.status === "done-by-person"
+              ? "done"
+              : state.status === "person-says-done"
+                ? "closed"
+                : state.status,
       outcome:
         state?.status === "answered"
           ? (state.outcome.status as NonNullable<AgentCommandActivity["outcome"]>)

@@ -26,6 +26,8 @@ import { senderUnlinkedFailure } from "./bridge-admission.js";
 import {
   OpensteerError,
   MessageContentSchema,
+  createId,
+  harnessSessionBrokenFailureCode,
   harnessUsageLimitFailureCode,
   runTerminationUnprovenCode,
   ReplyTargetSchema,
@@ -122,7 +124,11 @@ export async function finalizeRunTransaction(
     .selectAll()
     .where("id", "=", run.threadId)
     .executeTakeFirstOrThrow();
-  const children = offline ? undefined : await readFinishChildren(transaction, run.id);
+  const children = offline
+    ? undefined
+    : await readFinishChildren(transaction, run.id, undefined, {
+        runnerProvenExecute: input.source === "runner",
+      });
   if (children && !children.hasMore)
     await lockRunProjectionRows(transaction, {
       threadIds: [run.threadId],
@@ -213,7 +219,7 @@ export async function settleFinishChildren(
     "completedAt" | "source" | "requestCancellationReason" | "failure"
   >,
   children: Awaited<ReturnType<typeof readFinishChildren>>,
-  recovering = false,
+  _recovering = false,
 ) {
   if (children.steers.length) {
     const run = await tx
@@ -302,7 +308,7 @@ export async function settleFinishChildren(
       current.type === "run.restart"
         ? replacement?.dispatchedAt == null
         : current.status === "pending" || current.status === "failed";
-    const unknown = current.state === "unknown" || (recovering && !unclaimed);
+    const unknown = current.state === "unknown" || (!delivered && !unclaimed);
     const requeue = current.policy === "queue" && unclaimed && !delivered && !unknown;
     const stopped =
       requeue && stoppedConversation && current.authoritySource.kind === "user-session";
@@ -317,11 +323,11 @@ export async function settleFinishChildren(
             ? { state: "cancelled", cancelReason: "stopped" }
             : requeue
               ? { state: "pending", runId: null, steerCommandId: null }
-              : current.policy === "queue" || unknown
-                ? { state: "unknown" }
+              : unknown
+                ? { state: "unknown", cancelReason: null }
                 : {
                     state: "cancelled",
-                    cancelReason: unclaimed ? "steer-not-delivered" : "run-ended-delivery-unknown",
+                    cancelReason: "steer-not-delivered",
                   }),
         updatedAt: input.completedAt,
       })
@@ -340,9 +346,16 @@ export async function settleFinishChildren(
                 .case()
                 .when("type", "=", "run.execute")
                 .then("succeeded" as const)
+                .when(sql<boolean>`type = 'run.steer' and status = 'dispatched'`)
+                .then("unknown" as const)
                 .else("failed" as const)
                 .end()
-            : "failed",
+            : eb
+                .case()
+                .when(sql<boolean>`type = 'run.steer' and status = 'dispatched'`)
+                .then("unknown" as const)
+                .else("failed" as const)
+                .end(),
         lastError:
           input.failure && input.source === "host"
             ? jsonValue(input.failure)
@@ -351,6 +364,10 @@ export async function settleFinishChildren(
         updatedAt: input.completedAt,
       }))
       .where("id", "in", children.commands)
+      // Unknown stays unknown unless the Runner itself proved `run.execute` ran.
+      .where(
+        sql<boolean>`not (status = 'unknown' and not (type = 'run.execute' and ${input.source} = 'runner'))`,
+      )
       .execute();
   }
   await endLiveExecutionNodes(tx, { runId, endedAt: input.completedAt, ids: children.nodes });
@@ -605,24 +622,76 @@ async function finalizeRunOutcome(
     });
   }
   await recordPersonWaited(transaction, run.id);
-  if (run.runStatus !== "queued")
-    await transaction
-      .updateTable("providerSessions")
-      .set({
-        status: input.status === "failed" ? "broken" : "ready",
-        updatedAt: input.completedAt,
-        ...(offline && run.bindingGeneration !== null
-          ? {
-              bindingGeneration: sql<number>`binding_generation + 1`,
-              leaseExpiresAt: null,
-              leaseTokenHash: null,
-              runnerId: null,
-              runnerBootId: null,
-            }
-          : {}),
-      })
-      .where("id", "=", run.providerSessionId)
-      .execute();
+  if (run.runStatus !== "queued") {
+    const rotateBrokenSession =
+      input.status === "failed" && input.failure?.code === harnessSessionBrokenFailureCode;
+    const sessionUpdate = {
+      status: (input.status === "failed" ? "broken" : "ready") as "broken" | "ready",
+      updatedAt: input.completedAt,
+      ...(offline && run.bindingGeneration !== null
+        ? {
+            bindingGeneration: sql<number>`binding_generation + 1`,
+            leaseExpiresAt: null,
+            leaseTokenHash: null,
+            runnerId: null,
+            runnerBootId: null,
+          }
+        : {}),
+    };
+    if (rotateBrokenSession) {
+      const retired = await transaction
+        .updateTable("providerSessions")
+        .set({ ...sessionUpdate, active: false })
+        .where("id", "=", run.providerSessionId)
+        .where("active", "=", true)
+        .returning([
+          "continuationIdentity",
+          "harnessInstanceId",
+          "personLineage",
+          "personalContext",
+        ])
+        .executeTakeFirst();
+      if (retired) {
+        await transaction
+          .insertInto("providerSessions")
+          .values({
+            active: true,
+            bindingGeneration: 0,
+            continuationIdentity:
+              retired.continuationIdentity === null
+                ? null
+                : jsonValue(retired.continuationIdentity),
+            createdAt: input.completedAt,
+            harnessInstanceId: retired.harnessInstanceId,
+            id: createId("providerSession"),
+            leaseExpiresAt: null,
+            leaseTokenHash: null,
+            personLineage: retired.personLineage,
+            personalContext: retired.personalContext,
+            providerSessionReference: null,
+            runnerBootId: null,
+            runnerId: null,
+            stateLayout: "session",
+            status: "starting",
+            threadId: run.threadId,
+            updatedAt: input.completedAt,
+          })
+          .executeTakeFirstOrThrow();
+      } else {
+        await transaction
+          .updateTable("providerSessions")
+          .set(sessionUpdate)
+          .where("id", "=", run.providerSessionId)
+          .execute();
+      }
+    } else {
+      await transaction
+        .updateTable("providerSessions")
+        .set(sessionUpdate)
+        .where("id", "=", run.providerSessionId)
+        .execute();
+    }
+  }
   const cancelled =
     run.runStatus === "queued"
       ? await transaction

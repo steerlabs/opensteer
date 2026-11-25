@@ -23,6 +23,7 @@ export * from "./display-stream.js";
 export * from "./editing.js";
 export * from "./files.js";
 export * from "./host-api.js";
+export * from "./command-arguments.js";
 export * from "./local-bootstrap.js";
 export * from "./machines.js";
 export * from "./personal-remote-access.js";

@@ -75,6 +75,7 @@ describe("new Thread access ceilings", () => {
         grant: { scope: "everything" },
         mode: "auto",
       }),
+      secretDigestKey: Buffer.alloc(32, 0x33),
     });
     expect(door).not.toBeNull();
     expect((await service.create(actor, command, {}, door!)).thread).toEqual(thread);

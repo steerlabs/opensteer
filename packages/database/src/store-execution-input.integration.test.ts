@@ -1,8 +1,9 @@
 import { commitRunnerEvent } from "./runner-event-store.js";
-import { threadPathLinks } from "./store-primitives.js";
+import { jsonValue, threadPathLinks } from "./store-primitives.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import type { StoreFixture } from "./store.integration.test-support.js";
 import {
+  HarnessIdSchema,
   TabIdSchema,
   MessageContentSchema,
   messageContentMaxSerializedBytes,
@@ -12,10 +13,14 @@ import {
   createToolOutput,
   toolArgumentsMaxSerializedBytes,
 } from "@opensteer/core";
-import { type PendingAgentEvent, type PendingAgentEventV2 } from "@opensteer/protocol";
+import {
+  RunnerModulesSchema,
+  type PendingAgentEvent,
+  type PendingAgentEventV2,
+} from "@opensteer/protocol";
 import { sql } from "kysely";
 import { z } from "zod";
-import { describe, expect } from "vitest";
+import { describe, expect, vi } from "vitest";
 import { OpensteerStore } from "./index.js";
 import {
   describeStore,
@@ -2510,5 +2515,949 @@ describeStore("PostgreSQL store", (it) => {
     ).resolves.toEqual({
       status: "succeeded",
     });
+  });
+
+  it("preserves unknown steer command status when the Run finishes without delivery proof (T1)", async ({
+    storeFixture,
+  }) => {
+    const { startRunFixture, store, database } = storeFixture;
+    const activeRun = await startRunFixture("thread-steer-unknown-finish");
+    const unknown = await store.enqueueThreadInput({
+      content: [{ text: "Delivery remained unknown until finish", type: "text" }],
+      idempotencyKey: "thread-steer-unknown-finish",
+      policy: "steer",
+      requestedBy: activeRun.userId,
+      source: { kind: "human" },
+      threadId: activeRun.thread.id,
+    });
+    if (!unknown.command) throw new Error("Expected unknown steer Command");
+    await store.claimCommand(unknown.command.id, "thread-steer-unknown-finish-dispatcher");
+    await store.markSteerUnknown(unknown.command.id, "Runner disconnected after dispatch");
+
+    const inflight = await store.enqueueThreadInput({
+      content: [{ text: "Dispatched steer raced Run completion", type: "text" }],
+      idempotencyKey: "thread-steer-dispatched-finish",
+      policy: "steer",
+      requestedBy: activeRun.userId,
+      source: { kind: "human" },
+      threadId: activeRun.thread.id,
+    });
+    if (!inflight.command) throw new Error("Expected dispatched steer Command");
+    await store.claimCommand(inflight.command.id, "thread-steer-dispatched-finish-dispatcher");
+
+    const unsent = await store.enqueueThreadInput({
+      content: [{ text: "Pending steer was never dispatched", type: "text" }],
+      idempotencyKey: "thread-steer-pending-finish",
+      policy: "steer",
+      requestedBy: activeRun.userId,
+      source: { kind: "human" },
+      threadId: activeRun.thread.id,
+    });
+    if (!unsent.command) throw new Error("Expected pending steer Command");
+
+    await commitRunnerEvent(store.database, threadPathLinks, {
+      environmentId: activeRun.environmentId,
+      event: pendingEvent({
+        bindingGeneration: activeRun.bindingGeneration,
+        data: { status: "completed" },
+        environmentId: activeRun.environmentId,
+        ordinal: 1,
+        runId: activeRun.run.id,
+        threadId: activeRun.thread.id,
+        type: "run.completed",
+      }),
+      runnerBootId: activeRun.runnerBootId,
+      runnerId: activeRun.runnerId,
+    });
+
+    await expect(
+      database
+        .selectFrom("commands")
+        .select(["status", "lastError"])
+        .where("id", "=", unknown.command.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toMatchObject({
+      lastError: { message: "Runner disconnected after dispatch" },
+      status: "unknown",
+    });
+    await expect(
+      database
+        .selectFrom("commands")
+        .select("status")
+        .where("id", "=", inflight.command.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: "unknown" });
+    await expect(
+      database
+        .selectFrom("commands")
+        .select("status")
+        .where("id", "=", unsent.command.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: "failed" });
+    await expect(
+      database
+        .selectFrom("threadInputs")
+        .select(["state"])
+        .where("messageId", "=", unknown.message.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ state: "unknown" });
+  });
+
+  it("settles an in-flight strict steer input and command together as unknown on Run finish (X2)", async ({
+    storeFixture,
+  }) => {
+    const { startRunFixture, store, database } = storeFixture;
+    const activeRun = await startRunFixture("strict-steer-finish-unknown");
+    const inflight = await store.enqueueThreadInput({
+      content: [{ text: "Strict steer raced Run completion", type: "text" }],
+      idempotencyKey: "strict-steer-finish-unknown",
+      policy: "steer",
+      requestedBy: activeRun.userId,
+      source: { kind: "human" },
+      threadId: activeRun.thread.id,
+    });
+    if (!inflight.command) throw new Error("Expected strict steer Command");
+    await store.claimCommand(inflight.command.id, "strict-steer-finish-unknown-dispatcher");
+
+    // Finish wins BEFORE markSteerUnknown arrives.
+    await commitRunnerEvent(store.database, threadPathLinks, {
+      environmentId: activeRun.environmentId,
+      event: pendingEvent({
+        bindingGeneration: activeRun.bindingGeneration,
+        data: { status: "completed" },
+        environmentId: activeRun.environmentId,
+        ordinal: 1,
+        runId: activeRun.run.id,
+        threadId: activeRun.thread.id,
+        type: "run.completed",
+      }),
+      runnerBootId: activeRun.runnerBootId,
+      runnerId: activeRun.runnerId,
+    });
+
+    await expect(
+      database
+        .selectFrom("threadInputs")
+        .select(["state", "cancelReason", "runId"])
+        .where("messageId", "=", inflight.message.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({
+      cancelReason: null,
+      runId: activeRun.run.id,
+      state: "unknown",
+    });
+    await expect(
+      database
+        .selectFrom("commands")
+        .select(["status"])
+        .where("id", "=", inflight.command.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ status: "unknown" });
+
+    // Late uncertainty report is accepted (not ignored) and keeps the input unknown without requeuing.
+    await store.markSteerUnknown(inflight.command.id, "Runner lost contact after dispatch");
+    await expect(
+      database
+        .selectFrom("commands")
+        .select(["status", "lastError"])
+        .where("id", "=", inflight.command.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toMatchObject({
+      lastError: { message: "Runner lost contact after dispatch" },
+      status: "unknown",
+    });
+    await expect(
+      database
+        .selectFrom("threadInputs")
+        .select(["state", "cancelReason", "runId"])
+        .where("messageId", "=", inflight.message.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({
+      cancelReason: null,
+      runId: activeRun.run.id,
+      state: "unknown",
+    });
+  });
+
+  it("does not count terminal unknown steers against active task inbox capacity (X3)", async ({
+    storeFixture,
+  }) => {
+    const { startRunFixture, store, database } = storeFixture;
+    const activeRun = await startRunFixture("terminal-unknown-capacity");
+    const first = await store.enqueueThreadInput({
+      content: [{ text: "Real uncertain steer", type: "text" }],
+      idempotencyKey: "terminal-unknown-capacity-real",
+      policy: "steer",
+      requestedBy: activeRun.userId,
+      source: { kind: "human" },
+      threadId: activeRun.thread.id,
+    });
+    if (!first.command) throw new Error("Expected steer Command");
+    await store.claimCommand(first.command.id, "terminal-unknown-capacity-dispatcher");
+    await store.markSteerUnknown(first.command.id, "Delivery could not be confirmed");
+
+    const sampleInput = await database
+      .selectFrom("threadInputs")
+      .selectAll()
+      .where("messageId", "=", first.message.id)
+      .executeTakeFirstOrThrow();
+    const sampleMessage = await database
+      .selectFrom("messages")
+      .selectAll()
+      .where("id", "=", first.message.id)
+      .executeTakeFirstOrThrow();
+    const baseSequence = Number(sampleMessage.sequence);
+    const baseRank = Number(sampleInput.queueRank);
+    const now = new Date();
+    const seededMessages = Array.from({ length: 99 }, (_, index) => ({
+      actorPrincipalId: sampleMessage.actorPrincipalId,
+      author: jsonValue(sampleMessage.author),
+      content: jsonValue([{ text: `Seeded uncertain steer ${index + 1}`, type: "text" }]),
+      createdAt: now,
+      id: createId("message"),
+      kind: sampleMessage.kind,
+      runId: activeRun.run.id,
+      sequence: baseSequence + index + 1,
+      threadId: activeRun.thread.id,
+    }));
+    await database.insertInto("messages").values(seededMessages).execute();
+    await database
+      .updateTable("threads")
+      .set({ nextMessageSequence: String(baseSequence + 100) })
+      .where("id", "=", activeRun.thread.id)
+      .execute();
+    await database
+      .insertInto("threadInputs")
+      .values(
+        seededMessages.map((message, index) => ({
+          actorPrincipalId: sampleInput.actorPrincipalId,
+          authoritySource: jsonValue(sampleInput.authoritySource),
+          cancelReason: null,
+          causalChainId: sampleInput.causalChainId,
+          createdAt: now,
+          deliveredAt: null,
+          idempotencyKey: `terminal-unknown-capacity-seed-${index + 1}`,
+          messageId: message.id,
+          policy: "steer" as const,
+          queueRank: baseRank + index + 1,
+          replyTarget: null,
+          requestFingerprint: `fp-seed-${index + 1}`,
+          requestedBy: activeRun.userId,
+          runId: activeRun.run.id,
+          state: "unknown" as const,
+          steerCommandId: first.command!.id,
+          threadId: activeRun.thread.id,
+          updatedAt: now,
+        })),
+      )
+      .execute();
+
+    // Complete the Run so all 100 unknown steers become terminal delivery history.
+    await commitRunnerEvent(store.database, threadPathLinks, {
+      environmentId: activeRun.environmentId,
+      event: pendingEvent({
+        bindingGeneration: activeRun.bindingGeneration,
+        data: { status: "completed" },
+        environmentId: activeRun.environmentId,
+        ordinal: 1,
+        runId: activeRun.run.id,
+        threadId: activeRun.thread.id,
+        type: "run.completed",
+      }),
+      runnerBootId: activeRun.runnerBootId,
+      runnerId: activeRun.runnerId,
+    });
+
+    // A normal follow-up send must succeed instead of failing with resource_exhausted.
+    const next = await store.enqueueThreadInput({
+      content: [{ text: "Fresh message after terminal unknown steers", type: "text" }],
+      idempotencyKey: "terminal-unknown-capacity-next",
+      policy: "queue",
+      requestedBy: activeRun.userId,
+      source: { kind: "human" },
+      threadId: activeRun.thread.id,
+    });
+    expect(next.disposition).toBe("run-queued");
+    expect(next.run?.seedInputId).toBe(next.message.id);
+    const retainedUnknown = await database
+      .selectFrom("threadInputs")
+      .select(({ fn }) => fn.countAll<string>().as("count"))
+      .where("threadId", "=", activeRun.thread.id)
+      .where("state", "=", "unknown")
+      .executeTakeFirstOrThrow();
+    expect(Number(retainedUnknown.count)).toBe(100);
+  });
+
+  it("does not count live-Run unknown inputs against inbox capacity and checks capacity without joining runs (Y3)", async ({
+    storeFixture,
+  }) => {
+    const { startRunFixture, store, database } = storeFixture;
+    const activeRun = await startRunFixture("live-unknown-capacity");
+    const first = await store.enqueueThreadInput({
+      content: [{ text: "Live uncertain steer", type: "text" }],
+      idempotencyKey: "live-unknown-capacity-real",
+      policy: "steer",
+      requestedBy: activeRun.userId,
+      source: { kind: "human" },
+      threadId: activeRun.thread.id,
+    });
+    if (!first.command) throw new Error("Expected steer Command");
+    await store.claimCommand(first.command.id, "live-unknown-capacity-dispatcher");
+    await store.markSteerUnknown(first.command.id, "Delivery could not be confirmed");
+
+    const sampleInput = await database
+      .selectFrom("threadInputs")
+      .selectAll()
+      .where("messageId", "=", first.message.id)
+      .executeTakeFirstOrThrow();
+    const sampleMessage = await database
+      .selectFrom("messages")
+      .selectAll()
+      .where("id", "=", first.message.id)
+      .executeTakeFirstOrThrow();
+    const baseSequence = Number(sampleMessage.sequence);
+    const baseRank = Number(sampleInput.queueRank);
+    const now = new Date();
+    // Seed 99 pending inputs alongside the LIVE Run's unknown input (100 rows total).
+    // Because an unknown input is delivery history (never dispatched again), the 100th
+    // active slot is still free and a normal send must succeed.
+    const seededMessages = Array.from({ length: 99 }, (_, index) => ({
+      actorPrincipalId: sampleMessage.actorPrincipalId,
+      author: jsonValue(sampleMessage.author),
+      content: jsonValue([{ text: `Queued input ${index + 1}`, type: "text" }]),
+      createdAt: now,
+      id: createId("message"),
+      kind: sampleMessage.kind,
+      runId: null,
+      sequence: baseSequence + index + 1,
+      threadId: activeRun.thread.id,
+    }));
+    await database.insertInto("messages").values(seededMessages).execute();
+    await database
+      .updateTable("threads")
+      .set({ nextMessageSequence: String(baseSequence + 100) })
+      .where("id", "=", activeRun.thread.id)
+      .execute();
+    await database
+      .insertInto("threadInputs")
+      .values(
+        seededMessages.map((message, index) => ({
+          actorPrincipalId: sampleInput.actorPrincipalId,
+          authoritySource: jsonValue(sampleInput.authoritySource),
+          cancelReason: null,
+          causalChainId: sampleInput.causalChainId,
+          createdAt: now,
+          deliveredAt: null,
+          idempotencyKey: `live-unknown-capacity-seed-${index + 1}`,
+          messageId: message.id,
+          policy: "queue" as const,
+          queueRank: baseRank + index + 1,
+          replyTarget: null,
+          requestFingerprint: `fp-live-seed-${index + 1}`,
+          requestedBy: activeRun.userId,
+          runId: null,
+          state: "pending" as const,
+          steerCommandId: null,
+          threadId: activeRun.thread.id,
+          updatedAt: now,
+        })),
+      )
+      .execute();
+
+    // Capture the capacity SQL issued on an ordinary send: no join on `runs`.
+    const { default: pg } = await import("pg");
+    const recordedSql: string[] = [];
+    const originalQuery = pg.Client.prototype.query;
+    const spy = vi.spyOn(pg.Client.prototype, "query").mockImplementation(function (
+      this: InstanceType<typeof pg.Client>,
+      ...args: unknown[]
+    ) {
+      const firstArg = args[0];
+      const text =
+        typeof firstArg === "string"
+          ? firstArg
+          : firstArg &&
+              typeof firstArg === "object" &&
+              "text" in firstArg &&
+              typeof firstArg.text === "string"
+            ? firstArg.text
+            : "";
+      if (text) recordedSql.push(text);
+      return Reflect.apply(originalQuery, this, args);
+    });
+    try {
+      const accepted = await store.enqueueThreadInput({
+        content: [{ text: "100th queued input while live Run has an unknown steer", type: "text" }],
+        idempotencyKey: "live-unknown-capacity-next",
+        policy: "queue",
+        requestedBy: activeRun.userId,
+        source: { kind: "human" },
+        threadId: activeRun.thread.id,
+      });
+      expect(accepted.disposition).toBe("pending");
+    } finally {
+      spy.mockRestore();
+    }
+
+    const capacitySql = recordedSql.filter((sqlText) =>
+      sqlText.includes("octet_length(messages.content::text)"),
+    );
+    expect(capacitySql).toHaveLength(1);
+    expect(capacitySql[0]).not.toMatch(/left join "runs"/iu);
+    expect(capacitySql[0]).not.toMatch(/"runs"\."status"/iu);
+  });
+
+  it("counts unknown passive reports toward the report cap without joining runs (Z3)", async ({
+    storeFixture,
+  }) => {
+    const { startRunFixture, store, database } = storeFixture;
+    const base = await startRunFixture("report-unknown-capacity");
+    const firstReport = await store.enqueueThreadInput({
+      content: [{ text: "Passive report 1", type: "text" }],
+      idempotencyKey: "report-unknown-capacity-1",
+      policy: "report",
+      requestedBy: base.userId,
+      source: { kind: "human" },
+      threadId: base.thread.id,
+    });
+    const sampleInput = await database
+      .selectFrom("threadInputs")
+      .selectAll()
+      .where("messageId", "=", firstReport.message.id)
+      .executeTakeFirstOrThrow();
+    const sampleMessage = await database
+      .selectFrom("messages")
+      .selectAll()
+      .where("id", "=", firstReport.message.id)
+      .executeTakeFirstOrThrow();
+    await database
+      .updateTable("threadInputs")
+      .set({ state: "unknown" })
+      .where("messageId", "=", firstReport.message.id)
+      .execute();
+
+    // Seed 999 more unknown passive reports (1,000 total — at `threadReportMaxPendingEntries`).
+    // Because unknown passive reports are claimed again by a later Run, they must count against
+    // the report backlog cap without joining `runs`.
+    const baseSequence = Number(sampleMessage.sequence);
+    const baseRank = Number(sampleInput.queueRank);
+    const now = new Date();
+    const seededMessages = Array.from({ length: 999 }, (_, index) => ({
+      actorPrincipalId: sampleMessage.actorPrincipalId,
+      author: jsonValue(sampleMessage.author),
+      content: jsonValue([{ text: `Passive report ${index + 2}`, type: "text" }]),
+      createdAt: now,
+      id: createId("message"),
+      kind: sampleMessage.kind,
+      runId: null,
+      sequence: baseSequence + index + 1,
+      threadId: base.thread.id,
+    }));
+    await database.insertInto("messages").values(seededMessages).execute();
+    await database
+      .updateTable("threads")
+      .set({ nextMessageSequence: String(baseSequence + 1_000) })
+      .where("id", "=", base.thread.id)
+      .execute();
+    await database
+      .insertInto("threadInputs")
+      .values(
+        seededMessages.map((message, index) => ({
+          actorPrincipalId: sampleInput.actorPrincipalId,
+          authoritySource: jsonValue(sampleInput.authoritySource),
+          cancelReason: null,
+          causalChainId: sampleInput.causalChainId,
+          createdAt: now,
+          deliveredAt: null,
+          idempotencyKey: `report-unknown-capacity-seed-${index + 2}`,
+          messageId: message.id,
+          policy: "report" as const,
+          queueRank: baseRank + index + 1,
+          replyTarget: null,
+          requestFingerprint: `fp-report-unknown-seed-${index + 2}`,
+          requestedBy: base.userId,
+          runId: null,
+          state: "unknown" as const,
+          steerCommandId: null,
+          threadId: base.thread.id,
+          updatedAt: now,
+        })),
+      )
+      .execute();
+
+    const { default: pg } = await import("pg");
+    const recordedSql: string[] = [];
+    const originalQuery = pg.Client.prototype.query;
+    const spy = vi.spyOn(pg.Client.prototype, "query").mockImplementation(function (
+      this: InstanceType<typeof pg.Client>,
+      ...args: unknown[]
+    ) {
+      const firstArg = args[0];
+      const text =
+        typeof firstArg === "string"
+          ? firstArg
+          : firstArg &&
+              typeof firstArg === "object" &&
+              "text" in firstArg &&
+              typeof firstArg.text === "string"
+            ? firstArg.text
+            : "";
+      if (text) recordedSql.push(text);
+      return Reflect.apply(originalQuery, this, args);
+    });
+    try {
+      await expect(
+        store.enqueueThreadInput({
+          content: [{ text: "1001st passive report", type: "text" }],
+          idempotencyKey: "report-unknown-capacity-1001",
+          policy: "report",
+          requestedBy: base.userId,
+          source: { kind: "human" },
+          threadId: base.thread.id,
+        }),
+      ).rejects.toMatchObject({
+        code: "resource_exhausted",
+        message: "A task can hold at most 1000 undelivered reports",
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    const capacitySql = recordedSql.filter((sqlText) =>
+      sqlText.includes("octet_length(messages.content::text)"),
+    );
+    expect(capacitySql).toHaveLength(1);
+    expect(capacitySql[0]).not.toMatch(/left join "runs"/iu);
+    expect(capacitySql[0]).not.toMatch(/"runs"\."status"/iu);
+  });
+
+  it("routes steers on a Run held by an Antigravity Runner through restart to a definite delivered outcome (X1)", async ({
+    storeFixture,
+  }) => {
+    const { startRunFixture, store, database } = storeFixture;
+    const base = await startRunFixture("antigravity-restart-base");
+    const now = new Date();
+    const antigravityDriverKind = HarnessIdSchema.parse("antigravity");
+    const antigravityInstanceId = createId("harnessInstance");
+    await database
+      .insertInto("harnessInstances")
+      .values({
+        config: jsonValue({}),
+        createdAt: now,
+        driverKind: antigravityDriverKind,
+        enabled: true,
+        environmentId: base.environmentId,
+        id: antigravityInstanceId,
+        isDefault: false,
+        name: "Antigravity",
+        removedAt: null,
+        runtimeRevision: 1,
+        sourceId: "google",
+        stateKind: "isolated",
+        updatedAt: now,
+      })
+      .execute();
+    await database
+      .updateTable("runners")
+      .set({
+        capabilities: jsonValue(["attempts-v1"]),
+        moduleDescriptors: jsonValue(
+          RunnerModulesSchema.parse({
+            agents: {
+              environmentIds: [base.environmentId],
+              harnessDrivers: [
+                {
+                  accessModes: ["approval-required", "auto-accept-edits", "auto", "full-access"],
+                  driverKind: antigravityDriverKind,
+                  mcpImageContent: true,
+                  readiness: "runtime-check",
+                  sources: [
+                    {
+                      fields: [],
+                      kind: "first-party",
+                      label: "Google",
+                      quota: "windows",
+                      sourceId: "google",
+                      stateKinds: ["isolated"],
+                    },
+                  ],
+                  steering: false,
+                },
+              ],
+              maxConcurrentRuns: 4,
+            },
+          }),
+        ),
+      })
+      .where("id", "=", base.runnerId)
+      .execute();
+    const { thread } = await store.createThread({
+      createdBy: base.userId,
+      environmentId: base.environmentId,
+      harnessInstanceId: antigravityInstanceId,
+      idempotencyKey: "antigravity-restart-thread",
+      modelSelection: testModelSelection,
+      title: "Antigravity restart steer",
+    });
+    const initial = await store.enqueueThreadInput({
+      content: [{ text: "Start Antigravity turn", type: "text" }],
+      idempotencyKey: "antigravity-restart-initial",
+      policy: "queue",
+      requestedBy: base.userId,
+      source: { kind: "human" },
+      threadId: thread.id,
+    });
+    if (!initial.run || !initial.command) throw new Error("Expected initial Antigravity Run");
+    await store.claimCommand(initial.command.id, "antigravity-dispatcher");
+    const antigravityContinuationIdentity = {
+      ...testContinuationIdentity,
+      driverKind: antigravityDriverKind,
+    };
+    const binding = await store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+      continuationIdentity: antigravityContinuationIdentity,
+      harnessInstanceId: antigravityInstanceId,
+      leaseTokenHash: "antigravity-lease-1",
+      runnerBootId: base.runnerBootId,
+      runnerId: base.runnerId,
+      runId: initial.run.id,
+      threadId: thread.id,
+    });
+    await commitRunnerEvent(store.database, threadPathLinks, {
+      environmentId: base.environmentId,
+      event: pendingEvent({
+        bindingGeneration: binding.bindingGeneration,
+        data: { status: "running" },
+        environmentId: base.environmentId,
+        ordinal: 0,
+        runId: initial.run.id,
+        threadId: thread.id,
+        type: "run.started",
+      }),
+      runnerBootId: base.runnerBootId,
+      runnerId: base.runnerId,
+    });
+
+    const steered = await store.enqueueThreadInput({
+      content: [{ text: "Steer Antigravity via restart", type: "text" }],
+      idempotencyKey: "antigravity-restart-steer",
+      policy: "steer",
+      requestedBy: base.userId,
+      source: { kind: "human" },
+      threadId: thread.id,
+    });
+    expect(steered.disposition).toBe("steering");
+    expect(steered.command?.type).toBe("run.restart");
+
+    // First attempt is interrupted for restart, replacement attempt takes the steered message.
+    await commitRunnerEvent(store.database, threadPathLinks, {
+      environmentId: base.environmentId,
+      event: pendingEvent({
+        bindingGeneration: binding.bindingGeneration,
+        data: { status: "interrupted" },
+        environmentId: base.environmentId,
+        ordinal: 1,
+        runId: initial.run.id,
+        threadId: thread.id,
+        type: "run.interrupted",
+      }),
+      runnerBootId: base.runnerBootId,
+      runnerId: base.runnerId,
+    });
+    const replacementExecute = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("runId", "=", initial.run.id)
+      .where("type", "=", "run.execute")
+      .where("status", "=", "pending")
+      .executeTakeFirstOrThrow();
+    await store.claimCommand(replacementExecute.id, "antigravity-dispatcher");
+    const replacementBinding = await store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+      continuationIdentity: antigravityContinuationIdentity,
+      harnessInstanceId: antigravityInstanceId,
+      leaseTokenHash: "antigravity-lease-2",
+      runnerBootId: base.runnerBootId,
+      runnerId: base.runnerId,
+      runId: initial.run.id,
+      threadId: thread.id,
+    });
+    await commitRunnerEvent(store.database, threadPathLinks, {
+      environmentId: base.environmentId,
+      event: pendingEvent({
+        bindingGeneration: replacementBinding.bindingGeneration,
+        data: { status: "running" },
+        environmentId: base.environmentId,
+        ordinal: 2,
+        runId: initial.run.id,
+        threadId: thread.id,
+        type: "run.started",
+      }),
+      runnerBootId: base.runnerBootId,
+      runnerId: base.runnerId,
+    });
+    await commitRunnerEvent(store.database, threadPathLinks, {
+      environmentId: base.environmentId,
+      event: pendingEvent({
+        bindingGeneration: replacementBinding.bindingGeneration,
+        data: { status: "completed" },
+        environmentId: base.environmentId,
+        ordinal: 3,
+        runId: initial.run.id,
+        threadId: thread.id,
+        type: "run.completed",
+      }),
+      runnerBootId: base.runnerBootId,
+      runnerId: base.runnerId,
+    });
+    await expect(
+      database
+        .selectFrom("threadInputs")
+        .select(["state", "cancelReason"])
+        .where("messageId", "=", steered.message.id)
+        .executeTakeFirstOrThrow(),
+    ).resolves.toEqual({ cancelReason: null, state: "delivered" });
+  });
+
+  it("distinguishes pre-write and post-write replacement attempt failures for restart-steered messages (Y5)", async ({
+    storeFixture,
+  }) => {
+    const { startRunFixture, store, database } = storeFixture;
+    const base = await startRunFixture("antigravity-restart-y5-base");
+    const now = new Date();
+    const antigravityDriverKind = HarnessIdSchema.parse("antigravity");
+    const antigravityInstanceId = createId("harnessInstance");
+    await database
+      .insertInto("harnessInstances")
+      .values({
+        config: jsonValue({}),
+        createdAt: now,
+        driverKind: antigravityDriverKind,
+        enabled: true,
+        environmentId: base.environmentId,
+        id: antigravityInstanceId,
+        isDefault: false,
+        name: "Antigravity Y5",
+        removedAt: null,
+        runtimeRevision: 1,
+        sourceId: "google",
+        stateKind: "isolated",
+        updatedAt: now,
+      })
+      .execute();
+    await database
+      .updateTable("runners")
+      .set({
+        capabilities: jsonValue(["attempts-v1"]),
+        moduleDescriptors: jsonValue(
+          RunnerModulesSchema.parse({
+            agents: {
+              environmentIds: [base.environmentId],
+              harnessDrivers: [
+                {
+                  accessModes: ["approval-required", "auto-accept-edits", "auto", "full-access"],
+                  driverKind: antigravityDriverKind,
+                  mcpImageContent: true,
+                  readiness: "runtime-check",
+                  sources: [
+                    {
+                      fields: [],
+                      kind: "first-party",
+                      label: "Google",
+                      quota: "windows",
+                      sourceId: "google",
+                      stateKinds: ["isolated"],
+                    },
+                  ],
+                  steering: false,
+                },
+              ],
+              maxConcurrentRuns: 4,
+            },
+          }),
+        ),
+      })
+      .where("id", "=", base.runnerId)
+      .execute();
+
+    for (const scenario of ["pre-write-failure", "post-write-failure"] as const) {
+      const { thread } = await store.createThread({
+        createdBy: base.userId,
+        environmentId: base.environmentId,
+        harnessInstanceId: antigravityInstanceId,
+        idempotencyKey: `y5-thread-${scenario}`,
+        modelSelection: testModelSelection,
+        title: `Antigravity Y5 ${scenario}`,
+      });
+      const initial = await store.enqueueThreadInput({
+        content: [{ text: "Initial Antigravity turn", type: "text" }],
+        idempotencyKey: `y5-initial-${scenario}`,
+        policy: "queue",
+        requestedBy: base.userId,
+        source: { kind: "human" },
+        threadId: thread.id,
+      });
+      if (!initial.run) throw new Error("Expected initial Run");
+      const firstExecute = await database
+        .selectFrom("commands")
+        .select("id")
+        .where("runId", "=", initial.run.id)
+        .where("type", "=", "run.execute")
+        .executeTakeFirstOrThrow();
+      await store.claimCommand(firstExecute.id, `y5-dispatcher-${scenario}`);
+      const continuationIdentity = {
+        ...testContinuationIdentity,
+        driverKind: antigravityDriverKind,
+      };
+      const firstBinding = await store.acquireExecutionBinding({
+        bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+        continuationIdentity,
+        harnessInstanceId: antigravityInstanceId,
+        leaseTokenHash: `y5-lease-1-${scenario}`,
+        runnerBootId: base.runnerBootId,
+        runnerId: base.runnerId,
+        runId: initial.run.id,
+        threadId: thread.id,
+      });
+      await commitRunnerEvent(store.database, threadPathLinks, {
+        environmentId: base.environmentId,
+        event: pendingEvent({
+          bindingGeneration: firstBinding.bindingGeneration,
+          data: { status: "running" },
+          environmentId: base.environmentId,
+          ordinal: 0,
+          runId: initial.run.id,
+          threadId: thread.id,
+          type: "run.started",
+        }),
+        runnerBootId: base.runnerBootId,
+        runnerId: base.runnerId,
+      });
+
+      const steered = await store.enqueueThreadInput({
+        content: [{ text: `Restart steer (${scenario})`, type: "text" }],
+        idempotencyKey: `y5-steer-${scenario}`,
+        policy: "steer",
+        requestedBy: base.userId,
+        source: { kind: "human" },
+        threadId: thread.id,
+      });
+      expect(steered.command?.type).toBe("run.restart");
+
+      await commitRunnerEvent(store.database, threadPathLinks, {
+        environmentId: base.environmentId,
+        event: pendingEvent({
+          bindingGeneration: firstBinding.bindingGeneration,
+          data: { status: "interrupted" },
+          environmentId: base.environmentId,
+          ordinal: 1,
+          runId: initial.run.id,
+          threadId: thread.id,
+          type: "run.interrupted",
+        }),
+        runnerBootId: base.runnerBootId,
+        runnerId: base.runnerId,
+      });
+
+      const replacementExecute = await database
+        .selectFrom("commands")
+        .select("id")
+        .where("runId", "=", initial.run.id)
+        .where("type", "=", "run.execute")
+        .where("status", "=", "pending")
+        .executeTakeFirstOrThrow();
+      await store.claimCommand(replacementExecute.id, `y5-dispatcher-2-${scenario}`);
+      const replacementBinding = await store.acquireExecutionBinding({
+        bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+        continuationIdentity,
+        harnessInstanceId: antigravityInstanceId,
+        leaseTokenHash: `y5-lease-2-${scenario}`,
+        runnerBootId: base.runnerBootId,
+        runnerId: base.runnerId,
+        runId: initial.run.id,
+        threadId: thread.id,
+      });
+
+      if (scenario === "pre-write-failure") {
+        // ACP failed before writing `session/prompt`, so `run.started` was never emitted.
+        await commitRunnerEvent(store.database, threadPathLinks, {
+          environmentId: base.environmentId,
+          event: pendingEvent({
+            bindingGeneration: replacementBinding.bindingGeneration,
+            data: {
+              code: "harness_error",
+              message: "ACP pipe closed before prompt write",
+              retryable: false,
+              status: "failed",
+            },
+            environmentId: base.environmentId,
+            ordinal: 2,
+            runId: initial.run.id,
+            threadId: thread.id,
+            type: "run.failed",
+          }),
+          runnerBootId: base.runnerBootId,
+          runnerId: base.runnerId,
+        });
+        // The replacement input must NEVER be marked delivered when `run.started` did not fire.
+        await expect(
+          database
+            .selectFrom("threadInputs")
+            .select(["state", "cancelReason"])
+            .where("messageId", "=", steered.message.id)
+            .executeTakeFirstOrThrow(),
+        ).resolves.toEqual({ cancelReason: null, state: "unknown" });
+      } else {
+        // ACP wrote `session/prompt` to stdin -> emitted `run.started` -> failed later.
+        await commitRunnerEvent(store.database, threadPathLinks, {
+          environmentId: base.environmentId,
+          event: pendingEvent({
+            bindingGeneration: replacementBinding.bindingGeneration,
+            data: { status: "running" },
+            environmentId: base.environmentId,
+            ordinal: 2,
+            runId: initial.run.id,
+            threadId: thread.id,
+            type: "run.started",
+          }),
+          runnerBootId: base.runnerBootId,
+          runnerId: base.runnerId,
+        });
+        await commitRunnerEvent(store.database, threadPathLinks, {
+          environmentId: base.environmentId,
+          event: pendingEvent({
+            bindingGeneration: replacementBinding.bindingGeneration,
+            data: {
+              code: "harness_error",
+              message: "Engine failed after receiving prompt",
+              retryable: false,
+              status: "failed",
+            },
+            environmentId: base.environmentId,
+            ordinal: 3,
+            runId: initial.run.id,
+            threadId: thread.id,
+            type: "run.failed",
+          }),
+          runnerBootId: base.runnerBootId,
+          runnerId: base.runnerId,
+        });
+        await expect(
+          database
+            .selectFrom("threadInputs")
+            .select(["state", "cancelReason"])
+            .where("messageId", "=", steered.message.id)
+            .executeTakeFirstOrThrow(),
+        ).resolves.toEqual({ cancelReason: null, state: "delivered" });
+      }
+
+      await expect(
+        database
+          .selectFrom("runs")
+          .select("status")
+          .where("id", "=", initial.run.id)
+          .executeTakeFirstOrThrow(),
+      ).resolves.toEqual({ status: "failed" });
+    }
   });
 });

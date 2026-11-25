@@ -1,14 +1,12 @@
 import {
-  mutationIdempotencyKey,
   threadInDirectory,
   type HostClient,
   type HostSnapshot,
   type SessionTaskView,
 } from "@opensteer/client/host";
-import { useTaskActivity } from "@opensteer/client/react";
-import { AgentSessionIdSchema, ThreadIdSchema } from "@opensteer/core";
+import { useSessionStop, useTaskActivity } from "@opensteer/client/react";
 import { useCallback, useMemo } from "react";
-import { useScreenAction } from "../ui/client-feedback.js";
+import { actionLine } from "../ui/client-feedback.js";
 import { useHostValue } from "../ui/mobile-client-context.js";
 import { sessionRowOf, sessionTaskOf } from "./agent-session-model.js";
 
@@ -57,19 +55,15 @@ export function useSessionRow(
   );
 }
 
-const stopSpec = { label: "stop this agent", done: "stopped", happened: "it was stopped" } as const;
-
-/** Ends one agent session on one task, bound to the session the person saw. */
-export function useAgentSessionStop(hostClient: HostClient, threadId: string) {
-  return useScreenAction<string, void>(hostClient, `agent-session-stop:${threadId}`, {
-    ...stopSpec,
-    execute: async (sessionId) => {
-      await hostClient.dispatch({
-        type: "agent.session.stop",
-        threadId: ThreadIdSchema.parse(threadId),
-        agentSessionId: AgentSessionIdSchema.parse(sessionId),
-        idempotencyKey: mutationIdempotencyKey(`agent-session-stop:${sessionId}`),
-      });
-    },
-  });
+/** Native feedback for the same session Stop the web renders. */
+export function useAgentSessionStop(
+  hostClient: HostClient,
+  threadId: string,
+  sessionId: string | null,
+) {
+  const stop = useSessionStop(hostClient, threadId, sessionId);
+  return {
+    ...stop,
+    line: actionLine(stop, { check: () => void stop.reconcile() }, stop.key),
+  };
 }

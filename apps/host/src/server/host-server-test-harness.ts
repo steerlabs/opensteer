@@ -32,6 +32,7 @@ export function hostServerTestDependencies(
       bootstrap: async () => ({ tabs: [], layout: { revision: 0, items: [] }, complete: true }),
     } as unknown as HostServerDependencies["tabs"],
     toolActivity: inert(),
+    secretDigestKey: Buffer.alloc(32, 0x33),
     browserSources: inert(),
     passwordSignIns: inert(),
     signBrowserSourceInvitation: inert(),

@@ -108,7 +108,7 @@ export function useWorkspaceShortcuts({
       }
       // ⌥⌘↑ / ⌥⌘↓ — the previous or next task; the place stays.
       if (command && event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
-        const list = taskList(snapshot);
+        const list = taskList(snapshot, { personTasksOnly: true });
         const order = [
           ...list.working.map((row) => row.threadId),
           ...list.ready.map((row) => row.threadId),

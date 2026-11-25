@@ -135,6 +135,7 @@ function fixture(grant?: AgentGrant) {
     callers,
     service,
     activity,
+    secretDigestKey: Buffer.alloc(32, 0x33),
     realtime: {
       observeScopes: (_scopes, listener) => {
         changed = listener;
@@ -405,4 +406,144 @@ it("re-authenticates a native Run after activity.start so a mode lowered during 
     },
   });
   expect(f.settingsHandler).not.toHaveBeenCalled();
+});
+
+it("redacts secret fields before recording relay activity for admitted and refused commands (R1)", async () => {
+  const admittedMarker = `relay-admitted-${crypto.randomUUID()}`;
+  const refusedMarker = `relay-refused-${crypto.randomUUID()}`;
+  const otherCmdMarker = `relay-server-secret-${crypto.randomUUID()}`;
+  const received: unknown[] = [];
+  const savedArgs: unknown[] = [];
+
+  const app = Fastify();
+  apps.push(app);
+  const f = fixture();
+  const callers = {
+    authenticate: vi.fn(async (token: string) => {
+      if (token !== "run-token") throw new Error("Unauthorized");
+      return f.caller;
+    }),
+  };
+  const commandHandler = vi.fn(async (call: ToolCall<"opensteer_command">) => {
+    received.push(call.input);
+    const cmd = call.input.command as { readonly type?: string; readonly triggerId?: string };
+    if (cmd?.triggerId === "trg_refused") {
+      throw new OpensteerError({ code: "bad_request", message: "Leave set out" });
+    }
+    return { status: "done" as const, result: { secretNames: ["TOKEN"], type: cmd?.type } };
+  });
+  const service = new OpensteerMcpService({
+    callers,
+    handlers: { opensteer_command: commandHandler },
+    store: {
+      readTask: async () => f.caller.thread,
+      threadOrigins: async () => new Map(),
+      requests: { get: async () => null },
+    },
+    publicUrl: new URL("http://host.test"),
+  });
+  registerAgentToolRoute(app, {
+    callers,
+    service,
+    activity: {
+      start: async (context, callId, name, args) => {
+        savedArgs.push(args);
+        return f.activity.start(context, callId, name, args);
+      },
+      complete: f.activity.complete,
+    },
+    secretDigestKey: Buffer.alloc(32, 0x33),
+    realtime: { observeScopes: () => () => true },
+  });
+
+  const post = (input: unknown) =>
+    app.inject({
+      method: "POST",
+      url: agentToolHostRoutePath,
+      headers: { authorization: "Bearer run-token" },
+      payload: { callId: crypto.randomUUID(), name: "opensteer_command", input },
+    });
+
+  // 1. Admitted trigger.secrets.set: live handler gets the value, recorded activity gets [redacted].
+  const admittedRes = await post({
+    command: { type: "trigger.secrets.set", triggerId: "trg_ok", set: { TOKEN: admittedMarker } },
+  });
+  expect(admittedRes.statusCode).toBe(200);
+  expect(admittedRes.body).not.toContain(admittedMarker);
+
+  // 2. Refused trigger.secrets.set: recorded activity STILL redacts the value.
+  const refusedRes = await post({
+    command: {
+      type: "trigger.secrets.set",
+      triggerId: "trg_refused",
+      set: { TOKEN: refusedMarker },
+    },
+  });
+  expect(refusedRes.statusCode).toBe(200);
+  expect(refusedRes.body).not.toContain(refusedMarker);
+
+  // 3. Another secret-bearing command (integration.server.secrets.set): also redacted.
+  await post({
+    command: {
+      type: "integration.server.secrets.set",
+      serverId: "srv_1",
+      secrets: { API_KEY: otherCmdMarker },
+    },
+  });
+
+  // 4. M1: Agent-chosen / misspelled keys (`Set`, `sett`, `input`) on a secret-bearing command.
+  const misKeyMarker = `relay-miskey-${crypto.randomUUID()}`;
+  const nestedInputMarker = `relay-nested-${crypto.randomUUID()}`;
+  await post({
+    command: {
+      type: "trigger.secrets.set",
+      triggerId: "trg_miskey",
+      Set: { TOKEN: misKeyMarker },
+      input: { set: { TOKEN: nestedInputMarker } },
+    },
+  });
+
+  expect(JSON.stringify(received[0])).toContain(admittedMarker);
+  const allSaved = JSON.stringify(savedArgs);
+  expect(allSaved).not.toContain(admittedMarker);
+  expect(allSaved).not.toContain(refusedMarker);
+  expect(allSaved).not.toContain(otherCmdMarker);
+  expect(allSaved).not.toContain(misKeyMarker);
+  expect(allSaved).not.toContain(nestedInputMarker);
+  expect(savedArgs[0]).toMatchObject({
+    command: { type: "trigger.secrets.set", triggerId: "trg_ok", set: "[redacted]" },
+  });
+  expect(savedArgs[1]).toMatchObject({
+    command: { type: "trigger.secrets.set", triggerId: "trg_refused", set: "[redacted]" },
+  });
+  expect(savedArgs[2]).toMatchObject({
+    command: {
+      type: "integration.server.secrets.set",
+      serverId: "srv_1",
+      secrets: "[redacted]",
+    },
+  });
+  expect(savedArgs[3]).toMatchObject({
+    command: {
+      type: "trigger.secrets.set",
+      triggerId: "trg_miskey",
+      Set: "[redacted]",
+      input: "[redacted]",
+    },
+  });
+});
+
+it("refuses to register the agent tool relay without a non-empty secretDigestKey", () => {
+  const f = fixture();
+  const app = Fastify();
+  apps.push(app);
+  expect(() =>
+    registerAgentToolRoute(app, {
+      callers: { authenticate: async () => f.caller },
+      service: f.service,
+      activity: f.activity,
+      secretDigestKey: Buffer.alloc(0),
+      realtime: { observeScopes: () => () => true },
+    }),
+  ).toThrow("Agent tool relay route requires a non-empty secretDigestKey.");
 });

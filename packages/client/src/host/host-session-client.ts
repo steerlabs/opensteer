@@ -1635,7 +1635,10 @@ export class HttpHostClient {
         const thread = this.#threadState.reconcile(
           {
             ...detailSummary,
+            agentSessionId: row.agentSessionId ?? null,
+            externalWork: row.externalWork ?? null,
             ...(row.thread ? { endedOrigin: row.endedOrigin ?? null } : {}),
+            ...(row.originConnectionId ? { originConnectionId: row.originConnectionId } : {}),
             ...(row.retry === undefined ? {} : { retry: row.retry }),
           },
           SequenceSchema.parse(row.revision),
@@ -2102,6 +2105,7 @@ export class HttpHostClient {
               failureCode: row.failureCode ?? null,
               agentSessionId: row.agentSessionId ?? null,
               externalWork: row.externalWork ?? null,
+              ...(row.originConnectionId ? { originConnectionId: row.originConnectionId } : {}),
               ...(row.retry === undefined ? {} : { retry: row.retry }),
             },
             SequenceSchema.parse(row.revision),
@@ -4268,14 +4272,15 @@ export class HttpHostClient {
       if (this.#removedTasks.has(entry.thread.id)) return [];
       const row = rows.get(entry.thread.id);
       if (row && BigInt(row.revision) > asOf) return [this.#shellEntry(row)];
-      const thread = toThreadSummary(
-        entry.thread,
-        this.#snapshot.environments,
-        this.#snapshot.harnesses,
-      );
+      const { originConnectionId, externalWork, ...task } = entry;
+      const thread = {
+        ...toThreadSummary(entry.thread, this.#snapshot.environments, this.#snapshot.harnesses),
+        ...(originConnectionId ? { originConnectionId } : {}),
+        ...(externalWork ? { externalWork } : {}),
+      };
       return [
         {
-          ...entry,
+          ...task,
           thread: this.#reconcilePageThread(
             // The queued-account reason and active retry ride beside the Thread on the page, as on the shell row.
             entry.runQueued === undefined && entry.retry === undefined
@@ -5368,6 +5373,7 @@ function compactThread(
     failureCode: row.failureCode ?? null,
     agentSessionId: row.agentSessionId ?? null,
     externalWork: row.externalWork ?? null,
+    ...(row.originConnectionId ? { originConnectionId: row.originConnectionId } : {}),
     ...(row.retry === undefined ? {} : { retry: row.retry }),
     modelSelection: unknownModelSelection,
     harnessLabel: "",

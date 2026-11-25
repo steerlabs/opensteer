@@ -37,6 +37,8 @@ export {
   clipboardPermissionRefusal,
   connectionClipboardRefusal,
   connectionPermissionRefusal,
+  extensionManagementRefusal,
+  isExtensionMutationCommand,
   SessionCdpRouter,
   SessionCdpRouterError,
   type BrowserCdpBackend,

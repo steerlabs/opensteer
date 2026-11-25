@@ -242,6 +242,8 @@ export interface ThreadSummary {
   failureCode?: string | null;
   /** A connected agent or a chat started this task, so the person's own engine rules do not apply. */
   startedByOther?: boolean | undefined;
+  /** The connection lineage the Home disclosed in the person's task view. */
+  originConnectionId?: string;
   /** A connected agent works this task itself; Stop it with `agent.session.stop`. */
   agentSessionId?: string | null;
   /** A connected agent's own task: its session and connection, kept after the session ends. */
@@ -1083,6 +1085,8 @@ export interface TriggerDetail {
   downstreamRunsTruncated: boolean;
   occurrences: TriggerOccurrence[];
   revision: TriggerRevision;
+  secretNames?: readonly string[];
+  secretsUnreadable?: boolean;
   trigger: Trigger;
   webhook?: { scope: "local" | "public"; url?: string | null | undefined } | null | undefined;
 }

@@ -46,7 +46,7 @@ describe("an ask names only what the asking agent supplied (rule 5)", () => {
     expect(stored).toEqual({ type: "plugins.install", source: command.source });
     const gives = commandGives(command as never, 0);
     const shown = commandPresentation(
-      { summary: sentence, command: stored, gives, agentReason: null } as never,
+      { summary: sentence, command: stored, gives, agentReason: null, secretPaths: [] } as never,
       sentence,
       "Asked by the agent “Parity agent”",
     );

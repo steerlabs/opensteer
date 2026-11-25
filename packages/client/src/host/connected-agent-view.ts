@@ -1,5 +1,5 @@
-import { workWords } from "./agent-work-copy.js";
-import { activityRows } from "./agent-work.js";
+import { workSentence, workWords } from "./agent-work-copy.js";
+import { activityRows, connectedAgentNamePart, sessionAgent } from "./agent-work.js";
 import {
   BrowserProfileIdSchema,
   agentGrantPluginTargetKey,
@@ -13,7 +13,7 @@ import {
 } from "@opensteer/core";
 import type { AgentConnection } from "@opensteer/protocol";
 import { accessModeOptions } from "./access-modes.js";
-import { agentWho, agentWithdrawnLine, type AgentWho } from "./agent-identity.js";
+import { agentWithdrawnLine, type AgentWho } from "./agent-identity.js";
 import type { ThreadSummary } from "./client.js";
 import {
   agentSentence,
@@ -92,6 +92,7 @@ export interface ConnectedAgentStatus {
 export interface ConnectedAgentLive {
   readonly what: string;
   readonly threadId: string;
+  readonly state?: "working" | "needs-you";
 }
 
 type ConnectedAgentTask = {
@@ -194,22 +195,14 @@ export function connectedAgentIdentity(
   withdrawnAt?: string | null,
 ): ConnectedAgentIdentity {
   const redirect = redirectUri ?? source.client?.redirectOrigin ?? null;
-  const who = agentWho({
-    clientName: source.clientName,
-    redirect,
-    identity: source.identity,
-    identityAtConsent: source.identityAtConsent,
-    withdrawnAt: source.verificationWithdrawnAt ?? withdrawnAt,
-  });
-  const label = who.providerId ? who.heading : source.label;
-  const initial = Array.from(label.trim() || source.clientName)[0]?.toUpperCase() ?? "?";
+  const { who, name: label, initial, providerId } = sessionAgent(source, withdrawnAt, redirectUri);
   return {
     label,
     clientName: source.clientName,
     // Where it signed in from is a site a person decides about: its origin, parsed.
     origin: redirect === null ? null : siteOrigin(redirect),
     local: who.local,
-    providerId: who.providerId,
+    providerId,
     initial,
     who,
   };
@@ -232,9 +225,37 @@ export function connectedAgentPhase(
     : "active";
 }
 
+/** Direct work has its own Now section. Disconnect progress always stays visible. */
+export function showConnectedAgentStatus(row: ConnectedAgentRow): boolean {
+  return row.phase !== "active" || !!row.connection.bridge;
+}
+
 /** Still connected, as far as the person can tell: it may act, or will once it is back. */
 export function connectedAgentConnected(phase: ConnectedAgentPhase): boolean {
   return phase === "active" || phase === "paused" || phase === "unknown";
+}
+
+/** A task can name its origin only while the owner's catalog still holds the agent. */
+export function taskOriginLabels(
+  connections: readonly AgentConnection[] | null,
+  revoked: ReadonlySet<string>,
+  now = new Date(),
+): ReadonlyMap<string, readonly SentencePart[]> {
+  const labels = new Map<string, readonly SentencePart[]>();
+  for (const connection of connections ?? []) {
+    if (
+      connection.bridge ||
+      !connectedAgentConnected(connectedAgentPhase(connection, revoked, now))
+    )
+      continue;
+    labels.set(
+      connection.id,
+      workSentence("work.startedBy", {
+        agent: connectedAgentNamePart(sessionAgent(connection, connection.verificationWithdrawnAt)),
+      }),
+    );
+  }
+  return labels;
 }
 
 /** A connection listed without a grant reads as holding nothing (this Home always sends one). */
@@ -435,13 +456,14 @@ export function connectedAgentStatus(
   // status never says "Not doing anything" above a task it lists as running.
   const chatWork = connection.bridge?.tasks?.find(({ running }) => running);
   const working = live ?? (chatWork ? { what: chatWork.title, threadId: chatWork.id } : null);
+  const needsYou = live?.state === "needs-you";
   switch (row.phase) {
     case "active":
       return working
         ? {
-            label: agentWords("agent.status.working"),
+            label: agentWords(needsYou ? "agent.status.needsYou" : "agent.status.working"),
             detail: working.what,
-            tone: "good",
+            tone: needsYou ? "attention" : "good",
             steps: [],
           }
         : {

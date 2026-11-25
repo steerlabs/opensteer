@@ -144,7 +144,7 @@ async function open(choices: readonly string[]) {
   await act(async () => root!.render(<Pane client={host!} threadId={threadId} />));
   await vi.waitFor(() =>
     expect(container.textContent).toContain(
-      "Connected agent Claude asks in Find flights to Lisbon",
+      "Connected agent Claude asks in “\u2068Find flights to Lisbon\u2069”",
     ),
   );
   // Past the moment a card ignores taps for, having just arrived under a thumb.

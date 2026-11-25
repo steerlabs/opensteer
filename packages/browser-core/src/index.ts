@@ -8,4 +8,5 @@ export {
   cdpProfileRefusal,
   type CdpProfileRefusal,
 } from "./cdp-product-isolation.js";
+export { ConnectionExtensionIsolation, isExtensionUrl } from "./connection-extension-isolation.js";
 export { contextScopedCdpMethods } from "./cdp-context.js";

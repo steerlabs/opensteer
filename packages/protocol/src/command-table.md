@@ -30,7 +30,7 @@ edit. Callers: (a) your own agent at Full access, (b) your own agent below Full 
 | `node.stop` | subagent ← `threadId`,`nodeId` | narrow | now | now | now | now | A | `h/product.ts:908` passes `authority`; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
 | `assignment.cancel` | delegation ← `assignmentId` → worker task | narrow | now | now | now | now | A | `h/product.ts:927` passes `admission`; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
 | `request.respond` | Request ← `requestId` (its kind, origin task); answer to `harness.input` widen-self / allow a permission kind approve / decline narrow | widen-self / approve / narrow | now/ask | now/ask | now/ask | now/ask | A | answer face exists (`h/product.ts:964`); allow face "asks" = points at the same Request (no new one); decline face B; X11: the Run that asked goes on, in its lineage, so a connection asks unless that lineage is its own; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
-| `request.command.approve` | a command Request ← `requestId`; the person approves the command, as proposed or changed | approve | ask | ask | ask | ask | — | A4: the person's answer to a command Request; an agent's ask about it points at that Request |
+| `request.command.approve` | a command Request ← `requestId`; the person approves the command exactly as proposed | person-view | nf | nf | nf | nf | — | A4: the person's answer to a command Request, on their own screen; to an agent it reads as a command that does not exist |
 | `agent.session.stop` | a connected agent's direct session ← `threadId`,`agentSessionId` | narrow | now | ask | now | now | B | (c)(d): its own session only; another connection's → nf |
 | `attachment.upload.create` | an upload slot for the person's client ← name, size | person-view | nf | nf | nf | nf | — | bytes arrive on the session-bound binary route; agents pass files by path |
 | `attachment.upload.discard` | same ← `attachmentId` | person-view | nf | nf | nf | nf | — |  |
@@ -196,7 +196,7 @@ edit. Callers: (a) your own agent at Full access, (b) your own agent below Full 
 | `app.stop` | same | narrow | now | ask | now | nf | A | ; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
 | `app.delete` | an app ← `appId` | destroy | now | ask | now | nf | A | ; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
 
-## Automations (5)
+## Automations (6)
 
 | Command | Governs ← input | Class | (a) | (b) | (c) | (d) | Step | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -205,3 +205,4 @@ edit. Callers: (a) your own agent at Full access, (b) your own agent below Full 
 | `trigger.status.set` | an automation ← `triggerId`,`status`; pause/archive narrow / resume widen-self | narrow / narrow / widen-self | now | now | now | now | A | T2: pause, stopping a running firing and remove (archive) narrow: now below Full access for anyone with authority over the task; X11: resuming starts the automation again in its own lineage, so a connection asks unless that lineage is its own |
 | `trigger.run` | run now ← `triggerId` | widen-self | now | ask | now | now | A | full access today; X11: the occurrence is the automation's lineage's (`trigger-store.ts:1879`), so a connection outside that lineage asks |
 | `trigger.cancel` | pending occurrences ← `triggerId` | narrow | now | now | now | now | A |  |
+| `trigger.secrets.set` | an automation's secrets ← `triggerId` | destroy / widen-self / secret | now/ask | ask | now/ask | now/ask | A | removing or clearing secrets destroys person-entered data (`destroy`, like `app.delete`); setting values (`set`, in `agentMaySet`) needs Full access in the automation's own lineage (same admission as changing its script, trigger.update face 1); when the same name appears in both `remove` and `set`, `remove` runs first so `set` wins; proposing `names` without values always asks (`secret`) and the person enters values on the automation's Secrets screen (`editor: automation-secrets`), never on the Request card |

@@ -217,7 +217,7 @@ describe("real Chromium pages follow the person's view", () => {
     );
     expect(unsafeTab?.code).toBe("forbidden");
     expect(unsafeTab?.message).toBe(
-      "CDP navigation is limited to HTTP and HTTPS URLs without embedded credentials.",
+      "CDP navigation is limited to HTTP(S) and extension pages, without embedded credentials.",
     );
     expect(session.ledger.snapshot()).toHaveLength(pagesBeforeRefusal);
     await session.controller.handle({

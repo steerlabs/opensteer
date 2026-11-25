@@ -38,8 +38,9 @@ import {
   type Status,
   type UiRequest,
 } from "./messages.js";
+import { reloadWhenReplaced } from "./reload-when-replaced.js";
 import {
-  storageBusy,
+  storageTurn,
   loadQuarantine,
   forgetQuarantine,
   addConnection,
@@ -81,6 +82,8 @@ const liveTabs =
     ? new ChromeTabDebugger(chrome.debugger, chrome.tabs, chrome.webNavigation)
     : undefined;
 let pairingInProgress = false;
+/** Settles when the pairing in progress has ended. */
+let pairingEnded: Promise<void> = Promise.resolve();
 
 function link(sourceId: string): Link {
   let existing = links.get(sourceId);
@@ -819,6 +822,10 @@ async function connect(
 ): Promise<ConnectResult> {
   if (pairingInProgress) throw new ConnectProblem("busy");
   pairingInProgress = true;
+  let endPairing = () => {};
+  pairingEnded = new Promise((resolve) => {
+    endPairing = resolve;
+  });
   try {
     const invitation = await readOpenedInvitation(text, tab);
     const existing = await existingFor(invitation);
@@ -874,6 +881,7 @@ async function connect(
     return { deploymentName: invitation.deploymentName, ready: state === "connected" };
   } finally {
     pairingInProgress = false;
+    endPairing();
   }
 }
 
@@ -1017,22 +1025,30 @@ void (async () => {
 })().catch(() => undefined);
 
 async function checkForUpdate(): Promise<void> {
-  if (pairingInProgress || storageBusy()) return;
+  await reloadWhenReplaced({
+    self: import.meta.url,
+    replacement: workerOnDisk,
+    pairing: () => (pairingInProgress ? pairingEnded : null),
+    storageTurn,
+    reload: () => chrome.runtime.reload(),
+  });
+}
+
+/** The service worker the manifest on disk names, or null when it cannot be read. */
+async function workerOnDisk(): Promise<string | null> {
   try {
     const response = await fetch(chrome.runtime.getURL("manifest.json"), { cache: "no-store" });
     const manifest: unknown = await response.json();
-    if (typeof manifest !== "object" || manifest === null || !("background" in manifest)) return;
+    if (typeof manifest !== "object" || manifest === null || !("background" in manifest))
+      return null;
     const background = manifest.background;
     if (typeof background !== "object" || background === null || !("service_worker" in background))
-      return;
-    if (
-      typeof background.service_worker === "string" &&
-      chrome.runtime.getURL(background.service_worker) !== import.meta.url &&
-      !pairingInProgress &&
-      !storageBusy()
-    )
-      chrome.runtime.reload();
+      return null;
+    return typeof background.service_worker === "string"
+      ? chrome.runtime.getURL(background.service_worker)
+      : null;
   } catch {
     /* A failed read leaves this worker running. */
+    return null;
   }
 }

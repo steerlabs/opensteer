@@ -90,20 +90,6 @@ export function operationRequestsOf(
   ];
 }
 
-/** How a Needs you row names a direct operation's Request: its agent and the Home's question. */
-export function needsYouOperation(
-  snapshot: AgentWorkSource,
-  input: {
-    readonly request: Parameters<typeof operationRequestView>[0]["request"];
-    readonly threadId: string;
-  },
-): OperationRequestView | null {
-  return operationRequestView({
-    request: input.request,
-    session: slotOf(snapshot, input.threadId),
-  });
-}
-
 /** What a tab says of the connected agent using it, and the session its Stop ends. */
 export function placeSessionLine(
   snapshot: AgentWorkSource,

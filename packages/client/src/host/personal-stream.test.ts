@@ -2,6 +2,7 @@ import { AppIdSchema, createId, SequenceSchema, TabSchema } from "@opensteer/cor
 import { afterEach, describe, expect, it, test, vi } from "vitest";
 import {
   personalChangesFrameMaxBytes,
+  type PersonalTaskExternalWork,
   type ScopedClientMessage,
 } from "@opensteer/protocol/personal-sync";
 import type { PersonalResourceRevisions } from "@opensteer/protocol/resources";
@@ -15,6 +16,8 @@ import { ScopedPersonalStream, type PersonalResourcePort } from "./scoped-person
 import { ScopedThreadReader, TranscriptBodies } from "./scoped-thread-reader.js";
 import { nodeTranscriptCard } from "./transcript-item-view.js";
 import { detailThread } from "../test-support/scoped-transcript-fixture.js";
+import { mainDoneTasks } from "./client.js";
+import { doneTaskList, taskList } from "./task-list.js";
 
 const deploymentId = createId("deployment");
 const viewerId = createId("user");
@@ -3762,6 +3765,7 @@ function taskPageResponse(
     status?: "idle" | "running";
     doneReason?: "quiet";
     runQueued?: boolean;
+    externalWork?: PersonalTaskExternalWork;
   }[],
   window: { nextBefore: string | null; totalItems?: number },
 ) {
@@ -3787,6 +3791,7 @@ function taskPageResponse(
         lastReply: null,
         failure: null,
         ...(row.runQueued === undefined ? {} : { runQueued: row.runQueued }),
+        ...(row.externalWork ? { externalWork: row.externalWork } : {}),
       })),
       window: {
         nextBefore: window.nextBefore,
@@ -3803,6 +3808,86 @@ const minutesBefore = (minutes: number) =>
   new Date(Date.parse(time) - minutes * 60_000).toISOString();
 
 describe("task lists from the shell and its pages", () => {
+  it("keeps a direct session's own task out of the person's open and Done lists after paging", async () => {
+    const openId = createId("thread");
+    const doneId = createId("thread");
+    const ordinaryId = createId("thread");
+    const ownerDoneId = createId("thread");
+    const externalWork: PersonalTaskExternalWork = {
+      sessionId: createId("agentSession"),
+      status: "ended",
+      endReason: "idle",
+      connection: { id: "mcn_fixture", label: "Fixture", clientName: "Fixture" },
+    };
+    const recent = Array.from({ length: 25 }, (_, index) => ({
+      ...task,
+      id: createId("thread"),
+      askedAt: minutesBefore(index),
+      status: "idle" as const,
+    }));
+    const host = scriptedHost({
+      tasks: recent,
+      lists: { recentTaskIds: recent.map(({ id }) => id), nextBefore: "older" },
+    });
+    const requests: unknown[] = [];
+    const client = new HttpHostClient({
+      baseUrl: "http://scoped-host",
+      webSocketFactory: host.connect,
+      capabilities: ["quiet-tasks-v1"],
+      fetch: async (input) => {
+        const url = new URL(String(input));
+        if (!url.pathname.endsWith("/tasks.page")) return new Response(null, { status: 404 });
+        const page = JSON.parse(url.searchParams.get("input") ?? "{}");
+        requests.push(page);
+        const done = page.done === true;
+        return taskPageResponse(
+          host,
+          [
+            {
+              id: done ? doneId : openId,
+              askedAt: minutesBefore(25),
+              doneAt: done ? time : null,
+              externalWork,
+            },
+            {
+              id: done ? ownerDoneId : ordinaryId,
+              askedAt: minutesBefore(26),
+              doneAt: done ? time : null,
+            },
+          ],
+          { nextBefore: null, totalItems: 2 },
+        );
+      },
+    });
+    try {
+      await client.load();
+      expect(requests).toEqual([]);
+      await client.loadEarlierTasks();
+      await client.loadDoneTasks();
+      expect(requests).toEqual([
+        expect.objectContaining({ before: "older" }),
+        expect.objectContaining({ done: true }),
+      ]);
+      const snapshot = client.getSnapshot();
+      expect(snapshot.tasks?.entries.map(({ thread }) => thread.id)).toContain(openId);
+      expect(snapshot.doneTasks[mainDoneTasks]?.entries.map(({ thread }) => thread.id)).toContain(
+        doneId,
+      );
+      const person = taskList(snapshot, { personTasksOnly: true });
+      expect(person.ready.map(({ threadId }) => threadId)).toEqual([
+        ...recent.map(({ id }) => id),
+        ordinaryId,
+      ]);
+      const doneRows = doneTaskList(snapshot)?.rows;
+      expect(doneRows?.find(({ threadId }) => threadId === doneId)?.connectedAgentTask).toBe(true);
+      expect(
+        doneRows?.filter((row) => !row.connectedAgentTask).map(({ threadId }) => threadId),
+      ).toEqual([ownerDoneId]);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("refills the settled list when synchronization arrives, counting settled tasks only", async () => {
     // 25 newer Runs at work, and the Host's settled window of only three.
     const active = Array.from({ length: 25 }, (_, index) => ({

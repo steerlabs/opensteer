@@ -298,6 +298,33 @@ describe("WatchService", () => {
       vi.useRealTimers();
     }
   });
+
+  it("recovers a watch wake-up when watchEnvironmentForTrigger transiently fails", async () => {
+    vi.useFakeTimers();
+    const fixture = watchFixture();
+    const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
+      async () => undefined,
+    );
+    const watchEnvironmentForTrigger = vi
+      .fn<WatchServiceOptions["store"]["watchEnvironmentForTrigger"]>()
+      .mockRejectedValueOnce(new Error("transient db lookup error"))
+      .mockResolvedValueOnce(fixture.context.activation.environmentId);
+    const baseOptions = options(fixture, { reconcileWatches });
+    const service = new WatchService({
+      ...baseOptions,
+      store: { ...baseOptions.store, watchEnvironmentForTrigger },
+    });
+    try {
+      await service.triggerChanged(fixture.context.activation.triggerId);
+      expect(reconcileWatches).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(watchEnvironmentForTrigger).toHaveBeenCalledTimes(2);
+      expect(reconcileWatches).toHaveBeenCalledOnce();
+    } finally {
+      await service.close();
+      vi.useRealTimers();
+    }
+  });
 });
 function options(
   fixture: ReturnType<typeof watchFixture>,

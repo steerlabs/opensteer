@@ -541,6 +541,7 @@ it.skipIf(Boolean(reportPath))(
           expect(answer.statusCode, answer.body).toBe(200);
           expect(answer.body).toContain(run.threadId);
           expect(answer.body).not.toContain('"isError":true');
+          expect(answer.body).not.toContain('"originConnectionId"');
         };
       };
       const runTool = await mcpSession(run.toolsToken);

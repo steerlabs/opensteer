@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { ThreadAccessModeSchema, type ThreadAccessMode } from "@opensteer/core";
+import {
+  isAllowedConnectionPageUrl,
+  isExtensionUrl,
+  normalizePageOpenUrl,
+  ThreadAccessModeSchema,
+  type ThreadAccessMode,
+} from "@opensteer/core";
 import {
   commandFace,
   commandFaceStep,
@@ -8,7 +14,13 @@ import {
   type CommandType,
 } from "@opensteer/protocol/command-table";
 import expected from "../../protocol/src/command-table.rows.json" with { type: "json" };
-import { commandRule, type CommandAnswer, type CommandRuleCaller } from "./resource-access.js";
+import {
+  commandRule,
+  executionMayManageExtensions,
+  type CommandAnswer,
+  type CommandRuleCaller,
+  type ExecutionAuthority,
+} from "./resource-access.js";
 
 type Column = "a" | "b" | "c" | "d";
 interface ExpectedRow {
@@ -378,9 +390,9 @@ describe("the command rule, generated from the table", () => {
       b: nowInStepA("b"),
       c: nowInStepA("c"),
       d: nowInStepA("d"),
-      // b is 19, not the data file's first 21: creating (D1) or changing (D0a) an automation
-      // needs Full access, as today's tools say.
-    }).toEqual({ a: 51, b: 19, c: 46, d: 23 });
+      // b is 19, not the data file's first 22: creating (D1), changing (D0a), or removing secrets
+      // on (B1, destroy) an automation needs Full access.
+    }).toEqual({ a: 52, b: 19, c: 47, d: 24 });
   });
 });
 
@@ -394,5 +406,75 @@ describe("a command whose effect a store cannot admit, for an agent (AD3)", () =
           answer("viewer.name.update", 0, callers[column](mode)),
           `${column} ${mode}`,
         ).not.toBe("now");
+  });
+});
+
+describe("executionMayManageExtensions (Rule 1 / 2b)", () => {
+  const baseExecution = (
+    overrides: Partial<Pick<ExecutionAuthority, "actor" | "agentConnection" | "mode">> = {},
+  ): Pick<ExecutionAuthority, "actor" | "agentConnection" | "mode"> => ({
+    actor: "native",
+    mode: "full-access",
+    agentConnection: null,
+    ...overrides,
+  });
+
+  it("allows only a native Full access execution with personal context on the person's own lineage", () => {
+    expect(executionMayManageExtensions(baseExecution())).toBe(true);
+    for (const mode of belowFullAccess) {
+      expect(executionMayManageExtensions(baseExecution({ mode })), mode).toBe(false);
+    }
+    expect(executionMayManageExtensions(baseExecution({ actor: "agent" }))).toBe(false);
+    expect(executionMayManageExtensions(baseExecution({ actor: "person" }))).toBe(false);
+    expect(
+      executionMayManageExtensions(
+        baseExecution({
+          agentConnection: {
+            agentConnectionId: "acn_00000000-0000-0000-0000-000000000001" as never,
+            grant: { scope: "everything" },
+            grantRevision: 1,
+            consentVersion: 1,
+            accessMode: "full-access",
+            bridgeSenders: null,
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("connection page-open URL protocol checks (M4)", () => {
+  const id = "abcdefghijklmnopabcdefghijklmnop";
+
+  it("uses WHATWG URL parsing so tabs, newlines, control chars, mixed case, and view-source cannot bypass scheme guards", () => {
+    for (const blocked of [
+      `chrome-extension://${id}/options.html`,
+      `chrome-ex\ttension://${id}/options.html`,
+      `chrome-ex\ntension://${id}/options.html`,
+      `\u0001chrome-extension://${id}/options.html`,
+      `  ChRoMe-ExTeNsIoN://${id}/options.html`,
+      `view-source:chrome-extension://${id}/options.html`,
+      `view-source:chrome-ex\ttension://${id}/options.html`,
+      `blob:chrome-extension://${id}/0b1c`,
+      `filesystem:chrome-extension://${id}/temporary/x`,
+    ]) {
+      expect(isExtensionUrl(blocked), blocked).toBe(true);
+      expect(isAllowedConnectionPageUrl(blocked), blocked).toBe(false);
+    }
+    for (const otherBlocked of [
+      "view-source:https://example.test/",
+      "file:///etc/passwd",
+      "javascript:alert(1)",
+      "https://user:pass@example.test/",
+    ]) {
+      expect(isAllowedConnectionPageUrl(otherBlocked), otherBlocked).toBe(false);
+    }
+    expect(isAllowedConnectionPageUrl("about:blank")).toBe(true);
+    expect(isAllowedConnectionPageUrl("https://example.test/path")).toBe(true);
+    expect(isAllowedConnectionPageUrl("http://127.0.0.1:8080/")).toBe(true);
+    expect(normalizePageOpenUrl("about:blank")).toBe("about:blank");
+    expect(normalizePageOpenUrl("  ht\ttps://example.test/path ")).toBe(
+      "https://example.test/path",
+    );
   });
 });

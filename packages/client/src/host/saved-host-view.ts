@@ -22,7 +22,7 @@ const text = (bytes: number) =>
     .max(bytes)
     .refine((value) => utf8.encode(value).byteLength <= bytes);
 export const SavedViewScopeSchema = z.strictObject({
-  schema: z.literal(1),
+  schema: z.literal(2),
   epoch: z.number().int().positive(),
   hostIdentity: z.strictObject({
     deploymentId: DeploymentIdSchema,
@@ -88,13 +88,16 @@ export function emptySavedViewReadiness(): SavedViewReadiness {
 
 /** Reuse the shared list's membership/order, but retain no state, attention or action. */
 export function projectSavedTasks(snapshot: HostSnapshot): SavedTask[] {
-  const list = taskList({
-    ...snapshot,
-    waitingRequests: [],
-    needsYou: null,
-    runQueue: [],
-    machines: [],
-  });
+  const list = taskList(
+    {
+      ...snapshot,
+      waitingRequests: [],
+      needsYou: null,
+      runQueue: [],
+      machines: [],
+    },
+    { personTasksOnly: true },
+  );
   const groups = ["working", "ready", "done"] as const;
   const recent = new Set(
     groups

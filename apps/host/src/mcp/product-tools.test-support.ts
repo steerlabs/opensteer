@@ -337,6 +337,7 @@ export class ProductToolsTestClient {
           } as never,
           admit: async () => ({ answer: "now", face: 0, execution: null }),
           scope: async () => ({ scope: null, grant: null, mode: "full-access" }),
+          secretDigestKey: Buffer.alloc(32, 0x33),
         });
         return value;
       },
@@ -372,6 +373,7 @@ export class ProductToolsTestClient {
                 registry,
                 scope: async () => ({ scope: null, grant: null, mode: "full-access" }),
                 admit: async () => ({ answer: "now", face: 0, execution: null }),
+                secretDigestKey: Buffer.alloc(32, 0x33),
               }),
             },
       ),

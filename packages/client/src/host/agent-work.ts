@@ -1,4 +1,4 @@
-import { ThreadIdSchema } from "@opensteer/core";
+import { requestTitleText, ThreadIdSchema } from "@opensteer/core";
 import type {
   AgentCommandActivity,
   AgentOperationTarget,
@@ -6,19 +6,22 @@ import type {
   AgentSessionEndReason,
   Request,
   ThreadStatus,
+  ThreadAccessMode,
 } from "@opensteer/core";
 import type { AgentConnection } from "@opensteer/protocol";
 import type { PersonalTaskExternalWork } from "@opensteer/protocol/personal-sync";
 import { agentWho, type AgentWho } from "./agent-identity.js";
 import { workSentence, workWords } from "./agent-work-copy.js";
-import { plainSentence, type SentencePart } from "./sentence-parts.js";
+import { joinSentenceParts, named, plainSentence, type SentencePart } from "./sentence-parts.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
 import { unwrapRpcResult } from "./host-session-client.js";
-import type { HostClient } from "./client.js";
+import type { HostClient, ThreadSummary } from "./client.js";
 
 /** The connection a session belongs to, as a task row would carry it. */
 export type SessionConnection = Pick<AgentConnection, "id" | "label" | "clientName"> &
-  Partial<Pick<AgentConnection, "client" | "identity" | "identityAtConsent">>;
+  Partial<
+    Pick<AgentConnection, "client" | "identity" | "identityAtConsent" | "verificationWithdrawnAt">
+  >;
 
 /** A connected agent's session on one task, kept after it ends so the task stays its own. */
 export interface AgentSessionSlot {
@@ -73,7 +76,7 @@ export function agentSessionSlot(
 
 /** A connected agent's task's operations, newest first, as `threads.activity` lists them. */
 export async function readTaskActivity(
-  client: Pick<HostClient, "rpc">,
+  client: { readonly rpc: Pick<HostClient["rpc"], "threads.activity"> },
   threadId: string,
   signal?: AbortSignal,
 ): Promise<readonly AgentOperationView[]> {
@@ -122,20 +125,31 @@ const unknownAgent: SessionAgent = {
 };
 
 export function sessionAgent(
-  connection: SessionConnection | null | undefined,
+  connection: Omit<SessionConnection, "id">,
+  withdrawnAt?: string | null,
+  redirect?: string,
+): SessionAgent & { readonly who: AgentWho };
+export function sessionAgent(
+  connection: Omit<SessionConnection, "id"> | null | undefined,
+  withdrawnAt?: string | null,
+  redirect?: string,
+): SessionAgent;
+export function sessionAgent(
+  connection: Omit<SessionConnection, "id"> | null | undefined,
   withdrawnAt?: string | null | undefined,
+  redirect?: string,
 ): SessionAgent {
   if (!connection) return unknownAgent;
   const who = agentWho({
     clientName: connection.clientName,
-    redirect: connection.client?.redirectOrigin ?? null,
+    redirect: redirect ?? connection.client?.redirectOrigin ?? null,
     identity: connection.identity,
     identityAtConsent: connection.identityAtConsent,
-    withdrawnAt,
+    withdrawnAt: connection.verificationWithdrawnAt ?? withdrawnAt,
   });
   const name = who.providerId
     ? who.heading
-    : connection.label.trim() || connection.clientName || unknownAgent.name;
+    : connection.label.trim() || connection.clientName.trim() || unknownAgent.name;
   return {
     name,
     initial: Array.from(name)[0]?.toUpperCase() ?? "A",
@@ -144,8 +158,33 @@ export function sessionAgent(
   };
 }
 
-export function sessionAgentPart(agent: SessionAgent): SentencePart {
+export function sessionAgentPart(agent: Pick<SessionAgent, "name" | "who">): SentencePart {
   return agent.who !== null && agent.name !== unknownAgent.name ? { name: agent.name } : agent.name;
+}
+
+/** Verified names can stand in the product's words. Self-declared names keep their boundary. */
+export function connectedAgentNamePart(agent: Pick<SessionAgent, "name" | "who">): SentencePart {
+  return agent.who?.verified ? agent.name : sessionAgentPart(agent);
+}
+
+export function sessionActionParts(
+  key: "work.stop" | "work.watch" | "work.review",
+  agent: SessionAgent,
+  distinction?: string,
+): readonly SentencePart[] {
+  return joinSentenceParts(
+    [workSentence(key, { agent: connectedAgentNamePart(agent) }), distinction ? [distinction] : []],
+    " — ",
+  );
+}
+
+export function agentPlaceParts(
+  { name, device }: Pick<AgentOperationTarget, "name" | "device">,
+  sharedDeviceName?: string | null,
+): readonly SentencePart[] {
+  return device && device.name !== name && device.name !== sharedDeviceName
+    ? [named(name), " · ", named(device.name)]
+    : [named(name)];
 }
 
 export function tabNeedsYouParts(
@@ -167,8 +206,10 @@ export type OperationGlyph = "globe" | "app" | "plugin" | "list";
 export interface OperationRow {
   readonly id: string;
   readonly glyph: OperationGlyph;
+  readonly mode?: ThreadAccessMode;
   /** What it did, in plain words: "Opened a tab in Personal on Studio Mac". */
   readonly action: string;
+  readonly actionParts?: readonly SentencePart[];
   /** Who allowed it: you, Auto, full access, or reading only; null before anyone did. */
   readonly allowedBy: string | null;
   readonly outcome: { readonly label: string; readonly tone: OperationTone };
@@ -195,14 +236,25 @@ const knownTools = new Set([
   "plugin_call",
 ]);
 
-export function operationRow(operation: AgentOperationView): OperationRow {
-  const target = operation.target.name;
+export function operationActionParts(operation: AgentOperationView): readonly SentencePart[] {
+  const target = named(operation.target.name);
   const tool = knownTools.has(operation.tool) ? operation.tool : "other";
   // Past tense only for what ran; a waiting, running, refused or uncertain one may not have.
   const ran = operation.outcome === "completed" || operation.outcome === "failed";
-  const base = workWords(`op.${ran ? "" : "base."}${tool}` as "op.tab_open", { target });
+  return workSentence(`op.${ran ? "" : "base."}${tool}` as "op.tab_open", { target });
+}
+
+export function operationAction(operation: AgentOperationView): string {
+  return plainSentence(operationActionParts(operation), { quoteNames: false });
+}
+
+export function operationRow(operation: AgentOperationView): OperationRow {
+  const base = operationActionParts(operation);
   const device = operation.target.device;
-  const action = device ? workWords("op.onDevice", { action: base, device: device.name }) : base;
+  const actionParts = device
+    ? [...base, ...workSentence("op.onDevice", { action: "", device: named(device.name) })]
+    : base;
+  const action = plainSentence(actionParts, { quoteNames: false });
   const decision = operation.decision;
   const allowedBy =
     decision === null
@@ -216,12 +268,18 @@ export function operationRow(operation: AgentOperationView): OperationRow {
   return {
     id: operation.id,
     glyph: glyphs[operation.target.grant.kind],
+    mode: operation.mode,
     action,
+    actionParts,
     allowedBy,
     outcome,
     detail: operation.outcome === "unknown" ? workWords("op.outcome.unknownDetail") : null,
-    at: operation.completedAt ?? operation.handedOffAt ?? operation.createdAt,
+    at: operationTime(operation),
   };
+}
+
+export function operationTime(operation: AgentOperationView): string {
+  return operation.completedAt ?? operation.handedOffAt ?? operation.createdAt;
 }
 
 function operationOutcome(operation: AgentOperationView): OperationRow["outcome"] {
@@ -346,6 +404,20 @@ export interface SessionTaskView {
     | { readonly kind: "ready"; readonly rows: readonly OperationRow[] };
 }
 
+type SessionTaskIdentity = {
+  readonly agentSessionId?: string | null | undefined;
+  readonly externalWork?: Pick<AgentSessionSlot, "sessionId"> | null | undefined;
+};
+
+function sessionTaskId(thread: SessionTaskIdentity): string | null {
+  return thread.externalWork?.sessionId ?? thread.agentSessionId ?? null;
+}
+
+/** This task belongs to the connected agent's own session, even after it has ended. */
+export function isConnectedAgentTask(thread: SessionTaskIdentity): boolean {
+  return sessionTaskId(thread) !== null;
+}
+
 /**
  * The task view for a connected agent's own task, or null for any other task. A task is
  * the agent's while the Home names its session (`agentSessionId`), or while the preview's
@@ -360,7 +432,7 @@ export function sessionTaskView(input: {
   readonly withdrawnAt?: string | null | undefined;
 }): SessionTaskView | null {
   const { thread, slot } = input;
-  const sessionId = slot?.sessionId ?? thread.agentSessionId ?? null;
+  const sessionId = sessionTaskId({ ...thread, externalWork: slot });
   if (sessionId === null) return null;
   const agent = sessionAgent(slot?.connection, input.withdrawnAt);
   const agentName = sessionAgentPart(agent);
@@ -556,6 +628,57 @@ export function sessionQuestions<
   );
 }
 
+/** A connected agent's question names the agent and task as separate sentence parts. */
+export function sessionQuestionTitleParts(
+  request: Pick<Request, "kind" | "originatingAgentSessionId">,
+  thread: Pick<ThreadSummary, "title" | "externalWork"> | null,
+): readonly SentencePart[] | null {
+  if (request.kind !== "person.question" || !request.originatingAgentSessionId) return null;
+  const work = thread?.externalWork;
+  const agent = sessionAgent(
+    work?.sessionId === request.originatingAgentSessionId ? work.connection : null,
+  );
+  if (!thread) return [workWords("ask.sessionTitleWithoutTask")];
+  if (agent.name === unknownAgent.name)
+    return workSentence("ask.sessionTitleUnnamed", { task: named(thread.title) });
+  return workSentence("ask.sessionTitle", {
+    agent: connectedAgentNamePart(agent),
+    task: named(thread.title),
+  });
+}
+
+/** The same Needs you row whether the agent asked a question or needs approval. */
+export function needsYouAgentRequest(
+  request: Pick<Request, "kind" | "originatingThreadId" | "presentation"> & RequestLike,
+  session: AgentSessionSlot | null,
+) {
+  const matching = session?.sessionId === request.originatingAgentSessionId ? session : null;
+  const operation = operationRequestView({ request, session: matching });
+  if (!operation && !matching) return null;
+  const agent = operation?.agent ?? sessionAgent(matching?.connection);
+  const presentation = request.presentation;
+  const prompt =
+    request.kind === "person.question" &&
+    presentation.kind === "form" &&
+    presentation.fields.length === 1
+      ? presentation.fields[0]?.prompt.trim()
+      : null;
+  const question = operation?.question ?? (prompt || requestTitleText(presentation));
+  return {
+    agent,
+    question,
+    listTitleParts: workSentence(
+      agent.who?.verified ? "ask.listTitle" : "ask.title",
+      { agent: connectedAgentNamePart(agent) },
+      { question },
+    ),
+    stop:
+      matching?.status === "active"
+        ? { threadId: request.originatingThreadId, sessionId: matching.sessionId }
+        : null,
+  };
+}
+
 export type OperationRequestState = "pending" | "allowed" | "denied" | "expired" | "withdrawn";
 
 export interface OperationRequestView {
@@ -569,6 +692,7 @@ export interface OperationRequestView {
   readonly summary: string;
   /** Where it would act: "Shopping · Studio Mac"; null when the Home sent no parts. */
   readonly context: string | null;
+  readonly contextParts: readonly SentencePart[] | null;
   /** The agent's own reason, labelled as its words; separate from everything else. */
   readonly agentWords: {
     readonly label: string;
@@ -638,11 +762,8 @@ export function operationRequestView(input: {
     listTitle: plainSentence(listTitleParts),
     listTitleParts,
     summary: slot?.summary ?? request.presentation.detail ?? "",
-    context: slot
-      ? slot.target.device && slot.target.device.name !== slot.target.name
-        ? workWords("ask.context", { target: slot.target.name, device: slot.target.device.name })
-        : slot.target.name
-      : null,
+    context: slot ? plainSentence(agentPlaceParts(slot.target), { quoteNames: false }) : null,
+    contextParts: slot ? agentPlaceParts(slot.target) : null,
     agentWords:
       slot?.agentReason && agentWordsLabelParts
         ? {

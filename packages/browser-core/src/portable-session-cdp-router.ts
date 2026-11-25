@@ -14,6 +14,7 @@ export {
 } from "./standard-cdp-limits.js";
 import { contextScopedCdpMethods } from "./cdp-context.js";
 import { CdpProductIsolation } from "./cdp-product-isolation.js";
+import { ConnectionExtensionIsolation, isExtensionUrl } from "./connection-extension-isolation.js";
 import { boundedJsonSize, type JsonSizeBudget } from "./bounded-json.js";
 import { utf8Size } from "./bytes.js";
 import {
@@ -22,7 +23,9 @@ import {
   connectionCdpRefusal,
   connectionMethodRefusal,
   decodeNestedCdpMessage,
+  extensionManagementRefusal,
   invalidNestedMessageRefusal,
+  isExtensionMutationCommand,
 } from "./cdp-command-refusals.js";
 export {
   decodeNestedCdpMessage,
@@ -37,6 +40,8 @@ export {
   clipboardPermissionRefusal,
   connectionClipboardRefusal,
   connectionPermissionRefusal,
+  extensionManagementRefusal,
+  isExtensionMutationCommand,
 } from "./cdp-command-refusals.js";
 
 export interface SessionCdpRouterPorts {
@@ -61,6 +66,11 @@ export interface CdpCommand {
    * command's attachment; nested commands carry it on.
    */
   readonly connection?: true;
+  /**
+   * The Home's authority rule admitted this execution to persist or remove profile Chrome
+   * extensions (`Extensions.loadUnpacked`, `Extensions.uninstall`). Never defaulted on.
+   */
+  readonly manageExtensions?: true;
 }
 
 export interface CdpEvent {
@@ -82,6 +92,8 @@ export interface CdpChannel {
 export interface BrowserCdpBackend {
   readonly protectProductWorlds?: boolean;
   readonly allowsProfileCookieReads?: boolean;
+  /** The browser keeps the profile's Chrome extensions and answers CDP's `Extensions` domain. */
+  readonly extensions?: boolean;
   /**
    * Opens a page channel that behaves as a fresh CDP session: its
    * `Runtime.enable` reports every live execution context before it resolves,
@@ -89,6 +101,8 @@ export interface BrowserCdpBackend {
    */
   readonly dedicatedContext?: boolean;
   attach(targetId: string, waitForPage?: boolean, signal?: AbortSignal): Promise<CdpChannel>;
+  /** Notifies the backend when a target enters or leaves connected-agent control (M1a, S1). */
+  setConnectionControlled?(targetId: string, controlled: boolean): void;
   assertScope?(method: string, parameters: CdpParameters): void;
   scopeParameters?(method: string, parameters: CdpParameters): Promise<CdpParameters>;
   onEvent(listener: (method: string, parameters: CdpParameters) => void): () => void;
@@ -99,6 +113,8 @@ export interface SessionCdpRouterLimits {
   readonly maxCommandBytes: number;
   readonly maxEventBytes: number;
   readonly maxResultBytes: number;
+  /** Upper bound (ms) for internal `Runtime.enable` inventory on connection channels. */
+  readonly internalRuntimeEnableTimeoutMs?: number;
 }
 
 export interface StandardCdpAttachmentOptions {
@@ -152,11 +168,24 @@ interface AttachedChannel {
   readonly pending: Set<(reason: unknown) => void>;
   readonly ended: AbortController;
   readonly physicalTargetId: string;
+  /** Whether this channel operates under a connected agent's authority (state.connection || command.connection). */
+  readonly connection: boolean;
+  /** Whether this channel's virtualSessionId has been announced/returned to the caller (S6). */
+  announced: boolean;
   removeListener: () => void;
   pageEnabled: boolean;
+  agentRuntimeEnabled: boolean;
+  internalRuntimeEnabled: boolean;
+  /** Underlying `Runtime.enable` send reused across retries after a bounded wait times out (S9). */
+  runtimeEnableSent?: Promise<unknown>;
+  /** Underlying error when `Runtime.enable` rejected and ended the channel (Q1). */
+  runtimeEnableFailure?: unknown;
+  internalRuntimeEnable?: Promise<void>;
   readonly rootAttached?: boolean;
   readonly rootAlias?: TargetRoot;
+  readonly parentSessionId?: string;
   readonly childClaim?: TargetClaim;
+  readonly extensionIsolation?: ConnectionExtensionIsolation;
   readonly virtualSessionId: string;
 }
 
@@ -234,6 +263,14 @@ interface ConnectionState extends TargetRoot {
   pendingCount: number;
   readonly channels: Map<string, AttachedChannel>;
   readonly retiredTargets: Map<string, string>;
+  /** Target IDs hidden from this connection (an extension's): never in `shownTargets` at once (S4, G1). */
+  readonly hiddenTargets: Set<string>;
+  /**
+   * For a connection: target IDs this state has projected as visible to it (an event's or a
+   * reply's `targetInfo`). A terminal event without `targetInfo` reaches a connection only for
+   * one of these, its script's root, or a target one of its own channels is on (M1).
+   */
+  readonly shownTargets: Set<string>;
   readonly aliases: Map<string, TargetRoot>;
   readonly eventListeners: Set<(event: CdpEvent) => void>;
   nextSequence: number;
@@ -241,10 +278,20 @@ interface ConnectionState extends TargetRoot {
 
 const standardJsonBudget = { maxBytes: Infinity, maxDepth: 32, maxEntries: 16_384 };
 
+/** Whether any string in a (bounded) CDP value is an extension's address. */
+function mentionsExtensionUrl(value: unknown, depth: number): boolean {
+  if (typeof value === "string") return isExtensionUrl(value);
+  if (depth > 16 || value === null || typeof value !== "object") return false;
+  for (const entry of Array.isArray(value) ? value : Object.values(value))
+    if (mentionsExtensionUrl(entry, depth + 1)) return true;
+  return false;
+}
+
 const defaultLimits: SessionCdpRouterLimits = {
   maxCommandBytes: 432 * 1_024,
   maxEventBytes: 432 * 1_024,
   maxResultBytes: 432 * 1_024,
+  internalRuntimeEnableTimeoutMs: 5_000,
 };
 
 const browserRootLimit = standardCdpMessageMaxBytes - 4_096;
@@ -327,6 +374,7 @@ export class SessionCdpRouter {
   readonly #limits: SessionCdpRouterLimits;
   readonly #browserRootLimits: SessionCdpRouterLimits;
   readonly #ownerByTargetId = new Map<string, TargetClaim>();
+  readonly #connectionTargetCounts = new Map<string, number>();
   readonly #workByTarget = new Map<string, Set<Promise<unknown>>>();
   #exclusive: ConnectionState | undefined;
   readonly #removeBackendListener: () => void;
@@ -480,13 +528,37 @@ export class SessionCdpRouter {
       pendingCount: 0,
       channels: new Map(),
       retiredTargets: new Map(),
+      hiddenTargets: new Set(),
+      shownTargets: new Set(),
       aliases: new Map(),
       ...targetRoot(standard === undefined),
       eventListeners: new Set(),
       nextSequence: 1,
     };
     session.connections.add(state);
+    if (connection) {
+      if (state.lineagePages)
+        for (const targetId of state.lineagePages) this.#retainConnectionTarget(targetId);
+      if (state.script) this.#retainConnectionTarget(state.script.root);
+    }
     return state;
+  }
+
+  #retainConnectionTarget(targetId: string): void {
+    const next = (this.#connectionTargetCounts.get(targetId) ?? 0) + 1;
+    this.#connectionTargetCounts.set(targetId, next);
+    if (next === 1) this.#backend.setConnectionControlled?.(targetId, true);
+  }
+
+  #releaseConnectionTarget(targetId: string): void {
+    const count = this.#connectionTargetCounts.get(targetId);
+    if (!count) return;
+    if (count === 1) {
+      this.#connectionTargetCounts.delete(targetId);
+      this.#backend.setConnectionControlled?.(targetId, false);
+    } else {
+      this.#connectionTargetCounts.set(targetId, count - 1);
+    }
   }
 
   #closeConnection(state: ConnectionState): void {
@@ -495,11 +567,20 @@ export class SessionCdpRouter {
     state.closed.abort(error);
     rejectPending(state.pending, error);
     state.session.connections.delete(state);
-    if (state.script) state.session.scripts.delete(state.script.id);
+    if (state.script) {
+      state.session.scripts.delete(state.script.id);
+      if (state.connection) this.#releaseConnectionTarget(state.script.root);
+    }
+    if (state.connection && state.lineagePages) {
+      for (const targetId of state.lineagePages) this.#releaseConnectionTarget(targetId);
+      state.lineagePages.clear();
+    }
     state.autoAttached = undefined;
     state.autoReady = undefined;
     state.discoveryReplay = undefined;
     state.discoveredTargets.clear();
+    state.shownTargets.clear();
+    state.hiddenTargets.clear();
     state.eventListeners.clear();
     for (const aliasId of state.aliases.keys()) this.#detachRootAlias(state, aliasId);
     state.retiredTargets.clear();
@@ -724,7 +805,12 @@ export class SessionCdpRouter {
     this.#assertOpen();
     const state = this.#commandState(sessionId, command.scriptAttachmentId);
     validateCommand(command, this.#sessionLimits(state).maxCommandBytes);
-    assertSafeNavigationUrl(command.parameters?.url, true);
+    assertSafeNavigationUrl(
+      command.parameters?.url,
+      true,
+      true,
+      !state.connection && command.connection !== true,
+    );
   }
 
   onEvent(sessionId: string, listener: (event: CdpEvent) => void): () => void {
@@ -954,13 +1040,17 @@ export class SessionCdpRouter {
       "Target.activateTarget",
       "Target.setDiscoverTargets",
     ].includes(command.method);
-    const result = targetRouting
-      ? await this.#sendTargetCommand(state, command, alias)
-      : command.sessionId
-        ? await this.#sendAttachedCommand(state, command, beforeActivity)
-        : command.method.startsWith("Target.")
-          ? await this.#sendTargetCommand(state, command, alias)
-          : await this.#backend.send(command.method, command.parameters);
+    // Extensions belong to the profile's browser, so a page's session reaches
+    // them as the browser target does.
+    const result = command.method.startsWith("Extensions.")
+      ? await this.#sendExtensionsCommand(state, command)
+      : targetRouting
+        ? await this.#sendTargetCommand(state, command, alias)
+        : command.sessionId
+          ? await this.#sendAttachedCommand(state, command, beforeActivity)
+          : command.method.startsWith("Target.")
+            ? await this.#sendTargetCommand(state, command, alias)
+            : await this.#backend.send(command.method, command.parameters);
     this.#assertResultSize(
       result,
       this.#sessionLimits(state).maxResultBytes,
@@ -969,12 +1059,56 @@ export class SessionCdpRouter {
     return result;
   }
 
+  #sendExtensionsCommand(state: ConnectionState, command: CdpCommand): Promise<unknown> {
+    if (state.connection || command.connection === true)
+      throw new SessionCdpRouterError("forbidden", connectionMethodRefusal(command.method));
+    if (
+      isExtensionMutationCommand(command.method, command.parameters) &&
+      command.manageExtensions !== true
+    )
+      throw new SessionCdpRouterError("forbidden", extensionManagementRefusal);
+    if (command.parameters) this.#assertScope(state, command.parameters);
+    let parameters = command.parameters;
+    let attachedTargetId: string | undefined;
+    if (command.sessionId !== undefined) {
+      const attached = this.#admitAttachedCommand(state, command);
+      attachedTargetId = attached.physicalTargetId;
+    }
+    if (command.method === "Extensions.triggerAction") {
+      if (parameters?.targetId !== undefined) {
+        if (typeof parameters.targetId !== "string" || !parameters.targetId) {
+          throw new SessionCdpRouterError(
+            "bad_command",
+            "Extensions.triggerAction targetId must be a non-empty string.",
+          );
+        }
+      } else {
+        const defaultTargetId =
+          attachedTargetId ?? state.script?.root ?? state.session.rootTargetId;
+        if (!defaultTargetId || !this.#canReach(state, defaultTargetId)) {
+          throw new SessionCdpRouterError(
+            "not_found",
+            "No Browser Session tab is available for Extensions.triggerAction.",
+          );
+        }
+        parameters = { ...parameters, targetId: defaultTargetId };
+      }
+    }
+    if (!this.#backend.extensions)
+      throw new SessionCdpRouterError(
+        "bad_command",
+        "This browser keeps no extensions: they live in the desktop app's saved profiles.",
+      );
+    return this.#backend.send(command.method, parameters);
+  }
+
   async #sendTargetCommand(
     state: ConnectionState,
     command: CdpCommand,
     root: TargetRoot = state,
   ): Promise<unknown> {
     const parameters = command.parameters ?? {};
+    const connection = state.connection || command.connection === true;
     switch (command.method) {
       case "Target.attachToBrowserTarget": {
         this.#assertChannelCapacity(state);
@@ -983,8 +1117,11 @@ export class SessionCdpRouter {
         return { sessionId };
       }
       case "Target.getTargets": {
-        const response = await this.#ownedTargetInfos(state, parameters);
+        const response = await this.#ownedTargetInfos(state, parameters, connection);
         if (state.standard) return { targetInfos: response.targetInfos };
+        // A connection's script is told only its own root, never another of its session's pages.
+        if (state.connection && state.script)
+          return { ...response, rootTargetId: state.script.root };
         const root = state.script?.root ?? state.session.rootTargetId;
         const current = this.#ownerByTargetId.get(root);
         const rootTargetId =
@@ -1007,6 +1144,7 @@ export class SessionCdpRouter {
           parameters: nested.params ?? {},
           ...(command.replyBudget ? { replyBudget: command.replyBudget } : {}),
           ...(command.connection ? { connection: true as const } : {}),
+          ...(command.manageExtensions ? { manageExtensions: true as const } : {}),
           sessionId: virtualSessionId,
         });
         if (!root.aliasId || state.aliases.has(root.aliasId))
@@ -1014,7 +1152,8 @@ export class SessionCdpRouter {
         return {};
       }
       case "Target.getBrowserContexts":
-        if (state.standard) return { browserContextIds: [] };
+        // A connection is told of no browser context: another profile's would be outside it.
+        if (state.standard || connection) return { browserContextIds: [] };
         return this.#backend.send(command.method, parameters);
       case "Target.getTargetInfo": {
         if (state.standard && !command.sessionId && parameters.targetId === undefined) {
@@ -1031,10 +1170,10 @@ export class SessionCdpRouter {
         }
         const targetId = requiredTargetId(parameters);
         const claim = this.#assertOwnedTarget(state, targetId);
-        return this.#readTargetInfo(state, targetId, claim, parameters);
+        return this.#readTargetInfo(state, targetId, claim, parameters, connection);
       }
       case "Target.createTarget": {
-        assertSafeNavigationUrl(parameters.url, true);
+        assertSafeNavigationUrl(parameters.url, true, true, !connection);
         const response = asRecord(await this.#backend.send(command.method, parameters));
         const targetId = readString(response, "targetId");
         if (!targetId) {
@@ -1085,6 +1224,8 @@ export class SessionCdpRouter {
             throw error;
           }
         }
+        // S-1: a connection's own new page is shown to it by this reply.
+        if (state.connection) this.#setTargetVisibility(state, targetId, true);
         return response;
       }
       case "Target.attachToTarget": {
@@ -1094,6 +1235,7 @@ export class SessionCdpRouter {
           (channel) =>
             channel.physicalTargetId === targetId &&
             channel.channel instanceof ChildCdpChannel &&
+            channel.connection === connection &&
             channel.rootAlias === (root.aliasId ? root : undefined),
         );
         if (existing) return { sessionId: existing.virtualSessionId };
@@ -1104,16 +1246,27 @@ export class SessionCdpRouter {
         }
         if (state.standard) {
           const claim = this.#assertOwnedTarget(state, targetId);
-          const { targetInfo } = await this.#readTargetInfo(state, targetId, claim);
+          const { targetInfo } = await this.#readTargetInfo(
+            state,
+            targetId,
+            claim,
+            undefined,
+            connection,
+          );
           this.#assertCurrentClaim(state, targetId, claim);
           if (targetInfo.type !== "page")
             throw new SessionCdpRouterError(
               "forbidden",
               "Use its parent page to attach a child target.",
             );
-          return this.#attachTarget(state, targetId, targetInfo, undefined, root);
+          return this.#attachTarget(state, targetId, targetInfo, undefined, root, connection);
         }
-        return this.#attachTarget(state, targetId);
+        if (connection) {
+          const claim = this.#assertOwnedTarget(state, targetId);
+          await this.#readTargetInfo(state, targetId, claim, undefined, true);
+          this.#assertCurrentClaim(state, targetId, claim);
+        }
+        return this.#attachTarget(state, targetId, undefined, undefined, root, connection);
       }
       case "Target.detachFromTarget": {
         const virtualSessionId = requiredString(parameters, "sessionId");
@@ -1139,7 +1292,9 @@ export class SessionCdpRouter {
             unsent: true,
           });
         }
-        void this.#endChannel(state, attached);
+        // A connection that detaches a child session (an auto-attached frame or worker) itself is
+        // told that it ended, as it is for its pages.
+        void this.#endChannel(state, attached, attached.connection);
         return {};
       }
       case "Target.setAutoAttach": {
@@ -1245,7 +1400,11 @@ export class SessionCdpRouter {
     return result;
   }
 
-  async #ownedTargetInfos(state: ConnectionState, parameters?: CdpParameters) {
+  async #ownedTargetInfos(
+    state: ConnectionState,
+    parameters?: CdpParameters,
+    connection = state.connection,
+  ) {
     const claims = new Map(
       [...state.session.ownedTargetIds]
         .filter((id) => this.#canReach(state, id))
@@ -1258,7 +1417,7 @@ export class SessionCdpRouter {
       const target = asRecord(entry);
       const id = readString(target, "targetId");
       if (!id || !claims.has(id) || claims.get(id) !== this.#ownerByTargetId.get(id)) return [];
-      const info = this.#projectTargetInfo(state, target);
+      const info = this.#projectTargetInfo(state, target, connection);
       return info ? [info] : [];
     });
     return { ...response, targetInfos };
@@ -1269,32 +1428,49 @@ export class SessionCdpRouter {
     targetId: string,
     claim: TargetClaim,
     parameters?: CdpParameters,
+    connection = state.connection,
   ) {
     const response = asRecord(
       await this.#backend.send("Target.getTargetInfo", { ...parameters, targetId }),
     );
     this.#assertCurrentClaim(state, targetId, claim);
-    if (response.targetInfo === undefined && !state.standard)
+    if (response.targetInfo === undefined && !state.standard) {
       return { ...response, targetInfo: asRecord(response.targetInfo) };
+    }
     const targetInfo =
       readString(asRecord(response.targetInfo), "targetId") === targetId
-        ? this.#projectTargetInfo(state, asRecord(response.targetInfo))
+        ? this.#projectTargetInfo(state, asRecord(response.targetInfo), connection)
         : undefined;
     if (!targetInfo)
       throw new SessionCdpRouterError("not_found", "The target is no longer available.");
     return { ...response, targetInfo };
   }
 
-  #projectTargetInfo(state: ConnectionState, info: CdpParameters): CdpParameters | undefined {
+  #projectTargetInfo(
+    state: ConnectionState,
+    info: CdpParameters,
+    connection = state.connection,
+  ): CdpParameters | undefined {
     const targetId = readString(info, "targetId");
     if (!targetId || !this.#canReach(state, targetId)) return;
+    if (connection && isExtensionUrl(info.url)) {
+      // An event's or a reply's projection is where a connection learns a target is an
+      // extension's: from here its id is named to this state nowhere (G2).
+      if (state.connection) this.#setTargetVisibility(state, targetId, false);
+      return;
+    }
     const projected: Record<string, unknown> = {
       ...info,
       ...(state.standard ? { browserContextId: state.session.sessionId } : {}),
     };
     for (const key of ["openerId", "parentId"]) {
       const relatedId = readString(info, key);
-      if (relatedId && !this.#canReach(state, relatedId)) {
+      if (
+        relatedId &&
+        (!this.#canReach(state, relatedId) ||
+          // A connection is told a related target's id only where it may be told of that target.
+          (state.connection && !this.#mayName(state, relatedId)))
+      ) {
         delete projected[key];
         if (key === "openerId") {
           delete projected.openerFrameId;
@@ -1311,7 +1487,60 @@ export class SessionCdpRouter {
       if (frameClaim && frameClaim.sessionId !== state.session.sessionId)
         delete projected.parentFrameId;
     }
+    if (state.connection) this.#confineFrameIds(state, projected);
+    if (state.connection) this.#setTargetVisibility(state, targetId, true);
     return projected;
+  }
+
+  /**
+   * A frame ID is told to a connection only where it is the related page's own main frame or a
+   * target the connection may be told of (N4): a frame in another process (an extension's iframe
+   * inside a shown page, say) is a target of its own, claimed or not; a frame the connection
+   * cannot name is left out, whatever it is.
+   */
+  #confineFrameIds(state: ConnectionState, projected: Record<string, unknown>): void {
+    for (const [key, relatedKey] of [
+      ["openerFrameId", "openerId"],
+      ["parentFrameId", "parentId"],
+    ] as const) {
+      const frameId = readString(projected, key);
+      if (!frameId) continue;
+      if (frameId === readString(projected, relatedKey) || this.#mayName(state, frameId)) continue;
+      delete projected[key];
+    }
+  }
+
+  /**
+   * The one rule for what a connection state may be told of (M1, G2): a target it was shown and
+   * that is not hidden from it, its script's root, or a target one of its own channels is on.
+   * Terminal events, browser-level events naming a target or frame, and every target-valued
+   * field of a projected `targetInfo` go through it. Every other door through which a connection
+   * is given a target, frame, session, address or title is listed at `isExtensionUrl`
+   * (`@opensteer/shared/extensionUrl`), with where the same rule is applied there.
+   */
+  #mayName(state: ConnectionState, targetId: string): boolean {
+    if (state.hiddenTargets.has(targetId)) return false;
+    if (state.shownTargets.has(targetId) || state.script?.root === targetId) return true;
+    for (const channel of state.channels.values())
+      if (channel.physicalTargetId === targetId) return true;
+    return false;
+  }
+
+  /** Shown and hidden are exclusive: setting one always clears the other (G1). */
+  #setTargetVisibility(state: ConnectionState, targetId: string, visible: boolean): void {
+    const into = visible ? state.shownTargets : state.hiddenTargets;
+    (visible ? state.hiddenTargets : state.shownTargets).delete(targetId);
+    if (into.has(targetId)) return;
+    if (into.size >= 4_096) {
+      const oldest = into.values().next().value;
+      if (oldest !== undefined) into.delete(oldest);
+    }
+    into.add(targetId);
+  }
+
+  #forgetTargetVisibility(state: ConnectionState, targetId: string): void {
+    state.shownTargets.delete(targetId);
+    state.hiddenTargets.delete(targetId);
   }
 
   #autoAttachTarget(
@@ -1392,6 +1621,7 @@ export class SessionCdpRouter {
     rootInfo?: CdpParameters,
     current?: () => boolean,
     root: TargetRoot = state,
+    connection = state.connection,
   ): Promise<{ sessionId: string }> {
     const assertRoot = () => {
       if (root.aliasId && !state.aliases.has(root.aliasId))
@@ -1415,21 +1645,47 @@ export class SessionCdpRouter {
       if (root.aliasId) await closing;
       throw error;
     }
+    const virtualSessionId = `cdp_${this.#ports.uuid()}`;
     const attached: AttachedChannel = {
       channel,
       pending: new Set(),
       ended: new AbortController(),
       physicalTargetId: targetId,
+      connection,
+      announced: false,
       rootAttached: rootInfo !== undefined,
       ...(root.aliasId ? { rootAlias: root } : {}),
+      ...(connection
+        ? {
+            extensionIsolation: new ConnectionExtensionIsolation(
+              `agent-world:${virtualSessionId}:`,
+              { targetId },
+            ),
+          }
+        : {}),
       removeListener: () => undefined,
       pageEnabled: false,
-      virtualSessionId: `cdp_${this.#ports.uuid()}`,
+      agentRuntimeEnabled: false,
+      internalRuntimeEnabled: false,
+      virtualSessionId,
     };
     attached.removeListener = channel.onEvent((method, parameters) => {
       this.#handlePageEvent(state, attached, method, parameters);
     });
     state.channels.set(attached.virtualSessionId, attached);
+    if (connection) this.#retainConnectionTarget(targetId);
+    // N2 + S9: start Runtime inventory at attach WITHOUT blocking attach so dialog-blocked pages
+    // still accept Page.handleJavaScriptDialog; script and ID-bearing commands wait behind it.
+    if (connection && !this.#backend.allowsProfileCookieReads) {
+      void this.#ensureRuntimeInventory(state, attached).catch(() => undefined);
+      // S6: if Runtime.enable synchronously revealed a main-frame extension commit before attach
+      // returned, refuse with the single missing-target sentence and no stray detach event.
+      if (attached.extensionIsolation?.compromised || !state.channels.has(virtualSessionId)) {
+        void this.#endChannel(state, attached);
+        throw new SessionCdpRouterError("not_found", "The target is no longer available.");
+      }
+    }
+    attached.announced = true;
     if (rootInfo) {
       this.#appendEvent(
         state,
@@ -1464,7 +1720,7 @@ export class SessionCdpRouter {
     if (!state.channels.has(attached.virtualSessionId)) return;
     // A shared Chrome tab is one tab: a connection sees no cookie of any site in its events.
     if (
-      state.connection &&
+      attached.connection &&
       this.#backend.allowsProfileCookieReads &&
       (method.startsWith("Network.") || method.startsWith("Fetch."))
     ) {
@@ -1486,7 +1742,8 @@ export class SessionCdpRouter {
         (owner && !this.#canReach(state, targetId)) ||
         (!owner && this.#workByTarget.has(targetId)) ||
         (state.standard && state.channels.size + state.aliases.size >= standardCdpMaxPending) ||
-        (isWorkerShared(info.type) && (this.#exclusive !== state || state.connection))
+        (isWorkerShared(info.type) && (this.#exclusive !== state || attached.connection)) ||
+        (attached.connection && isExtensionUrl(info.url))
       ) {
         void attached.channel
           .send("Target.detachFromTarget", { sessionId: physicalSessionId })
@@ -1504,21 +1761,41 @@ export class SessionCdpRouter {
         physicalSessionId,
         this.#backend.protectProductWorlds === true,
       );
+      const childSessionId = `cdp_${this.#ports.uuid()}`;
       const child: AttachedChannel = {
         channel,
         pending: new Set(),
         ended: new AbortController(),
         physicalTargetId: targetId,
+        connection: attached.connection,
+        announced: true,
         childClaim,
+        parentSessionId: attached.virtualSessionId,
         ...(attached.rootAlias ? { rootAlias: attached.rootAlias } : {}),
-        virtualSessionId: `cdp_${this.#ports.uuid()}`,
+        ...(attached.connection
+          ? {
+              extensionIsolation: new ConnectionExtensionIsolation(
+                `agent-world:${childSessionId}:`,
+                { targetId, isWorker: info.type !== "iframe" },
+              ),
+            }
+          : {}),
+        virtualSessionId: childSessionId,
         pageEnabled: false,
+        agentRuntimeEnabled: false,
+        internalRuntimeEnabled: false,
         removeListener: () => undefined,
       };
       child.removeListener = channel.onEvent((method, params) =>
         this.#handlePageEvent(state, child, method, params),
       );
       state.channels.set(child.virtualSessionId, child);
+      if (attached.connection) {
+        this.#retainConnectionTarget(targetId);
+        if (!this.#backend.allowsProfileCookieReads) {
+          void this.#ensureRuntimeInventory(state, child).catch(() => undefined);
+        }
+      }
       this.#appendEvent(
         state,
         method,
@@ -1544,6 +1821,16 @@ export class SessionCdpRouter {
       );
       void this.#endChannel(state, child);
       return;
+    }
+    if (attached.extensionIsolation) {
+      const outcome = attached.extensionIsolation.observeEvent(method, parameters);
+      if (outcome.action === "compromised") {
+        this.#compromiseTargetConnections(state.session, attached.physicalTargetId);
+        return;
+      }
+      if (outcome.action === "drop") return;
+      if (!attached.agentRuntimeEnabled && method.startsWith("Runtime.")) return;
+      parameters = outcome.params;
     }
     this.#appendEvent(state, method, parameters, attached.virtualSessionId);
   }
@@ -1571,7 +1858,12 @@ export class SessionCdpRouter {
       ? entries.find((candidate: unknown) => asRecord(candidate).id === entryId)
       : undefined;
     if (!entry) throw new SessionCdpRouterError("not_found", "No such navigation history entry.");
-    assertSafeNavigationUrl(asRecord(entry).url, false, Boolean(state.standard || state.script));
+    assertSafeNavigationUrl(
+      asRecord(entry).url,
+      false,
+      Boolean(state.standard || state.script),
+      !attached.connection,
+    );
   }
 
   /** Refused before any effect: see `cdp-command-refusals.ts`. */
@@ -1626,12 +1918,27 @@ export class SessionCdpRouter {
         unsent: true,
       });
     }
+    if (attached.extensionIsolation?.compromised) {
+      throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
+        unsent: true,
+      });
+    }
+    if (command.connection === true && !attached.connection) {
+      throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
+        unsent: true,
+      });
+    }
     const parameters = command.parameters ?? {};
     this.#assertOwnedTarget(state, attached.physicalTargetId);
     this.#assertScope(state, parameters, false, command.method);
     this.#assertAllowed(state, command);
     if (command.method === "Page.navigate") {
-      assertSafeNavigationUrl(parameters.url, false, Boolean(state.standard || state.script));
+      assertSafeNavigationUrl(
+        parameters.url,
+        false,
+        Boolean(state.standard || state.script),
+        !attached.connection && command.connection !== true,
+      );
     }
     if (
       state.standard &&
@@ -1696,6 +2003,95 @@ export class SessionCdpRouter {
     return attached;
   }
 
+  #compromiseTargetConnections(session: BrowserSessionState, targetId: string): void {
+    for (const connection of session.connections) {
+      for (const attached of connection.channels.values()) {
+        if (attached.physicalTargetId !== targetId) continue;
+        if (attached.extensionIsolation) {
+          attached.extensionIsolation.markCompromised();
+          void this.#endChannel(connection, attached, true);
+        }
+      }
+    }
+  }
+
+  async #ensureRuntimeInventory(state: ConnectionState, attached: AttachedChannel): Promise<void> {
+    if (attached.internalRuntimeEnabled) return;
+    if (!attached.internalRuntimeEnable) {
+      const timeoutMs = this.#limits.internalRuntimeEnableTimeoutMs ?? 5_000;
+      if (!attached.runtimeEnableSent) {
+        const sent = attached.channel.send("Runtime.enable").then(
+          () => {
+            attached.internalRuntimeEnabled = true;
+          },
+          (error: unknown) => {
+            if (attached.runtimeEnableSent === sent) delete attached.runtimeEnableSent;
+            // Q1: when the underlying `Runtime.enable` rejects (not a bounded timeout), end the
+            // channel so no un-held command can run without main-frame compromise detection.
+            attached.runtimeEnableFailure = error;
+            if (state.channels.get(attached.virtualSessionId) === attached) {
+              void this.#endChannel(state, attached, true);
+            }
+            throw error;
+          },
+        );
+        // Prevent unhandled rejection when a caller's bounded wait rejects before `sent` settles.
+        void sent.catch(() => undefined);
+        attached.runtimeEnableSent = sent;
+      }
+      const pendingEnable = attached.runtimeEnableSent;
+      const enabling = this.#trackPhysicalWork(state, () =>
+        this.#trackTargetWork(attached.physicalTargetId, async () => {
+          const timeout = Promise.withResolvers<never>();
+          const timer = setTimeout(() => {
+            timeout.reject(
+              new SessionCdpRouterError("conflict", "The page is not answering; try again.", {
+                unsent: false,
+              }),
+            );
+          }, timeoutMs);
+          if (typeof timer === "object" && "unref" in timer && typeof timer.unref === "function") {
+            timer.unref();
+          }
+          const onAbort = () => {
+            timeout.reject(
+              attached.runtimeEnableFailure ??
+                new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
+                  unsent: true,
+                }),
+            );
+          };
+          const signals = [state.closed.signal, attached.ended.signal];
+          for (const signal of signals) {
+            if (signal.aborted) {
+              onAbort();
+              break;
+            }
+            signal.addEventListener("abort", onAbort, { once: true });
+          }
+          try {
+            await Promise.race([pendingEnable, timeout.promise]);
+          } finally {
+            clearTimeout(timer);
+            for (const signal of signals) signal.removeEventListener("abort", onAbort);
+          }
+        }),
+      ).finally(() => {
+        if (attached.internalRuntimeEnable === enabling) delete attached.internalRuntimeEnable;
+      });
+      attached.internalRuntimeEnable = enabling;
+    }
+    await attached.internalRuntimeEnable;
+    if (
+      !state.channels.has(attached.virtualSessionId) ||
+      attached.extensionIsolation?.compromised
+    ) {
+      throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
+        unsent: true,
+      });
+    }
+  }
+
   async #sendAttachedCommand(
     state: ConnectionState,
     command: CdpCommand,
@@ -1707,10 +2103,48 @@ export class SessionCdpRouter {
     }
     if (command.method === "Page.enable") attached.pageEnabled = true;
     if (command.method === "Page.disable") attached.pageEnabled = false;
-    let parameters = command.parameters;
+    const isolation = attached.extensionIsolation;
+    if (isolation) {
+      if (command.method === "Runtime.enable") {
+        if (
+          attached.internalRuntimeEnabled ||
+          attached.internalRuntimeEnable ||
+          attached.runtimeEnableSent
+        ) {
+          await this.#ensureRuntimeInventory(state, attached);
+          attached.agentRuntimeEnabled = true;
+          for (const event of isolation.allowedContextEvents()) {
+            this.#appendEvent(
+              state,
+              "Runtime.executionContextCreated",
+              event,
+              attached.virtualSessionId,
+            );
+          }
+          return {};
+        }
+        attached.agentRuntimeEnabled = true;
+        attached.internalRuntimeEnabled = true;
+      } else if (command.method === "Runtime.disable") {
+        attached.agentRuntimeEnabled = false;
+        if (attached.internalRuntimeEnabled || attached.runtimeEnableSent) return {};
+      } else if (
+        isolation.needsRuntimeInventory(
+          command.method,
+          command.parameters,
+          !this.#backend.allowsProfileCookieReads,
+        ) &&
+        !attached.internalRuntimeEnabled
+      ) {
+        await this.#ensureRuntimeInventory(state, attached);
+      }
+    }
+    let parameters = isolation
+      ? isolation.assertAndRewriteCommand(command.method, command.parameters ?? {})
+      : command.parameters;
     if (command.method === "Target.setAutoAttach")
       parameters = {
-        ...(state.connection || command.connection
+        ...(attached.connection || command.connection
           ? connectionAutoAttachParameters(parameters)
           : parameters),
         flatten: false,
@@ -1734,6 +2168,7 @@ export class SessionCdpRouter {
             parameters: message.params ?? {},
             ...(command.replyBudget ? { replyBudget: command.replyBudget } : {}),
             ...(command.connection ? { connection: true as const } : {}),
+            ...(command.manageExtensions ? { manageExtensions: true as const } : {}),
             sessionId: child.virtualSessionId,
           },
           beforeActivity,
@@ -1802,7 +2237,8 @@ export class SessionCdpRouter {
     };
     const tracked = () =>
       this.#trackPhysicalWork(state, () => this.#trackTargetWork(attached.physicalTargetId, send));
-    return command.replyBudget ? tracked() : whileOpen(attached.pending, tracked);
+    const answered = await (command.replyBudget ? tracked() : whileOpen(attached.pending, tracked));
+    return isolation ? isolation.sanitizeResult(command.method, answered) : answered;
   }
 
   // An agent's target selection cannot change a viewer's tab or native focus.
@@ -1869,11 +2305,11 @@ export class SessionCdpRouter {
     }
 
     const owner = this.#sessions.get(this.#ownerByTargetId.get(targetId)?.sessionId ?? "");
-    if (owner)
+    if (owner) {
       for (const state of owner.session.connections)
         for (const root of this.#targetRoots(state))
           this.#discover(state, method, parameters, root);
-    else this.#trackUnclaimedPage(method, targetId, parameters);
+    } else this.#trackUnclaimedPage(method, targetId, parameters);
     if (method === "Target.targetDestroyed") this.#releaseTarget(targetId);
   }
 
@@ -1926,14 +2362,42 @@ export class SessionCdpRouter {
         if (
           seen.has(targetId) ||
           !this.#canReach(state, targetId) ||
-          !targetMatchesFilter(asRecord(parameters.targetInfo), root.discoveryFilter)
+          !targetMatchesFilter(asRecord(parameters.targetInfo), root.discoveryFilter) ||
+          (state.connection && isExtensionUrl(asRecord(parameters.targetInfo).url))
+        ) {
+          if (
+            state.connection &&
+            this.#canReach(state, targetId) &&
+            isExtensionUrl(asRecord(parameters.targetInfo).url)
+          ) {
+            this.#setTargetVisibility(state, targetId, false);
+          }
+          return;
+        }
+        seen.add(targetId);
+      } else if (!seen.has(targetId)) {
+        // A connection's target that was hidden when it was created (an extension page) is
+        // announced when it is first shown, so it hears that target's later end.
+        const info = asRecord(parameters.targetInfo);
+        // A connection learns a target went to an extension's page even if it never discovered
+        // it (one of its own channels may be on it), so that target is hidden from it alike.
+        if (state.connection && isExtensionUrl(info.url) && this.#canReach(state, targetId)) {
+          this.#setTargetVisibility(state, targetId, false);
+          return;
+        }
+        if (
+          !state.connection ||
+          method !== "Target.targetInfoChanged" ||
+          !state.hiddenTargets.has(targetId) ||
+          isExtensionUrl(info.url) ||
+          !this.#canReach(state, targetId) ||
+          !targetMatchesFilter(info, root.discoveryFilter)
         )
           return;
         seen.add(targetId);
-      } else {
-        if (!seen.has(targetId)) return;
-        if (method === "Target.targetDestroyed") seen.delete(targetId);
-      }
+        method = "Target.targetCreated";
+        parameters = { targetInfo: info };
+      } else if (method === "Target.targetDestroyed") seen.delete(targetId);
     }
     this.#appendEvent(state, method, parameters, root.aliasId);
   }
@@ -1988,14 +2452,20 @@ export class SessionCdpRouter {
       ...(parentId ? { parentId, scriptParentId: parentId } : {}),
     };
     if (!parentId && state.lineagePages && state.standard?.lineage) {
-      state.lineagePages.add(targetId);
+      if (!state.lineagePages.has(targetId)) {
+        state.lineagePages.add(targetId);
+        if (state.connection) this.#retainConnectionTarget(targetId);
+      }
       claim.creatorAttachmentId ??= state.standard.lineage.attachmentId;
     }
     if (openerId) {
       for (const connection of state.session.connections) {
         const lineage = connection.standard?.lineage;
         if (!lineage || !connection.lineagePages || !this.#canReach(connection, openerId)) continue;
-        connection.lineagePages.add(targetId);
+        if (!connection.lineagePages.has(targetId)) {
+          connection.lineagePages.add(targetId);
+          if (connection.connection) this.#retainConnectionTarget(targetId);
+        }
         claim.creatorAttachmentId ??= lineage.attachmentId;
       }
     }
@@ -2007,7 +2477,10 @@ export class SessionCdpRouter {
     if (woke) {
       for (const connection of state.session.connections) {
         if (!connection.asleepLineage?.delete(woke.from) || !woke.itself) continue;
-        connection.lineagePages?.add(targetId);
+        if (connection.lineagePages && !connection.lineagePages.has(targetId)) {
+          connection.lineagePages.add(targetId);
+          if (connection.connection) this.#retainConnectionTarget(targetId);
+        }
       }
     }
     if (parentId) claim.scriptParentId ??= parentId;
@@ -2053,10 +2526,18 @@ export class SessionCdpRouter {
             const oldest = retired.keys().next().value;
             if (oldest !== undefined) retired.delete(oldest);
           }
-          void this.#endChannel(connection, attached);
+          // A connection's auto-attached child whose target the browser ended before its page
+          // said so is told now: the page's own detach then finds no child, so it is told once.
+          void this.#endChannel(
+            connection,
+            attached,
+            attached.connection && attached.parentSessionId !== undefined,
+          );
         }
       }
-      connection.lineagePages?.delete(targetId);
+      if (connection.lineagePages?.delete(targetId) && connection.connection) {
+        this.#releaseConnectionTarget(targetId);
+      }
       if (connection.script?.root === targetId) this.#closeConnection(connection);
     }
     for (const childId of state.session.ownedTargetIds)
@@ -2068,20 +2549,27 @@ export class SessionCdpRouter {
    * its own: a backend can need the page to answer first, and a page under a
    * JavaScript dialog answers nothing until the dialog closes.
    */
-  #endChannel(state: ConnectionState, attached: AttachedChannel): Promise<void> | undefined {
+  #endChannel(
+    state: ConnectionState,
+    attached: AttachedChannel,
+    forceDetachEvent = false,
+  ): Promise<void> | undefined {
     if (state.channels.get(attached.virtualSessionId) !== attached) return;
     state.channels.delete(attached.virtualSessionId);
-    if (attached.rootAttached || state.script) {
+    if (attached.connection) this.#releaseConnectionTarget(attached.physicalTargetId);
+    if (attached.rootAttached || state.script || forceDetachEvent) {
       (attached.rootAlias ?? state).autoAttached?.delete(attached.physicalTargetId);
-      this.#appendEvent(
-        state,
-        "Target.detachedFromTarget",
-        {
-          sessionId: attached.virtualSessionId,
-          targetId: attached.physicalTargetId,
-        },
-        attached.rootAlias?.aliasId,
-      );
+      if (attached.announced) {
+        this.#appendEvent(
+          state,
+          "Target.detachedFromTarget",
+          {
+            sessionId: attached.virtualSessionId,
+            targetId: attached.physicalTargetId,
+          },
+          attached.parentSessionId ?? attached.rootAlias?.aliasId,
+        );
+      }
     }
     const descendants: Promise<void>[] = [];
     for (const child of state.channels.values()) {
@@ -2143,11 +2631,51 @@ export class SessionCdpRouter {
       boundedJsonSize({ method, parameters, sessionId }, state.script.eventBudget) === undefined
     )
       return;
-    if (method.startsWith("Target.") && parameters.targetInfo !== undefined) {
-      const info = this.#projectTargetInfo(state, asRecord(parameters.targetInfo));
-      if (!info) return;
-      parameters = { ...parameters, targetInfo: info };
-    }
+    if (method.startsWith("Target.")) {
+      if (parameters.targetInfo !== undefined) {
+        const connection =
+          state.connection ||
+          (sessionId !== undefined && state.channels.get(sessionId)?.connection === true);
+        const rawInfo = asRecord(parameters.targetInfo);
+        const info = this.#projectTargetInfo(state, rawInfo, connection);
+        if (!info) {
+          // A state that is not a connection's hides only what a connection's channel on it was
+          // shown in an event, as before.
+          const hiddenId = readString(rawInfo, "targetId");
+          if (!state.connection && connection && hiddenId && isExtensionUrl(rawInfo.url))
+            this.#setTargetVisibility(state, hiddenId, false);
+          return;
+        }
+        parameters = { ...parameters, targetInfo: info };
+      } else {
+        const targetId = readString(parameters, "targetId");
+        // A target this connection was told is an extension's stays hidden for its terminal
+        // events too. That holds for a script's own root the router has hidden (its address
+        // became a `chrome-extension:` page): its own `Target.targetDestroyed` and its channels'
+        // `Target.detachedFromTarget` naming it are dropped here, as they were before the
+        // allow-list below; the root's destroy still closes the attachment (`#discover`), so its
+        // later commands answer as a missing session.
+        // It stays hidden through its destroy: its channels' detaches, which follow, are dropped
+        // as well (E1). The bounded set and the connection's close forget it.
+        if (targetId && state.hiddenTargets.has(targetId)) return;
+        if (
+          state.connection &&
+          targetId &&
+          (method === "Target.targetDestroyed" || method === "Target.targetCrashed")
+        ) {
+          // M1: an allow-list, not a deny-list. A target claimed under this connection's pages
+          // before it was opened was never projected to it, so its end is not this
+          // connection's to hear unless it was shown, is its root, or one of its channels is on it.
+          if (!this.#mayName(state, targetId)) return;
+          if (method === "Target.targetDestroyed") this.#forgetTargetVisibility(state, targetId);
+        }
+      }
+    } else if (
+      state.connection &&
+      (sessionId === undefined || state.aliases.has(sessionId)) &&
+      !this.#connectionMayHearBrowserEvent(state, parameters)
+    )
+      return;
     const event: CdpEvent = {
       method,
       parameters,
@@ -2176,6 +2704,17 @@ export class SessionCdpRouter {
         // target ownership or the browser backend's event pump.
       }
     }
+  }
+
+  /**
+   * A browser-level event (not `Target.*`, outside any page session) that names a target or a
+   * frame reaches a connection only when it may be told of that target, and never with an
+   * extension's address in it (G2).
+   */
+  #connectionMayHearBrowserEvent(state: ConnectionState, parameters: CdpParameters): boolean {
+    const subject = readString(parameters, "targetId") ?? readString(parameters, "frameId");
+    if (subject !== null && !this.#mayName(state, subject)) return false;
+    return !mentionsExtensionUrl(parameters, 0);
   }
 
   #nestedMethod(state: ConnectionState, method: string): string {
@@ -2339,6 +2878,7 @@ function validateCommand(command: CdpCommand, maxBytes: number): number {
 
 function validateLimits(limits: SessionCdpRouterLimits): SessionCdpRouterLimits {
   for (const [name, value] of Object.entries(limits)) {
+    if (value === undefined) continue;
     if (!Number.isSafeInteger(value) || value < 1) {
       throw new TypeError(`${name} must be a positive safe integer.`);
     }
@@ -2362,6 +2902,7 @@ function assertSafeNavigationUrl(
   value: unknown,
   allowOmitted: boolean,
   allowAboutBlank = allowOmitted,
+  allowExtensions = true,
 ): void {
   if (value === undefined && allowOmitted) return;
   if (typeof value !== "string" || value.length < 1 || value.length > 16_384) {
@@ -2376,10 +2917,14 @@ function assertSafeNavigationUrl(
       cause: error,
     });
   }
-  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) {
+  const allowed = allowExtensions ? ["http:", "https:", "chrome-extension:"] : ["http:", "https:"];
+  // Extension pages are the browser's own; connected agents stay limited to HTTP(S).
+  if (!allowed.includes(url.protocol) || url.username || url.password) {
     throw new SessionCdpRouterError(
       "forbidden",
-      "CDP navigation is limited to HTTP and HTTPS URLs without embedded credentials.",
+      allowExtensions
+        ? "CDP navigation is limited to HTTP(S) and extension pages, without embedded credentials."
+        : "CDP navigation is limited to HTTP and HTTPS URLs without embedded credentials.",
     );
   }
 }
