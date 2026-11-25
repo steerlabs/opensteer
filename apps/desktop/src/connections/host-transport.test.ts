@@ -1,4 +1,5 @@
 import { HostTransport as SharedHostTransport } from "@opensteer/client/connections";
+import { homeHostApi } from "./desktop-host-api.js";
 import {
   createDesktopHostFetch,
   desktopHostUploadConcurrency,
@@ -1239,6 +1240,69 @@ describe("DesktopHostTransport", () => {
       request: { headers: { accept: "application/json", idempotencyKey: "workspace:test" } },
     });
     expect(JSON.stringify(requests[0]!.request.headers)).not.toContain("renderer");
+  });
+
+  it("sends main's own calls to a Home reached at its own address with that Home's sign-in", async () => {
+    // The owner's shape: listed by the Account, reached at its canonical origin, signed in
+    // natively, so its session is an Authorization header and there is no cookie to send.
+    const cloud = DeploymentConnectionSchema.parse({
+      ...deployment("Cloud Computer", "https://cc.home-trial.opensteer.test"),
+      accountAccess: "owner",
+      source: {
+        issuer: "https://accounts.opensteer.test",
+        kind: "account",
+        subject: `acct_${crypto.randomUUID()}`,
+      },
+    });
+    const id = cloud.authority.document.deploymentId;
+    const requests: HostNetworkRequest[] = [];
+    const transport = desktopHostTransport({
+      catalog: catalogStore([cloud], id),
+      credentials: { authorizationHeader: async () => "Bearer native-home-session" },
+      network: {
+        openWebSocket: vi.fn(() => socket()),
+        request: vi.fn(async (input: HostNetworkRequest) => {
+          requests.push(input);
+          return new Response('{"ok":true,"data":{}}', {
+            headers: { "content-type": "application/json" },
+            status: 200,
+          });
+        }),
+      },
+    });
+    const home = homeHostApi(transport)(id);
+    const machineId = createId("runner");
+    // Binding this sign-in to the device, retiring an unused enrollment, and leaving.
+    await home["sessions.list"]({}).catch(() => undefined);
+    await home["commands.dispatch"]({
+      type: "machine.session.bind",
+      idempotencyKey: crypto.randomUUID(),
+      machineId,
+      proof: { issuedAt: new Date().toISOString(), signature: "s".repeat(86) },
+    }).catch(() => undefined);
+    await home["commands.dispatch"]({
+      type: "runner.enrollment.retire",
+      enrollmentId: "ren_unused",
+      idempotencyKey: "desktop-retire:ren_unused",
+    }).catch(() => undefined);
+    await home["commands.dispatch"]({
+      type: "machine.revoke",
+      machineId,
+      idempotencyKey: `desktop-leave:${machineId}`,
+    }).catch(() => undefined);
+    expect(requests.map(({ request }) => request.path)).toEqual([
+      "/v1/rpc/sessions.list?input=%7B%7D",
+      "/v1/rpc/commands.dispatch",
+      "/v1/rpc/commands.dispatch",
+      "/v1/rpc/commands.dispatch",
+    ]);
+    for (const request of requests) {
+      expect(request).toMatchObject({
+        authorization: "Bearer native-home-session",
+        canonicalOrigin: "https://cc.home-trial.opensteer.test",
+        deploymentId: id,
+      });
+    }
   });
 
   it("uses an explicitly selected verified direct route without an implicit fallback", async () => {

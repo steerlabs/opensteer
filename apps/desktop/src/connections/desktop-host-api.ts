@@ -65,6 +65,18 @@ export function createDesktopHostApi(options: {
 }
 
 /**
+ * Main's own typed calls to a Home, selected or not: through the same route the
+ * window's requests to that Home take, so they carry whatever that place's
+ * sign-in is (its session cookie, or a native sign-in's Authorization header).
+ * The calls still start in main, which alone holds this Mac's device key.
+ */
+export function homeHostApi(
+  transport: Parameters<typeof createForwardedHostApi>[0],
+): (deploymentId: DeploymentId) => HostApiClient {
+  return (deploymentId) => createForwardedHostApi(transport, deploymentId, { anyHome: true });
+}
+
+/**
  * The selected Home's typed API with the window's own owner session: each
  * call goes through the same Host route the bundled UI's requests take.
  */
