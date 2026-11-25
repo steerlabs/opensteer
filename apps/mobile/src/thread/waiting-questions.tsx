@@ -99,6 +99,7 @@ export function QuestionCard(props: {
   /** Off in the asking subagent's own view, which already is the asker. */
   readonly asker?: boolean;
   readonly surface: SurfaceModel;
+  readonly title?: string | undefined;
   readonly userId: string;
 }): ReactNode {
   const threadId = props.surface.request.originatingThreadId;
@@ -133,7 +134,12 @@ export function QuestionCard(props: {
           view={command}
         />
       ) : isQuestionRequest(props.surface.request) && props.surface.denied === null ? (
-        <QuestionRequestCard {...shared} composer={null} key={props.surface.request.id} />
+        <QuestionRequestCard
+          {...shared}
+          composer={null}
+          key={props.surface.request.id}
+          title={props.title}
+        />
       ) : (
         <RequestCard {...shared} onPresent={() => undefined} onSettle={() => undefined} />
       )}

@@ -8,6 +8,7 @@ import {
 } from "@opensteer/client/mock";
 import { act } from "react";
 import { expect, it, vi } from "vitest";
+import { testUnsentSessionStops } from "../../../../packages/client/src/test-support/session-stop-feedback.test-support.js";
 import {
   client,
   goTo,
@@ -90,6 +91,29 @@ it("names one agent’s place above Tasks and stops the session shown in the pan
   ]);
   await vi.waitFor(() => expect(trigger()).toBeNull());
 });
+
+testUnsentSessionStops(
+  async (stop) => {
+    await act(async () => stop.click());
+  },
+  {
+    "web line": async () => {
+      await mount("/", options("one"));
+      const shown = document.querySelector<HTMLElement>(".agents-now")!;
+      return { client, shown, stop: button("Stop ChatGPT", shown) };
+    },
+    "web panel": async () => {
+      await mount("/", options("one"));
+      const shown = await openPanel();
+      return { client, shown, stop: button("Stop ChatGPT", shown) };
+    },
+    "web task": async () => {
+      await mount(`/tasks/${mockAgentWorkThreads.shopping}`, options("one"));
+      const shown = document.querySelector<HTMLElement>(".session-bar")!;
+      return { client, shown, stop: button("Stop “ChatGPT”", shown) };
+    },
+  },
+);
 
 it("lists each active agent and sends Stop all once per session", async () => {
   await mount("/", options("three"));
@@ -179,6 +203,46 @@ it("names a connection only once when two of its sessions have unconfirmed Stops
   expect(dialog.querySelector('[role="status"]')?.textContent).toBe(
     "Couldn’t confirm Stop for Claude.",
   );
+});
+
+it("distinguishes matching rows for different connections by their catalog age", async () => {
+  const seeded = mockConnectedAgents("seeded");
+  const ago = (hours: number) => new Date(Date.now() - hours * 3_600_000 - 120_000).toISOString();
+  await mount("/", {
+    mock: {
+      ...seeded,
+      connections: seeded.connections.map((row) =>
+        row.label === "Claude"
+          ? { ...row, createdAt: ago(1) }
+          : row.label === "Grok"
+            ? { ...row, createdAt: ago(2) }
+            : row,
+      ),
+    },
+    hostClient(source) {
+      source.mockAgentWork({ livePanel: "three" });
+      const { threads } = source.getSnapshot();
+      const first = threads.find(({ id }) => id === mockAgentWorkThreads.working)!.externalWork!;
+      const second = threads.find(({ id }) => id === mockAgentWorkThreads.waiting)!.externalWork!;
+      (second as { connection: typeof second.connection }).connection = {
+        ...first.connection,
+        id: second.connection.id,
+      };
+      Object.defineProperty(source.rpc, "threads.activity", {
+        value: async () => ({ ok: true, data: { operations: [], nextBefore: null } }),
+        configurable: true,
+      });
+      return source;
+    },
+  });
+  const dialog = await openPanel();
+  await vi.waitFor(() => {
+    expect(button("Stop Claude — Connected 1h ago", dialog)).toBeDefined();
+    expect(button("Watch Claude — Connected 2h ago", dialog)).toBeDefined();
+    expect(dialog.textContent).toContain("Connected 1h ago");
+    expect(dialog.textContent).toContain("Connected 2h ago");
+    expect(button("Stop ChatGPT", dialog)).toBeDefined();
+  });
 });
 
 it("keeps the last operations for a task whose activity refresh fails", async () => {

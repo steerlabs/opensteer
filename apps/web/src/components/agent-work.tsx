@@ -2,13 +2,14 @@ import {
   accessModeOptions,
   connectedAgentNamePart,
   isolatedPlainSentence,
+  mutationIdempotencyKey,
+  sessionActionParts,
   sessionSlotFromHome,
   agentSessionSlot,
-  mutationIdempotencyKey,
   operationRequestView,
   requestDecision,
   requestsWaitingOn,
-  sessionAgent,
+  needsYouAgentRequest,
   sessionTaskView,
   tabAgentLine,
   tabNeedsYouParts,
@@ -20,11 +21,10 @@ import {
   type SentencePart,
   type HostClient,
   type SessionTaskView,
-  workSentence,
   workWords,
 } from "@opensteer/client/host";
-import { useHostSelector, useTaskActivity } from "@opensteer/client/react";
-import { requestTitleText, type Request, type RequestResponse } from "@opensteer/core";
+import { useHostSelector, useSessionStop, useTaskActivity } from "@opensteer/client/react";
+import { type Request, type RequestResponse } from "@opensteer/core";
 import type { NeedsYouEntry } from "@opensteer/protocol";
 import { useCallback, useState } from "react";
 import { useNavigate } from "react-router";
@@ -34,7 +34,7 @@ import { Icon, type IconName } from "./icon.js";
 import { SentenceText } from "../ui/address-text.js";
 import { AgentMark } from "./settings/agent-mark.js";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
-import { requestAnswer, useAction } from "./use-action.js";
+import { actionLine, requestAnswer, useAction } from "./use-action.js";
 
 /** The view for a connected agent's own task, or null for any other task. */
 export function useSessionTask(hostClient: HostClient, threadId: string): SessionTaskView | null {
@@ -57,36 +57,18 @@ export function useSessionTask(hostClient: HostClient, threadId: string): Sessio
   });
 }
 
-/** Ends this agent's session on this task, bound to the session the person saw. */
-function stopSessionAction(hostClient: HostClient, threadId: string, sessionId: string) {
-  return {
-    label: "stop this agent",
-    done: "stopped",
-    happened: "this agent was stopped",
-    execute: () =>
-      hostClient.dispatch({
-        type: "agent.session.stop",
-        threadId,
-        agentSessionId: sessionId,
-        idempotencyKey: mutationIdempotencyKey(`agent-session-stop:${sessionId}`),
-      }),
-  };
-}
-
 export function useStopSession(threadId: string, sessionId: string | null) {
   const { hostClient } = useShell();
-  return useAction(
-    hostClient,
-    stopSessionAction(hostClient, threadId, sessionId!),
-    `agent-session-stop:${sessionId ?? ""}`,
-  );
+  const stop = useSessionStop(hostClient, threadId, sessionId);
+  return { ...stop, line: stop.issue ? actionLine(stop.issue, () => void stop.reconcile()) : null };
 }
 
 export function sessionActionLabel(
   key: "work.stop" | "work.watch" | "work.review",
   agent: SessionAgent,
+  distinction?: string,
 ) {
-  return isolatedPlainSentence(workSentence(key, { agent: connectedAgentNamePart(agent) }));
+  return isolatedPlainSentence(sessionActionParts(key, agent, distinction));
 }
 
 export function TaskOriginLine({ parts }: { readonly parts: readonly SentencePart[] | undefined }) {
@@ -148,7 +130,7 @@ export function SessionTaskBar({
           <button
             className="btn btn--small session-bar__stop"
             disabled={stop.running}
-            onClick={() => void stop.run(undefined)}
+            onClick={() => void stop.run()}
             title={isolatedPlainSentence(view.stop.detailParts)}
             type="button"
           >
@@ -202,7 +184,9 @@ export function SessionActivity({
               <li className="session-op" key={row.id}>
                 <Icon className="session-op__glyph" name={glyphIcons[row.glyph]} />
                 <span className="session-op__body">
-                  <span className="session-op__action">{row.action}</span>
+                  <span className="session-op__action">
+                    <SentenceText parts={row.actionParts ?? [row.action]} quoteNames={false} />
+                  </span>
                   {mode ? <span className="session-op__by">{mode}</span> : null}
                   {row.allowedBy && row.allowedBy !== mode ? (
                     <span className="session-op__by">{row.allowedBy}</span>
@@ -301,7 +285,13 @@ export function OperationRequestPanel({
       </div>
       <p className="action-panel__title">{view.question}</p>
       {(view.context ?? view.summary) ? (
-        <p className="operation-request__summary">{view.context ?? view.summary}</p>
+        <p className="operation-request__summary">
+          {view.contextParts ? (
+            <SentenceText parts={view.contextParts} quoteNames={false} />
+          ) : (
+            view.summary
+          )}
+        </p>
       ) : null}
       {view.agentWords ? (
         <blockquote className="operation-request__says">
@@ -408,7 +398,7 @@ export function TabAgentStatus({
         <button
           className="btn btn--small"
           disabled={stop.running}
-          onClick={() => void stop.run(undefined)}
+          onClick={() => void stop.run()}
           type="button"
         >
           <Icon name="stop" />
@@ -427,25 +417,5 @@ export function useNeedsYouAgentRequest(entry: NeedsYouEntry) {
   const snapshot = useOptionalShell()?.snapshot;
   if (!snapshot || entry.kind !== "request") return null;
   const { request } = entry;
-  const session = agentSessionSlot(snapshot, request.originatingThreadId);
-  const operation = operationRequestView({ request, session });
-  if (!operation && (!session || session.sessionId !== request.originatingAgentSessionId))
-    return null;
-  const agent = operation?.agent ?? sessionAgent(session?.connection);
-  const presentation = request.presentation;
-  const prompt =
-    request.kind === "person.question" &&
-    presentation.kind === "form" &&
-    presentation.fields.length === 1
-      ? presentation.fields[0]?.prompt.trim()
-      : null;
-  const question = operation?.question ?? (prompt || requestTitleText(presentation));
-  return {
-    agent,
-    listTitleParts: workSentence(
-      agent.who?.verified ? "ask.listTitle" : "ask.title",
-      { agent: connectedAgentNamePart(agent) },
-      { question },
-    ),
-  };
+  return needsYouAgentRequest(request, agentSessionSlot(snapshot, request.originatingThreadId));
 }

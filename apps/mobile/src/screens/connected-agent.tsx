@@ -4,7 +4,6 @@ import {
   agentBrowserOptions,
   agentHomeName,
   agentSentence,
-  agentText,
   agentWords,
   workSentence,
   workWords,
@@ -13,6 +12,10 @@ import {
   chatTaskStop,
   chatTasksNow,
   connectedAgentConnected,
+  connectedAgentNamePart,
+  sessionAgentPart,
+  showConnectedAgentStatus,
+  connectedAgentActivity,
   connectionsRead,
   connectedAgentDetail,
   chatScreenHost,
@@ -28,13 +31,14 @@ import {
   type ConnectedAgentDetail,
   type ChatTaskNow,
   type HostClient,
+  type SentencePart,
 } from "@opensteer/client/host";
 import {
   useAgentAppOptions,
   useAgentPluginOptions,
   useChromeTabGrantCatalog,
-  useConnectedAgentActivity,
-  useConnectedAgentLive,
+  useConnectedAgentHistory,
+  useConnectedAgentWork,
   useConnectedAgents,
   useLiveTasks,
 } from "@opensteer/client/react";
@@ -51,6 +55,7 @@ import {
 import { AgentGrantSheetPage } from "./agent-grant-sheet.js";
 import { readGateSections } from "./read-gate-sections.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
+import { connectedAgentWorkSections } from "./connected-agent-work.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 import { addressDetail } from "../ui/sentence-parts.js";
@@ -84,8 +89,13 @@ export function ConnectedAgentController(props: {
   const agents = useConnectedAgents(host);
   // What this screen sends is what the chat parity script covers.
   const chatHost = chatScreenHost(host);
-  const live = useConnectedAgentLive(host, connectionId);
-  const activity = useConnectedAgentActivity(host, connectionId, live?.threadId ?? null);
+  const connection = agents.connections?.find((row) => row.id === connectionId) ?? null;
+  const direct = connection !== null && !connection.bridge;
+  const work = useConnectedAgentWork(chatHost, connectionId, direct);
+  const history = useConnectedAgentHistory(chatHost, connectionId);
+  const activity = history.page
+    ? connectedAgentActivity({ ...history.page, operations: direct ? [] : history.page.operations })
+    : undefined;
   const liveTasks = useLiveTasks(host);
   const chromeTabs = useChromeTabGrantCatalog(host, true);
   const [sheet, setSheet] = useState<{
@@ -98,7 +108,6 @@ export function ConnectedAgentController(props: {
   // device answers), never Stop again beside Running, and no second Stop is sent meanwhile; a
   // Stop the Home refused says why. A later Run of the task is a new Run, with a Stop of its own.
   const [stopping, setStopping] = useState<ReadonlySet<string>>(new Set());
-  const connection = agents.connections?.find((row) => row.id === connectionId) ?? null;
   // A chat's tasks as the Home's live task updates say they are now; its list is read again
   // when one of them moved past it, so a Stop names the Run that is at work.
   const chatTasks = chatTasksNow(connection?.bridge?.tasks ?? [], liveTasks);
@@ -114,13 +123,16 @@ export function ConnectedAgentController(props: {
       : connectedAgentDetail(connection, names, {
           revoked: agents.revoked,
           grantsAvailable: agents.grantsAvailable,
-          live,
           ...(activity ? { activity } : {}),
         });
   const agent = detail?.row.identity.label ?? null;
+  const name: SentencePart | null = detail
+    ? connectedAgentNamePart({ name: detail.row.identity.label, who: detail.row.identity.who })
+    : null;
+  const title = name === null ? null : phoneSentence([name], { quoteNames: !connection?.bridge });
   useEffect(() => {
-    if (agent !== null) navigation.setOptions({ title: agent });
-  }, [agent, navigation]);
+    if (title !== null) navigation.setOptions({ title });
+  }, [title, navigation]);
   // A sheet open when a refresh fails closes without saving what it held.
   useEffect(() => {
     if (agents.readFailed) setSheet(null);
@@ -131,7 +143,7 @@ export function ConnectedAgentController(props: {
   const apps = useAgentAppOptions(host, sheet?.which === "apps" || hasKind("computer-app"));
   const plugins = useAgentPluginOptions(host, sheet?.which === "plugins" || hasKind("plugin"));
 
-  if (detail === null || connection === null || agent === null)
+  if (detail === null || connection === null || agent === null || name === null)
     return (
       <NativeSettingsPage
         sections={[
@@ -167,6 +179,7 @@ export function ConnectedAgentController(props: {
       />
     );
 
+  const agentPart = sessionAgentPart({ name: agent, who: detail.row.identity.who });
   const pending = agents.pending === connection.id ? agents.pendingAction : null;
   const busy = pending !== null || creating;
   const browser = agentBrowserOptions(snapshot);
@@ -174,7 +187,7 @@ export function ConnectedAgentController(props: {
   const chatShape = connection.bridge?.grantShape as ChatGrantShape | undefined;
   const context = {
     ...(chatShape ? { chat: chatShape } : {}),
-    agent: { name: agent },
+    agent: agentPart,
     home: agentHomeName(snapshot),
     chromeTabs,
     browser,
@@ -233,7 +246,7 @@ export function ConnectedAgentController(props: {
       return;
     }
     Alert.alert(
-      agentText("agent.narrow.title", { agent: { name: agent } }),
+      phoneSentence(agentSentence("agent.narrow.title", { agent: agentPart })),
       agentWords("agent.narrow.body"),
       [
         { text: agentWords("common.cancel"), style: "cancel" },
@@ -250,7 +263,7 @@ export function ConnectedAgentController(props: {
   };
   const disconnect = () =>
     Alert.alert(
-      agentText("agent.disconnect.title", { agent: { name: agent } }),
+      phoneSentence(agentSentence("agent.disconnect.title", { agent: agentPart })),
       agentWords("agent.disconnect.body"),
       [
         { text: agentWords("common.cancel"), style: "cancel" },
@@ -280,6 +293,24 @@ export function ConnectedAgentController(props: {
             context,
             current,
             detail,
+            ...(direct
+              ? {
+                  directWork: agents.readFailed
+                    ? []
+                    : connectedAgentWorkSections({
+                        host,
+                        deploymentId,
+                        work,
+                        history,
+                        open: (threadId, requestId) =>
+                          navigation.navigate("Thread", {
+                            deploymentId,
+                            threadId,
+                            ...(requestId ? { requestId } : {}),
+                          }),
+                      }),
+                }
+              : {}),
             error: agents.error,
             note,
             onDisconnect: disconnect,
@@ -356,6 +387,7 @@ export function connectedAgentSections(props: {
   /** Why the last action didn't finish, if it didn't. */
   readonly error: string | null;
   readonly current: AgentGrantDraft;
+  readonly directWork?: readonly NativeSettingsSection[];
   readonly detail: ConnectedAgentDetail;
   readonly note: "saved" | "profile-failed" | null;
   readonly onDisconnect: () => void;
@@ -375,8 +407,9 @@ export function connectedAgentSections(props: {
   readonly pending: "revoke" | "update" | "remove" | null;
 }): readonly NativeSettingsSection[] {
   const { detail } = props;
-  const watchThreadId = detail.live?.threadId;
+  const watchThreadId = props.directWork === undefined ? detail.live?.threadId : undefined;
   const agent = detail.row.identity.label;
+  const agentName = sessionAgentPart({ name: agent, who: detail.row.identity.who });
   const who = whoLines(detail.row.identity.who, { consent: false });
   // Still connected (active, paused, or a state this app doesn't know): it can be disconnected.
   const active = connectedAgentConnected(detail.row.phase);
@@ -389,12 +422,13 @@ export function connectedAgentSections(props: {
     label:
       props.pending === "revoke"
         ? agentWords("agent.disconnecting")
-        : phoneSentence(agentSentence("agent.disconnect", { agent: { name: agent } })),
+        : phoneSentence(agentSentence("agent.disconnect", { agent: agentName })),
     destructive: true,
     disabled: props.busy,
     onPress: props.onDisconnect,
   });
   const sections: NativeSettingsSection[] = [
+    ...(props.directWork ?? []),
     // Who it says it is, and where it signed in from: facts of an agent that signed in, never of
     // a chat.
     ...(chat
@@ -453,38 +487,42 @@ export function connectedAgentSections(props: {
           },
         ]
       : []),
-    {
-      key: "status",
-      title: "",
-      rows: [
-        {
-          key: "status",
-          kind: "status",
-          tone: detail.status.tone,
-          label: detail.status.labelParts
-            ? phoneSentence(detail.status.labelParts)
-            : detail.status.label,
-          ...(detail.status.steps.length ? { steps: detail.status.steps } : {}),
-        },
-        ...(watchThreadId
-          ? [
+    ...(!showConnectedAgentStatus(detail.row)
+      ? []
+      : [
+          {
+            key: "status",
+            title: "",
+            rows: [
               {
-                key: "watch",
-                kind: "button" as const,
-                label: agentWords("agent.watch"),
-                symbol: "eye" as const,
-                opens: true,
-                onPress: () => props.onWatch(watchThreadId),
+                key: "status",
+                kind: "status" as const,
+                tone: detail.status.tone,
+                label: detail.status.labelParts
+                  ? phoneSentence(detail.status.labelParts)
+                  : detail.status.label,
+                ...(detail.status.steps.length ? { steps: detail.status.steps } : {}),
               },
-            ]
-          : []),
-      ],
-      footer: {
-        text: detail.status.detailParts
-          ? phoneSentence(detail.status.detailParts)
-          : detail.status.detail,
-      },
-    },
+              ...(watchThreadId
+                ? [
+                    {
+                      key: "watch",
+                      kind: "button" as const,
+                      label: agentWords("agent.watch"),
+                      symbol: "eye" as const,
+                      opens: true,
+                      onPress: () => props.onWatch(watchThreadId),
+                    },
+                  ]
+                : []),
+            ],
+            footer: {
+              text: detail.status.detailParts
+                ? phoneSentence(detail.status.detailParts)
+                : detail.status.detail,
+            },
+          },
+        ]),
     // An edit that met a newer one says so on its own: what the status says (a paused chat's
     // held replies) stays.
     ...(props.conflict
@@ -610,25 +648,29 @@ export function connectedAgentSections(props: {
         rows: [],
         footer:
           props.note === "saved"
-            ? { text: phoneSentence(agentSentence("agent.saved", { agent: { name: agent } })) }
+            ? { text: phoneSentence(agentSentence("agent.saved", { agent: agentName })) }
             : { text: agentWords("consent.error.newProfile"), tone: "danger" },
       });
   }
-  sections.push({
-    key: "activity",
-    title: agentWords("agent.activity.title"),
-    rows:
-      detail.activity.kind === "unavailable"
-        ? [{ key: "unavailable", kind: "text", label: agentWords("agent.activity.unavailable") }]
-        : detail.activity.items.length === 0
-          ? [{ key: "empty", kind: "text", label: agentWords("agent.activity.empty") }]
-          : detail.activity.items.map((item): NativeSettingsRow => ({
-              key: item.id,
-              kind: "text",
-              label: item.action,
-              detail: `${item.outcome} · ${item.at}`,
-            })),
-  });
+  if (
+    props.directWork === undefined ||
+    (detail.activity.kind === "ready" && detail.activity.items.length)
+  )
+    sections.push({
+      key: "activity",
+      title: agentWords("agent.activity.title"),
+      rows:
+        detail.activity.kind === "unavailable"
+          ? [{ key: "unavailable", kind: "text", label: agentWords("agent.activity.unavailable") }]
+          : detail.activity.items.length === 0
+            ? [{ key: "empty", kind: "text", label: agentWords("agent.activity.empty") }]
+            : detail.activity.items.map((item): NativeSettingsRow => ({
+                key: item.id,
+                kind: "text",
+                label: item.action,
+                detail: `${item.outcome} · ${item.at}`,
+              })),
+    });
   sections.push({
     key: "about",
     title: agentWords("agent.about.title"),

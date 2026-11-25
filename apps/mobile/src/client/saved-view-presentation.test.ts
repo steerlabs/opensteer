@@ -24,7 +24,7 @@ function presentation(options: { readonly store: SavedViewStore; readonly now?: 
   });
 }
 const scope = (): SavedViewScope => ({
-  schema: 1,
+  schema: 2,
   epoch: hostApiVersion,
   loginId: globalThis.crypto.randomUUID(),
   hostIdentity: {

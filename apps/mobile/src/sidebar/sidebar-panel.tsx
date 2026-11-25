@@ -1,10 +1,12 @@
 import { presentClientIssue } from "@opensteer/client/feedback";
 import Animated from "react-native-reanimated";
 import { move } from "../ui/motion.js";
+import { ConnectedAgentsSection } from "./connected-agents-section.js";
+import { useTaskOrigins } from "../threads/use-task-origins.js";
 import { SavedTasks } from "./saved-tasks.js";
 import { PlaceholderRows } from "../ui/placeholder.js";
 import {
-  doneTaskList,
+  personDoneTaskList,
   listedRowThreadId,
   quietlyMoved,
   quietSeenScope,
@@ -162,11 +164,12 @@ function useSidebarModel(
       return current.model;
     }
     const list = taskList(snapshot, {
+      personTasksOnly: true,
       openThreadId: openThreadId === null ? null : listedRowThreadId(snapshot, openThreadId),
       previous: shelves.list,
     });
     const model = {
-      done: doneTaskList(snapshot),
+      done: personDoneTaskList(snapshot),
       list,
       loaded: snapshot.tasks !== null,
       quietScope: quietSeenScope(snapshot),
@@ -312,8 +315,8 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   }, [docked, visible]);
 
   const openTask = useCallback(
-    (threadId: string) => {
-      if (deploymentId !== null) actions.onOpenTask(deploymentId, threadId);
+    (threadId: string, requestId?: string) => {
+      if (deploymentId !== null) actions.onOpenTask(deploymentId, threadId, requestId);
     },
     [actions, deploymentId],
   );
@@ -364,6 +367,10 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   const now = Date.now();
   const list = model?.list ?? null;
   const shown = list === null ? [] : [...list.working, ...list.ready];
+  const origins = useTaskOrigins(
+    tasksShown ? hostClient : null,
+    shown.some((row) => row.originConnectionId !== undefined),
+  );
   const needsYou = needsPage?.count ?? 0;
   const doneCount = model?.done?.total ?? list?.done.length ?? 0;
   const moved =
@@ -421,6 +428,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
           </View>
         ) : (
           <>
+            {hostClient ? <ConnectedAgentsSection host={hostClient} onOpen={openTask} /> : null}
             <TasksHead needsYou={needsYou} onNeedsYou={openNeedsYou} />
             {shown.length === 0 ? (
               <AppText role="caption" style={styles.empty} tone="muted">
@@ -435,6 +443,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
                     ask={task.tone === "needs-you" ? task.line : null}
                     drafted={unsentReply(task.threadId)}
                     onOpen={openTask}
+                    origin={origins.get(task.originConnectionId ?? "")}
                     onSetDone={moveTask}
                     row={task}
                     selected={task.threadId === selectedRowId}
