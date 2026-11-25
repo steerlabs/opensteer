@@ -1,0 +1,35 @@
+# The account service does not answer /healthz from outside, so nobody can sign in or buy.
+# Runbook: docs/cloud-computer-operations.md, "The account service is down".
+displayName: "Opensteer: The account service is down"
+severity: CRITICAL
+userLabels:
+  opensteer_alert: page
+documentation:
+  mimeType: text/markdown
+  subject: "Opensteer: The account service is down"
+  content: |-
+    The account service's /healthz has failed from more than one region for two minutes.
+    Nobody can sign in, buy or reach a Cloud Computer through it.
+
+    Open the runbook, docs/cloud-computer-operations.md, section "The account service is down".
+combiner: OR
+conditions:
+  - displayName: "/healthz fails from more than one region"
+    conditionThreshold:
+      # ACCOUNT_HOST is filled in by apply.sh: the account service's public host name.
+      filter: >-
+        metric.type="monitoring.googleapis.com/uptime_check/check_passed" AND
+        resource.type="uptime_url" AND resource.labels.host="${ACCOUNT_HOST}"
+      aggregations:
+        - alignmentPeriod: 60s
+          perSeriesAligner: ALIGN_NEXT_OLDER
+          crossSeriesReducer: REDUCE_COUNT_FALSE
+          groupByFields:
+            - resource.labels.host
+      comparison: COMPARISON_GT
+      thresholdValue: 1
+      duration: 120s
+      trigger:
+        count: 1
+alertStrategy:
+  autoClose: 1800s

@@ -17,6 +17,7 @@ import { z } from "zod";
 import { type ComputeAccessToken, googleMetadataAccessToken } from "./google-auth.js";
 import {
   json,
+  ObservationFailed,
   ProviderOutcomeUnknown,
   ProviderPlacementError,
   ProviderRateLimited,
@@ -1477,13 +1478,14 @@ export class GoogleCompute implements VmProvider, PoolHostProvider {
       );
     } catch (error) {
       if (hasStatus(error, 401)) this.#accessToken.invalidate?.(token);
-      if (isRateLimited(error)) {
+      const failure = httpFailure(error);
+      if (isRateLimited(failure)) {
         this.#retryAt = Math.max(
           this.#retryAt,
-          error.retryAt ?? 0,
+          failure.retryAt ?? 0,
           Date.now() + rateLimitBackoffMs,
         );
-        throw new ProviderRateLimited(this.#retryAt, error);
+        throw new ProviderRateLimited(this.#retryAt, failure);
       }
       throw error;
     }
@@ -1511,8 +1513,14 @@ function matchesResource(resource: string, path: string) {
   return resource === path || resource.endsWith(`/compute/v1/${path}`);
 }
 
-function hasStatus(error: unknown, status: number): boolean {
+/** The HTTP failure under an error: a failed GET's comes inside an `ObservationFailed`. */
+function httpFailure(error: unknown): unknown {
   const cause = error instanceof ProviderWriteRejected ? error.original : error;
+  return cause instanceof ObservationFailed ? cause.cause : cause;
+}
+
+function hasStatus(error: unknown, status: number): boolean {
+  const cause = httpFailure(error);
   return (
     cause instanceof RemoteRequestError && cause.service === compute && cause.status === status
   );

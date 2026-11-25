@@ -18,6 +18,7 @@ import {
   type CloudComputerCheck,
   CloudComputerDesiredResponseSchema,
   CloudComputerIdSchema,
+  type CloudComputerId,
   CloudComputerIdentitySchema,
   cloudComputerBackupReportPath,
   cloudComputerBootPath,
@@ -68,11 +69,16 @@ import { createControlPlaneServer } from "../server/server.js";
 import { CloudComputerClaimer, HttpManagedHomeClient } from "./claim.js";
 import { loadCloudComputerConfig } from "./config.js";
 import { browserPoolRelease } from "./pool-release.test-support.js";
-import { CloudComputerStore } from "./store.js";
+import { CloudComputerStore, type CloudComputerFinding } from "./store.js";
 import { billingErrorDetails } from "./billing-error.js";
 import { cloudComputerBillingSettledMigration } from "./migration.js";
 import { cloudComputerOperatorUsage, runCloudComputerOperator } from "./operator.js";
 import type { StripeBilling, StripeSubscription } from "./stripe.js";
+import {
+  cloudComputerHealthPath,
+  reportTime,
+  type HomeHealthReport,
+} from "@opensteer/protocol/problems";
 
 const url = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
 // The focused integration launcher supplies a disposable Account database.
@@ -826,14 +832,39 @@ integration("Cloud Computer Account service", () => {
         }
       | undefined;
     let records = false;
+    let discovers = true;
+    // The provider's next read fails with this; a newer generation appears beside this one.
+    let findFails: Error | undefined;
+    let newerGeneration = false;
+    // The next report is delivered twice: a retried request whose first copy landed.
+    let duplicate = false;
+    // Every report the provisioner sent, and the provider's answer to the next create.
+    const sent: CloudComputerReport[] = [];
+    let createRefusal: Error | undefined;
+    // The shared firewall step refused for the whole stack while this is set (an IAM change).
+    let firewallRefused = false;
     let bootCount = 0;
     let booted: CloudComputerBootResponse | undefined;
     const provider = {
-      ensureFirewall: async () => 1,
+      ensureFirewall: async () => {
+        if (firewallRefused) throw new RemoteRequestError("Google Compute Engine", 403);
+        return 1;
+      },
       ensureFirewallAttached: async () => true,
       listManaged: async () => [],
-      find: async () => (server ? [server] : []),
+      find: async () => {
+        const failure = findFails;
+        findFails = undefined;
+        if (failure) throw failure;
+        if (!server) return [];
+        return newerGeneration
+          ? [server, { ...server, id: 8, generation: server.generation + 1 }]
+          : [server];
+      },
       create: async ({ generation, userData }: { generation: number; userData: string }) => {
+        const refusal = createRefusal;
+        createRefusal = undefined;
+        if (refusal) throw refusal;
         expect(first?.bootstrapToken).toBeTruthy();
         expect(userData).toContain(first!.bootstrapToken!);
         server = { id: 7, generation, status: "off", ipv4: "192.0.2.7", ipv6: null, firewalls: [] };
@@ -888,24 +919,41 @@ integration("Cloud Computer Account service", () => {
         report: (report: CloudComputerReport, signal: AbortSignal) => Promise<boolean>;
       };
     }>("../../../home-provisioner/src/account.js");
+    const { RemoteRequestError, ProviderWriteRejected } = await vi.importActual<{
+      RemoteRequestError: new (service: string, status: number) => Error;
+      ProviderWriteRejected: new (original: Error) => Error;
+    }>("../../../home-provisioner/src/http.js");
+    const client = accountClient(
+      listener,
+      async () => provisionerToken,
+      { timeoutMs: 5000 },
+      lease,
+      undefined,
+      "10.40.0.0/20",
+    );
     const options = {
-      account: accountClient(
-        listener,
-        async () => provisionerToken,
-        { timeoutMs: 5000 },
-        lease,
-        undefined,
-        "10.40.0.0/20",
-      ),
+      account: {
+        ...client,
+        report: async (report: CloudComputerReport, signal: AbortSignal) => {
+          sent.push(report);
+          const recorded = await client.report(report, signal);
+          if (duplicate) {
+            duplicate = false;
+            await client.report(report, signal);
+          }
+          return recorded;
+        },
+      },
       provider,
       dns,
-      discover: async () => identity,
+      discover: async () => (discovers ? identity : undefined),
       accountOrigin: publicOrigin,
       image: "image",
       defaultRegion: "us-central1-a",
       defaultServerType: "e2-standard-4",
       concurrency: 1,
-      readinessTimeoutMs: 10_000,
+      readinessTimeoutMs: 10 * 60_000,
+      now: () => now.getTime(),
     };
     const { Reconciler } = await vi.importActual<{
       Reconciler: new (input: typeof options) => { pass: (signal: AbortSignal) => Promise<void> };
@@ -917,6 +965,18 @@ integration("Cloud Computer Account service", () => {
     const mutation = (action: string) =>
       http({ method: "POST", url: `${path}/${action}`, headers: account.headers });
     expect((await read()).json()).toMatchObject({ status: "preparing" });
+    // A create the provider refused (a 400) fails the computer, and pages at once (Q2); the next
+    // pass creates it.
+    createRefusal = new ProviderWriteRejected(new RemoteRequestError("Google Compute Engine", 400));
+    await pass();
+    expect(createRefusal).toBeUndefined();
+    expect(
+      (await cloud.watch(30 * 60_000)).filter(
+        (finding) => finding.event === "account.cloud_computer.not_ready",
+      ),
+    ).toEqual([
+      expect.objectContaining({ computerId: id, phase: "failed", code: "provider-failed" }),
+    ]);
     await pass();
     expect(records).toBe(true);
     expect(kickBootstrap).not.toHaveBeenCalled();
@@ -959,6 +1019,123 @@ integration("Cloud Computer Account service", () => {
     expect(records).toBe(true);
     expect((await getDesired(id))?.observedIdentity).toEqual(identity);
     expect((await boot(first!)).statusCode).toBe(401);
+    // Case a through the real provisioner: ready for 23 minutes, then a 26-second restart in
+    // which its discovery misses once. It read the desired state while the computer was still
+    // ready, so it judged its ten-minute deadline by the clock of the attempt before (V1). The
+    // account records that first report as booting and starts this outage's clocks: never failed,
+    // never a page, never a set-up failure on its owner's page.
+    const notReady = async () =>
+      (await cloud.watch(30 * 60_000)).filter(
+        ({ event }) => event === "account.cloud_computer.not_ready",
+      );
+    const clocks = () =>
+      database
+        .selectFrom("cloudComputers")
+        .select(["phase", "lastError", "readinessStartedAt", "downAt"])
+        .where("id", "=", id)
+        .executeTakeFirstOrThrow();
+    const logged = logs.length;
+    now = new Date(now.getTime() + 23 * 60_000);
+    discovers = false;
+    // And that first report is delivered twice: the second copy, judged against the attempt
+    // before this outage, changes nothing (P1).
+    duplicate = true;
+    await pass();
+    expect(duplicate).toBe(false);
+    expect(await clocks()).toEqual({
+      phase: "booting",
+      lastError: null,
+      readinessStartedAt: now,
+      downAt: now,
+    });
+    expect(await notReady()).toEqual([]);
+    expect((await read()).json()).not.toMatchObject({ status: "failed" });
+    now = new Date(now.getTime() + 26_000);
+    expect(await notReady()).toEqual([]);
+    discovers = true;
+    await pass();
+    expect(await clocks()).toMatchObject({ phase: "ready", downAt: null });
+    expect(await notReady()).toEqual([]);
+    expect(
+      logs
+        .slice(logged)
+        .filter(
+          (line) => line.includes("account.cloud_computer.setup_failed") && line.includes(id),
+        ),
+    ).toEqual([]);
+    // A copy of that first report arriving now, after the computer is ready again: it names an
+    // attempt that is over and changes nothing, and nothing pages thirty minutes on (Q1).
+    const firstNews = sent.find(
+      ({ lastError }) =>
+        lastError === "The Cloud Computer did not become ready before its deadline.",
+    )!;
+    expect(firstNews.judgedReadinessStartedAt).toBeDefined();
+    expect(await client.report(firstNews, new AbortController().signal)).toBe(true);
+    expect(await clocks()).toMatchObject({ phase: "ready", downAt: null });
+    now = new Date(now.getTime() + 30 * 60_000);
+    expect(await notReady()).toEqual([]);
+    expect((await read()).json()).toMatchObject({ status: "ready" });
+    // A second outage, and no pass between its first report and ten real minutes in: the deadline
+    // then names this outage's attempt, so it is sent though it reads like the stale one before,
+    // and it fails the computer and pages at ten minutes, not thirty (P1).
+    now = new Date(now.getTime() + 23 * 60_000);
+    discovers = false;
+    await pass();
+    expect(await clocks()).toMatchObject({ phase: "booting", readinessStartedAt: now });
+    now = new Date(now.getTime() + 10 * 60_000);
+    await pass();
+    expect(await clocks()).toMatchObject({
+      phase: "failed",
+      lastError: "The Cloud Computer did not become ready before its deadline.",
+    });
+    expect(await notReady()).toEqual([
+      expect.objectContaining({ computerId: id, phase: "failed", code: "readiness-timeout" }),
+    ]);
+    discovers = true;
+    await pass();
+    expect(await clocks()).toMatchObject({ phase: "ready", lastError: null });
+    // A provider read that failed (a 503) says nothing of the computer: nothing is reported, it
+    // stays ready, nothing pages, and its owner's page never says its set-up failed (P2).
+    findFails = new RemoteRequestError("Google Compute Engine", 503);
+    await pass();
+    expect(findFails).toBeUndefined();
+    expect(await clocks()).toMatchObject({ phase: "ready", lastError: null });
+    expect(await notReady()).toEqual([]);
+    expect((await read()).json()).toMatchObject({ status: "ready" });
+    // The firewall step every computer shares, refused (403) for the whole stack: the stack's
+    // problem, not this computer's, which is still read and reported as it is: ready, and
+    // nothing pages (Q3, Q4).
+    firewallRefused = true;
+    await pass();
+    expect(await clocks()).toMatchObject({ phase: "ready", lastError: null });
+    expect(await notReady()).toEqual([]);
+    // And while it stays refused, a machine that stopped is still reported, so its outage begins
+    // and the watch pages it by the ordinary clocks (Q4).
+    server = { ...server!, status: "off" };
+    discovers = false;
+    await pass();
+    expect(await clocks()).toMatchObject({ phase: "booting", downAt: now });
+    now = new Date(now.getTime() + 31 * 60_000);
+    expect(await notReady()).toEqual([
+      expect.objectContaining({ computerId: id, phase: "booting" }),
+    ]);
+    firewallRefused = false;
+    discovers = true;
+    await pass();
+    expect(await clocks()).toMatchObject({ phase: "ready", lastError: null });
+    // Evidence of a terminal state still fails it, and pages at once.
+    newerGeneration = true;
+    await pass();
+    expect(await clocks()).toMatchObject({
+      phase: "failed",
+      lastError: "The provider has a newer Cloud Computer generation.",
+    });
+    expect(await notReady()).toEqual([
+      expect.objectContaining({ computerId: id, phase: "failed", code: "newer-generation" }),
+    ]);
+    newerGeneration = false;
+    await pass();
+    expect((await read()).json()).toMatchObject({ status: "ready" });
     expect((await mutation("suspend")).statusCode).toBe(200);
     expect((await mutation("resume")).statusCode).toBe(200);
     await pass();
@@ -1032,6 +1209,37 @@ integration("Cloud Computer Account service", () => {
           .executeTakeFirst()
       )?.tombstonedAt,
     ).toBeInstanceOf(Date);
+
+    // A new purchase while the shared firewall step is refused: no machine can be created for
+    // it, so it is reported provisioning, fails at its ten-minute deadline and pages (Q4).
+    const next = await buy();
+    firewallRefused = true;
+    await pass();
+    const phaseOf = async () =>
+      await database
+        .selectFrom("cloudComputers")
+        .select(["phase", "lastError"])
+        .where("id", "=", next.id)
+        .executeTakeFirstOrThrow();
+    expect(await phaseOf()).toEqual({ phase: "provisioning", lastError: null });
+    expect(server).toBeUndefined();
+    now = new Date(now.getTime() + 10 * 60_000);
+    await pass();
+    expect(await phaseOf()).toEqual({
+      phase: "failed",
+      lastError: "The Cloud Computer did not become ready before its deadline.",
+    });
+    expect(
+      (await cloud.watch(30 * 60_000)).filter(
+        (finding) => finding.event === "account.cloud_computer.not_ready",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        computerId: next.id,
+        phase: "failed",
+        code: "readiness-timeout",
+      }),
+    ]);
   });
 
   it("replays checkout requests and events, fences one live computer and honors billing without undoing manual suspension", async () => {
@@ -1150,9 +1358,20 @@ integration("Cloud Computer Account service", () => {
     expect(JSON.stringify(config)).not.toContain(setup!);
     expect(logs.join("")).not.toContain(first.bootstrapToken!);
 
+    // Down again 50 ms after it became ready: the provisioner's deadline clock starts again with
+    // this outage, never kept from the attempt before it. The watch's outage starts now; its run
+    // of outages is the one the reissue began, 50 ms ago, since it was ready only 50 ms between.
+    const reissuedAt = now;
     now = new Date(now.getTime() + 50);
     expect((await report(pinned, { phase: "booting" })).json()).toEqual({ recorded: true });
     expect((await getDesired(id))?.readinessStartedAt).toBe(now.toISOString());
+    expect(
+      await database
+        .selectFrom("cloudComputers")
+        .select(["downAt", "unstableSince"])
+        .where("id", "=", id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ downAt: now, unstableSince: reissuedAt });
     expect((await getDesired(id))?.observedIdentity).toEqual(identity);
 
     await expect(cloud.mutate(id, "reissue")).rejects.toThrow("working Home");
@@ -1459,6 +1678,86 @@ integration("Cloud Computer Account service", () => {
     expect((await read(`Bearer ${computer.bootstrapToken}`)).statusCode).toBe(401);
   });
 
+  it("keeps each Cloud Computer's latest health report for its operator, and takes no report from anyone else", async () => {
+    const { id } = await buy();
+    const current = (await getDesired(id))!;
+    const oidc = (await bootable(current)).managedHome!.oidc;
+    const report: HomeHealthReport = {
+      schema: 1,
+      home: "cloud-computer",
+      version: "1.4.0",
+      disk: "70-85",
+      services: { host: "healthy", runner: "unhealthy" },
+      problems: [
+        {
+          code: "stop.unconfirmed",
+          count: 2,
+          firstSeenAt: reportTime(now),
+          lastSeenAt: reportTime(now),
+          fields: {},
+        },
+      ],
+    };
+    const send = (payload: unknown, credentials = oidc) =>
+      http({
+        method: "POST",
+        url: cloudComputerHealthPath(id),
+        headers: {
+          authorization: `Basic ${Buffer.from(`${credentials.clientId}:${credentials.clientSecret}`).toString("base64")}`,
+        },
+        payload,
+      });
+    const show = async () =>
+      ((await runCloudComputerOperator(cloud, ["show", id])) as { health: unknown }).health;
+    // Only a booted Home, with its own credentials, and only the fixed schema.
+    expect((await send(report)).statusCode).toBe(401);
+    expect((await complete(current)).statusCode).toBe(200);
+    expect(
+      (await send(report, { ...oidc, clientSecret: `ocs_${"x".repeat(43)}` })).statusCode,
+    ).toBe(401);
+    for (const bad of [
+      { ...report, note: "https://example.com/a-private-page" },
+      { ...report, home: "server" },
+      { ...report, version: "1.0.0-timjang.gmail.com" },
+      { ...report, problems: [{ ...report.problems[0], firstSeenAt: now.toISOString() }] },
+      { ...report, problems: [{ ...report.problems[0], fields: { detail: "Bearer TOKEN" } }] },
+    ])
+      expect((await send(bad)).statusCode).toBe(400);
+    expect(await show()).toBeNull();
+    expect((await send(report)).statusCode).toBe(204);
+    expect(await show()).toEqual({ receivedAt: now, report });
+    // The next report replaces it; nothing older is kept.
+    now = new Date(now.getTime() + 15 * 60_000);
+    const later = { ...report, services: { host: "healthy", runner: "healthy" }, problems: [] };
+    expect((await send(later)).statusCode).toBe(204);
+    expect(await show()).toEqual({ receivedAt: now, report: later });
+    expect(await database.selectFrom("cloudComputerHealth").select("computerId").execute()).toEqual(
+      [{ computerId: id }],
+    );
+    // There is no route for anyone else to read it.
+    expect(
+      (await http({ method: "GET", url: `/v1/account/cloud-computers/${id}/health` })).statusCode,
+    ).toBe(404);
+
+    // Ready and claimed, then an hour with no report: the watch says so.
+    await database
+      .updateTable("cloudComputers")
+      .set({ phase: "ready", bootstrapReceiptAt: now, lastBackupAt: now })
+      .where("id", "=", id)
+      .execute();
+    now = new Date(now.getTime() + 61 * 60_000);
+    expect(
+      (await cloud.watch(30 * 60_000)).filter(
+        ({ event }) => event === "account.cloud_computer.report_missing",
+      ),
+    ).toEqual([{ event: "account.cloud_computer.report_missing", computerId: id, minutes: 61 }]);
+
+    // A person's own Home sends Opensteer nothing: there is no route to send it to.
+    expect(
+      (await http({ method: "POST", url: "/v1/problem-reports", payload: {} })).statusCode,
+    ).toBe(404);
+  });
+
   it("assigns a late egress endpoint and never serves it to the Home, whose browser is in the pool", async () => {
     const { account, id } = await buy();
     const computer = (await getDesired(id))!;
@@ -1588,6 +1887,524 @@ integration("Cloud Computer Account service", () => {
         },
       ],
     });
+  });
+
+  it("tells the operator of a person who paid and has no working Cloud Computer, an overdue backup and a low pool", async () => {
+    const { id } = await buy();
+    const findings = async (event: string) =>
+      (await cloud.watch(30 * 60_000)).filter((finding) => finding.event === event);
+    expect(await findings("account.cloud_computer.not_ready")).toEqual([]);
+    now = new Date(now.getTime() + 31 * 60_000);
+    expect(await findings("account.cloud_computer.not_ready")).toEqual([
+      expect.objectContaining({ computerId: id, phase: "provisioning", minutes: 31 }),
+    ]);
+    // A failed setup is said once, with its cause, as it turns failed; the watch keeps saying it.
+    // The provisioner's lease lapsed with the half hour: it takes it again.
+    expect(
+      (
+        await http({
+          method: "POST",
+          url: cloudComputerLeasePath,
+          headers: leaseHeaders(),
+          payload: { holder: lease, poolNetwork: "10.40.0.0/20" },
+        })
+      ).statusCode,
+    ).toBe(200);
+    const computer = (await getDesired(id))!;
+    const failed = {
+      phase: "failed",
+      observedIdentity: null,
+      providerServerId: null,
+      ipv4: null,
+      lastError: "The Cloud Computer provider operation failed.",
+    } as const;
+    expect((await report(computer, failed)).json()).toEqual({ recorded: true });
+    expect((await report(computer, failed)).json()).toEqual({ recorded: true });
+    const setupFailed = logs
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((line) => line.event === "account.cloud_computer.setup_failed");
+    expect(setupFailed).toEqual([
+      expect.objectContaining({ computerId: id, code: "provider-failed", phase: "failed" }),
+    ]);
+    expect(await findings("account.cloud_computer.not_ready")).toEqual([
+      expect.objectContaining({ computerId: id, phase: "failed", code: "provider-failed" }),
+    ]);
+    // Ready and claimed, with its last backup 37 hours ago.
+    await database
+      .updateTable("cloudComputers")
+      .set({
+        phase: "ready",
+        lastError: null,
+        bootstrapReceiptAt: now,
+        bootCompletedAt: now,
+        lastBackupAt: new Date(now.getTime() - 37 * 60 * 60_000),
+      })
+      .where("id", "=", id)
+      .execute();
+    expect(await findings("account.cloud_computer.not_ready")).toEqual([]);
+    expect(await findings("account.cloud_computer.backup_overdue")).toEqual([
+      { event: "account.cloud_computer.backup_overdue", computerId: id, minutes: 37 * 60 },
+    ]);
+    // Two backup targets, one held by this computer; no egress endpoint at all.
+    expect(await findings("account.pool.low")).toEqual([
+      { event: "account.pool.low", pool: "backup", free: 1 },
+      { event: "account.pool.low", pool: "egress", free: 0 },
+    ]);
+    // Claimed, then resumed or rebooted and never ready again: readiness starts over, and once the
+    // limit passes it is a person who pays and has no working computer (R2).
+    await database
+      .updateTable("cloudComputers")
+      .set({ phase: "booting", readinessStartedAt: now, lastBackupAt: now })
+      .where("id", "=", id)
+      .execute();
+    expect(await findings("account.cloud_computer.not_ready")).toEqual([]);
+    now = new Date(now.getTime() + 31 * 60_000);
+    expect(await findings("account.cloud_computer.not_ready")).toEqual([
+      { event: "account.cloud_computer.not_ready", computerId: id, phase: "booting", minutes: 31 },
+    ]);
+  });
+
+  it("never pages a working computer for one short restart, whatever clock was kept (U1)", async () => {
+    const { id } = await buy();
+    await database
+      .updateTable("cloudComputers")
+      .set({ bootCompletedAt: now, bootstrapReceiptAt: now, lastBackupAt: now })
+      .where("id", "=", id)
+      .execute();
+    const takeLease = () =>
+      http({
+        method: "POST",
+        url: cloudComputerLeasePath,
+        headers: leaseHeaders(),
+        payload: { holder: lease, poolNetwork: "10.40.0.0/20" },
+      });
+    const to = async (phase: "ready" | "booting") => {
+      expect((await takeLease()).statusCode).toBe(200);
+      const current = (await getDesired(id))!;
+      expect(
+        (
+          await report(
+            current,
+            phase === "ready"
+              ? {}
+              : {
+                  phase: "booting",
+                  observedIdentity: null,
+                  providerServerId: 7,
+                  ipv4: "192.0.2.7",
+                },
+          )
+        ).json(),
+      ).toEqual({ recorded: true });
+    };
+    const notReady = async () =>
+      (await cloud.watch(30 * 60_000)).filter(
+        ({ event }) => event === "account.cloud_computer.not_ready",
+      );
+    const later = (ms: number) => {
+      now = new Date(now.getTime() + ms);
+    };
+    // A slow first set-up: ready ten minutes after its clock began.
+    later(10 * 60_000);
+    await to("ready");
+    // A 26-second restart (an update, a provider write not confirmed on one pass) at any minute
+    // of the next forty, the window the kept clock would have paged in included.
+    for (let minute = 1; minute <= 40; minute += 3) {
+      later(3 * 60_000);
+      await to("booting");
+      expect(await notReady(), `minute ${minute}`).toEqual([]);
+      later(26_000);
+      expect(await notReady(), `minute ${minute}`).toEqual([]);
+      await to("ready");
+    }
+    // The review's case: ready for hours, one real outage of 8 minutes, ready again for 23, then
+    // one booting report.
+    later(6 * 60 * 60_000);
+    await to("booting");
+    later(8 * 60_000);
+    await to("ready");
+    later(23 * 60_000);
+    await to("booting");
+    expect(await notReady()).toEqual([]);
+    later(26_000);
+    expect(await notReady()).toEqual([]);
+    // Still down two minutes on, inside the clock kept from the 8-minute outage: now it pages.
+    later(2 * 60_000);
+    expect(await notReady()).toEqual([
+      expect.objectContaining({ computerId: id, phase: "booting" }),
+    ]);
+  });
+
+  it("pages a computer that was ready, then resumed or replaced, with no report from the provisioner after", async () => {
+    const takeLease = () =>
+      http({
+        method: "POST",
+        url: cloudComputerLeasePath,
+        headers: leaseHeaders(),
+        payload: { holder: lease, poolNetwork: "10.40.0.0/20" },
+      });
+    const notReady = async () =>
+      (await cloud.watch(30 * 60_000)).filter(
+        ({ event }) => event === "account.cloud_computer.not_ready",
+      );
+    // Ready and claimed through the provisioner's own report, so its outage clock was cleared.
+    const working = async () => {
+      const bought = await buy();
+      await database
+        .updateTable("cloudComputers")
+        .set({ bootCompletedAt: now, bootstrapReceiptAt: now, lastBackupAt: now })
+        .where("id", "=", bought.id)
+        .execute();
+      expect((await takeLease()).statusCode).toBe(200);
+      expect((await report((await getDesired(bought.id))!, {})).json()).toEqual({
+        recorded: true,
+      });
+      return bought;
+    };
+    const resumed = await working();
+    const replaced = await working();
+    now = new Date(now.getTime() + 60 * 60_000);
+    expect(await notReady()).toEqual([]);
+    // A Resume and a replacement put each back to provisioning; the provisioner never reports
+    // either of them again (it is down, or it lost them).
+    await cloud.mutate(resumed.id, "suspend", resumed.account.id);
+    await cloud.mutate(resumed.id, "resume", resumed.account.id);
+    await cloud.mutate(replaced.id, "replace", undefined, "aabbccdd");
+    expect(await notReady()).toEqual([]);
+    now = new Date(now.getTime() + 31 * 60_000);
+    const paged = await notReady();
+    expect(paged).toHaveLength(2);
+    expect(paged).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ computerId: resumed.id, phase: "provisioning" }),
+        expect.objectContaining({ computerId: replaced.id, phase: "provisioning" }),
+      ]),
+    );
+  });
+
+  it("pages a computer that keeps going down faster than the limit, though each outage is short (U2)", async () => {
+    const { id } = await buy();
+    // Up and claimed, as after its first set-up.
+    await database
+      .updateTable("cloudComputers")
+      .set({ bootCompletedAt: now, bootstrapReceiptAt: now, lastBackupAt: now })
+      .where("id", "=", id)
+      .execute();
+    const takeLease = () =>
+      http({
+        method: "POST",
+        url: cloudComputerLeasePath,
+        headers: leaseHeaders(),
+        payload: { holder: lease, poolNetwork: "10.40.0.0/20" },
+      });
+    const flap = async (phase: "ready" | "booting") => {
+      expect((await takeLease()).statusCode).toBe(200);
+      const current = (await getDesired(id))!;
+      expect(
+        (
+          await report(
+            current,
+            phase === "ready"
+              ? {}
+              : {
+                  phase: "booting",
+                  observedIdentity: null,
+                  providerServerId: 7,
+                  ipv4: "192.0.2.7",
+                },
+          )
+        ).json(),
+      ).toEqual({ recorded: true });
+    };
+    await flap("ready");
+    const notReady = async () =>
+      (await cloud.watch(30 * 60_000)).filter(
+        ({ event }) => event === "account.cloud_computer.not_ready",
+      );
+    // Every ten minutes for an hour: down for three, back for seven, never up for the limit.
+    const pages: number[] = [];
+    for (let minute = 0; minute < 60; minute += 10) {
+      await flap("booting");
+      now = new Date(now.getTime() + 3 * 60_000);
+      if ((await notReady()).length) pages.push(minute + 3);
+      await flap("ready");
+      now = new Date(now.getTime() + 7 * 60_000);
+    }
+    await flap("booting");
+    now = new Date(now.getTime() + 3 * 60_000);
+    if ((await notReady()).length) pages.push(63);
+    // Its first outage began at minute 0, so from minute 33 on, each time it is down, it pages.
+    expect(pages).toEqual([33, 43, 53, 63]);
+    // Up again for the whole limit, then down: a fresh outage, with a fresh clock.
+    await flap("ready");
+    now = new Date(now.getTime() + 30 * 60_000);
+    await flap("booting");
+    now = new Date(now.getTime() + 29 * 60_000);
+    expect(await notReady()).toEqual([]);
+    now = new Date(now.getTime() + 60_000);
+    expect(await notReady()).toEqual([
+      expect.objectContaining({ computerId: id, phase: "booting", minutes: 30 }),
+    ]);
+  });
+
+  it("pages by the two clocks, case by case (the fourth look's cases a to h)", async () => {
+    const minutes = (count: number) => count * 60_000;
+    const later = (ms: number) => {
+      now = new Date(now.getTime() + ms);
+    };
+    const deadline = "The Cloud Computer did not become ready before its deadline.";
+    // One backup target for each computer below, beside the two every test has.
+    for (let n = 0; n < 9; n += 1)
+      await cloud.addBackupTarget({
+        endpoint: "https://s3.example.test",
+        bucket: "test-backups",
+        prefix: `case-${n}`,
+        accessKeyId: `access-case-${n}`,
+        secretAccessKey: `secret-case-${n}`,
+      });
+    // Bought, booted and claimed for its buyer: a person's working computer, still setting up.
+    const working = async (claimed = true) => {
+      const { id } = await buy();
+      await database
+        .updateTable("cloudComputers")
+        .set({
+          bootCompletedAt: now,
+          bootstrapReceiptAt: claimed ? now : null,
+          lastBackupAt: now,
+        })
+        .where("id", "=", id)
+        .execute();
+      return id;
+    };
+    const to = async (id: CloudComputerId, phase: "ready" | "booting" | "failed") => {
+      const leased = await http({
+        method: "POST",
+        url: cloudComputerLeasePath,
+        headers: leaseHeaders(),
+        payload: { holder: lease, poolNetwork: "10.40.0.0/20" },
+      });
+      expect(leased.statusCode).toBe(200);
+      const current = (await getDesired(id))!;
+      const response = await report(
+        current,
+        phase === "ready"
+          ? {}
+          : phase === "booting"
+            ? { phase, observedIdentity: null, providerServerId: 7, ipv4: "192.0.2.7" }
+            : {
+                phase,
+                observedIdentity: null,
+                lastError: deadline,
+                // As the provisioner sends it: the attempt it read in the desired state.
+                judgedReadinessStartedAt: current.readinessStartedAt,
+              },
+      );
+      expect(response.json()).toEqual({ recorded: true });
+    };
+    // What the watch says of this one computer: whether it pages, and the digest's word.
+    const says = async (id: CloudComputerId) =>
+      (await cloud.watch(minutes(30)))
+        .filter((finding) => "computerId" in finding && finding.computerId === id)
+        .filter(({ event }) => event !== "account.cloud_computer.report_missing")
+        .map(({ event }) => event.replace("account.cloud_computer.", ""));
+    const phaseOf = async (id: CloudComputerId) =>
+      (
+        await database
+          .selectFrom("cloudComputers")
+          .select("phase")
+          .where("id", "=", id)
+          .executeTakeFirstOrThrow()
+      ).phase;
+
+    // a. Ready at 8 minutes, a 26-second restart at minute 31, the provisioner's first report of
+    // it a deadline failure measured by the clock it read while the computer was still ready:
+    // recorded as booting, not paged, not failed.
+    const a = await working();
+    later(minutes(8));
+    await to(a, "ready");
+    later(minutes(23));
+    await to(a, "failed");
+    expect(await phaseOf(a)).toBe("booting");
+    expect(await says(a)).toEqual([]);
+    later(26_000);
+    expect(await says(a)).toEqual([]);
+    await to(a, "ready");
+    expect(await says(a)).toEqual([]);
+
+    // b. The same restart lasting three minutes: one outage of three minutes is not paged. Ten
+    // real minutes into it the provisioner's deadline, now this outage's, fails it: pages at once.
+    later(minutes(60));
+    await to(a, "booting");
+    later(minutes(3));
+    expect(await says(a)).toEqual([]);
+    later(minutes(7));
+    await to(a, "failed");
+    expect(await phaseOf(a)).toBe("failed");
+    expect(await says(a)).toEqual(["not_ready"]);
+
+    // c. Ready for days, then down without a break: pages once it has been down for the limit.
+    const c = await working();
+    await to(c, "ready");
+    later(minutes(3 * 24 * 60));
+    await to(c, "booting");
+    later(minutes(29));
+    expect(await says(c)).toEqual([]);
+    later(minutes(1));
+    expect(await says(c)).toEqual(["not_ready"]);
+
+    // d. Down three minutes, ready one, again and again: pages once the run has lasted the limit
+    // and this outage two minutes, so from minute 31 each time it is down.
+    const d = await working();
+    await to(d, "ready");
+    later(minutes(60));
+    const pagedAt: number[] = [];
+    for (let minute = 0; minute < 40; minute += 4) {
+      await to(d, "booting");
+      later(minutes(3));
+      if ((await says(d)).includes("not_ready")) pagedAt.push(minute + 3);
+      await to(d, "ready");
+      later(minutes(1));
+    }
+    expect(pagedAt).toEqual([31, 35, 39]);
+
+    // e. Down 90 seconds each time for an hour: never paged, each outage under the floor. Once the
+    // run has lasted the limit it is one finding for the daily digest, while the run goes on.
+    const e = await working();
+    await to(e, "ready");
+    later(minutes(60));
+    const unstableAt: number[] = [];
+    for (let second = 0; second < 3600; second += 180) {
+      await to(e, "booting");
+      later(90_000);
+      const said = await says(e);
+      expect(said, `second ${second + 90}`).not.toContain("not_ready");
+      if (said.includes("unstable")) unstableAt.push(second + 90);
+      await to(e, "ready");
+      later(90_000);
+    }
+    expect(unstableAt[0]).toBe(31.5 * 60);
+    expect(unstableAt.at(-1)).toBe(58.5 * 60);
+    later(minutes(28));
+    expect(await says(e)).toEqual(["unstable"]);
+    later(minutes(2));
+    expect(await says(e)).toEqual([]);
+
+    // f. Two booting reports in a row: the second keeps when the outage, its run and its attempt
+    // began; pages when both hold.
+    const f = await working();
+    await to(f, "ready");
+    later(minutes(60));
+    await to(f, "booting");
+    const clocksOf = (id: CloudComputerId) =>
+      database
+        .selectFrom("cloudComputers")
+        .select(["downAt", "unstableSince", "readinessStartedAt"])
+        .where("id", "=", id)
+        .executeTakeFirstOrThrow();
+    const first = await clocksOf(f);
+    later(minutes(1));
+    await to(f, "booting");
+    expect(await clocksOf(f)).toEqual(first);
+    later(minutes(29));
+    expect(await says(f)).toEqual(["not_ready"]);
+
+    // g. Not paged while its owner suspended it, its deletion is asked or its billing is not
+    // active; a Resume with no report after it pages at the limit (the test above); a ready
+    // computer never claimed pages at the limit of its attempt.
+    const suspended = await working();
+    await to(suspended, "ready");
+    const owner = (
+      await database
+        .selectFrom("cloudComputers")
+        .select("accountId")
+        .where("id", "=", suspended)
+        .executeTakeFirstOrThrow()
+    ).accountId!;
+    await cloud.mutate(suspended, "suspend", owner);
+    const deleting = await working();
+    await to(deleting, "booting");
+    await database
+      .updateTable("cloudComputers")
+      .set({ deletionRequestedAt: now })
+      .where("id", "=", deleting)
+      .execute();
+    const unpaid = await working();
+    await to(unpaid, "booting");
+    await database
+      .updateTable("cloudComputers")
+      .set({ billingStatus: "past_due" })
+      .where("id", "=", unpaid)
+      .execute();
+    const unclaimed = await working(false);
+    await to(unclaimed, "ready");
+    later(minutes(29));
+    expect(await says(unclaimed)).toEqual([]);
+    later(minutes(2));
+    for (const id of [suspended, deleting, unpaid]) expect(await says(id)).toEqual([]);
+    expect(await says(unclaimed)).toEqual(["not_ready"]);
+
+    // Time not active never counts, and never erases (P3). A computer that never comes up again,
+    // suspended and resumed every eight minutes, pages after thirty active minutes.
+    const ownerOf = async (id: CloudComputerId) =>
+      (
+        await database
+          .selectFrom("cloudComputers")
+          .select("accountId")
+          .where("id", "=", id)
+          .executeTakeFirstOrThrow()
+      ).accountId!;
+    const cycled = await working();
+    await to(cycled, "ready");
+    later(minutes(60));
+    const pagedAtActive: number[] = [];
+    let active = 0;
+    for (let cycle = 0; cycle < 5; cycle += 1) {
+      await cloud.mutate(cycled, "suspend", await ownerOf(cycled));
+      later(minutes(5));
+      await cloud.mutate(cycled, "resume", await ownerOf(cycled));
+      for (let minute = 0; minute < 8; minute += 1) {
+        later(minutes(1));
+        active += 1;
+        if ((await says(cycled)).includes("not_ready")) pagedAtActive.push(active);
+      }
+    }
+    expect(pagedAtActive[0]).toBe(30);
+    // And one suspended for days soon after it came back from an outage keeps that short run,
+    // not the days: not paged two minutes after its Resume.
+    const rested = await working();
+    await to(rested, "ready");
+    later(minutes(60));
+    await to(rested, "booting");
+    later(minutes(5));
+    await to(rested, "ready");
+    later(minutes(1));
+    await cloud.mutate(rested, "suspend", await ownerOf(rested));
+    later(minutes(3 * 24 * 60));
+    await cloud.mutate(rested, "resume", await ownerOf(rested));
+    later(minutes(2));
+    expect(await says(rested)).toEqual([]);
+
+    // h. Passes do not overlap: while another replica holds the billing pass's lock, a pass
+    // reports nothing, so each finding is said once a pass.
+    const said: CloudComputerFinding[] = [];
+    await database.connection().execute(async (other) => {
+      await sql`select pg_advisory_lock(hashtextextended('cloud-computer-billing-reconcile',0))`.execute(
+        other,
+      );
+      try {
+        expect(
+          await cloud.reconcileBilling(() => undefined, {
+            onFinding: (finding) => said.push(finding),
+            notReadyAfterMs: minutes(30),
+          }),
+        ).toBe(false);
+      } finally {
+        await sql`select pg_advisory_unlock(hashtextextended('cloud-computer-billing-reconcile',0))`.execute(
+          other,
+        );
+      }
+    });
+    expect(said).toEqual([]);
   });
 
   it("keeps deletion pending without key erasure and a backup target reserved until an empty listing", async () => {

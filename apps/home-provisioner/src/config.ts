@@ -6,6 +6,7 @@ import {
   CloudComputerHostnameSchema,
   defaultBrowserPoolAdminPort,
 } from "@opensteer/control-plane-protocol";
+import { heartbeatUrl } from "@opensteer/shared/heartbeat";
 import { z } from "zod";
 
 const envSchema = z.object({
@@ -114,7 +115,21 @@ function sharedConfig(parsed: z.infer<typeof envSchema>, env: NodeJS.ProcessEnv)
     readinessTimeoutMs: parsed.OPENSTEER_HOME_READINESS_TIMEOUT_MS,
     concurrency: parsed.OPENSTEER_HOME_CONCURRENCY,
     orphanGraceMs: parsed.OPENSTEER_HOME_ORPHAN_GRACE_MS,
+    /** Sent a GET after each tick in which nothing failed (deploy/monitoring). */
+    heartbeatUrl:
+      env.OPENSTEER_HOME_PROVISIONER_HEARTBEAT_URL === undefined &&
+      env.OPENSTEER_HOME_PROVISIONER_HEARTBEAT_URL_FILE === undefined
+        ? undefined
+        : provisionerHeartbeatUrl(readSecret(env, "OPENSTEER_HOME_PROVISIONER_HEARTBEAT_URL")),
   };
+}
+
+function provisionerHeartbeatUrl(value: string): URL | undefined {
+  try {
+    return heartbeatUrl(value);
+  } catch {
+    throw refused("bad_request", "Invalid OPENSTEER_HOME_PROVISIONER_HEARTBEAT_URL");
+  }
 }
 
 function readSecret(env: NodeJS.ProcessEnv, name: string): string {

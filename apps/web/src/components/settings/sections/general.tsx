@@ -5,6 +5,7 @@ import { useDesktopPlaces } from "../../../desktop/places-context.js";
 import { PlaceMenuPlaces } from "../../places/place-menu.js";
 import { DesktopUpdatesRow } from "./desktop-updates.js";
 import { RemoteDesktopUpdateSection } from "./remote-desktop-update.js";
+import { ProblemsGroup } from "./problems.js";
 import { useEffect, useState } from "react";
 import { QuietTaskDaysSchema, type QuietTaskDays } from "@opensteer/core";
 import {
@@ -57,6 +58,7 @@ export function GeneralSection({ view }: { readonly view: SettingsView }) {
         <SearchSuggestionsRow />
         <NotificationsRow />
       </SettingsGroup>
+      <ProblemsGroup />
       <UpdatesGroup view={view} />
       <SettingsGroup heading="About" headingId="settings-general-about">
         <SettingsRow

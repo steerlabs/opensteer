@@ -89,8 +89,12 @@ update_home() (
     rebuild) echo "Same version, different build: updating $new_version." ;;
     newer) echo "Updating from $old_version to $new_version." ;;
     older)
-      [[ $1 == scheduled-update ]] &&
+      if [[ $1 == scheduled-update ]]; then
+        if declare -F record_update_result >/dev/null; then
+          record_update_result feed-older "$old_version" "$new_version"
+        fi
         fail "The feed's release $new_version is older than the running $old_version: older: refused."
+      fi
       echo "Release $new_version is older than the running $old_version: updating, as asked by hand."
       ;;
   esac
@@ -135,9 +139,15 @@ update_home() (
     durable_marker "$journal/committed"
     retire_journal "$journal"
     echo "Updated Home to $new_version."
+    if declare -F record_update_result >/dev/null; then
+      record_update_result updated "$old_version" "$new_version"
+    fi
     return
   fi
   printf '%s\n' "Home $new_version did not become healthy. Restoring $old_version." >&2
   update_recovery
+  if declare -F record_update_result >/dev/null; then
+    record_update_result rolled-back "$old_version" "$new_version"
+  fi
   fail "The update was rolled back."
 )

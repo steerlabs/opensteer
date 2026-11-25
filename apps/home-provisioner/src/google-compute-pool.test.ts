@@ -6,6 +6,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "./config.js";
 import { checkPoolNetwork } from "./main.js";
+import { provisionerFailure } from "./http.js";
 import {
   ComputeFake,
   computeCreate,
@@ -251,5 +252,13 @@ describe("the Homes' subnet as the pool network (review S3)", () => {
     await expect(checkPoolNetwork(provider, "10.40.0.0/16", signal)).rejects.toThrow(
       "OPENSTEER_POOL_HOME_CIDR (10.40.0.0/16) is not the subnet's range (10.40.0.0/20)",
     );
+    // Its fatal log says why, not only that a pass failed.
+    const failure = await checkPoolNetwork(provider, "10.40.0.0/16", signal).catch(
+      (error: unknown) => error,
+    );
+    expect(provisionerFailure(failure)).toEqual({
+      event: "home-provisioner.pool.network-mismatch",
+      message: "OPENSTEER_POOL_HOME_CIDR (10.40.0.0/16) is not the subnet's range (10.40.0.0/20)",
+    });
   });
 });

@@ -125,6 +125,8 @@ export class ComputeFake {
   readonly #held = new Set<string>();
   /** Refuses the first Compute request that matches, once, for the rate quota. */
   rateLimitMatch: ((method: string, path: string) => boolean) | undefined;
+  /** Answers a plain 403 to every Compute request that matches while it is set (an IAM change). */
+  refuseMatch: ((method: string, path: string) => boolean) | undefined;
   #nextId = BigInt(computeInstanceId);
   #nextDiskId = 9000n;
   #nextAddress = 21;
@@ -189,6 +191,8 @@ export class ComputeFake {
         this.rateLimitStatus,
       );
     }
+    if (this.refuseMatch?.(method, path))
+      return json({ error: { code: 403, message: "Required permission is missing" } }, 403);
     // Compute ignores a repeated requestId "if it has already been completed" and answers with
     // the original operation. Google does not document a different request under the same id;
     // the fake refuses it so a reused id cannot pass unnoticed.

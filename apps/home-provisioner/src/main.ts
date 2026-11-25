@@ -1,12 +1,18 @@
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
+import { sendHeartbeat } from "@opensteer/shared/heartbeat";
 import { accountClient, accountRefused, workloadIdentityToken } from "./account.js";
 import { CloudflareDns } from "./cloudflare.js";
 import { loadConfig } from "./config.js";
 import { discoverHome } from "./discovery.js";
 import { GoogleCompute } from "./google-compute.js";
-import { ProviderRateLimited, provisionerFailure, RemoteRequestError } from "./http.js";
+import {
+  PoolNetworkMismatchError,
+  ProviderRateLimited,
+  provisionerFailure,
+  RemoteRequestError,
+} from "./http.js";
 import { httpPoolAgentClient } from "./pool-agent-client.js";
 import { PoolReconciler } from "./pool-reconcile.js";
 import { Reconciler } from "./reconcile.js";
@@ -28,10 +34,17 @@ export async function runProvisionerTick(options: {
   readonly intervalMs: number;
   readonly signal: AbortSignal;
   readonly onError: (error: unknown) => void;
+  /** Called after a tick in which every pass finished without an error. */
+  readonly heartbeat?: () => void;
   readonly now?: () => number;
 }): Promise<number> {
   const now = options.now ?? Date.now;
   let waitMs = options.intervalMs;
+  let failed = false;
+  const onError = (error: unknown) => {
+    failed = true;
+    options.onError(error);
+  };
 
   try {
     await options.reconciler.pass(options.signal);
@@ -39,7 +52,7 @@ export async function runProvisionerTick(options: {
     if (error instanceof ProviderRateLimited) {
       waitMs = Math.max(waitMs, error.retryAt - now());
     }
-    if (!options.signal.aborted) options.onError(error);
+    if (!options.signal.aborted) onError(error);
     if (isFatalAccountError(error)) throw error;
   }
 
@@ -52,11 +65,12 @@ export async function runProvisionerTick(options: {
       if (error instanceof ProviderRateLimited) {
         waitMs = Math.max(waitMs, error.retryAt - now());
       }
-      if (!options.signal.aborted) options.onError(error);
+      if (!options.signal.aborted) onError(error);
       if (isFatalAccountError(error)) throw error;
     }
   }
 
+  if (!failed && !options.signal.aborted) options.heartbeat?.();
   return waitMs;
 }
 
@@ -72,7 +86,7 @@ export async function checkPoolNetwork(
 ): Promise<void> {
   const range = await provider.subnetRange(signal);
   if (range !== homeCidr)
-    throw new Error(
+    throw new PoolNetworkMismatchError(
       `OPENSTEER_POOL_HOME_CIDR (${homeCidr}) is not the subnet's range (${range ?? "unknown"})`,
     );
 }
@@ -161,6 +175,11 @@ async function main(): Promise<void> {
         intervalMs: config.intervalMs,
         signal: shutdown.signal,
         onError: logFailure,
+        heartbeat: () =>
+          sendHeartbeat(config.heartbeatUrl, {
+            onError: (status) =>
+              console.error(JSON.stringify({ event: "home-provisioner.heartbeat.failed", status })),
+          }),
       });
       if (!shutdown.signal.aborted) {
         await delay(waitMs, undefined, { signal: shutdown.signal }).catch(() => {});

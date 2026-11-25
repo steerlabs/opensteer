@@ -1549,6 +1549,26 @@ describe("PoolReconciler — hosts", () => {
     expect(poolPass2).toHaveBeenCalledOnce();
     expect(onError2).toHaveBeenCalledOnce();
   });
+
+  it("sends its heartbeat only after a pass in which nothing failed", async () => {
+    const signal = new AbortController().signal;
+    const heartbeat = vi.fn();
+    const tick = (pass: () => Promise<void>) =>
+      runProvisionerTick({
+        reconciler: { pass },
+        poolReconciler: { pass: async () => {} },
+        intervalMs: 1000,
+        signal,
+        onError: () => undefined,
+        heartbeat,
+      });
+    await tick(async () => {});
+    expect(heartbeat).toHaveBeenCalledOnce();
+    await tick(async () => {
+      throw new Error("one Home failed");
+    });
+    expect(heartbeat).toHaveBeenCalledOnce();
+  });
 });
 
 describe("PoolReconciler — slots", () => {

@@ -136,6 +136,20 @@ export const CloudComputerPhaseSchema = z.enum([
   "failed",
 ]);
 
+/** Why a Cloud Computer's setup failed, as the provisioner reports it. */
+export const CloudComputerFailureSchema = z.enum([
+  "A bootstrap token is required to create this Cloud Computer.",
+  "The provider has a newer Cloud Computer generation.",
+  "The Cloud Computer has more than one server for this generation.",
+  "The Cloud Computer did not become ready before its deadline.",
+  "The Cloud Computer reported a different Home identity for this generation.",
+  "The Cloud Computer provider operation failed.",
+  "The Cloud Computer DNS operation failed.",
+]);
+/** The failure that is a deadline: it names the attempt it judged (`judgedReadinessStartedAt`). */
+export const cloudComputerReadinessDeadline =
+  CloudComputerFailureSchema.enum["The Cloud Computer did not become ready before its deadline."];
+
 export const CloudComputerReportSchema = z
   .strictObject({
     id: CloudComputerIdSchema,
@@ -147,17 +161,13 @@ export const CloudComputerReportSchema = z
     ipv4: z.ipv4().nullable(),
     ipv6: z.ipv6().nullable(),
     observedIdentity: CloudComputerIdentitySchema.nullable(),
-    lastError: z
-      .enum([
-        "A bootstrap token is required to create this Cloud Computer.",
-        "The provider has a newer Cloud Computer generation.",
-        "The Cloud Computer has more than one server for this generation.",
-        "The Cloud Computer did not become ready before its deadline.",
-        "The Cloud Computer reported a different Home identity for this generation.",
-        "The Cloud Computer provider operation failed.",
-        "The Cloud Computer DNS operation failed.",
-      ])
-      .nullable(),
+    lastError: CloudComputerFailureSchema.nullable(),
+    /**
+     * With a deadline failure, and only then: the attempt it judged, the `readinessStartedAt` the
+     * provisioner read in the desired state. The account accepts the failure only for its current
+     * attempt; one judged against an attempt before it is stale.
+     */
+    judgedReadinessStartedAt: z.iso.datetime({ offset: true }).optional(),
   })
   .superRefine((report, context) => {
     const hasServer = report.providerServerId !== null || report.providerServerRef !== undefined;
@@ -183,6 +193,16 @@ export const CloudComputerReportSchema = z
       context.addIssue({
         code: "custom",
         message: "A deleted Cloud Computer cannot have server details",
+      });
+    }
+    if (
+      (report.lastError === cloudComputerReadinessDeadline) !==
+      (report.judgedReadinessStartedAt !== undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["judgedReadinessStartedAt"],
+        message: "A deadline failure, and only one, names the attempt it judged",
       });
     }
     if ((report.phase === "failed") !== (report.lastError !== null)) {

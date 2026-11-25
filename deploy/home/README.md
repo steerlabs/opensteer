@@ -302,6 +302,28 @@ on a bring-your-own Home, or supply a manifest to `update` directly. The Openste
 account gives every Cloud Computer a `releaseManifestUrl` in its boot response and its current
 feed at each update check; a managed Home updates from the account's feed only.
 
+## Problems and reports
+
+The maintenance timer hands the Host what only the machine knows, as fixed values: each service's
+health, the last scheduled backup's result and the last update's result, with times to the minute
+(`machine-status.sh`, written as `machine-status.json` in the Host's `host-data` volume, which no
+Runner mounts). The Host reads it only because `compose.yaml` sets
+`OPENSTEER_MACHINE_STATUS=root-maintenance`, and shows it with its own problems under Settings →
+General → Problems.
+
+A self-hosted Home sends nothing unless you, its operator, set `OPENSTEER_HOME_PROBLEM_REPORTS_URL` in
+`config.env` to an `https://` origin of your own that accepts `POST /v1/problem-reports` (the Host
+refuses `http://`, except to a numeric loopback address, `127.0.0.0/8` or `[::1]`, never the name
+`localhost`). Also set `OPENSTEER_HOME_PROBLEM_REPORTS_TOKEN` (16 to 512
+printable characters): it is sent as `Authorization: Bearer <token>`, and your collector should
+refuse a report without it, because otherwise anyone who can reach the collector can post a forged
+report to it. Setting
+it is the consent: from then on the Host sends that address its health report every 15 minutes,
+exactly the bytes Settings → General → Problems shows. The person's apps have no switch for it, and
+no agent can change it. Unset, nothing leaves the machine. A managed Home (an Opensteer Cloud
+Computer) always sends its health report to the Opensteer account that runs it; see
+[architecture](../../docs/architecture.md#problems-and-reports).
+
 ## Managed release and verification
 
 Generate the standalone cloud-init artifact with

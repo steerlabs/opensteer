@@ -66,7 +66,7 @@ if [[ -n $managed ]]; then
       rm -f -- "$token_path"
       exit 0
     fi
-    for file in install.sh managed-boot.sh common.sh firewall.sh backup.sh update.sh opensteer-home install-scheduler.sh compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml compose.browser-pool.yaml; do
+    for file in install.sh managed-boot.sh common.sh firewall.sh backup.sh update.sh machine-status.sh opensteer-home install-scheduler.sh compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml compose.browser-pool.yaml; do
       install -m 0700 "$source_dir/$file" "$boot/$file"
     done
     install -m 0600 "$managed" "$boot/spec.json.new"

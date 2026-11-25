@@ -5,6 +5,13 @@ import {
   type CloudComputerDeletionStep,
 } from "./billing-error.js";
 import { freeBackupTargets } from "./backup-capacity.js";
+import { cloudComputerSetupFailure } from "../server/events.js";
+import {
+  problemTable,
+  type CloudComputerSetupFailure,
+  type HomeHealthReport,
+  type ProblemCode,
+} from "@opensteer/protocol/problems";
 import { deletionView } from "./deletion-view.js";
 import { SecretManagerBackupKeyVault, type BackupKeyVault } from "./backup-vault.js";
 import { purgeBackupObjects, type BackupPurgeStep } from "./backup-purge.js";
@@ -16,6 +23,7 @@ import {
   type ManagedHomeClaimReceipt,
   CloudComputerBootReleaseSchema,
   CloudComputerBrowserPoolNetworkSchema,
+  cloudComputerReadinessDeadline,
   CloudComputerBootResponseSchema,
   CloudComputerDesiredSchema,
   CloudComputerManagedHomeSchema,
@@ -108,6 +116,44 @@ const emptyDigest = "0".repeat(64);
 const claimLeaseMs = 2 * 60_000;
 const providerWriteGraceMs = 3 * 60_000;
 const dispatchedWriteGraceMs = 15 * 60_000;
+/** A ready Cloud Computer with no backup reported for this long is overdue (it backs up daily). */
+const backupOverdueMs = 36 * 60 * 60_000;
+/** A pool with fewer free entries than this is about to stop checkout or browsing. */
+const lowPoolEntries = 2;
+/** How long a computer that was ready before must be down now before it counts as an outage. */
+const minimumOutageMs = 2 * 60_000;
+/** A ready Cloud Computer reports every 15 minutes; an hour without one is missing. */
+const reportMissingMs = 60 * 60_000;
+
+/** One thing the watch found wrong; each is logged as its own stable event. */
+export type CloudComputerFinding =
+  | {
+      readonly event: "account.cloud_computer.not_ready";
+      readonly computerId: CloudComputerId;
+      readonly phase: "provisioning" | "booting" | "claiming" | "failed";
+      readonly minutes: number;
+      readonly code?: CloudComputerSetupFailure;
+    }
+  | {
+      readonly event: "account.cloud_computer.report_missing";
+      readonly computerId: CloudComputerId;
+      readonly minutes: number;
+    }
+  | {
+      readonly event: "account.cloud_computer.unstable";
+      readonly computerId: CloudComputerId;
+      readonly minutes: number;
+    }
+  | {
+      readonly event: "account.cloud_computer.backup_overdue";
+      readonly computerId: CloudComputerId;
+      readonly minutes: number;
+    }
+  | {
+      readonly event: "account.pool.low";
+      readonly pool: "backup" | "egress";
+      readonly free: number;
+    };
 
 /** One ready Home the Account is about to claim, as it was when the attempt began. */
 export interface CloudComputerClaimJob {
@@ -158,6 +204,11 @@ export class CloudComputerStore {
       assignEgress: (tx, computerId) => this.#assignEgress(tx, computerId),
       egressCredentials: (endpoint) => this.#egressCredentials(endpoint),
     });
+  }
+
+  /** The not-ready limit: also the ready stretch that closes a run of outages. */
+  get #stableMs() {
+    return this.#options.config.notReadyAfterMinutes * 60_000;
   }
 
   get plan() {
@@ -670,7 +721,7 @@ export class CloudComputerStore {
             billingCurrency: attempt.currency,
             billingStatus: billing,
             renewsAt: subscriptionRenewal(subscription, billing),
-            ...transition(existing, desiredState(existing, billing), this.#now()),
+            ...transition(existing, desiredState(existing, billing), this.#now(), this.#stableMs),
             updatedAt: this.#now(),
           })
           .executeTakeFirst();
@@ -845,7 +896,7 @@ export class CloudComputerStore {
         .updateTable("cloudComputers")
         .where("id", "=", row.id)
         .set({
-          ...transition(row, "deleted", now),
+          ...transition(row, "deleted", now, this.#stableMs),
           ...clearBootToken,
           billingStatus: "canceled",
           renewsAt: null,
@@ -870,13 +921,20 @@ export class CloudComputerStore {
       .set({
         billingStatus: status,
         renewsAt,
-        ...transition(row, desiredState(row, status), this.#now()),
+        ...transition(row, desiredState(row, status), this.#now(), this.#stableMs),
         updatedAt: this.#now(),
       })
       .executeTakeFirst();
   }
 
-  async reconcileBilling(onError: (error: unknown) => void) {
+  async reconcileBilling(
+    onError: (error: unknown) => void,
+    watch?: {
+      /** Each finding of the watch, logged as its stable event; see `watch`. */
+      readonly onFinding: (finding: CloudComputerFinding) => void;
+      readonly notReadyAfterMs: number;
+    },
+  ) {
     const run = async (action: () => Promise<unknown>) => {
       try {
         await action();
@@ -891,6 +949,11 @@ export class CloudComputerStore {
       try {
         await run(() => this.checkOffer());
         await this.#billingPass(run, onError);
+        // Under the same lock, so one replica reports each finding once a pass.
+        if (watch)
+          await run(async () => {
+            for (const finding of await this.watch(watch.notReadyAfterMs)) watch.onFinding(finding);
+          });
         return true;
       } finally {
         await sql`select pg_advisory_unlock(hashtextextended('cloud-computer-billing-reconcile',0))`.execute(
@@ -898,6 +961,137 @@ export class CloudComputerStore {
         );
       }
     });
+  }
+
+  /**
+   * What is wrong for paying people now, read from the rows the account already keeps: a
+   * person who paid and has no working Cloud Computer (its setup failed, its claim failed, or
+   * it is not claimed `notReadyAfterMs` after its readiness began), a ready computer that has
+   * reported no backup for 36 hours, and a pool with fewer than two free entries.
+   */
+  async watch(notReadyAfterMs: number): Promise<CloudComputerFinding[]> {
+    const now = this.#now().getTime();
+    const findings: CloudComputerFinding[] = [];
+    const rows = await this.#db
+      .selectFrom("cloudComputers")
+      .leftJoin("cloudComputerHealth", "cloudComputerHealth.computerId", "cloudComputers.id")
+      .select([
+        "id",
+        "phase",
+        "lastError",
+        "claimError",
+        "readinessStartedAt",
+        "bootstrapReceiptAt",
+        "bootCompletedAt",
+        "lastBackupAt",
+        "readyAt",
+        "downAt",
+        "unstableSince",
+        "cloudComputerHealth.receivedAt as healthReceivedAt",
+      ])
+      .where("state", "=", "active")
+      .where("billingStatus", "=", "active")
+      .where("accountId", "is not", null)
+      .where("deletionRequestedAt", "is", null)
+      .where("tombstonedAt", "is", null)
+      .orderBy("id")
+      .execute();
+    const minutesSince = (at: Date) => Math.max(0, Math.floor((now - at.getTime()) / 60_000));
+    for (const row of rows) {
+      const claim = operatorClaimError(row.claimError);
+      const code = cloudComputerSetupFailure(row.lastError, claim);
+      const claimed = row.bootstrapReceiptAt !== null;
+      // Working means ready and claimed for its buyer. The watch, once, for everything else:
+      // - failed, or its claim failed: pages at once (a deadline failure is ten real minutes of
+      //   this attempt or outage, `report`; a provider failure is a real failure);
+      // - never ready (`ready_at` null), or ready and not yet claimed: pages once its current
+      //   attempt's clock, `readiness_started_at`, passes the limit;
+      // - ready before and down now: pages once its run of outages, `unstable_since`, has lasted
+      //   the limit and this outage, `down_at`, has lasted `minimumOutageMs`. One restart never
+      //   pages; a computer that keeps going down, or stays down, does.
+      // Every path that takes a computer out of ready starts its outage (`report`, `mutate`,
+      // `transition`); a row without one is judged from its attempt's clock.
+      const working = row.phase === "ready" && claimed;
+      const down = row.phase !== "ready";
+      const outageBegan = row.downAt ?? row.readinessStartedAt;
+      const runBegan = row.unstableSince ?? outageBegan;
+      const wasReady = down && row.readyAt !== null;
+      const clock = wasReady ? runBegan : row.readinessStartedAt;
+      if (
+        row.phase === "failed" ||
+        claim !== null ||
+        (!working &&
+          now - clock.getTime() >= notReadyAfterMs &&
+          (!wasReady || now - outageBegan.getTime() >= minimumOutageMs))
+      ) {
+        findings.push({
+          event: "account.cloud_computer.not_ready",
+          computerId: row.id,
+          phase:
+            row.phase === "failed" || claim
+              ? "failed"
+              : row.phase === "ready"
+                ? "claiming"
+                : row.phase === "booting"
+                  ? "booting"
+                  : "provisioning",
+          minutes: minutesSince(clock),
+          ...(code ? { code } : {}),
+        });
+        continue;
+      }
+      // Not paged, for the digest: a run of outages that has lasted the limit (from its first
+      // outage to now while down, to the end of its last once ready), none of which is paged now,
+      // and still going: down now, or ready again for less than the limit. Many short outages,
+      // or one long one that was paged and has ended; nobody is woken for either at night.
+      if (row.readyAt !== null && row.unstableSince !== null) {
+        const run = (down ? now : row.readyAt.getTime()) - row.unstableSince.getTime();
+        if (run >= notReadyAfterMs && (down || now - row.readyAt.getTime() < notReadyAfterMs))
+          findings.push({
+            event: "account.cloud_computer.unstable",
+            computerId: row.id,
+            minutes: Math.floor(run / 60_000),
+          });
+      }
+      const reported = row.healthReceivedAt ?? row.bootstrapReceiptAt;
+      if (row.phase === "ready" && reported && now - reported.getTime() >= reportMissingMs)
+        findings.push({
+          event: "account.cloud_computer.report_missing",
+          computerId: row.id,
+          minutes: minutesSince(reported),
+        });
+      const backedUp = row.lastBackupAt ?? row.bootCompletedAt;
+      if (
+        row.phase === "ready" &&
+        claimed &&
+        backedUp &&
+        now - backedUp.getTime() >= backupOverdueMs
+      )
+        findings.push({
+          event: "account.cloud_computer.backup_overdue",
+          computerId: row.id,
+          minutes: minutesSince(backedUp),
+        });
+    }
+    const [backup, egress] = await Promise.all([
+      freeBackupTargets(this.#db)
+        .select((eb) => eb.fn.countAll<string>().as("free"))
+        .executeTakeFirstOrThrow(),
+      this.#db
+        .selectFrom("cloudComputerEgressEndpoints")
+        .select((eb) => eb.fn.countAll<string>().as("free"))
+        .where("computerId", "is", null)
+        .where("needsRotation", "=", false)
+        .where("retired", "=", false)
+        .executeTakeFirstOrThrow(),
+    ]);
+    for (const [pool, { free }] of [
+      ["backup", backup],
+      ["egress", egress],
+    ] as const)
+      if (Number(free) < lowPoolEntries)
+        findings.push({ event: "account.pool.low", pool, free: Number(free) });
+    return findings;
   }
 
   async #billingPass(
@@ -1373,7 +1567,7 @@ export class CloudComputerStore {
           row.pendingProviderWrites.length !== 0) ||
         (report.phase === "ready" && (!row.bootCompletedAt || !report.observedIdentity))
       ) {
-        return { recorded: false, kick: false };
+        return { recorded: false, kick: false, newlyFailed: false };
       }
       const identity = report.observedIdentity;
       if (
@@ -1385,13 +1579,35 @@ export class CloudComputerStore {
         throw new ControlPlaneError("conflict", "Cloud Computer Home identity changed");
       }
       const now = this.#now();
-      const ready = report.phase === "ready";
-      const deleted = report.phase === "deleted";
+      // A deadline failure is about the attempt it judged (`judgedReadinessStartedAt`, the clock
+      // the provisioner read in the desired state). One that names any attempt but the row's
+      // current one is about an attempt that is over: it changes nothing, whatever the row's phase
+      // (a retried copy, one judged before a Resume, a replacement or the outage after it). One
+      // that names the current attempt of a row still ready is the first news of an outage: the
+      // provisioner read the clock while the row was ready, so it is recorded as booting, and the
+      // outage and a new attempt begin; any later copy of it names a past attempt. One that names
+      // the current attempt of a row already down is accepted: failed. The account owns the
+      // clock, so this is decided here, under the row lock.
+      const deadline = report.lastError === cloudComputerReadinessDeadline;
+      const judged = report.judgedReadinessStartedAt;
+      const current =
+        judged !== undefined && Date.parse(judged) === row.readinessStartedAt.getTime();
+      if (deadline && !current) return { recorded: true, kick: false, newlyFailed: false };
+      const stale = deadline && row.phase === "ready";
+      const phase = stale ? "booting" : report.phase;
+      const lastError = stale ? null : report.lastError;
+      const ready = phase === "ready";
+      const deleted = phase === "deleted";
+      // Out of ready while active: an outage begins, and the attempt's clock starts again.
+      const outageBegins =
+        row.state === "active" &&
+        row.phase === "ready" &&
+        (phase === "booting" || phase === "failed" || phase === "provisioning");
       await tx
         .updateTable("cloudComputers")
         .where("id", "=", row.id)
         .set({
-          phase: deleted ? "deleting" : report.phase,
+          phase: deleted ? "deleting" : phase,
           ipv4: report.ipv4,
           ipv6: report.ipv6,
           // Retain the last server observation through transient provider failures.
@@ -1399,11 +1615,14 @@ export class CloudComputerStore {
             ? null
             : (report.providerServerId?.toString() ?? row.providerServerId),
           providerServerRef: deleted ? null : (report.providerServerRef ?? row.providerServerRef),
-          lastError: report.lastError,
+          lastError,
           reportedAt: now,
           updatedAt: now,
           ...(ready ? { everReady: true, generationReady: true, dnsQuarantined: false } : {}),
-          ...(report.lastError ===
+          ...(ready && (row.phase !== "ready" || row.readyAt === null) ? { readyAt: now } : {}),
+          // When the current outage began: kept while it stays down, cleared once it is ready.
+          downAt: ready ? null : (row.downAt ?? now),
+          ...(lastError ===
           "The Cloud Computer reported a different Home identity for this generation."
             ? { dnsQuarantined: true }
             : {}),
@@ -1416,8 +1635,11 @@ export class CloudComputerStore {
                 readinessStartedAt: now,
               }
             : {}),
-          ...((report.phase === "booting" || report.phase === "failed") && row.phase === "ready"
-            ? { readinessStartedAt: now }
+          ...(outageBegins
+            ? {
+                readinessStartedAt: now,
+                ...outageBegin(row, now, this.#stableMs),
+              }
             : {}),
           ...(deleted
             ? {
@@ -1441,7 +1663,12 @@ export class CloudComputerStore {
           .where("computerId", "=", row.id)
           .executeTakeFirst();
       }
-      return { recorded: true, kick: ready && row.bootstrapReceiptAt === null };
+      return {
+        recorded: true,
+        kick: ready && row.bootstrapReceiptAt === null,
+        // Said once, as the setup turns failed; the watch keeps saying it while it stays so.
+        newlyFailed: phase === "failed" && row.phase !== "failed",
+      };
     });
     if (result.recorded && report.phase === "deleted") {
       await this.#eraseBackupKey(report.id).catch(() =>
@@ -1863,6 +2090,35 @@ export class CloudComputerStore {
         .where("id", "=", id)
         .executeTakeFirst();
     });
+  }
+
+  /**
+   * Keeps a Cloud Computer's latest health report, sent with the credentials its backup report
+   * uses, in place of the one before. Returns the codes in it that need someone now.
+   */
+  async reportHealthForHome(
+    id: CloudComputerId,
+    authorization: string | undefined,
+    report: HomeHealthReport,
+  ): Promise<ProblemCode[]> {
+    await this.#db.transaction().execute(async (tx) => {
+      await this.#requireBootedHome(tx, id, authorization, "share");
+      const receivedAt = this.#now();
+      await tx
+        .insertInto("cloudComputerHealth")
+        .values({ computerId: id, receivedAt, report: JSON.stringify(report) })
+        .onConflict((conflict) =>
+          conflict.column("computerId").doUpdateSet({ receivedAt, report: JSON.stringify(report) }),
+        )
+        .execute();
+    });
+    return [
+      ...new Set(
+        report.problems
+          .filter(({ code }) => problemTable[code].severity === "needs-you")
+          .map(({ code }) => code),
+      ),
+    ];
   }
 
   async setupCodeForReadyHome(
@@ -2289,6 +2545,12 @@ export class CloudComputerStore {
       },
       lastError: row.lastError,
       updatedAt: row.updatedAt,
+      health:
+        (await this.#db
+          .selectFrom("cloudComputerHealth")
+          .select(["receivedAt", "report"])
+          .where("computerId", "=", row.id)
+          .executeTakeFirst()) ?? null,
     };
   }
 
@@ -2413,6 +2675,7 @@ export class CloudComputerStore {
           phase: "provisioning",
           lastError: null,
           readinessStartedAt: now,
+          ...outageBegin(row, now, this.#stableMs),
         };
       } else if (action === "reissue" || action === "replace") {
         if (row.state !== "active")
@@ -2465,6 +2728,7 @@ export class CloudComputerStore {
           ownerAccessAt: null,
           phase: "provisioning",
           readinessStartedAt: now,
+          ...outageBegin(row, now, this.#stableMs),
           reportedAt: null,
           setupCodeDigest: digestSecret(setupCode),
           sealedSetupCode: this.#options.cipher.seal(id, generation, setupCode),
@@ -2552,6 +2816,7 @@ export class CloudComputerStore {
             row,
             desiredState({ ...row, operatorSuspension, ownerSuspended }, row.billingStatus),
             now,
+            this.#stableMs,
           ),
         };
       }
@@ -3243,20 +3508,61 @@ function transition(
   row: Computer,
   next: Computer["state"],
   now: Date,
+  stableMs: number,
 ): Updateable<CloudComputerTable> {
   if (row.state === next) return {};
+  // Time not active never counts toward a run of outages, and never erases one. Leaving active,
+  // it records when; a run a ready stretch of the limit has closed ends there, one still open is
+  // kept. Back to active (a Resume, an operator's unsuspend, billing that recovered): a new
+  // attempt and a new outage, and the open run moved forward by the time it was not active, so
+  // it counts active time only; with none open, a run begins now.
+  const leaving = row.state === "active";
+  const closed =
+    row.phase === "ready" &&
+    row.downAt === null &&
+    row.readyAt !== null &&
+    now.getTime() - row.readyAt.getTime() >= stableMs;
   return {
     state: next,
     phase: next === "deleted" ? "deleting" : "provisioning",
     lastError: null,
+    ...(leaving ? { inactiveSince: now, ...(closed ? { unstableSince: null } : {}) } : {}),
     ...(next === "active"
       ? {
           readinessStartedAt: new Date(
             Math.max(now.getTime(), row.readinessStartedAt.getTime() + 1),
           ),
+          downAt: now,
+          unstableSince:
+            row.unstableSince && row.inactiveSince
+              ? new Date(
+                  row.unstableSince.getTime() + (now.getTime() - row.inactiveSince.getTime()),
+                )
+              : now,
+          inactiveSince: null,
         }
       : {}),
   };
+}
+
+/**
+ * The outage a computer leaving ready, or put back to provisioning, is in: when it began, and when
+ * its run of outages began. One already under way is kept. A new one starts a new run if the
+ * computer had stayed ready for the stable period (the not-ready limit) before it, or was never
+ * ready; one sooner keeps its run's start, so a computer that keeps going down pages once the run
+ * passes the limit (`watch`).
+ */
+function outageBegin(
+  row: Pick<Computer, "readyAt" | "downAt" | "unstableSince">,
+  now: Date,
+  stableMs: number,
+): { downAt: Date; unstableSince: Date } {
+  if (row.downAt) return { downAt: row.downAt, unstableSince: row.unstableSince ?? row.downAt };
+  const newRun =
+    row.unstableSince === null ||
+    row.readyAt === null ||
+    now.getTime() - row.readyAt.getTime() >= stableMs;
+  return { downAt: now, unstableSince: newRun ? now : row.unstableSince! };
 }
 
 function preparationSteps(row: Computer): CloudComputerPreparationStep[] {

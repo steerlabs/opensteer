@@ -1,4 +1,5 @@
 import { agentDirectoryMigration } from "../agent-directory/migration.js";
+import { problemReportsMigration } from "../cloud-computers/health-migration.js";
 import { cloudComputerViewMigration } from "../cloud-computers/view-migration.js";
 import { onePersonAccountMigrations } from "./one-person-account-migration.js";
 import { platformVerificationRemovalMigration } from "../agent-directory/platform-verification-removal-migration.js";
@@ -537,6 +538,7 @@ const migrationProvider = {
       // A Cloud Computer is one person's, bought and paid by that person.
       ...onePersonAccountMigrations,
       "0038_remove_platform_verification": platformVerificationRemovalMigration,
+      "0039_problem_reports": problemReportsMigration,
       // Lands after 0039 (problem reports): the migrator applies in name order.
       "0040_browser_always_pooled": browserAlwaysPooledMigration,
     };
@@ -548,6 +550,17 @@ export async function migrateControlPlaneToLatest(
 ): Promise<MigrationResultSet> {
   const migrator = new Migrator({ db: database, provider: migrationProvider });
   const result = await migrator.migrateToLatest();
+  assertMigrationSucceeded(result);
+  return result;
+}
+
+/** Migrates to exactly `target`, the name of one migration, as a stack at that release is. */
+export async function migrateControlPlaneTo(
+  database: Kysely<ControlPlaneDatabaseSchema>,
+  target: string,
+): Promise<MigrationResultSet> {
+  const migrator = new Migrator({ db: database, provider: migrationProvider });
+  const result = await migrator.migrateTo(target);
   assertMigrationSucceeded(result);
   return result;
 }

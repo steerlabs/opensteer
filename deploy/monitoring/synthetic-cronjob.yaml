@@ -1,0 +1,95 @@
+# Runs the synthetic purchase (scripts/synthetic-cloud-computer.mjs) every six hours in the same
+# cluster as the account service, so its JSON lines reach Cloud Logging and
+# policies/page-synthetic-failed-twice.yaml can count them. Point it at a STAGING account service
+# that sells in Stripe test mode, never at production. It pays on Stripe's hosted Checkout page in
+# a headless Chromium, so it runs in Playwright's own image (the one deploy/container pins), with
+# playwright-core 1.62.1 installed beside the script when the job starts.
+#
+# The account service needs the synthetic purchase's own sign-in, never App Review's:
+#   OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL and OPENSTEER_SYNTHETIC_SIGN_IN_PASSWORD (24+ characters).
+#
+#   kubectl -n opensteer-system create configmap opensteer-synthetic-script \
+#     --from-file=synthetic-cloud-computer.mjs=scripts/synthetic-cloud-computer.mjs \
+#     --dry-run=client -o yaml | kubectl apply -f -
+#   kubectl -n opensteer-system create secret generic opensteer-synthetic \
+#     --from-literal=OPENSTEER_SYNTHETIC_ACCOUNT_URL=https://account.staging.example.com \
+#     --from-literal=OPENSTEER_SYNTHETIC_EMAIL=... \
+#     --from-literal=OPENSTEER_SYNTHETIC_PASSWORD=... \
+#     --from-literal=OPENSTEER_SYNTHETIC_HEARTBEAT_URL=https://...
+#   kubectl apply -f deploy/monitoring/synthetic-cronjob.yaml
+#
+# Cost of a run: the image (about 2 GB, pulled once per node), one npm install of playwright-core
+# (about 10 s), a Chromium of about 0.5-1 GiB for the minute it pays, and the test Cloud Computer's
+# VM for the 10-20 minutes from purchase to deletion.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: opensteer-synthetic-purchase
+  namespace: opensteer-system
+spec:
+  schedule: "17 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 4
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      # Longer than the run's own worst case (worstCaseMs: 83.5 minutes with the default bounds),
+      # so a run is never stopped from outside while it still has a Cloud Computer to delete.
+      activeDeadlineSeconds: 6000
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            seccompProfile:
+              type: RuntimeDefault
+          initContainers:
+            - name: playwright-core
+              image: mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
+              command:
+                - sh
+                - -ec
+                - |
+                  cp /script/synthetic-cloud-computer.mjs /run/synthetic/
+                  cd /run/synthetic
+                  HOME=/tmp npm install --no-save --ignore-scripts --no-audit --no-fund playwright-core@1.62.1
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                - { name: script, mountPath: /script, readOnly: true }
+                - { name: run, mountPath: /run/synthetic }
+                - { name: tmp, mountPath: /tmp }
+          containers:
+            - name: synthetic
+              image: mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
+              command: ["node", "/run/synthetic/synthetic-cloud-computer.mjs"]
+              envFrom:
+                - secretRef:
+                    name: opensteer-synthetic
+              env:
+                - { name: HOME, value: /tmp }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              resources:
+                requests: { cpu: 500m, memory: 512Mi }
+                limits: { memory: 1536Mi }
+              volumeMounts:
+                - { name: run, mountPath: /run/synthetic, readOnly: true }
+                - { name: tmp, mountPath: /tmp }
+                - { name: shm, mountPath: /dev/shm }
+          volumes:
+            - name: script
+              configMap:
+                name: opensteer-synthetic-script
+            - { name: run, emptyDir: {} }
+            - { name: tmp, emptyDir: {} }
+            - { name: shm, emptyDir: { medium: Memory, sizeLimit: 256Mi } }

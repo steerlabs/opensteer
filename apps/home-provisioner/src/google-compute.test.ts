@@ -408,7 +408,8 @@ it("caches, refreshes, and discards a refused metadata token without replay", as
   await provider.listManaged(signal);
   expect(fake.metadataCalls).toBe(2);
   fake.rejectComputeToken = true;
-  await expect(provider.listManaged(signal)).rejects.toMatchObject({ status: 401 });
+  // A refused GET observed nothing (http.ts): its 401 is inside the ObservationFailed.
+  await expect(provider.listManaged(signal)).rejects.toMatchObject({ cause: { status: 401 } });
   expect(fake.metadataCalls).toBe(2);
   fake.rejectComputeToken = false;
   await provider.listManaged(signal);

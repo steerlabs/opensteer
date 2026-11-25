@@ -60,6 +60,8 @@ import { z } from "zod";
 import type { ControlPlaneAuthenticator } from "../auth/auth.js";
 import type { ControlPlaneStore } from "../database/store.js";
 import { toWebHeaders } from "../portal/routes.js";
+import { cloudComputerSetupFailure, logAccountEvent } from "../server/events.js";
+import { HomeHealthReportSchema } from "@opensteer/protocol/problems";
 import { ControlPlaneError } from "../server/errors.js";
 import { PoolSlotEgressRateLimitedError } from "./pool-store.js";
 import type { CloudComputerStore } from "./store.js";
@@ -172,6 +174,15 @@ export function registerCloudComputerRoutes(
       throw new ControlPlaneError("bad_request", "Cloud Computer report ID does not match the URL");
     const result = await store.report(report);
     if (result.kick) options.kickBootstrap?.();
+    if (result.newlyFailed) {
+      const code = cloudComputerSetupFailure(report.lastError, null);
+      logAccountEvent(
+        request.log,
+        "account.cloud_computer.setup_failed",
+        { computerId: id, phase: report.phase, ...(code ? { code } : {}) },
+        "Cloud Computer setup failed",
+      );
+    }
     return CloudComputerReportResponseSchema.parse({ recorded: result.recorded });
   });
 
@@ -257,6 +268,27 @@ export function registerCloudComputerRoutes(
       request.headers.authorization,
       CloudComputerBackupReportSchema.parse(request.body),
     );
+    return reply.code(204).send();
+  });
+
+  // A Cloud Computer's health report, with the credentials of its backup report: the latest one
+  // is kept, and a problem that needs someone is logged for the operator's digest.
+  app.post(`${provisionerPath}/health`, { bodyLimit: 16_384 }, async (request, reply) => {
+    privateResponse(reply);
+    const { id } = params.parse(request.params);
+    const report = HomeHealthReportSchema.safeParse(request.body);
+    if (!report.success || report.data.home !== "cloud-computer")
+      throw new ControlPlaneError("bad_request", "Invalid Cloud Computer health report");
+    const codes = await store.reportHealthForHome(id, request.headers.authorization, report.data);
+    const unhealthy = Object.values(report.data.services ?? {}).some(
+      (health) => health === "unhealthy" || health === "stopped",
+    );
+    if (codes.length || unhealthy)
+      logAccountEvent(request.log, "account.cloud_computer.unhealthy", {
+        computerId: id,
+        codes,
+        version: report.data.version,
+      });
     return reply.code(204).send();
   });
 
