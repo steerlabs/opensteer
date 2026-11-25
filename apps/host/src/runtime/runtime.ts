@@ -877,8 +877,7 @@ export async function createHostRuntime(
     const homeAddresses = new HomeAddressBook({
       canonicalOrigin: config.canonicalOrigin,
       listenPort: config.port,
-      readRoute: async () =>
-        (await personalRemoteAccess?.status())?.route?.document.route.origin ?? null,
+      readRoute: async () => (await personalRemoteAccess?.routeOrigin()) ?? null,
     });
     const personalAccount = config.personal
       ? new PersonalRemoteAccessService({
@@ -899,12 +898,13 @@ export async function createHostRuntime(
           onAccountLinkChanged: () => {
             void ownerProfile.refresh().catch(reportOwnerProfileError);
           },
-          onRouteChanged: () =>
-            homeAddresses
-              .refresh()
-              .catch((error: unknown) =>
-                app.log.error({ err: error }, "This Home's addresses could not be read again"),
-              ),
+          onRouteChanged: (routeOrigin) => {
+            // A new set is published from the committed route; agents attached under the old
+            // one end their attachments and attach again with it (B1).
+            if (!homeAddresses.publish(routeOrigin)) return;
+            browser.endAgentAttachments("This Home's addresses changed. Attach again.");
+            chromeTabs.endAgentAttachments();
+          },
         })
       : undefined;
     const personalRemoteAccess = exposurePolicy.personalRemoteAccess ? personalAccount : undefined;

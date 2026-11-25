@@ -127,7 +127,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
   readonly #accountOperations = new Map<string, Promise<RevokeConnectResponse | undefined>>();
   readonly #disconnectRunners: () => Promise<void>;
   readonly #accountLinkChanged: () => void;
-  readonly #routeChanged: () => Promise<unknown>;
+  readonly #routeChanged: (routeOrigin: string | null) => void;
 
   constructor(options: {
     readonly authority: PersonalHostAccountAuthority;
@@ -146,8 +146,11 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     readonly now?: () => Date;
     /** Called after a link becomes active or ends, so what follows the Account can catch up. */
     readonly onAccountLinkChanged?: () => void;
-    /** Called after the route changed and committed, so this Home's addresses are read again. */
-    readonly onRouteChanged?: () => Promise<unknown>;
+    /**
+     * Called after the route changed and committed, with the committed route's origin (null when
+     * Remote access is off): this Home's addresses are published from it, never read again.
+     */
+    readonly onRouteChanged?: (routeOrigin: string | null) => void;
   }) {
     this.desktopUpdates = new PersonalDesktopUpdate(
       new PersonalDesktopUpdateStore(options.database),
@@ -168,11 +171,21 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     this.#now = options.now ?? (() => new Date());
     this.#disconnectRunners = options.disconnectRunners ?? (async () => undefined);
     this.#accountLinkChanged = options.onAccountLinkChanged ?? (() => undefined);
-    this.#routeChanged = options.onRouteChanged ?? (async () => undefined);
+    this.#routeChanged = options.onRouteChanged ?? (() => undefined);
   }
 
   status(): Promise<PersonalRemoteAccessStatus> {
     return this.#readStatus(this.#database);
+  }
+
+  /** The current route's origin, null when Remote access is off: one narrow read, no signing. */
+  async routeOrigin(): Promise<string | null> {
+    const state = await this.#database
+      .selectFrom("personalRemoteAccess")
+      .select(["mode", "routeOrigin"])
+      .where("singletonKey", "=", "personal")
+      .executeTakeFirstOrThrow();
+    return state.mode === "off" ? null : state.routeOrigin;
   }
 
   async #readStatus(database: Kysely<DatabaseSchema>): Promise<PersonalRemoteAccessStatus> {
@@ -222,6 +235,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     await requirePersonalAdministrator(this.#database, caller.session);
     const request = ConfigurePersonalRemoteAccessRequestSchema.parse(input);
     let reconfigured = false;
+    let committedRoute: string | null = null;
     let ended: readonly AuthSessionId[] = [];
     await this.#database.transaction().execute(async (transaction) => {
       await lockRemoteAccess(transaction);
@@ -290,6 +304,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         .where("singletonKey", "=", "personal")
         .executeTakeFirstOrThrow();
       reconfigured = true;
+      committedRoute = request.mode === "off" ? null : (request.routeOrigin ?? null);
     });
     // Their browser and realtime connections end with the logins, after commit.
     const announce = () => this.#identity.announceSessionsEnded(ended);
@@ -302,8 +317,9 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     // shell sessions have ended as the disconnection they are.
     if (reconfigured) {
       this.administration.changed();
-      // Before the computers are taken away: what they reconnect to issues tickets with it.
-      await this.#routeChanged();
+      // From the route this transaction committed, before the computers are taken away: what they
+      // reconnect to issues tickets with it, and agents attached under the old set attach again.
+      this.#routeChanged(committedRoute);
       await this.#disconnectRunners();
     }
     return this.status();

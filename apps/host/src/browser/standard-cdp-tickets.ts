@@ -157,6 +157,11 @@ export class StandardCdpTickets {
       if (entry.claims.authority.agentBindingId === agentBindingId) this.#discard(key, entry);
   }
 
+  /** Every outstanding ticket ends: this Home's addresses changed after it was issued (B1). */
+  revokeAll(): void {
+    for (const [key, entry] of this.#claims) this.#discard(key, entry);
+  }
+
   revokePooled(predicate: (claims: StandardCdpTicketClaims) => boolean): void {
     for (const [key, entry] of this.#claims)
       if (entry.pool && predicate(entry.claims)) this.#discard(key, entry);

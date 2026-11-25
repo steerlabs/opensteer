@@ -291,11 +291,13 @@ describe("PersonalRemoteAccessService", () => {
   it("disconnects the reachable computers exactly when the route generation moves", async () => {
     const keys = generateKeyPairSync("ed25519");
     const disconnectRunners = vi.fn(async () => undefined);
+    const onRouteChanged = vi.fn((_routeOrigin: string | null) => undefined);
     const fixture = configureDatabase({ generation: 4, mode: "off", routeOrigin: null });
     const service = new PersonalRemoteAccessService({
       authority,
       database: ownerAuthority(fixture.database) as never,
       disconnectRunners,
+      onRouteChanged,
       identity: fakeIdentity(),
       keys,
     });
@@ -316,6 +318,11 @@ describe("PersonalRemoteAccessService", () => {
     // The durable generation is what a reconnecting computer is checked
     // against, so it has to be committed before anything is taken away.
     expect(fixture.updated).toHaveBeenCalledBefore(disconnectRunners);
+    // This Home's addresses are published from the route that committed, before the computers
+    // are taken away (B1, B2): no second read that could fail.
+    expect(onRouteChanged.mock.calls).toEqual([["https://personal.example.test"]]);
+    expect(fixture.updated).toHaveBeenCalledBefore(onRouteChanged);
+    expect(onRouteChanged).toHaveBeenCalledBefore(disconnectRunners);
 
     // Re-saving the settings that are already stored writes nothing and bumps
     // no generation, so it takes no connection away either.
@@ -327,6 +334,7 @@ describe("PersonalRemoteAccessService", () => {
       }),
     ).resolves.toMatchObject({ generation: 5 });
     expect(disconnectRunners).toHaveBeenCalledOnce();
+    expect(onRouteChanged).toHaveBeenCalledOnce();
   });
 
   it("pins Account approval and publishes with the Host-owned linked credential", async () => {

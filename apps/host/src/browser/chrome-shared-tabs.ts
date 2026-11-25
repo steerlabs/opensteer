@@ -522,6 +522,16 @@ export class ChromeSharedTabs {
     };
   }
 
+  /**
+   * This Home's addresses changed: every agent's client on a shared tab ends, and its tickets, so
+   * the next attachment brings the new set to the extension and this router (B1). The person's
+   * shares stay.
+   */
+  endAgentAttachments(): void {
+    this.standardCdpTickets.revokeAll();
+    for (const share of this.#shares.values()) for (const client of share.clients) client.close();
+  }
+
   async closeForBinding(agentBindingId: string, _reason: string): Promise<void> {
     this.standardCdpTickets.revoke(agentBindingId);
     await Promise.all(

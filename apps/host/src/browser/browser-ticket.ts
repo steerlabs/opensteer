@@ -96,7 +96,8 @@ export class BrowserAttachTicketSigner {
     const schema = input.pool
       ? PooledBrowserAttachTicketClaimsSchema
       : BrowserAttachTicketClaimsSchema;
-    const home = this.#homeAddresses?.();
+    // Only a ticket with the actor claim carries the set (B4): no other one pays for it.
+    const home = input.actor ? this.#homeAddresses?.() : undefined;
     const claims: RuntimeBrowserAttachTicketClaims = schema.parse({
       access: input.access,
       ...(input.standardCdp ? { standardCdp: input.standardCdp } : {}),
@@ -146,7 +147,7 @@ export class BrowserAttachTicketSigner {
       ...(input.viewport ? { viewport: input.viewport } : {}),
       // Only beside the actor claim: a runtime that reads it (the Mac's, a pooled one) holds the
       // tabs agents drive; a phone browser reads neither and refuses a claim it does not know.
-      ...(input.actor && home && (home.origins.length || home.loopbackPorts.length)
+      ...(home && (home.origins.length || home.loopbackPorts.length)
         ? {
             homeAddresses: {
               origins: [...home.origins],

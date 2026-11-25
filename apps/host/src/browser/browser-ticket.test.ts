@@ -4,7 +4,7 @@ import {
   createBrowserSessionId,
 } from "@opensteer/protocol/browser";
 import { generateKeyPairSync, randomUUID, verify } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { BrowserAttachTicketSigner } from "./browser-ticket.js";
 
 describe("BrowserAttachTicketSigner", () => {
@@ -56,10 +56,11 @@ describe("BrowserAttachTicketSigner", () => {
   it("carries this Home's addresses only beside the actor claim, read from memory at issue", () => {
     const keys = generateKeyPairSync("ed25519");
     let home = { origins: ["https://home.example.com"], loopbackPorts: [4310] };
+    const supplier = vi.fn(() => home);
     const signer = new BrowserAttachTicketSigner({
       keyId: "home",
       privateKey: keys.privateKey,
-      homeAddresses: () => home,
+      homeAddresses: supplier,
     });
     const claimsOf = (actor?: "agent" | "person") =>
       BrowserAttachTicketClaimsSchema.parse(
@@ -85,6 +86,10 @@ describe("BrowserAttachTicketSigner", () => {
     // A phone browser reads neither the actor claim nor this one, and refuses a claim it does not
     // know: it is never given it.
     expect(claimsOf()).not.toHaveProperty("homeAddresses");
+    // A ticket without the actor claim never asks for the set (B4).
+    supplier.mockClear();
+    claimsOf();
+    expect(supplier).not.toHaveBeenCalled();
     // The set as it is when the ticket is issued.
     home = { origins: ["https://home.example.com", "https://route.test"], loopbackPorts: [4310] };
     expect(claimsOf("agent").homeAddresses).toEqual(home);

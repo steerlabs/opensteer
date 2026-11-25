@@ -795,6 +795,13 @@ const BaselineBrowserClientMessageSchema = z
       manageExtensions: z.literal(true).optional(),
       /** Host-only attribution for Page.navigate and Opensteer.openTab. */
       navigationId: z.uuid().optional(),
+      /**
+       * Host-only: this Home's addresses as they are now, on an agent's command that attaches a
+       * page (`Opensteer.resumeTab`, `Target.attachToTarget`, `Target.createTarget`), sent to a
+       * runtime that reads the actor claim. An agent whose attachments the Home ended when the
+       * set changed brings the new set with its next attach (B1).
+       */
+      homeAddresses: BrowserHomeAddressesSchema.optional(),
       type: z.literal("cdp.command"),
     }),
     /**

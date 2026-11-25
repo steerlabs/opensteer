@@ -1141,6 +1141,28 @@ describe("BrowserController", () => {
     }
   });
 
+  it("takes this Home's addresses from an agent's attach command, as from its ticket (B1)", async () => {
+    const controller = createController();
+    await controller.start();
+    try {
+      expect(cdpRouter.isHomeAddress("https://route.opensteer.test/")).toBe(false);
+      await controller.handle({
+        type: "cdp.command",
+        requestId: randomUUID(),
+        homeAddresses: { origins: ["https://route.opensteer.test"], loopbackPorts: [4310] },
+        command: {
+          method: "Target.attachToTarget",
+          parameters: { targetId: await page.targetId(), flatten: true },
+        },
+      } as BrowserClientMessage);
+      expect(cdpRouter.isHomeAddress("https://route.opensteer.test/")).toBe(true);
+      expect(cdpRouter.isHomeAddress("http://localhost:4310/")).toBe(true);
+    } finally {
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("fills nothing into a page on an extension's page for a connection (N1)", async () => {
     const controller = createController();
     await controller.start();

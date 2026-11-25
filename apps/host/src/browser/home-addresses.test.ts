@@ -28,6 +28,21 @@ describe("HomeAddressBook", () => {
     expect(book.current().includes("https://route.opensteer.test/")).toBe(false);
   });
 
+  it("publishes a committed route without reading, and says whether the set changed (B1, B2)", () => {
+    const readRoute = vi.fn(async () => null);
+    const book = new HomeAddressBook({
+      canonicalOrigin: new URL("http://127.0.0.1:4310"),
+      listenPort: 4310,
+      readRoute,
+    });
+    expect(book.publish("https://route.opensteer.test")).toBe(true);
+    expect(book.current().includes("https://route.opensteer.test/x")).toBe(true);
+    expect(book.publish("https://route.opensteer.test")).toBe(false);
+    expect(book.publish(null)).toBe(true);
+    expect(book.current().includes("https://route.opensteer.test/x")).toBe(false);
+    expect(readRoute).not.toHaveBeenCalled();
+  });
+
   it("counts the listen port and a loopback canonical origin's own port", () => {
     const book = new HomeAddressBook({
       canonicalOrigin: new URL("http://localhost:8080"),

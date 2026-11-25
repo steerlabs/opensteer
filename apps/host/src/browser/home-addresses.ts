@@ -41,11 +41,21 @@ export class HomeAddressBook {
     return this.#set;
   }
 
-  /** Reads the route now and keeps the set it gives. */
+  /** Reads the route now and keeps the set it gives: at startup, when nothing else has it. */
   async refresh(): Promise<ThisHomeAddressSet> {
-    this.#route = await this.#readRoute();
-    this.#set = this.#build();
+    this.publish(await this.#readRoute());
     return this.#set;
+  }
+
+  /**
+   * The route a committed change left (null: Remote access off). Returns whether the set changed,
+   * so the agents attached under the old one can be made to attach again.
+   */
+  publish(routeOrigin: string | null): boolean {
+    const before = JSON.stringify(this.#set);
+    this.#route = routeOrigin;
+    this.#set = this.#build();
+    return JSON.stringify(this.#set) !== before;
   }
 
   #build(): ThisHomeAddressSet {

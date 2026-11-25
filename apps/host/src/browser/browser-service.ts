@@ -36,6 +36,7 @@ import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import {
   TabStore,
   storablePageUrl,
+  authorizePageAddress,
   acquireBrowserStandardCdpLease,
   admitExecution,
   listBrowserStandardCdpLeases,
@@ -276,6 +277,15 @@ const pageNoticeDelayMs = 250;
 /** A connected agent's direct-work session, which finds tabs with `discover`, not `tab_list`. */
 function connectedAgentBinding(agentBindingId: string | undefined): boolean {
   return agentBindingId?.startsWith("session:") === true;
+}
+
+/** An agent's command that attaches a page carries this Home's addresses (B1). */
+function attachesPage(method: string): boolean {
+  return (
+    method === browserHostMethods.resumeTab ||
+    method === "Target.attachToTarget" ||
+    method === "Target.createTarget"
+  );
 }
 
 /** Whether any string in a (bounded) CDP value is an extension's address or this Home's. */
@@ -4698,6 +4708,20 @@ export class BrowserService {
           continue;
         }
         if (opener.pageBinding?.sessionId !== record.id) continue;
+        // A popup of a task's tab is that task's: rule 1 is asked of it as of any agent's page. One
+        // on an address of this Home is not recorded for the task, and the runtime closes it (B3).
+        if (
+          opener.openedBy !== "person" &&
+          opener.openedBy !== null &&
+          !authorizePageAddress(
+            { agentConnection: null, actor: "native" },
+            descriptor.url,
+            this.#homeAddresses(),
+          )
+        ) {
+          await this.#queuePhysicalPageClose(record.id, descriptor.id);
+          continue;
+        }
         await tabs.open(
           {
             id: descriptor.id,
@@ -5865,6 +5889,18 @@ export class BrowserService {
     }
   }
 
+  /**
+   * This Home's addresses changed (the person turned Remote access on or off, or changed its
+   * route): every agent's attachment ends, its standard CDP tickets with it, so each agent attaches
+   * again and brings the new set to its browser (B1). The person's own attachments stay.
+   */
+  endAgentAttachments(reason: string): void {
+    this.standardCdpTickets.revokeAll();
+    for (const { close } of this.#standardCdpAttachments.values()) close(reason);
+    for (const attachment of this.#deviceAttachments.values()) attachment.close();
+    for (const attachment of this.#actionAttachments.values()) attachment.close();
+  }
+
   closeStandardCdpForBinding(agentBindingId: string, reason: string): void {
     this.standardCdpTickets.revoke(agentBindingId);
     for (const { claims, close } of this.#standardCdpAttachments.values())
@@ -6195,6 +6231,8 @@ export class BrowserService {
     // command it unpacks is checked where it is unpacked; the Home's gate stays for any other.
     const runtimeHoldsConnection =
       connectionWork && this.#resolveTarget(placementOf(record))?.connectionCommands === true;
+    // A runtime that reads the actor claim reads this Home's addresses on an agent's attach.
+    const readsHomeAddresses = this.#resolveTarget(placementOf(record))?.actorClaim === true;
     const pool = input.browserSend && this.#pool(record.runnerId);
     const pageWitness = (tabId: TabId) =>
       this.pooledScriptPageWitness(input.ownerId, record.id, tabId);
@@ -6764,6 +6802,14 @@ export class BrowserService {
               ...(actorToken ? { actorToken } : {}),
               ...(nativeAttachment ? { attachmentId: nativeAttachment.attachmentId } : {}),
               ...(runtimeHoldsConnection ? { connection: true as const } : {}),
+              ...(readsHomeAddresses && attachesPage(command.method)
+                ? {
+                    homeAddresses: {
+                      origins: [...this.#homeAddresses().origins],
+                      loopbackPorts: [...this.#homeAddresses().loopbackPorts],
+                    },
+                  }
+                : {}),
               ...(canManageExtensions &&
               isExtensionMutationCommand(command.method, command.parameters)
                 ? { manageExtensions: true as const }

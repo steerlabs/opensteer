@@ -3562,6 +3562,8 @@ export class BrowserController {
   private async dispatchAgentCommand(
     message: Extract<BrowserClientMessage, { type: "cdp.command" }>,
   ): Promise<void> {
+    // An agent's attach brings this Home's addresses as they are now (B1).
+    if (message.homeAddresses) this.cdpRouter.setHomeAddresses(message.homeAddresses);
     this.cursorAgentCommands++;
     for (const entry of this.cursorHints.values()) entry.hints.invalidate();
     const finish = this.clipboard?.agentStarted();
