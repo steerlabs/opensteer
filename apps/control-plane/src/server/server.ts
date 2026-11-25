@@ -447,6 +447,16 @@ function registerAccountPages(
         Boolean(form.switch_account),
       );
       copySetCookies(reply, response);
+      // A sign-in page left open past its signed query's expiry, or one whose
+      // query does not verify, starts the authorization again from the
+      // request it carried, for every provider; it never ends on the JSON.
+      if (form.oauth_query && (await signedQueryRefused(response))) {
+        const request = new URLSearchParams(form.oauth_query);
+        for (const name of signedQueryParameters) request.delete(name);
+        return request.get("client_id")
+          ? reply.redirect(`${controlPlaneAuthPath}/oauth2/authorize?${request.toString()}`, 303)
+          : sendAuthorizationRestartPage(reply);
+      }
       if (credentials && (response.status === 401 || response.status === 429)) {
         return sendSignInPage(reply.code(response.status), {
           returnTo,
@@ -595,6 +605,28 @@ async function sendWebResponse(reply: FastifyReply, response: Response): Promise
 function copySetCookies(reply: FastifyReply, response: Response): void {
   const cookies = response.headers.getSetCookie();
   if (cookies.length > 0) void reply.header("set-cookie", cookies);
+}
+
+/**
+ * What the OAuth provider adds to an authorization request when it signs it for
+ * the sign-in page. Without them it is the request the client made, which
+ * authorize checks again in full: client, redirect, scope, state and PKCE.
+ */
+const signedQueryParameters = ["sig", "exp", "ba_iat", "ba_pl", "ba_param"] as const;
+
+/** The OAuth provider refused a sign-in's signed query: expired, or not its own. */
+async function signedQueryRefused(response: Response): Promise<boolean> {
+  if (response.status !== 400) return false;
+  const body: unknown = await response
+    .clone()
+    .json()
+    .catch(() => null);
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    "error" in body &&
+    body.error === "invalid_signature"
+  );
 }
 
 function registerTransportSecurity(app: FastifyInstance): void {
