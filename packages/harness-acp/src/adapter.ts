@@ -126,6 +126,7 @@ interface ActiveTurn {
   nextPromptSequence: number;
   pendingSteers: number;
   promptSequence: number;
+  promptWritten: boolean;
   started: boolean;
   terminal: boolean;
   stderrStart: number;
@@ -358,6 +359,7 @@ class AcpHarnessSession implements HarnessSession {
       nextPromptSequence: 0,
       pendingSteers: 0,
       promptSequence: 0,
+      promptWritten: false,
       started: false,
       terminal: false,
       stderrStart: this.#stderrPosition(),
@@ -405,14 +407,18 @@ class AcpHarnessSession implements HarnessSession {
       active.livePrompts.add(sequence);
       // A Run abort is translated through the engine's cancel policy. In
       // particular, resume-based ACP engines keep this RPC alive until their
-      // post-cancel prompt outcome arrives. Publish `run.started` only once the
-      // `session/prompt` request write to the engine's pipe resolves (or the
-      // engine sends a turn update/response), never before the write succeeds.
+      // post-cancel prompt outcome arrives. Keep `onWritten` as the fence for
+      // when the `session/prompt` frame left the pipe; `run.started` is only
+      // published once post-write turn activity or the prompt response arrives.
       const promptPromise = this.#client.prompt(
         this.providerSessionReference,
         prepared.blocks,
         this.#lifetime.signal,
-        { onWritten: () => this.#ensureRunStarted(active) },
+        {
+          onWritten: () => {
+            active.promptWritten = true;
+          },
+        },
       );
       void this.#followPrompt(active, entry, promptPromise);
       await active.completion.promise;
@@ -498,6 +504,7 @@ class AcpHarnessSession implements HarnessSession {
     const superseded = () => active.promptSequence !== entry.sequence;
     const interrupted = () => active.interruptRequested || active.runSignal.aborted || this.#closed;
     if (active.terminal || superseded()) return;
+    active.promptWritten = true;
     this.#ensureRunStarted(active);
     if (
       entry.steerMessageId &&
@@ -1100,10 +1107,10 @@ class AcpHarnessSession implements HarnessSession {
     const foreign = sessionId !== this.#providerSessionReference;
     const sessionKey = active.childSessions.get(sessionId);
     if (foreign && !sessionKey) return;
-    this.#ensureRunStarted(active);
     for (const entry of normalized) {
       const nodeKey = foreign ? sessionKey : entry.nodeKey;
       if (nodeKey && !active.nodes.nodeId(nodeKey)) continue;
+      if (isTurnActivityUpdate(entry)) this.#ensureRunStarted(active);
       this.#applyUpdate(active, { ...entry, ...(nodeKey ? { nodeKey } : {}) });
     }
   }
@@ -1122,7 +1129,7 @@ class AcpHarnessSession implements HarnessSession {
       if (update.kind === "assistant") active.nodes.progress(update.nodeKey, update.text);
       return;
     }
-    if (active.assistantHoldActive && update.kind !== "assistant") {
+    if (active.assistantHoldActive && update.kind !== "assistant" && update.kind !== "plan") {
       this.#flushHeldAssistant(active);
       active.assistantHoldActive = false;
     }
@@ -1194,6 +1201,7 @@ class AcpHarnessSession implements HarnessSession {
         active.usage = update;
         return;
       case "compaction":
+      case "plan":
       case "ignore":
         return;
     }
@@ -1555,7 +1563,7 @@ class AcpHarnessSession implements HarnessSession {
   }
 
   #ensureRunStarted(active: ActiveTurn): void {
-    if (active.started || active.terminal) return;
+    if (!active.promptWritten || active.started || active.terminal) return;
     active.started = true;
     this.#publish(runStartedEvent());
   }
@@ -1986,9 +1994,21 @@ export function normalizeAcpUpdate(update: unknown): readonly AcpNormalizedUpdat
         },
       ];
     }
+    case "plan":
+      return [{ kind: "plan" }];
     default:
       return [];
   }
+}
+
+function isTurnActivityUpdate(update: AcpNormalizedUpdate): boolean {
+  return (
+    update.kind === "assistant" ||
+    update.kind === "thought" ||
+    update.kind === "tool" ||
+    update.kind === "subagent" ||
+    update.kind === "plan"
+  );
 }
 
 function mcpServers(context: HarnessSessionContext): readonly AcpMcpServer[] {

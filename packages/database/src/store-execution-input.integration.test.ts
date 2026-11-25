@@ -2907,6 +2907,130 @@ describeStore("PostgreSQL store", (it) => {
     expect(capacitySql[0]).not.toMatch(/"runs"\."status"/iu);
   });
 
+  it("counts unknown passive reports toward the report cap without joining runs (Z3)", async ({
+    storeFixture,
+  }) => {
+    const { startRunFixture, store, database } = storeFixture;
+    const base = await startRunFixture("report-unknown-capacity");
+    const firstReport = await store.enqueueThreadInput({
+      content: [{ text: "Passive report 1", type: "text" }],
+      idempotencyKey: "report-unknown-capacity-1",
+      policy: "report",
+      requestedBy: base.userId,
+      source: { kind: "human" },
+      threadId: base.thread.id,
+    });
+    const sampleInput = await database
+      .selectFrom("threadInputs")
+      .selectAll()
+      .where("messageId", "=", firstReport.message.id)
+      .executeTakeFirstOrThrow();
+    const sampleMessage = await database
+      .selectFrom("messages")
+      .selectAll()
+      .where("id", "=", firstReport.message.id)
+      .executeTakeFirstOrThrow();
+    await database
+      .updateTable("threadInputs")
+      .set({ state: "unknown" })
+      .where("messageId", "=", firstReport.message.id)
+      .execute();
+
+    // Seed 999 more unknown passive reports (1,000 total — at `threadReportMaxPendingEntries`).
+    // Because unknown passive reports are claimed again by a later Run, they must count against
+    // the report backlog cap without joining `runs`.
+    const baseSequence = Number(sampleMessage.sequence);
+    const baseRank = Number(sampleInput.queueRank);
+    const now = new Date();
+    const seededMessages = Array.from({ length: 999 }, (_, index) => ({
+      actorPrincipalId: sampleMessage.actorPrincipalId,
+      author: jsonValue(sampleMessage.author),
+      content: jsonValue([{ text: `Passive report ${index + 2}`, type: "text" }]),
+      createdAt: now,
+      id: createId("message"),
+      kind: sampleMessage.kind,
+      runId: null,
+      sequence: baseSequence + index + 1,
+      threadId: base.thread.id,
+    }));
+    await database.insertInto("messages").values(seededMessages).execute();
+    await database
+      .updateTable("threads")
+      .set({ nextMessageSequence: String(baseSequence + 1_000) })
+      .where("id", "=", base.thread.id)
+      .execute();
+    await database
+      .insertInto("threadInputs")
+      .values(
+        seededMessages.map((message, index) => ({
+          actorPrincipalId: sampleInput.actorPrincipalId,
+          authoritySource: jsonValue(sampleInput.authoritySource),
+          cancelReason: null,
+          causalChainId: sampleInput.causalChainId,
+          createdAt: now,
+          deliveredAt: null,
+          idempotencyKey: `report-unknown-capacity-seed-${index + 2}`,
+          messageId: message.id,
+          policy: "report" as const,
+          queueRank: baseRank + index + 1,
+          replyTarget: null,
+          requestFingerprint: `fp-report-unknown-seed-${index + 2}`,
+          requestedBy: base.userId,
+          runId: null,
+          state: "unknown" as const,
+          steerCommandId: null,
+          threadId: base.thread.id,
+          updatedAt: now,
+        })),
+      )
+      .execute();
+
+    const { default: pg } = await import("pg");
+    const recordedSql: string[] = [];
+    const originalQuery = pg.Client.prototype.query;
+    const spy = vi.spyOn(pg.Client.prototype, "query").mockImplementation(function (
+      this: InstanceType<typeof pg.Client>,
+      ...args: unknown[]
+    ) {
+      const firstArg = args[0];
+      const text =
+        typeof firstArg === "string"
+          ? firstArg
+          : firstArg &&
+              typeof firstArg === "object" &&
+              "text" in firstArg &&
+              typeof firstArg.text === "string"
+            ? firstArg.text
+            : "";
+      if (text) recordedSql.push(text);
+      return Reflect.apply(originalQuery, this, args);
+    });
+    try {
+      await expect(
+        store.enqueueThreadInput({
+          content: [{ text: "1001st passive report", type: "text" }],
+          idempotencyKey: "report-unknown-capacity-1001",
+          policy: "report",
+          requestedBy: base.userId,
+          source: { kind: "human" },
+          threadId: base.thread.id,
+        }),
+      ).rejects.toMatchObject({
+        code: "resource_exhausted",
+        message: "A task can hold at most 1000 undelivered reports",
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    const capacitySql = recordedSql.filter((sqlText) =>
+      sqlText.includes("octet_length(messages.content::text)"),
+    );
+    expect(capacitySql).toHaveLength(1);
+    expect(capacitySql[0]).not.toMatch(/left join "runs"/iu);
+    expect(capacitySql[0]).not.toMatch(/"runs"\."status"/iu);
+  });
+
   it("routes steers on a Run held by an Antigravity Runner through restart to a definite delivered outcome (X1)", async ({
     storeFixture,
   }) => {

@@ -381,7 +381,7 @@ describe("ACP lifecycle", () => {
     const controller = new AbortController();
     const execution = session.execute(fixture.turn("stop", controller.signal));
     await vi.waitFor(() => {
-      expect(observed.events.some((event) => event.type === "run.started")).toBe(true);
+      expect(fixture.prompts).toHaveLength(1);
     });
     controller.abort(new Error("person stopped the Run"));
     await execution;
@@ -882,7 +882,8 @@ function fakeClient(
       ]);
       return { configOptions: [], metadata: {}, sessionId: "new-session" };
     },
-    prompt: async (_sessionId, input) => {
+    prompt: async (_sessionId, input, _signal, options) => {
+      options?.onWritten?.();
       prompts.push(input);
       if (scenario === "wait-interruption") {
         handlers.update("new-session", {
@@ -3534,15 +3535,26 @@ describe("ACP prompt steering, outcome inspection, and permission disposition", 
     expect(permissionResults).toEqual([null]);
   });
 
-  it("publishes run.started only after session/prompt writes to stdin, never on a pre-write failure (Y5)", async () => {
+  it("publishes run.started only on post-write turn activity or prompt response, never on session updates or write-only exits (Z1)", async () => {
     const f = await setup("replay");
-    for (const mode of ["pre-write-sync", "pre-write-async", "post-write"] as const) {
+    const scenarios = [
+      "pre-write-session-update-then-epipe",
+      "pre-write-async-epipe",
+      "post-write-session-update-then-exit",
+      "post-write-turn-chunk-then-fail",
+      "post-write-plan-then-end",
+      "post-write-response-only",
+    ] as const;
+
+    for (const mode of scenarios) {
       const stdout = new PassThrough();
       const stderr = new EventEmitter();
       const exited = Promise.withResolvers<{
         readonly code: number | null;
         readonly signal: NodeJS.Signals | null;
       }>();
+      let observedSessionUpdates = 0;
+      const sessionUpdatesObserved = new Deferred<void>();
       let buffer = "";
       const stdin = new Writable({
         write(chunk, _encoding, callback) {
@@ -3588,24 +3600,97 @@ describe("ACP prompt steering, outcome inspection, and permission disposition", 
                 })}\n`,
               );
             } else if (request.method === "session/prompt") {
-              if (mode === "pre-write-sync") {
+              if (mode === "pre-write-session-update-then-epipe") {
                 callback(new Error("EPIPE: broken stdin before prompt write"));
                 return;
               }
-              if (mode === "pre-write-async") {
+              if (mode === "pre-write-async-epipe") {
                 process.nextTick(() => {
                   callback(new Error("EPIPE: async broken stdin before prompt write"));
                 });
                 return;
               }
               callback();
-              // After the prompt frame write succeeded, fail the turn on the engine side.
               queueMicrotask(() => {
+                if (mode === "post-write-session-update-then-exit") {
+                  stdout.write(
+                    `${JSON.stringify({
+                      jsonrpc: "2.0",
+                      method: "session/update",
+                      params: {
+                        sessionId: "pipe-session",
+                        update: {
+                          sessionUpdate: "available_commands_update",
+                          availableCommands: [],
+                        },
+                      },
+                    })}\n`,
+                  );
+                  stdout.write(
+                    `${JSON.stringify({
+                      jsonrpc: "2.0",
+                      method: "session/update",
+                      params: {
+                        sessionId: "pipe-session",
+                        update: { sessionUpdate: "current_mode_update", currentModeId: "auto" },
+                      },
+                    })}\n`,
+                  );
+                  void sessionUpdatesObserved.promise.then(() => {
+                    stdout.end();
+                    exited.resolve({ code: 1, signal: null });
+                  });
+                  return;
+                }
+                if (mode === "post-write-turn-chunk-then-fail") {
+                  stdout.write(
+                    `${JSON.stringify({
+                      jsonrpc: "2.0",
+                      method: "session/update",
+                      params: {
+                        sessionId: "pipe-session",
+                        update: {
+                          sessionUpdate: "agent_message_chunk",
+                          content: { type: "text", text: "started turn" },
+                        },
+                      },
+                    })}\n`,
+                  );
+                  stdout.write(
+                    `${JSON.stringify({
+                      error: { code: -32603, message: "engine crashed mid-turn" },
+                      id: request.id,
+                      jsonrpc: "2.0",
+                    })}\n`,
+                  );
+                  return;
+                }
+                if (mode === "post-write-plan-then-end") {
+                  stdout.write(
+                    `${JSON.stringify({
+                      jsonrpc: "2.0",
+                      method: "session/update",
+                      params: {
+                        sessionId: "pipe-session",
+                        update: {
+                          sessionUpdate: "plan",
+                          entries: [
+                            {
+                              content: "Inspect workspace",
+                              priority: "high",
+                              status: "in_progress",
+                            },
+                          ],
+                        },
+                      },
+                    })}\n`,
+                  );
+                }
                 stdout.write(
                   `${JSON.stringify({
-                    error: { code: -32603, message: "engine crashed after reading prompt" },
                     id: request.id,
                     jsonrpc: "2.0",
+                    result: { stopReason: "end_turn" },
                   })}\n`,
                 );
               });
@@ -3634,7 +3719,55 @@ describe("ACP prompt steering, outcome inspection, and permission disposition", 
               error instanceof OpensteerError
                 ? error
                 : new OpensteerError({ code: "harness_error", message: String(error) }),
+            normalizeUpdate: (update) => {
+              if (
+                update &&
+                typeof update === "object" &&
+                "sessionUpdate" in update &&
+                (update.sessionUpdate === "available_commands_update" ||
+                  update.sessionUpdate === "current_mode_update")
+              ) {
+                observedSessionUpdates += 1;
+                if (observedSessionUpdates >= 2) sessionUpdatesObserved.resolve();
+              }
+              return normalizeAcpUpdate(update);
+            },
             permissionChoices: () => [],
+            ...(mode === "pre-write-session-update-then-epipe"
+              ? {
+                  watchPromptOutcome: async () => {
+                    // Sol's fixture: session-level updates arrive before `session/prompt` is written.
+                    stdout.write(
+                      `${JSON.stringify({
+                        jsonrpc: "2.0",
+                        method: "session/update",
+                        params: {
+                          sessionId: "pipe-session",
+                          update: {
+                            sessionUpdate: "available_commands_update",
+                            availableCommands: [],
+                          },
+                        },
+                      })}\n`,
+                    );
+                    stdout.write(
+                      `${JSON.stringify({
+                        jsonrpc: "2.0",
+                        method: "session/update",
+                        params: {
+                          sessionId: "pipe-session",
+                          update: {
+                            sessionUpdate: "current_mode_update",
+                            currentModeId: "auto",
+                          },
+                        },
+                      })}\n`,
+                    );
+                    await sessionUpdatesObserved.promise;
+                    return () => undefined;
+                  },
+                }
+              : {}),
           },
           launch: ({ context }) => ({
             args: [],
@@ -3677,18 +3810,39 @@ describe("ACP prompt steering, outcome inspection, and permission disposition", 
 
       const session = await adapter.startSession(f.context);
       const observed = observe(session.events);
+      const streamDone = observed.done.catch(() => undefined);
       await session.execute(f.turn(`prompt-${mode}`));
       await session.stop();
-      await observed.done;
+      await streamDone;
       await adapter.close();
 
       const eventTypes = observed.events.map((event) => event.type);
-      if (mode !== "post-write") {
-        expect(eventTypes).not.toContain("run.started");
-        expect(eventTypes).toContain("run.failed");
+      if (
+        mode === "pre-write-session-update-then-epipe" ||
+        mode === "pre-write-async-epipe" ||
+        mode === "post-write-session-update-then-exit"
+      ) {
+        expect(eventTypes, mode).not.toContain("run.started");
+        expect(eventTypes, mode).toContain("run.failed");
+      } else if (mode === "post-write-turn-chunk-then-fail") {
+        expect(
+          eventTypes.filter((type) => type === "run.started"),
+          mode,
+        ).toHaveLength(1);
+        expect(eventTypes.indexOf("run.started"), mode).toBeLessThan(
+          eventTypes.indexOf("assistant.delta"),
+        );
+        expect(eventTypes.indexOf("run.failed"), mode).toBeGreaterThan(
+          eventTypes.indexOf("run.started"),
+        );
       } else {
-        expect(eventTypes.indexOf("run.started")).toBeGreaterThanOrEqual(0);
-        expect(eventTypes.indexOf("run.failed")).toBeGreaterThan(eventTypes.indexOf("run.started"));
+        expect(
+          eventTypes.filter((type) => type === "run.started"),
+          mode,
+        ).toHaveLength(1);
+        expect(eventTypes.indexOf("run.completed"), mode).toBeGreaterThan(
+          eventTypes.indexOf("run.started"),
+        );
       }
     }
     await f.adapter.close();

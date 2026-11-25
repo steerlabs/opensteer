@@ -2390,10 +2390,15 @@ export async function assertThreadInputCapacity(
       sql<string>`coalesce(sum(octet_length(messages.content::text)), 0)`.as("bytes"),
     ])
     .where("threadInputs.threadId", "=", threadId)
-    // Capacity bounds work still waiting to be dispatched (`pending` / `claimed`).
-    // An `unknown` input is retained delivery history and is never dispatched again
-    // (at most one message in flight per steer while a Run is live), so it is never load.
-    .where("threadInputs.state", "in", ["pending", "claimed"])
+    // Capacity bounds deliverable backlog: `pending` and `claimed` for work
+    // inputs (an `unknown` work input is retained delivery history and is never
+    // dispatched again), plus `unknown` for passive `report` inputs (which a
+    // later Run claims again).
+    .where(
+      "threadInputs.state",
+      "in",
+      policy === "report" ? ["pending", "claimed", "unknown"] : ["pending", "claimed"],
+    )
     .where("threadInputs.policy", policy === "report" ? "=" : "!=", "report")
     .$if(replacingMessageId !== undefined, (query) =>
       query.where("threadInputs.messageId", "!=", replacingMessageId!),

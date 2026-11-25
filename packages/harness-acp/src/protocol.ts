@@ -213,14 +213,16 @@ function createV1Client(
       return { action: "accept", content };
     });
   const pendingPromptWrites: (() => void)[] = [];
+  const stdinSink = createStdinSink(process.child.stdin);
   const stream = acpV1.ndJsonStream(
-    stdinWritableStream(process.child.stdin),
+    stdinSink.stream,
     Readable.toWeb(Readable.from(stdout)) as ReadableStream<Uint8Array>,
   );
   const writable = observePromptWrites(
     stream.writable,
     acpV1.methods.agent.session.prompt,
     pendingPromptWrites,
+    stdinSink.setNextWriteHook,
   );
   // SDK dispatch walks async handlers; project updates before a following RPC response can settle.
   const readable = stream.readable.pipeThrough(
@@ -397,8 +399,9 @@ function createV2Client(
         : { action: "accept", content: result };
     });
   const pendingPromptWrites: (() => void)[] = [];
+  const stdinSink = createStdinSink(process.child.stdin);
   const rawStream = acpV2.ndJsonStream(
-    stdinWritableStream(process.child.stdin),
+    stdinSink.stream,
     Readable.toWeb(Readable.from(stdout)) as ReadableStream<Uint8Array>,
   );
   const connection = app.connect({
@@ -407,6 +410,7 @@ function createV2Client(
       rawStream.writable,
       acpV2.methods.agent.session.prompt,
       pendingPromptWrites,
+      stdinSink.setNextWriteHook,
     ),
   });
   const agent = connection.agent;
@@ -540,10 +544,17 @@ function createV2Client(
  * the stream errors/closes). Unlike `Writable.toWeb`, this does not resolve
  * early while buffered below `highWaterMark`, so an immediate or async EPIPE
  * rejects the write before `observePromptWrites` reports the prompt written.
+ * When `nextWriteHook` is armed for a `session/prompt` frame, it fires
+ * synchronously inside the successful `stdin.write` callback so an immediate
+ * response on `stdout` cannot race ahead of the prompt-written fence.
  */
-function stdinWritableStream(stdin: Writable): WritableStream<Uint8Array> {
+function createStdinSink(stdin: Writable): {
+  readonly stream: WritableStream<Uint8Array>;
+  readonly setNextWriteHook: (hook: (() => void) | undefined) => void;
+} {
   let streamError: unknown;
   let hasStreamError = false;
+  let nextWriteHook: (() => void) | undefined;
   const onError = (error: unknown) => {
     if (!hasStreamError) {
       hasStreamError = true;
@@ -551,8 +562,10 @@ function stdinWritableStream(stdin: Writable): WritableStream<Uint8Array> {
     }
   };
   stdin.on("error", onError);
-  return new WritableStream<Uint8Array>({
+  const stream = new WritableStream<Uint8Array>({
     write(chunk) {
+      const onSuccess = nextWriteHook;
+      nextWriteHook = undefined;
       if (hasStreamError) return Promise.reject(streamError);
       if (stdin.destroyed || stdin.writableEnded) {
         return Promise.reject(stdin.errored ?? new Error("ACP stdin is closed"));
@@ -564,8 +577,12 @@ function stdinWritableStream(stdin: Writable): WritableStream<Uint8Array> {
           settled = true;
           stdin.off("error", onWriteError);
           stdin.off("close", onClose);
-          if (error) reject(error);
-          else resolve();
+          if (error) {
+            reject(error);
+          } else {
+            onSuccess?.();
+            resolve();
+          }
         };
         const onWriteError = (error: Error) => finish(error);
         const onClose = () => finish(stdin.errored ?? new Error("ACP stdin closed during write"));
@@ -579,6 +596,7 @@ function stdinWritableStream(stdin: Writable): WritableStream<Uint8Array> {
       });
     },
     close() {
+      nextWriteHook = undefined;
       stdin.off("error", onError);
       if (stdin.destroyed || stdin.writableEnded) return;
       return new Promise<void>((resolve) => {
@@ -586,18 +604,26 @@ function stdinWritableStream(stdin: Writable): WritableStream<Uint8Array> {
       });
     },
     abort(reason) {
+      nextWriteHook = undefined;
       stdin.off("error", onError);
       if (!stdin.destroyed) {
         stdin.destroy(reason instanceof Error ? reason : undefined);
       }
     },
   });
+  return {
+    stream,
+    setNextWriteHook: (hook) => {
+      nextWriteHook = hook;
+    },
+  };
 }
 
 function observePromptWrites<Message>(
   streamWritable: WritableStream<Message>,
   promptMethod: string,
   pendingPromptWrites: (() => void)[],
+  setNextWriteHook: (hook: (() => void) | undefined) => void,
 ): WritableStream<Message> {
   return new WritableStream<Message>({
     async write(message) {
@@ -605,13 +631,23 @@ function observePromptWrites<Message>(
         isRecord(message) && message.method === promptMethod
           ? pendingPromptWrites.shift()
           : undefined;
+      let notified = false;
+      const notifyOnce = onWritten
+        ? () => {
+            if (notified) return;
+            notified = true;
+            onWritten();
+          }
+        : undefined;
+      setNextWriteHook(notifyOnce);
       const writer = streamWritable.getWriter();
       try {
         await writer.write(message);
       } finally {
+        setNextWriteHook(undefined);
         writer.releaseLock();
       }
-      onWritten?.();
+      notifyOnce?.();
     },
     close() {
       return streamWritable.close();
