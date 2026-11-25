@@ -84,6 +84,7 @@ export function clientIssueFromFailure(
       resource: context.label,
       reason: failure.reason,
     };
+  if (failure.reason === "outcome-unknown") return { code: "unconfirmed", action: context.label };
   return failure.kind === "rejection"
     ? { code: "rejected", reason: failure.reason, action: context.label }
     : { code: "unconfirmed", action: context.label };

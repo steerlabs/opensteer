@@ -1,4 +1,5 @@
 import { DeviceAccessRefusal } from "../administration/device-access.js";
+import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import { HostApiErrorSchema } from "@opensteer/protocol";
 import { OpensteerError } from "@opensteer/core";
 import { formatIssues } from "@opensteer/shared/validationIssues";
@@ -35,6 +36,17 @@ export function normalizeHostError(error: unknown): NormalizedHostError {
         retryable: false,
       },
       status: 400,
+    };
+  }
+  if (error instanceof OperationOutcomeUnknown) {
+    return {
+      error: {
+        code: "conflict",
+        message: error.message || "This change may have happened. Check before trying again.",
+        reason: "outcome-unknown",
+        retryable: false,
+      },
+      status: 409,
     };
   }
   if (error instanceof OpensteerError) {

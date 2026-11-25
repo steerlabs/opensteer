@@ -327,4 +327,16 @@ describe("safe client issues", () => {
       "Not sent. Your computer didn't accept it.",
     );
   });
+
+  it("presents outcome-unknown Host conflicts as unconfirmed rather than a definite rejection (M8)", () => {
+    const issue = clientIssue(
+      { code: "conflict", reason: "outcome-unknown", retryable: false },
+      { operation: "action", label: "send your answer" },
+    );
+    expect(issue).toEqual({ code: "unconfirmed", action: "send your answer" });
+    expect(presentClientIssue({ ...issue!, happened: "your answer was sent" })).toMatchObject({
+      title: "Couldn't confirm your answer was sent.",
+      action: "check",
+    });
+  });
 });

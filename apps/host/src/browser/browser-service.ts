@@ -7034,6 +7034,7 @@ export class BrowserService {
     try {
       await broker.requestStateImport(site, cookies);
     } catch (error) {
+      if (error instanceof OperationOutcomeUnknown) throw error;
       if (!this.#brokers.has(sessionId)) return "session-closed";
       throw error;
     }
@@ -9035,6 +9036,7 @@ interface PendingStateImport {
   readonly reject: (error: unknown) => void;
   readonly resolve: () => void;
   readonly timeout: NodeJS.Timeout;
+  submitted: boolean;
 }
 
 /** How a pooled broker's sends pass the gate. */
@@ -10095,29 +10097,45 @@ export class HostedBrowserBroker {
     }
     const operationId = randomUUID();
     return new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        if (!this.#pendingStateImports.delete(operationId)) return;
-        reject(
-          new OpensteerError({
-            code: "timeout",
-            message: "Browser Runtime did not apply the sign-in in time.",
-            retryable: true,
-          }),
-        );
-      }, browserStateImportHostTimeoutMs);
-      timeout.unref();
-      this.#pendingStateImports.set(operationId, { reject, resolve, timeout });
-      void this.#sendCommand({
-        cookies: [...cookies],
-        operationId,
-        site,
-        type: "state.import",
-      }).catch((error: unknown) => {
-        const pending = this.#pendingStateImports.get(operationId);
-        if (!pending) return;
+      const pending: PendingStateImport = {
+        reject,
+        resolve,
+        submitted: false,
+        timeout: setTimeout(() => {
+          if (!this.#pendingStateImports.delete(operationId)) return;
+          // Rule 4: once `state.import` crossed the submit edge, a missing reply may mean the
+          // cookies were already applied in the browser context; never classify as retryable timeout.
+          reject(
+            pending.submitted
+              ? new OperationOutcomeUnknown(browserSignInOutcomeUnknownWords)
+              : new OpensteerError({
+                  code: "timeout",
+                  message: "Browser Runtime did not apply the sign-in in time.",
+                  retryable: true,
+                }),
+          );
+        }, browserStateImportHostTimeoutMs),
+      };
+      pending.timeout.unref();
+      this.#pendingStateImports.set(operationId, pending);
+      void this.#sendCommand(
+        {
+          cookies: [...cookies],
+          operationId,
+          site,
+          type: "state.import",
+        },
+        undefined,
+        () => {
+          pending.submitted = true;
+        },
+      ).catch((error: unknown) => {
+        if (this.#pendingStateImports.get(operationId) !== pending) return;
         clearTimeout(pending.timeout);
         this.#pendingStateImports.delete(operationId);
-        pending.reject(error);
+        pending.reject(
+          pending.submitted ? new OperationOutcomeUnknown(browserSignInOutcomeUnknownWords) : error,
+        );
       });
     });
   }
@@ -10158,7 +10176,9 @@ export class HostedBrowserBroker {
     for (const pending of this.#pendingStateImports.values()) {
       clearTimeout(pending.timeout);
       pending.reject(
-        new OpensteerError({ code: "conflict", message: "The device is restarting." }),
+        pending.submitted
+          ? new OperationOutcomeUnknown(browserSignInOutcomeUnknownWords)
+          : new OpensteerError({ code: "conflict", message: "The device is restarting." }),
       );
     }
     this.#pendingStateImports.clear();
@@ -11752,7 +11772,9 @@ export class HostedBrowserBroker {
       for (const pending of this.#pendingStateImports.values()) {
         clearTimeout(pending.timeout);
         pending.reject(
-          new OpensteerError({ code: "conflict", message: "Browser Runtime disconnected." }),
+          pending.submitted
+            ? new OperationOutcomeUnknown(browserSignInOutcomeUnknownWords)
+            : new OpensteerError({ code: "conflict", message: "Browser Runtime disconnected." }),
         );
       }
       this.#pendingStateImports.clear();
@@ -12469,6 +12491,9 @@ interface BrowserTabOpenBudget {
 /** A7: what an agent reads when a browser command may have run and its reply cannot tell. */
 const browserOutcomeUnknownWords =
   "A browser action did not confirm its outcome. Observe the page before trying again.";
+/** Rule 4: a sign-in import whose command left the Host and whose reply was lost. */
+const browserSignInOutcomeUnknownWords =
+  "The sign-in may have been applied. Check the page before trying again.";
 
 class BrowserCdpRefusal extends OpensteerError {
   constructor(cause: OpensteerError) {

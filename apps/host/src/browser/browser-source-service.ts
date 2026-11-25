@@ -69,6 +69,7 @@ import {
   type PersonalHostAccessRouteEnvelope,
 } from "@opensteer/deployment-authority";
 import type { BrowserService, BrowserSignInTarget } from "./browser-service.js";
+import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import {
   admitSignIn,
   admitWithin,
@@ -192,6 +193,8 @@ export class BrowserSourceService {
   readonly #authenticating = new Set<SourceSocket>();
   readonly #pendingByAddress = new Map<string, number>();
   readonly #turns = new Map<string, Promise<unknown>>();
+  /** Invocations whose `state.import` crossed the submit edge and lost their reply (rule 4). */
+  readonly #uncertainInvocations = new Set<string>();
   readonly #pairChallenges = new Map<string, number[]>();
   readonly #drains = new Map<UserId, Promise<void>>();
   readonly #calls = new Map<string, number[]>();
@@ -652,6 +655,11 @@ export class BrowserSourceService {
     const invocationId = invocationUuid(`owner:${input.ownerId}:${input.idempotencyKey}`);
     const receipt = await this.#store.getSignIn({ ownerId: input.ownerId, invocationId });
     if (receipt) return appliedOutcome(assertReceiptScope(receipt, target.sessionId, site));
+    if (this.#uncertainInvocations.has(invocationId)) {
+      throw new OperationOutcomeUnknown(
+        "The sign-in may have been applied. Check the page before trying again.",
+      );
+    }
     if (!target.live) return problem("session-closed", site, null);
     if (!target.stateImport) return problem(stateImportRefusal(target), site, null);
     const choice = await this.#chooseForOwner(
@@ -697,6 +705,11 @@ export class BrowserSourceService {
     const invocationId = invocationUuid(`agent:${input.runId}:${input.callId}`);
     const receipt = await this.#store.getSignIn({ ownerId: input.ownerId, invocationId });
     if (receipt) return copiedResult(assertReceiptScope(receipt, sessionId, site));
+    if (this.#uncertainInvocations.has(invocationId)) {
+      throw new OperationOutcomeUnknown(
+        "The sign-in may have been applied. Check the page before trying again.",
+      );
+    }
     const prior = await this.#requests.findByCallIdentity({
       callId: input.callId,
       originatingRunId: input.runId,
@@ -1053,6 +1066,12 @@ export class BrowserSourceService {
     review?: { readonly settlementSessionId?: string; readonly expectedRevision: string },
   ): Promise<RequestDelivery> {
     if (request.payload.kind !== "browser.sign-in") throw new Error("Not a sign-in Request");
+    const invocationId = invocationUuid(`request:${request.id}`);
+    if (this.#uncertainInvocations.has(invocationId)) {
+      throw new OperationOutcomeUnknown(
+        "The sign-in may have been applied. Check the page before trying again.",
+      );
+    }
     const { site } = request.payload;
     const sessionId = parseSignInSessionId(request.payload.sessionId);
     const target = await this.#browser.signInTarget({
@@ -1076,7 +1095,7 @@ export class BrowserSourceService {
       actor: "request",
       ...(review?.settlementSessionId ? { settlementSessionId: review.settlementSessionId } : {}),
       ...(review ? { expectedRequestRevision: review.expectedRevision } : {}),
-      invocationId: invocationUuid(`request:${request.id}`),
+      invocationId,
       ownerId: request.requestedBy,
       rememberSite: false,
       requestId: request.id,
@@ -1248,6 +1267,11 @@ export class BrowserSourceService {
     const { site, source, target } = input;
     const receipt = await this.#store.getSignIn(input);
     if (receipt) return appliedOutcome(assertReceiptScope(receipt, target.sessionId, site));
+    if (this.#uncertainInvocations.has(input.invocationId)) {
+      throw new OperationOutcomeUnknown(
+        "The sign-in may have been applied. Check the page before trying again.",
+      );
+    }
     if (await this.#refusesSite(site)) return problem("not-allowed", site, null);
     const peer = this.#connections.get(source.id);
     if (!peer?.ready) return problem("chrome-offline", site, source.name);
@@ -1310,7 +1334,15 @@ export class BrowserSourceService {
       ...(target.agentBindingId ? { agentBindingId: target.agentBindingId } : {}),
     });
     if (!admitted?.live) return problem("session-closed", site, null);
-    const applied = await this.#browser.applySiteCookies(target.sessionId, site, cookies);
+    let applied: Awaited<ReturnType<BrowserService["applySiteCookies"]>>;
+    try {
+      applied = await this.#browser.applySiteCookies(target.sessionId, site, cookies);
+    } catch (error) {
+      if (error instanceof OperationOutcomeUnknown) {
+        this.#uncertainInvocations.add(input.invocationId);
+      }
+      throw error;
+    }
     if (applied !== "applied") return problem(applied, site, null);
     const committed = await this.#store.commitSignIn({
       actor: input.actor,
