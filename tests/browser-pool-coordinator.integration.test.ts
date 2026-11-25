@@ -9,6 +9,8 @@ import {
 import { BrowserPoolAttemptRefused } from "../apps/host/src/browser/browser-pool-gate.js";
 import type {
   BrowserPoolControllerCall,
+  BrowserPoolControllerResult,
+  BrowserPoolPhysicalStatus,
   BrowserPoolPhysicalController,
 } from "../apps/host/src/browser/browser-pool-controller.js";
 import {
@@ -666,52 +668,113 @@ it("waits longer after each failure in a row, retryMs or not", async () => {
   }
 });
 
-it("keeps a parked browser whose wake the host refused for a down egress proxy, counts no failed start, starts nothing at once, and wakes it later", async () => {
-  const f = await poolFixture("proxy-refused");
+it("wakes with a down proxy, then parks and wakes the same browser to repair it without a failed start or a lost page", async () => {
+  const f = await poolFixture("proxy-wake-repair");
+  const slotId = "slot-proxy-wake-repair";
+  const agent = poolControllerKind() === "agent";
+  const repairWake = Promise.withResolvers<BrowserPoolControllerCall>();
+  const allowRepair = Promise.withResolvers<void>();
   try {
-    // Against the real agent the host itself refuses (it pulls egress, and the slot's proxy
-    // fails its check); against the fake, the refusal is the signed answer's shape.
-    const agent = poolControllerKind() === "agent";
-    let refusing = false;
     const calls: string[] = [];
+    let firstWake: BrowserPoolControllerResult | undefined;
+    let firstWakeSavedId: string | null | undefined;
+    let repairPark: BrowserPoolControllerResult | undefined;
+    let down: BrowserPoolPhysicalStatus | undefined;
     const physical: BrowserPoolPhysicalController = {
-      status: (slot, term) => f.controller.status(slot, term),
+      status: async (slot, term) => {
+        const status = await f.controller.status(slot, term);
+        if (status.phase === "running" && status.proxy === "down") down = status;
+        return status;
+      },
       result: (slot, term, id) => f.controller.result(slot, term, id),
       apply: async (call) => {
         if (call.kind !== "sign") calls.push(call.kind);
-        // The host's proxy did not serve within its bound: the resume left nothing running.
-        return !agent && refusing && call.kind === "resume"
-          ? {
-              id: call.id,
-              applied: false,
-              reason: "egress-proxy-down",
-              status: await f.controller.status(call.slotId, call.term),
-            }
-          : f.controller.apply(call);
+        if (call.kind === "resume" && call.expect.epoch === 2) {
+          repairWake.resolve(call);
+          await allowRepair.promise;
+        }
+        const result = await f.controller.apply(call);
+        if (call.kind === "resume" && call.expect.epoch === 1) {
+          firstWake = result;
+          firstWakeSavedId = call.expect.savedStateId;
+          if (!agent) f.controller.observe({ proxy: "down" });
+        }
+        if (call.kind === "pause" && call.expect.epoch === 2) repairPark = result;
+        return result;
       },
     };
-    // A refusal is asked again only after a long while here: whatever is sent at once shows.
-    const home = f.home(undefined, physical, { refusedRetryMs: 60_000 });
+    const home = f.home(undefined, physical, { statusEveryMs: 50 });
     await home.recover();
+    await f.openSession(home);
+    const runtime = f.runtime;
+    const loader = f.page.loaderId;
     expect(await home.tryPark()).toBe("parked");
-    refusing = true;
-    f.controller.refuseProxy?.(true);
-    const waiting = home.gate.reserve(AbortSignal.timeout(30_000));
-    await vi.waitFor(() => expect(home.report()).toMatchObject({ refused: "egress-proxy-down" }));
-    // Nothing given up at once: no start after the refused resume (today's agent loses the saved
-    // state with its refusal; a fresh guest into the same refusal would be futile), and no
-    // failed start counted. Still parked.
-    expect(calls).toEqual(["start", "pause", "resume"]);
-    expect(await f.slot()).toMatchObject({ phase: "parked", failedStarts: 0 });
-    refusing = false;
-    f.controller.refuseProxy?.(false);
-    // Asked again (here by a second waiter), it wakes: from its saved state when the host kept
-    // it, or as a fresh guest when the host's refusal took the state with it.
-    (await home.gate.reserve(AbortSignal.timeout(30_000))).release();
-    (await waiting).release();
-    expect(await f.slot()).toMatchObject({ phase: "running", failedStarts: 0 });
-    if (!agent) expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
+    const parked = await f.controller.status(slotId, 1);
+    expect(parked).toMatchObject({ phase: "paused", epoch: 1 });
+    expect(parked.savedState?.id).toBeDefined();
+    f.controller.setProxyUnhealthy?.(true);
+    const waiting = home.gate.reserve(AbortSignal.timeout(30_000)).then(
+      (lease) => lease.release(),
+      (error: unknown) => error,
+    );
+
+    const repair = await repairWake.promise;
+    expect(firstWakeSavedId).toBe(parked.savedState?.id);
+    expect(firstWake).toMatchObject({
+      applied: true,
+      status: { phase: "running", instance: parked.instance, epoch: 2, savedState: null },
+    });
+    expect(down).toMatchObject({
+      phase: "running",
+      instance: parked.instance,
+      epoch: 2,
+      proxy: "down",
+    });
+    expect(repairPark).toMatchObject({
+      applied: true,
+      status: { phase: "paused", instance: parked.instance, epoch: 2 },
+    });
+    expect(repairPark?.savedState?.id).toBeDefined();
+    expect(repair.expect.savedStateId).toBe(repairPark?.savedState?.id);
+    expect(await f.controller.status(slotId, 1)).toMatchObject({
+      phase: "paused",
+      instance: parked.instance,
+      savedState: repairPark?.savedState,
+    });
+    expect(await f.slot()).toMatchObject({ instanceId: parked.instance, failedStarts: 0 });
+    expect(home.report()).toMatchObject({ phase: "waking" });
+    expect(home.report()?.refused).toBeUndefined();
+
+    f.controller.setProxyUnhealthy?.(false);
+    if (!agent) f.controller.observe({ proxy: "up" as never });
+    allowRepair.resolve();
+    expect(await waiting).toBeUndefined();
+    await vi.waitFor(async () =>
+      expect(await f.slot()).toMatchObject({
+        phase: "running",
+        instanceId: parked.instance,
+        epoch: 3,
+        failedStarts: 0,
+        outcome: { adopted: [f.sessionId], lost: [] },
+      }),
+    );
+    expect(await f.controller.status(slotId, 1)).toMatchObject({
+      phase: "running",
+      instance: parked.instance,
+      epoch: 3,
+      savedState: null,
+    });
+    expect((await f.controller.status(slotId, 1)).proxy).toBe(agent ? undefined : "up");
+    expect(calls).toEqual(["start", "pause", "resume", "pause", "resume"]);
+    expect(f.controller.effects).toEqual(calls);
+    expect(f.runtime).toBe(runtime);
+    expect(f.page.isClosed()).toBe(false);
+    expect(f.page.loaderId).toBe(loader);
+    expect((await f.row())?.state).toBe("ready");
+    expect(f.sinks.has(f.sessionId)).toBe(true);
+    await f.admitted();
   } finally {
+    allowRepair.resolve();
     await f.close();
   }
 });

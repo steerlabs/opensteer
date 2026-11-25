@@ -1,6 +1,6 @@
 import { X509Certificate } from "node:crypto";
 import { createSecureContext, getCACertificates, type SecureContext } from "node:tls";
-import { refused } from "@opensteer/core";
+import { refused } from "@opensteer/core/opensteer-error";
 import { readBoundedRegularFile } from "@opensteer/shared/privateFiles";
 import {
   browserEgressCredentialAccepted,
