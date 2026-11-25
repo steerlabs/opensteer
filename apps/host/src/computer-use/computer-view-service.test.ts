@@ -29,6 +29,7 @@ function harness(phone = false) {
   let admission: (() => void) | undefined;
   let answer: Promise<void> | undefined;
   let openAnswer: Promise<void> | undefined;
+  let unanswered = false;
   let wrongWindow = false;
   let inAdmission = false;
   let windowRequests = 0;
@@ -71,6 +72,12 @@ function harness(phone = false) {
       sendComputerView: async ({ request }) => {
         sends.push(request);
         if (request.operation === "open") await openAnswer;
+        if (request.operation === "open" && unanswered)
+          return {
+            kind: "error" as const,
+            code: "no-answer" as const,
+            message: "That computer did not answer in time.",
+          };
         const id =
           request.target.kind === "app" ? Number(request.target.windowId.slice(-12)) : focused;
         return {
@@ -98,6 +105,9 @@ function harness(phone = false) {
     },
     wrongWindow: () => {
       wrongWindow = true;
+    },
+    leaveOpensUnanswered: () => {
+      unanswered = true;
     },
     holdOpen: (promise: Promise<void>) => {
       openAnswer = promise;
@@ -252,6 +262,23 @@ describe("owner windows", () => {
       ).rejects.toThrow(/approval/);
       h.revoke();
       await expect(h.service.windows(owner, machine, app)).rejects.toThrow(/approval/);
+    } finally {
+      h.service.shutdown();
+    }
+  });
+});
+
+describe("an open the computer does not answer", () => {
+  it("ends the view as unanswered, says so, and closes it on the computer", async () => {
+    const h = harness();
+    try {
+      h.leaveOpensUnanswered();
+      const view = await h.open(11);
+      expect(view).toMatchObject({ state: "unavailable", unavailableReason: "no-answer" });
+      await vi.waitFor(() =>
+        expect(h.sends.map((request) => request.operation)).toEqual(["open", "close"]),
+      );
+      expect(h.logs.at(-1)?.details).toMatchObject({ reason: "no-answer" });
     } finally {
       h.service.shutdown();
     }

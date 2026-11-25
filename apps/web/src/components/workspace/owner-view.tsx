@@ -231,7 +231,10 @@ export function OwnerView({
   const computer = ownerViewComputerReadiness(machine, phone);
   const chooseWindow =
     appIdentity !== null && ownerViewRecovery(readiness, phone) === "choose-window";
-  const reopenEligible = hostConnected && computer === null;
+  // A view whose own open ended (the Mac did not answer, its window closed) can be opened
+  // again whatever the computer's readiness says; the Home answers that open with its reason.
+  const reopenEligible =
+    hostConnected && (computer === null || (readiness !== computer && current?.state !== "ready"));
   const resting = phone && source === null;
   const ordinaryState: {
     readonly words: string;
