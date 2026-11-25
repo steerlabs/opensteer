@@ -95,7 +95,12 @@ function installed(files: Record<string, string>) {
 }
 
 /** Stands in for curl: the account's release-feed answer, and the installer at its address. */
-function network(answer: object | null, bundle?: string) {
+function network(given: object | null, bundle?: string) {
+  // The account's pin names its release: the feed's (1.2.4) unless a test says otherwise.
+  const answer =
+    given && "recipe" in given && given.recipe && !("version" in (given.recipe as object))
+      ? { ...given, recipe: { ...(given.recipe as object), version: "1.2.4" } }
+      : given;
   writeFileSync(
     join(work, "curl"),
     `#!/usr/bin/env bash
@@ -535,4 +540,113 @@ it("decides a finished managed boot before it copies boot's own recipe over the 
   const finish = install.slice(install.indexOf("finish_managed_boot() {"), finished);
   expect(finish).toContain('"$home_dir/install-scheduler.sh"');
   expect(finish).not.toContain("$source_dir");
+});
+
+/** Nothing changed: A's recipe and selector, and the Home never stopped. */
+const untouched = () => {
+  expect(onDisk()).toBe("# recipe A: compose.yaml\n");
+  expect(readFileSync(join(home, "images.env"), "utf8")).toBe(selection("1.2.3", "a"));
+  expect(said()).not.toContain("compose down");
+  expect(existsSync(join(home, "update.pending"))).toBe(false);
+};
+
+it("never stops the Home when the way back cannot be kept: a failed tag of the running image", () => {
+  rmSync(join(home, "managed"));
+  const b = installer(recipe("B"));
+  network(null, b.path);
+  const manifest = join(work, "owner.json");
+  writeFileSync(
+    manifest,
+    JSON.stringify({ ...newer, recipe: { url: recipeUrl, sha256: b.sha256 } }),
+  );
+  // A self-hosted Home runs images by tag; tagging them for the rollback fails (a full disk).
+  const result = update(
+    newer,
+    "update",
+    manifest,
+    `docker() {
+       case $1 in
+         inspect) if [[ $3 == '{{.Config.Image}}' ]]; then echo "example.test/x:latest"; else echo "sha256:${"d".repeat(64)}"; fi ;;
+         image) [[ $2 == tag ]] && return 1; return 0 ;;
+       esac
+     }`,
+  );
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain("could not be kept for a rollback");
+  untouched();
+});
+
+it.each([
+  [
+    "the release's images cannot be pulled",
+    "fetch_release_images() { return 1; }",
+    "could not be obtained",
+  ],
+  [
+    "a release image is not on this machine after the pull",
+    `docker() {
+       case $1 in
+         inspect) c=\${*: -1}; echo "example.test/\${c#container-}@sha256:${"a".repeat(64)}" ;;
+         image) [[ $3 == *${"b".repeat(64)} ]] && return 1; return 0 ;;
+       esac
+     }`,
+    "is not on this machine",
+  ],
+])("never stops the Home when %s", (_case, fault, says) => {
+  pinned();
+  const result = update(newer, "scheduled-update", undefined, fault);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain(says);
+  untouched();
+});
+
+it("says the update committed when its marker is on disk, even if the marker's sync failed", () => {
+  pinned();
+  const result = update(
+    newer,
+    "scheduled-update",
+    undefined,
+    `durable_marker() { touch "$1"; return 1; }`,
+  );
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain("Updated Home to 1.2.4.");
+  expect(result.stderr).toContain("commit marker could not be synced");
+  expect(result.stderr).not.toContain("rolled back");
+  expect(onDisk()).toBe("# recipe B: compose.yaml\n");
+  expect(readFileSync(join(home, "images.env"), "utf8")).toBe(selection("1.2.4", "b"));
+  expect(existsSync(join(home, "update.pending"))).toBe(false);
+});
+
+it("changes nothing while the account's pin and the feed's images name different releases", () => {
+  const b = installer(recipe("B"));
+  // Account published the next release's installer; the feed still serves 1.2.4's images.
+  network(
+    {
+      releaseManifestUrl: "https://releases.example.test/stable.json",
+      recipe: { url: recipeUrl, sha256: b.sha256, version: "1.2.5" },
+    },
+    b.path,
+  );
+  const result = update(newer);
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain("The release is still being published");
+  untouched();
+});
+
+it("writes the previous recipe's units back when a boot ran the candidate's during an interrupted update", () => {
+  interrupted("recipe-swapped");
+  const recovered = nextStart();
+  expect(recovered.status, recovered.stderr).toBe(0);
+  // The rollback leaves the units its recipe writes, whatever a boot wrote meanwhile.
+  expect(said()).toContain("units from recipe A");
+  expect(said()).not.toContain("units from recipe B");
+  // And the finished-boot branch leaves units alone while an update is pending.
+  const install = readFileSync(join(source, "install.sh"), "utf8");
+  const finish = install.slice(
+    install.indexOf("finish_managed_boot() {"),
+    install.indexOf("if $resume_managed; then\n  for outcome"),
+  );
+  expect(finish).toMatch(
+    /if \[\[ ! -e "\$home_dir\/update\.pending" \]\]; then\n\s+"\$home_dir\/install-scheduler\.sh"/u,
+  );
 });

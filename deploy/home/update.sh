@@ -46,8 +46,18 @@ update_recovery() {
   cp "$journal/previous.env" "$active.new" || return
   publish_file "$active.new" "$active" || return
   install_sandbox_policies && start_pod || return
+  # The units the previous recipe writes (a boot may have written the candidate's meanwhile).
+  if [[ -d "$journal/recipe.previous" ]]; then refresh_installed_units || return; fi
   echo 'Rolled back to the previous recipe and images. The pre-update dump is retained for manual recovery.'
   retire_journal "$journal"
+}
+
+# mark_committed JOURNAL: the commit marker; one whose sync failed still marks the commit (it is
+# what recovery decides by), and says so.
+mark_committed() {
+  durable_marker "$1/committed" && return 0
+  [[ -f "$1/committed" ]] || return 1
+  echo 'The update committed, but its commit marker could not be synced; it stands.' >&2
 }
 
 # recipe_installed RECIPE_JSON: whether the Home runs that recipe already (no recipe named: yes).
@@ -103,6 +113,12 @@ update_home() (
   if $pinned && [[ ! -s "$current_dir/recipe.json" ]]; then
     fail 'The Opensteer account gave no recipe for this release: not updating now; the next check tries again.'
   fi
+  # The account's pin and the feed's images are published apart: they are one release only when
+  # both name it. Between the two publications nothing changes; the next check tries again.
+  if $pinned && [[ $(jq -r '.version // empty' "$current_dir/recipe.json") != "$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$candidate")" ]]; then
+    echo 'The release is still being published (its recipe and its images name different releases): not updating now; the next check tries again.'
+    return 0
+  fi
   old_version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$active")
   new_version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$candidate")
   # A release is its version and its image digests together.
@@ -140,22 +156,36 @@ update_home() (
         fail "The selected $service image is missing."
       continue
     fi
-    container=$(compose ps -q "$service")
+    container=$(compose ps -q "$service") || fail 'The running services could not be read. Nothing was changed.'
     [[ -n $container ]] || fail "Start the Home before updating."
-    ref=$(docker inspect --format '{{.Config.Image}}' "$container")
+    ref=$(docker inspect --format '{{.Config.Image}}' "$container") && [[ -n $ref ]] ||
+      fail "The running $service image could not be read. Nothing was changed."
     if [[ ! $ref =~ @sha256:[0-9a-f]{64}$ ]]; then
       ! $pinned || fail "The running managed $service image is missing its release digest."
-      id=$(docker inspect --format '{{.Image}}' "$container")
-      tag="opensteer-home-rollback/$project-$service:${id#sha256:}"
-      docker image tag "$id" "$tag"
+      id=$(docker inspect --format '{{.Image}}' "$container") && [[ -n $id ]] &&
+        tag="opensteer-home-rollback/$project-$service:${id#sha256:}" &&
+        docker image tag "$id" "$tag" ||
+        fail "The running $service image could not be kept for a rollback. Nothing was changed."
       ref=$tag
     fi
+    # The way back must exist before the Home stops.
+    docker image inspect "$ref" >/dev/null 2>&1 ||
+      fail "The running $service image $ref is not on this machine for a rollback. Nothing was changed."
     printf 'OPENSTEER_HOME_%s_IMAGE=%s\n' "$(printf %s "$service" | tr 'a-z-' 'A-Z_')" "$ref" >> "$previous" ||
       fail 'The update could not record the running images. Nothing was changed.'
   done
 
-  fetch_release_images "$candidate" "$(uses_local_images)"
-  if $pinned; then check_release_stamps "$candidate"; fi
+  # The release's images are here before anything stops: obtained, and each one present.
+  fetch_release_images "$candidate" "$(uses_local_images)" ||
+    fail "The release's images could not be obtained. Nothing was changed."
+  if $pinned; then
+    check_release_stamps "$candidate" || fail "The release's images are not this release. Nothing was changed."
+  fi
+  for service in $(running_services); do
+    ref=$(sed -n "s/^OPENSTEER_HOME_$(printf %s "$service" | tr 'a-z-' 'A-Z_')_IMAGE=//p" "$candidate")
+    [[ -n $ref ]] && docker image inspect "$ref" >/dev/null 2>&1 ||
+      fail "The release's $service image is not on this machine. Nothing was changed."
+  done
   # A release is one thing: its recipe (scripts and Compose files) rides with its images, checked
   # against its SHA-256 before anything is stopped, and journalled beside the previous one.
   if [[ -s "$current_dir/recipe.json" ]]; then
@@ -192,7 +222,7 @@ update_home() (
   if compose down && { [[ ! -d "$journal/recipe.new" ]] || put_recipe "$journal/recipe.new"; } &&
     OPENSTEER_HOME_UPDATE_JOURNAL="$journal" "$home_dir/opensteer-home" update-gate &&
     cp "$journal/candidate.env" "$active.new" && publish_file "$active.new" "$active" &&
-    durable_marker "$journal/committed"; then
+    mark_committed "$journal"; then
     # Committed. Units, timers and the command on the path follow the committed recipe only; what
     # fails from here is finished from the committed journal at the next start.
     refresh_installed_units ||
@@ -203,6 +233,13 @@ update_home() (
     if declare -F record_update_result >/dev/null; then
       record_update_result updated "$old_version" "$new_version"
     fi
+    return
+  fi
+  # One decision, the one recovery takes: a commit marker on disk means the update committed.
+  if [[ -f "$journal/committed" ]]; then
+    update_recovery ||
+      fail "Updated to $new_version (committed), but finishing it failed: the next start finishes it."
+    echo "Updated Home to $new_version."
     return
   fi
   printf '%s\n' "Home $new_version did not become healthy. Restoring $old_version." >&2

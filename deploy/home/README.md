@@ -303,7 +303,9 @@ operator instead of deleting a volume set. Move DNS once the restored Home is re
 Before switching to a new release, the updater pulls its images, records both
 image sets, and saves `update-database.dump` in the root-only configuration
 directory. An interrupted or unhealthy candidate rolls back to the previous
-recipe and images (not the database). Migrations are expand-only and must keep the preceding Host compatible.
+recipe, images and units. It deliberately keeps the database as the candidate's migrations
+left it (they are expand-only, so the previous Host runs on it; the dump is kept for manual
+recovery, never replayed) and a feed address its Opensteer account moved. Migrations are expand-only and must keep the preceding Host compatible.
 The dump is a consistent, last-resort copy for manual recovery. It does not include
 writes made after the dump. Managed updates take only digest-pinned images from
 the stored HTTPS feed from the Opensteer account and refuse a local manifest. Each fetch checks DNS
@@ -333,7 +335,8 @@ undone at the next start by `restore-recipe.sh`, which the units run first (`Exe
 under the Home's lock); it is written with the units, so an update never replaces it before it
 commits. The previous recipe's own recovery then rolls the images back. Volumes, `config.env`
 and secrets are never touched. A Home installed before this updater needs one replace (or a new
-install) to get it.
+install) to get it. Do not run services of your own under the Home's Compose project name: a
+rollback stops the candidate with `--remove-orphans`, which removes them (their volumes are kept).
 
 ## Problems and reports
 

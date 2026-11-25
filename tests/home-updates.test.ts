@@ -205,7 +205,6 @@ it("runs a scheduled update from the account's feed and decides by the release's
     url: "https://releases.example.test/opensteer-home-installer.sh",
     sha256: "c".repeat(64),
   };
-  account({ releaseManifestUrl: moved, recipe: pin });
   writeFileSync(join(home, "recipe.sha256"), `${pin.sha256}\n`);
   const images = (digit: string) =>
     Object.fromEntries(
@@ -224,6 +223,8 @@ it("runs a scheduled update from the account's feed and decides by the release's
       "",
     ].join("\n");
   const update = (running: string, feedRelease: { version: string; digit: string }) => {
+    // The account's pin names the release the feed offers: the two halves agree.
+    account({ releaseManifestUrl: moved, recipe: { ...pin, version: feedRelease.version } });
     writeFileSync(join(home, "images.env"), running);
     writeFileSync(
       join(work, "release.json"),

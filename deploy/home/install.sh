@@ -156,7 +156,11 @@ finish_managed_boot() {
     if [[ -f "$home_dir/config.env" ]]; then compose down; fi
     exit 78
   fi
-  "$home_dir/install-scheduler.sh" "$home_dir" "$unit_prefix"
+  # While an update is pending its recovery owns the units (the main unit's restore step and
+  # update_recovery run next); only a Home with no update in flight has its units written here.
+  if [[ ! -e "$home_dir/update.pending" ]]; then
+    "$home_dir/install-scheduler.sh" "$home_dir" "$unit_prefix"
+  fi
   flock -u 9
   systemctl start "$unit_prefix.service"
   exit 0
