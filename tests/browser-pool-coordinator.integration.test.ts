@@ -2970,8 +2970,9 @@ it("records savedStateKept only when signed status proves saved state stayed pau
           };
         }
         if (call.kind === "resume" && mode === "refuse-lost") {
+          mode = "normal";
           const stopped = await f.controller.apply({
-            id: `consume-${call.id}`,
+            id: randomUUID(),
             slotId: call.slotId,
             term: call.term,
             kind: "stop",
@@ -3004,7 +3005,12 @@ it("records savedStateKept only when signed status proves saved state stayed pau
     expect(home.report()).toMatchObject({ refused: "egress-required", savedStateKept: true });
 
     // Saved state consumed/stopped -> savedStateKept: false.
-    mode = "refuse-lost";
+    if (poolControllerKind() === "agent") {
+      mode = "normal";
+      (f.controller as AgentPoolController).failNext("resume", new Error("resume failed"));
+    } else {
+      mode = "refuse-lost";
+    }
     await expect(
       home.gate.reserve(AbortSignal.timeout(5_000), { failOnRefusal: true }),
     ).rejects.toMatchObject({
@@ -3013,6 +3019,14 @@ it("records savedStateKept only when signed status proves saved state stayed pau
       savedStateKept: false,
     });
     expect(home.report()).toMatchObject({ refused: "resume-failed", savedStateKept: false });
+
+    // A follow-up open after the lost saved state gets a fresh guest rather than timing out.
+    (await home.gate.reserve(AbortSignal.timeout(5_000), { failOnRefusal: true })).release();
+    expect(await f.slot()).toMatchObject({
+      phase: "running",
+      failedStarts: 0,
+      lastStart: { reason: "expired" },
+    });
   } finally {
     await f.close();
   }
