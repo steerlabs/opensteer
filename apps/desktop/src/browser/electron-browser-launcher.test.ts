@@ -5356,11 +5356,15 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
         `chrome-ex\ttension://${extId}/war.html`,
         `\u0001chrome-extension://${extId}/war.html`,
       ];
+      withExtensions(view.webContents, { [extId]: warManifest });
+      withFrames(view.webContents, ["https://site.test"]);
+      const initiator = { origin: "https://site.test" };
 
-      // Before connection control: person's own page keeps #745's behavior, and will-frame-navigate /
-      // will-redirect do NOT block data:, blob:, or about:srcdoc subframes (N4).
+      // Before connection control: the person's own page reaches the web-accessible war.html,
+      // and will-frame-navigate / will-redirect do NOT block data:, blob:, or about:srcdoc
+      // subframes (N4).
       const personNav = vi.fn();
-      willNavigate({ preventDefault: personNav }, extUrls[0]);
+      willNavigate({ preventDefault: personNav, initiator }, extUrls[0]);
       expect(personNav).not.toHaveBeenCalled();
       expect(popupHandler({ url: extUrls[0] })).toMatchObject({ action: "allow" });
       for (const subframeUrl of [
@@ -5370,27 +5374,27 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
         extUrls[0],
       ]) {
         const preventFrame = vi.fn();
-        willFrameNavigate({ url: subframeUrl, preventDefault: preventFrame });
+        willFrameNavigate({ url: subframeUrl, preventDefault: preventFrame, initiator });
         expect(
           preventFrame,
           `uncontrolled will-frame-navigate ${subframeUrl}`,
         ).not.toHaveBeenCalled();
         const preventRedir = vi.fn();
-        willRedirect({ preventDefault: preventRedir }, subframeUrl);
+        willRedirect({ preventDefault: preventRedir, initiator }, subframeUrl);
         expect(preventRedir, `uncontrolled will-redirect ${subframeUrl}`).not.toHaveBeenCalled();
       }
 
       // S-e: backend.attach alone does NOT mark the page connection-controlled; only setConnectionControlled does.
       const channel = await browser.cdp.attach(targetId);
       const stillPersonNav = vi.fn();
-      willNavigate({ preventDefault: stillPersonNav }, extUrls[0]);
+      willNavigate({ preventDefault: stillPersonNav, initiator }, extUrls[0]);
       expect(stillPersonNav).not.toHaveBeenCalled();
 
       // Mark page as connection-controlled (as SessionCdpRouter's counted retain does).
       browser.cdp.setConnectionControlled?.(targetId, true);
       await vi.waitFor(() => {
         const probe = vi.fn();
-        willNavigate({ preventDefault: probe }, extUrls[0]);
+        willNavigate({ preventDefault: probe, initiator }, extUrls[0]);
         expect(probe).toHaveBeenCalledOnce();
       });
       for (const url of [
@@ -5399,15 +5403,15 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
         `filesystem:chrome-extension://${extId}/temporary/x`,
       ]) {
         const preventNav = vi.fn();
-        willNavigate({ preventDefault: preventNav }, url);
+        willNavigate({ preventDefault: preventNav, initiator }, url);
         expect(preventNav, `will-navigate ${url}`).toHaveBeenCalledOnce();
 
         const preventFrame = vi.fn();
-        willFrameNavigate({ url, preventDefault: preventFrame });
+        willFrameNavigate({ url, preventDefault: preventFrame, initiator });
         expect(preventFrame, `will-frame-navigate ${url}`).toHaveBeenCalledOnce();
 
         const preventRedirect = vi.fn();
-        willRedirect({ preventDefault: preventRedirect }, url);
+        willRedirect({ preventDefault: preventRedirect, initiator }, url);
         expect(preventRedirect, `will-redirect ${url}`).toHaveBeenCalledOnce();
 
         expect(popupHandler({ url }), `windowOpen ${url}`).toMatchObject({ action: "deny" });
@@ -5427,6 +5431,7 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       const beforeViews = electron.views.length;
       popupHandler({ url: "about:blank", disposition: "new-window" }).createWindow({});
       const popupView = electron.views[beforeViews]!;
+      withExtensions(popupView.webContents, { [extId]: warManifest });
       const origPopupSend = popupView.webContents.debugger.sendCommand;
       popupView.webContents.debugger.sendCommand = vi.fn(
         (method: string, params?: Record<string, unknown>, sid?: string) =>
@@ -5438,14 +5443,14 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
         ([name]) => name === "will-navigate",
       )![1];
       const preventPopupExt = vi.fn();
-      popupWillNavigate({ preventDefault: preventPopupExt }, extUrls[0]);
+      popupWillNavigate({ preventDefault: preventPopupExt, initiator }, extUrls[0]);
       expect(preventPopupExt).toHaveBeenCalledOnce();
 
       // S5: when the popup is announced and no router retains it (e.g., after Disconnect), the
       // inherited connection-controlled flag is released instead of staying sticky forever.
       await vi.waitFor(() => {
         const afterAnnounce = vi.fn();
-        popupWillNavigate({ preventDefault: afterAnnounce }, extUrls[0]);
+        popupWillNavigate({ preventDefault: afterAnnounce, initiator }, extUrls[0]);
         expect(afterAnnounce).not.toHaveBeenCalled();
       });
 
@@ -5454,6 +5459,93 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       // Electron sets `view.webContents` to undefined before emitting `destroyed`.
       await expect(page.close()).resolves.toBeUndefined();
       expect(view.webContents).toBeUndefined();
+    } finally {
+      await browser.close();
+    }
+  });
+  it("lets a page that is not connection-controlled reach an extension address only as Chrome lets a web page", async () => {
+    const launcher = new ElectronBrowserLauncher({
+      downloads: { accept: () => undefined },
+      pagePolicyPreloadPath: "/policy.cjs",
+    });
+    const browser = await launcher.launch({
+      initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+      partitionKey: "session:extension-web-accessible",
+      sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000098"),
+      storage: { kind: "guest" },
+    });
+    try {
+      const view = electron.views.at(-1)!;
+      const handler = (name: string) =>
+        view.webContents.on.mock.calls.find(([event]) => event === name)![1];
+      const willNavigate = handler("will-navigate");
+      const willFrameNavigate = handler("will-frame-navigate");
+      const willRedirect = handler("will-redirect");
+      const popupHandler = view.webContents.setWindowOpenHandler.mock.calls[0]![0];
+      const extId = "abcdefghijklmnopabcdefghijklmnop";
+      const absentId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      withExtensions(view.webContents, { [extId]: warManifest });
+      const war = `chrome-extension://${extId}/war.html`;
+      const nonWar = `chrome-extension://${extId}/nonwar.html`;
+      const absent = `chrome-extension://${absentId}/war.html`;
+      const web = { origin: "https://site.test" };
+      const own = { origin: `chrome-extension://${extId}` };
+      const refused = {
+        navigate: (url: string, initiator: object | null) => {
+          const preventDefault = vi.fn();
+          willNavigate({ preventDefault, initiator }, url);
+          return preventDefault.mock.calls.length > 0;
+        },
+        frame: (url: string, initiator: object | null) => {
+          const preventDefault = vi.fn();
+          willFrameNavigate({ url, preventDefault, initiator, isMainFrame: false });
+          return preventDefault.mock.calls.length > 0;
+        },
+        redirect: (url: string, initiator: object | null) => {
+          const preventDefault = vi.fn();
+          willRedirect({ preventDefault, initiator }, url);
+          return preventDefault.mock.calls.length > 0;
+        },
+      };
+      for (const [gate, refuses] of Object.entries(refused)) {
+        // A web page reaches the web-accessible page; not the non-web-accessible one, and not
+        // an absent extension's, alike.
+        expect(refuses(war, web), `${gate} war from web`).toBe(false);
+        expect(refuses(nonWar, web), `${gate} nonwar from web`).toBe(true);
+        expect(refuses(absent, web), `${gate} absent from web`).toBe(true);
+        // An initiator Electron no longer has matches no MV3 entry.
+        expect(refuses(war, null), `${gate} war from no initiator`).toBe(true);
+        // Ordinary addresses are not this rule's.
+        expect(refuses("https://example.test/", null), `${gate} web`).toBe(false);
+      }
+      // The extension's own pages move among their own pages; a server redirect into the
+      // extension comes from the web even when its own page started the navigation.
+      expect(refused.navigate(nonWar, own)).toBe(false);
+      expect(refused.frame(nonWar, own)).toBe(false);
+      expect(refused.redirect(nonWar, own)).toBe(true);
+      // data:, blob: and about:srcdoc subframes still load without an initiator (N4).
+      for (const url of [
+        "data:text/html,<p>inline</p>",
+        "blob:https://example.test/1234",
+        "about:srcdoc",
+      ])
+        expect(refused.frame(url, null), url).toBe(false);
+
+      // window.open: Electron does not say which frame opened it, so every frame must be allowed.
+      const opens = (url: string, origins: readonly string[]) => {
+        withFrames(view.webContents, origins);
+        return popupHandler({ url, disposition: "new-window" }) as { action: string };
+      };
+      expect(opens(war, ["https://site.test"]).action).toBe("allow");
+      expect(opens(nonWar, ["https://site.test"])).toEqual({ action: "deny" });
+      expect(opens(absent, ["https://site.test"])).toEqual({ action: "deny" });
+      expect(opens(nonWar, [`chrome-extension://${extId}`]).action).toBe("allow");
+      expect(opens(nonWar, [`chrome-extension://${extId}`, "https://site.test"])).toEqual({
+        action: "deny",
+      });
+      expect(opens(war, ["https://site.test", "null"])).toEqual({ action: "deny" });
+      expect(opens(war, [])).toEqual({ action: "deny" });
+      expect(opens("https://example.test/", []).action).toBe("allow");
     } finally {
       await browser.close();
     }
@@ -7171,3 +7263,32 @@ it("does not block channel release or other channels' domain work behind a held 
     await hub.browser.close();
   }
 });
+
+const warManifest = {
+  manifest_version: 3,
+  web_accessible_resources: [{ resources: ["war.html"], matches: ["<all_urls>"] }],
+};
+
+/** Gives a mock page the profile's loaded extensions, as Electron's `session.extensions` holds them. */
+function withExtensions(contents: object, manifests: Record<string, unknown>): void {
+  Object.assign(contents, {
+    session: {
+      extensions: {
+        getExtension: (id: string) => (id in manifests ? { manifest: manifests[id] } : null),
+      },
+    },
+  });
+}
+
+/** Gives a mock page the frames Electron reports in `mainFrame.framesInSubtree`. */
+function withFrames(contents: object, origins: readonly string[]): void {
+  Object.assign(contents, {
+    mainFrame: {
+      framesInSubtree: origins.map((origin) => ({
+        origin,
+        isDestroyed: () => false,
+        osProcessId: 0,
+      })),
+    },
+  });
+}

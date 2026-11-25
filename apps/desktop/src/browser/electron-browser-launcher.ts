@@ -60,6 +60,7 @@ import {
   type NativeImage,
   type Session,
   type WebContents,
+  type WebFrameMain,
   type WebPreferences,
 } from "electron";
 import { createHash } from "node:crypto";
@@ -69,6 +70,7 @@ import path from "node:path";
 import { z } from "zod";
 import { desktopBrowserAppShortcut } from "../app/application-menu.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
+import { mayReachExtensionResource } from "./extensions/web-accessible.js";
 import { boundPageRestore, ElectronPageRestoreSchema, WakeSeeds } from "./page-restore.js";
 import {
   applyBrowserSessionPolicy,
@@ -1559,15 +1561,33 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     void pageEnabled?.catch(() => this.close()).catch(() => undefined);
     void pagePolicy?.catch(() => this.close()).catch(() => undefined);
     void this.#cdpPromise.catch(() => this.close()).catch(() => undefined);
+    // A page reaches an extension address only as Chrome lets a web page: an extension's own
+    // pages always, any other page only a resource the extension lists as web-accessible for it.
+    // A connection-controlled page reaches no extension address at all (M1a).
+    const pageContents = view.webContents;
     view.webContents.on("will-navigate", (event, url) => {
-      if (!isAllowedBrowserNavigation(url, false, !this.#connectionControlled))
+      if (
+        !isAllowedBrowserNavigation(url, false, !this.#connectionControlled) ||
+        !mayPageReachExtension(pageContents, url, [event.initiator])
+      )
         event.preventDefault();
     });
     view.webContents.on("will-frame-navigate", (details) => {
-      if (this.#connectionControlled && isExtensionUrl(details.url)) details.preventDefault();
+      if (!isExtensionUrl(details.url)) return;
+      if (
+        this.#connectionControlled ||
+        !mayPageReachExtension(pageContents, details.url, [details.initiator])
+      )
+        details.preventDefault();
     });
     view.webContents.on("will-redirect", (event, url) => {
-      if (this.#connectionControlled && isExtensionUrl(url)) event.preventDefault();
+      if (!isExtensionUrl(url)) return;
+      // A server redirect into an extension comes from the web, whoever started the navigation.
+      if (
+        this.#connectionControlled ||
+        !mayPageReachExtension(pageContents, url, [event.initiator], { sameExtension: false })
+      )
+        event.preventDefault();
     });
     view.webContents.on("cursor-changed", (_event, type) => {
       this.#cursor = normalizeElectronCursor(type);
@@ -2768,8 +2788,16 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     securePreferences: WebPreferences,
     create: (options: ElectronPopupWindowOptions, details: ElectronPopupDetails) => WebContents,
   ): void {
+    const contents = this.#webContents;
     this.#webContents.setWindowOpenHandler((details) => {
       if (!isAllowedBrowserNavigation(details.url, true, !this.#connectionControlled))
+        return { action: "deny" };
+      // Electron does not say which frame opened the window: an extension address opens only
+      // when every frame of the opener could reach it.
+      if (
+        isExtensionUrl(details.url) &&
+        !mayPageReachExtension(contents, details.url, openerFrames(contents))
+      )
         return { action: "deny" };
       return {
         action: "allow",
@@ -4801,13 +4829,56 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
   }
 }
 
+/**
+ * Whether the page in `contents` may reach `url` when the navigation or window was started by a
+ * frame of one of `initiators` (all of them must be allowed; none known is a refusal). Anything
+ * that is not an extension address is not this rule's to decide.
+ */
+function mayPageReachExtension(
+  contents: WebContents,
+  url: string,
+  initiators: readonly (WebFrameMain | null | undefined)[],
+  options?: { readonly sameExtension?: boolean },
+): boolean {
+  if (!isExtensionUrl(url)) return true;
+  const manifestOf = (extensionId: string): unknown =>
+    contents.isDestroyed()
+      ? undefined
+      : contents.session.extensions.getExtension(extensionId)?.manifest;
+  return (
+    initiators.length > 0 &&
+    initiators.every((frame) =>
+      mayReachExtensionResource(url, frameOrigin(frame), manifestOf, options),
+    )
+  );
+}
+
+/** A frame's origin, or undefined when there is no frame or it is gone. */
+function frameOrigin(frame: WebFrameMain | null | undefined): string | undefined {
+  try {
+    return frame?.origin;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Every frame of the page that may have opened a window. */
+function openerFrames(contents: WebContents): readonly WebFrameMain[] {
+  try {
+    return contents.isDestroyed() ? [] : contents.mainFrame.framesInSubtree;
+  } catch {
+    return [];
+  }
+}
+
 function isAllowedBrowserNavigation(value: string, popup = false, allowExtensions = true): boolean {
   if (value === "about:blank") return true;
   if (!allowExtensions && isExtensionUrl(value)) return false;
   try {
     const protocol = new URL(value).protocol;
-    // Chromium itself keeps web pages from extension pages they may not reach;
-    // connection-controlled pages never navigate to extension pages at all (M1a).
+    // Electron does not keep web pages from extension pages (its Chromium has no extension
+    // navigation throttle): the page's own navigations also pass mayPageReachExtension.
+    // Connection-controlled pages never navigate to extension pages at all (M1a).
     return (
       protocol === "http:" ||
       protocol === "https:" ||

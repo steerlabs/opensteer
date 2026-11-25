@@ -56,7 +56,7 @@ it("rejects early success without result evidence and records smoke failures", (
     const quitRows = readFileSync(path.join(out, "results.jsonl"), "utf8").trim().split("\n");
     expect(JSON.parse(quitRows.at(-1)!).exitCode).toBe(0);
 
-    // extensions validation requires 5/5 passing boundary sections AND pins main's known fault on
+    // extensions validation requires 6/6 passing boundary sections AND pins main's known fault on
     // `chrome.windows.create and remove` (it.fails style: accepts only that exact refusal, rejects
     // any other lifecycle failure, rejects an unexpected pass so the pin cannot rot, and rejects
     // any failing or missing boundary section).
@@ -69,6 +69,7 @@ it("rejects early success without result evidence and records smoke failures", (
       "connected-agent-compromise",
       "connected-agent-probes",
       "connected-agent-dialog",
+      "extension-web-accessible",
     ];
     const knownMainFault = {
       step: "chrome.windows.create and remove",
@@ -165,6 +166,22 @@ it("rejects early success without result evidence and records smoke failures", (
         "missing boundary section rejected",
         0,
         { omitBoundary: "connected-agent-compromise" },
+        1,
+        undefined,
+        undefined,
+      ],
+      [
+        "missing web-accessible section rejected",
+        0,
+        { omitBoundary: "extension-web-accessible" },
+        1,
+        undefined,
+        undefined,
+      ],
+      [
+        "failing web-accessible section rejected",
+        0,
+        { failingBoundary: "extension-web-accessible" },
         1,
         undefined,
         undefined,

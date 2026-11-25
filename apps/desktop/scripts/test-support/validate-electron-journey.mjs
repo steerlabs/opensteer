@@ -44,6 +44,7 @@ try {
         "connected-agent-compromise",
         "connected-agent-probes",
         "connected-agent-dialog",
+        "extension-web-accessible",
       ]) {
         const entry = local(`section-${section}.json`);
         assert.equal(entry.section, section);
@@ -89,7 +90,7 @@ try {
       assert.equal(report.knownMainFault?.refusal, KNOWN_REFUSAL);
       assert.deepEqual(report.knownMainFault?.phases, ["install", "reopen"]);
       console.log(
-        `[journey] extensions: PASS (5/5 boundary sections passed; extension-lifecycle = knownMainFault at "${KNOWN_STEP}" — ${KNOWN_REFUSAL})`,
+        `[journey] extensions: PASS (6/6 boundary sections passed; extension-lifecycle = knownMainFault at "${KNOWN_STEP}" — ${KNOWN_REFUSAL})`,
       );
       break;
     }

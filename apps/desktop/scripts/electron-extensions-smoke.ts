@@ -404,6 +404,7 @@ const boundarySectionNames = [
   "connected-agent-compromise",
   "connected-agent-probes",
   "connected-agent-dialog",
+  "extension-web-accessible",
 ] as const;
 
 function writeSectionArtifact(entry: SectionResult): void {
@@ -460,7 +461,7 @@ async function runBoundarySection(
 
 /**
  * Section: "a connected agent beside an extension".
- * Runs as five independent boundary sections before main's install/windows phase, writing a
+ * Runs as six independent boundary sections before main's install/windows phase, writing a
  * separate result line and JSON file per section so boundary evidence is complete regardless of
  * main's chrome.windows step while still failing honestly if any boundary check fails.
  */
@@ -799,6 +800,11 @@ async function checkConnectedAgentBesideExtension(
         console.log(
           `[extensions-smoke] connected-agent: non-connection web page location.href=${nonWarUrl} -> finalUrl=${probePage.url()}`,
         );
+        assert.equal(
+          probePage.url(),
+          `${origin}/nonwar-probe`,
+          `Q2 failed: a web page reached the non-web-accessible ${nonWarUrl}`,
+        );
 
         await load(probePage, `${origin}/iframe-probe`);
         const observedFrameNavigations: string[] = [];
@@ -958,7 +964,176 @@ async function checkConnectedAgentBesideExtension(
     }),
   );
 
+  results.push(
+    await runBoundarySection("extension-web-accessible", checks, async (sectionChecks) => {
+      await checkWebAccessibleResources(browser, extensionId, sectionChecks);
+    }),
+  );
+
   return results;
+}
+
+/**
+ * Section: a page that no connected agent controls reaches an extension address only as Chrome
+ * lets a web page: the extension's own pages move among their own pages, and any other page
+ * reaches only what the extension lists as web-accessible. A refused page or resource reads
+ * exactly like one of an extension that is not installed.
+ */
+async function checkWebAccessibleResources(
+  browser: LaunchedBrowser,
+  extensionId: string,
+  sectionChecks: string[],
+): Promise<void> {
+  const base = `chrome-extension://${extensionId}/`;
+  const absentBase = "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/";
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://fixture");
+    if (url.pathname === "/redirect") {
+      response.writeHead(302, { location: url.searchParams.get("to") ?? "/" });
+      response.end();
+      return;
+    }
+    response.setHeader("Content-Type", "text/html");
+    response.end(`<!doctype html><title>${url.pathname}</title><p>page</p>`);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Fixture server did not bind.");
+  const web = `http://127.0.0.1:${address.port}`;
+  const page = await browser.context.createPage();
+  try {
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 500));
+    const navigations = {
+      "location.href": (url: string) => `location.href = ${JSON.stringify(url)}`,
+      "link click": (url: string) =>
+        `(() => { const a = document.createElement("a"); a.href = ${JSON.stringify(url)}; document.body.append(a); a.click(); })()`,
+      "server redirect": (url: string) =>
+        `location.href = ${JSON.stringify(`${web}/redirect?to=${encodeURIComponent(url)}`)}`,
+    } as const;
+    // Each navigation route: the web-accessible page is reached; the page that is not listed
+    // and the absent extension's page leave the web page where it was, with its own document.
+    for (const [route, script] of Object.entries(navigations)) {
+      const outcome = async (target: string) => {
+        await load(page, `${web}/start`);
+        await contents(page).executeJavaScript(`${script(target)}; "started"`);
+        await settle();
+        return {
+          url: page.url(),
+          title: await contents(page)
+            .executeJavaScript("document.title")
+            .catch((error: unknown) => `unreadable: ${String(error)}`),
+        };
+      };
+      const war = await outcome(`${base}war.html`);
+      assert.equal(war.url, `${base}war.html`, `${route}: the web-accessible page was not reached`);
+      const nonWar = await outcome(`${base}nonwar.html`);
+      const absent = await outcome(`${absentBase}nonwar.html`);
+      assert.deepEqual(
+        nonWar,
+        { url: `${web}/start`, title: "/start" },
+        `${route}: a web page reached the non-web-accessible page`,
+      );
+      assert.deepEqual(absent, nonWar, `${route}: refusal told an absent extension apart`);
+      sectionChecks.push(`${route} refused`);
+    }
+
+    // window.open, an iframe, fetch and a script: every page signal of a refused address is the
+    // same as for an absent extension's.
+    const pageSignals = async (target: string, text: string) => {
+      await load(page, `${web}/start`);
+      const before = browser.context.pages().length;
+      const signals = (await contents(page).executeJavaScript(`(async () => {
+        const target = ${JSON.stringify(target)};
+        const opened = window.open(target);
+        const handle = opened === null ? null : { closed: opened.closed, length: opened.length };
+        const frame = await new Promise((done) => {
+          const f = document.createElement("iframe");
+          f.onload = () => done("load");
+          f.onerror = () => done("error");
+          f.src = target;
+          document.body.append(f);
+          setTimeout(() => done("no event"), 1500);
+        });
+        const fetched = await fetch(${JSON.stringify(text)}).then(
+          (response) => response.text().then((body) => "ok " + response.status + " " + body),
+          (error) => "rejected " + error.name + ": " + error.message,
+        );
+        const script = await new Promise((done) => {
+          const s = document.createElement("script");
+          s.onload = () => done("load");
+          s.onerror = () => done("error");
+          s.src = ${JSON.stringify(text)};
+          document.head.append(s);
+          setTimeout(() => done("no event"), 1500);
+        });
+        return { handle, frame, fetched, script };
+      })()`)) as {
+        handle: { closed: boolean; length: number } | null;
+        frame: string;
+        fetched: string;
+        script: string;
+      };
+      await settle();
+      const frames = contents(page).mainFrame.framesInSubtree.map((frame) => frame.url);
+      const popups = browser.context.pages().slice(before);
+      const popupUrls = popups.map((popup) => popup.url());
+      for (const popup of popups) await popup.close().catch(() => undefined);
+      return { ...signals, frames, popupUrls };
+    };
+    const reached = await pageSignals(`${base}war.html`, `${base}war.txt`);
+    assert.notEqual(reached.handle, null, "window.open of the web-accessible page was refused");
+    assert.equal(
+      reached.fetched,
+      "ok 200 extension-war-secret",
+      "the web-accessible file did not load",
+    );
+    assert.ok(
+      reached.frames.includes(`${base}war.html`),
+      `the web-accessible page did not load in an iframe: ${JSON.stringify(reached.frames)}`,
+    );
+    const refused = await pageSignals(`${base}nonwar.html`, `${base}nonwar.html`);
+    const absent = await pageSignals(`${absentBase}nonwar.html`, `${absentBase}nonwar.html`);
+    console.log(
+      `[extensions-smoke] extension-web-accessible: reached=${JSON.stringify(reached)} refused=${JSON.stringify(refused)} absent=${JSON.stringify(absent)}`,
+    );
+    assert.equal(
+      refused.handle,
+      null,
+      "window.open of the non-web-accessible page was not refused",
+    );
+    assert.deepEqual(refused.popupUrls, [], "a popup opened at the non-web-accessible page");
+    assert.ok(
+      !refused.frames.some((url) => url.startsWith("chrome-extension:")),
+      `an iframe reached an extension address: ${JSON.stringify(refused.frames)}`,
+    );
+    assert.match(refused.fetched, /^rejected TypeError/u);
+    assert.equal(refused.script, "error");
+    assert.deepEqual(
+      absent,
+      refused,
+      "a refused extension address read differently from an absent extension's",
+    );
+    sectionChecks.push("window.open, iframe, fetch and script refused alike");
+
+    // The extension's own page moves to its own page that is not web-accessible, and the
+    // product itself still opens any of the extension's pages.
+    await load(page, `${base}war.html`);
+    await contents(page).executeJavaScript(
+      `location.href = ${JSON.stringify(`${base}nonwar.html`)}; "started"`,
+    );
+    await waitFor(() => page.url() === `${base}nonwar.html`);
+    assert.equal(await contents(page).executeJavaScript("document.title"), "Smoke non-WAR");
+    sectionChecks.push("the extension's own navigation");
+    await load(page, `${web}/start`);
+    await load(page, `${base}nonwar.html`);
+    assert.equal(page.url(), `${base}nonwar.html`);
+    await load(page, `${base}options.html`);
+    assert.equal(await contents(page).executeJavaScript("document.title"), "Smoke options");
+    sectionChecks.push("the product opens the extension's pages");
+  } finally {
+    await page.close().catch(() => undefined);
+    server.close();
+  }
 }
 
 async function webStore(
@@ -1311,7 +1486,7 @@ async function driver(): Promise<void> {
   if (!passed) throw new Error(error ?? "Extensions smoke failed.");
   console.log(
     lifecycleStatus === "known-main-fault"
-      ? "[extensions-smoke] passed (5/5 boundary sections passed; lifecycle = knownMainFault)"
+      ? `[extensions-smoke] passed (${boundarySectionNames.length}/${boundarySectionNames.length} boundary sections passed; lifecycle = knownMainFault)`
       : "[extensions-smoke] passed",
   );
 }

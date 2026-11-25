@@ -382,3 +382,66 @@ it("cancels chrome-extension: requests for connection-controlled webContents whi
   before({ url: `chrome-extension://${extId}/worker.js` }, workerAnswer);
   expect(workerAnswer).toHaveBeenCalledWith({ cancel: false });
 });
+
+it("loads a page's own request for an extension resource only when the extension lists it as web-accessible for the page", async () => {
+  const { applyBrowserSessionPolicy } = await import("./browser-session-policy.js");
+  const { vi } = await import("vitest");
+  const extId = "abcdefghijklmnopabcdefghijklmnop";
+  const absentId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const manifest = {
+    manifest_version: 3,
+    web_accessible_resources: [{ resources: ["war.txt"], matches: ["<all_urls>"] }],
+  };
+  const getExtension = vi.fn((id: string) => (id === extId ? { manifest } : null));
+  const session = {
+    setPermissionCheckHandler: vi.fn(),
+    setPermissionRequestHandler: vi.fn(),
+    getPreloadScripts: () => [],
+    registerPreloadScript: vi.fn(),
+    webRequest: { onHeadersReceived: vi.fn(), onBeforeRequest: vi.fn() },
+    setUserAgent: vi.fn(),
+    getUserAgent: () => "Chrome/150",
+    extensions: { getExtension },
+  };
+  applyBrowserSessionPolicy(session as unknown as import("electron").Session, {
+    downloads: { accept: vi.fn() },
+    pagePolicyPreloadPath: "/policy.cjs",
+    isConnectionWebContents: () => false,
+  });
+  const before = session.webRequest.onBeforeRequest.mock.calls[0]![0];
+  const web = { origin: "https://site.test" };
+  const own = { origin: `chrome-extension://${extId}` };
+  const opaque = { origin: "null" };
+  const gone = {
+    get origin(): string {
+      throw new Error("Render frame was disposed before WebFrameMain could be accessed");
+    },
+  };
+  const cancelled = (url: string, frame: object | null, resourceType = "xhr") => {
+    const answer = vi.fn();
+    before({ url, webContentsId: 7, resourceType, frame, method: "GET" }, answer);
+    return answer.mock.calls[0]![0].cancel as boolean;
+  };
+  // A web page: the web-accessible resource loads; one not listed and one of an absent
+  // extension are refused alike.
+  expect(cancelled(`chrome-extension://${extId}/war.txt`, web)).toBe(false);
+  expect(cancelled(`chrome-extension://${extId}/nonwar.html`, web)).toBe(true);
+  expect(cancelled(`chrome-extension://${absentId}/nonwar.html`, web)).toBe(true);
+  expect(cancelled(`chrome-extension://${extId}/nonwar.html`, web, "image")).toBe(true);
+  expect(cancelled(`chrome-extension://${extId}/nonwar.html`, web, "script")).toBe(true);
+  // An opaque frame (a data: iframe) matches no MV3 entry; a frame already gone is refused.
+  expect(cancelled(`chrome-extension://${extId}/war.txt`, opaque)).toBe(true);
+  expect(cancelled(`chrome-extension://${extId}/war.txt`, gone)).toBe(true);
+  // The extension's own pages load their own files.
+  expect(cancelled(`chrome-extension://${extId}/nonwar.html`, own)).toBe(false);
+  // Navigations are the page's navigation events' to decide: a load the browser starts carries
+  // the frame's previous origin here.
+  expect(cancelled(`chrome-extension://${extId}/nonwar.html`, web, "mainFrame")).toBe(false);
+  expect(cancelled(`chrome-extension://${extId}/nonwar.html`, web, "subFrame")).toBe(false);
+  // No frame (an extension's worker) is left to Chromium's extension loader.
+  expect(cancelled(`chrome-extension://${extId}/worker.js`, null, "script")).toBe(false);
+  // Rule 7: an ordinary web request never reads a manifest.
+  getExtension.mockClear();
+  expect(cancelled("https://site.test/app.js", web, "script")).toBe(false);
+  expect(getExtension).not.toHaveBeenCalled();
+});
