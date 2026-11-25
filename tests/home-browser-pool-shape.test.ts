@@ -138,10 +138,11 @@ const mebibytes = (value: string) => {
 };
 
 it("sizes a Cloud Computer's Home from its machine: no limit adds up past it, room left for the kernel", () => {
-  // 3916 MiB is what Linux reports as MemTotal on a 4 GiB e2-medium.
+  // 3908 and 3916 MiB are what Linux reports as MemTotal on a 4 GiB e2-medium.
   for (const [memory, cpus] of [
     [4096, 2],
     [3916, 2],
+    [3908, 2],
     [8192, 2],
     [16384, 4],
   ] as const) {
@@ -155,17 +156,19 @@ it("sizes a Cloud Computer's Home from its machine: no limit adds up past it, ro
         .concat("OPENSTEER_HOME_LIMIT_RUNNER_RUNS")
         .sort(),
     );
-    // Runs at once: the Runner's memory over the allowance for one Run (1 GiB), at least one.
+    // Runs at once: the Runner's memory, less its own 192 MiB, over the allowance for one Run
+    // (1,536 MiB: a measured OpenCode Run's peak and half again), at least one.
     expect(limits.OPENSTEER_HOME_LIMIT_RUNNER_RUNS).toBe(
-      `${Math.max(1, Math.floor(mebibytes(limits.OPENSTEER_HOME_LIMIT_RUNNER_MEMORY!) / 1024))}`,
+      `${Math.max(1, Math.floor((mebibytes(limits.OPENSTEER_HOME_LIMIT_RUNNER_MEMORY!) - 192) / 1536))}`,
     );
     const total = Object.values(pooledServices).reduce(
       (sum, name) => sum + mebibytes(limits[`OPENSTEER_HOME_LIMIT_${name}_MEMORY`]!),
       0,
     );
-    // Every cap together stays under the machine. What is left is at least 1 GiB and an eighth:
-    // a real Cloud Computer used about 800 MiB outside its containers (kernel, Docker, agents).
-    expect(total).toBeLessThanOrEqual(memory - Math.max(1024, Math.floor(memory / 8)));
+    // Every cap together stays under the machine (no overcommit). What is left is an eighth, at
+    // least 768 MiB: a real Cloud Computer used about 670 MiB outside its containers at a Run's
+    // peak (kernel, Docker, the system).
+    expect(total).toBeLessThanOrEqual(memory - Math.max(768, Math.floor(memory / 8)));
     for (const name of Object.values(pooledServices)) {
       const share = Number(limits[`OPENSTEER_HOME_LIMIT_${name}_CPUS`]);
       expect(share).toBeGreaterThan(0);
@@ -174,26 +177,28 @@ it("sizes a Cloud Computer's Home from its machine: no limit adds up past it, ro
     }
     // The Runner may use every CPU the machine has, whatever their number.
     expect(limits.OPENSTEER_HOME_LIMIT_RUNNER_CPUS).toBe(`${cpus}`);
-    expect(mebibytes(limits.OPENSTEER_HOME_LIMIT_RUNNER_MEMORY!)).toBeGreaterThanOrEqual(1024);
+    // One Run of the heaviest engine measured, at its peak, with room: a 4 GiB machine too.
+    expect(mebibytes(limits.OPENSTEER_HOME_LIMIT_RUNNER_MEMORY!)).toBeGreaterThanOrEqual(2000);
   }
   // The default machine, 4 GiB with two CPUs. No browser runs here, so nothing is kept for one.
-  expect(homeLimits(4096, 2)).toEqual({
+  // The scratch e2-medium (3,908 MiB) where an OpenCode Run was killed for memory at a 1,092 MiB
+  // Runner: about 2 GiB now, one Run at a time; a second waits for it.
+  expect(homeLimits(3908, 2)).toEqual({
     OPENSTEER_HOME_LIMIT_POSTGRES_CPUS: "2",
-    OPENSTEER_HOME_LIMIT_POSTGRES_MEMORY: "512m",
+    OPENSTEER_HOME_LIMIT_POSTGRES_MEMORY: "256m",
     OPENSTEER_HOME_LIMIT_HOST_CPUS: "2",
-    OPENSTEER_HOME_LIMIT_HOST_MEMORY: "768m",
+    OPENSTEER_HOME_LIMIT_HOST_MEMORY: "640m",
     OPENSTEER_HOME_LIMIT_GATEWAY_CPUS: "1",
-    OPENSTEER_HOME_LIMIT_GATEWAY_MEMORY: "256m",
+    OPENSTEER_HOME_LIMIT_GATEWAY_MEMORY: "64m",
     OPENSTEER_HOME_LIMIT_RUNNER_CPUS: "2",
-    OPENSTEER_HOME_LIMIT_RUNNER_MEMORY: "1280m",
-    // An e2-medium runs one Run at a time; a second waits for it.
+    OPENSTEER_HOME_LIMIT_RUNNER_MEMORY: "2020m",
     OPENSTEER_HOME_LIMIT_RUNNER_RUNS: "1",
     OPENSTEER_HOME_LIMIT_CHANNEL_CPUS: "1",
-    OPENSTEER_HOME_LIMIT_CHANNEL_MEMORY: "256m",
+    OPENSTEER_HOME_LIMIT_CHANNEL_MEMORY: "160m",
   });
-  expect(homeLimits(16384, 4).OPENSTEER_HOME_LIMIT_RUNNER_MEMORY).toBe("9984m");
-  expect(homeLimits(16384, 4).OPENSTEER_HOME_LIMIT_RUNNER_RUNS).toBe("9");
-  expect(homeLimits(8192, 2).OPENSTEER_HOME_LIMIT_RUNNER_RUNS).toBe("4");
+  expect(homeLimits(16384, 4).OPENSTEER_HOME_LIMIT_RUNNER_MEMORY).toBe("10976m");
+  expect(homeLimits(16384, 4).OPENSTEER_HOME_LIMIT_RUNNER_RUNS).toBe("7");
+  expect(homeLimits(8192, 2).OPENSTEER_HOME_LIMIT_RUNNER_RUNS).toBe("3");
 });
 
 it("refuses a machine too small for a Cloud Computer's Home instead of overcommitting it", () => {
@@ -230,7 +235,7 @@ it("applies the machine's limits on a pooled Cloud Computer only, never on a sel
   expect(read("compose.yaml")).not.toContain("OPENSTEER_HOME_LIMIT_");
   expect(read("compose.yaml")).not.toContain("OPENSTEER_MAX_CONCURRENT_RUNS");
   expect(composeEnvironment(["managed", "browser-pool"])).toContain(
-    "OPENSTEER_HOME_LIMIT_RUNNER_MEMORY=1280m",
+    "OPENSTEER_HOME_LIMIT_RUNNER_MEMORY=2208m",
   );
   expect(composeEnvironment(["managed"]).join("\n")).not.toContain("OPENSTEER_HOME_LIMIT_");
   expect(composeEnvironment([]).join("\n")).not.toContain("OPENSTEER_HOME_LIMIT_");

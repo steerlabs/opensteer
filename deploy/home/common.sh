@@ -82,34 +82,45 @@ clamp() { if (($1 < $2)); then echo "$2"; elif (($1 > $3)); then echo "$3"; else
 # home_limits <memory MiB> <cpus>: the CPU and memory limit of each service that runs on a Cloud
 # Computer's Home, whose browser runs in the browser pool (no Browser Runtime or egress proxy
 # runs here). The memory limits add up to the machine less what the kernel, Docker and the system
-# keep (an eighth of it, at least 1 GiB: a Cloud Computer measured idle used about 800 MiB outside
-# its containers), so the services together can never take more than the machine has. CPU limits are each service's ceiling of CPU time, not a reservation: none is above
-# the machine's CPU count, and the Runner may use them all. The Runner runs as many Runs at once as
-# its memory holds at run_allowance MiB each, at least one; the Host holds the next one back until
-# one ends.
+# keep, so the services together can never take more than the machine has. The other services'
+# limits are about twice what they used at the peak of a Run, and the Runner gets the rest:
+# measured on a scratch e2-medium Cloud Computer (3,908 MiB) on Nov 25, during one Run of OpenCode
+# 1.18.32 writing a 500-word essay, the Host used 330 MiB, PostgreSQL 97, the gateway 17, the
+# Channel Runtime 75, and the machine about 670 outside its containers. CPU limits are each
+# service's ceiling of CPU time, not a reservation: none is above the machine's CPU count, and
+# the Runner may use them all. The Runner runs as many Runs at once as its memory holds at
+# run_allowance MiB each beside its own, at least one; the Host holds the next one back.
 home_limits() {
-  local memory=$1 cpus=$2 reserve budget postgres host agents runs two small=256
-  # Memory for one Run of the person's own agents. PLACEHOLDER: 1 GiB until a Run is measured on
-  # a real Cloud Computer; replace it with that figure.
-  local run_allowance=1024
+  local memory=$1 cpus=$2 reserve budget postgres host gateway channel agents runs two
+  # Memory for one Run of the person's own agents. Measured on that machine and Run: OpenCode's
+  # engine peaked at 0.98 to 1.06 GiB of anonymous memory, in a garbage collector's sawtooth that
+  # touched the Runner's old 1,092 MiB limit (two Runs of three were killed for memory). Allowed:
+  # that peak and half again. The other engines are not measured yet (they need a sign-in).
+  local run_allowance=1536
+  # The Runner's own process and its supervisor: 131 MiB at rest there, 152 at that peak.
+  local runner_itself=192
   [[ $memory =~ ^[0-9]+$ ]] || fail "Invalid machine memory: $memory"
   if [[ ! $cpus =~ ^[0-9]+$ ]] || ((cpus < 1)); then fail "Invalid machine CPU count: $cpus"; fi
-  reserve=$(clamp $((memory / 8)) 1024 "$memory")
+  # An eighth of the machine, at least 768 MiB: about 670 were in use outside the containers.
+  reserve=$(clamp $((memory / 8)) 768 "$memory")
   budget=$((memory - reserve))
-  postgres=$(clamp $((budget / 8)) 512 2048)
-  host=$(clamp $((budget / 5)) 768 2048)
-  agents=$((budget - postgres - host - 2 * small))
-  ((agents >= 768)) || fail "This machine (${memory} MiB) is too small for a Cloud Computer's Home."
+  postgres=$(clamp $((budget / 16)) 256 2048)
+  host=$(clamp $((budget / 8)) 640 2048)
+  gateway=$(clamp $((budget / 64)) 64 256)
+  channel=$(clamp $((budget / 32)) 160 512)
+  agents=$((budget - postgres - host - gateway - channel))
+  ((agents >= runner_itself + run_allowance)) ||
+    fail "This machine (${memory} MiB) is too small for a Cloud Computer's Home."
   # At most the Runner's own limit of 1,000 Runs at once.
-  runs=$(clamp $((agents / run_allowance)) 1 1000)
+  runs=$(clamp $(((agents - runner_itself) / run_allowance)) 1 1000)
   two=$(clamp 2 1 "$cpus")
   printf '%s\n' \
     "OPENSTEER_HOME_LIMIT_POSTGRES_CPUS=$two" "OPENSTEER_HOME_LIMIT_POSTGRES_MEMORY=${postgres}m" \
     "OPENSTEER_HOME_LIMIT_HOST_CPUS=$two" "OPENSTEER_HOME_LIMIT_HOST_MEMORY=${host}m" \
-    "OPENSTEER_HOME_LIMIT_GATEWAY_CPUS=1" "OPENSTEER_HOME_LIMIT_GATEWAY_MEMORY=${small}m" \
+    "OPENSTEER_HOME_LIMIT_GATEWAY_CPUS=1" "OPENSTEER_HOME_LIMIT_GATEWAY_MEMORY=${gateway}m" \
     "OPENSTEER_HOME_LIMIT_RUNNER_CPUS=$cpus" "OPENSTEER_HOME_LIMIT_RUNNER_MEMORY=${agents}m" \
     "OPENSTEER_HOME_LIMIT_RUNNER_RUNS=$runs" \
-    "OPENSTEER_HOME_LIMIT_CHANNEL_CPUS=1" "OPENSTEER_HOME_LIMIT_CHANNEL_MEMORY=${small}m"
+    "OPENSTEER_HOME_LIMIT_CHANNEL_CPUS=1" "OPENSTEER_HOME_LIMIT_CHANNEL_MEMORY=${channel}m"
 }
 
 # Limits for a command that creates no container (down, stop, logs, config, pull, ...): Compose

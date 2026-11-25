@@ -148,17 +148,17 @@ An Opensteer Cloud Computer's Home is different in two ways, both set by
 - **Its limits come from its machine.** `home_limits` in `common.sh` reads the
   machine's memory and CPU count and sets each running service's limits so
   that together they never ask for more memory than the machine has. It keeps
-  an eighth of memory, at least 1 GiB, for the kernel, Docker and the system
-  (an idle Cloud Computer was measured using about 800 MiB outside its
-  containers). PostgreSQL gets an eighth of the rest (512 MiB to 2 GiB), the Host a
-  fifth (768 MiB to 2 GiB), Caddy and Channel Runtime 256 MiB each, and the
-  Runner what remains. No CPU limit exceeds the machine's CPU count: the
-  Runner may use every CPU, and the Host and PostgreSQL up to two each. A
-  machine where the Runner would get less than 768 MiB is refused. The
-  Runner runs as many Runs at once as its memory holds at 1 GiB each, at
-  least one, and the Host holds the next one back until one ends. The 1 GiB
-  is a placeholder until a Run is measured on a real Cloud Computer. The
-  `OPENSTEER_HOME_*` limit settings above do not apply to it.
+  an eighth of memory, at least 768 MiB, for the kernel, Docker and the system.
+  PostgreSQL gets a sixteenth of the rest (256 MiB to 2 GiB), the Host an
+  eighth (640 MiB to 2 GiB), Caddy a sixty-fourth (64 to 256 MiB), Channel
+  Runtime a thirty-second (160 to 512 MiB), and the Runner what remains: about
+  twice what each used at the peak of a Run measured on a real Cloud Computer
+  (below). No CPU limit exceeds the machine's CPU count: the Runner may use
+  every CPU, and the Host and PostgreSQL up to two each. The Runner runs as
+  many Runs at once as its memory holds, beside its own 192 MiB, at 1,536 MiB
+  each, at least one, and the Host holds the next one back until one ends. A
+  machine whose Runner would not hold one Run is refused. The `OPENSTEER_HOME_*`
+  limit settings above do not apply to it.
 - **It reaches its pool host on two ports only.** The boot answer's
   `browserPoolNetwork` (the private subnet the pool hosts live in, and the
   agent and relay ports) is kept in `pool-network`, and `firewall.sh` allows
@@ -180,16 +180,23 @@ An Opensteer Cloud Computer's Home is different in two ways, both set by
   pool), and re-applies the firewall when it changed. The file is read only with the `browser-pool` marker and removed at
   uninstall.
 
-On Compute Engine's default `e2-medium` (2 vCPUs, 4 GiB) that gives PostgreSQL
-512 MiB, the Host 768 MiB, Caddy and Channel Runtime 256 MiB each, and the
-Runner 1280 MiB and both CPUs: one Run at a time. Linux reports somewhat less than 4 GiB as the
-machine's memory, and the Runner's share shrinks by that difference (1100 MiB
-if it reports 3916 MiB). Measured on a real pooled Cloud Computer, idle with
-nobody signed in, its services' working set was 509 MiB (the Runner about
-263, the Host about 195) and the machine used 1,299 MiB, so about 790 MiB was
-outside the containers: the reserve above is for that. Whether the person's
-own agents' Runs fit in what the Runner is given has not been measured on a
-real machine. Below 2 GiB the Runner keeps no warm engine beside its Run;
+On Compute Engine's default `e2-medium` (2 vCPUs, 4 GiB; Linux reports 3,908
+MiB) that gives PostgreSQL 256 MiB, the Host 640 MiB, Caddy 64 MiB, Channel
+Runtime 160 MiB, and the Runner 2,020 MiB and both CPUs: one Run at a time.
+Measured on a scratch pooled Cloud Computer on Nov 25, during one Run of
+OpenCode 1.18.32 writing a 500-word essay: OpenCode's engine peaked at 0.98 to
+1.06 GiB of anonymous memory in a garbage collector's sawtooth, the Runner's
+own process at about 130 MiB, the Host 330 MiB, PostgreSQL 97, Caddy 17 and
+Channel Runtime 75, and about 670 MiB was in use outside the containers.
+Under the earlier split (the Runner 1,092 MiB) two Runs of three were killed
+for memory; with the Runner at 2,048 MiB the same Run completed. The other
+engines are not measured yet. Idle, with nobody signed in, about 790 MiB was
+outside the containers, page cache included, which the kernel gives back
+under pressure. A Cloud Computer has no swap: on a two-vCPU shared-core
+machine a garbage collector that walks a heap partly on disk would make a Run
+crawl instead of failing plainly, and the Runner now has room for the measured
+peak. Below 2 GiB (a 4 GiB Cloud Computer's Runner) the Runner keeps no warm
+engine beside its Run;
 from 2 to 4 GiB it keeps one, to 8 GiB two, above that eight. That cap reads
 the memory the Runner runs under (its container's limit), so a self-hosted
 Home's Runner, limited to 8 GiB by default, now keeps two where it kept eight
