@@ -283,7 +283,7 @@ it("starts a machine short of the ordinary peaks, the shortfall out of the kept 
 it("keeps the machine Opensteer sells well above the floor, so an OS update cannot make it refuse", () => {
   // The lowest memory the Home starts on, found from the rule itself.
   let low = 1024;
-  let high = soldMachine.memTotalMib;
+  let high: number = soldMachine.memTotalMib;
   expect(homeStart(high).status).toBe(0);
   expect(homeStart(low).status).not.toBe(0);
   while (high - low > 1) {
