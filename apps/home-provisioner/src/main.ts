@@ -138,6 +138,29 @@ export async function holdLease(input: {
   }
 }
 
+/**
+ * Runs `run` while this provisioner holds the lease, and gives the lease back when it ends (P2).
+ * Back whenever an acquire was sent, held or not: a stop that aborts an acquire the account had
+ * already committed leaves the lease held without this process knowing, and the account's
+ * release changes nothing for a provisioner that is not the holder.
+ */
+export async function whileLeased(
+  input: Parameters<typeof holdLease>[0] & {
+    readonly account: Pick<AccountApi, "acquire" | "release">;
+    readonly onError: (error: unknown) => void;
+  },
+  run: () => Promise<void>,
+): Promise<void> {
+  try {
+    if (await holdLease(input)) await run();
+  } finally {
+    await input.account
+      .release?.(AbortSignal.timeout(5_000))
+      .then((released) => input.log({ event: "home-provisioner.lease.released", released }))
+      .catch(input.onError);
+  }
+}
+
 async function main(): Promise<void> {
   let config: ReturnType<typeof loadConfig>;
   try {
@@ -208,49 +231,46 @@ async function main(): Promise<void> {
       })
     : undefined;
   const shutdown = new AbortController();
-  let held = false;
   const stop = () => shutdown.abort();
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
   try {
     await checkPoolNetwork(googleProvider, config.pool.homeCidr, shutdown.signal);
-    held = await holdLease({
-      account,
-      signal: shutdown.signal,
-      retryMs: leaseRetryMs,
-      log: (line) => console.log(JSON.stringify(line)),
-      sleep: (ms) => delay(ms, undefined, { signal: shutdown.signal }).catch(() => {}),
-    });
-    if (!held) return;
-    console.log(JSON.stringify({ event: "home-provisioner.started" }));
-    while (!shutdown.signal.aborted) {
-      const waitMs = await runProvisionerTick({
-        reconciler,
-        poolReconciler,
-        intervalMs: config.intervalMs,
+    await whileLeased(
+      {
+        account,
         signal: shutdown.signal,
+        retryMs: leaseRetryMs,
+        log: (line) => console.log(JSON.stringify(line)),
+        sleep: (ms) => delay(ms, undefined, { signal: shutdown.signal }).catch(() => {}),
         onError: logFailure,
-        heartbeat: () =>
-          sendHeartbeat(config.heartbeatUrl, {
-            onError: (status) =>
-              console.error(JSON.stringify({ event: "home-provisioner.heartbeat.failed", status })),
-          }),
-      });
-      if (!shutdown.signal.aborted) {
-        await delay(waitMs, undefined, { signal: shutdown.signal }).catch(() => {});
-      }
-    }
+      },
+      async () => {
+        console.log(JSON.stringify({ event: "home-provisioner.started" }));
+        while (!shutdown.signal.aborted) {
+          const waitMs = await runProvisionerTick({
+            reconciler,
+            poolReconciler,
+            intervalMs: config.intervalMs,
+            signal: shutdown.signal,
+            onError: logFailure,
+            heartbeat: () =>
+              sendHeartbeat(config.heartbeatUrl, {
+                onError: (status) =>
+                  console.error(
+                    JSON.stringify({ event: "home-provisioner.heartbeat.failed", status }),
+                  ),
+              }),
+          });
+          if (!shutdown.signal.aborted) {
+            await delay(waitMs, undefined, { signal: shutdown.signal }).catch(() => {});
+          }
+        }
+      },
+    );
   } finally {
     process.off("SIGTERM", stop);
     process.off("SIGINT", stop);
-    // A clean stop gives the lease back, so the next provisioner starts at once (P2).
-    if (held)
-      await account
-        .release?.(AbortSignal.timeout(5_000))
-        .then((released) =>
-          console.log(JSON.stringify({ event: "home-provisioner.lease.released", released })),
-        )
-        .catch(logFailure);
     console.log(JSON.stringify({ event: "home-provisioner.stopped" }));
   }
 }

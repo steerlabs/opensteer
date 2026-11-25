@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { expect, it, vi } from "vitest";
 import { accountClient } from "./account.js";
 import { RemoteRequestError } from "./http.js";
-import { holdLease } from "./main.js";
+import { holdLease, whileLeased } from "./main.js";
 
 const held = () => new RemoteRequestError("Account", 409);
 
@@ -75,4 +75,38 @@ it("gives its lease back, as its own holder, when it stops", async () => {
   );
   expect(await account.release?.(new AbortController().signal)).toBe(true);
   expect(requests).toEqual([{ method: "DELETE", holder }]);
+});
+
+it("gives the lease back when the stop came while an acquire the account committed was in flight", async () => {
+  const stop = new AbortController();
+  const methods: (string | undefined)[] = [];
+  const account = accountClient(
+    new URL("https://account.example.test"),
+    async () => "test-token",
+    {
+      fetch: async (_input, init) => {
+        methods.push(init?.method);
+        if (init?.method === "DELETE") return Response.json({ released: true });
+        // The account commits the lease, then the stop aborts the request before its answer.
+        stop.abort();
+        throw new DOMException("The operation was aborted.", "AbortError");
+      },
+      timeoutMs: 2_000,
+    },
+    randomUUID(),
+  );
+  const ran = vi.fn(async () => undefined);
+  await whileLeased(
+    {
+      account,
+      signal: stop.signal,
+      retryMs: 5_000,
+      log: () => undefined,
+      sleep: async () => undefined,
+      onError: () => undefined,
+    },
+    ran,
+  );
+  expect(ran).not.toHaveBeenCalled();
+  expect(methods).toEqual(["POST", "DELETE"]);
 });
