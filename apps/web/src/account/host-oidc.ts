@@ -6,6 +6,8 @@ import type {
 
 // Desktop authorizes in the system browser: its renderer cannot navigate to a Host origin.
 export async function startHostOidcSignIn(input: {
+  /** Ask the provider who is signing in, even when it holds a session. */
+  readonly chooseAccount?: boolean;
   readonly deploymentId: DesktopSelectDeploymentInput["deploymentId"] | null;
   readonly desktopBridge: Pick<OpensteerDesktopBridge, "select"> | null;
   readonly hostClient: Pick<HostClient, "rpc">;
@@ -23,6 +25,7 @@ export async function startHostOidcSignIn(input: {
   input.navigate(
     unwrapRpcResult(
       await input.hostClient.rpc["auth.oidc.begin"]({
+        ...(input.chooseAccount ? { chooseAccount: true } : {}),
         ...(input.oauthQuery ? { oauthQuery: input.oauthQuery } : {}),
         providerId: input.providerId,
         returnPath: "/",
