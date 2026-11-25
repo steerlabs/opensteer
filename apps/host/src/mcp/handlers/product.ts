@@ -169,10 +169,7 @@ export class ProductToolHandlers {
     T extends { tabId: import("@opensteer/core").TabId; site: string | null },
   >(caller: AgentCaller, rows: readonly T[]): Promise<T[]> {
     const owner = caller.userId;
-    // Rule 1's place rule (P3): a connection's work reads a place only where it has a web origin;
-    // an extension's page records none. The person and their own agents read every place.
     const lineage = callerLineage(caller);
-    rows = rows.filter((row) => authorizePlaceSite({ agentConnection: lineage }, row.site));
     // A selected grant reads only places in tabs its own lineage's tasks opened.
     const lineageId = selectedLineageId(caller);
     if (lineageId && rows.length) {
@@ -202,13 +199,19 @@ export class ProductToolHandlers {
         async (row) =>
           await this.#tabs?.get?.(owner, row.tabId).then(
             (tab) =>
-              !selected ||
-              (tab.kind === "page" &&
-                !!tab.profile &&
-                agentGrantAccess(selected, {
-                  kind: "browser-profile",
-                  profileId: tab.profile.profileId,
-                }) !== null),
+              // Rule 1's place rule (P3, P9): a browser tab's place is read by a connection's work
+              // only where it has a web origin; a Mac app window's or phone screen's is not a page.
+              authorizePlaceSite(
+                { agentConnection: lineage },
+                { kind: tab.kind, site: row.site },
+              ) &&
+              (!selected ||
+                (tab.kind === "page" &&
+                  !!tab.profile &&
+                  agentGrantAccess(selected, {
+                    kind: "browser-profile",
+                    profileId: tab.profile.profileId,
+                  }) !== null)),
             () => false,
           ),
       ),

@@ -3,6 +3,7 @@ import {
   createId,
   DeviceIdSchema,
   TabIdSchema,
+  WindowIdSchema,
   type AgentGrant,
   type ExecutionNodeId,
   type RunId,
@@ -704,7 +705,7 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     }
   });
 
-  it("keeps an extension page's place for the person and their own agents, and from every connection (P3)", async ({
+  it("keeps an extension page's place for the person and their own agents, and from every connection, but not a Mac app's or phone's (P3, P9)", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("extension-place");
@@ -750,11 +751,41 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     };
     const extensionTab = await tab("extension");
     const webTab = await tab("web");
-    // One of your own agents' Runs entered an extension's options page and a web page: its place
-    // keeps no site for the extension's page (it has no web origin), as rows always have.
+    // A Mac app's window and a phone's screen: places without an address, never pages.
+    const windowTab = TabIdSchema.parse("bsf_window");
+    await tabs.open(
+      {
+        id: windowTab,
+        ownerId: f.userId,
+        computerId: DeviceIdSchema.parse(f.runnerId),
+        kind: "window",
+        windowId: WindowIdSchema.parse(`win_${randomUUID()}`),
+        windowApp: { bundleId: "test.app", displayName: "Test", teamId: null },
+        title: "Window",
+        openedBy: "person",
+      },
+      "window",
+    );
+    const phoneTab = TabIdSchema.parse("bsf_phone");
+    await tabs.open(
+      {
+        id: phoneTab,
+        ownerId: f.userId,
+        computerId: DeviceIdSchema.parse(f.runnerId),
+        kind: "phone",
+        title: "iPhone",
+        openedBy: "person",
+      },
+      "phone",
+    );
+    // One of your own agents' Runs entered an extension's options page, a web page, a Mac app's
+    // window and a phone's screen: the extension's page keeps no site (it has no web origin), as
+    // rows always have, and so do the window and the screen.
     for (const [tabId, title, site] of [
       [extensionTab, "My Extension Options", null],
       [webTab, "Web", "https://web.test"],
+      [windowTab, "Window", null],
+      [phoneTab, "iPhone", null],
     ] as const)
       await storeFixture.store.recordRunTabPlace({
         runId: f.runId,
@@ -767,22 +798,24 @@ describeStore("a selected connection reads only its own lineage", (it) => {
         .map(({ tabId }) => tabId)
         .sort();
     };
-    // The Run itself reads both.
+    const all = [extensionTab, webTab, windowTab, phoneTab].sort();
+    // The Run itself reads all four.
     runScopes.own = fixtureRunScope({ ...f, threadId: f.threadId });
     const own = await runClient(url, "own");
     expect(
       placesOf(
         await own.callTool({ name: "opensteer_task_read", arguments: { taskId: f.threadId } }),
       ),
-    ).toEqual([extensionTab, webTab].sort());
+    ).toEqual(all);
     // So does the person's record of the task.
     const recent = await readAgentThreadRecent(storeFixture.database, {
       threadId: f.threadId,
       ownerId: f.userId,
       runLimit: 5,
     });
-    expect(recent?.places.map(({ tabId }) => tabId).sort()).toEqual([extensionTab, webTab].sort());
-    // A connection that may read every task reads only the web place.
+    expect(recent?.places.map(({ tabId }) => tabId).sort()).toEqual(all);
+    // A connection that may read every task reads the web tab's place, the window's and the
+    // screen's: the page rule judges only a browser tab's place.
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
@@ -795,7 +828,7 @@ describeStore("a selected connection reads only its own lineage", (it) => {
           arguments: { taskId: f.threadId },
         }),
       ),
-    ).toEqual([webTab]);
+    ).toEqual([webTab, windowTab, phoneTab].sort());
   });
 
   it("derives task list pending filter, counts, changedSince questions, and task read pendingRequests from connectionRequests", async ({

@@ -776,17 +776,21 @@ export function authorizePageAddress(
 }
 
 /**
- * May this admitted execution read a recorded place (a page a Run entered)? A place keeps only its
- * page's web origin, and records none for a page without one, an extension's page among them: so
- * a connection's work reads a place only where it has a web origin, past rows included, and the
- * person and their own agents read every place (P3).
+ * May this admitted execution read a recorded place? The page rule judges only a browser tab's
+ * place: a tab's place keeps only its page's web origin, and records none for a page without one,
+ * an extension's page among them, so a connection's work reads a tab's place only where it has a
+ * web origin, past rows included (P3). A Mac app window's or a phone screen's place has no address
+ * and is not a page: it is read as any place (P9). The person and their own agents read every
+ * place.
  */
 export function authorizePlaceSite(
   execution: { readonly agentConnection: object | null },
-  site: string | null,
+  place: { readonly kind: string; readonly site: string | null },
 ): boolean {
   return (
-    execution.agentConnection === null || (site !== null && authorizePageAddress(execution, site))
+    execution.agentConnection === null ||
+    place.kind !== "page" ||
+    (place.site !== null && authorizePageAddress(execution, place.site))
   );
 }
 
