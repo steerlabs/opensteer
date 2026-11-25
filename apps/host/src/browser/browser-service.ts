@@ -2205,6 +2205,7 @@ export class BrowserService {
     holder: BrowserSessionRecord | null;
     storage: Awaited<ReturnType<BrowserLocalProfiles["storage"]>>;
     target: BrowserRuntimeTarget;
+    pool?: { target: BrowserPoolCoordinator; reservation: BrowserPoolReservation };
   }> {
     const profileId = command.identity.kind === "profile" ? command.identity.profileId : null;
     const identityKey = profileId ?? "guest";
@@ -2250,109 +2251,147 @@ export class BrowserService {
             : null);
     if (await this.#waitForBrowser(homes, intended?.runnerId, signal))
       return this.#resolveIdentityOpen(ownerId, command, signal, agent);
-    // A pooled target that is still recovering or parked after a Home restart attaches its
-    // in-process browser relay once its guest is running; waking it here makes the placement ready.
-    const intendedPool = intended ? this.#pool(intended.runnerId) : undefined;
-    if (
-      intended &&
-      intendedPool &&
-      (this.#targetResolver?.pendingAdmission?.(intended.runnerId) ||
-        !this.#resolveTarget(intended))
-    ) {
-      const agentRecheck = agent
-        ? async () => {
-            await this.admitAgentBrowser(agent, "read-write", [], this.#repository, false, {
-              profileId,
-            });
-            await this.#requireAgentAccess(intended.runnerId);
-          }
-        : undefined;
-      if (agentRecheck) await agentRecheck();
-      const wakeSignal = AbortSignal.any([
-        this.#closing.signal,
-        signal ?? AbortSignal.timeout(browserOpenWorkMs),
-      ]);
-      const reservation = agent
-        ? await this.#reserveAgentPool(
-            intendedPool.gate,
-            agent.agentBindingId,
-            undefined,
-            wakeSignal,
-            intended.runnerId,
-            agentRecheck,
-          )
-        : await this.#reservePool(intendedPool.gate, wakeSignal);
-      try {
-        if (agentRecheck) await agentRecheck();
-        if (this.#targetResolver?.pendingAdmission?.(intended.runnerId)) {
+    // Reserve the pooled browser's gate before checking target availability and keep that
+    // reservation into `select()`: a Runner reconnect, park, or wake waits here instead of
+    // refusing as unavailable or selecting a stale session before reattach finishes.
+    const candidateRunnerId =
+      intended?.runnerId ??
+      (() => {
+        const available = this.#eligiblePlacements(homes).filter(
+          (candidate) => candidate.available,
+        );
+        if (available.length === 1) return available[0]!.runnerId;
+        if (available.length === 0) {
+          const pooledHomes = homes.filter((home) => this.#pool(home.id) !== undefined);
+          if (pooledHomes.length === 1) return pooledHomes[0]!.id;
+        }
+        return undefined;
+      })();
+    const wakeSignal = AbortSignal.any([
+      this.#closing.signal,
+      signal ?? AbortSignal.timeout(browserOpenWorkMs),
+    ]);
+    let heldPool:
+      { target: BrowserPoolCoordinator; reservation: BrowserPoolReservation } | undefined;
+    try {
+      for (;;) {
+        const pool = candidateRunnerId ? this.#pool(candidateRunnerId) : undefined;
+        if (!pool || !candidateRunnerId) break;
+        const selector: BrowserPlacementSelector = { kind: "runner", runnerId: candidateRunnerId };
+        const agentRecheck = agent
+          ? async () => {
+              await this.admitAgentBrowser(agent, "read-write", [], this.#repository, false, {
+                profileId,
+              });
+              await this.#requireAgentAccess(candidateRunnerId);
+            }
+          : undefined;
+        // Never wake a parked or reconnecting browser for an unauthorized agent (S2/X1).
+        if (agentRecheck && !pool.gate.admits) await agentRecheck();
+        const reservation = agent
+          ? await this.#reserveAgentPool(
+              pool.gate,
+              agent.agentBindingId,
+              undefined,
+              wakeSignal,
+              candidateRunnerId,
+              agentRecheck,
+            )
+          : await this.#reservePool(pool.gate, wakeSignal);
+        heldPool = { target: pool, reservation };
+        if (agentRecheck && reservation.waited) await agentRecheck();
+        if (this.#targetResolver?.pendingAdmission?.(candidateRunnerId)) {
           await this.#targetResolver
-            .waitForTarget?.(intended.runnerId, wakeSignal)
+            .waitForTarget?.(candidateRunnerId, wakeSignal)
             .catch(() => undefined);
-        } else if (!this.#resolveTarget(intended)) {
-          await intendedPool.ensureRelayAttached(wakeSignal).catch(() => undefined);
-          if (this.#targetResolver?.pendingAdmission?.(intended.runnerId))
+        } else if (!this.#resolveTarget(selector)) {
+          await pool.ensureRelayAttached(wakeSignal).catch(() => undefined);
+          if (this.#targetResolver?.pendingAdmission?.(candidateRunnerId))
             await this.#targetResolver
-              .waitForTarget?.(intended.runnerId, wakeSignal)
+              .waitForTarget?.(candidateRunnerId, wakeSignal)
               .catch(() => undefined);
         }
-      } finally {
-        reservation.release();
+        // If the Runner dropped right before its channel-close microtask moved gate.phase to
+        // "reconnecting", yield once so the gate reflects the drop before deciding unavailability.
+        if (!this.#resolveTarget(selector) && pool.gate.admits) {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        if (
+          !this.#resolveTarget(selector) &&
+          !pool.gate.admits &&
+          pool.gate.phase !== "released" &&
+          pool.gate.phase !== "unavailable"
+        ) {
+          reservation.release();
+          heldPool = undefined;
+          wakeSignal.throwIfAborted();
+          continue;
+        }
+        break;
       }
-    }
-    if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
-    const eligible = this.#eligiblePlacements(homes).filter((candidate) => candidate.available);
-    if (
-      command.placement &&
-      !eligible.some((candidate) => candidate.runnerId === command.placement?.runnerId)
-    )
-      throw this.#tabOpenRefusal(
-        "browser-placement-unavailable",
-        this.#pooledRefusalMessage(
-          homes,
-          command.placement.runnerId,
-          "The selected browser computer is unavailable.",
-        ),
-        this.#eligiblePlacements(homes),
-      );
-    if (this.#personal && !profile && !command.placement && !main)
-      throw this.#tabOpenRefusal(
-        "browser-placement-unavailable",
-        this.#pooledRefusalMessage(homes, undefined, "The main computer's browser is unavailable."),
-      );
-    let placement = intended;
-    if (!placement) {
-      if (eligible.length > 1)
+      if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
+      const eligible = this.#eligiblePlacements(homes).filter((candidate) => candidate.available);
+      if (
+        command.placement &&
+        !eligible.some((candidate) => candidate.runnerId === command.placement?.runnerId)
+      )
         throw this.#tabOpenRefusal(
-          "browser-placement-ambiguous",
-          "Choose which computer should open this browser.",
-          eligible,
+          "browser-placement-unavailable",
+          this.#pooledRefusalMessage(
+            homes,
+            command.placement.runnerId,
+            "The selected browser computer is unavailable.",
+          ),
+          this.#eligiblePlacements(homes),
         );
-      placement = eligible[0] ? placementSelector(eligible[0]) : null;
+      if (this.#personal && !profile && !command.placement && !main)
+        throw this.#tabOpenRefusal(
+          "browser-placement-unavailable",
+          this.#pooledRefusalMessage(
+            homes,
+            undefined,
+            "The main computer's browser is unavailable.",
+          ),
+        );
+      let placement = intended;
+      if (!placement) {
+        if (eligible.length > 1)
+          throw this.#tabOpenRefusal(
+            "browser-placement-ambiguous",
+            "Choose which computer should open this browser.",
+            eligible,
+          );
+        placement = eligible[0] ? placementSelector(eligible[0]) : null;
+      }
+      if (
+        !placement ||
+        !eligible.some((candidate) => candidate.runnerId === placement.runnerId) ||
+        !this.#resolveTarget(placement)
+      )
+        throw this.#tabOpenRefusal(
+          "browser-placement-unavailable",
+          this.#pooledRefusalMessage(
+            homes,
+            placement?.runnerId,
+            boundRunnerId
+              ? "Waiting for this computer to open its browser profile. Reconnect the owning computer."
+              : "The selected browser computer is unavailable.",
+          ),
+          this.#eligiblePlacements(homes),
+        );
+      return {
+        profileId,
+        identityKey,
+        placement,
+        holder,
+        storage,
+        target: this.#resolveTarget(placement)!,
+        ...(heldPool ? { pool: heldPool } : {}),
+      };
+    } catch (error) {
+      heldPool?.reservation.release();
+      throw error;
     }
-    if (
-      !placement ||
-      !eligible.some((candidate) => candidate.runnerId === placement.runnerId) ||
-      !this.#resolveTarget(placement)
-    )
-      throw this.#tabOpenRefusal(
-        "browser-placement-unavailable",
-        this.#pooledRefusalMessage(
-          homes,
-          placement?.runnerId,
-          boundRunnerId
-            ? "Waiting for this computer to open its browser profile. Reconnect the owning computer."
-            : "The selected browser computer is unavailable.",
-        ),
-        this.#eligiblePlacements(homes),
-      );
-    return {
-      profileId,
-      identityKey,
-      placement,
-      holder,
-      storage,
-      target: this.#resolveTarget(placement)!,
-    };
   }
 
   #historyOperation<T>(profileId: BrowserProfileId, operation: () => Promise<T>): Promise<T> {
@@ -2560,6 +2599,27 @@ export class BrowserService {
           let opening: StartBrowserSessionInput | null = null;
           let identityKey: string | null = null;
           let runnerId: RunnerId;
+          const attachPoolReservation = (
+            target: BrowserPoolCoordinator,
+            reservation: BrowserPoolReservation,
+          ) => {
+            budget.pool = { target, reservation };
+            const ended = reservation.ended;
+            if (ended) {
+              const onEnded = () =>
+                budget.abort?.(
+                  ended.reason ?? new BrowserPoolAdmissionClosed("This browser is restarting."),
+                );
+              if (ended.aborted) onEnded();
+              else {
+                ended.addEventListener("abort", onEnded, { once: true });
+                budget.cleanupPoolAbort = () => ended.removeEventListener("abort", onEnded);
+              }
+            }
+            reservation.onForcedEnd?.(async () => {
+              budget.abort?.(new BrowserPoolAdmissionClosed("This browser is restarting."));
+            });
+          };
           if (command.sessionId !== undefined) {
             record = await this.#repository.getBrowserSessionForOwner(command.sessionId, ownerId);
             if (!record)
@@ -2579,6 +2639,9 @@ export class BrowserService {
               budget.signal,
               agent,
             );
+            if (resolved.pool) {
+              attachPoolReservation(resolved.pool.target, resolved.pool.reservation);
+            }
             const { profileId, placement } = resolved;
             identityKey = resolved.identityKey;
             runnerId = placement.runnerId;
@@ -2668,34 +2731,24 @@ export class BrowserService {
                   await this.#requireAgentAccess(runnerId);
                 }
               : undefined;
-            const reservation = agent
-              ? await this.#reserveAgentPool(
-                  pooled.gate,
-                  agent.agentBindingId,
-                  record?.id,
-                  budget.signal,
-                  runnerId,
-                  openRecheck,
-                )
-              : await this.#reservePool(pooled.gate, budget.signal, record?.id);
-            budget.pool = { target: pooled, reservation };
-            const ended = reservation.ended;
-            if (ended) {
-              const onEnded = () =>
-                budget.abort?.(
-                  ended.reason ?? new BrowserPoolAdmissionClosed("This browser is restarting."),
-                );
-              if (ended.aborted) onEnded();
-              else {
-                ended.addEventListener("abort", onEnded, { once: true });
-                budget.cleanupPoolAbort = () => ended.removeEventListener("abort", onEnded);
-              }
+            if (budget.pool?.target !== pooled) {
+              budget.pool?.reservation.release();
+              const reservation = agent
+                ? await this.#reserveAgentPool(
+                    pooled.gate,
+                    agent.agentBindingId,
+                    record?.id,
+                    budget.signal,
+                    runnerId,
+                    openRecheck,
+                  )
+                : await this.#reservePool(pooled.gate, budget.signal, record?.id);
+              attachPoolReservation(pooled, reservation);
+              budget.signal.throwIfAborted();
+              if (openRecheck && reservation.waited) await openRecheck();
+            } else {
+              budget.signal.throwIfAborted();
             }
-            reservation.onForcedEnd?.(async () => {
-              budget.abort?.(new BrowserPoolAdmissionClosed("This browser is restarting."));
-            });
-            budget.signal.throwIfAborted();
-            if (openRecheck && reservation.waited) await openRecheck();
             if (record) {
               const current = await this.#repository.getBrowserSessionForOwner(record.id, ownerId);
               if (

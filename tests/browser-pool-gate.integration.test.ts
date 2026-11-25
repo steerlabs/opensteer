@@ -2668,11 +2668,103 @@ it("lets every service call made while the Runner is away wait for it, never ref
       (await j.tabs.get(j.task.userId, tabId))!,
       "away-activate",
     );
+    await until(() => expect(home.coordinator.gate.demand).toBe(true));
     j.runnerUp();
     (await watching.attaching).close();
-    expect(await opening).toMatchObject({ tabId: expect.any(String) });
+    expect(await opening).toMatchObject({ tabId: expect.any(String), sessionId });
     expect(await activating).toMatchObject({ kind: "page", sessionId });
     expect((await j.row(sessionId))?.state).toBe("ready");
+  } finally {
+    j.runnerUp();
+    await j.close();
+  }
+});
+
+it("waits on the reconnecting pool gate instead of refusing openTab as unavailable across mid-resolve drops and implicit placement", async () => {
+  const j = await journey("runner-away-open-tab", { chromium: false });
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("seed"));
+
+    // 1. Mid-resolve drop: the Runner goes away right after listEligibleBrowserRunners returns,
+    // before #resolveIdentityOpen checks #resolveTarget(placement). openTab must wait on the
+    // reconnecting pool gate rather than throwing "The selected browser computer is unavailable."
+    const listRunners = j.store.listEligibleBrowserRunners.bind(j.store);
+    let droppedOnce = false;
+    const runnerSpy = vi
+      .spyOn(j.store, "listEligibleBrowserRunners")
+      .mockImplementation(async (...args) => {
+        const result = await listRunners(...args);
+        if (!droppedOnce) {
+          droppedOnce = true;
+          j.runnerDown();
+        }
+        return result;
+      });
+    try {
+      const opening = home.service.openTab(j.task.userId, j.command("mid-resolve-drop"));
+      await until(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+      await until(() => expect(home.coordinator.gate.demand).toBe(true));
+      j.runnerUp();
+      expect(await opening).toMatchObject({ tabId: expect.any(String), sessionId });
+    } finally {
+      runnerSpy.mockRestore();
+    }
+
+    // 2. Implicit placement (non-personal Home, no command.placement) while the Runner is away:
+    // #resolveIdentityOpen must still find the single pooled runner and wait on its gate.
+    const nonPersonal = new BrowserService({
+      deploymentId: j.task.deploymentId,
+      hostOrigin: new URL("http://127.0.0.1"),
+      personal: false,
+      pools: new Map([[j.task.runnerId, home.coordinator]]),
+      tabs: j.tabs,
+      tabPlaces: { write: async () => false, notice: () => {} },
+      repository: personalBrowserRepository(j.store),
+      signer: j.signer,
+      onError: () => {},
+      onSessionsChanged: () => {},
+      targetResolver: {
+        placements: () => [
+          {
+            kind: "runner",
+            runnerId: j.task.runnerId,
+            label: "Pooled test browser",
+            runtimeId: "pool-runtime",
+            environmentIds: [j.task.environmentId],
+            available: true,
+          },
+        ],
+        resolve: () =>
+          home.coordinator.gate.phase === "reconnecting"
+            ? undefined
+            : {
+                runtimeId: "pool-runtime",
+                placementKey: "pool-test",
+                main: true,
+                surfaceState: 1,
+                tabRestoreVersion: true,
+                sharedControl: true,
+                cdpBoundary: true,
+                connect: j.connect,
+              },
+      },
+    });
+    try {
+      j.runnerDown();
+      await until(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+      const implicitOpen = nonPersonal.openTab(j.task.userId, {
+        type: "browser.tab.open",
+        identity: { kind: "guest" },
+        idempotencyKey: "implicit-away-open",
+      });
+      await until(() => expect(home.coordinator.gate.demand).toBe(true));
+      j.runnerUp();
+      expect(await implicitOpen).toMatchObject({ tabId: expect.any(String) });
+    } finally {
+      j.runnerUp();
+      await nonPersonal.close().catch(() => undefined);
+    }
   } finally {
     j.runnerUp();
     await j.close();
