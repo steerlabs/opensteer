@@ -1,4 +1,5 @@
 import { pluginEngineEntry, pluginEngineUnavailableReason } from "./engine-resources.js";
+import { firstToGoUnderMemoryPressure, memoryKills } from "./memory-pressure.js";
 import { PluginSkillCache } from "./plugin-skill-cache.js";
 import { fork, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
@@ -395,6 +396,9 @@ export class PluginService {
       stdio: ["ignore", "ignore", "ignore", "ipc"],
       serialization: "json",
     });
+    // A script that outgrows the Host's memory limit ends the engine, not the Host.
+    firstToGoUnderMemoryPressure(child.pid);
+    const killsBefore = memoryKills();
     this.#child = child;
     const launchId = randomUUID();
     this.#engine =
@@ -485,10 +489,19 @@ export class PluginService {
       }
     });
     child.once("error", (error) => rejectReady(error));
-    child.once("exit", () => {
+    child.once("exit", (_code, signal) => {
+      // Said as a memory kill only on the kernel's own record of one, made while this engine ran.
+      const killsAfter =
+        signal === "SIGKILL" && !this.#closed && this.#idleStop?.child !== child
+          ? memoryKills()
+          : undefined;
+      const outOfMemory =
+        killsBefore !== undefined && killsAfter !== undefined && killsAfter > killsBefore;
       const error = new PluginServiceError(
         "interrupted",
-        "Plugin engine stopped; earlier calls may have taken effect. Check current state before repeating them.",
+        outOfMemory
+          ? "Plugin engine ran out of memory and was stopped; earlier calls may have taken effect. Check current state before repeating them."
+          : "Plugin engine stopped; earlier calls may have taken effect. Check current state before repeating them.",
       );
       rejectReady(error);
       this.#child = undefined;
@@ -529,7 +542,9 @@ export class PluginService {
         this.#set({
           status: "unavailable",
           generation,
-          reason: "Plugin engine repeatedly stopped",
+          reason: outOfMemory
+            ? "Plugin engine repeatedly ran out of memory"
+            : "Plugin engine repeatedly stopped",
         });
         return;
       }

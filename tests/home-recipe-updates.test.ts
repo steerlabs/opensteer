@@ -793,6 +793,45 @@ it("takes the account's portal into config.env when it prepares a release, befor
   ]);
 });
 
+it("starts each release with the limits its own code computes: an update brings a new split", () => {
+  // A Cloud Computer that runs A, whose code gave the Host 640 MiB on a 4 GiB machine.
+  writeFileSync(join(home, "browser-pool"), "");
+  const a = join(home, "releases", running);
+  writeFileSync(
+    join(a, "common.sh"),
+    readFileSync(join(a, "common.sh"), "utf8").replace(
+      /host=\$\(clamp \$\(\(budget \/ 8\)\) \d+ 2048\)/u,
+      "host=$(clamp $((budget / 8)) 640 2048)",
+    ),
+  );
+  const b = join(home, "releases", "1.2.4-bbbbbb");
+  mkdirSync(b);
+  for (const file of releaseFiles) cpSync(join(source, file), join(b, file));
+  writeFileSync(join(b, "images.env"), selection("1.2.4", "b"));
+  // What Docker Compose is given when a release's own code starts its containers (its gate, or
+  // any later start), on the 4 GiB machine.
+  const started = (release: string) =>
+    spawnSync(
+      "bash",
+      [
+        "-c",
+        `source "$1/common.sh"; release_dir=$1
+         machine_size() { echo 3908 2; }; env() { printf '%s\\n' "$@"; }; compose up -d`,
+        "start",
+        release,
+      ],
+      { encoding: "utf8", env: { ...process.env, OPENSTEER_HOME_DIR: home } },
+    ).stdout.split("\n");
+  expect(started(a)).toContain("OPENSTEER_HOME_LIMIT_HOST_MEMORY=640m");
+  expect(started(b)).toContain("OPENSTEER_HOME_LIMIT_HOST_MEMORY=1536m");
+  expect(started(b)).toContain("OPENSTEER_HOME_LIMIT_RUNNER_MEMORY=2450m");
+  // Nothing keeps the old split: the limits are not written anywhere the next release reads.
+  expect(readFileSync(join(home, "config.env"), "utf8")).not.toContain("LIMIT");
+  expect(readdirSync(home).filter((name) => /limit/iu.test(name))).toEqual([]);
+  // The gate is the new release's own command, which reads its own common.sh.
+  expect(readFileSync(join(b, "opensteer-home"), "utf8")).toContain('source "${own%/*}/common.sh"');
+});
+
 it("names a release's tagged images by their ids, by tags no release can move", () => {
   const { b, prepare } = candidate();
   // Images named by tag are named by their id instead, by a tag no release can move.

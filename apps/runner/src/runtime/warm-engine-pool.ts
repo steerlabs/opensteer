@@ -73,8 +73,9 @@ export function runnerMemoryBytes(
  * process tree, so a small laptop keeps one or two rather than eight; and what
  * the Runner may hold at once, its Runs and its warm engines together, fits its
  * memory at one allowance each: a warm engine takes only the room its
- * `maxConcurrentRuns` Runs leave. A Runner under 2 GiB (a Cloud Computer's on a 4 GiB machine,
- * with no swap) therefore keeps none: one beside the Run would invite an out-of-memory kill.
+ * `maxConcurrentRuns` Runs leave. A Runner without room for a second allowance beside its Runs
+ * (a Cloud Computer's on a 4 GiB machine, 2,450 MiB, with no swap) therefore keeps none: one
+ * beside the Run would invite an out-of-memory kill.
  */
 export function warmEngineIdleCap(
   totalMemoryBytes: number = runnerMemoryBytes(),

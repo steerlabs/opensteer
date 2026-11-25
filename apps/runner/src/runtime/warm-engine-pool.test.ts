@@ -43,9 +43,10 @@ it("keeps no warm engine when the Runner has less than 2 GiB (review S7)", async
 it("keeps warm engines only in the room the Runner's Runs leave, at one allowance each", () => {
   // A Cloud Computer's Runner, as its Home sizes it (Runner memory, Runs at once): no warm
   // engine on 4, 8 or 16 GB, where three Runs and two warm engines once shared 5,329 MiB.
-  expect(warmEngineIdleCap(2020 * mib, 1)).toBe(0);
+  expect(warmEngineIdleCap(2450 * mib, 1)).toBe(0);
+  expect(warmEngineIdleCap(6335 * mib, 3)).toBe(0);
+  expect(warmEngineIdleCap(13_646 * mib, 8)).toBe(0);
   expect(warmEngineIdleCap(5329 * mib, 3)).toBe(0);
-  expect(warmEngineIdleCap(10_714 * mib, 6)).toBe(0);
   // A self-hosted Linux Home's Runner: limited to 8 GiB, four Runs at once by default.
   expect(warmEngineIdleCap(8 * gib, 4)).toBe(1);
   expect(warmEngineIdleCap(8 * gib, 3)).toBe(2);
@@ -54,7 +55,8 @@ it("keeps warm engines only in the room the Runner's Runs leave, at one allowanc
   expect(warmEngineIdleCap(8 * gib, 2)).toBe(2);
   // Runs and warm engines together never take more than the Runner has.
   for (const [memory, runs] of [
-    [2020 * mib, 1],
+    [2450 * mib, 1],
+    [6335 * mib, 3],
     [5329 * mib, 3],
     [8 * gib, 4],
     [16 * gib, 4],

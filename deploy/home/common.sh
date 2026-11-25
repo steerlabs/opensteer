@@ -89,38 +89,56 @@ clamp() { if (($1 < $2)); then echo "$2"; elif (($1 > $3)); then echo "$3"; else
 
 # home_limits <memory MiB> <cpus>: the CPU and memory limit of each service that runs on a Cloud
 # Computer's Home, whose browser runs in the browser pool (no Browser Runtime or egress proxy
-# runs here). The memory limits add up to the machine less what the kernel, Docker and the system
-# keep, so the services together can never take more than the machine has. The other services'
-# limits are about twice what they used at the peak of a Run, and the Runner gets the rest:
-# measured on a scratch e2-medium Cloud Computer (3,908 MiB) on Nov 25, during one Run of OpenCode
-# 1.18.32 writing a 500-word essay, the Host used 330 MiB, PostgreSQL 97, the gateway 17, the
-# Channel Runtime 75, and the machine about 670 outside its containers. CPU limits are each
-# service's ceiling of CPU time, not a reservation: none is above the machine's CPU count, and
-# the Runner may use them all. The Runner runs as many Runs at once as its memory holds at
-# run_allowance MiB each beside its own, at least one; the Host holds the next one back.
+# runs here). The rule: the machine keeps an eighth of itself, at least 768 MiB, for the kernel,
+# Docker, the system and the page cache, and every part's ordinary peak must fit beside that, the
+# plugin engine's and one Run's at the same time included; a machine where they do not is
+# refused. A memory limit is a ceiling that stops a runaway, well above the part's ordinary peak,
+# not a ration: the Runner's is what the machine has for it while the others are at their
+# ordinary peaks and no plugin runs, so the limits together can be more than the machine. Should
+# the plugin engine and a Run both outgrow that at once, the kernel ends the plugin engine first
+# (plugins/memory-pressure.ts) and never the Host or PostgreSQL before a Run (their
+# oom_score_adj in compose.browser-pool.yaml). CPU limits are each service's ceiling of CPU time,
+# not a reservation: none is above the machine's CPU count, and the Runner may use them all. The
+# Runner runs as many Runs at once as fit at run_allowance MiB each beside every ordinary peak, at
+# least one; the Host holds the next one back.
 home_limits() {
-  local memory=$1 cpus=$2 reserve budget postgres host gateway channel agents runs two
-  # Memory for one Run of the person's own agents. Measured on that machine and Run: OpenCode's
-  # engine peaked at 0.98 to 1.06 GiB of anonymous memory, in a garbage collector's sawtooth that
-  # touched the Runner's old 1,092 MiB limit (two Runs of three were killed for memory). Allowed:
-  # that peak and half again. The other engines are not measured yet (they need a sign-in).
-  local run_allowance=1536
-  # The Runner's own process and its supervisor: 131 MiB at rest there, 152 at that peak.
+  local memory=$1 cpus=$2 reserve budget ordinary postgres host gateway channel agents runs two
+  # Ordinary peaks (MiB), measured on a scratch e2-medium Cloud Computer (3,908 MiB) on Nov 25,
+  # cgroup v2 sampled every half second. The Host serving connected agents' browser and
+  # computer_use calls (in-process worker threads): 324 (its node 346); the packaged Host 281 at
+  # rest, 97 more for a first browser script and 80 for a first computer_use read: 460.
+  local host_peak=460
+  # Its plugin engine and that engine's workerd, in the Host's container while a plugin call runs:
+  # 553 to 559 and 126 to 127 at the engine's start.
+  local plugin_peak=680
+  local postgres_peak=110 channel_peak=100 gateway_peak=20
+  # The Runner's own process and its supervisor: 131 MiB at rest, 152 at a Run's peak.
   local runner_itself=192
+  # One Run of the person's own agents: OpenCode 1.18.32's engine peaked at 0.98 to 1.06 GiB of
+  # anonymous memory in a garbage collector's sawtooth; allowed: that and half again. The other
+  # engines are not measured yet (they need a sign-in).
+  local run_allowance=1536
   [[ $memory =~ ^[0-9]+$ ]] || fail "Invalid machine memory: $memory"
   if [[ ! $cpus =~ ^[0-9]+$ ]] || ((cpus < 1)); then fail "Invalid machine CPU count: $cpus"; fi
-  # An eighth of the machine, at least 768 MiB: about 670 were in use outside the containers.
+  # An eighth of the machine, at least 768 MiB: about 570 to 670 were in use outside the
+  # containers, and the rest is page cache.
   reserve=$(clamp $((memory / 8)) 768 "$memory")
   budget=$((memory - reserve))
-  postgres=$(clamp $((budget / 16)) 256 2048)
-  host=$(clamp $((budget / 8)) 640 2048)
-  gateway=$(clamp $((budget / 64)) 64 256)
-  channel=$(clamp $((budget / 32)) 160 512)
-  agents=$((budget - postgres - host - gateway - channel))
-  ((agents >= runner_itself + run_allowance)) ||
+  ordinary=$((host_peak + plugin_peak + postgres_peak + channel_peak + gateway_peak + runner_itself))
+  ((budget - ordinary >= run_allowance)) ||
     fail "This machine (${memory} MiB) is too small for a Cloud Computer's Home."
   # At most the Runner's own limit of 1,000 Runs at once.
-  runs=$(clamp $(((agents - runner_itself) / run_allowance)) 1 1000)
+  runs=$(clamp $(((budget - ordinary) / run_allowance)) 1 1000)
+  # Ceilings: about two and a half times or more each ordinary peak, and a share of a bigger
+  # machine. The Host's holds its own peak and the plugin engine's together.
+  postgres=$(clamp $((budget / 16)) 256 2048)
+  host=$(clamp $((budget / 8)) 1536 2048)
+  gateway=$(clamp $((budget / 64)) 64 256)
+  channel=$(clamp $((budget / 32)) 256 512)
+  agents=$((budget - host_peak - postgres_peak - channel_peak - gateway_peak))
+  # Below a further Run's allowance beside its Runs: the Runner keeps warm engines only in that
+  # room (warmEngineIdleCap), and none here, where the room is the others' and the page cache's.
+  agents=$(clamp "$agents" 0 $((runner_itself + (runs + 1) * run_allowance - 1)))
   two=$(clamp 2 1 "$cpus")
   printf '%s\n' \
     "OPENSTEER_HOME_LIMIT_POSTGRES_CPUS=$two" "OPENSTEER_HOME_LIMIT_POSTGRES_MEMORY=${postgres}m" \

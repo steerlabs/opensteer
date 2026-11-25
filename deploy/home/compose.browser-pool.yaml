@@ -1,16 +1,20 @@
 # A Cloud Computer whose boot answer said browserPool: true. Its browser runs on a pool host, not
 # here. Only this file sets it apart from a self-hosted Home's shape (compose.yaml).
-# Each service's limits come from this machine (home_limits in common.sh), so together they never
-# ask for more memory than it has.
+# Each service's limits come from this machine (home_limits in common.sh): ceilings above each
+# part's ordinary peak, whose peaks together fit in it. Should the machine itself run out, the
+# kernel takes the plugin engine first (it raises its own score), then a Run, before the Host or
+# PostgreSQL (each child of the Host starts from the Host's score).
 services:
   postgres:
     cpus: ${OPENSTEER_HOME_LIMIT_POSTGRES_CPUS:?Machine limits required}
     mem_limit: ${OPENSTEER_HOME_LIMIT_POSTGRES_MEMORY:?Machine limits required}
     memswap_limit: ${OPENSTEER_HOME_LIMIT_POSTGRES_MEMORY:?Machine limits required}
+    oom_score_adj: -500
   host:
     cpus: ${OPENSTEER_HOME_LIMIT_HOST_CPUS:?Machine limits required}
     mem_limit: ${OPENSTEER_HOME_LIMIT_HOST_MEMORY:?Machine limits required}
     memswap_limit: ${OPENSTEER_HOME_LIMIT_HOST_MEMORY:?Machine limits required}
+    oom_score_adj: -500
     environment:
       OPENSTEER_MANAGED_HOME_BROWSER_POOL: "true"
   gateway:

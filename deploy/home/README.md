@@ -154,19 +154,26 @@ An Opensteer Cloud Computer's Home is different in two ways, both set by
   six-image selection, but it neither pulls them, checks their release stamps
   nor reads their sandbox policy.
 - **Its limits come from its machine.** `home_limits` in `common.sh` reads the
-  machine's memory and CPU count and sets each running service's limits so
-  that together they never ask for more memory than the machine has. It keeps
-  an eighth of memory, at least 768 MiB, for the kernel, Docker and the system.
-  PostgreSQL gets a sixteenth of the rest (256 MiB to 2 GiB), the Host an
-  eighth (640 MiB to 2 GiB), Caddy a sixty-fourth (64 to 256 MiB), Channel
-  Runtime a thirty-second (160 to 512 MiB), and the Runner what remains: about
-  twice what each used at the peak of a Run measured on a real Cloud Computer
-  (below). No CPU limit exceeds the machine's CPU count: the Runner may use
-  every CPU, and the Host and PostgreSQL up to two each. The Runner runs as
-  many Runs at once as its memory holds, beside its own 192 MiB, at 1,536 MiB
-  each, at least one, and the Host holds the next one back until one ends. A
-  machine whose Runner would not hold one Run is refused. The `OPENSTEER_HOME_*`
-  limit settings above do not apply to it.
+  machine's memory and CPU count. It keeps an eighth of memory, at least 768
+  MiB, for the kernel, Docker, the system and the page cache, and every part's
+  ordinary peak must fit beside that, the plugin engine's and one Run's at the
+  same time included; a machine where they do not is refused. Each memory
+  limit is a ceiling that stops a runaway, well above its part's ordinary
+  peak, not a ration: PostgreSQL a sixteenth of the rest (256 MiB to 2 GiB),
+  the Host an eighth (1,536 MiB to 2 GiB: the Host and its plugin engine and
+  workerd at their peaks together), Caddy a sixty-fourth (64 to 256 MiB),
+  Channel Runtime a thirty-second (256 to 512 MiB), and the Runner what the
+  machine has for it while the others are at their ordinary peaks and no
+  plugin runs. The limits together are more than the machine. Should the
+  machine itself run out (a Run and the plugin engine both past their peaks
+  at once), the kernel takes the plugin engine first (it raises its own
+  `oom_score_adj` to 1000), then a Run, before the Host or PostgreSQL (each at
+  -500 in `compose.browser-pool.yaml`); inside the Host's own limit, too, it
+  takes the plugin engine first. No CPU limit exceeds the machine's CPU count:
+  the Runner may use every CPU, and the Host and PostgreSQL up to two each.
+  The Runner runs as many Runs at once as fit beside every ordinary peak at
+  1,536 MiB each, at least one, and the Host holds the next one back until one
+  ends. The `OPENSTEER_HOME_*` limit settings above do not apply to it.
 - **It reaches its pool host on two ports only.** The boot answer's
   `browserPoolNetwork` (the private subnet the pool hosts live in, and the
   agent and relay ports) is kept in `pool-network`, and `firewall.sh` allows
@@ -189,8 +196,18 @@ An Opensteer Cloud Computer's Home is different in two ways, both set by
   uninstall.
 
 On Compute Engine's default `e2-medium` (2 vCPUs, 4 GiB; Linux reports 3,908
-MiB) that gives PostgreSQL 256 MiB, the Host 640 MiB, Caddy 64 MiB, Channel
-Runtime 160 MiB, and the Runner 2,020 MiB and both CPUs: one Run at a time.
+MiB) that gives PostgreSQL 256 MiB, the Host 1,536 MiB, Caddy 64 MiB, Channel
+Runtime 256 MiB, and the Runner 2,450 MiB and both CPUs: one Run at a time.
+The ordinary peaks, measured on a scratch e2-medium on Nov 25 (cgroup v2,
+sampled every half second): the Host 324 MiB serving connected agents' browser
+and computer_use calls (the packaged Host 281 at rest, 97 more for a first
+browser script and 80 for a first computer_use read: 460), its plugin engine
+553 to 559 and workerd 126 to 127 at the engine's start, PostgreSQL 108,
+Channel Runtime 100, Caddy 19, the Runner 192 with a Run's 1,536 allowance:
+with the kernel's 768, 3,866 MiB, 42 under the machine. With the Host at 640
+MiB, one connected agent's discover woke the plugin engine, the Host's
+container sat at its limit and the kernel killed the engine four times, while
+about 2.5 GiB of the machine stayed free.
 Measured on a scratch pooled Cloud Computer on Nov 25, during one Run of
 OpenCode 1.18.32 writing a 500-word essay: OpenCode's engine peaked at 0.98 to
 1.06 GiB of anonymous memory in a garbage collector's sawtooth, the Runner's
@@ -203,9 +220,9 @@ outside the containers, page cache included, which the kernel gives back
 under pressure. A Cloud Computer has no swap: on a two-vCPU shared-core
 machine a garbage collector that walks a heap partly on disk would make a Run
 crawl instead of failing plainly, and the Runner now has room for the measured
-peak. Below 2 GiB (a 4 GiB Cloud Computer's Runner) the Runner keeps no warm
-engine beside its Run;
-from 2 to 4 GiB it keeps one, to 8 GiB two, above that eight. That cap reads
+peak. A Runner whose memory holds no second allowance beside its Runs (a 4
+GiB Cloud Computer's) keeps no warm engine beside its Run; otherwise, up to
+4 GiB it keeps one, to 8 GiB two, above that eight. That cap reads
 the memory the Runner runs under (its container's limit), so a self-hosted
 Home's Runner, limited to 8 GiB by default, now keeps two where it kept eight
 on a 16 GiB machine.

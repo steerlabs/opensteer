@@ -9,9 +9,14 @@ import type { RunnerIdentity } from "@opensteer/orchestration";
 import { HostMessageSchema } from "./engine-protocol.js";
 import { PluginService } from "./plugin-service.js";
 import { PluginStopCoordinator } from "./plugin-stop-coordinator.js";
+import { firstToGoUnderMemoryPressure, memoryKills } from "./memory-pressure.js";
 
 vi.mock("node:child_process", () => ({ fork: vi.fn() }));
 vi.mock("./engine-resources.js", () => ({ pluginEngineUnavailableReason: async () => undefined }));
+vi.mock("./memory-pressure.js", () => ({
+  firstToGoUnderMemoryPressure: vi.fn(() => true),
+  memoryKills: vi.fn((): number | undefined => undefined),
+}));
 const active = vi.hoisted(() => new Map<string, string>());
 vi.mock("./engine-storage.js", () => ({
   engineActiveVersions: async () => active,
@@ -271,6 +276,10 @@ it("proves idle Stop without launching the engine, and starts a later engine wit
     // Starting the engine later while still stopped initializes it with agentWorkStopped: true.
     await service.health({}, { caller: "owner", mode: "automatic" });
     expect(fork).toHaveBeenCalledOnce();
+    // The engine it started is the OOM killer's first choice, not the Host.
+    expect(firstToGoUnderMemoryPressure).toHaveBeenCalledWith(
+      vi.mocked(fork).mock.results[0]?.value.pid,
+    );
     expect(initConfigs).toEqual([{ agentWorkStopped: true }]);
   } finally {
     coordinator.close();
@@ -278,4 +287,62 @@ it("proves idle Stop without launching the engine, and starts a later engine wit
     await service.close();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+it("tells a waiting call the engine ran out of memory only on the kernel's record of a memory kill", async () => {
+  /** A call waiting on an engine that then ends by `signal`, with the kernel's memory-kill counts. */
+  const ended = async (
+    kills: readonly [number | undefined, number | undefined],
+    signal: string,
+  ) => {
+    const child = Object.assign(new EventEmitter(), {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send(raw: unknown) {
+        const message = HostMessageSchema.parse(raw);
+        if (message.type === "init") child.emit("message", { type: "ready", pid: 1, startupMs: 0 });
+        // A health request is never answered: it is waiting when the engine ends.
+      },
+    });
+    vi.mocked(fork).mockReset();
+    vi.mocked(fork).mockReturnValue(child as unknown as ChildProcess);
+    vi.mocked(memoryKills).mockReset();
+    vi.mocked(memoryKills).mockReturnValueOnce(kills[0]).mockReturnValueOnce(kills[1]);
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-memory-kill-"));
+    const service = new PluginService({
+      processEntry: new URL("file:///unused.js"),
+      databaseUrl: "postgres://unused.invalid/unused",
+      dataDirectory: directory,
+      owner: "owner",
+      credentialKey: new Uint8Array(32),
+      origin: "https://fixture.invalid",
+    });
+    try {
+      await service.start();
+      const waiting = service.health({}, { caller: "owner", mode: "automatic" });
+      await vi.waitFor(() => expect(service.state().status).toBe("ready"));
+      child.emit("exit", null, signal);
+      return await waiting.then(
+        () => "answered",
+        (error: Error) => error.message,
+      );
+    } finally {
+      await service.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  };
+  // The kernel's count of memory kills in the Host's cgroup grew while this engine ran.
+  expect(await ended([4, 5], "SIGKILL")).toMatch(
+    /^Plugin engine ran out of memory and was stopped; earlier calls may have taken effect/u,
+  );
+  // Killed, but not on the kernel's record; or the record cannot be read; or ended otherwise.
+  for (const [kills, signal] of [
+    [[5, 5], "SIGKILL"],
+    [[undefined, undefined], "SIGKILL"],
+    [[5, 6], "SIGTERM"],
+  ] as const)
+    expect(await ended(kills, signal), `${kills} ${signal}`).toMatch(
+      /^Plugin engine stopped; earlier calls may have taken effect/u,
+    );
 });
