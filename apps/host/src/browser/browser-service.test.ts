@@ -3370,7 +3370,7 @@ describe("BrowserService", () => {
     };
   }
 
-  it("records no place, nor its title, for a page at an extension's address", async () => {
+  it("records a Run's place on an extension's page as on any page, for the person and their own agents (P3)", async () => {
     const f = await runPlaceFixture(new ManualClock(0));
     f.record.mockResolvedValue(true);
     f.runtime.publishTabs({
@@ -3394,8 +3394,12 @@ describe("BrowserService", () => {
     await f.activity("page-1");
     await f.activity("page-2");
     await f.drain();
-    expect(f.record.mock.calls.map(([input]) => input.data.tabId)).toEqual(["page-2"]);
-    expect(JSON.stringify(f.record.mock.calls)).not.toContain("My Extension Options");
+    // What a connection reads of it is decided where places are read (authorizePlaceSite).
+    expect(f.record.mock.calls.map(([input]) => input.data.tabId)).toEqual(["page-1", "page-2"]);
+    expect(f.record.mock.calls[0]?.[0].data).toMatchObject({
+      title: "My Extension Options",
+      site: null,
+    });
   });
 
   it("bounds interleaved activity writes and converges usage on the final surface", async () => {

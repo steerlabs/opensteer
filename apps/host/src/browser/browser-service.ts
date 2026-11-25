@@ -1733,11 +1733,7 @@ export class BrowserService {
   }
 
   #placeData(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId) {
-    const broker = this.#brokers.get(sessionId);
-    // A Run's places are read back by the connection that leads it (task_read): a page at an
-    // extension's address is no place, its title included.
-    if (broker?.onExtensionPage(surfaceId)) return null;
-    const page = broker?.pageOf(surfaceId);
+    const page = this.#brokers.get(sessionId)?.pageOf(surfaceId);
     if (!page) return null;
     let site: string | null = null;
     try {
@@ -9924,11 +9920,6 @@ export class HostedBrowserBroker {
    * What one tab shows now, as a conversation's use of it records it. A page
    * that failed to load shows an address it never reached, so it records none.
    */
-  /** Whether this surface shows a page at an extension's address. */
-  onExtensionPage(surfaceId: string): boolean {
-    return isExtensionUrl(this.#surfaces.find((surface) => surface.id === surfaceId)?.url);
-  }
-
   pageOf(surfaceId: string): BrowserUsePage | null {
     const surface = this.#surfaces.find((surface) => surface.id === surfaceId);
     if (!surface) return null;
