@@ -9,6 +9,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -222,11 +223,21 @@ ${value === null ? "exit 7" : `printf '%s' '${JSON.stringify(value)}' > "$out"; 
 `,
       { mode: 0o755 },
     );
+  // Each ask here is a fresh one (the next test holds the five-minute rule).
   const refresh = () =>
-    spawnSync("bash", ["-c", 'source "$1"; refresh_pool_network', "r", join(home, "common.sh")], {
-      encoding: "utf8",
-      env: { ...process.env, OPENSTEER_HOME_DIR: directory, PATH: `${work}:${process.env.PATH}` },
-    });
+    spawnSync(
+      "bash",
+      [
+        "-c",
+        'rm -f -- "$OPENSTEER_HOME_DIR/pool-network-asked"; source "$1"; refresh_pool_network',
+        "r",
+        join(home, "common.sh"),
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, OPENSTEER_HOME_DIR: directory, PATH: `${work}:${process.env.PATH}` },
+      },
+    );
   const saved = () => readFileSync(join(directory, "pool-network"), "utf8");
   // Unchanged: nothing to apply.
   answer({ browserPoolNetwork: { cidr: "10.128.0.0/20", agentPort: 7310, relayPort: 7312 } });
@@ -258,6 +269,147 @@ ${value === null ? "exit 7" : `printf '%s' '${JSON.stringify(value)}' > "$out"; 
   expect(readFileSync(join(home, "opensteer-home"), "utf8")).toMatch(
     /refresh_pool_network[^\n]*\n?[^\n]*apply_firewall/u,
   );
+});
+
+/** A pooled managed Home's directory, and a curl stand-in that counts the account's answers. */
+function pooledHome(): { directory: string; asks: () => string[] } {
+  const directory = mkdtempSync(join(work, "home-"));
+  mkdirSync(join(directory, "secrets"));
+  writeFileSync(join(directory, "secrets", "oidc_client_secret"), `ocs_${"A".repeat(43)}`);
+  for (const marker of ["managed", "browser-pool"]) writeFileSync(join(directory, marker), "");
+  writeFileSync(
+    join(directory, "config.env"),
+    [
+      "OPENSTEER_HOME_ACCOUNT_ORIGIN='https://account.example.test'",
+      "OPENSTEER_HOME_MANAGED_ID='cc_00000000-0000-4000-8000-000000000001'",
+      "OPENSTEER_HOME_OIDC_CLIENT_ID='occ_00000000-0000-4000-8000-000000000002'",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(join(directory, "pool-network"), "10.128.0.0/20 7310,7312\n");
+  const log = join(directory, "asked.log");
+  writeFileSync(
+    join(work, "curl"),
+    `#!/usr/bin/env bash
+cat > /dev/null
+out='' url=''
+while (($#)); do case $1 in --output) out=$2; shift 2 ;; --) url=$2; shift 2 ;; *) shift ;; esac; done
+printf '%s\\n' "\${url##*/}" >> "${log}"
+case \${url##*/} in
+  pool-network) printf '%s' '{"browserPoolNetwork":{"cidr":"10.128.0.0/20","agentPort":7310,"relayPort":7312}}' > "$out" ;;
+  *) printf '{}' > "$out" ;;
+esac
+printf 200
+`,
+    { mode: 0o755 },
+  );
+  const asks = () =>
+    existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean) : [];
+  return { directory, asks };
+}
+
+const inHome = (directory: string, script: string) =>
+  spawnSync(
+    "bash",
+    [
+      "-c",
+      `source "$1"; source "$2"; ${script}`,
+      "m",
+      join(home, "common.sh"),
+      join(home, "managed-egress.sh"),
+    ],
+    {
+      encoding: "utf8",
+      env: { ...process.env, OPENSTEER_HOME_DIR: directory, PATH: `${work}:${process.env.PATH}` },
+    },
+  );
+
+it("asks its account for the pool network after a start and then at most once every five minutes", () => {
+  const { directory, asks } = pooledHome();
+  expect(inHome(directory, "refresh_pool_network").status).toBe(1);
+  expect(asks()).toEqual(["pool-network"]);
+  // A pass while the last ask is fresh asks nothing (four passes a minute, every Home).
+  for (let pass = 0; pass < 3; pass++)
+    expect(inHome(directory, "refresh_pool_network").status).toBe(1);
+  expect(asks()).toEqual(["pool-network"]);
+  // Five minutes on, it asks again.
+  const stale = new Date(Date.now() - 6 * 60_000);
+  utimesSync(join(directory, "pool-network-asked"), stale, stale);
+  inHome(directory, "refresh_pool_network");
+  expect(asks()).toEqual(["pool-network", "pool-network"]);
+  // A start (boot, update, restore, a restart by maintenance) forgets the last ask.
+  expect(readFileSync(join(home, "common.sh"), "utf8")).toMatch(
+    /^start_pod\(\) \{\n(?:.*\n)*?\s*rm -f -- "\$home_dir\/pool-network-asked"\n/mu,
+  );
+});
+
+it("asks its account for no egress on a pooled Home, whose browser leaves from the pool host", () => {
+  const { directory, asks } = pooledHome();
+  expect(inHome(directory, "maintain_managed_egress").status).toBe(0);
+  expect(asks()).toEqual([]);
+  // A managed Home whose browser runs on it still asks until its egress is set.
+  rmSync(join(directory, "browser-pool"));
+  expect(inHome(directory, "maintain_managed_egress").status).toBe(0);
+  expect(asks()).toEqual(["egress"]);
+});
+
+it("reads the pod for a maintenance pass with two docker calls, as Compose would list it", () => {
+  const { directory } = pooledHome();
+  const calls = join(directory, "docker.log");
+  const pod = (lines: string[]) =>
+    writeFileSync(
+      join(work, "docker"),
+      `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${calls}"
+case $1 in
+  ps) printf '%s\\n' ${lines.map((_, index) => `c${index}`).join(" ")} ;;
+  inspect) printf '%s\\n' ${lines.map((line) => `'${line}'`).join(" ")} ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+  const healthy = [
+    "postgres running healthy 11",
+    "host running healthy 12",
+    "gateway running healthy 13",
+    "runner running healthy 14",
+    "channel-runtime running healthy 15",
+  ];
+  const check = () =>
+    inHome(directory, 's=$(pod_snapshot) && snapshot_host_pid "$s" && pod_healthy "$s"');
+  pod(healthy);
+  expect(check()).toMatchObject({ status: 0, stdout: "12\n" });
+  // Compose's own project name (compose.yaml), its own containers only, and nothing else run.
+  expect(readFileSync(calls, "utf8").split("\n")[0]).toBe(
+    "ps -aq --filter label=com.docker.compose.project=opensteer-home --filter label=com.docker.compose.oneoff=False",
+  );
+  expect(readFileSync(calls, "utf8").trim().split("\n")).toHaveLength(2);
+  writeFileSync(
+    join(directory, "config.env"),
+    `${readFileSync(join(directory, "config.env"), "utf8")}COMPOSE_PROJECT_NAME='home-b'\n`,
+  );
+  rmSync(calls);
+  check();
+  expect(readFileSync(calls, "utf8")).toContain("label=com.docker.compose.project=home-b ");
+  // Not healthy: one service unhealthy, starting, stopped or missing, or one more than runs here.
+  for (const pod_ of [
+    healthy.map((line) => line.replace("runner running healthy", "runner running unhealthy")),
+    healthy.map((line) => line.replace("gateway running healthy", "gateway running starting")),
+    healthy.map((line) => line.replace("postgres running healthy", "postgres exited none")),
+    healthy.slice(1),
+    [...healthy, "browser-runtime running healthy 16"],
+  ]) {
+    pod(pod_);
+    expect(check().status, pod_.join(", ")).not.toBe(0);
+  }
+  // A Host that is not running has no PID to check the firewall against.
+  pod(healthy.map((line) => line.replace("host running healthy 12", "host exited none 0")));
+  expect(inHome(directory, 'snapshot_host_pid "$(pod_snapshot)"').status).toBe(1);
+  // The maintenance pass reads the pod once, not through a Compose CLI.
+  const command = readFileSync(join(home, "opensteer-home"), "utf8");
+  const maintain = command.slice(command.indexOf("  maintain)"), command.indexOf("  stop)"));
+  expect(maintain).toContain("snapshot=$(pod_snapshot)");
+  expect(maintain).not.toMatch(/compose ps|host_pid\)\s*\|\|/u);
 });
 
 it("reuses a saved boot answer only when it still holds what a pooled Home needs", () => {

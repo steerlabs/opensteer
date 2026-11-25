@@ -22,6 +22,9 @@ poll_managed_egress() {
 
 maintain_managed_egress() {
   local pending="$home_dir/egress.pending" origin id client_id response
+  # A pooled Cloud Computer's browser leaves through its own address on the pool host; the
+  # account answers its Home {} here, every time (egressForHome).
+  [[ ! -f "$home_dir/browser-pool" ]] || return 0
   if [[ ! -s "$home_dir/secrets/egress_url" && -s "$home_dir/secrets/oidc_client_secret" ]]; then
     origin=$(sed -n "s/^OPENSTEER_HOME_ACCOUNT_ORIGIN='\([^']*\)'$/\1/p" "$home_dir/config.env")
     id=$(sed -n "s/^OPENSTEER_HOME_MANAGED_ID='\([^']*\)'$/\1/p" "$home_dir/config.env")

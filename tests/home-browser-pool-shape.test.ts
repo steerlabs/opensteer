@@ -304,7 +304,8 @@ it("starts no local browser and no local browser egress on a Cloud Computer", ()
   }
   // Maintenance and update count what runs, not the six images, or a pooled Home would be torn
   // down and restarted on every maintenance pass and could never update.
-  expect(read("opensteer-home")).toContain("running_services");
+  expect(read("opensteer-home")).toContain('pod_healthy "$snapshot"');
+  expect(read("common.sh")).toMatch(/^pod_healthy\(\) \{\n(?:.*\n)*?.*running_services/mu);
   expect(read("update.sh")).toContain("running_services");
 });
 

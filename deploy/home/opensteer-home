@@ -68,14 +68,14 @@ case "${1:-}" in
   maintain)
     lock_home
     recover_home
-    pid=$(host_pid) || pid=''
+    snapshot=$(pod_snapshot) || snapshot=''
+    pid=$(snapshot_host_pid "$snapshot") || pid=''
     if ! { [[ -n $pid && -f "$home_dir/host.pid" && $pid == "$(cat "$home_dir/host.pid")" ]] &&
       { check_firewall "$pid" || { apply_firewall "$pid" && check_firewall "$pid"; }; } &&
-      compose ps --all --format json |
-        jq -es --argjson count "$(($(running_services | wc -l) + 1))" \
-          'length == $count and all(.[]; .Health == "healthy")' >/dev/null; }; then
+      pod_healthy "$snapshot"; }; then
       compose down
       start_pod
+      snapshot=$(pod_snapshot) || snapshot=''
     fi
     # A Cloud Computer follows the pool network its account gives now (checked as at boot).
     if refresh_pool_network && pid=$(host_pid); then
@@ -86,7 +86,7 @@ case "${1:-}" in
       source "$home_dir/managed-egress.sh"
       maintain_managed_egress
     fi
-    if declare -F publish_machine_status >/dev/null; then publish_machine_status; fi
+    if declare -F publish_machine_status >/dev/null; then publish_machine_status "$snapshot"; fi
     ;;
   stop)
     lock_home

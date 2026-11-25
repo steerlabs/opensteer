@@ -175,8 +175,9 @@ An Opensteer Cloud Computer's Home is different in two ways, both set by
   refuses to boot a Cloud Computer until it knows the pool network (the
   installer retries), and the installer refuses a boot answer without a valid
   one, and fetches again a saved one that lacks it. Maintenance asks the
-  Opensteer account for it again on every pass and re-applies the firewall when it
-  changed. The file is read only with the `browser-pool` marker and removed at
+  Opensteer account for it again at its first pass after each start, then at
+  most once every five minutes (it changes only when an operator moves the
+  pool), and re-applies the firewall when it changed. The file is read only with the `browser-pool` marker and removed at
   uninstall.
 
 On Compute Engine's default `e2-medium` (2 vCPUs, 4 GiB) that gives PostgreSQL
@@ -379,8 +380,12 @@ assigns an upstream, maintenance writes the three secret files under the
 root-only configuration directory, with mode `0444` for the proxy mounts, and
 recreates the egress proxy. An
 interrupted change resumes at the next maintenance tick. A Cloud Computer's Home
-is always answered `{}`: it runs no egress proxy, and its browser's egress is
-given to its pool host only.
+does not ask: the Opensteer account always answers it `{}`, it runs no egress
+proxy, and its browser's egress is given to its pool host only.
+
+Each maintenance pass reads the pod with two `docker` calls (`pod_snapshot`): the
+Host's PID for the firewall check, every service's health, and the machine
+status come from that one reading, not from a Compose CLI each.
 
 ## Known limits
 

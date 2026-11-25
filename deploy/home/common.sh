@@ -422,6 +422,52 @@ host_pid() {
   owner=$(compose ps -q host) && [[ -n $owner ]] && docker inspect --format '{{.State.Pid}}' "$owner"
 }
 
+# This Home's own Compose project, as compose() names it outside a staged restore: the name it
+# passes, or compose.yaml's own (compose_project asks Compose itself, at a Compose CLI's cost).
+pod_project() {
+  local project
+  project=$(sed -n "s/^COMPOSE_PROJECT_NAME='\([^']*\)'$/\1/p" "$home_dir/config.env") || return
+  printf '%s\n' "${project:-opensteer-home}"
+}
+
+# The pod as Docker has it: one line per container of this Home's project (no one-off runs) with
+# its service, state, health (none without a check) and PID. Two docker calls in place of a
+# Compose CLI each for the Host's PID, the health check and the machine status: each of those
+# parses every recipe file, most of a maintenance pass's CPU.
+pod_snapshot() {
+  local project ids
+  project=$(pod_project) || return
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$project" \
+    --filter label=com.docker.compose.oneoff=False) || return
+  [[ -n $ids ]] || return 0
+  # shellcheck disable=SC2086 # One container ID per word.
+  docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}} {{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.State.Pid}}' $ids
+}
+
+# snapshot_host_pid SNAPSHOT: the Host's PID while it runs; fails when it does not.
+snapshot_host_pid() {
+  local service state health pid
+  while read -r service state health pid; do
+    if [[ $service == host && $state == running && $pid =~ ^[1-9][0-9]*$ ]]; then
+      printf '%s\n' "$pid"
+      return 0
+    fi
+  done <<< "$1"
+  return 1
+}
+
+# pod_healthy SNAPSHOT: as many containers of the Home's services as run here, all healthy.
+pod_healthy() {
+  local service state health pid count=0 expected
+  expected=$(($(running_services | wc -l) + 1))
+  while read -r service state health pid; do
+    [[ " postgres ${services[*]} " == *" $service "* ]] || continue
+    [[ $health == healthy ]] || return 1
+    count=$((count + 1))
+  done <<< "$1"
+  ((count == expected))
+}
+
 # The pool network (CIDR, then agent,relay ports) a Cloud Computer's firewall lets it reach.
 # The pool network (CIDR, then agent,relay ports) a Cloud Computer's firewall lets its Host reach:
 # read only on a Home whose boot answer said browserPool, so a file left behind opens nothing.
@@ -488,12 +534,15 @@ save_pool_network() {
   printf '%s\n' "$network" > "$home_dir/pool-network"
 }
 
-# A pooled Home asks its Opensteer account for its pool network at each maintenance pass. Succeeds only
-# when it changed and was saved (the caller re-applies the firewall); a network that fails the
-# checks, or no answer, keeps the one it has, and says so.
+# A pooled Home asks its Opensteer account for its pool network after each start (start_pod
+# forgets the last ask) and then at most once every five minutes: it changes only when an
+# operator moves the pool. Succeeds only when it changed and was saved (the caller re-applies the
+# firewall); a network that fails the checks, or no answer, keeps the one it has, and says so.
 refresh_pool_network() {
-  local answer network current=''
+  local answer network current='' asked="$home_dir/pool-network-asked"
   [[ -f "$home_dir/managed" && -f "$home_dir/browser-pool" ]] || return 1
+  if [[ -f $asked && -z $(find "$asked" -mmin +5 2>/dev/null) ]]; then return 1; fi
+  touch "$asked" || return 1
   answer=$(mktemp "$home_dir/pool-network.XXXXXX") || return 1
   if ! ask_account pool-network "$answer"; then
     rm -f -- "$answer"
@@ -517,6 +566,8 @@ refresh_pool_network() {
 
 start_pod() {
   local pid namespace
+  # The next maintenance pass asks for the pool network again.
+  rm -f -- "$home_dir/pool-network-asked"
   prepare_runner_apparmor || return
   if compose up -d --wait --wait-timeout 240 --pull never postgres host &&
     pid=$(host_pid) && namespace=$(readlink "/proc/$pid/ns/net") &&
@@ -630,7 +681,7 @@ compose_down_home() {
 remove_home_files() {
   rm -rf -- "${home_dir:?}/"{secrets,boot,identity,restore.pending,update.pending,restore.pending.retired,update.pending.retired}
   rm -rf -- "$home_dir/"{install,backup,update,egress,images.placeholder,feed,config.env,pool-network}.??????
-  rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,compose.browser-pool.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,browser-pool,pool-network,update-database.dump,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
+  rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,compose.browser-pool.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,browser-pool,pool-network,pool-network-asked,update-database.dump,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
 }
 
 # Whether this Home was installed with --local-images.
