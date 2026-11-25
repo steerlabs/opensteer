@@ -10942,14 +10942,14 @@ describe("work under a connection's authority never uses the clipboard or change
     connectedScript.close();
   });
 
-  async function connectedRootAttachment(name: string) {
+  async function connectedRootAttachment(name: string, surfaceState = false) {
     const ownerId = createId("user");
     const runId = createId("run");
     const threadId = createId("thread");
     const repository = new MemoryBrowserRepository(ownerId);
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-    const service = freshService({ keys, runtime, repository });
+    const service = freshService({ keys, runtime, repository, surfaceState });
     cleanups.push(async () => service.close());
     const profile = await repository.createBrowserProfile({ ownerId, name });
     const binding = { agentBindingId: `run:${runId}`, ownerId };
@@ -11037,6 +11037,79 @@ describe("work under a connection's authority never uses the clipboard or change
       ),
     );
     expect(JSON.stringify(events)).not.toContain("other-");
+    attached.close();
+  });
+
+  it("replays a created or resumed tab's own early end, and churn never pushes out an attach's (G3)", async () => {
+    const { runtime, attach } = await connectedRootAttachment("G3 Profile", true);
+    const { attached, events } = await attach();
+    let sequence = 1;
+    const send = (method: string, parameters: Record<string, unknown>) =>
+      runtime.sendServer({
+        type: "cdp.event",
+        event: { method, parameters, sequence: sequence++ },
+      });
+    const nextCdp = async () => {
+      for (;;) {
+        const command = await runtime.nextCommand();
+        if (command.type === "cdp.command") return command;
+      }
+    };
+    // A create, a resume and a named attach all pending at once.
+    const create = attached.request({
+      method: "Target.createTarget",
+      parameters: { url: "https://new.test/" },
+    });
+    const createForward = await nextCdp();
+    const resume = attached.request({
+      method: browserHostMethods.resumeTab,
+      parameters: { surfaceId: BrowserSurfaceIdSchema.parse("tab_g3") },
+    });
+    const resumeForward = await nextCdp();
+    const attach_ = attached.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "named-tab", flatten: true },
+    });
+    const attachForward = await nextCdp();
+    send("Target.targetCrashed", { targetId: "created-tab", status: "crashed", errorCode: 1 });
+    send("Target.targetDestroyed", { targetId: "created-tab" });
+    send("Target.targetDestroyed", { targetId: "resumed-tab" });
+    send("Target.detachedFromTarget", { sessionId: "cdp_named", targetId: "named-tab" });
+    for (let index = 0; index < 200; index += 1) {
+      send("Target.targetDestroyed", { targetId: `other-${index}` });
+      send("Target.detachedFromTarget", {
+        sessionId: `cdp_other_${index}`,
+        targetId: `other-${index}`,
+      });
+    }
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: createForward.requestId,
+      result: { targetId: "created-tab" },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: resumeForward.requestId,
+      result: { targetId: "resumed-tab" },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: attachForward.requestId,
+      result: { sessionId: "cdp_named" },
+    });
+    await Promise.all([create, resume, attach_]);
+    await vi.waitFor(() => expect(events).toHaveLength(4));
+    expect(events.map(({ method, parameters }) => [method, parameters.targetId])).toEqual([
+      ["Target.targetCrashed", "created-tab"],
+      ["Target.targetDestroyed", "created-tab"],
+      ["Target.targetDestroyed", "resumed-tab"],
+      ["Target.detachedFromTarget", "named-tab"],
+    ]);
+    // Nothing pending: an unknown target's end is dropped, not kept.
+    send("Target.targetDestroyed", { targetId: "late-unknown" });
+    send("Target.targetDestroyed", { targetId: "created-tab" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(events).toHaveLength(4);
     attached.close();
   });
 

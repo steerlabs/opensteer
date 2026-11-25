@@ -6147,11 +6147,20 @@ export class BrowserService {
     const visibleRootTargets = new Set<string>();
     const attachedTargets = new Set<string>();
     const attachedSessions = new Set<string>();
-    const pendingTerminalEvents: Extract<BrowserServerMessage, { type: "cdp.event" }>["event"][] =
-      [];
-    let pendingAttaches = 0;
-    // The targets pending `Target.attachToTarget`s name: only their early terminal events are
-    // kept, so other targets' ends cannot push this subscriber's own out of the buffer (S1).
+    type TerminalEvent = Extract<BrowserServerMessage, { type: "cdp.event" }>["event"];
+    // Terminal events that arrive before the reply that makes their target this subscriber's.
+    // Two buffers, so that other targets' ends never push out an attach's own (S1, G3):
+    // - named: for a target a pending `Target.attachToTarget` names (or a target-less detach
+    //   while one is pending), at most 64, kept while such an attach is pending;
+    // - unknown: any other terminal event while a `Target.createTarget` or `resumeTab` is
+    //   pending (their target is known only from the reply), at most 4,096, kept only while one
+    //   is pending. Only above 4,096 other terminal events inside one such reply's wait can a
+    //   created or resumed tab's own early end be lost.
+    const namedTerminalEvents: TerminalEvent[] = [];
+    const unknownTerminalEvents: TerminalEvent[] = [];
+    let pendingNamedAttaches = 0;
+    let pendingUnknownTargets = 0;
+    // The targets pending `Target.attachToTarget`s name.
     const pendingTargetIds = new Map<string, number>();
     const rememberBounded = (set: Set<string>, id: string) => {
       if (!set.has(id) && set.size >= 4_096) {
@@ -6161,54 +6170,71 @@ export class BrowserService {
       set.add(id);
     };
     const recordTerminalCandidate = (
-      event: Extract<BrowserServerMessage, { type: "cdp.event" }>["event"],
+      event: TerminalEvent,
+      targetId: string | undefined,
+      sessionId: string | undefined,
     ) => {
-      if (pendingTerminalEvents.length >= 64) pendingTerminalEvents.shift();
-      pendingTerminalEvents.push(event);
-    };
-    const releasePendingAttach = (targetId: string | undefined) => {
-      pendingAttaches = Math.max(0, pendingAttaches - 1);
-      if (targetId !== undefined) {
-        const count = pendingTargetIds.get(targetId) ?? 0;
-        if (count <= 1) pendingTargetIds.delete(targetId);
-        else pendingTargetIds.set(targetId, count - 1);
+      if (
+        targetId !== undefined
+          ? pendingTargetIds.has(targetId)
+          : pendingNamedAttaches > 0 && sessionId !== undefined
+      ) {
+        if (namedTerminalEvents.length >= 64) namedTerminalEvents.shift();
+        namedTerminalEvents.push(event);
+      } else if (pendingUnknownTargets > 0) {
+        if (unknownTerminalEvents.length >= 4_096) unknownTerminalEvents.shift();
+        unknownTerminalEvents.push(event);
       }
-      if (pendingAttaches === 0) pendingTerminalEvents.length = 0;
+    };
+    const releasePendingAttach = (named: boolean, targetId: string | undefined) => {
+      if (named) {
+        pendingNamedAttaches = Math.max(0, pendingNamedAttaches - 1);
+        if (targetId !== undefined) {
+          const count = pendingTargetIds.get(targetId) ?? 0;
+          if (count <= 1) pendingTargetIds.delete(targetId);
+          else pendingTargetIds.set(targetId, count - 1);
+        }
+        if (pendingNamedAttaches === 0) namedTerminalEvents.length = 0;
+      } else {
+        pendingUnknownTargets = Math.max(0, pendingUnknownTargets - 1);
+        if (pendingUnknownTargets === 0) unknownTerminalEvents.length = 0;
+      }
     };
     const flushPendingTerminalEvents = (
       matchedSessionId: string | undefined,
       matchedTargetId: string | undefined,
     ) => {
-      if (pendingTerminalEvents.length === 0) return;
-      const remaining: Extract<BrowserServerMessage, { type: "cdp.event" }>["event"][] = [];
-      for (const buffered of pendingTerminalEvents) {
-        const bufferedParams = buffered.parameters as
-          { sessionId?: unknown; targetId?: unknown } | undefined;
-        const bufferedSessionId =
-          typeof bufferedParams?.sessionId === "string" ? bufferedParams.sessionId : undefined;
-        const bufferedTargetId =
-          typeof bufferedParams?.targetId === "string" ? bufferedParams.targetId : undefined;
-        const matchesDetach =
-          buffered.method === "Target.detachedFromTarget" &&
-          matchedSessionId !== undefined &&
-          bufferedSessionId === matchedSessionId;
-        const matchesDestroy =
-          buffered.method === "Target.targetDestroyed" &&
-          matchedTargetId !== undefined &&
-          bufferedTargetId === matchedTargetId;
-        if (matchesDetach || matchesDestroy) {
-          if (matchesDetach && matchedSessionId) attachedSessions.delete(matchedSessionId);
-          if (matchesDestroy && matchedTargetId) {
-            attachedTargets.delete(matchedTargetId);
-            visibleRootTargets.delete(matchedTargetId);
-          }
-          if (!attachmentClosed) onEvent(buffered);
-        } else {
-          remaining.push(buffered);
+      const matched: TerminalEvent[] = [];
+      for (const buffer of [namedTerminalEvents, unknownTerminalEvents]) {
+        if (buffer.length === 0) continue;
+        const remaining: TerminalEvent[] = [];
+        for (const buffered of buffer) {
+          const bufferedParams = buffered.parameters as
+            { sessionId?: unknown; targetId?: unknown } | undefined;
+          const bufferedSessionId =
+            typeof bufferedParams?.sessionId === "string" ? bufferedParams.sessionId : undefined;
+          const bufferedTargetId =
+            typeof bufferedParams?.targetId === "string" ? bufferedParams.targetId : undefined;
+          const matches =
+            buffered.method === "Target.detachedFromTarget"
+              ? matchedSessionId !== undefined && bufferedSessionId === matchedSessionId
+              : matchedTargetId !== undefined && bufferedTargetId === matchedTargetId;
+          if (matches) matched.push(buffered);
+          else remaining.push(buffered);
         }
+        buffer.length = 0;
+        buffer.push(...remaining);
       }
-      pendingTerminalEvents.length = 0;
-      pendingTerminalEvents.push(...remaining);
+      matched.sort((left, right) => left.sequence - right.sequence);
+      for (const buffered of matched) {
+        if (buffered.method === "Target.detachedFromTarget" && matchedSessionId)
+          attachedSessions.delete(matchedSessionId);
+        if (buffered.method === "Target.targetDestroyed" && matchedTargetId) {
+          attachedTargets.delete(matchedTargetId);
+          visibleRootTargets.delete(matchedTargetId);
+        }
+        if (!attachmentClosed) onEvent(buffered);
+      }
     };
     const close = () => {
       if (attachmentClosed) return;
@@ -6218,7 +6244,8 @@ export class BrowserService {
       visibleRootTargets.clear();
       attachedTargets.clear();
       attachedSessions.clear();
-      pendingTerminalEvents.length = 0;
+      namedTerminalEvents.length = 0;
+      unknownTerminalEvents.length = 0;
       pendingTargetIds.clear();
       if (scriptAttachmentId && scriptOpening) {
         void broker
@@ -6284,16 +6311,8 @@ export class BrowserService {
           ) {
             // Terminal detach for a discovered or attached target passes through.
           } else {
-            // A detach names the attachment's target; one with no target can still be the
-            // pending attach's own session.
-            if (
-              pendingAttaches > 0 &&
-              (targetId !== undefined
-                ? pendingTargetIds.has(targetId)
-                : eventSessionId !== undefined)
-            ) {
-              recordTerminalCandidate(event);
-            }
+            if (targetId !== undefined || eventSessionId !== undefined)
+              recordTerminalCandidate(event, targetId, eventSessionId);
             return;
           }
         } else if (event.method === "Target.targetDestroyed") {
@@ -6301,13 +6320,15 @@ export class BrowserService {
             attachedTargets.delete(targetId);
             visibleRootTargets.delete(targetId);
           } else {
-            if (pendingAttaches > 0 && targetId !== undefined && pendingTargetIds.has(targetId)) {
-              recordTerminalCandidate(event);
-            }
+            if (targetId !== undefined) recordTerminalCandidate(event, targetId, undefined);
             return;
           }
         } else if (targetId) {
-          if (!attachedTargets.has(targetId) && !visibleRootTargets.has(targetId)) return;
+          if (!attachedTargets.has(targetId) && !visibleRootTargets.has(targetId)) {
+            if (event.method === "Target.targetCrashed")
+              recordTerminalCandidate(event, targetId, undefined);
+            return;
+          }
         }
       }
       onEvent(event);
@@ -6544,11 +6565,12 @@ export class BrowserService {
           typeof command.parameters?.targetId === "string"
             ? command.parameters.targetId
             : undefined;
-        if (tracksPendingAttach) {
-          pendingAttaches += 1;
+        const namedAttach = tracksPendingAttach && command.method === "Target.attachToTarget";
+        if (namedAttach) {
+          pendingNamedAttaches += 1;
           if (pendingTargetId !== undefined)
             pendingTargetIds.set(pendingTargetId, (pendingTargetIds.get(pendingTargetId) ?? 0) + 1);
-        }
+        } else if (tracksPendingAttach) pendingUnknownTargets += 1;
         let answered: Promise<BrowserCdpResponse>;
         try {
           answered = broker.requestCdp(
@@ -6601,7 +6623,7 @@ export class BrowserService {
                 : undefined,
           );
         } catch (error) {
-          if (tracksPendingAttach) releasePendingAttach(pendingTargetId);
+          if (tracksPendingAttach) releasePendingAttach(namedAttach, pendingTargetId);
           throw error;
         }
         pooledRelay?.track(command.method, command.parameters, answered);
@@ -6630,7 +6652,7 @@ export class BrowserService {
                 if (attachedSessionId) rememberBounded(attachedSessions, attachedSessionId);
                 if (attachedTargetId) rememberBounded(attachedTargets, attachedTargetId);
                 flushPendingTerminalEvents(attachedSessionId, attachedTargetId);
-                releasePendingAttach(pendingTargetId);
+                releasePendingAttach(namedAttach, pendingTargetId);
               }
               if (
                 command.method === "Target.createTarget" &&
@@ -6716,7 +6738,7 @@ export class BrowserService {
               return response.result;
             },
             (error) => {
-              if (tracksPendingAttach) releasePendingAttach(pendingTargetId);
+              if (tracksPendingAttach) releasePendingAttach(namedAttach, pendingTargetId);
               throw error;
             },
           ),
