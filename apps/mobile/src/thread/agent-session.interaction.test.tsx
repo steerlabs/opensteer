@@ -108,7 +108,7 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-function seeded(options: { readonly question?: boolean } = {}) {
+function seeded(options: Parameters<MockHostClient["mockAgentWork"]>[0] = {}) {
   host = new MockHostClient({
     latencyMs: 0,
     connections: mockConnectedAgents("seeded").connections,
@@ -272,8 +272,7 @@ testUnsentSessionStops(
   },
   {
     "phone drawer": async () => {
-      const client = seeded();
-      client.mockAgentWork({ livePanel: "one" });
+      const client = seeded({ livePanel: "one" });
       const shown = mountMobile();
       await act(async () =>
         root!.render(<ConnectedAgentsSection host={client} onOpen={vi.fn()} />),
@@ -281,8 +280,7 @@ testUnsentSessionStops(
       return { client, shown, stop: button(shown, "Stop ChatGPT") };
     },
     "phone task": async () => {
-      const client = seeded();
-      client.mockAgentWork({ livePanel: "one" });
+      const client = seeded({ livePanel: "one" });
       const shown = await render(client, mockAgentWorkThreads.shopping);
       return { client, shown, stop: button(shown, "Stop “\u2068ChatGPT\u2069”") };
     },
