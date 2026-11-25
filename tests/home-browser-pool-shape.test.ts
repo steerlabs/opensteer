@@ -201,7 +201,7 @@ it("sizes a Cloud Computer's Home from its machine: every ordinary peak fits bes
   }
   // The default machine, 4 GiB with two CPUs: the scratch e2-medium (3,908 MiB). No browser runs
   // here, so nothing is kept for one. One Run at a time; a second waits for it.
-  expect(homeLimits(3908, 2)).toEqual({
+  expect(homeLimits(soldMachine.memTotalMib, 2)).toEqual({
     OPENSTEER_HOME_LIMIT_POSTGRES_CPUS: "2",
     OPENSTEER_HOME_LIMIT_POSTGRES_MEMORY: "256m",
     OPENSTEER_HOME_LIMIT_HOST_CPUS: "2",
@@ -237,10 +237,66 @@ it("gives a 4 GiB machine's Host room for the plugin engine a connected agent's 
   }
 });
 
-it("refuses a machine where the ordinary peaks do not fit, instead of squeezing them", () => {
+/**
+ * The machine Opensteer sells, as Linux reported it: Compute Engine's e2-medium (4 GiB), its
+ * MemTotal read on the scratch Cloud Computer on 2026-11-25.
+ */
+const soldMachine = { type: "e2-medium", memTotalMib: 3908, read: "2026-11-25" } as const;
+
+/** home_limits as a start runs it: what it prints for Compose, what it says, and whether it ran. */
+function homeStart(memoryMib: number) {
+  const result = spawnSync(
+    "bash",
+    ["-c", 'source "$1"; home_limits "$2" 2', "limits", join(home, "common.sh"), `${memoryMib}`],
+    { encoding: "utf8", env: { ...process.env, OPENSTEER_HOME_DIR: tmpdir() } },
+  );
+  return { status: result.status, said: result.stderr.trim(), printed: result.stdout };
+}
+
+it("refuses only a machine of a smaller class, and says why and what it needs", () => {
   expect(() => homeLimits(2048, 1)).toThrow(/too small/u);
-  expect(() => homeLimits(3865, 2)).toThrow(/too small/u);
+  expect(homeStart(3583)).toMatchObject({
+    status: 1,
+    said: "This machine (3583 MiB) is too small for a Cloud Computer's Home: it needs at least 3584 MiB.",
+  });
   expect(() => homeLimits(4096, 0)).toThrow(/CPU/u);
+});
+
+it("starts a machine short of the ordinary peaks, the shortfall out of the kept room, said at start", () => {
+  for (const memory of [3584, 3700, 3865]) {
+    const start = homeStart(memory);
+    expect(start.status, `${memory}`).toBe(0);
+    const short = 768 + ordinary + runAllowance - memory;
+    expect(start.said).toBe(
+      `This machine has ${short} MiB less than the Home's ordinary peaks; the system's reserve is ${768 - short} MiB.`,
+    );
+    // The same ceilings as a machine with its full kept room: only the system's reserve gave way.
+    expect(start.printed).toBe(homeStart(3866).printed);
+  }
+  // The floor's kept room: 486 MiB.
+  expect(homeStart(3584).said).toMatch(/the system's reserve is 486 MiB\.$/u);
+  // A machine with room for every ordinary peak says nothing.
+  expect(homeStart(3866).said).toBe("");
+  expect(homeStart(soldMachine.memTotalMib).said).toBe("");
+});
+
+it("keeps the machine Opensteer sells well above the floor, so an OS update cannot make it refuse", () => {
+  // The lowest memory the Home starts on, found from the rule itself.
+  let low = 1024;
+  let high = soldMachine.memTotalMib;
+  expect(homeStart(high).status).toBe(0);
+  expect(homeStart(low).status).not.toBe(0);
+  while (high - low > 1) {
+    const middle = Math.floor((low + high) / 2);
+    if (homeStart(middle).status === 0) high = middle;
+    else low = middle;
+  }
+  expect(high).toBe(3584);
+  // A rule that brings the floor within 150 MiB of the sold machine fails here.
+  expect(
+    soldMachine.memTotalMib - high,
+    `${soldMachine.type}, read ${soldMachine.read}`,
+  ).toBeGreaterThanOrEqual(150);
 });
 
 it("lets the kernel take a Run, or first the plugin engine, before the Host or PostgreSQL", () => {

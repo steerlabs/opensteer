@@ -91,7 +91,9 @@ clamp() { if (($1 < $2)); then echo "$2"; elif (($1 > $3)); then echo "$3"; else
 # Computer's Home, whose browser runs in the browser pool (no Browser Runtime or egress proxy
 # runs here). The rule: the machine keeps an eighth of itself, at least 768 MiB, for the kernel,
 # Docker, the system and the page cache, and every part's ordinary peak must fit beside that, the
-# plugin engine's and one Run's at the same time included; a machine where they do not is
+# plugin engine's and one Run's at the same time included. On a machine short of that, the
+# shortfall comes out of the kept room, said in one line at each start; a machine under
+# machine_floor MiB, where the kept room would fall below 486 MiB, is of another class and is
 # refused. A memory limit is a ceiling that stops a runaway, well above the part's ordinary peak,
 # not a ration: the Runner's is what the machine has for it while the others are at their
 # ordinary peaks and no plugin runs, so the limits together can be more than the machine. Should
@@ -118,15 +120,27 @@ home_limits() {
   # anonymous memory in a garbage collector's sawtooth; allowed: that and half again. The other
   # engines are not measured yet (they need a sign-in).
   local run_allowance=1536
+  # 3.5 GiB: half a GiB under the 4 GiB class, whose machines report 3.8 to 3.95 GiB (the kernel
+  # and firmware keep the rest; Compute Engine's e2-medium reports 3,908), so only a smaller class
+  # (2 or 3 GB) is refused, never the machine Opensteer sells after a kernel update.
+  local machine_floor=3584
   [[ $memory =~ ^[0-9]+$ ]] || fail "Invalid machine memory: $memory"
   if [[ ! $cpus =~ ^[0-9]+$ ]] || ((cpus < 1)); then fail "Invalid machine CPU count: $cpus"; fi
   # An eighth of the machine, at least 768 MiB: about 570 to 670 were in use outside the
   # containers, and the rest is page cache.
   reserve=$(clamp $((memory / 8)) 768 "$memory")
-  budget=$((memory - reserve))
   ordinary=$((host_peak + plugin_peak + postgres_peak + channel_peak + gateway_peak + runner_itself))
-  ((budget - ordinary >= run_allowance)) ||
-    fail "This machine (${memory} MiB) is too small for a Cloud Computer's Home."
+  ((memory >= machine_floor)) ||
+    fail "This machine (${memory} MiB) is too small for a Cloud Computer's Home: it needs at least ${machine_floor} MiB."
+  # Between the floor and the ordinary peaks, the kept room gives way: limits are ceilings, a Run
+  # and a plugin call peaking together is the rare case, and the kernel's victim order keeps the
+  # Home.
+  local short=$((reserve + ordinary + run_allowance - memory))
+  if ((short > 0)); then
+    reserve=$((reserve - short))
+    echo "This machine has ${short} MiB less than the Home's ordinary peaks; the system's reserve is ${reserve} MiB." >&2
+  fi
+  budget=$((memory - reserve))
   # At most the Runner's own limit of 1,000 Runs at once.
   runs=$(clamp $(((budget - ordinary) / run_allowance)) 1 1000)
   # Ceilings: about two and a half times or more each ordinary peak, and a share of a bigger

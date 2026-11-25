@@ -157,7 +157,17 @@ An Opensteer Cloud Computer's Home is different in two ways, both set by
   machine's memory and CPU count. It keeps an eighth of memory, at least 768
   MiB, for the kernel, Docker, the system and the page cache, and every part's
   ordinary peak must fit beside that, the plugin engine's and one Run's at the
-  same time included; a machine where they do not is refused. Each memory
+  same time included. On a machine short of that, the shortfall comes out of
+  the kept room, and each start says so in one line ("This machine has N MiB
+  less than the Home's ordinary peaks; the system's reserve is M MiB"): limits
+  are ceilings, a Run and a plugin call peaking together is the rare case, and
+  the kernel's victim order keeps the Home. Only a machine under 3,584 MiB
+  (3.5 GiB, where the kept room would fall below 486 MiB) is refused, at its
+  first start, with "This machine (N MiB) is too small for a Cloud Computer's
+  Home: it needs at least 3584 MiB." in the installer's output. A machine of the
+  4 GiB class reports 3.8 to 3.95 GiB (the e2-medium 3,908), so only a smaller
+  class is refused. The account is not told: a managed Home has no route to
+  report a failed install, so the account shows an expired bootstrap. Each memory
   limit is a ceiling that stops a runaway, well above its part's ordinary
   peak, not a ration: PostgreSQL a sixteenth of the rest (256 MiB to 2 GiB),
   the Host an eighth (1,536 MiB to 2 GiB: the Host and its plugin engine and
