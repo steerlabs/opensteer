@@ -1,4 +1,5 @@
 import { boundedJsonSize } from "@opensteer/browser-core/bounded-json";
+import { isExtensionUrl } from "@opensteer/browser-core/extension-url";
 import { DeploymentIdSchema } from "@opensteer/core";
 import {
   BrowserListTabsParametersSchema,
@@ -3954,9 +3955,13 @@ export class BrowserController {
       const parsed = BrowserListTabsParametersSchema.safeParse(parameters ?? {});
       if (!parsed.success) throw new BrowserRuntimeError("bad_message", "Invalid tab-list cursor.");
       const ledger = this.ledger;
+      // N1: a connection is never told of a tab on an extension's page, nor that one opened a tab.
+      const connection = message.connection === true;
+      const hidden = (surfaceId: BrowserSurfaceId) =>
+        connection && isExtensionUrl(ledger.toRecord(surfaceId)?.url);
       const records = function* () {
         for (const record of ledger.policyRecords()) {
-          if (!record.announced) continue;
+          if (!record.announced || hidden(record.id)) continue;
           const row = ledger.toRecord(record.id)!;
           const dialog = ledger.dialogOf(record.id);
           const tab: AgentTab = {
@@ -3966,7 +3971,7 @@ export class BrowserController {
             title: row.title,
             url: row.url,
             order: record.order,
-            openerId: record.openerId,
+            openerId: record.openerId && hidden(record.openerId) ? null : record.openerId,
             userActivity: record.userActivity
               ? {
                   ...record.userActivity,
@@ -4012,8 +4017,15 @@ export class BrowserController {
       try {
         stopIfCancelled();
         const state = this.ledger.stateOf(surfaceId);
-        if (state === undefined)
-          throw new BrowserRuntimeError("not_found", "The browser tab closed.", { unsent: true });
+        // N1: to a connection a tab on an extension's page does not exist: the same answer as a
+        // closed tab, before the wake and again once its page has loaded, before any script
+        // attachment opens or any target is named.
+        const absent = () =>
+          new BrowserRuntimeError("not_found", "The browser tab closed.", { unsent: true });
+        const hiddenFromConnection = (page?: { url(): string }) =>
+          message.connection === true &&
+          (isExtensionUrl(this.ledger.toRecord(surfaceId)?.url) || isExtensionUrl(page?.url()));
+        if (state === undefined || hiddenFromConnection()) throw absent();
         const reloaded = state === "suspended";
         this.forwarded.add(message);
         let binding = await untilAborted(this.ledger.wake(surfaceId), cancelled.signal);
@@ -4072,6 +4084,7 @@ export class BrowserController {
             "Browser result exceeds its byte or nesting limit.",
             { reason: "browser-reply-limit" },
           );
+        if (hiddenFromConnection(binding.page)) throw absent();
         if (message.scriptAttachmentId && message.scriptEventBudget) {
           const scriptRequest = this.scriptCommands.get(message.requestId);
           if (scriptRequest?.closing)
