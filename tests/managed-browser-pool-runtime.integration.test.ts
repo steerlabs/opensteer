@@ -76,7 +76,10 @@ import {
   testGuest,
   type TestPoolAgent,
 } from "../apps/pool-agent/src/test-support.js";
-import { BrowserPoolCoordinator } from "../apps/host/src/browser/browser-pool-coordinator.js";
+import {
+  BrowserPoolCoordinator,
+  type BrowserPoolWakeTrace,
+} from "../apps/host/src/browser/browser-pool-coordinator.js";
 import {
   createManagedPooledRelay,
   defaultManagedBrowserPoolIdleMs,
@@ -3996,4 +3999,168 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it("reuses one wake control tunnel, skips duplicate health checks, and reattaches 1, 4, and 8 retained sessions in bounded parallel", async () => {
+    const database = await cloneTestDatabase("host");
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-pool-wake-speed-"));
+    const port = await freePort();
+    const config = managedConfig(database.url, directory, port, { browserPool: true });
+    let registeredKeys:
+      | {
+          readonly homeKey: string;
+          readonly relayKey: string;
+          readonly ticketKey: { readonly keyId: string; readonly spki: string };
+        }
+      | undefined;
+    let targetResponse: ManagedBrowserPoolTargetResponse = { status: "preparing" };
+    const accountControlFetch: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === managedBrowserPoolRegistrationPath && init?.method === "PUT") {
+        const parsed = ManagedBrowserPoolRegistrationRequestSchema.parse(
+          JSON.parse(String(init.body)),
+        );
+        registeredKeys = parsed.document.keys;
+        return Response.json(targetResponse);
+      }
+      if (url.pathname === managedBrowserPoolTargetPath) {
+        return Response.json(registeredKeys ? targetResponse : { status: "unregistered" });
+      }
+      return new Response("not found", { status: 404 });
+    };
+    const wakes: BrowserPoolWakeTrace[] = [];
+    let host: PersonalHostRuntime | undefined;
+    let poolHost: LoopbackPoolHost | undefined;
+    try {
+      const started = await ownTestDatabaseProducer(database.url, async () => {
+        const runtime = await createHostRuntime(config, {
+          personalAccountGrantFetch: jwksFetch(),
+          accountControlFetch,
+          managedBrowserPoolTiming: {
+            firstDelayMs: 30,
+            maxDelayMs: 80,
+            idleParkMs: 200,
+            onWake: (trace) => wakes.push(trace),
+          },
+        });
+        if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
+        return { host: runtime, close: () => runtime.close() };
+      });
+      host = started.host;
+      const { ownerId } = await claimHome(host);
+      await enrollMainRunner(host, config);
+      await vi.waitFor(() => expect(registeredKeys).toBeDefined(), { timeout: 5_000 });
+      poolHost = await startLoopbackPoolHost({
+        directory,
+        slotId: `bps_${randomUUID()}`,
+        term: 1,
+        registered: registeredKeys!,
+      });
+      targetResponse = { status: "ready", target: poolHost.target };
+      await vi.waitFor(
+        async () => {
+          expect((await host!.app.inject({ method: "GET", url: "/ready" })).json()).toEqual({
+            ok: true,
+            browserPool: "ready",
+          });
+        },
+        { timeout: 10_000 },
+      );
+
+      const profiles: {
+        readonly id: import("../packages/core/src/index.js").BrowserProfileId;
+        readonly sessionId: import("../packages/protocol/src/browser.js").BrowserSessionId;
+      }[] = [];
+      for (const sessionCount of [1, 4, 8]) {
+        // Hold a viewer on the first session while creating additional profiles/tabs so the
+        // 200 ms idle-park timer cannot park between profile creations.
+        let setupViewer: { close(): void } | undefined;
+        if (profiles.length > 0) {
+          let closed = false;
+          setupViewer = await host.browser.attach(
+            ownerId,
+            profiles[0]!.sessionId,
+            {
+              id: `setup-viewer-${sessionCount}`,
+              isOpen: () => !closed,
+              close: () => {
+                closed = true;
+              },
+              send: async () => {},
+            },
+            {
+              authSessionId: `aus_${randomUUID()}` as AuthSessionId,
+              mode: "control",
+              signedIn: async () => true,
+            },
+          );
+        }
+        try {
+          const needed = sessionCount - profiles.length;
+          const startIndex = profiles.length;
+          const created = await Promise.all(
+            Array.from({ length: needed }, async (_, offset) => {
+              const index = startIndex + offset + 1;
+              const profile = await host!.browser.createProfile({
+                ownerId,
+                name: `Speed Profile ${index}`,
+                idempotencyKey: `wake-speed-profile-${index}-${randomUUID()}`,
+              });
+              const opened = await host!.browser.openTab(ownerId, {
+                type: "browser.tab.open",
+                idempotencyKey: `wake-speed-open-${index}-${randomUUID()}`,
+                identity: { kind: "profile", profileId: profile.id },
+                url: `https://example.test/session-${index}`,
+              });
+              return { id: profile.id, sessionId: opened.sessionId };
+            }),
+          );
+          profiles.push(...created);
+        } finally {
+          setupViewer?.close();
+        }
+
+        // Wait for idle park with `sessionCount` retained sessions.
+        await vi.waitFor(
+          async () => {
+            const status = await poolHost!.currentAgent().status(poolHost!.slotId, poolHost!.term);
+            expect(status.phase).toBe("paused");
+          },
+          { timeout: 10_000 },
+        );
+
+        wakes.length = 0;
+        await host.browser.openTab(ownerId, {
+          type: "browser.tab.open",
+          idempotencyKey: `wake-speed-trigger-${sessionCount}-${randomUUID()}`,
+          identity: { kind: "profile", profileId: profiles[0]!.id },
+          url: `https://example.test/wake-${sessionCount}`,
+        });
+
+        await vi.waitFor(() => expect(wakes).toHaveLength(1), { timeout: 5_000 });
+        const trace = wakes[0]!;
+        console.info(
+          "wake.speed.sample",
+          JSON.stringify({
+            sessionCount,
+            totalMs: trace.totalMs,
+            afterResumeMs: trace.afterResumeMs,
+            handshakes: trace.relayHandshakes.length,
+            steps: trace.steps,
+          }),
+        );
+        expect(trace.retainedSessions).toBe(sessionCount);
+        expect(trace.adoptedSessions).toBe(sessionCount);
+        expect(trace.lostSessions).toBe(0);
+        expect(trace.steps.reattach).toBeGreaterThanOrEqual(0);
+        expect(trace.steps.relay).toBeGreaterThanOrEqual(0);
+        // 1 keep-alive control tunnel (poolState + adopt + complete) + N session websockets.
+        expect(trace.relayHandshakes.length).toBe(1 + sessionCount);
+      }
+    } finally {
+      await host?.close();
+      await poolHost?.close();
+      await database.drop();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

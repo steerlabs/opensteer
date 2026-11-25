@@ -40,7 +40,9 @@ export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel
   readonly #guest: GuestStatus | undefined;
   readonly #controlTimeoutMs: number;
   #wakeDepth = 0;
-  #pooled: { readonly agent: HttpAgent; readonly socket: Duplex; readonly bridgeToken: string } | undefined;
+  #pooled:
+    | { readonly agent: HttpAgent; readonly socket: Duplex; readonly bridgeToken: string }
+    | undefined;
 
   /**
    * `guest`: the agent's signed status, which says whether there is a runtime to ask.
@@ -247,6 +249,8 @@ export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel
         reject(error);
       });
       req.end(body);
+      // `openPoolRelay` leaves the tunnel paused after reading its grant line; resume it for HTTP.
+      current.socket.resume();
     });
   }
 }

@@ -78,6 +78,8 @@ it("reuses one keep-alive tunnel across a wake and never retries a failed contro
         socket.once("connect", resolve);
         socket.once("error", reject);
       });
+      // Mirror `openPoolRelay`'s `readLine`, which leaves the tunnel paused for the next reader.
+      socket.pause();
       sockets.push(socket);
       return { socket, bridgeToken: "wake-token" };
     },

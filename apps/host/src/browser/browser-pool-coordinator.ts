@@ -368,7 +368,7 @@ export class BrowserPoolCoordinator {
   #wakeTrace:
     | {
         readonly startedAt: number;
-        afterResumeAt?: number;
+        afterResumeAt?: number | undefined;
         mark: number;
         readonly steps: Record<string, number>;
         retainedSessions: number;
@@ -1727,6 +1727,7 @@ export class BrowserPoolCoordinator {
     const trace = this.#options.onWake
       ? {
           startedAt,
+          afterResumeAt: undefined as number | undefined,
           mark: startedAt,
           steps: {} as Record<string, number>,
           retainedSessions: 0,
