@@ -344,6 +344,17 @@ export const cloudComputerEgressPath = (id: CloudComputerId) => `/v1/cloud-compu
 /** The feed a booted Home updates from now: the account's, which may differ from its boot's. */
 export const CloudComputerReleaseFeedResponseSchema = z.strictObject({
   releaseManifestUrl: CloudComputerReleaseManifestUrlSchema,
+  /**
+   * The Home's recipe (its scripts and Compose files) for the account's current release: the
+   * standalone installer and its SHA-256, pinned in the account's own release config. A managed
+   * Home takes its recipe from here only, never from a manifest.
+   */
+  recipe: z
+    .strictObject({
+      url: CloudComputerInstallerUrlSchema,
+      sha256: CloudComputerInstallerSha256Schema,
+    })
+    .optional(),
 });
 export type CloudComputerReleaseFeedResponse = z.infer<
   typeof CloudComputerReleaseFeedResponseSchema

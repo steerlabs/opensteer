@@ -2082,7 +2082,11 @@ export class CloudComputerStore {
   async releaseFeedForHome(id: CloudComputerId, authorization: string | undefined) {
     return this.#db.transaction().execute(async (tx) => {
       await this.#requireBootedHome(tx, id, authorization, "share");
-      return { releaseManifestUrl: this.#options.config.releaseManifestUrl };
+      const { installerSha256, installerUrl } = this.#options.config.release;
+      return {
+        releaseManifestUrl: this.#options.config.releaseManifestUrl,
+        recipe: { url: installerUrl, sha256: installerSha256 },
+      };
     });
   }
 

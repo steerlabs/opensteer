@@ -288,5 +288,19 @@ it("names a Home's release feed route and answers only an allowed feed address",
   for (const releaseManifestUrl of ["http://releases.example.test/x", "https://a.test/x?y=1"])
     expect(CloudComputerReleaseFeedResponseSchema.safeParse({ releaseManifestUrl }).success).toBe(
       false,
-    );
+    ); // The recipe for the account's release: its installer and SHA-256, from the account's config.
+  const releaseManifestUrl = "https://releases.example.test/managed/stable.json";
+  const recipe = { url: "https://releases.example.test/home.sh", sha256: "a".repeat(64) };
+  expect(CloudComputerReleaseFeedResponseSchema.parse({ releaseManifestUrl, recipe })).toEqual({
+    releaseManifestUrl,
+    recipe,
+  });
+  for (const bad of [
+    { ...recipe, sha256: "A".repeat(64) },
+    { ...recipe, url: "http://releases.example.test/home.sh" },
+    { url: recipe.url },
+  ])
+    expect(
+      CloudComputerReleaseFeedResponseSchema.safeParse({ releaseManifestUrl, recipe: bad }).success,
+    ).toBe(false);
 });
