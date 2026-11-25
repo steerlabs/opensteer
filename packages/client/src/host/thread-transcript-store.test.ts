@@ -266,8 +266,8 @@ test("pages accumulate whole, and a live row bounds the window with a cursor bes
   // Every page the reader asked for is held: nothing they loaded leaves under them.
   expect(store.getSnapshot().ids).toEqual(all.map(({ id }) => id));
   expect(store.getSnapshot().snapshot?.nextBefore).toBeNull();
-  expect(store.getSnapshot().newest).toBe(true);
-  // Following the latest, the next live row bounds the window above the reader.
+  expect(store.getSnapshot().expanded).toBe(true);
+  // New live rows append directly to the tail without dropping earlier loaded pages.
   const next = { ...item, id: createId("message"), position: "301", revision: "2" };
   store.apply({
     ...address,
@@ -285,8 +285,8 @@ test("pages accumulate whole, and a live row bounds the window with a cursor bes
       },
     ],
   } as never);
-  expect(store.getSnapshot().historyIds).toEqual([...all.slice(51), next].map(({ id }) => id));
-  expect(store.getSnapshot().snapshot?.nextBefore?.beforeId).toBe(all[51]!.id);
+  expect(store.getSnapshot().historyIds).toEqual([...all, next].map(({ id }) => id));
+  expect(store.getSnapshot().snapshot?.nextBefore).toBeNull();
 });
 
 test("history pages land during a Run and keep an unhide or removal made while they were read", () => {
@@ -375,8 +375,29 @@ test("history pages land during a Run and keep an unhide or removal made while t
   );
   expect(store.getSnapshot().snapshot?.nextBefore).toBeNull();
 
-  // Jumping to a message also lands while changes arrive.
-  const jump = store.beginRead();
+  // Hydrating deferred work also lands while live changes arrive.
+  const { messageId: _messageId, ...baseItem } = item;
+  const anchor = {
+    ...baseItem,
+    kind: "tool" as const,
+    id: "tool:1",
+    toolCallId: "tool-1",
+    position: "15",
+    revision: String(through + 1),
+    view: { status: "done" },
+    deferredWork: { itemCount: 1 },
+  };
+  const hidden = {
+    ...baseItem,
+    kind: "tool" as const,
+    id: "tool:2",
+    toolCallId: "tool-2",
+    position: "16",
+    revision: String(through + 1),
+    view: { status: "done" },
+  };
+  commit({ operation: "upsert", entityKind: "item", entityId: anchor.id, value: anchor });
+  const hydrate = store.beginRead();
   commit({
     operation: "upsert",
     entityKind: "item",
@@ -384,24 +405,24 @@ test("history pages land during a Run and keep an unhide or removal made while t
     value: { ...reply, revision: String(through + 1), view: { preview: "B" } },
   });
   expect(
-    store.installPage(
+    store.installDeferredWorkPage(
       {
         kind: "page",
         threadId: scope.threadId,
         nodeId: null,
-        revision: "8",
-        items: all.slice(0, 3),
+        revision: String(through),
+        items: [{ ...anchor, deferredWork: undefined }, hidden],
         hasMore: false,
         nextBefore: null,
-        nextAfter: cursor(all[2]!),
       },
       1,
-      { mode: "around" },
-      jump,
+      anchor.id,
+      hydrate,
     ),
   ).toBe("installed");
-  store.endRead(jump);
-  expect(store.getSnapshot().historyIds).toEqual(all.slice(0, 3).map(({ id }) => id));
+  store.endRead(hydrate);
+  expect(store.getSnapshot().historyIds).toContain(hidden.id);
+  expect(store.getSnapshot().items.get(reply.id)?.view.preview).toBe("B");
 });
 
 test("a repair replaces the scope: no stale history, no older page, no omitted queue entry", () => {
@@ -550,25 +571,12 @@ test("a held provisional card takes a new face and its place; a window of histor
   // The stream was reidentified: the same card now stands between them.
   store.liveItem({ ...face, position: "2" }, "live", false);
   expect(order()).toEqual(["1", "live", "3"]);
-  // The reader is held in a window of history: the card is not drawn into it.
+  // Snapshots always stay tail-anchored: a repair keeps live cards drawn at the tail.
   store.apply({
     ...base,
     type: "host.snapshot",
     throughSequence: "1",
-    snapshot: snapshot(item.id, { ...cursorOf(second) }),
+    snapshot: snapshot(item.id, null),
   } as never);
-  expect(store.getSnapshot().newest).toBe(false);
-  expect(displayedItemIds(store.getSnapshot())).not.toContain("live");
+  expect(displayedItemIds(store.getSnapshot())).toContain("live");
 });
-
-function cursorOf(row: { id: string; position: string }) {
-  return {
-    deploymentId: createId("deployment"),
-    epoch: "00000000-0000-4000-8000-000000000001",
-    viewerId: createId("user"),
-    threadId: scope.threadId,
-    nodeId: null,
-    beforeId: row.id,
-    beforePosition: row.position,
-  };
-}

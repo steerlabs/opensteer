@@ -225,6 +225,11 @@ try {
   );
 
   await check("find in conversation reaches a message far outside the window", async () => {
+    // Seed a tail-anchored window so older turns sit behind backward paging, as on a real Host.
+    await page.evaluate(
+      (id) => (Reflect.get(window, "opensteerMock") as MockHostClient).mockWindowTail(id, 100),
+      threadId,
+    );
     await page.evaluate((selector) => {
       const element = document.querySelector<HTMLElement>(selector)!;
       element.scrollTop = element.scrollHeight;

@@ -478,16 +478,16 @@ describe("Run details", () => {
     expect(sheet.querySelector('[role="alert"]')).toBeNull();
   });
 
-  it("finds a Run a link named in history, loading the conversation around it first", async () => {
+  it("finds a Run a link named in history, extending earlier transcript through it first", async () => {
     // The conversation holds only its newest reply; the linked Run is older than what is loaded.
     const host = fakeHost(snapshotWith(replying.slice(answered.length)));
     let loaded = () => undefined as void;
-    const around = vi.fn(
-      (_threadId: string, _messageId: string) =>
+    const earlier = vi.fn(
+      (_threadId: string, _options?: { readonly throughItemId?: string }) =>
         new Promise<boolean>((resolve) => (loaded = () => resolve(true))),
     );
     Object.assign(host.client, {
-      loadTranscriptAround: around,
+      loadEarlierTranscript: earlier,
       observeThread: () => () => undefined,
     });
     const sheet = render(
@@ -497,7 +497,7 @@ describe("Run details", () => {
         }}
       />,
     );
-    expect(around).toHaveBeenCalledWith(taskId, askA.id);
+    expect(earlier).toHaveBeenCalledWith(taskId, { throughItemId: askA.id });
     expect(sheet.querySelector('[aria-label="Not loaded yet"]')).not.toBeNull();
     host.move(snapshotWith(replying));
     await act(async () => loaded());
@@ -508,7 +508,7 @@ describe("Run details", () => {
   it("says a linked Run isn't available once the Host has nothing around it", async () => {
     const host = fakeHost(snapshotWith(replying.slice(answered.length)));
     Object.assign(host.client, {
-      loadTranscriptAround: async () => true,
+      loadEarlierTranscript: async () => true,
       observeThread: () => () => undefined,
     });
     const sheet = render(

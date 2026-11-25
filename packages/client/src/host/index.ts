@@ -37,7 +37,6 @@ export * from "./thread-placement.js";
 export * from "./waiting-inputs.js";
 export * from "./waiting-draft.js";
 export * from "./transcript.js";
-export type { TranscriptFollowReader } from "./thread-transcript-store.js";
 export * from "./usage-notice.js";
 export * from "./browser-presentation.js";
 export * from "./surfaces.js";

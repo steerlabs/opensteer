@@ -10,6 +10,7 @@ import { HttpHostClient } from "@opensteer/client/host";
 import { PersonalDetailSnapshotSchema } from "@opensteer/protocol/personal-sync";
 import { TranscriptItemSchema } from "@opensteer/protocol/transcript";
 import type {
+  HostClient,
   MessageEntry,
   PlaceEntry,
   ReasoningEntry,
@@ -1453,8 +1454,8 @@ describe("arrival motion", () => {
     await show(range(30, 55), "1:2");
     expect(moving()).toEqual(["arrival-54"]);
     settle();
-    // In a window of history, Load newer appends a page; landing on the newest rows, it still
-    // moves nothing, and only live work after it does.
+    // While temporarily unsynchronized, newly read rows do not animate as arrivals; only live work
+    // after synchronization does.
     await show(range(30, 55), null);
     await show(range(30, 56), null);
     expect(moving()).toEqual([]);
@@ -1763,5 +1764,182 @@ describe("a long transcript's bodies", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("deferred turn work hydration", () => {
+  it("loads deferred work on demand when a settled turn is expanded and retries on failure", async () => {
+    const start = "2026-08-16T10:00:00.000Z";
+    const end = "2026-08-16T10:05:00.000Z";
+    const runId = createId("run");
+    const replyId = createId("message");
+    const entries: TranscriptEntry[] = [
+      {
+        createdAt: start,
+        endedAt: end,
+        error: null,
+        id: `run:${runId}`,
+        kind: "run",
+        replyMessageId: replyId,
+        runId,
+        startedAt: start,
+        status: "completed",
+      },
+      tool({
+        arguments: { command: "ls" },
+        callId: "call-1",
+        completedAt: "2026-08-16T10:00:02.000Z",
+        createdAt: start,
+        deferredWork: { endedAt: end, itemCount: 25, startedAt: start },
+        id: "tool:anchor",
+        runId,
+      }),
+      {
+        ...note,
+        body: "All done.",
+        createdAt: end,
+        id: replyId,
+        runId,
+      },
+    ];
+    let resolveLoad!: (value: boolean) => void;
+    let rejectLoad!: (error: unknown) => void;
+    const loadDeferredWork = vi
+      .fn<(anchorItemId: string) => Promise<boolean>>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolve, reject) => {
+            resolveLoad = resolve;
+            rejectLoad = reject;
+          }),
+      )
+      .mockResolvedValueOnce(true);
+
+    const hostClient = { loadDeferredWork } as unknown as HostClient;
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/tasks/thread-deferred"]}>
+          <AgentTranscript
+            attachmentReader={hostClient}
+            entries={entries}
+            threadId="thread-deferred"
+          />
+        </MemoryRouter>,
+      );
+      await import("./markdown.js");
+    });
+
+    // Collapsed initially: does not fetch deferred work until expanded.
+    expect(loadDeferredWork).not.toHaveBeenCalled();
+    const toggle = Array.from(container.querySelectorAll("button")).find((btn) =>
+      btn.textContent?.includes("Worked for 5m"),
+    );
+    expect(toggle).toBeDefined();
+
+    await act(async () => {
+      toggle!.click();
+    });
+    expect(loadDeferredWork).toHaveBeenCalledTimes(1);
+    expect(loadDeferredWork).toHaveBeenCalledWith("thread-deferred", "tool:anchor");
+    expect(container.textContent).toContain("Loading steps…");
+
+    // Rejecting shows retry button and retries cleanly.
+    await act(async () => {
+      rejectLoad(new Error("offline"));
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("Retry");
+    const retry = Array.from(container.querySelectorAll("button")).find((btn) =>
+      btn.textContent?.includes("Retry"),
+    );
+    expect(retry).toBeDefined();
+    await act(async () => {
+      retry!.click();
+    });
+    expect(loadDeferredWork).toHaveBeenCalledTimes(2);
+    void resolveLoad;
+  });
+
+  it("hydrates deferred work in Chat ConversationActivity and surfaces Retry when hydration returns false", async () => {
+    const start = "2026-08-16T10:00:00.000Z";
+    const end = "2026-08-16T10:05:00.000Z";
+    const runId = createId("run");
+    const replyId = createId("message");
+    const entries: TranscriptEntry[] = [
+      {
+        createdAt: start,
+        endedAt: end,
+        error: null,
+        id: `run:${runId}`,
+        kind: "run",
+        replyMessageId: replyId,
+        runId,
+        startedAt: start,
+        status: "completed",
+      },
+      tool({
+        arguments: { command: "ls" },
+        callId: "call-chat-1",
+        completedAt: "2026-08-16T10:00:02.000Z",
+        createdAt: start,
+        deferredWork: { endedAt: end, itemCount: 25, startedAt: start },
+        id: "tool:chat-anchor",
+        runId,
+      }),
+      {
+        ...note,
+        body: "Chat reply.",
+        createdAt: end,
+        id: replyId,
+        runId,
+      },
+    ];
+    const loadDeferredWork = vi
+      .fn<(threadId: string, anchorItemId: string) => Promise<boolean>>()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const hostClient = { loadDeferredWork } as unknown as HostClient;
+    const anchorEl = document.createElement("button");
+    document.body.append(anchorEl);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/tasks/chat-deferred"]}>
+          <ConversationActivity
+            anchor={anchorEl}
+            entries={entries}
+            hostClient={hostClient}
+            live
+            onClose={() => undefined}
+            selection={{ kind: "latest" }}
+            threadId="chat-deferred"
+          />
+        </MemoryRouter>,
+      );
+      await import("./markdown.js");
+    });
+
+    expect(loadDeferredWork).toHaveBeenCalledTimes(1);
+    expect(loadDeferredWork).toHaveBeenCalledWith("chat-deferred", "tool:chat-anchor");
+    expect(document.body.textContent).toContain("Retry");
+
+    const retry = Array.from(document.body.querySelectorAll("button")).find((btn) =>
+      btn.textContent?.includes("Retry"),
+    );
+    expect(retry).toBeDefined();
+    await act(async () => {
+      retry!.click();
+    });
+    expect(loadDeferredWork).toHaveBeenCalledTimes(2);
   });
 });

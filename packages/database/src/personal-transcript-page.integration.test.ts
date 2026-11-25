@@ -221,3 +221,175 @@ test("a page carries the Run cards of its rows that it does not hold, beside its
     await fixture.close();
   }
 });
+
+test("acceptDeferredWork folds settled work bursts and view=work hydrates them in order", async () => {
+  const fixture = await createStoreFixture();
+  const { database } = fixture;
+  try {
+    const run = await fixture.startRunFixture("deferred-work");
+    await database
+      .updateTable("transcriptItems")
+      .set({ visible: false, isTurnStart: false })
+      .where("threadId", "=", run.threadId)
+      .execute();
+    await database
+      .updateTable("runs")
+      .set({ status: "completed" })
+      .where("id", "=", run.runId)
+      .execute();
+    await database
+      .updateTable("transcriptItems")
+      .set({ visible: true, position: "1", view: jsonValue({ status: "completed" }) })
+      .where("threadId", "=", run.threadId)
+      .where("kind", "=", "run")
+      .where("runId", "=", run.runId)
+      .execute();
+    const message = await database
+      .selectFrom("messages")
+      .selectAll()
+      .where("threadId", "=", run.threadId)
+      .limit(1)
+      .executeTakeFirstOrThrow();
+    const replyId = createId("message");
+    await database
+      .insertInto("messages")
+      .values({ ...message, content: jsonValue(message.content), id: replyId, sequence: "100" })
+      .execute();
+    const baseMs = Date.parse("2026-11-23T10:00:00.000Z");
+    const toolCallIds = Array.from({ length: 40 }, (_, index) => `tc_deferred_${index + 1}`);
+    await database
+      .insertInto("toolCalls")
+      .values(
+        toolCallIds.map((toolCallId, index) => ({
+          id: toolCallId,
+          threadId: run.threadId,
+          runId: run.runId,
+          attemptId: null,
+          bindingGeneration: null,
+          nodeId: null,
+          callId: `call_${index + 1}`,
+          origin: "host-harness" as const,
+          tool: jsonValue({ namespace: "codex", name: "shell" }),
+          integration: null,
+          arguments: jsonValue({ command: `echo ${index + 1}` }),
+          argumentDigest: null,
+          provisional: false,
+          status: "completed" as const,
+          output: jsonValue({ text: `ok ${index + 1}` }),
+          isError: false,
+          startedAt: new Date(baseMs + index * 60_000),
+          completedAt: new Date(baseMs + (index + 1) * 60_000),
+          completionOrder: String(index + 1),
+        })),
+      )
+      .execute();
+    const toolRows = toolCallIds.map((toolCallId, index) => ({
+      id: `tool:${toolCallId}`,
+      threadId: run.threadId,
+      runId: run.runId,
+      attemptId: null,
+      nodeId: null,
+      position: String(index + 2),
+      kind: "tool" as const,
+      toolCallId,
+      visible: true,
+      isTurnStart: false,
+      createdAt: new Date(baseMs + index * 60_000),
+      view: jsonValue({
+        status: "completed",
+        title: `Tool ${index + 1}`,
+        completedAt: new Date(baseMs + (index + 1) * 60_000).toISOString(),
+      }),
+    }));
+    const anchorId = toolRows[0]!.id;
+    await database
+      .insertInto("transcriptItems")
+      .values([
+        ...toolRows,
+        {
+          id: replyId,
+          messageId: replyId,
+          threadId: run.threadId,
+          runId: run.runId,
+          attemptId: null,
+          nodeId: null,
+          position: "42",
+          kind: "message" as const,
+          toolCallId: null,
+          visible: true,
+          isTurnStart: false,
+          createdAt: new Date(baseMs + 41 * 60_000),
+          view: jsonValue({ preview: "All done" }),
+        },
+      ])
+      .execute();
+
+    const query = {
+      viewerId: run.userId,
+      scope: { kind: "thread" as const, threadId: run.threadId },
+    };
+    const folded = await readTranscriptPage(database, {
+      ...query,
+      acceptDeferredWork: true,
+      limit: 50,
+    });
+    if (folded.kind !== "page") throw new Error("Expected folded page");
+    // Run card + 1 folded anchor tool + reply (40 tools collapsed to 1 anchor).
+    expect(folded.items.map(({ id }) => id)).toEqual([`run:${run.runId}`, anchorId, replyId]);
+    const anchor = folded.items[1]!;
+    expect(anchor.kind).toBe("tool");
+    if (anchor.kind === "tool") {
+      expect(anchor.deferredWork).toEqual({
+        itemCount: 39,
+        startedAt: new Date(baseMs).toISOString(),
+        endedAt: new Date(baseMs + 40 * 60_000).toISOString(),
+        onlyThinking: false,
+      });
+    }
+
+    // Hydrate the folded stretch across multiple view="work" pages.
+    const hydrated: string[] = [];
+    let cursor = undefined;
+    for (;;) {
+      const workPage = await readTranscriptPage(database, {
+        ...query,
+        view: "work",
+        workAnchorId: anchorId,
+        limit: 15,
+        ...(cursor ? { cursor } : {}),
+      });
+      if (workPage.kind !== "page") throw new Error("Expected deferred work page");
+      hydrated.unshift(...workPage.items.map(({ id }) => id));
+      if (!workPage.hasMore) {
+        expect(workPage.nextBefore).toBeNull();
+        break;
+      }
+      cursor = workPage.nextBefore!;
+    }
+    expect(hydrated).toEqual(toolRows.slice(1).map(({ id }) => id));
+
+    // Active (non-terminal) runs are never folded.
+    await database
+      .updateTable("runs")
+      .set({ status: "running" })
+      .where("id", "=", run.runId)
+      .execute();
+    const active = await readTranscriptPage(database, {
+      ...query,
+      acceptDeferredWork: true,
+      limit: 50,
+    });
+    if (active.kind !== "page") throw new Error("Expected active page");
+    expect(active.items).toHaveLength(42);
+
+    // throughItemId rejects unknown ids immediately with history-reset + anchorUnavailable.
+    const missing = await readTranscriptPage(database, {
+      ...query,
+      throughItemId: createId("message"),
+      acceptDeferredWork: true,
+    });
+    expect(missing).toEqual({ kind: "history-reset", anchorUnavailable: true });
+  } finally {
+    await fixture.close();
+  }
+});

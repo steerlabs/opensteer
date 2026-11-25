@@ -53,13 +53,14 @@ import {
   type TranscriptVoice,
   type Turn,
   type TurnAgents,
+  type TurnDeferredWork,
   type WorkEntry,
   type WorkRow,
   type WorkSummary,
 } from "@opensteer/client/host";
 import { voiceCallSeed } from "@opensteer/core";
 import { replyParts, type ReplyPart } from "@opensteer/shared/markdown";
-import { memo, useContext, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AsleepActivityLine, asleepToolOf } from "./asleep-activity-line.js";
 import { Pressable, StyleSheet, View } from "react-native";
 import Animated, { LayoutAnimationConfig } from "react-native-reanimated";
@@ -722,6 +723,44 @@ type AgentTraceRow =
   | { readonly kind: "agents"; readonly key: string; readonly group: AgentGroup }
   | { readonly kind: "workflow"; readonly key: string; readonly card: AgentCard };
 
+function useDeferredWorkLoading(
+  hostClient: HostClient | null,
+  threadId: string | null,
+  deferredWork: readonly TurnDeferredWork[] | undefined,
+  enabled: boolean,
+) {
+  const [state, setState] = useState<"idle" | "loading" | "error">("idle");
+  const [attempt, setAttempt] = useState(0);
+  const anchorIds = useMemo(
+    () => (deferredWork ?? []).map((entry) => entry.itemId),
+    [deferredWork],
+  );
+  const anchorKey = anchorIds.join("\0");
+  useEffect(() => {
+    if (!enabled || !hostClient || !threadId || anchorIds.length === 0) {
+      setState("idle");
+      return;
+    }
+    let cancelled = false;
+    setState("loading");
+    void Promise.all(anchorIds.map((anchorId) => hostClient.loadDeferredWork(threadId, anchorId)))
+      .then((results) => {
+        if (!cancelled) setState(results.every(Boolean) ? "idle" : "error");
+      })
+      .catch(() => {
+        if (!cancelled) setState("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [anchorKey, attempt, enabled, hostClient, threadId]);
+  return {
+    loading: state === "loading" && anchorIds.length > 0,
+    error: state === "error" && anchorIds.length > 0,
+    retry: () => setAttempt((count) => count + 1),
+  };
+}
+
 function TurnRows(
   props: TurnContentProps & {
     readonly agents: TurnAgents | null;
@@ -730,6 +769,7 @@ function TurnRows(
   },
 ): ReactNode {
   const { agents, agentScope, fold, turn } = props;
+  const scope = useContext(TaskScopeContext);
   const [showAll, setShowAll] = useState(false);
   const active = turnState(turn) !== "settled";
   const status = props.status !== false;
@@ -737,6 +777,12 @@ function TurnRows(
   // Closed, only the last word stays mounted, keeping long transcripts light to scroll;
   // helpers still at work stand outside the fold instead.
   const closed = fold?.open === false;
+  const deferred = useDeferredWorkLoading(
+    scope?.hostClient ?? null,
+    scope?.threadId ?? null,
+    turn.deferredWork,
+    !closed,
+  );
   // Rebuilt whenever the turn changes, which a helper's progress does each
   // second; a row standing on the same entries is handed back as the same
   // object, so only what changed draws again.
@@ -783,6 +829,17 @@ function TurnRows(
       {agentScope === null ? null : <AgentNews cards={cards} focused={props.focused} />}
       {closed && agents?.keptOutside && agentScope !== null ? (
         <AgentGroupRow group={agents.keptOutside} />
+      ) : null}
+      {!closed && deferred.loading ? (
+        <AppText role="caption" tone="muted">
+          Loading steps…
+        </AppText>
+      ) : !closed && deferred.error ? (
+        <Pressable accessibilityRole="button" onPress={deferred.retry}>
+          <AppText role="caption" tone="muted">
+            Couldn’t load steps · Tap to retry
+          </AppText>
+        </Pressable>
       ) : null}
       {trace.hidden > 0 ? (
         <Pressable

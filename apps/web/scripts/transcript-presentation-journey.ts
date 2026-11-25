@@ -227,7 +227,7 @@ async function installFixture(context: BrowserContext, working: boolean, family:
               window: { nextBefore: null },
             }),
           });
-          Object.defineProperty(value, "loadTranscriptAround", { value: async () => undefined });
+          Object.defineProperty(value, "loadEarlierTranscript", { value: async () => true });
           const read = value.getSnapshot;
           Object.defineProperty(value, "getSnapshot", {
             value: (): TranscriptFixtureSnapshot => {
