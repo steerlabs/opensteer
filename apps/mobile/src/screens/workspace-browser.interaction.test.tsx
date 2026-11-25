@@ -3308,7 +3308,7 @@ describe("a Cloud Computer's browser", () => {
   }
   const lastAlert = () => vi.mocked(Alert.alert).mock.calls.at(-1);
 
-  it("stands in for its page when it could not start, tabs and sign-ins kept", async () => {
+  it("stands in for its page when it could not start", async () => {
     vi.mocked(Alert.alert).mockClear();
     const { container, render } = await setup({ sessionId: "chosen" });
     // The page is listed first, as a Home lists it before reporting its browser.
@@ -3317,9 +3317,8 @@ describe("a Cloud Computer's browser", () => {
     state.snapshot = pooled("failed");
     await render();
     expect(container.textContent).toContain("Your browser couldn’t start");
-    expect(container.textContent).toContain(
-      "Your tabs and sign-ins are kept. Try again in a moment.",
-    );
+    expect(container.textContent).toContain("Try again in a moment.");
+    expect(container.textContent).not.toContain("Your tabs and sign-ins are kept.");
     expect(container.textContent).not.toContain("Contact support");
     await pressAsync(container, "Try again");
     expect(lastAlert()?.slice(0, 2)).toEqual([
@@ -3328,9 +3327,8 @@ describe("a Cloud Computer's browser", () => {
     ]);
     state.snapshot = pooled("failed-again");
     await render();
-    expect(container.textContent).toContain(
-      "Your tabs and sign-ins are kept. If this keeps happening, contact support.",
-    );
+    expect(container.textContent).toContain("If this keeps happening, contact support.");
+    expect(container.textContent).not.toContain("Your tabs and sign-ins are kept.");
     expect(container.textContent).toContain("Contact support");
   });
 

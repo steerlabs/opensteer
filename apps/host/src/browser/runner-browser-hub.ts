@@ -107,6 +107,22 @@ export class RunnerBrowserHub implements RunnerBrowserRegistry {
     entry.peer.close(reason === "revoked" ? 4003 : 4001, `browser stream ${reason}`);
   }
 
+  /**
+   * Lets go of a Runner's stream only when its `auxiliaryStreamId` matches, so
+   * a rejected or expired Runner auxiliary stream can never tear down an
+   * in-process managed pool peer for the same Runner.
+   */
+  detachStream(
+    runnerId: RunnerId,
+    auxiliaryStreamId: RunnerAuxiliaryStream["auxiliaryStreamId"],
+    reason: RunnerStreamLossReason,
+  ): void {
+    const entry = this.#byRunner.get(runnerId);
+    if (!entry || entry.stream.auxiliaryStreamId !== auxiliaryStreamId) return;
+    this.detach(entry.peer, reason);
+    entry.peer.close(reason === "revoked" ? 4003 : 4001, `browser stream ${reason}`);
+  }
+
   browserStreams(): readonly RunnerAuxiliaryStream[] {
     return [...this.#byRunner.values()].map((entry) => entry.stream);
   }

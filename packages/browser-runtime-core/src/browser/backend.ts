@@ -120,6 +120,8 @@ export interface BrowserPage {
   /** Reads opaque restore state without closing or changing the page. Null refuses this document. */
   captureRestore?(): Promise<unknown | null>;
   keepAwake?(): KeepAwakeReason | null | Promise<KeepAwakeReason | null>;
+  /** Synchronous in-flight transfer reasons safe to inspect even while the page is frozen. */
+  activeTransfers?(): readonly ("download" | "upload")[];
   hasOpenerAccess?(): boolean | Promise<boolean>;
   readonly cursor?: import("./cursor-hints.js").NativePageCursor;
   readonly capture?: PageCapturePort;

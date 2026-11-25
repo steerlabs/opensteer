@@ -117,6 +117,7 @@ export class FakeCdpSession implements CdpSession {
 export class FakePage implements BrowserPage {
   captureRestore?: () => Promise<unknown | null>;
   keepAwake: NonNullable<BrowserPage["keepAwake"]> = () => null;
+  activeTransfers?: NonNullable<BrowserPage["activeTransfers"]>;
   hasOpenerAccess(): boolean {
     return this.openerPage !== null;
   }

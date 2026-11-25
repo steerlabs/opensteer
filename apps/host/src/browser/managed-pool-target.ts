@@ -73,7 +73,8 @@ export class ManagedBrowserPoolAccountClient implements ManagedBrowserPoolAccoun
 
   async #send(method: "GET" | "PUT", path: string, body?: unknown) {
     const credential = await this.#credential();
-    if (!credential) throw new Error("This Home is not linked to its account yet.");
+    if (!credential)
+      throw new ManagedBrowserPoolUnclaimed("This Home is not linked to its account yet.");
     const response = await this.#fetch(new URL(path, this.#origin), {
       method,
       headers: {
@@ -92,6 +93,9 @@ export class ManagedBrowserPoolAccountClient implements ManagedBrowserPoolAccoun
     return ManagedBrowserPoolTargetResponseSchema.parse(await response.json());
   }
 }
+
+/** The Home has not been claimed by its Opensteer account yet, so it has no host credential. */
+export class ManagedBrowserPoolUnclaimed extends Error {}
 
 /** The account answered, and refused: a definite answer, unlike no answer at all. */
 export class ManagedBrowserPoolAccountRefused extends Error {

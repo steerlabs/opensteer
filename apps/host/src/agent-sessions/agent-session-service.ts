@@ -140,12 +140,14 @@ export interface PooledBrowserSend {
   recheck(): Promise<void>;
   submitted(): void;
   acknowledged(): void;
+  /** True once at least one command in this operation crossed to the browser. */
+  hasSubmitted?(): boolean;
 }
 
 export interface PooledDirectBrowser {
   reserve(signal: AbortSignal): Promise<BrowserPoolReservation>;
   identity(): BrowserPoolTargetIdentity;
-  recheckTarget(): Promise<void>;
+  recheckTarget(afterSubmit?: boolean): Promise<void>;
 }
 
 /** An executor's way to say it cannot tell whether its effect happened. */
@@ -942,7 +944,7 @@ export class AgentSessionService {
                   target: pooled.identity,
                   recheck: async () => {
                     await recheck();
-                    await pooled.pool.recheckTarget();
+                    await pooled.pool.recheckTarget(submitted > 0);
                     // Replaced before anything was sent, the runtime is a closed admission.
                     if (canonicalJson(pooled.pool.identity()) !== canonicalJson(pooled.identity))
                       throw submitted === 0
@@ -961,6 +963,7 @@ export class AgentSessionService {
                   acknowledged: () => {
                     outstanding--;
                   },
+                  hasSubmitted: () => submitted > 0,
                 },
               }
             : {}),

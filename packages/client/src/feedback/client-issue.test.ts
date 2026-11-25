@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { HostClientRequestError } from "../host/client.js";
 import {
+  browserPoolRefusalWords,
   clientIssue,
   presentClientIssue,
   presentConnectionDetail,
@@ -327,4 +328,52 @@ describe("safe client issues", () => {
       "Not sent. Your computer didn't accept it.",
     );
   });
+
+  it("presents outcome-unknown Host conflicts as unconfirmed rather than a definite rejection (M8)", () => {
+    const issue = clientIssue(
+      { code: "conflict", reason: "outcome-unknown", retryable: false },
+      { operation: "action", label: "send your answer" },
+    );
+    expect(issue).toEqual({ code: "unconfirmed", action: "send your answer" });
+    expect(presentClientIssue({ ...issue!, happened: "your answer was sent" })).toMatchObject({
+      title: "Couldn't confirm your answer was sent.",
+      action: "check",
+    });
+  });
+
+  it.each([
+    [
+      "browser-pool-refused",
+      "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
+    ],
+    [
+      "browser-pool-start-refused",
+      "Your Cloud Computer’s browser can’t start right now. Try again in a moment.",
+    ],
+    ["browser-pool-setting-up", "Setting up your browser… This can take a few minutes."],
+    [
+      "browser-pool-unreachable",
+      "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
+    ],
+    [
+      "browser-pool-disconnected",
+      "Your Cloud Computer’s browser isn’t connected right now. Try again in a moment.",
+    ],
+  ])(
+    "words Cloud Computer pooled-browser refusal (%s) without exposing raw messages",
+    (reason, words) => {
+      expect(browserPoolRefusalWords(reason)).toBe(words);
+      const error = new HostClientRequestError({
+        code: "conflict",
+        message: "INTERNAL_UNFILTERED_MESSAGE",
+        reason,
+        status: 409,
+      });
+      const issue = clientIssue(error, { operation: "action", label: "open this" });
+      expect(issue).toMatchObject({ code: "rejected", reason });
+      expect(presentClientIssue({ ...issue!, done: "opened" }).title).toBe(`Not opened. ${words}`);
+      expect(browserPoolRefusalWords("browser-placement-unavailable")).toBeUndefined();
+      expect(browserPoolRefusalWords(undefined)).toBeUndefined();
+    },
+  );
 });

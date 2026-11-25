@@ -12,6 +12,20 @@ import { BrowserRuntimeError } from "./errors.js";
  */
 export const pooledRuntimeSessionDeadlineMs = 10 * 60_000;
 
+/**
+ * In-flight transfers that veto freezing a pooled Firecracker guest: freezing stops guest TCP ACKs
+ * so upstream servers drop active downloads and uploads. Uses synchronous `activeTransfers()` when
+ * provided (safe on a frozen renderer), falling back to `keepAwake()` for other `BrowserPage`s.
+ */
+export async function poolPageRetireBlockers(
+  page: BrowserPage,
+  _phase: "active" | "frozen",
+): Promise<readonly string[]> {
+  if (typeof page.activeTransfers === "function") return page.activeTransfers();
+  const reason = await page.keepAwake?.();
+  return reason === "download" || reason === "upload" ? [reason] : [];
+}
+
 export interface BrowserPoolRuntimeOptions {
   /** The pool controller's key. The runtime holds no fence until the controller installs one. */
   readonly controllerKey: KeyObject;

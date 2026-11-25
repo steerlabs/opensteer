@@ -1,4 +1,10 @@
-import { readBrowserPoolSlot, TabStore } from "../packages/database/src/index.js";
+import {
+  readBrowserPoolSlot,
+  TabStore,
+  type DatabaseSchema,
+} from "../packages/database/src/index.js";
+import type { Kysely } from "kysely";
+import type { BrowserSurfaceId, UserId } from "../packages/core/src/index.js";
 import {
   createStoreFixture,
   personalBrowserRepository,
@@ -24,7 +30,6 @@ import { chromium } from "playwright-core";
 import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
 import {
   BrowserPoolCoordinator,
-  loopbackPoolChannel,
   type BrowserPoolRuntimeChannel,
 } from "../apps/host/src/browser/browser-pool-coordinator.js";
 import { FakeBrowserPoolController } from "../apps/host/src/browser/browser-pool-controller.test-support.js";
@@ -39,9 +44,40 @@ import {
   BrowserRuntime,
   BrowserRuntimeServer,
   Ed25519AttachTicketVerifier,
+  type BrowserPoolControl,
+  type BrowserPoolEndAnswer,
+  type BrowserPoolRuntimeState,
   type LaunchedBrowser,
 } from "../packages/browser-runtime-core/src/index.js";
 import { FakeIsolatingLauncher } from "../packages/browser-runtime-core/src/test-support/fakes.js";
+
+/** Test-only in-process runtime channel for loopback pool tests. */
+export function loopbackPoolChannel(runtime: {
+  poolState(): BrowserPoolRuntimeState | undefined;
+  controlPool(control: BrowserPoolControl, signature: Uint8Array): Promise<BrowserPoolRuntimeState>;
+  endPoolSession(ticket: string): Promise<BrowserPoolEndAnswer>;
+}): BrowserPoolRuntimeChannel {
+  return {
+    poolState: async () => runtime.poolState() ?? null,
+    controlPool: (control, signature) => runtime.controlPool(control, signature),
+    endSession: (ticket) => runtime.endPoolSession(ticket),
+  };
+}
+
+/** Test-only read of document loss rows for assertions in pool integration tests. */
+export function listBrowserPoolDocumentLosses(
+  database: Kysely<DatabaseSchema>,
+  ownerId: UserId,
+  surfaceId: BrowserSurfaceId,
+) {
+  return database
+    .selectFrom("browserPoolDocumentLosses")
+    .selectAll()
+    .where("ownerId", "=", ownerId)
+    .where("surfaceId", "=", surfaceId)
+    .orderBy("lostAt", "desc")
+    .execute();
+}
 
 /** Decodes a frame to raw pixels with the Host's own image library. */
 const sharp = createRequire(new URL("../apps/host/package.json", import.meta.url))("sharp") as (

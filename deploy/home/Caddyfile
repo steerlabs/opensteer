@@ -18,9 +18,22 @@ https://{$OPENSTEER_HOME_HOSTNAME} {
 }
 
 http://127.0.0.1:8080 {
-	handle /ready {
+	@direct_ready {
+		path /ready
+		not header X-Forwarded-For *
+		not header X-Forwarded-Host *
+		not header X-Forwarded-Proto *
+		not header Forwarded *
+	}
+	handle @direct_ready {
 		reverse_proxy 127.0.0.1:4310 {
-			rewrite /healthz
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Host
+			header_up -X-Forwarded-Proto
+			header_up -Forwarded
 		}
+	}
+	handle {
+		respond 404
 	}
 }

@@ -1,6 +1,19 @@
 import { OpensteerError } from "@opensteer/core";
 import { BrowserPoolAdmissionClosed } from "@opensteer/database";
 
+/** The controller explicitly refused this start/wake attempt. */
+export class BrowserPoolAttemptRefused extends BrowserPoolAdmissionClosed {
+  readonly refusedReason: string;
+  /** True only when signed host status proved the saved state stayed paused on the same fence. */
+  readonly savedStateKept: boolean;
+  constructor(reason: string, savedStateKept = false) {
+    super(`The pooled browser could not start (${reason}). Nothing was sent.`);
+    this.name = "BrowserPoolAttemptRefused";
+    this.refusedReason = reason;
+    this.savedStateKept = savedStateKept;
+  }
+}
+
 /** Where the browser is when it is not simply running: senders wait, and nothing wakes it twice. */
 export type BrowserPoolAway = "parking" | "parked" | "waking" | "reconnecting";
 
@@ -46,10 +59,15 @@ export class BrowserPoolGate {
   readonly #commandsIdle: (() => void)[] = [];
   #changed = new AbortController();
   #ended = new AbortController();
+  #refusalGeneration = 0;
+  #lastRefusalReason: string | undefined;
+  #lastRefusalSavedStateKept = false;
   readonly #idle: (() => void)[] = [];
   readonly #settlers = new Set<() => Promise<void>>();
   /** The loop is asked to act: someone waits with demand, or a hold needs holders gone. */
   onChange: () => void = () => {};
+  /** Admission, reservations, or viewers changed: the idle-park rule updates its timer. */
+  onIdleStateChanged: () => void = () => {};
 
   /** The loop's facts. `released` is for good: nothing moves it again. */
   set(facts: {
@@ -121,11 +139,13 @@ export class BrowserPoolGate {
   /** A viewer attached: held until the returned release. */
   viewing(): () => void {
     this.#viewers++;
+    this.onIdleStateChanged();
     let released = false;
     return () => {
       if (released) return;
       released = true;
       this.#viewers--;
+      this.onIdleStateChanged();
     };
   }
 
@@ -198,9 +218,23 @@ export class BrowserPoolGate {
     this.#notify();
   }
 
+  /**
+   * The controller explicitly refused this wake/start attempt: waiting opens that opted in end at
+   * once with the pool's refusal reason, while a later open still creates fresh demand and retries.
+   */
+  noteAttemptRefused(reason: string, savedStateKept = false): void {
+    this.#refusalGeneration++;
+    this.#lastRefusalReason = reason;
+    this.#lastRefusalSavedStateKept = savedStateKept;
+    this.#notify();
+  }
+
   /** Demand: asks the loop to wake a parked browser and waits for it. */
-  reserve(signal: AbortSignal): Promise<BrowserPoolReservation> {
-    return this.#wait(signal, true);
+  reserve(
+    signal: AbortSignal,
+    options?: { readonly failOnRefusal?: boolean },
+  ): Promise<BrowserPoolReservation> {
+    return this.#wait(signal, true, options?.failOnRefusal === true);
   }
 
   /** Taken when a send without a consumer is queued. Before D it vetoes the park. */
@@ -231,8 +265,13 @@ export class BrowserPoolGate {
     if (failed) throw (failed as PromiseRejectedResult).reason;
   }
 
-  async #wait(signal: AbortSignal, demand: boolean): Promise<BrowserPoolReservation> {
+  async #wait(
+    signal: AbortSignal,
+    demand: boolean,
+    failOnRefusal = false,
+  ): Promise<BrowserPoolReservation> {
     if (demand) this.#waiting++;
+    const seenRefusal = this.#refusalGeneration;
     let asked = false;
     let waited = false;
     try {
@@ -250,17 +289,23 @@ export class BrowserPoolGate {
           throw new BrowserPoolAdmissionClosed("This browser is not ready. Nothing was sent.");
         if (this.#hold === "released")
           throw new BrowserPoolAdmissionClosed("This device was removed. Nothing was sent.");
+        if (failOnRefusal && this.#refusalGeneration !== seenRefusal)
+          throw new BrowserPoolAttemptRefused(
+            this.#lastRefusalReason ?? "refused",
+            this.#lastRefusalSavedStateKept,
+          );
         if (this.admits) return this.#take(demand, waited);
         if (this.#preparing && (demand || !this.#repairing)) this.#demanded = true;
         // Demand asks the loop once, as it begins to wait: the loop keeps a change that came
         // during a step for the turn after it, so asking again at every change of the gate
         // (the loop's own publications included) would only end its backoff each time.
+        const changed = this.#changed.signal;
         if (demand && !asked) {
           asked = true;
           this.onChange();
         }
         waited = true;
-        await waitForChange(this.#changed.signal, signal);
+        await waitForChange(changed, signal);
       }
     } finally {
       if (demand) this.#waiting--;
@@ -270,6 +315,7 @@ export class BrowserPoolGate {
   #take(command: boolean, waited = false): BrowserPoolReservation {
     this.#active++;
     if (command) this.#commands++;
+    this.onIdleStateChanged();
     let released = false;
     let settler: (() => Promise<void>) | undefined;
     return {
@@ -288,6 +334,7 @@ export class BrowserPoolGate {
         if (command && --this.#commands === 0)
           for (const idle of this.#commandsIdle.splice(0)) idle();
         if (--this.#active === 0) for (const idle of this.#idle.splice(0)) idle();
+        this.onIdleStateChanged();
       },
     };
   }
@@ -296,6 +343,7 @@ export class BrowserPoolGate {
     const previous = this.#changed;
     this.#changed = new AbortController();
     previous.abort();
+    this.onIdleStateChanged();
   }
 }
 

@@ -519,3 +519,129 @@ it("closes only the channel whose runtime frame exceeds the module byte cap", as
     f.relay.detach();
   }
 });
+
+it("S1: enforces a live stopped predicate for agent attaches and CDP frames while allowing person frames", async () => {
+  const bridge = new LocalBrowserRuntimeBridge({
+    bridgeToken: "x".repeat(64),
+    runtimeId: "runtime_test",
+    url: new URL("http://127.0.0.1:4312"),
+  });
+  vi.spyOn(bridge, "capabilities").mockResolvedValue({
+    wireVersion: 2,
+    localProfileStorage: storage,
+  });
+  vi.spyOn(bridge, "localProfileInventory").mockResolvedValue({ storage, profiles: [] });
+  const attach = vi.spyOn(bridge, "attach").mockResolvedValue({ type: "browser.attached" });
+  const sendBridge = vi.spyOn(bridge, "send").mockResolvedValue(undefined);
+  let stopped = false;
+  const relay = new BrowserModuleRelay(bridge, (() => stopped) as unknown as boolean);
+  const messages: Record<string, unknown>[] = [];
+  const fence = RunnerAuxiliaryFrameFenceSchema.parse({
+    auxiliaryStreamId: `rax_${randomUUID()}`,
+    bootId: `rbt_${randomUUID()}`,
+    connectionId: `rcn_${randomUUID()}`,
+    connectionGeneration: 1,
+    connectionLeaseId: `rls_${randomUUID()}`,
+    module: "browser",
+    runnerId: binding.runnerId,
+  });
+  const keys = generateKeyPairSync("ed25519");
+  const lease = BrowserCapabilityLeaseSchema.parse({
+    capabilityGeneration: 1,
+    capabilityLeaseId: `bcl_${randomUUID()}`,
+    runtimeId: "runtime_test",
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const capability = {
+    capabilityGeneration: lease.capabilityGeneration,
+    capabilityLeaseId: lease.capabilityLeaseId,
+    runtimeId: lease.runtimeId,
+  };
+  const send = (message: Record<string, unknown>) =>
+    relay.handleFrame(
+      Buffer.from(JSON.stringify({ ...fence, requestId: `req:${randomUUID()}`, ...message })),
+      false,
+    );
+  const agentTicket = `h.${Buffer.from(JSON.stringify({ actor: "agent" })).toString("base64url")}.s`;
+  const personTicket = `h.${Buffer.from(JSON.stringify({ actor: "person" })).toString("base64url")}.s`;
+  try {
+    await relay.attach({
+      browserWireVersion: 2,
+      fence,
+      browserAttachPublicKeys: [
+        {
+          keyId: "test",
+          publicKeyPem: keys.publicKey.export({ format: "pem", type: "spki" }).toString(),
+        },
+      ],
+      send: async (frame) => {
+        messages.push(createBrowserRelayToHostMessageSchema().parse(JSON.parse(String(frame))));
+      },
+    });
+    await send({ type: "capability.grant", lease });
+    const openChannel = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+    await send({
+      type: "browser.attach",
+      capability,
+      channelId: openChannel,
+      attachTicket: personTicket,
+    });
+    await vi.waitFor(() => expect(attach).toHaveBeenCalledTimes(1));
+
+    stopped = true;
+    const refusedChannel = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+    await send({
+      type: "browser.attach",
+      capability,
+      channelId: refusedChannel,
+      attachTicket: agentTicket,
+    });
+    await vi.waitFor(() =>
+      expect(messages.at(-1)).toMatchObject({
+        type: "browser.command-error",
+        channelId: refusedChannel,
+        error: { code: "forbidden" },
+      }),
+    );
+    expect(attach).toHaveBeenCalledTimes(1);
+
+    const cdpRequestId = randomUUID();
+    await relay.handleFrame(
+      Buffer.from(
+        JSON.stringify({
+          ...fence,
+          type: "browser.client-message",
+          capability,
+          channelId: openChannel,
+          message: {
+            type: "cdp.command",
+            requestId: cdpRequestId,
+            command: { method: "Runtime.evaluate", parameters: { expression: "1" } },
+          },
+        }),
+        "utf8",
+      ),
+      false,
+    );
+    await vi.waitFor(() =>
+      expect(messages.at(-1)).toMatchObject({
+        type: "browser.server-message",
+        channelId: openChannel,
+        message: { type: "cdp.error", requestId: cdpRequestId, error: { code: "forbidden" } },
+      }),
+    );
+    expect(sendBridge).not.toHaveBeenCalled();
+
+    stopped = false;
+    const resumedChannel = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+    await send({
+      type: "browser.attach",
+      capability,
+      channelId: resumedChannel,
+      attachTicket: agentTicket,
+    });
+    await vi.waitFor(() => expect(attach).toHaveBeenCalledTimes(2));
+  } finally {
+    relay.detach();
+  }
+});

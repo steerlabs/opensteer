@@ -23,6 +23,7 @@ export interface AttachTicketVerifier {
     token: string,
     expectation: AttachTicketExpectation,
   ): Promise<RuntimeBrowserAttachTicketClaims>;
+  close?(): Promise<void>;
 }
 
 export type PublicKeySource = Ed25519KeySource;
@@ -49,6 +50,7 @@ export class Ed25519AttachTicketVerifier implements AttachTicketVerifier {
   private readonly replayLedger: DurableAttachTicketReplayLedger;
   private readonly resolvePublicKey: PublicKeyResolver;
   private readonly parseClaims: (value: unknown) => RuntimeBrowserAttachTicketClaims;
+  private closed = false;
 
   private constructor(
     options: Ed25519AttachTicketVerifierOptions,
@@ -83,10 +85,18 @@ export class Ed25519AttachTicketVerifier implements AttachTicketVerifier {
     return new Ed25519AttachTicketVerifier(options, replayLedger);
   }
 
+  close(): Promise<void> {
+    this.closed = true;
+    return this.replayLedger.close();
+  }
+
   async verify(
     token: string,
     expectation: AttachTicketExpectation,
   ): Promise<RuntimeBrowserAttachTicketClaims> {
+    if (this.closed) {
+      throw replayUnavailable(new Error("Attach ticket verifier is closed."));
+    }
     try {
       return await verifyAttachTicket(
         token,

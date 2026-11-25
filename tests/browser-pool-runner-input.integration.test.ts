@@ -33,10 +33,8 @@ import {
 import { LocalBrowserRuntimeBridge } from "../packages/runner-client/src/browser-bridge.js";
 import { BrowserModuleRelay } from "../packages/runner-client/src/browser-relay.js";
 import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
-import {
-  BrowserPoolCoordinator,
-  loopbackPoolChannel,
-} from "../apps/host/src/browser/browser-pool-coordinator.js";
+import { BrowserPoolCoordinator } from "../apps/host/src/browser/browser-pool-coordinator.js";
+import { loopbackPoolChannel } from "./browser-pool-journey.test-support.js";
 import { FakeBrowserPoolController } from "../apps/host/src/browser/browser-pool-controller.test-support.js";
 import { BrowserService } from "../apps/host/src/browser/browser-service.js";
 import { BrowserLocalProfiles } from "../apps/host/src/browser/browser-local-profiles.js";
