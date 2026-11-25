@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import {
   agentBrowserOptions,
@@ -8,6 +8,8 @@ import {
   chatFacts,
   chatTasksNow,
   connectedAgentConnected,
+  connectedAgentNamePart,
+  connectedAgentActivity,
   connectionsRead,
   connectedAgentDetail,
   chatScreenHost,
@@ -23,8 +25,6 @@ import {
 } from "@opensteer/client/host";
 import {
   useChromeTabGrantCatalog,
-  useConnectedAgentActivity,
-  useConnectedAgentLive,
   useConnectedAgents,
   useLiveTasks,
 } from "@opensteer/client/react";
@@ -32,11 +32,17 @@ import { type ChatGrantShape, type ThreadAccessMode } from "@opensteer/core";
 import { useShell } from "../../app-shell.js";
 import { Dialog } from "../../dialog.js";
 import { ReadGate } from "../../read-gate.js";
+import { useConnectedAgentWork } from "../../use-connected-agent-sessions.js";
 import { Icon } from "../../icon.js";
 import { AgentGrantEditor, ConnectionModeChoices } from "../agent-grant-editor.js";
 import { AgentMark } from "../agent-mark.js";
 import { AgentWhoLine, AgentWithdrawnNotice } from "../agent-who.js";
 import { ChatFactsSection } from "./chat-facts.js";
+import { ConnectedAgentNowSection } from "./connected-agent-now-section.js";
+import {
+  ConnectedAgentEarlierSection,
+  useConnectedAgentHistory,
+} from "./connected-agent-earlier-section.js";
 import { SectionHeader, SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
 import { SentenceText } from "../../../ui/address-text.js";
 
@@ -62,8 +68,12 @@ export function ConnectedAgentPage({
   const agents = useConnectedAgents(client);
   // What this page sends is what the chat parity script covers.
   const chatHost = chatScreenHost(client);
-  const live = useConnectedAgentLive(client, connectionId);
-  const activity = useConnectedAgentActivity(client, connectionId, live?.threadId ?? null);
+  const work = useConnectedAgentWork(chatHost, connectionId);
+  const history = useConnectedAgentHistory(chatHost, connectionId);
+  const activeSessionIds = useMemo(
+    () => new Set(work.view.agents.map(({ sessionId }) => sessionId)),
+    [work.view.agents],
+  );
   const liveTasks = useLiveTasks(client);
   const chromeTabs = useChromeTabGrantCatalog(client, true);
   const { snapshot } = shell;
@@ -123,8 +133,6 @@ export function ConnectedAgentPage({
   const detail = connectedAgentDetail(connection, names, {
     revoked: agents.revoked,
     grantsAvailable: agents.grantsAvailable,
-    live,
-    ...(activity ? { activity } : {}),
   });
   const who = detail.row.identity.who;
   // A withdrawn verification offers Disconnect once, in its own notice.
@@ -204,21 +212,20 @@ export function ConnectedAgentPage({
         <div className="connected-agent__header">
           <AgentMark identity={detail.row.identity} large />
           <h1 className="settings-section__title">
-            <SentenceText parts={[{ name: agent }]} />
+            <SentenceText
+              parts={[connectedAgentNamePart({ name: agent, who })]}
+              quoteNames={!connection.bridge}
+            />
           </h1>
-          {detail.live?.threadId ? (
-            <Link className="btn" to={`/tasks/${detail.live.threadId}`}>
-              <Icon name="eye" />
-              {agentWords("agent.watch")}
-            </Link>
-          ) : null}
         </div>
         {chat ? null : <AgentWhoLine nameShown={agent !== who.heading} who={who} />}
         <AgentWithdrawnNotice
           onDisconnect={withdrawn && !busy ? () => setConfirming("disconnect") : null}
           who={who}
         />
-        <StatusNotice status={detail.status} />
+        {detail.row.phase !== "active" || (chat && !work.view.agents.length) ? (
+          <StatusNotice status={detail.status} />
+        ) : null}
         {detail.uncertain ? (
           <p className="notice connected-agent__uncertain" role="alert">
             <Icon name="alert-circle" />
@@ -252,6 +259,8 @@ export function ConnectedAgentPage({
             onRunEnded={() => void agents.refresh?.()}
           />
         ) : null}
+        <ConnectedAgentNowSection client={client} work={work} />
+        <ConnectedAgentEarlierSection activeSessionIds={activeSessionIds} history={history} />
         {detail.editable ? (
           <>
             <AgentGrantEditor
@@ -296,12 +305,16 @@ export function ConnectedAgentPage({
             <SettingsError message={profileError} />
           </>
         ) : null}
-        <SettingsGroup
-          heading={agentWords("agent.activity.title")}
-          headingId="connected-agent-activity"
-        >
-          <ActivityRows activity={detail.activity} />
-        </SettingsGroup>
+        {history.page?.commands.length ? (
+          <SettingsGroup
+            heading={agentWords("agent.activity.title")}
+            headingId="connected-agent-activity"
+          >
+            <ActivityRows
+              activity={connectedAgentActivity({ operations: [], commands: history.page.commands })}
+            />
+          </SettingsGroup>
+        ) : null}
         <SettingsGroup heading={agentWords("agent.about.title")} headingId="connected-agent-about">
           {detail.about.map((row) => (
             <SettingsRow

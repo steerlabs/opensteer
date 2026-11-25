@@ -2,7 +2,7 @@ import { isolatedPlainSentence, needsYouEntryKey } from "@opensteer/client/host"
 import type { NeedsYouEntry } from "@opensteer/protocol";
 import { SentenceText } from "../ui/address-text.js";
 import { TaskMark, TaskState } from "./workspace/task-mark.js";
-import { useNeedsYouOperation } from "./agent-work.js";
+import { useNeedsYouAgentRequest } from "./agent-work.js";
 import { AgentMark } from "./settings/agent-mark.js";
 
 /** One thing waiting on the person. It opens where it is answered. */
@@ -13,20 +13,25 @@ export function NeedsYouRow({
   readonly entry: NeedsYouEntry;
   readonly onOpen: () => void;
 }) {
-  // A connected agent's direct operation names the agent and the Home's question.
-  const operation = useNeedsYouOperation(entry);
-  const title = operation ? isolatedPlainSentence(operation.listTitleParts) : entry.title;
+  const agentRequest = useNeedsYouAgentRequest(entry);
+  const title = agentRequest ? isolatedPlainSentence(agentRequest.listTitleParts) : entry.title;
   return (
     <li className="side-task side-task--needs-you" data-motion-key={needsYouEntryKey(entry)}>
-      <button className="side-task__main" type="button" title={title} onClick={onOpen}>
-        {operation ? (
-          <AgentMark identity={operation.agent} />
+      <button
+        aria-label={agentRequest ? title : undefined}
+        className="side-task__main"
+        type="button"
+        title={title}
+        onClick={onOpen}
+      >
+        {agentRequest ? (
+          <AgentMark identity={agentRequest.agent} />
         ) : (
           <TaskMark size={20} mark={{ icon: null, color: null }} />
         )}
         <span className="side-task__text">
           <span className="side-task__title">
-            {operation ? <SentenceText parts={operation.listTitleParts} /> : entry.title}
+            {agentRequest ? <SentenceText parts={agentRequest.listTitleParts} /> : entry.title}
           </span>
         </span>
         <TaskState state="needs-you" />

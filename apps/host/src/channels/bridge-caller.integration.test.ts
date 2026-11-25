@@ -3,6 +3,7 @@ import { createId, ThreadIdSchema, type AgentGrant } from "@opensteer/core";
 import {
   AgentConnectionStore,
   ConnectionWaiting,
+  readPersonalShellSnapshot,
   upsertChannelIdentity,
 } from "@opensteer/database";
 import { createStoreFixture } from "@opensteer/database/test-support/store";
@@ -97,6 +98,13 @@ describe("a bridge asks your own agents to work through the task tools' own entr
           .where("id", "=", taskId)
           .executeTakeFirstOrThrow(),
       ).toEqual({ originConnectionId: f.bridge.id, accessMode: "approval-required" });
+      const shell = await readPersonalShellSnapshot(database, { viewerId: f.fixture.userId });
+      if (shell.kind !== "snapshot") throw new Error("Expected the owner's shell snapshot");
+      expect(shell.snapshot.tasks.find(({ id }) => id === taskId)).toHaveProperty(
+        "originConnectionId",
+        f.bridge.id,
+      );
+      expect(created).not.toHaveProperty("originConnectionId");
       const input = await database
         .selectFrom("threadInputs")
         .innerJoin("messages", "messages.id", "threadInputs.messageId")

@@ -5,10 +5,11 @@ import {
   hostSnapshotStore,
   type HostSelectionEquality,
   type HostSnapshotSelector,
+  type HostSnapshotSource,
 } from "../host/host-snapshot-store.js";
 
 export function useHostSelector<Selection>(
-  hostClient: HostClient,
+  hostClient: HostSnapshotSource,
   selector: HostSnapshotSelector<Selection>,
   isEqual: HostSelectionEquality<Selection> = Object.is,
 ): Selection {

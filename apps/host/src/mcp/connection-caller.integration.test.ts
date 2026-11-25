@@ -280,6 +280,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       parentTaskId: null,
       status: "open",
     });
+    expect(JSON.stringify(result)).not.toContain("originConnectionId");
     const threadId = ThreadIdSchema.parse((result.structuredContent as { taskId: string }).taskId);
     expect(
       await storeFixture.database

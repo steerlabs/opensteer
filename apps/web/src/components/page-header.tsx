@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Icon } from "./icon.js";
-import { SidebarRestoreButton } from "./sidebar-chrome.js";
+import { ConnectedAgentsHeader, SidebarRestoreButton } from "./sidebar-chrome.js";
 import { useWorkspaceAttention } from "./workspace/workspace-context.js";
 
 /**
@@ -40,6 +40,7 @@ export function PageTopbar({
           </span>
         ) : null}
       </button>
+      <ConnectedAgentsHeader drawer />
       <span className="topbar__title">{title}</span>
       {trailing ?? <span aria-hidden className="icon-btn" />}
     </header>

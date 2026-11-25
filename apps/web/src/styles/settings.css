@@ -1544,6 +1544,104 @@ a.connected-agents__row:focus-visible {
   padding: 0;
 }
 
+.connected-agents__work {
+  flex: none;
+  white-space: nowrap;
+}
+
+[aria-labelledby="connected-agent-now"],
+[aria-labelledby="connected-agent-earlier"] {
+  margin-block: var(--space-12);
+}
+
+.connected-agent__session {
+  padding: var(--space-12) var(--space-16);
+}
+
+.connected-agent__session + .connected-agent__session {
+  border-top: 1px solid var(--line);
+}
+
+.connected-agent__session-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-8);
+  margin-block-end: var(--space-8);
+}
+
+.connected-agent__session-summary {
+  flex: 1;
+  min-width: min(9rem, 100%);
+  overflow-wrap: anywhere;
+}
+
+.connected-agent__session-title {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.connected-agent__session-place {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.connected-agent__session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+.connected-agent__session .session-activity {
+  margin-block: var(--space-8) 0;
+}
+
+.connected-agent__session .session-op__body {
+  overflow-wrap: anywhere;
+}
+
+.connected-agent__session .request-stack {
+  margin-block-start: var(--space-8);
+}
+
+.connected-agent__history-day + .connected-agent__history-day {
+  border-top: 1px solid var(--line);
+}
+
+.connected-agent__history-day h3 {
+  margin: 0;
+  padding: var(--space-8) var(--space-16) var(--space-4);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.connected-agent__history-row {
+  text-align: start;
+  width: 100%;
+}
+
+.connected-agent__history-row:hover {
+  background-color: var(--fill-quiet);
+}
+
+.connected-agent__history-row .card__row-detail {
+  overflow-wrap: anywhere;
+}
+
+.connected-agent__history-row > time,
+.connected-agent__history-row > .icon {
+  flex: none;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.connected-agent__show-earlier {
+  margin: var(--space-8) var(--space-16);
+}
+
 /* The problem report: what this Home sends, field by field, then exactly as sent. */
 .problem-report {
   display: grid;

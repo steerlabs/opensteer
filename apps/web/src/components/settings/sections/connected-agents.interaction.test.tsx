@@ -3,9 +3,19 @@ import { createId, ThreadIdSchema } from "@opensteer/core";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
-import { agentWords, HostClientRequestError, mutationIdempotencyKey } from "@opensteer/client/host";
+import {
+  agentWords,
+  HostClientRequestError,
+  mutationIdempotencyKey,
+  unwrapRpcResult,
+} from "@opensteer/client/host";
 import { HostTransportError } from "@opensteer/client/connections";
-import { MockHostClient, mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
+import {
+  MockHostClient,
+  mockAgentOperationRequestId,
+  mockAgentWorkThreads,
+  mockConnectedAgents,
+} from "@opensteer/client/mock";
 import type { AgentConnection } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ShellContext } from "../../app-shell.js";
@@ -27,6 +37,7 @@ const view = {
   name: "Mac mini",
   facts: { desktop: true, onThisComputer: true, remote: false },
 } as unknown as SettingsView;
+const chatgpt = "mcn_00000000-0000-4000-8000-000000000008";
 const claude = "mcn_00000000-0000-4000-8000-000000000002";
 const grok = "mcn_00000000-0000-4000-8000-000000000001";
 const shopHelper = "mcn_00000000-0000-4000-8000-000000000004";
@@ -99,21 +110,40 @@ describe("Connected agents list", () => {
     await vi.waitFor(() => expect(page.textContent).toContain("Grok"));
     expect(page.querySelector("h1")?.textContent).toBe("Connected agents");
     expect(rows(page, "Connected")).toEqual([
-      ["Grok", "Shopping profile · Supervised"],
+      ["“Grok”", "Shopping profile · Supervised"],
       ["Claude", "Everything · Full access"],
-      ["Trip planner", "Tasks · Auto"],
+      ["“Trip planner”", "Tasks · Auto"],
       ["Errand", "Nothing chosen · Supervised"],
-      ["Claude Code", "Tasks · Auto"],
+      ["“Claude Code”", "Tasks · Auto"],
       ["ChatGPT", "Nothing chosen · Supervised"],
     ]);
     expect(rows(page, "Disconnected")).toEqual([
-      ["Shop helper", "Check its last action"],
-      ["Old notes agent", "Disconnected"],
-      ["Old search agent", "Expired"],
+      ["“Shop helper”", "Check its last action"],
+      ["“Old notes agent”", "Disconnected"],
+      ["“Old search agent”", "Expired"],
     ]);
     expect(page.querySelector(`a[href="${base}/${grok}"]`)).not.toBeNull();
+    expect(page.querySelector(`a[href="${base}/${grok}"] .card__row-title bdi`)?.textContent).toBe(
+      "Grok",
+    );
     // A logo only for a platform the Home verified: Claude and ChatGPT, never Grok's domain.
     expect(page.querySelectorAll(".agent-mark .provider-logo")).toHaveLength(2);
+  });
+
+  it("marks each active connection by its sessions and clears the mark when work ends", async () => {
+    host = seeded();
+    const page = await mount(host);
+    const mark = (id: string) =>
+      page.querySelector(`a[href="${base}/${id}"] .connected-agents__work`)?.textContent;
+    await act(async () => host!.mockAgentWork({ livePanel: "needs-you" }));
+    expect(mark(chatgpt)).toBe("Working");
+    expect(mark(claude)).toBe("Needs you");
+    expect(mark(shopHelper)).toBeUndefined();
+    const threadId = mockAgentWorkThreads.shopping;
+    const sessionId = host.getSnapshot().threads.find(({ id }) => id === threadId)!.agentSessionId!;
+    await act(async () => expect(host!.stopAgentSession(threadId, sessionId)).toBe(true));
+    expect(mark(chatgpt)).toBeUndefined();
+    expect(mark(claude)).toBe("Needs you");
   });
 
   it("after a refresh of the list fails, says so and starts no setup until it is read again", async () => {
@@ -183,12 +213,18 @@ describe("one connected agent", () => {
       configurable: true,
     });
     const page = await mount(client, `${base}/${claude}`);
-    const watch = () => page.querySelector<HTMLAnchorElement>(".connected-agent__header a");
-    expect(status(page)).toContain("Not doing anything");
+    const watch = () =>
+      page.querySelector<HTMLButtonElement>(
+        '[aria-labelledby="connected-agent-now"] button[aria-label="Watch Claude"]',
+      );
+    expect(status(page)).toBe("");
     expect(watch()).toBeNull();
     await act(async () => client.mockAgentWork());
-    expect(status(page)).toContain("Working now");
-    expect(status(page)).toContain("Find flights to Lisbon");
+    expect(status(page)).toBe("");
+    expect(page.querySelector(".connected-agent__header a")).toBeNull();
+    expect(page.querySelector(".connected-agent__session-title")?.textContent).toBe(
+      "Find flights to Lisbon",
+    );
     expect(activity).toHaveBeenCalledWith(
       { connectionId: claude },
       { signal: expect.any(AbortSignal) },
@@ -198,12 +234,220 @@ describe("one connected agent", () => {
       ?.thread.agentSessionId;
     expect(sessionId).toBeTruthy();
     await act(async () => expect(client.stopAgentSession(threadId, sessionId!)).toBe(true));
-    expect(status(page)).toContain("Not doing anything");
+    expect(status(page)).toBe("");
     expect(watch()).toBeNull();
     await act(async () => client.mockAgentWork());
+    expect(activity).toHaveBeenCalledTimes(1);
     expect(watch()?.textContent).toBe("Watch");
     await act(async () => watch()!.click());
     expect(path).toBe(`/tasks/${threadId}`);
+  });
+
+  it("shows Now only during this agent's session, with the task's operation rows and Stop", async () => {
+    host = seeded();
+    const page = await mount(host, `${base}/${chatgpt}`);
+    const now = () => page.querySelector<HTMLElement>('[aria-labelledby="connected-agent-now"]');
+    expect(now()).toBeNull();
+    await act(async () => host!.mockAgentWork({ livePanel: "three" }));
+    const section = now()!;
+    expect(section.querySelector("h2")?.textContent).toBe("Now");
+    expect(section.querySelectorAll(".connected-agent__session")).toHaveLength(1);
+    expect(section.querySelector(".connected-agent__session-place")?.textContent).toBe(
+      "Shopping · Studio Mac",
+    );
+    const row = [...section.querySelectorAll(".session-op")].find((item) =>
+      item.textContent?.includes("Run a script on Shopping"),
+    );
+    expect(row?.textContent).toContain("Supervised");
+    expect(row?.textContent).toContain("Running…");
+    expect(row?.querySelector("time")?.dateTime).toBeTruthy();
+    expect(buttonNamed(section, "Watch ChatGPT")).toBeTruthy();
+
+    const threadId = mockAgentWorkThreads.shopping;
+    const sessionId = host.getSnapshot().threads.find(({ id }) => id === threadId)!.agentSessionId!;
+    const dispatch = vi.spyOn(host, "dispatch");
+    await act(async () => buttonNamed(section, "Stop ChatGPT").click());
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "agent.session.stop",
+        threadId,
+        agentSessionId: sessionId,
+        idempotencyKey: expect.stringMatching(`^agent-session-stop:${sessionId}:`),
+      }),
+    );
+    expect(now()).toBeNull();
+  });
+
+  it("opens the session's task from Watch inside Now", async () => {
+    host = seeded();
+    const page = await mount(host, `${base}/${chatgpt}`);
+    await act(async () => host!.mockAgentWork({ livePanel: "one" }));
+    const now = page.querySelector<HTMLElement>('[aria-labelledby="connected-agent-now"]')!;
+    await act(async () => buttonNamed(now, "Watch ChatGPT").click());
+    expect(path).toBe(`/tasks/${mockAgentWorkThreads.shopping}`);
+  });
+
+  it("names a device only once when it is the session's place", async () => {
+    const client = seeded();
+    host = client;
+    const read = client.rpc["threads.activity"];
+    Object.defineProperty(client.rpc, "threads.activity", {
+      value: async (...args: Parameters<typeof read>) => {
+        const result = await read(...args);
+        if (!result.ok) return result;
+        return {
+          ...result,
+          data: {
+            ...result.data,
+            operations: result.data.operations.map((operation) => ({
+              ...operation,
+              target: {
+                ...operation.target,
+                grant: { kind: "device" },
+                name: operation.target.device!.name,
+              },
+            })),
+          },
+        };
+      },
+      configurable: true,
+    });
+    const page = await mount(client, `${base}/${chatgpt}`);
+    await act(async () => client.mockAgentWork({ livePanel: "one" }));
+    expect(page.querySelector(".connected-agent__session-place")?.textContent).toBe("Studio Mac");
+  });
+
+  it("quotes and isolates self-declared names in Now’s action labels", async () => {
+    host = seeded();
+    const page = await mount(host, `${base}/${grok}`);
+    await act(async () => {
+      host!.mockAgentWork({ livePanel: "long-one" });
+    });
+    const now = page.querySelector<HTMLElement>('[aria-labelledby="connected-agent-now"]')!;
+    const name = "“\u2068Grok research assistant for the entire household\u2069”";
+    expect(buttonNamed(now, `Watch ${name}`)).toBeTruthy();
+    expect(buttonNamed(now, `Stop ${name}`)).toBeTruthy();
+  });
+
+  it("answers the existing task Request card inline in Now", async () => {
+    host = seeded();
+    const page = await mount(host, `${base}/${claude}`);
+    await act(async () => host!.mockAgentWork({ livePanel: "needs-you" }));
+    expect(status(page)).toBe("");
+    const now = page.querySelector<HTMLElement>('[aria-labelledby="connected-agent-now"]')!;
+    const heading = now.querySelector(".connected-agent__session-head")!;
+    expect(heading.querySelector(".chip--warn")?.textContent).toBe("Needs you");
+    expect(heading.querySelector('button[aria-label="Watch Claude"]')).toBeNull();
+    const card = now.querySelector<HTMLElement>(".request-card .operation-request")!;
+    expect(card.dataset.requestId).toBe(mockAgentOperationRequestId);
+    expect(card.textContent).toContain("Run a script in Travel?");
+    const waiting = host
+      .getSnapshot()
+      .waitingRequests.find(({ request }) => request.id === mockAgentOperationRequestId)!.request;
+    expect(waiting.reviewedRevision).toBeDefined();
+    const dispatch = vi.spyOn(host, "dispatch");
+    await act(async () => buttonNamed(card, "Allow once").click());
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "request.respond",
+        requestId: mockAgentOperationRequestId,
+        expectedRevision: waiting.reviewedRevision,
+        response: { kind: "form", answers: { "operation-decision": ["allow"] } },
+        idempotencyKey: expect.stringMatching(`^request:${mockAgentOperationRequestId}:`),
+      }),
+    );
+    await vi.waitFor(() => expect(page.querySelector(".request-card")).toBeNull());
+  });
+
+  it("paginates Earlier once per click, completes the counts, and opens the selected past task", async () => {
+    const client = seeded();
+    host = client;
+    await client.load();
+    client.mockAgentWork({ livePanel: "one-history" });
+    const original = client.rpc["connections.activity"];
+    const all = unwrapRpcResult(await original({ connectionId: chatgpt }));
+    const activity = vi.fn(async ({ before }: Parameters<typeof original>[0]) => ({
+      ok: true as const,
+      data: before
+        ? { ...all, operations: all.operations.slice(5) }
+        : { ...all, operations: all.operations.slice(0, 5), nextBefore: "page-2" },
+    }));
+    Object.defineProperty(client.rpc, "connections.activity", {
+      value: activity,
+      configurable: true,
+    });
+    const page = await mount(client, `${base}/${chatgpt}`);
+    const earlier = page.querySelector<HTMLElement>('[aria-labelledby="connected-agent-earlier"]')!;
+    const rowTitles = () =>
+      [...earlier.querySelectorAll(".card__row-title")].map((row) => row.textContent);
+    expect([...earlier.querySelectorAll("h3")].map((heading) => heading.textContent)).toEqual([
+      "Today",
+      "Yesterday",
+    ]);
+    expect(rowTitles()).toEqual(["Shopping", "Travel", "Work"]);
+    expect(earlier.textContent).toContain("Opened a tab in Shopping · Done");
+    expect(earlier.textContent).not.toContain("Run a script on Shopping");
+    expect(activity).toHaveBeenCalledTimes(1);
+    expect(activity).toHaveBeenNthCalledWith(
+      1,
+      { connectionId: chatgpt },
+      { signal: expect.any(AbortSignal) },
+    );
+
+    await act(async () => buttonNamed(earlier, "Show earlier").click());
+    expect(activity).toHaveBeenCalledTimes(2);
+    expect(activity).toHaveBeenNthCalledWith(
+      2,
+      { connectionId: chatgpt, before: "page-2" },
+      { signal: expect.any(AbortSignal) },
+    );
+    expect(rowTitles()).toEqual([
+      "Shopping · 1 action",
+      "Travel · 1 action",
+      "2 places · 3 actions",
+    ]);
+    expect(earlier.querySelector(".connected-agent__show-earlier")).toBeNull();
+    await act(async () =>
+      earlier.querySelector<HTMLButtonElement>(".connected-agent__history-row")!.click(),
+    );
+    expect(path).toBe(`/tasks/${mockAgentWorkThreads.pastShopping}`);
+  });
+
+  it("puts Show earlier under its heading when the first page contains only current work", async () => {
+    const client = seeded();
+    host = client;
+    await client.load();
+    client.mockAgentWork({ livePanel: "one-history" });
+    const original = client.rpc["connections.activity"];
+    const all = unwrapRpcResult(await original({ connectionId: chatgpt }));
+    const activity = vi.fn(async ({ before }: Parameters<typeof original>[0]) => ({
+      ok: true as const,
+      data: before
+        ? { ...all, nextBefore: null }
+        : {
+            ...all,
+            operations: all.operations.filter(
+              ({ taskId }) => taskId === mockAgentWorkThreads.shopping,
+            ),
+            nextBefore: "past-sessions",
+          },
+    }));
+    Object.defineProperty(client.rpc, "connections.activity", {
+      value: activity,
+      configurable: true,
+    });
+    const page = await mount(client, `${base}/${chatgpt}`);
+    const earlier = page.querySelector<HTMLElement>(
+      'section[aria-labelledby="connected-agent-earlier"]',
+    )!;
+    expect(earlier.querySelector("h2")?.textContent).toBe("Earlier");
+    expect(earlier.querySelector(".connected-agent__history-row")).toBeNull();
+    expect(activity).toHaveBeenCalledTimes(1);
+    await act(async () =>
+      earlier.querySelector<HTMLButtonElement>(".connected-agent__show-earlier")!.click(),
+    );
+    expect(activity).toHaveBeenCalledTimes(2);
+    expect(earlier.querySelector(".connected-agent__history-row")).not.toBeNull();
   });
 
   it.each([390, 1440])("reads and saves the paired Chrome grant at %d px", async (width) => {
@@ -246,12 +490,12 @@ describe("one connected agent", () => {
     host = seeded();
     const page = await mount(host, `${base}/mcn_00000000-0000-4000-8000-000000000003`);
     await vi.waitFor(() => expect(page.textContent).toContain("Trip planner"));
-    expect(status(page)).toContain("Not doing anything");
+    expect(status(page)).toBe("");
     expect(page.textContent).toContain("Calls itself");
     expect(page.textContent).toContain("TravelBot Agent");
     expect(page.textContent).toContain("trips.example");
-    // Its Recent activity is what the Home reports for it (connections.activity): nothing yet.
-    expect(page.textContent).toContain("Recent activityNothing yet.");
+    expect(page.querySelector('[aria-labelledby="connected-agent-earlier"]')).toBeNull();
+    expect(page.querySelector('[aria-labelledby="connected-agent-activity"]')).toBeNull();
     expect(page.textContent).not.toContain("doesn’t keep a list");
     expect(
       page.querySelector<HTMLInputElement>('[aria-labelledby="agent-grant-tasks"]')!.checked,
