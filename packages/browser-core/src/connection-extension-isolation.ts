@@ -7,8 +7,15 @@ export { isExtensionUrl };
 
 /** Whether a free-form string (e.g. a formatted stack trace or breakpoint regex) mentions an extension URL. */
 function containsExtensionUrl(value: unknown): boolean {
-  return typeof value === "string" && (isExtensionUrl(value) || /chrome-extension:/iu.test(value));
+  if (typeof value !== "string") return false;
+  if (/chrome-extension:/iu.test(value)) return true;
+  // The URL parser drops tabs and newlines anywhere in an address; only then can a whole string
+  // be an extension's address without the plain text in it.
+  return /[\t\n\r]/u.test(value) && value.length <= 8_192 && isExtensionUrl(value);
 }
+
+/** CDP fields whose string value names a frame. */
+const frameIdKeys = new Set(["frameId", "parentFrameId", "openerFrameId", "ownerFrameId"]);
 
 function isHttpOrHttpsUrl(value: unknown): boolean {
   if (typeof value !== "string") return false;
@@ -156,8 +163,112 @@ export class ConnectionExtensionIsolation {
     return referencesAnyRuntimeId(params);
   }
 
-  /** Filters and scrubs a page/child CDP event; signals `"compromised"` if this channel entered an extension page. */
+  /**
+   * Filters and scrubs a page/child CDP event; signals `"compromised"` if this channel entered an
+   * extension page. After each method's own rule, every forwarded event meets one more (N2): a
+   * frame attached under an extension frame, or by script from outside what this connection may
+   * know, is an extension frame; stacks anywhere in it are scrubbed; and it is dropped when any
+   * field still carries an extension's address or names an extension frame. The fields that can
+   * carry one, by domain this isolation forwards:
+   * - Page: frameAttached (frameId, parentFrameId, stack), frameNavigated (frame.id, parentId,
+   *   url, securityOrigin, unreachableUrl), navigatedWithinDocument, frameRequestedNavigation,
+   *   windowOpen, javascriptDialogOpening, downloadWillBegin (url, frameId), lifecycleEvent,
+   *   fileChooserOpened (frameId);
+   * - Runtime: executionContextCreated (origin, auxData), consoleAPICalled and exceptionThrown
+   *   (stackTrace, url, scriptId, contexts);
+   * - Network and Fetch: request.url and headers (Origin, Referer), redirectResponse.url and
+   *   headers, response.url and headers, documentURL, initiator (url, stack), frameId, the
+   *   ExtraInfo headers;
+   * - Debugger: scriptParsed (url, sourceMapURL), paused (callFrames, asyncStackTrace);
+   * - DOM: nodes' frameId (an IFRAME's frame), documentURL, baseURL;
+   * - Audits (issue frameId, url), Log (url, text, stackTrace), Security (no address or frame);
+   * - Target children: the router's projection.
+   */
   observeEvent(method: string, params: CdpParameters): ExtensionEventOutcome {
+    const outcome = this.#observeEventByMethod(method, params);
+    return outcome.action === "forward" ? this.#confineForwarded(method, outcome.params) : outcome;
+  }
+
+  #confineForwarded(method: string, params: CdpParameters): ExtensionEventOutcome {
+    // A frame nested in an extension frame, or attached by an extension's script, is an
+    // extension frame.
+    if (method === "Page.frameAttached") {
+      if (
+        this.#isExtensionFrameId(params.parentFrameId) ||
+        this.#stackOriginatedOutsideAllowed(params.stack)
+      ) {
+        if (typeof params.frameId === "string") this.#extensionFrameIds.add(params.frameId);
+        return { action: "drop" };
+      }
+    }
+    if (method === "Page.frameNavigated") {
+      const frame = asRecord(params.frame);
+      // A frame hidden as an extension's stays hidden when it navigates to a web address.
+      if (this.#isExtensionFrameId(frame.parentId) || this.#isExtensionFrameId(frame.id)) {
+        if (typeof frame.id === "string") this.#extensionFrameIds.add(frame.id);
+        return { action: "drop" };
+      }
+    }
+    const scrubbed = this.#scrubStacksIn(params, 0) as CdpParameters;
+    return this.#namesExtension(scrubbed, 0, false)
+      ? { action: "drop" }
+      : { action: "forward", params: scrubbed };
+  }
+
+  /** Every `stack` / `stackTrace` / `asyncStackTrace` in a value, scrubbed of other scripts. */
+  #scrubStacksIn(value: unknown, depth: number): unknown {
+    if (depth > 16 || !value || typeof value !== "object") return value;
+    if (Array.isArray(value)) {
+      const next = value.map((item) => this.#scrubStacksIn(item, depth + 1));
+      return next.some((item, index) => item !== value[index]) ? next : value;
+    }
+    let next: Record<string, unknown> | undefined;
+    for (const [key, field] of Object.entries(value as Record<string, unknown>)) {
+      const scrubbed =
+        (key === "stack" || key === "stackTrace" || key === "asyncStackTrace") &&
+        field &&
+        typeof field === "object"
+          ? this.#scrubStackTrace(field)
+          : this.#scrubStacksIn(field, depth + 1);
+      if (scrubbed !== field) (next ??= { ...(value as Record<string, unknown>) })[key] = scrubbed;
+    }
+    return next ?? value;
+  }
+
+  /** Whether any field of a value carries an extension's address or names an extension frame. */
+  #namesExtension(value: unknown, depth: number, frameField: boolean): boolean {
+    if (typeof value === "string")
+      return containsExtensionUrl(value) || (frameField && this.#extensionFrameIds.has(value));
+    if (depth > 32 || !value || typeof value !== "object") return false;
+    if (Array.isArray(value))
+      return value.some((item) => this.#namesExtension(item, depth + 1, false));
+    for (const [key, field] of Object.entries(value as Record<string, unknown>))
+      if (this.#namesExtension(field, depth + 1, frameIdKeys.has(key))) return true;
+    return false;
+  }
+
+  /** A reply's fields that name an extension frame, removed (N2). */
+  #withoutExtensionFrames(value: unknown, depth: number): unknown {
+    if (this.#extensionFrameIds.size === 0 || depth > 32 || !value || typeof value !== "object")
+      return value;
+    if (Array.isArray(value)) {
+      const next = value.map((item) => this.#withoutExtensionFrames(item, depth + 1));
+      return next.some((item, index) => item !== value[index]) ? next : value;
+    }
+    let next: Record<string, unknown> | undefined;
+    for (const [key, field] of Object.entries(value as Record<string, unknown>)) {
+      if (frameIdKeys.has(key) && this.#isExtensionFrameId(field)) {
+        next ??= { ...(value as Record<string, unknown>) };
+        delete next[key];
+        continue;
+      }
+      const kept = this.#withoutExtensionFrames(field, depth + 1);
+      if (kept !== field) (next ??= { ...(value as Record<string, unknown>) })[key] = kept;
+    }
+    return next ?? value;
+  }
+
+  #observeEventByMethod(method: string, params: CdpParameters): ExtensionEventOutcome {
     if (this.#compromised) return { action: "compromised" };
     if (method === "Runtime.executionContextsCleared") {
       this.#allowedContextIds.clear();
@@ -455,8 +566,15 @@ export class ConnectionExtensionIsolation {
     return params;
   }
 
-  /** Learns agent-created world IDs, strips disallowed breakpoint locations, prunes frames/history, and rejects disallowed handles. */
+  /**
+   * Learns agent-created world IDs, strips disallowed breakpoint locations, prunes frames/history,
+   * rejects disallowed handles, and removes every field that names an extension frame (N2).
+   */
   sanitizeResult(method: string, result: unknown): unknown {
+    return this.#withoutExtensionFrames(this.#sanitizeResultByMethod(method, result), 0);
+  }
+
+  #sanitizeResultByMethod(method: string, result: unknown): unknown {
     if (this.#compromised)
       throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
     if (!result || typeof result !== "object") return result;
