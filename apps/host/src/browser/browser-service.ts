@@ -2644,16 +2644,16 @@ export class BrowserService {
           let runnerId: RunnerId;
           const releasePoolReservation = () => {
             budget.cleanupPoolAbort?.();
-            budget.cleanupPoolAbort = undefined;
+            delete budget.cleanupPoolAbort;
             budget.pool?.reservation.release();
-            budget.pool = undefined;
+            delete budget.pool;
           };
           const attachPoolReservation = (
             target: BrowserPoolCoordinator,
             reservation: BrowserPoolReservation,
           ) => {
             budget.cleanupPoolAbort?.();
-            budget.cleanupPoolAbort = undefined;
+            delete budget.cleanupPoolAbort;
             budget.pool = { target, reservation };
             const ended = reservation.ended;
             if (ended) {

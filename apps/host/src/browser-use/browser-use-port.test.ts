@@ -270,11 +270,19 @@ describe("Browser Use port", () => {
         port.openPage(binding.tabId, {
           ...call,
           browserSend: {
-            target: { runnerId: createId("runner"), runtimeId: "browser-main" },
+            target: {
+              runnerId: createId("runner"),
+              runtimeId: "browser-main",
+              slotId: "slot",
+              term: 1,
+              instanceId: "inst",
+              epoch: 1,
+            },
             recheck: async () => {},
             submitted: () => {
               submitted = true;
             },
+            acknowledged: () => {},
             hasSubmitted: () => submitted,
           },
         }),
