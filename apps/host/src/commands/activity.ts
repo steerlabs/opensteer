@@ -36,7 +36,13 @@ const sentenceLimit = 600;
  */
 export async function commandActivity(
   database: Kysely<DatabaseSchema>,
-  naming: { name(resource: CommandResource, owner: UserId): Promise<string | null> },
+  naming: {
+    name(resource: CommandResource, owner: UserId): Promise<string | null>;
+    /** An approval whose receipt was lost reads as what its attempt says, before it is shown. */
+    reconcileShown?(
+      requests: readonly { readonly id: string; readonly command?: unknown }[],
+    ): Promise<void>;
+  },
   input: { readonly userId: UserId } & CommandActivityOf & CommandActivitySpan,
   /**
    * The page as an agent reads it (rule 5): no name is looked up and no Home sentence is shown
@@ -78,10 +84,19 @@ export async function commandActivity(
     ledger = ledger.where("commands.createdAt", ">=", input.since);
     asks = asks.where("createdAt", ">=", input.since);
   }
-  const [done, asked] = await Promise.all([
+  const askPage = () => asks.orderBy("createdAt", "desc").limit(pageLimit).execute();
+  const [done, firstAsked] = await Promise.all([
     ledger.orderBy("commands.createdAt", "desc").limit(pageLimit).execute(),
-    asks.orderBy("createdAt", "desc").limit(pageLimit).execute(),
+    askPage(),
   ]);
+  let asked = firstAsked;
+  const running = (row: (typeof asked)[number]) =>
+    (row.command as { readonly outcome?: { readonly status?: unknown } } | null)?.outcome
+      ?.status === "running";
+  if (naming.reconcileShown && asked.some(running)) {
+    await naming.reconcileShown(asked);
+    asked = await askPage();
+  }
 
   // Who sent what ran at once: the connection by its own name, or the engine of the task's Run.
   const sender = done.length ? await senderOf(database, input) : null;

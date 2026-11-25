@@ -182,8 +182,20 @@ export class CommandRequestService {
   readonly #database: Kysely<DatabaseSchema>;
   readonly #requests: { get(id: RequestId): Promise<Request | null> };
   readonly #homeKind: HostHomeKind | undefined;
-  /** Approvals whose effect is in flight in this process: a read leaves their receipt alone. */
-  readonly #inFlight = new Set<RequestId>();
+  /**
+   * Approvals in flight in this process, counted from before the approval begins until its
+   * receipt is written or given up: a read leaves their receipt alone. A count, so a second
+   * approval of the same Request ending first never clears the first's.
+   */
+  readonly #inFlight = new Map<RequestId, number>();
+  #enter(requestId: RequestId) {
+    this.#inFlight.set(requestId, (this.#inFlight.get(requestId) ?? 0) + 1);
+  }
+  #leave(requestId: RequestId) {
+    const left = (this.#inFlight.get(requestId) ?? 1) - 1;
+    if (left > 0) this.#inFlight.set(requestId, left);
+    else this.#inFlight.delete(requestId);
+  }
   constructor(options: {
     readonly store: CommandRequestStore;
     readonly database: Kysely<DatabaseSchema>;
@@ -227,6 +239,15 @@ export class CommandRequestService {
       callId,
       part: { askKey, argumentsDigest, proposer: input.proposer },
     });
+    if (early?.status === "answered" && early.outcome.status === "running") {
+      await this.reconcile(early.requestId);
+      const settled = await this.#store.answerBeforeAsking({
+        ownerUserId: input.ownerUserId,
+        callId,
+        part: { askKey, argumentsDigest, proposer: input.proposer },
+      });
+      if (settled && settled.status !== "pending") return settled;
+    }
     if (early) {
       if (early.status !== "pending") return early;
       return { status: "pending", requestId: early.request.id, existing: early.replayed };
@@ -399,144 +420,159 @@ export class CommandRequestService {
     );
     const stillAsks = (transaction: Kysely<DatabaseSchema>) =>
       this.#proposerStillAsks(transaction, actor.userId, stored, command);
-    const begun = await this.#store.beginApproval({
-      // Whoever asked must still be able to ask for this, as it asked, in the approval's own
-      // transaction: a Disconnect, a narrowing or a paused automation since closes the ask, and
-      // nothing runs.
-      stillAsks,
-      // The Home's words as they are true now, read under the same lock: if they no longer read
-      // as the person reviewed them, the card is written anew and nothing is approved.
-      checkWords: async (transaction, part) => {
-        const words = await this.#words(
-          command,
-          askedFace,
-          part.proposer as CommandProposer,
-          actor.userId,
-          transaction,
-        );
-        if (
-          words.sentence === (part.sentence ?? part.summary) &&
-          words.gives === part.gives &&
-          canonicalJson(words.notes) === canonicalJson(part.notes ?? [])
-        )
-          return null;
-        const rewritten: CommandRequestPart = {
-          ...part,
-          summary: words.summary,
-          sentence: words.sentence,
-          gives: words.gives,
-          notes: words.notes,
-        };
-        return {
-          part: rewritten,
-          presentation: commandPresentation(rewritten, words.sentence, words.asker),
-        };
-      },
-      requestId: input.requestId,
-      expectedRevision: input.expectedRevision,
-      resolvedBy: actor.userId,
-      settlementSessionId: actor.session.id,
-      approvalKey: input.idempotencyKey,
-      approved: { command: RequestJsonObjectSchema.parse(stored.command.command) },
-      accept: () => undefined,
-    });
-    // The same approval twice at once: the second reads what the first came to; nothing runs twice.
-    if (begun.replayed) return begun.replayed;
-    if (begun.changed)
-      throw new OpensteerError({
-        code: "conflict",
-        reason: "request-changed",
-        message: "This changed since you read it. Look at it again before approving.",
-      });
-    if (begun.closed) throw proposerGone();
-    const connectionId = stored.command.proposer.connectionId;
-    // The proposer once more, where the store makes the change in a transaction it shares (a
-    // tab group's): a group that gained a tab it does not hold since is refused, nothing changes.
-    const readmit = async (transaction: Kysely<DatabaseSchema>) => {
-      if (!(await stillAsks(transaction))) throw raisedBeforeEffect(proposerGone());
-    };
-    const approver = person({
-      requestId: input.requestId,
-      revision: input.expectedRevision,
-      proposedBy: { ...stored.command.proposer },
-      readmit,
-    });
-    this.#inFlight.add(input.requestId);
-    let outcome: CommandRequestOutcome;
+    this.#enter(input.requestId);
     try {
-      // The one way a command acts (G4): its attempt in the proposer's Disconnect set, recorded
-      // in one transaction with the proposer's last admission (`readmit`), the act, then what is
-      // known of it.
-      const effect = await runCommandEffect({
-        row,
-        attempts: commandAttempts(this.#database),
-        attempt: {
-          requestedBy: actor.userId,
-          callerKey: `request:${input.requestId}`,
-          connectionId: connectionId ?? null,
-          type: command.type,
-          idempotencyKey: `command-request:${input.requestId}`,
-        },
-        readmit,
-        act: () =>
-          run(approver, {
-            ...command,
-            idempotencyKey: `command-request:${input.requestId}`,
-          } as HostApiCommand),
-      }).catch((error: unknown) => {
-        // Refused at the last admission: nothing was recorded or run.
-        if (error instanceof OpensteerError && error.reason === "proposer-gone")
-          return { status: "refused" as const, error };
-        throw error;
-      });
-      if (effect.status === "refused") {
-        await this.#store.closeRefusedApproval(input.requestId);
-        throw proposerGone();
-      }
-      if (effect.status === "done") {
-        // What a proposer reads of a person's command: everything for your own agents' Runs;
-        // under a connection's grant only that it ran (rule 5).
-        let result: unknown = null;
-        try {
-          result = JSON.parse(
-            JSON.stringify(
-              commandAgentOutput(command, effect.output, connectionId !== undefined) ?? null,
-            ),
+      const begun = await this.#store.beginApproval({
+        // Whoever asked must still be able to ask for this, as it asked, in the approval's own
+        // transaction: a Disconnect, a narrowing or a paused automation since closes the ask, and
+        // nothing runs.
+        stillAsks,
+        // The Home's words as they are true now, read under the same lock: if they no longer read
+        // as the person reviewed them, the card is written anew and nothing is approved.
+        checkWords: async (transaction, part) => {
+          const words = await this.#words(
+            command,
+            askedFace,
+            part.proposer as CommandProposer,
+            actor.userId,
+            transaction,
           );
-        } catch {
-          result = undefined;
+          if (
+            words.sentence === (part.sentence ?? part.summary) &&
+            words.gives === part.gives &&
+            canonicalJson(words.notes) === canonicalJson(part.notes ?? [])
+          )
+            return null;
+          const rewritten: CommandRequestPart = {
+            ...part,
+            summary: words.summary,
+            sentence: words.sentence,
+            gives: words.gives,
+            notes: words.notes,
+          };
+          return {
+            part: rewritten,
+            presentation: commandPresentation(rewritten, words.sentence, words.asker),
+          };
+        },
+        requestId: input.requestId,
+        expectedRevision: input.expectedRevision,
+        resolvedBy: actor.userId,
+        settlementSessionId: actor.session.id,
+        approvalKey: input.idempotencyKey,
+        approved: { command: RequestJsonObjectSchema.parse(stored.command.command) },
+        accept: () => undefined,
+      });
+      // The same approval twice at once: the second reads what the first came to; nothing runs twice.
+      if (begun.replayed) return begun.replayed;
+      if (begun.changed)
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "request-changed",
+          message: "This changed since you read it. Look at it again before approving.",
+        });
+      if (begun.closed) throw proposerGone();
+      const connectionId = stored.command.proposer.connectionId;
+      // The proposer once more, where the store makes the change in a transaction it shares (a
+      // tab group's): a group that gained a tab it does not hold since is refused, nothing changes.
+      const readmit = async (transaction: Kysely<DatabaseSchema>) => {
+        if (!(await stillAsks(transaction))) throw raisedBeforeEffect(proposerGone());
+      };
+      const approver = person({
+        requestId: input.requestId,
+        revision: input.expectedRevision,
+        proposedBy: { ...stored.command.proposer },
+        readmit,
+      });
+      let outcome: CommandRequestOutcome;
+      {
+        // The one way a command acts (G4): its attempt in the proposer's Disconnect set, recorded
+        // in one transaction with the proposer's last admission (`readmit`), the act, then what is
+        // known of it.
+        const effect = await runCommandEffect({
+          row,
+          attempts: commandAttempts(this.#database),
+          attempt: {
+            requestedBy: actor.userId,
+            callerKey: `request:${input.requestId}`,
+            connectionId: connectionId ?? null,
+            type: command.type,
+            idempotencyKey: `command-request:${input.requestId}`,
+          },
+          readmit,
+          act: () =>
+            run(approver, {
+              ...command,
+              idempotencyKey: `command-request:${input.requestId}`,
+            } as HostApiCommand),
+        }).catch((error: unknown) => {
+          // Refused at the last admission: nothing was recorded or run.
+          if (error instanceof OpensteerError && error.reason === "proposer-gone")
+            return { status: "refused" as const, error };
+          throw error;
+        });
+        if (effect.status === "refused") {
+          await this.#store.closeRefusedApproval(input.requestId);
+          throw proposerGone();
         }
-        outcome =
-          result !== undefined && JSON.stringify(result).length <= maxResultBytes
-            ? { status: "done", result: result as never }
-            : { status: "done" };
-      } else if (effect.status === "failed") {
-        // The proposer reads the Home's words only.
-        outcome = {
-          status: "failed",
-          code: effect.error instanceof OpensteerError ? effect.error.code : "internal",
-          message: commandRefusedWords,
-        };
-      } else outcome = { status: "unknown" };
+        if (effect.status === "done") {
+          // What a proposer reads of a person's command: everything for your own agents' Runs;
+          // under a connection's grant only that it ran (rule 5).
+          let result: unknown = null;
+          try {
+            result = JSON.parse(
+              JSON.stringify(
+                commandAgentOutput(command, effect.output, connectionId !== undefined) ?? null,
+              ),
+            );
+          } catch {
+            result = undefined;
+          }
+          outcome =
+            result !== undefined && JSON.stringify(result).length <= maxResultBytes
+              ? { status: "done", result: result as never }
+              : { status: "done" };
+        } else if (effect.status === "failed") {
+          // The proposer reads the Home's words only.
+          outcome = {
+            status: "failed",
+            code: effect.error instanceof OpensteerError ? effect.error.code : "internal",
+            message: commandRefusedWords,
+          };
+        } else outcome = { status: "unknown" };
+      }
+      // The receipt: written again if writing it fails once; if it still fails, the next read of
+      // the Request takes it from the attempt. The effect itself never runs again.
+      try {
+        await this.#store.settle(input.requestId, outcome);
+      } catch {
+        await this.#store.settle(input.requestId, outcome);
+      }
+      return outcome;
     } finally {
-      this.#inFlight.delete(input.requestId);
+      this.#leave(input.requestId);
     }
-    // The receipt: written again if writing it fails once; if it still fails, the next read of
-    // the Request takes it from the attempt. The effect itself never runs again.
-    try {
-      await this.#store.settle(input.requestId, outcome);
-    } catch {
-      await this.#store.settle(input.requestId, outcome);
-    }
-    return outcome;
   }
 
   /**
-   * An approval left running with no effect in flight in this process: its outcome is read from
-   * the attempt it recorded, done or unknown. A read of the Request calls this first.
+   * An approval left running with no approval of it in flight in this process (its receipt was
+   * lost): its outcome is read from the attempt it recorded, done or unknown, and only the record
+   * is written. The proposer's reads (the same call again, its requests, its activity) and the
+   * person's call this first; startup does it for every one.
    */
   async reconcile(requestId: RequestId): Promise<void> {
     if (!this.#inFlight.has(requestId)) await this.#store.reconcileRunning(requestId);
+  }
+
+  /** `reconcile` for each Request shown that reads as running; nothing for any other. */
+  async reconcileShown(
+    requests: readonly { readonly id: string; readonly command?: unknown }[],
+  ): Promise<void> {
+    for (const request of requests) {
+      const outcome = (request.command as { readonly outcome?: { readonly status?: unknown } })
+        ?.outcome;
+      if (outcome?.status === "running") await this.reconcile(request.id as RequestId);
+    }
   }
 
   /**

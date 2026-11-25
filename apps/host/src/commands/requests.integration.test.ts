@@ -1972,7 +1972,8 @@ describeStore("command Requests at the Home", (it) => {
     storeFixture,
   }) => {
     const { store, ran, run, door, rename, approve, commandStore } = await setup(storeFixture);
-    const proposed = (await dispatchCommand(run, rename("Work"), door(run))) as {
+    const sent = rename("Work");
+    const proposed = (await dispatchCommand(run, sent, door(run))) as {
       requestId: string;
     };
     const asked = (await store.requests.get(proposed.requestId as never))!;
@@ -1987,8 +1988,15 @@ describeStore("command Requests at the Home", (it) => {
     };
     const key = randomUUID();
     await approve(proposed.requestId, asked.command!.command, key).catch(() => undefined);
-    expect(await approve(proposed.requestId, asked.command!.command, key)).not.toMatchObject({
-      status: "running",
+    // The proposer's same call again reads what the attempt says, never a running that stays.
+    // A database command records no attempt (only an outside effect does), so what may have
+    // happened reads as unknown (rule 4), never done by a guess, and the approval again agrees.
+    expect(await dispatchCommand(run, sent, door(run))).toMatchObject({
+      status: "answered",
+      outcome: { status: "unknown" },
+    });
+    expect(await approve(proposed.requestId, asked.command!.command, key)).toEqual({
+      status: "unknown",
     });
     expect(ran).toHaveLength(1);
     expect((await store.requests.get(proposed.requestId as never))!.command!.outcome).not.toEqual({

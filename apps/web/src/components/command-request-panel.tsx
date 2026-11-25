@@ -1,11 +1,11 @@
 import {
   commandApproval,
+  commandApprovalRefusal,
   commandApproveArmMs,
   commandDecline,
   commandDoneMyself,
   commandRequestView,
   commandRequestWords,
-  HostClientRequestError,
   mutationIdempotencyKey,
   type CommandRequestView,
   type RequestView,
@@ -22,14 +22,6 @@ const approveAction = {
   done: "approved",
   happened: "your approval was sent",
 } as const;
-
-/** The Home's refusals of an approval that say why, in its own words. */
-const saidReasons = new Set([
-  "request-changed",
-  "command-changed",
-  "proposer-gone",
-  "command-needs-person-screen",
-]);
 
 /** Where each screen that performs a command is, in this app. */
 const screenPaths: Readonly<Record<string, string>> = {
@@ -104,9 +96,9 @@ export function CommandRequestPanel({
           if (answered.outcome) setResult({ identity, outcome: answered.outcome });
           return answered;
         } catch (error) {
-          // The Home's own reason, as it said it: changed since it was read, or no longer asked.
-          if (error instanceof HostClientRequestError && saidReasons.has(error.reason ?? ""))
-            throw new Refusal(error.message);
+          // The Home's reason, where it says one: changed since it was read, or no longer asked.
+          const refused = commandApprovalRefusal(error);
+          if (refused) throw new Refusal(refused.words);
           throw error;
         }
       },

@@ -500,7 +500,10 @@ export class CommandTools {
         const commands = await withDatabaseTransaction(this.#database, (transaction) =>
           commandActivity(
             transaction,
-            { name: async () => null },
+            {
+              name: async () => null,
+              reconcileShown: (rows) => this.#requests()?.reconcileShown(rows) ?? Promise.resolve(),
+            },
             { userId: caller.userId, ...of } as Parameters<typeof commandActivity>[2],
             {
               reaches: async (command) =>

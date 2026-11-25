@@ -1,11 +1,11 @@
 import {
   commandApproval,
+  commandApprovalRefusal,
   commandApproveArmMs,
   commandDecline,
   commandDoneMyself,
   commandRequestView,
   commandRequestWords,
-  HostClientRequestError,
   mutationIdempotencyKey,
   type CommandRequestView,
   type HostClient,
@@ -25,14 +25,6 @@ import { ActionLine } from "../ui/action-line.js";
 import { refusal as homeRefusal, useScreenAction } from "../ui/client-feedback.js";
 import { AppText, monoFontFamily } from "../ui/primitives.js";
 import { AnswerPill } from "./answer-pill.js";
-
-/** The Home's refusals of an approval that say why, in its own words. */
-const saidReasons = new Set([
-  "request-changed",
-  "command-changed",
-  "proposer-gone",
-  "command-needs-person-screen",
-]);
 
 /** Where each screen that performs a command is, in this app. */
 const screenRoutes: Readonly<Record<string, string>> = {
@@ -111,9 +103,9 @@ export function CommandRequestCard(props: {
         if (answered.outcome) setResult({ identity, outcome: answered.outcome });
         return answered;
       } catch (error) {
-        // The Home's own reason, as it said it: changed since it was read, or no longer asked.
-        if (error instanceof HostClientRequestError && saidReasons.has(error.reason ?? ""))
-          throw homeRefusal(error.reason!, error.message);
+        // The Home's reason, where it says one: changed since it was read, or no longer asked.
+        const refused = commandApprovalRefusal(error);
+        if (refused) throw homeRefusal(refused.reason, refused.words);
         throw error;
       }
     },

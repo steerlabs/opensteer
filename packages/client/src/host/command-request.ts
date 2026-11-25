@@ -12,7 +12,7 @@ import {
   type CommandReviewRow,
 } from "@opensteer/protocol/command-review";
 import { accessModeOptions } from "./access-modes.js";
-import { requestDecision, type RequestView } from "./client.js";
+import { HostClientRequestError, requestDecision, type RequestView } from "./client.js";
 
 /**
  * A Home command an agent proposed, as the person reviews it on any client: the Home's sentence,
@@ -100,6 +100,30 @@ export const commandRequestWords = {
   more: "More below. Scroll to the end to approve.",
   arming: "Approve is ready in a moment, so a click meant for something else cannot approve this.",
 } as const;
+
+/**
+ * Why the Home refused an approval, where it says why: the card's own sentence for each reason,
+ * so a screen shows the reason without reading the failure itself. Null for anything else, which
+ * the screen's usual feedback says.
+ */
+const approvalRefusals: Readonly<Record<string, string>> = {
+  "request-changed": "This changed since you read it. Look at it again before approving.",
+  "command-changed":
+    "This proposal no longer reads as a command this Home runs, so it cannot be approved.",
+  "proposer-gone": "The agent that asked can no longer ask for this, so its Request closed.",
+  "command-needs-person-screen":
+    "This needs something only you type. Do it on its own screen in Opensteer.",
+};
+
+export function commandApprovalRefusal(
+  error: unknown,
+): { readonly reason: string; readonly words: string } | null {
+  if (!(error instanceof HostClientRequestError) || !error.reason) return null;
+  const words = Object.hasOwn(approvalRefusals, error.reason)
+    ? approvalRefusals[error.reason]
+    : undefined;
+  return words ? { reason: error.reason, words } : null;
+}
 
 /** The screens that perform a command, by the Home's name for each. */
 const screenLabels: Readonly<Record<string, string>> = {
