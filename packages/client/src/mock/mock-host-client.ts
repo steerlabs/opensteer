@@ -4938,6 +4938,12 @@ export class MockHostClient implements HostClient {
     return this.#state.mockLongThread(turns);
   }
 
+  /** Seeds a tail-anchored history window on a mock thread so older turns remain unloaded. */
+  async mockWindowTail(threadId: string, limit = 100): Promise<boolean> {
+    this.#mockHistory.delete(threadId);
+    return this.#readMockHistory(threadId, { limit, acceptDeferredWork: true });
+  }
+
   /** Rewrites one message's words in place, as a durable update or a streamed token would. */
   mockMessageBody(threadId: string, messageId: string, body: string): void {
     this.#state.mockMessageBody(threadId, messageId, body);
@@ -5330,37 +5336,50 @@ export class MockHostClient implements HostClient {
   ): Promise<boolean> {
     const throughItemId = options?.throughItemId;
     if (throughItemId) {
-      const entries = this.getThreadTranscript(threadId)?.getSnapshot().entries ?? [];
-      if (
-        entries.some(
+      const hasTarget = () =>
+        (this.getThreadTranscript(threadId)?.getSnapshot().entries ?? []).some(
           (entry) =>
             entry.id === throughItemId || ("itemId" in entry && entry.itemId === throughItemId),
-        )
-      )
-        return true;
-      const before = this.#mockHistory.get(threadId)?.before;
-      if (!before) {
-        const all = mockScopedItems(
-          this.#state.getSnapshot(),
-          threadId,
-          undefined,
-          String(this.#state.getSnapshot().revision),
-          this.#state.nodeEvents,
         );
-        if (
-          !all.some(
-            (row) =>
-              row.id === throughItemId || (row.kind === "message" && row.messageId === throughItemId),
+      if (hasTarget()) return true;
+      for (let pages = 0; pages < 50; pages++) {
+        const before = this.#mockHistory.get(threadId)?.before;
+        if (!before) {
+          const all = mockScopedItems(
+            this.#state.getSnapshot(),
+            threadId,
+            undefined,
+            String(this.#state.getSnapshot().revision),
+            this.#state.nodeEvents,
+          );
+          if (
+            !all.some(
+              (row) =>
+                row.id === throughItemId ||
+                (row.kind === "message" && row.messageId === throughItemId),
+            )
           )
-        )
-          throw new HostClientRequestError({
-            code: "not_found",
-            message: "The requested message is unavailable.",
-            status: 404,
-          });
-        return true;
+            throw new HostClientRequestError({
+              code: "not_found",
+              message: "The requested message is unavailable.",
+              status: 404,
+            });
+          return true;
+        }
+        const landed = await this.#readMockHistory(threadId, {
+          before,
+          throughItemId,
+          limit: 50,
+          acceptDeferredWork: true,
+        });
+        if (!landed) return false;
+        if (hasTarget()) return true;
       }
-      return this.#readMockHistory(threadId, { before, throughItemId, acceptDeferredWork: true });
+      throw new HostClientRequestError({
+        code: "unavailable",
+        message: "The requested message is too far back to load in one jump.",
+        status: 503,
+      });
     }
     const before = this.#mockHistory.get(threadId)?.before;
     if (!before) return false;

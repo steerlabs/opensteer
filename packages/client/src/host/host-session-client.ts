@@ -1764,7 +1764,7 @@ export class HttpHostClient {
       loadingOlder: false,
     };
     const closed = { ...view, status: "closed" as const };
-    const readEarlier = async () => {
+    const readHistory = async (mode: "earlier" | "latest") => {
       const { generation, synchronized } = detail.transcript.getSnapshot();
       if (
         released ||
@@ -1772,11 +1772,23 @@ export class HttpHostClient {
         (read?.generation === generation && read.status === "loading")
       )
         return;
-      const pending = { generation, mode: "earlier" as const, status: "loading" as const, error: null };
+      const pending = {
+        generation,
+        mode,
+        status: "loading" as const,
+        error: null,
+      };
       read = pending;
       notify();
       try {
-        await reader.loadEarlier();
+        if (mode === "earlier") await reader.loadEarlier();
+        else
+          unwrapRpcResult(
+            await this.rpc["node.items.page"](
+              { threadId, nodeId },
+              detail.controller ? { signal: detail.controller.signal } : undefined,
+            ),
+          );
         if (read === pending) read = undefined;
       } catch (error) {
         if (read === pending && generation === detail.transcript.getSnapshot().generation) {
@@ -1785,7 +1797,7 @@ export class HttpHostClient {
             (error.status === 403 || error.status === 404);
           read = {
             generation,
-            mode: "earlier",
+            mode,
             status: unavailable ? "missing" : "error",
             error: unavailable ? null : "Could not load this subagent’s work.",
           };
@@ -1867,10 +1879,9 @@ export class HttpHostClient {
         listeners.add(listener);
         return () => listeners.delete(listener);
       },
-      loadOlder: () => readEarlier(),
+      loadOlder: () => readHistory("earlier"),
       retry: () => {
-        if (read?.mode === "earlier") void readEarlier();
-        else detail.recut();
+        void readHistory(read?.mode ?? "latest");
       },
       release: () => {
         if (released) return;

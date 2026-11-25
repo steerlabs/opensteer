@@ -708,9 +708,7 @@ test("a history page the store refused (its change journal overflowed) is read a
     },
   };
   let settled = false;
-  const jump = reader
-    .loadEarlier({ throughItemId: linked.messageId })
-    .then(() => (settled = true));
+  const jump = reader.loadEarlier({ throughItemId: linked.messageId }).then(() => (settled = true));
   await vi.waitFor(() => expect(answers).toHaveLength(1));
   // More changes land while the page flies than the store keeps for it.
   for (let frame = 0; frame < 16; frame++) {

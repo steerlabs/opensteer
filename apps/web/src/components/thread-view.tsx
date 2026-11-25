@@ -781,21 +781,32 @@ const ThreadView = memo(function ThreadView({
   };
 
   // Sending a message while scrolled up returns the reader to the live tail so they see their
-  // message and the reply arriving.
-  const lastLocalSendKeyRef = useRef<string | null>(null);
-  const newestLocalSendKey = useMemo(() => {
-    for (let index = withOutbox.length - 1; index >= 0; index -= 1) {
-      const entry = withOutbox[index];
-      if (entry?.kind === "message" && entry.localDelivery !== undefined)
-        return entry.clientSendKey ?? entry.id;
+  // message and the reply arriving. Track every seen send key so cancelling a newer local
+  // message does not treat an older remaining one as a fresh send.
+  const seenLocalSendKeysRef = useRef<Set<string> | null>(null);
+  const localSendKeys = useMemo(() => {
+    const keys: string[] = [];
+    for (const entry of withOutbox) {
+      if (entry.kind === "message" && entry.localDelivery !== undefined)
+        keys.push(entry.clientSendKey ?? entry.id);
     }
-    return null;
+    return keys;
   }, [withOutbox]);
   useLayoutEffect(() => {
-    if (newestLocalSendKey !== null && newestLocalSendKey !== lastLocalSendKeyRef.current)
-      goToTail();
-    lastLocalSendKeyRef.current = newestLocalSendKey;
-  }, [newestLocalSendKey]);
+    const seen = seenLocalSendKeysRef.current;
+    if (seen === null) {
+      seenLocalSendKeysRef.current = new Set(localSendKeys);
+      return;
+    }
+    let added = false;
+    for (const key of localSendKeys) {
+      if (!seen.has(key)) {
+        seen.add(key);
+        added = true;
+      }
+    }
+    if (added) goToTail();
+  }, [localSendKeys]);
 
   // Restore before paint on every page, including pages that only add Activity.
   useLayoutEffect(() => {

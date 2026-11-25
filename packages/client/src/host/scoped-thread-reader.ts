@@ -144,6 +144,7 @@ export class ScopedThreadReader implements ThreadViewSource {
   #requestGeneration = 0;
   #bodyGeneration = 0;
   #earlierCall = 0;
+  #activeTarget: string | undefined;
   #view: ThreadViewState = emptyThreadView;
 
   constructor(detail: ObservedDetail, rpc: HostApiClient, bodies: TranscriptBodies, listen = true) {
@@ -458,8 +459,16 @@ export class ScopedThreadReader implements ThreadViewSource {
    */
   loadEarlier(options?: { readonly throughItemId?: string | undefined }): Promise<boolean> {
     if (this.#disposed) return Promise.resolve(false);
+    // Do not let plain upward scrolling cancel an active targeted jump (e.g., mobile link load).
+    if (
+      !options?.throughItemId &&
+      this.#activeTarget !== undefined &&
+      this.#reads.busy("history:earlier")
+    )
+      return Promise.resolve(false);
     const throughItemId = options?.throughItemId;
     const call = ++this.#earlierCall;
+    this.#activeTarget = throughItemId;
     let landed = false;
     return this.#reads
       .request(
@@ -472,8 +481,12 @@ export class ScopedThreadReader implements ThreadViewSource {
         { observed: () => !this.#disposed, retry: false },
       )
       .then(
-        () => call === this.#earlierCall && landed,
+        () => {
+          if (call === this.#earlierCall) this.#activeTarget = undefined;
+          return call === this.#earlierCall && landed;
+        },
         (error) => {
+          if (call === this.#earlierCall) this.#activeTarget = undefined;
           if (call !== this.#earlierCall) return false;
           throw error;
         },
@@ -529,7 +542,7 @@ export class ScopedThreadReader implements ThreadViewSource {
         status: 404,
       });
 
-    for (let pages = 0; pages < maxPages; ) {
+    for (let pages = 0; pages < maxPages;) {
       if (!read.current()) return false;
       const state = transcript.getSnapshot();
       const snapshot = state.snapshot;
@@ -602,7 +615,7 @@ export class ScopedThreadReader implements ThreadViewSource {
   async #readDeferredWork(read: FencedRead, workAnchorId: string): Promise<boolean> {
     const transcript = this.#detail.transcript;
     let before: TranscriptOrderCursor | null = this.#deferredWorkUpperBound(workAnchorId);
-    for (let pages = 0; pages < maxDeferredWorkPages; ) {
+    for (let pages = 0; pages < maxDeferredWorkPages;) {
       if (!read.current()) return false;
       const state = transcript.getSnapshot();
       const anchor = state.items.get(workAnchorId);

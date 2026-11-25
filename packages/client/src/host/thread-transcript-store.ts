@@ -463,10 +463,7 @@ export class ThreadTranscriptStore {
               // boundary lands directly in history. Updates to unloaded older history are ignored
               // unless they are active work or belong to a held Run card.
               const inHistory =
-                provisional ||
-                !snapshot?.nextBefore ||
-                !first ||
-                comparePosition(next, first) >= 0;
+                provisional || !snapshot?.nextBefore || !first || comparePosition(next, first) >= 0;
               const wasActive = (activeIds ?? state.activeIds).has(id);
               const active = openWork(next);
               if (wasActive !== active) {

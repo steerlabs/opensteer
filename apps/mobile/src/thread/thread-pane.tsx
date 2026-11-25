@@ -1161,26 +1161,38 @@ function ThreadPaneForUser(
   }, [conversational, drawn, groups, heldHead, indicator, outcomes, viewerUserId]);
   shownItems.current = items;
 
-  // Sending a message while scrolled up returns the reader to the live tail.
-  const lastLocalSendKey = useRef<string | null>(null);
-  const newestLocalSendKey = useMemo(() => {
-    for (let index = visible.length - 1; index >= 0; index -= 1) {
-      const entry = visible[index];
-      if (entry?.kind === "message" && entry.localDelivery !== undefined)
-        return entry.clientSendKey ?? entry.id;
+  // Sending a message while scrolled up returns the reader to the live tail. Track every seen
+  // send key so deleting a newer local message does not treat an older remaining one as a send.
+  const seenLocalSendKeys = useRef<Set<string> | null>(null);
+  const localSendKeys = useMemo(() => {
+    const keys: string[] = [];
+    for (const entry of visible) {
+      if (entry.kind === "message" && entry.localDelivery !== undefined)
+        keys.push(entry.clientSendKey ?? entry.id);
     }
-    return null;
+    return keys;
   }, [visible]);
   useEffect(() => {
-    if (newestLocalSendKey !== null && newestLocalSendKey !== lastLocalSendKey.current) {
+    const seen = seenLocalSendKeys.current;
+    if (seen === null) {
+      seenLocalSendKeys.current = new Set(localSendKeys);
+      return;
+    }
+    let added = false;
+    for (const key of localSendKeys) {
+      if (!seen.has(key)) {
+        seen.add(key);
+        added = true;
+      }
+    }
+    if (added) {
       anchorShown.current = anchorMessageId;
       revealed.current = requestId;
       releasePlace();
       follow(true);
       scrollToLatest(false);
     }
-    lastLocalSendKey.current = newestLocalSendKey;
-  }, [anchorMessageId, follow, newestLocalSendKey, releasePlace, requestId, scrollToLatest]);
+  }, [anchorMessageId, follow, localSendKeys, releasePlace, requestId, scrollToLatest]);
 
   const queueFooter = useMemo(
     () =>
