@@ -477,7 +477,6 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
         idempotencyKey: randomUUID(),
         requestId: first.id,
         expectedRevision: (await host.store.requests.revision(first.id))!,
-        command: (first.command as { command: Record<string, unknown> }).command,
       } as never,
       { headers: host.ownerHeaders },
     );
@@ -616,7 +615,6 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
         idempotencyKey: randomUUID(),
         requestId: renameAsk.id,
         expectedRevision: (await host.store.requests.revision(renameAsk.id))!,
-        command: renameAsk.command!.command,
       } as never,
       { headers: host.ownerHeaders },
     );
@@ -676,6 +674,155 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
     });
     expect(onB.isError).toBe(true);
     expect(JSON.stringify(onB.content)).toBe(JSON.stringify(nothing.content));
+    // Nor can a selected grant learn through its own Request what lies outside it (rule 5): one
+    // that holds Tasks (so it reads its Requests) and profile A proposes a grant naming profile B,
+    // and reads that Request back. The person's card names the profile; what the agent reads
+    // carries no note at all.
+    const profileAsker = await connect(
+      {
+        scope: "selected",
+        tasks: true,
+        resources: [{ kind: "browser-profile", profileId: a.id }],
+      },
+      "Asking agent",
+    );
+    const widening = await call(profileAsker.client, "opensteer_command", {
+      command: {
+        type: "connection.update",
+        connectionId: profileAsker.id,
+        expectedRevision: 1,
+        grant: {
+          scope: "selected",
+          tasks: false,
+          resources: [
+            { kind: "browser-profile", profileId: a.id },
+            { kind: "browser-profile", profileId: b.id },
+          ],
+        },
+      },
+    });
+    expect(widening.structuredContent, JSON.stringify(widening.content)).toMatchObject({
+      status: "pending",
+    });
+    const widenAsk = (await host.store.requests.get(
+      (widening.structuredContent as { requestId: string }).requestId as never,
+    ))!;
+    expect(widenAsk.command!.notes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: "“Private”" })]),
+    );
+    const readBack = await call(profileAsker.client, "opensteer_state", { area: "requests" });
+    const readText = JSON.stringify(readBack.structuredContent);
+    expect(readText).toContain(widenAsk.id);
+    expect(readText).not.toContain("Private");
+    expect(readText).not.toContain('"notes"');
+    // What it reads of its own proposal is what it sent and a status: never the Home's sentence.
+    expect(readText).not.toContain("Change a connected agent");
+    // C1: once the person takes away what a proposal is about, the agent no longer sees it at all,
+    // in its requests or its activity, while the person keeps a faithful record.
+    const holdsAWithTasks = await connect(
+      {
+        scope: "selected",
+        tasks: true,
+        resources: [{ kind: "browser-profile", profileId: a.id }],
+      },
+      "Renaming agent",
+    );
+    const profileRenaming = await call(holdsAWithTasks.client, "opensteer_command", {
+      command: { type: "browser.profile.rename", profileId: a.id, name: "Asked name" },
+    });
+    expect(
+      profileRenaming.structuredContent,
+      JSON.stringify(profileRenaming.content),
+    ).toMatchObject({
+      status: "pending",
+    });
+    const renameRequest = (profileRenaming.structuredContent as { requestId: string }).requestId;
+    const visible = async () =>
+      JSON.stringify(
+        (await call(holdsAWithTasks.client, "opensteer_state", { area: "requests" }))
+          .structuredContent,
+      ) +
+      JSON.stringify(
+        (await call(holdsAWithTasks.client, "opensteer_state", { area: "activity" }))
+          .structuredContent,
+      );
+    expect(await visible()).toContain(renameRequest);
+    const revision = (
+      await host.store.database
+        .selectFrom("agentConnections")
+        .select("grantRevision")
+        .where("id", "=", holdsAWithTasks.id)
+        .executeTakeFirstOrThrow()
+    ).grantRevision;
+    await connections.update(owner, {
+      connectionId: holdsAWithTasks.id,
+      expectedRevision: revision,
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    expect(await visible()).not.toContain(renameRequest);
+    expect(await host.store.requests.get(renameRequest as never)).toMatchObject({
+      status: "cancelled",
+      cancellationReason: "authority-revoked",
+    });
+    // M2: nor does withdrawing it tell the agent the ask exists: it reads exactly like an id that
+    // never existed (rule 5). And nothing is said to it of the close.
+    const neverAsked = `req_${randomUUID()}`;
+    const withdrawGone = await call(holdsAWithTasks.client, "opensteer_command", {
+      withdraw: renameRequest,
+    });
+    const withdrawNever = await call(holdsAWithTasks.client, "opensteer_command", {
+      withdraw: neverAsked,
+    });
+    expect(withdrawNever.isError).toBe(true);
+    expect(withdrawGone.isError).toBe(true);
+    expect(JSON.stringify(withdrawGone.content)).toBe(JSON.stringify(withdrawNever.content));
+    expect(
+      await host.store.database
+        .selectFrom("requestContinuations")
+        .select("requestId")
+        .where("requestId", "=", renameRequest as never)
+        .execute(),
+    ).toEqual([]);
+    // Q2: an ask whose value only the person types is still the agent's own to read and to
+    // withdraw: it proposes it with the value left out, as the tool tells it to.
+    const submitter = await connect({ scope: "everything" }, "Signing-in agent");
+    const submitAsk = await call(submitter.client, "opensteer_command", {
+      command: {
+        type: "harness.authentication.submit",
+        environmentId: machine.environmentId,
+        harnessInstanceId: machine.harnessInstanceId,
+      },
+    });
+    expect(submitAsk.structuredContent, JSON.stringify(submitAsk.content)).toMatchObject({
+      status: "pending",
+    });
+    const submitRequest = (submitAsk.structuredContent as { requestId: string }).requestId;
+    expect(
+      JSON.stringify(
+        (await call(submitter.client, "opensteer_state", { area: "requests" })).structuredContent,
+      ),
+    ).toContain(submitRequest);
+    const submitWithdrawn = await call(submitter.client, "opensteer_command", {
+      withdraw: submitRequest,
+    });
+    expect(
+      submitWithdrawn.structuredContent,
+      JSON.stringify(submitWithdrawn.content),
+    ).toMatchObject({ status: "withdrawn" });
+    // M3: an answered ask reads, on every agent surface, as one value-free status, with nothing
+    // of who answered or on which of the person's devices: here a Run's Request tools, on the
+    // ask the person approved above.
+    const readAnswered = await call(full, "opensteer_request_read", { requestId: first.id });
+    expect(readAnswered.isError, JSON.stringify(readAnswered.content)).not.toBe(true);
+    const answered = (readAnswered.structuredContent as { request: Record<string, unknown> })
+      .request;
+    expect(answered.status).toBe("approved-done");
+    expect(answered).not.toHaveProperty("settlementProvenance");
+    const fullList = JSON.stringify(
+      (await call(full, "opensteer_request_list", {})).structuredContent,
+    );
+    expect(fullList).toContain(first.id);
+    expect(fullList).not.toMatch(/deviceLabel|settlementProvenance/u);
 
     // The reads sent as POST write nothing (AD10 2d): every statement the Home issues while the
     // person makes each is a read, apart from what signing a request in does for any call, which

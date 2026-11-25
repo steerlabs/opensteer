@@ -383,11 +383,10 @@ describe("dispatchCommand", () => {
       dispatchCommand(
         run("full-access"),
         {
-          type: "request.command.approve",
+          type: "browser.sign-in.respond",
           idempotencyKey: "k",
           requestId: theirs,
-          expectedRevision: "1",
-          command: {},
+          decision: { decision: "allow", sourceId: "bsr_00000000-0000-4000-8000-0000000000bb" },
         } as unknown as HostApiCommand,
         door,
       ),

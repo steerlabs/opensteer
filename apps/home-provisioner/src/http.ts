@@ -88,6 +88,12 @@ export async function request<T>(
 ): Promise<T> {
   const signal = AbortSignal.any([shutdown, AbortSignal.timeout(options.timeoutMs)]);
   const { method = "GET", body, headers, errorReasons = false } = input;
+  // Read or write is the request's own: a GET of the Compute Engine or Cloudflare API reads, and
+  // whatever it fails with (any status, a timeout, a network error, an unreadable answer) observed
+  // nothing. Only a request that changes something can be a refused write.
+  const read =
+    method === "GET" && (service === "Google Compute Engine" || service === "Cloudflare");
+  const failed = (error: Error) => (read ? new ObservationFailed(error) : error);
   let response: Response;
   try {
     response = await (options.fetch ?? fetch)(url, {
@@ -102,17 +108,19 @@ export async function request<T>(
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
   } catch {
-    throw requestFailure(service, signal, "request failed");
+    throw failed(requestFailure(service, signal, "request failed"));
   }
 
   if (!response.ok) {
     const reasons = errorReasons ? await readErrorReasons(response, signal) : [];
     if (!errorReasons) void response.body?.cancel().catch(() => undefined);
-    throw new RemoteRequestError(
-      service,
-      response.status,
-      response.status === 429 ? retryAt(response.headers) : undefined,
-      reasons,
+    throw failed(
+      new RemoteRequestError(
+        service,
+        response.status,
+        response.status === 429 ? retryAt(response.headers) : undefined,
+        reasons,
+      ),
     );
   }
 
@@ -123,7 +131,7 @@ export async function request<T>(
     });
     return decode(new TextDecoder().decode(bytes));
   } catch {
-    throw requestFailure(service, signal, "returned an invalid response");
+    throw failed(requestFailure(service, signal, "returned an invalid response"));
   }
 }
 
@@ -182,6 +190,36 @@ export class BootstrapScrubFailure extends Error {
 
 export class ProviderPlacementError extends Error {}
 
+/**
+ * A read that failed: a GET of the Compute Engine or Cloudflare API (`request` decides it from the
+ * method), or the Home's discovery (`observed`). It observed nothing of the computer, whatever its
+ * status code: the reconciler reports nothing new for that computer, and the error is the
+ * operator's (`home-provisioner.pass.failed`).
+ */
+export class ObservationFailed extends Error {
+  constructor(cause: unknown) {
+    super("A read of the provider or DNS failed", { cause });
+  }
+}
+
+/**
+ * Makes a read that is not an HTTP GET of those two APIs (the Home's discovery) fail as one: its
+ * failure is an `ObservationFailed`. A rate limit and a machine in another zone keep their meaning.
+ */
+export async function observed<T>(read: Promise<T>): Promise<T> {
+  try {
+    return await read;
+  } catch (error) {
+    if (
+      error instanceof ObservationFailed ||
+      error instanceof ProviderRateLimited ||
+      error instanceof ProviderPlacementError
+    )
+      throw error;
+    throw new ObservationFailed(error);
+  }
+}
+
 export class UntrackedPoolProfileDiskError extends Error {
   readonly diskName: string;
   readonly hostId: string;
@@ -205,6 +243,7 @@ export class PoolConfigMismatchError extends Error {
 }
 
 export function provisionerFailure(error: unknown) {
+  if (error instanceof ObservationFailed) return provisionerFailure(error.cause);
   if (error instanceof ProviderPlacementError)
     return { event: "home-provisioner.provider.wrong-zone", message: error.message };
   if (error instanceof UntrackedPoolProfileDiskError)

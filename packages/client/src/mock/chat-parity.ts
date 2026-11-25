@@ -155,6 +155,10 @@ export const chatParityAcceptedOutside = {
 
 /** What those screens send that this script does not cover, by why; listed so it is seen. */
 export const chatParityOutside = {
+  "connections.activity":
+    "Reads earlier sessions of a connected agent that works tasks itself. The connected agent Settings tests cover paging those sessions; the chat script starts Runs instead.",
+  "threads.activity":
+    "Reads operations on a task a connected agent works itself. The connected agent Settings tests cover the operations and pending Request; the chat script starts Runs instead.",
   "browser.profile.create":
     "Makes the browser profile a connected agent's new grant names, as Browser profiles makes one; this script runs no browser.",
 } as const;

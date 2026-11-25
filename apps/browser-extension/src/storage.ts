@@ -52,22 +52,20 @@ const ConnectionSchema = z.object({
 export type Connection = z.infer<typeof ConnectionSchema>;
 
 const connectionsKey = "connections";
-let mutations = 0;
-export function storageBusy(): boolean {
-  return mutations > 0;
-}
 let mutationTail: Promise<void> = Promise.resolve();
 
 function serialize<T>(operation: () => Promise<T>): Promise<T> {
-  mutations += 1;
-  const next = mutationTail.then(operation, operation).finally(() => {
-    mutations -= 1;
-  });
+  const next = mutationTail.then(operation, operation);
   mutationTail = next.then(
     () => undefined,
     () => undefined,
   );
   return next;
+}
+
+/** Runs `step` once every storage operation queued before it has ended, before any queued after. */
+export function storageTurn<T>(step: () => T): Promise<T> {
+  return serialize(async () => step());
 }
 
 export async function restrictCredentialStorage(): Promise<void> {

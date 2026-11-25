@@ -1,4 +1,5 @@
 import { endAgentSessions, refuseUnsentAgentOperation } from "./agent-session-store.js";
+import { closeLostConnectionProposals } from "./command-proposal-reach.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { recordThreadVisit } from "./thread-visits.js";
 import { installAssignmentReturnWake } from "./assignment-store.js";
@@ -1020,6 +1021,20 @@ export class OpensteerStore {
             }),
           );
         }
+        // A narrowing closes a command ask its lineage made only where its standing no longer
+        // reaches it, by the same function the grant edit uses; nothing is said to the lineage.
+        // (A gone connection's asks are in its set, closed with the rest, saying nothing too.)
+        if (reason === "narrowed")
+          await step(() =>
+            commitPersonalMutation(this.#database, async (tx) => {
+              if (await renewConnectionCleanupClaim(tx, cleanup))
+                await closeLostConnectionProposals(tx, {
+                  ownerUserId: userId,
+                  connectionId,
+                  all: false,
+                });
+            }),
+          );
         if (attempts.length || cleanup.pending) {
           if (options.onCleanup) await step(() => options.onCleanup!(cleanup));
         }

@@ -193,6 +193,20 @@ app's start); a step that can only take authority away (cancel, interrupt, Stop,
 identity step under its own proof (sign-in, the Cloud Computer claim, the consent screen, a
 Runner's or a device's signed frames).
 
+When the door asks the person instead of acting, the Request holds the proposal, and approving runs
+exactly that, as the person (`apps/host/src/commands/requests.ts`). An ask belongs to its
+proposer's lineage: one of your own agents' to its task, so it waits after the Run that sent it
+ends and approving it continues the task; a connection's (its direct session, or a Run or
+automation working under it) to that connection, re-admitted as the connection stands then, never
+as the task's own origin. What ends an automation's asks is a decision or a loss of standing,
+never bookkeeping: the person's pause or archive, or a pause for lost standing, refuses them when
+the person approves (a later sweep only tidies); a one-shot that archives itself because its one
+firing completed keeps them. A database-only effect of an approval is decided at the approval's
+commit: the proposer stood when the person's approval committed, and nothing leaves the Home. An
+outside effect is admitted once more where its attempt is recorded, before anything leaves. The
+person's approval is the person's act: a Stop of the Run that lands after the approval committed
+does not undo it.
+
 Each call is one reviewed **operation** of an **agent session**:
 
 - A session is anchored one-to-one to a listed task whose worker is the connected agent
@@ -721,6 +735,81 @@ pinned proxy failing closed, no PostgreSQL listener, firewall rules, a Host rest
 claim, backup, restore, refusal without `--replace`, image-only rollback and the managed install.
 On Colima it runs arm64; locally it runs the server's own architecture. It does not prove
 public certificates, real IPv6, a pristine Ubuntu install or a VM reboot.
+
+## Problems and reports
+
+A **problem** is a code from one table (`packages/protocol/src/problems.ts`): a severity
+(someone has to act now, or worth knowing), one plain sentence with what to do, and at most a few
+fields that are enums or bounded whole numbers. Its schema is strict, and
+`packages/protocol/src/problems.test.ts` fails if a free-text field is ever added, so a problem
+never carries an address, a title, task text, a file path, an account or device name, a token or
+an error's own words. A Home derives its problems from what it already keeps
+(`readStoredProblems`, `packages/database/src/home-problems.ts`) and from what its machine's
+maintenance writes as fixed values (`deploy/home/machine-status.sh`); one read gives them
+(`HomeProblems`, `apps/host/src/problems/home-problems.ts`). Adding a code is one entry in the
+table and one place that counts it.
+
+Who learns what depends on who runs the machine:
+
+1. **The person, always.** Settings → General → Problems shows this Home's problems in the
+   table's words. Nothing leaves for that.
+2. **Opensteer, for what it runs itself**, with no question asked, because it is its own
+   infrastructure. Its services log one stable event for each failure the
+   [runbook](cloud-computer-operations.md#when-something-goes-wrong) names
+   (`apps/control-plane/src/server/events.ts` and the provisioner's `home-provisioner.*`), with
+   the same field names everywhere. Each job that must run sends a heartbeat, an HTTP GET to an
+   address from configuration, at the end of each successful pass. The alerts are files in
+   [deploy/monitoring](../deploy/monitoring/README.md). The event that matters most is its own:
+   `account.cloud_computer.not_ready`, a person who paid and has no working Cloud Computer. Each
+   Cloud Computer's Host sends a **health report** every 15 minutes, with the credentials its backup
+   report uses. The account keeps only the latest one (`cloud_computer_health`, shown to the
+   operator in `show <id>`). When a report names a problem that needs someone, the account logs
+   `account.cloud_computer.unhealthy` with the computer's id, its version and those codes, and Cloud
+   Logging keeps that line for its retention period. The person sees the exact bytes in that Home's
+   Settings ("What Opensteer can see about this computer"). **What the operator of a Cloud Computer
+   can see:**
+   - the report: the computer's kind and release version, its disk as a range, each service healthy
+     or not, its last backup and update results with their times to the minute, and its problem
+     codes with their fixed details, counts and times to the minute;
+   - the address the report comes from, which is the computer's own;
+   - the account's own record of its setup, billing and backups.
+
+   **What it cannot see through these:** anything the person or an agent did or holds on it,
+   including pages, tasks, messages, files, accounts, sign-ins, names, logs and error text.
+
+3. **People's own devices send nothing.** A Mac Home, or any Home whose operator set no collector,
+   has no switch, no timer and nothing to send; its Problems page says that nothing about these
+   problems leaves this computer. **A self-hosted Linux Home** (`deploy/home`) sends the same health
+   report every 15 minutes to its operator's own collector only when that operator sets
+   `OPENSTEER_HOME_PROBLEM_REPORTS_URL`: the operator's setting is the consent, the person's Settings
+   shows the exact bytes, and what the collector keeps is up to whoever runs it. No person's app and
+   no agent can turn it on, off or point it anywhere.
+
+The machine status is read only where `OPENSTEER_MACHINE_STATUS=root-maintenance` says root's
+maintenance writes it (`deploy/home` sets it). There the file is in `host-data`, which no Runner
+mounts, and the Host itself writes only in subfolders of that volume. Anywhere else an agent's shell
+could write the file, so it is not read.
+
+Rule 3 of AGENTS.md (nothing leaves the Home before it is in the Disconnect set) is about effects
+done for a connection, and a report is not one. It is the Home's own, sent on its own timer, never
+for a connection or a Run, and carries nothing a connection produced: only codes with their fixed
+details, counts, times to the minute, versions and the machine's own status. An
+agent reads problems through `opensteer_state` (area `problems`, for the person's own agents and
+`everything` grants; outside a grant it does not exist). No tool sends a report, reads one back, or
+changes where it goes or what it holds.
+
+**An opt-in report from a person's own Home to Opensteer is deliberately not built.** It would need
+someone at Opensteer who reads what it counts, and a way to trust a report: an anonymous endpoint
+lets anyone forge counts or crowd real reports out, and the sending address can tie a report to the
+person's other requests to Opensteer. Until both exist, every problem stays on the person's own
+Home, where they see it.
+
+Not built yet, and where each would attach. Such an opt-in report, and crash reports from devices
+(Sentry's protocol, so a self-hoster could point them at their own collector, with the desktop's
+`crashReporter` started with uploads off), would each need their own switch for the person, asked
+once after setup and off until they choose. A "Report a problem" form would send the Home's report
+and the person's own words, after showing both, from the Problems group. Session recording and
+product analytics on devices are never to be built.
 
 ## What was measured
 

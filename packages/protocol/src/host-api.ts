@@ -33,6 +33,7 @@ import {
   TabIdSchema,
 } from "@opensteer/core";
 import { MachineListSummarySchema } from "./machines.js";
+import { ProblemViewSchema, problemsLimit } from "./problems.js";
 import { OwnerWindowInfoSchema } from "./computer-use.js";
 import {
   TabCommandSchema,
@@ -303,6 +304,18 @@ const ComputerUseInstalledAppViewSchema = z.object({
 const idempotencyKeySchema = z.string().trim().min(1).max(255);
 /** Client-generated, so a retried take is the same lease. */
 const threadInputEditLeaseIdSchema = z.string().regex(/^[A-Za-z0-9_-]{16,64}$/);
+/**
+ * Who this Home's report goes to, from its operator's configuration alone: `operator`, a Cloud
+ * Computer, whose health report Opensteer, which runs it, receives; `own`, the collector a
+ * self-hosted Home's operator set; `none`, nothing leaves this computer.
+ */
+export const ProblemReportingSchema = z.object({
+  destination: z.enum(["operator", "own", "none"]),
+  lastSentAt: z.iso.datetime().optional(),
+  lastResult: z.enum(["sent", "refused", "unreachable"]).optional(),
+});
+export type ProblemReporting = z.infer<typeof ProblemReportingSchema>;
+
 export const messageRevisionsPageSize = 20;
 const emailSchema = z.email().max(320);
 // An interrupted native OAuth authorization rides through sign-in as its opaque
@@ -721,13 +734,12 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     requestId: RequestIdSchema,
-    /** The revision of the Request the person reviewed. */
-    expectedRevision: PersonalRevisionSchema,
     /**
-     * The command as the person approves it: as proposed, or changed on its screen, with the values
-     * only the person types. Its type and what it changes must be what was asked.
+     * The revision of the Request the person reviewed. The Home runs the proposal it stored,
+     * exactly; the approval carries no command of its own. A command that carries a value only
+     * the person types is never approved this way.
      */
-    command: z.record(z.string().max(200), z.unknown()),
+    expectedRevision: PersonalRevisionSchema,
     type: z.literal("request.command.approve"),
   }),
   z.strictObject({
@@ -2311,6 +2323,17 @@ const workspaceHostApi = defineRpc({
       cursor: z.string().max(4096).optional(),
     }),
     PersonalResourceDetailSchema,
+  ),
+  // This Home's problems now, and the one report it sends or would send, exactly.
+  "problems.get": declaration(
+    "GET",
+    emptyInputSchema,
+    z.object({
+      problems: z.array(ProblemViewSchema).max(problemsLimit),
+      reporting: ProblemReportingSchema,
+      /** Exactly the bytes this Home sends, or would send; null where there is nowhere to send. */
+      body: z.string().max(65_536).nullable(),
+    }),
   ),
   "machines.list": declaration(
     "GET",

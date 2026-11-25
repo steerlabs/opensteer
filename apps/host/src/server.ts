@@ -378,6 +378,8 @@ const HarnessAuthenticationParamsSchema = z.strictObject({
 const machinePageLimit = 100;
 
 export interface HostServerDependencies {
+  /** This Home's problems and the report it sends; see problems/home-problems.ts. */
+  readonly problems?: Pick<import("./problems/home-problems.js").HomeProblems, "view">;
   /** The person's Requests for Home commands agents propose. */
   readonly commandRequests?: import("./commands/requests.js").CommandRequestService;
   /** Hands the agents' state tool the person's read handlers once they are built. */
@@ -1567,6 +1569,12 @@ export async function createHostServer(
         }),
       );
     },
+    "problems.get": async (_input, context) => {
+      requireRpcSession(context);
+      if (!dependencies.problems)
+        throw new OpensteerError({ code: "not_found", message: "This Home has no problem view" });
+      return rpcSuccess(hostApi["problems.get"].success.parse(await dependencies.problems.view()));
+    },
     "machines.list": async (_input, context) => {
       const session = requireRpcSession(context);
       return rpcSuccess(
@@ -1748,6 +1756,7 @@ export async function createHostServer(
     | "voice.stop"
     | "machine.access.history"
     | "machines.list"
+    | "problems.get"
     | "requests.list"
     | "run.attempts.list"
     | "tasks.list"

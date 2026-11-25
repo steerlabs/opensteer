@@ -1,0 +1,26 @@
+# The provisioner recorded a failed setup; the code names the cause (for example provider-failed when Google refused the request).
+# Runbook: docs/cloud-computer-operations.md, "Setup that never becomes ready".
+displayName: "Opensteer: A Cloud Computer setup failed"
+severity: WARNING
+userLabels:
+  opensteer_alert: digest
+documentation:
+  mimeType: text/markdown
+  subject: "Opensteer: A Cloud Computer setup failed"
+  content: |-
+    The provisioner recorded a failed setup; the code names the cause (for example provider-failed when Google refused the request).
+
+    Open the runbook, docs/cloud-computer-operations.md, section "Setup that never becomes ready".
+combiner: OR
+conditions:
+  - displayName: "A Cloud Computer setup failed"
+    conditionMatchedLog:
+      filter: >-
+        resource.type="k8s_container" AND resource.labels.namespace_name="opensteer-system" AND jsonPayload.event="account.cloud_computer.setup_failed"
+      labelExtractors:
+        computer_id: EXTRACT(jsonPayload.computerId)
+        event: EXTRACT(jsonPayload.event)
+alertStrategy:
+  notificationRateLimit:
+    period: 86400s
+  autoClose: 604800s

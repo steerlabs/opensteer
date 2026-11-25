@@ -1829,7 +1829,6 @@ export default defineApp({}, { tools: router({ tick }),
               idempotencyKey: randomUUID(),
               requestId: "req_00000000-0000-4000-8000-000000000001",
               expectedRevision: "1",
-              command: {},
             } as never,
             { headers: { authorization: `Bearer ${bearer}` } },
           );

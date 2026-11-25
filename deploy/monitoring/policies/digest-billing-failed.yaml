@@ -1,0 +1,25 @@
+# A step of the 60-second billing pass failed (Stripe unreachable, a webhook not processed); missed webhooks heal only while this passes.
+# Runbook: docs/cloud-computer-operations.md, "Missed webhook".
+displayName: "Opensteer: The billing pass failed a step"
+severity: WARNING
+userLabels:
+  opensteer_alert: digest
+documentation:
+  mimeType: text/markdown
+  subject: "Opensteer: The billing pass failed a step"
+  content: |-
+    A step of the 60-second billing pass failed (Stripe unreachable, a webhook not processed); missed webhooks heal only while this passes.
+
+    Open the runbook, docs/cloud-computer-operations.md, section "Missed webhook".
+combiner: OR
+conditions:
+  - displayName: "The billing pass failed a step"
+    conditionMatchedLog:
+      filter: >-
+        resource.type="k8s_container" AND resource.labels.namespace_name="opensteer-system" AND jsonPayload.event="account.billing.failed"
+      labelExtractors:
+        event: EXTRACT(jsonPayload.event)
+alertStrategy:
+  notificationRateLimit:
+    period: 86400s
+  autoClose: 604800s

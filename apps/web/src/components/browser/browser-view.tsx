@@ -1,5 +1,4 @@
 import { presentClientIssue } from "@opensteer/client/feedback";
-import { WebTabNotice } from "../devices/web-tab-notice.js";
 import { useFreshPicture } from "./fresh-picture.js";
 import {
   browserCloseUnconfirmed,
@@ -902,7 +901,6 @@ export function PlaceBrowserView({
             </>
           }
         />
-        {native ? null : <WebTabNotice hostClient={hostClient} />}
         {sleep.note ? (
           <div className="browser-return-note" role="status">
             <p className="browser-return-note__text">{sleep.note.line}</p>

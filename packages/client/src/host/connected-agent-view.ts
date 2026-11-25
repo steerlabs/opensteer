@@ -1,5 +1,5 @@
-import { workWords } from "./agent-work-copy.js";
-import { activityRows } from "./agent-work.js";
+import { workSentence, workWords } from "./agent-work-copy.js";
+import { activityRows, connectedAgentNamePart, sessionAgent } from "./agent-work.js";
 import {
   BrowserProfileIdSchema,
   agentGrantPluginTargetKey,
@@ -92,6 +92,7 @@ export interface ConnectedAgentStatus {
 export interface ConnectedAgentLive {
   readonly what: string;
   readonly threadId: string;
+  readonly state?: "working" | "needs-you";
 }
 
 type ConnectedAgentTask = {
@@ -235,6 +236,29 @@ export function connectedAgentPhase(
 /** Still connected, as far as the person can tell: it may act, or will once it is back. */
 export function connectedAgentConnected(phase: ConnectedAgentPhase): boolean {
   return phase === "active" || phase === "paused" || phase === "unknown";
+}
+
+/** A task can name its origin only while the owner's catalog still holds the agent. */
+export function taskOriginLabels(
+  connections: readonly AgentConnection[] | null,
+  revoked: ReadonlySet<string>,
+  now = new Date(),
+): ReadonlyMap<string, readonly SentencePart[]> {
+  const labels = new Map<string, readonly SentencePart[]>();
+  for (const connection of connections ?? []) {
+    if (
+      connection.bridge ||
+      !connectedAgentConnected(connectedAgentPhase(connection, revoked, now))
+    )
+      continue;
+    labels.set(
+      connection.id,
+      workSentence("work.startedBy", {
+        agent: connectedAgentNamePart(sessionAgent(connection, connection.verificationWithdrawnAt)),
+      }),
+    );
+  }
+  return labels;
 }
 
 /** A connection listed without a grant reads as holding nothing (this Home always sends one). */
@@ -435,13 +459,14 @@ export function connectedAgentStatus(
   // status never says "Not doing anything" above a task it lists as running.
   const chatWork = connection.bridge?.tasks?.find(({ running }) => running);
   const working = live ?? (chatWork ? { what: chatWork.title, threadId: chatWork.id } : null);
+  const needsYou = live?.state === "needs-you";
   switch (row.phase) {
     case "active":
       return working
         ? {
-            label: agentWords("agent.status.working"),
+            label: agentWords(needsYou ? "agent.status.needsYou" : "agent.status.working"),
             detail: working.what,
-            tone: "good",
+            tone: needsYou ? "attention" : "good",
             steps: [],
           }
         : {

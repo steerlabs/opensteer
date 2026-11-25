@@ -833,6 +833,23 @@ export function migrationProvider(options?: {
                   `.execute(database);
                 },
               },
+              "0118_problem_reports": {
+                /**
+                 * The partial indexes that let the Home count the outcomes it could not confirm
+                 * (docs/architecture.md, "Problems and reports") without reading every operation,
+                 * firing or chat reply it ever recorded. Unconfirmed Stops use 0117's index.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    create index if not exists agent_operations_unknown
+                      on agent_operations(completed_at) where outcome = 'unknown';
+                    create index if not exists trigger_occurrences_unknown
+                      on trigger_occurrences(updated_at) where status = 'unknown';
+                    create index if not exists bridge_deliveries_unknown
+                      on bridge_deliveries(updated_at) where status = 'unknown';
+                  `.execute(database);
+                },
+              },
               "0119_automation_secret_names": {
                 /**
                  * Stores each automation's sorted secret names unsealed beside `encrypted_secrets`

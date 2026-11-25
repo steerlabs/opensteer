@@ -1,4 +1,6 @@
 import {
+  accessModeOptions,
+  connectedAgentNamePart,
   isolatedPlainSentence,
   sessionSlotFromHome,
   agentSessionSlot,
@@ -6,7 +8,7 @@ import {
   operationRequestView,
   requestDecision,
   requestsWaitingOn,
-  sessionTaskRow,
+  sessionAgent,
   sessionTaskView,
   tabAgentLine,
   tabNeedsYouParts,
@@ -14,14 +16,18 @@ import {
   type OperationGlyph,
   type OperationRequestView,
   type RequestView,
+  type SessionAgent,
+  type SentencePart,
   type HostClient,
   type SessionTaskView,
+  workSentence,
   workWords,
 } from "@opensteer/client/host";
 import { useHostSelector, useTaskActivity } from "@opensteer/client/react";
-import type { Request, RequestResponse, ThreadStatus } from "@opensteer/core";
+import { requestTitleText, type Request, type RequestResponse } from "@opensteer/core";
 import type { NeedsYouEntry } from "@opensteer/protocol";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
+import { useNavigate } from "react-router";
 import { ActionLine } from "./action-line.js";
 import { useOptionalShell, useShell } from "./app-shell.js";
 import { Icon, type IconName } from "./icon.js";
@@ -52,24 +58,66 @@ export function useSessionTask(hostClient: HostClient, threadId: string): Sessio
 }
 
 /** Ends this agent's session on this task, bound to the session the person saw. */
-function useStopSession(threadId: string, sessionId: string | null) {
+function stopSessionAction(hostClient: HostClient, threadId: string, sessionId: string) {
+  return {
+    label: "stop this agent",
+    done: "stopped",
+    happened: "this agent was stopped",
+    execute: () =>
+      hostClient.dispatch({
+        type: "agent.session.stop",
+        threadId,
+        agentSessionId: sessionId,
+        idempotencyKey: mutationIdempotencyKey(`agent-session-stop:${sessionId}`),
+      }),
+  };
+}
+
+export function useStopSession(threadId: string, sessionId: string | null) {
   const { hostClient } = useShell();
   return useAction(
     hostClient,
-    {
-      label: "stop this agent",
-      done: "stopped",
-      happened: "this agent was stopped",
-      execute: () =>
-        hostClient.dispatch({
-          type: "agent.session.stop",
-          threadId,
-          agentSessionId: sessionId!,
-          idempotencyKey: mutationIdempotencyKey(`agent-session-stop:${sessionId}`),
-        }),
-    },
+    stopSessionAction(hostClient, threadId, sessionId!),
     `agent-session-stop:${sessionId ?? ""}`,
   );
+}
+
+export function sessionActionLabel(
+  key: "work.stop" | "work.watch" | "work.review",
+  agent: SessionAgent,
+) {
+  return isolatedPlainSentence(workSentence(key, { agent: connectedAgentNamePart(agent) }));
+}
+
+export function TaskOriginLine({ parts }: { readonly parts: readonly SentencePart[] | undefined }) {
+  return parts ? (
+    <span className="side-task__origin">
+      <SentenceText parts={parts} />
+    </span>
+  ) : null;
+}
+
+/** Watch a session in its existing task view, or focus its Request when reviewing it there. */
+export function useOpenSessionTask() {
+  const workspace = useOptionalWorkspace();
+  const navigate = useNavigate();
+  return (
+    threadId: string,
+    waiting?: {
+      readonly request: Pick<Request, "id" | "originatingThreadId">;
+      readonly presentation?: { readonly threadId: string } | null | undefined;
+    } | null,
+  ) => {
+    const id = waiting?.presentation?.threadId ?? waiting?.request.originatingThreadId ?? threadId;
+    if (workspace) {
+      workspace.nav.openConversation(
+        workspace.nav.threadPath(id),
+        waiting ? { focusRequest: waiting.request.id } : undefined,
+      );
+    } else {
+      void navigate(`/tasks/${encodeURIComponent(id)}`);
+    }
+  };
 }
 
 /**
@@ -123,35 +171,55 @@ const glyphIcons: Readonly<Record<OperationGlyph, IconName>> = {
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 
 /** The agent's operations as they happen, oldest first, in place of a transcript. */
-export function SessionActivity({ view }: { readonly view: SessionTaskView }) {
+export function SessionActivity({
+  view,
+  showIdentity = true,
+  showMode = false,
+}: {
+  readonly view: SessionTaskView;
+  readonly showIdentity?: boolean;
+  readonly showMode?: boolean;
+}) {
   return (
     <section aria-label={view.header} className="session-activity">
-      <p className="session-activity__header">
-        <AgentMark identity={view.agent} />
-        <span>{view.header}</span>
-      </p>
+      {showIdentity ? (
+        <p className="session-activity__header">
+          <AgentMark identity={view.agent} />
+          <span>{view.header}</span>
+        </p>
+      ) : null}
       {view.activity.kind === "unavailable" ? (
         <p className="session-activity__empty">{workWordsUnavailable}</p>
       ) : view.activity.rows.length === 0 ? (
         <p className="session-activity__empty">{workWordsEmpty}</p>
       ) : (
         <ol className="session-activity__list">
-          {view.activity.rows.map((row) => (
-            <li className="session-op" key={row.id}>
-              <Icon className="session-op__glyph" name={glyphIcons[row.glyph]} />
-              <span className="session-op__body">
-                <span className="session-op__action">{row.action}</span>
-                {row.allowedBy ? <span className="session-op__by">{row.allowedBy}</span> : null}
-                {row.detail ? <span className="session-op__detail">{row.detail}</span> : null}
-              </span>
-              <span className={`chip session-op__outcome session-op__outcome--${row.outcome.tone}`}>
-                {row.outcome.label}
-              </span>
-              <time className="session-op__time" dateTime={row.at}>
-                {timeFormat.format(new Date(row.at))}
-              </time>
-            </li>
-          ))}
+          {view.activity.rows.map((row) => {
+            const mode = showMode
+              ? accessModeOptions.find((option) => option.mode === row.mode)?.label
+              : null;
+            return (
+              <li className="session-op" key={row.id}>
+                <Icon className="session-op__glyph" name={glyphIcons[row.glyph]} />
+                <span className="session-op__body">
+                  <span className="session-op__action">{row.action}</span>
+                  {mode ? <span className="session-op__by">{mode}</span> : null}
+                  {row.allowedBy && row.allowedBy !== mode ? (
+                    <span className="session-op__by">{row.allowedBy}</span>
+                  ) : null}
+                  {row.detail ? <span className="session-op__detail">{row.detail}</span> : null}
+                </span>
+                <span
+                  className={`chip session-op__outcome session-op__outcome--${row.outcome.tone}`}
+                >
+                  {row.outcome.label}
+                </span>
+                <time className="session-op__time" dateTime={row.at}>
+                  {timeFormat.format(new Date(row.at))}
+                </time>
+              </li>
+            );
+          })}
         </ol>
       )}
     </section>
@@ -227,7 +295,9 @@ export function OperationRequestPanel({
     >
       <div className="operation-request__by">
         <AgentMark identity={view.agent} />
-        <strong>{view.agent.name}</strong>
+        <strong>
+          <SentenceText parts={[connectedAgentNamePart(view.agent)]} quoteNames />
+        </strong>
       </div>
       <p className="action-panel__title">{view.question}</p>
       {(view.context ?? view.summary) ? (
@@ -352,42 +422,30 @@ export function TabAgentStatus({
 const workWordsUnavailable = workWords("work.activityUnavailable");
 const workWordsEmpty = workWords("work.activityEmpty");
 
-/** A Needs you entry for a connected agent's direct operation, or null for anything else. */
-export function useNeedsYouOperation(entry: NeedsYouEntry): OperationRequestView | null {
+/** Name both a direct approval and a question the connected agent asked. */
+export function useNeedsYouAgentRequest(entry: NeedsYouEntry) {
   const snapshot = useOptionalShell()?.snapshot;
   if (!snapshot || entry.kind !== "request") return null;
   const { request } = entry;
-  return operationRequestView({
-    request,
-    session: agentSessionSlot(snapshot, request.originatingThreadId),
-  });
-}
-
-/**
- * A connected agent's own task's row in Tasks, or null for any other task. It selects only
- * this task's facts, so a row redraws only when they change.
- */
-export function useSessionTaskRow(hostClient: HostClient, threadId: string) {
-  const work = useHostSelector(
-    hostClient,
-    useCallback((current) => threadInDirectory(threadId, current)?.externalWork, [threadId]),
-  );
-  const key = useHostSelector(
-    hostClient,
-    useCallback(
-      (current) => {
-        const thread = threadInDirectory(threadId, current);
-        return thread ? `${thread.status}|${thread.agentSessionId ?? ""}` : null;
-      },
-      [threadId],
+  const session = agentSessionSlot(snapshot, request.originatingThreadId);
+  const operation = operationRequestView({ request, session });
+  if (!operation && (!session || session.sessionId !== request.originatingAgentSessionId))
+    return null;
+  const agent = operation?.agent ?? sessionAgent(session?.connection);
+  const presentation = request.presentation;
+  const prompt =
+    request.kind === "person.question" &&
+    presentation.kind === "form" &&
+    presentation.fields.length === 1
+      ? presentation.fields[0]?.prompt.trim()
+      : null;
+  const question = operation?.question ?? (prompt || requestTitleText(presentation));
+  return {
+    agent,
+    listTitleParts: workSentence(
+      agent.who?.verified ? "ask.listTitle" : "ask.title",
+      { agent: connectedAgentNamePart(agent) },
+      { question },
     ),
-  );
-  return useMemo(() => {
-    if (key === null) return null;
-    const [status, agentSessionId] = key.split("|") as [ThreadStatus, string];
-    return sessionTaskRow({
-      thread: { status, agentSessionId: agentSessionId || null },
-      slot: sessionSlotFromHome(work),
-    });
-  }, [key, work]);
+  };
 }

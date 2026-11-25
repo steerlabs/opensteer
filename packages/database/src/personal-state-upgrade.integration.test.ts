@@ -128,6 +128,7 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         "0115_provider_session_person_lineage",
         browserPoolSessionsMigrationName,
         "0117_stop_truth_and_recovery",
+        "0118_problem_reports",
         "0119_automation_secret_names",
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });

@@ -980,30 +980,61 @@ it("waits for a command in flight before it repairs a guest whose egress proxy i
 it("repairs a guest whose egress proxy is down while a person watches it: a viewer's sends wait for the wake", async () => {
   const f = await poolFixture("proxy-down-viewer");
   try {
-    const home = f.home(undefined, f.controller, { statusEveryMs: 50 });
+    // Wait on the repair's own events rather than a 1 s clock: observing proxy-down through the
+    // real agent takes its host check, status poll, and serialized journal/DB commits for park
+    // and wake, none of which wait on the viewer.
+    const resumed = Promise.withResolvers<void>();
+    const sentAfterWake = Promise.withResolvers<void>();
+    let sent = 0;
+    let sentAtPause: number | undefined;
+    let sentAtResume: number | undefined;
+    let resumeApplied = false;
+    let waitedForWake = false;
+    const physical: BrowserPoolPhysicalController = {
+      status: (slot, term) => f.controller.status(slot, term),
+      result: (slot, term, id) => f.controller.result(slot, term, id),
+      apply: async (call) => {
+        if (call.kind === "pause" && sentAtPause === undefined) sentAtPause = sent;
+        const result = await f.controller.apply(call);
+        if (call.kind === "resume" && result.applied) {
+          sentAtResume = sent;
+          resumeApplied = true;
+          resumed.resolve();
+        }
+        return result;
+      },
+    };
+    const home = f.home(undefined, physical, { statusEveryMs: 50 });
     await home.recover();
     // A viewer: sends with no demand (its frames' acknowledgements), one after another, each
     // admitted and released on the next turn of the event loop.
     const watching = new AbortController();
-    let sent = 0;
     const viewer = (async () => {
       while (!watching.signal.aborted) {
         const send =
           home.gate.backgroundNow() ??
           (await home.gate.background(watching.signal).catch(() => undefined));
         if (!send) return;
+        if (send.waited) waitedForWake = true;
         sent++;
+        if (resumeApplied) sentAfterWake.resolve();
         await new Promise<void>((resolve) => setImmediate(resolve));
         send.release();
       }
     })();
-    f.controller.observe({ proxy: "down" });
-    await vi.waitFor(() => expect(f.controller.effects).toEqual(["start", "pause", "resume"]));
-    // The viewer kept sending across it.
-    const before = sent;
-    await vi.waitFor(() => expect(sent).toBeGreaterThan(before));
-    watching.abort();
-    await viewer;
+    try {
+      f.controller.observe({ proxy: "down" });
+      await resumed.promise;
+      expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
+      // No viewer send slipped through between pause and resume.
+      expect(sentAtResume).toBe(sentAtPause);
+      // The viewer's send waited on the gate and kept sending once the wake reopened it.
+      await sentAfterWake.promise;
+      expect(waitedForWake).toBe(true);
+    } finally {
+      watching.abort();
+      await viewer;
+    }
   } finally {
     await f.close();
   }

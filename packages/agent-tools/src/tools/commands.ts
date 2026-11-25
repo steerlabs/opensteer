@@ -46,7 +46,7 @@ export const opensteer_command = defineAgentTool({
   name: "opensteer_command",
   title: "Change Opensteer",
   description:
-    "Send one command from opensteer_commands. One that asks the person returns pending with a Request; they may change it before approving. Leave secret fields out. withdraw: take back your own pending Request.",
+    "Send one command from opensteer_commands. One that asks the person returns pending with a Request; they approve exactly what you sent, or decline it. Leave secret fields out. withdraw: take back your own pending Request.",
   input: z.strictObject({
     command: z
       .object({ type: z.string().min(1).max(100) })
@@ -65,7 +65,9 @@ export const opensteer_command = defineAgentTool({
       next: z.string(),
     }),
     z.object({
-      status: z.enum(["declined", "withdrawn", "closed"]),
+      // person-says-done: the person says they did it themselves; done-by-person: their own
+      // command did it. Either way the proposal itself did not run.
+      status: z.enum(["declined", "withdrawn", "closed", "person-says-done", "done-by-person"]),
       requestId: RequestIdSchema,
     }),
     z.object({
@@ -88,6 +90,7 @@ export const stateAreas = [
   "engines",
   "requests",
   "activity",
+  "problems",
 ] as const;
 
 export type StateArea = (typeof stateAreas)[number];
@@ -106,7 +109,7 @@ export function connectionStateAreas(
   return stateAreas.filter((area) => {
     if (area === "chats") return false;
     if (grant.scope === "everything") return true;
-    if (area === "settings" || area === "engines") return false;
+    if (area === "settings" || area === "engines" || area === "problems") return false;
     if (area === "devices")
       return grant.resources.some((resource) => resource.kind === "computer-app");
     return true;
@@ -122,6 +125,7 @@ const stateAreaWords: Readonly<Record<StateArea, string>> = {
   engines: "engines: AI engine accounts.",
   requests: "requests: what waits for the person.",
   activity: "activity: what agents did.",
+  problems: "problems: what is going wrong with this Home, as the person's Settings shows it.",
 };
 const stateLead =
   "See what is set up in Opensteer now, as the person's apps show it, cut to what you may see.";
@@ -142,7 +146,7 @@ export const opensteer_state = defineAgentTool({
   name: "opensteer_state",
   title: "See what is set up",
   description:
-    "See what is set up in Opensteer now, as the person's apps show it, cut to what you may see. connections: connected agents (the other AI apps the person connected) and what each may use. devices: the person's devices and what each allows. chats: chat accounts and their chats. engines: AI engine accounts. requests: what waits for the person. activity: what agents did. settings. Read here what another agent, a device or a chat can use. An area you cannot see is unavailable.",
+    "See what is set up in Opensteer now, as the person's apps show it, cut to what you may see. connections: connected agents (the other AI apps the person connected) and what each may use. devices: the person's devices and what each allows. chats: chat accounts and their chats. engines: AI engine accounts. requests: what waits for the person. activity: what agents did. problems: what is going wrong with this Home. settings. Read here what another agent, a device or a chat can use. An area you cannot see is unavailable.",
   input: z.strictObject({ area: z.enum(stateAreas) }),
   output: z.object({ area: z.string(), view: z.record(z.string(), z.unknown()) }),
   access: "read",

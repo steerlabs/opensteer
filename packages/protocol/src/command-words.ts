@@ -514,7 +514,7 @@ export function commandGives(
     case "approve":
       return "It lifts an approval you set.";
     case "secret":
-      return "You type the value on this screen; it is not sent to the agent.";
+      return "Only you type the value, on its own screen in Opensteer; the agent does not send it.";
     case "identity":
       return "It concerns who you are or your Opensteer account.";
     default:

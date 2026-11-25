@@ -156,7 +156,6 @@ describeStore("automation secrets through the one door", (it) => {
             {
               requestId: command.requestId,
               expectedRevision: command.expectedRevision,
-              command: command.command,
               idempotencyKey: command.idempotencyKey,
             },
             (person, approved) => dispatchCommand(person, approved, personDoor, ctx),

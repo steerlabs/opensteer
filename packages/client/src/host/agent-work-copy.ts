@@ -8,7 +8,13 @@ import { plainSentence, sentenceWith, type SentencePart } from "./sentence-parts
  */
 export const agentWorkCopy = {
   "work.someAgent": "A connected agent",
+  "work.startedBy": "started by {agent}",
   "work.working": "{agent} is working",
+  "now.workingIn": "{agent} is working in {place}",
+  "now.workingInPlaces": "{agent} is working in {count} places",
+  "now.workingCount": "{count} agents working",
+  "now.needsYouCount": "{count} agents need you",
+  "now.alsoWorking": " · {count} working",
   "work.waiting": "{agent} needs you",
   "work.idle": "{agent} is idle",
   "work.stopped": "Stopped by you",
@@ -17,6 +23,8 @@ export const agentWorkCopy = {
   "work.ended.narrowed": "Ended: {agent} can no longer use what this task used",
   "work.ended.idle": "Ended: {agent} went quiet",
   "work.stop": "Stop {agent}",
+  "work.watch": "Watch {agent}",
+  "work.review": "Review {agent}",
   "work.stopDetail": "Ends {agent}’s work on this task. It stays connected.",
   "work.noComposer": "{agent} works this task itself. You can’t write to it here.",
   "work.header": "Connected agent · {origin}",
@@ -80,6 +88,7 @@ export const agentWorkCopy = {
   "tab.answer": "Answer",
 
   "ask.title": "{agent}: {question}",
+  "ask.listTitle": "{agent} · {question}",
   "ask.says": "{agent} says:",
   "ask.context": "{target} · {device}",
   "ask.calls": "Show exactly what it will run",

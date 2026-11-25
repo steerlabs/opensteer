@@ -2,6 +2,7 @@ import type { HostClient, HostSnapshot } from "./client.js";
 
 export type HostSnapshotSelector<Selection> = (snapshot: HostSnapshot) => Selection;
 export type HostSelectionEquality<Selection> = (previous: Selection, next: Selection) => boolean;
+export type HostSnapshotSource = Pick<HostClient, "getSnapshot" | "subscribe" | "snapshotReader">;
 
 /**
  * A client has one upstream subscription, regardless of how many consumers
@@ -25,7 +26,7 @@ export interface SnapshotReader {
   close(): void;
 }
 
-const stores = new WeakMap<HostClient, HostSnapshotStore>();
+const stores = new WeakMap<HostSnapshotSource, HostSnapshotStore>();
 const tracked = new WeakMap<object, HostSnapshot>();
 
 /**
@@ -57,7 +58,7 @@ export function rawSnapshot<Value>(value: Value): Value {
   ) as Value;
 }
 
-function createHostSnapshotStore(hostClient: HostClient): HostSnapshotStore {
+function createHostSnapshotStore(hostClient: HostSnapshotSource): HostSnapshotStore {
   const listeners = new Set<() => void>();
   let unsubscribeFromClient: (() => void) | null = null;
 
@@ -85,7 +86,7 @@ function createHostSnapshotStore(hostClient: HostClient): HostSnapshotStore {
   };
 }
 
-export function hostSnapshotStore(hostClient: HostClient): HostSnapshotStore {
+export function hostSnapshotStore(hostClient: HostSnapshotSource): HostSnapshotStore {
   const current = stores.get(hostClient);
   if (current) return current;
   const created = createHostSnapshotStore(hostClient);

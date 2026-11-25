@@ -47,6 +47,7 @@ const taskFields = [
   "latestRunCompletedAt",
   "environmentId",
   "harnessInstanceId",
+  "originConnectionId",
 ] as const;
 
 /** A Run of this thread waits to start and none is executing (the task row's `runQueued`). */
@@ -121,6 +122,14 @@ function taskWindowQuery(
     .$if(input.window !== "done", (part) => part.where("doneAt", "is", null))
     .$if(input.window === "active", (part) =>
       part.where(sql<boolean>`status in ('running','waiting')`),
+    )
+    // Active rows also supply the connected agents' live work. Done and settled Tasks page
+    // only the person's tasks. Keep the session lookup correlated so it can probe the unique
+    // thread_id index as the bounded window reads, without building an anti-join hash table.
+    .$if(input.window !== "active", (part) =>
+      part.where(
+        sql<boolean>`not exists (select 1 from agent_sessions where agent_sessions.thread_id = threads.id offset 0)`,
+      ),
     )
     .$if(input.window === "done", (part) => part.where(sql<boolean>`status <> 'archived'`))
     // The shell lists every active task, so the open list beside it is the settled ones.

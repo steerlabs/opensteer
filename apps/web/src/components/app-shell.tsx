@@ -98,6 +98,7 @@ import {
 } from "./composer-drafts.js";
 import { belongsToPreviousLogin, draftTaskStart, startTask } from "./home/task-start.js";
 import { SidebarChromeProvider } from "./sidebar-chrome.js";
+import { ConnectedAgentsProvider } from "./connected-agents-now.js";
 import { useChromeConnectEnvironment } from "./chrome/chrome-environment.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
 import {
@@ -565,7 +566,9 @@ export function AppShell({
         return open !== null && listedRowThreadId(hostClient.getSnapshot(), open) === threadId;
       };
       const next =
-        done && inView() ? taskAfter(taskList(hostClient.getSnapshot()), threadId) : undefined;
+        done && inView()
+          ? taskAfter(taskList(hostClient.getSnapshot(), { personTasksOnly: true }), threadId)
+          : undefined;
       await hostClient.setTaskDone(threadId, done);
       if (next !== undefined && inView()) openConversation(next === null ? "/" : threadPath(next));
     },
@@ -1161,7 +1164,12 @@ export function AppShell({
                   ) : null}
                   <VoiceIsland ask={<VoiceAsk />} />
                   <SidebarChromeProvider
+                    hostClient={hostClient}
                     onRestore={toggleSidebar}
+                    showConnectedAgents={
+                      !fullWindow &&
+                      (mobileNavigation ? !(mobileNavigationOpen && drawerReady) : sidebarCollapsed)
+                    }
                     restoreVisible={!fullWindow && !mobileNavigation && sidebarCollapsed}
                   >
                     {fullWindow ? (
@@ -1231,7 +1239,11 @@ export function AppShell({
   );
   return (
     <ShellContext value={shell}>
-      <ConnectionGateScope>{workspace}</ConnectionGateScope>
+      <ConnectionGateScope>
+        <ConnectedAgentsProvider hostClient={hostClient} readActivity={!fullWindow}>
+          {workspace}
+        </ConnectedAgentsProvider>
+      </ConnectionGateScope>
     </ShellContext>
   );
 }

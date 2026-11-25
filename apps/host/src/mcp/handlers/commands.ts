@@ -1,5 +1,7 @@
 import { connectionStateAreas } from "@opensteer/agent-tools/tools";
 import {
+  commandAgentStatus,
+  CommandRequestPartSchema,
   OpensteerError,
   raisedBeforeEffect,
   type RequestId,
@@ -13,12 +15,17 @@ import {
   commandHolds,
   commandNotFoundMessage,
   commandRule,
+  commandSubject,
   connectionRequests,
+  requestFromRow,
+  stillReaches,
+  storedProposal,
   withDatabaseTransaction,
   type CommandRequestOrigin,
   type DatabaseSchema,
 } from "@opensteer/database";
 import type { HostApiCommand } from "@opensteer/protocol";
+import { commandActivity } from "../../commands/activity.js";
 import {
   commandFamilies,
   commandRow,
@@ -249,10 +256,16 @@ export class CommandTools {
       });
     if (input.withdraw) {
       if (!requests) throw notFound();
+      const lineage =
+        caller.kind === "connection"
+          ? caller.connectionId
+          : caller.agentConnection?.agentConnectionId;
       return requests.withdraw({
         ownerUserId: caller.userId,
         requestId: input.withdraw as RequestId,
         proposerKey: await proposerLineageKey(this.#database, caller),
+        // Under a connection's grant, the caller's own reach now, in the withdraw's transaction.
+        ...(lineage ? { caller: commandSubject(caller.key) } : {}),
       });
     }
     const command = {
@@ -398,19 +411,55 @@ export class CommandTools {
         return { area: input.area, view: { harnesses } };
       }
       case "requests": {
+        // Under a connection's grant (a connected agent, or a Run or automation in its lineage)
+        // the caller reads a command Request only while it still reaches what it governs now.
+        const grantBound = Boolean(connectionId);
+        const subject = commandSubject(caller.key);
+        // A command Request as an agent reads it: what was sent and a value-free status, never
+        // the Home's sentence, card or notes (rule 5); its reach checked in the transaction that
+        // reads the row.
+        const project = async (item: AgentReadRequest): Promise<AgentReadRequest | null> => {
+          if (!item.request.command) return item;
+          return withDatabaseTransaction(this.#database, async (transaction) => {
+            const row = await transaction
+              .selectFrom("requests")
+              .select(["id", "status", "command", "response"])
+              .where("id", "=", item.request.id as RequestId)
+              .executeTakeFirst();
+            if (!row?.command) return null;
+            const part = CommandRequestPartSchema.parse(row.command);
+            if (grantBound) {
+              const command = storedProposal(part);
+              if (!command || !(await stillReaches(transaction, caller.userId, subject, command)))
+                return null;
+            }
+            return {
+              request: {
+                id: row.id,
+                kind: "command",
+                status: commandAgentStatus({
+                  status: row.status,
+                  response: row.response as never,
+                  command: part,
+                }),
+                type: part.type,
+                // What it sent: never what the Home added for the card.
+                command: Object.fromEntries(
+                  Object.entries(part.command).filter(([key]) => !part.homeAdded?.includes(key)),
+                ),
+                reason: part.agentReason,
+              },
+            } as unknown as AgentReadRequest;
+          });
+        };
         const view = await read("requests.list", {});
-        // Each item as the person's Needs you list holds it: the Request, and how it is shown.
-        const requests = (view.requests ?? []) as readonly {
-          readonly request: { readonly id: string };
-        }[];
+        const personItems = (view.requests ?? []) as readonly AgentReadRequest[];
         // Your own agents at Full access see what the person sees; anyone else, its lineage's:
-        // a connected agent's, the task tree it works in, or the automation's own task.
-        if (!connectionId && mode === "full-access")
-          return { area: input.area, view: { requests } };
-        // A connection's lineage sees what the one predicate gives it (connectionRequests): the
-        // same Requests its task tools count and read, and nothing a hidden one changes (K5).
-        const mine = new Set(
-          connectionId
+        // a connected agent's, the task tree it works in, or the automation's own task, taken
+        // as its own page before any limit (K5).
+        let items: readonly AgentReadRequest[] = personItems;
+        if (connectionId || mode !== "full-access") {
+          const mine = connectionId
             ? await withDatabaseTransaction(this.#database, async (transaction) =>
                 (
                   await (
@@ -431,25 +480,83 @@ export class CommandTools {
                 caller.kind === "run"
                   ? await rootTask(this.#database, caller.thread.id)
                   : (caller as Extract<AgentCaller, { kind: "program" }>).anchor.id,
-              ),
-        );
-        return {
-          area: input.area,
-          view: { requests: requests.filter(({ request }) => mine.has(request.id)) },
-        };
+              );
+          const page = mine.length
+            ? await this.#database
+                .selectFrom("requests")
+                .select("id")
+                .where("id", "in", mine as RequestId[])
+                .where("status", "=", "pending")
+                .orderBy("createdAt", "desc")
+                .orderBy("id", "desc")
+                .limit(stateRequestsLimit)
+                .execute()
+            : [];
+          const byId = new Map(personItems.map((item) => [item.request.id, item]));
+          const own: AgentReadRequest[] = [];
+          for (const { id } of page) {
+            const known = byId.get(id);
+            if (known) {
+              own.push(known);
+              continue;
+            }
+            const row = await this.#database
+              .selectFrom("requests")
+              .selectAll()
+              .where("id", "=", id)
+              .executeTakeFirst();
+            if (row)
+              own.push({ request: requestFromRow(row) as unknown as AgentReadRequest["request"] });
+          }
+          items = own;
+        }
+        const projected: AgentReadRequest[] = [];
+        for (const item of items) {
+          const shown = await project(item);
+          if (shown) projected.push(shown);
+        }
+        return { area: input.area, view: { requests: projected } };
       }
-      case "activity":
-        return {
-          area: input.area,
-          view: connectionId
-            ? await read("connections.activity", { connectionId })
-            : await read("threads.activity", {
-                threadId:
-                  caller.kind === "run"
-                    ? caller.thread.id
-                    : (caller as Extract<AgentCaller, { kind: "program" }>).anchor.id,
-              }),
-        };
+      case "activity": {
+        const of = connectionId
+          ? { connectionId }
+          : {
+              threadId:
+                caller.kind === "run"
+                  ? caller.thread.id
+                  : (caller as Extract<AgentCaller, { kind: "program" }>).anchor.id,
+            };
+        const view = connectionId
+          ? await read("connections.activity", { connectionId })
+          : await read("threads.activity", of);
+        // The door's commands as an agent reads them: no Home sentence or looked-up name, and,
+        // under a connection's grant, only what it still reaches now, read in one transaction.
+        const subject = commandSubject(caller.key);
+        const commands = await withDatabaseTransaction(this.#database, (transaction) =>
+          commandActivity(
+            transaction,
+            {
+              name: async () => null,
+              reconcileShown: (rows) => this.#requests()?.reconcileShown(rows) ?? Promise.resolve(),
+            },
+            { userId: caller.userId, ...of } as Parameters<typeof commandActivity>[2],
+            {
+              reaches: async (command) =>
+                !connectionId ||
+                stillReaches(transaction, caller.userId, subject, command as HostApiCommand),
+            },
+          ),
+        );
+        return { area: input.area, view: { ...view, commands: [...commands] } };
+      }
+      case "problems": {
+        // Home-wide, like settings: an everything grant or the person's own agents only.
+        if (scope === "selected") throw notFound();
+        // The person's own read, its problems only: what this Home would send is not an
+        // agent's to see or to shape, and nothing here sends it.
+        const view = await read("problems.get", {});
+        return { area: input.area, view: { problems: view.problems ?? [] } };
+      }
     }
   }
 
@@ -540,7 +647,14 @@ export class CommandTools {
       taskTitle: task?.title?.slice(0, 240) ?? null,
       key: await proposerLineageKey(database, caller),
       ...(connectionId && connection
-        ? { connectionId, grantRevision: connection.grantRevision }
+        ? {
+            connectionId,
+            grantRevision: connection.grantRevision,
+            // A Run or automation under a connection: the card names whose it is.
+            ...(caller.kind !== "connection"
+              ? { connectionName: connection.label.slice(0, 200) }
+              : {}),
+          }
         : {}),
     };
   }
@@ -653,7 +767,7 @@ function tooled(outcome: AgentCommandOutcome) {
         status: "pending" as const,
         requestId: outcome.requestId as RequestId,
         // A tool every caller holds: a connection has no opensteer_request_read (G6).
-        next: "The person decides in Opensteer. See it with opensteer_state, area requests; it may be changed before it is approved.",
+        next: "The person decides in Opensteer: they approve exactly this, or decline it. See it with opensteer_state, area requests.",
       };
     case "ask":
       throw new OpensteerError({
@@ -690,3 +804,13 @@ async function lineageRequests(
   );
   return rows.map(({ id }) => id);
 }
+
+type AgentReadRequest = {
+  readonly request: {
+    readonly id: string;
+    readonly command?: unknown;
+  };
+};
+
+/** The most Requests an agent reads in one look at its waiting ones. */
+const stateRequestsLimit = 50;

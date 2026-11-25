@@ -1,4 +1,6 @@
-import { billingErrorDetails } from "../cloud-computers/billing-error.js";
+import { billingErrorDetails, billingEvent } from "../cloud-computers/billing-error.js";
+import { logAccountEvent } from "./events.js";
+import { sendHeartbeat } from "@opensteer/shared/heartbeat";
 import { AgentDirectoryStore } from "../agent-directory/store.js";
 import { CloudComputerClaimer, HttpManagedHomeClient } from "../cloud-computers/claim.js";
 import { cloudComputerPortalPath } from "../cloud-computers/portal-pages.js";
@@ -63,6 +65,8 @@ export async function startControlPlane(
   let cloudComputerClaimer: CloudComputerClaimer | undefined;
   // Does nothing until the billing pass is set up below; its minute timer covers that.
   let runBilling = (): void => undefined;
+  // The store reports billing attention before the server and its logger exist.
+  let logger: Parameters<typeof logAccountEvent>[0] | undefined;
   try {
     await migrateControlPlaneToLatest(database);
     const appleSignIn = config.appleSignIn;
@@ -94,6 +98,8 @@ export async function startControlPlane(
             cipher: new CloudComputerSecretCipher(config.adoptionOperationKey),
             stripe,
             returnUrl: new URL(cloudComputerPortalPath, config.portalOrigin),
+            onBillingAttention: (message) =>
+              logAccountEvent(logger ?? console, "account.billing.failed", {}, message),
           })
         : undefined;
     const store = new ControlPlaneStore(database, config.publicOrigin, {
@@ -188,9 +194,12 @@ export async function startControlPlane(
     await personalRemoteAccount.purgeExpired();
     await portalSessions.purgeExpired();
     await hostedOAuthBrokerStore?.purgeExpired(new Date());
+    logger = server.log;
     const billingError = (error: unknown) =>
-      server.log.error(
-        { error: billingErrorDetails(error) },
+      logAccountEvent(
+        server.log,
+        billingEvent(error),
+        billingErrorDetails(error),
         "Cloud Computer billing reconciliation failed",
       );
     await cloudComputers?.checkOffer().catch(billingError);
@@ -229,16 +238,39 @@ export async function startControlPlane(
           home: new HttpManagedHomeClient(),
           issuer: config.publicOrigin,
           sign: async (claims) => (await auth.api.signJWT({ body: { payload: claims } })).token,
-          onError: (error) => server.log.error({ err: error }, "Cloud Computer claim failed"),
+          onError: (error) =>
+            logAccountEvent(
+              server.log,
+              "account.cloud_computer.claim_failed",
+              { err: error },
+              "Cloud Computer claim failed",
+            ),
         })
       : undefined;
     cloudComputerClaimer?.start();
 
     let billingPass: Promise<boolean | void> | undefined;
     runBilling = () => {
-      if (!billingPass && cloudComputers) {
+      if (!billingPass && cloudComputers && cloud) {
+        // A heartbeat only after a pass that ran here, start to end, with nothing failing.
+        let failed = false;
+        const passError = (error: unknown) => {
+          failed = true;
+          billingError(error);
+        };
         billingPass = cloudComputers
-          .reconcileBilling(billingError)
+          .reconcileBilling(passError, {
+            notReadyAfterMs: cloud.notReadyAfterMinutes * 60_000,
+            onFinding: ({ event, ...fields }) => logAccountEvent(server.log, event, fields),
+          })
+          .then((ran) => {
+            if (ran && !failed)
+              sendHeartbeat(cloud.heartbeatUrl, {
+                onError: (status) =>
+                  logAccountEvent(server.log, "account.heartbeat.failed", { status }),
+              });
+            return ran;
+          })
           .catch(billingError)
           .finally(() => {
             billingPass = undefined;
@@ -250,7 +282,13 @@ export async function startControlPlane(
     runBilling();
 
     let backupPass: Promise<void> | undefined;
-    const backupError = () => server.log.error("Cloud Computer backup erasure is pending");
+    const backupError = () =>
+      logAccountEvent(
+        server.log,
+        "account.backup.erasure_pending",
+        {},
+        "Cloud Computer backup erasure is pending",
+      );
     const runBackupErasure = () => {
       if (!backupPass && cloudComputers) {
         backupPass = cloudComputers

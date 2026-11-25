@@ -424,6 +424,7 @@
     "apps/host/src/plugins/plugin-webhook-routes.ts",
     "apps/host/src/plugins/provider-names.ts",
     "apps/host/src/plugins/target-blocked.ts",
+    "apps/host/src/problems/home-problems.ts",
     "apps/host/src/process-entries.ts",
     "apps/host/src/references/resolve.ts",
     "apps/host/src/runtime/assignment-return-pass.ts",
