@@ -8,6 +8,7 @@ import {
   isExtensionMutationCommand,
   type BrowserRuntime,
 } from "@opensteer/browser-runtime-core";
+import { browserPoolSessionGoneReason } from "@opensteer/protocol";
 import type {
   StandardCdpAttemptReconciliation,
   StandardCdpLeaseReconciliation,
@@ -1395,7 +1396,8 @@ export class BrowserService {
     if (!pool) return undefined;
     return {
       identity: () => pool.identity(),
-      reserve: (signal: AbortSignal) => pool.gate.reserve(signal),
+      reserve: (signal: AbortSignal, sessionId?: BrowserSessionId) =>
+        pool.gate.reserve(signal, sessionId ? { sessionId } : undefined),
       /**
        * The page's document: live, or while the browser is away the one last known. Null: its
        * session is being reattached and no document is known (after a Home crash); undefined:
@@ -1403,7 +1405,7 @@ export class BrowserService {
        */
       pageDocument: (sessionId: BrowserSessionId, tabId: TabId): string | null | undefined =>
         this.pageInventory(sessionId)?.records.get(tabId)?.documentId ??
-        (pool.gate.retiringOrAdopting
+        (pool.gate.retiringOrAdopting || pool.reattaching(sessionId)
           ? (pool.knownDocument(sessionId, tabId) ??
             (pool.reattaching(sessionId) ? null : undefined))
           : undefined),
@@ -1524,6 +1526,10 @@ export class BrowserService {
             })),
           ),
       live: (sessionId) => this.#brokers.get(sessionId)?.live === true,
+      reachable: () => {
+        const pool = this.#pool(runnerId);
+        return pool !== undefined && this.isPlacementReady(runnerId, pool.identity().runtimeId);
+      },
       pagesOf: async (sessionId) => {
         if (!(this.#repository instanceof OpensteerStore)) return [];
         const owner = await readBrowserPoolOwner(this.#repository.database);
@@ -1616,7 +1622,7 @@ export class BrowserService {
           timeoutError: () => new Error("A pooled browser did not let go in time."),
         });
       },
-      reattach: async ({ sessions, documents, fence, attempt, signal }) => {
+      reattach: async ({ sessions, documents, fence, attempt, signal, back, gone }) => {
         if (!sessions.length || this.#closed || !(this.#repository instanceof OpensteerStore))
           return [];
         const owner = await readBrowserPoolOwner(this.#repository.database);
@@ -1639,9 +1645,16 @@ export class BrowserService {
                   attempt,
                   signal,
                 );
+                if (back && this.#brokers.get(sessionId)?.live) back(sessionId);
               } catch (error) {
-                // This session is not reattached; the runtime reports it lost, the rest proceed.
-                this.#onError(error);
+                if (
+                  gone &&
+                  error instanceof OpensteerError &&
+                  error.code === "not_found" &&
+                  error.reason === browserPoolSessionGoneReason
+                )
+                  await gone(sessionId).catch(this.#onError);
+                else this.#onError(error);
               }
             }
           }),
@@ -6038,6 +6051,7 @@ export class BrowserService {
     await this.#requireAgentAccess(record.runnerId);
     return pooled.gate.reserve(
       AbortSignal.any([this.#closing.signal, AbortSignal.timeout(browserOpenWorkMs)]),
+      { sessionId: record.id },
     );
   }
 
@@ -8994,7 +9008,10 @@ export class BrowserService {
     waiters.add(waiter);
     this.#poolWaiters.set(sessionId, waiters);
     try {
-      return await gate.reserve(AbortSignal.any([reserveSignal, waiter.signal]), options);
+      return await gate.reserve(AbortSignal.any([reserveSignal, waiter.signal]), {
+        ...options,
+        sessionId,
+      });
     } finally {
       waiters.delete(waiter);
       if (!waiters.size) this.#poolWaiters.delete(sessionId);

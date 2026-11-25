@@ -12,11 +12,15 @@ import {
 import {
   BrowserClientMessageSchema,
   BrowserSessionIdSchema,
+  browserPoolSessionGoneReason,
   decodeBrowserFrameEnvelope,
   type InitialPageReady,
 } from "../packages/protocol/src/browser.js";
 import { BrowserChannelIdSchema } from "../packages/protocol/src/browser-relay.js";
-import { LocalBrowserRuntimeBridge } from "../packages/runner-client/src/browser-bridge.js";
+import {
+  BrowserRelayError,
+  LocalBrowserRuntimeBridge,
+} from "../packages/runner-client/src/browser-bridge.js";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -25,7 +29,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sql } from "kysely";
 import { expect, vi, onTestFinished } from "vitest";
-import { createId } from "../packages/core/src/index.js";
+import { createId, OpensteerError } from "../packages/core/src/index.js";
 import { chromium } from "playwright-core";
 import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
 import {
@@ -124,7 +128,19 @@ export class TestRuntimeConnection extends EventEmitter implements BrowserRuntim
       })
       .catch((error: unknown) => {
         // A refused attach closes the channel whether or not anyone listens for the error.
-        if (this.listenerCount("error")) this.emit("error", error);
+        if (this.listenerCount("error")) {
+          const refusal = error instanceof BrowserRelayError ? error.runtimeError : undefined;
+          this.emit(
+            "error",
+            refusal?.code === "not_found" && refusal.reason === browserPoolSessionGoneReason
+              ? new OpensteerError({
+                  code: refusal.code,
+                  reason: refusal.reason,
+                  message: refusal.message,
+                })
+              : error,
+          );
+        }
         this.end(1011, "attach failed");
       });
   }

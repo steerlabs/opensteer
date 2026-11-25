@@ -1934,3 +1934,5 @@ export const BrowserTabCloseResultSchema = z.object({
 export type BrowserTabCloseCommand = z.infer<typeof BrowserTabCloseCommandSchema>;
 export type BrowserTabCloseResult = z.infer<typeof BrowserTabCloseResultSchema>;
 export const staleBrowserTabInventoryReason = "stale-tab-inventory";
+/** A fenced pooled reattach confirmed the guest holds nothing of this session. */
+export const browserPoolSessionGoneReason = "session-gone";

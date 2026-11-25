@@ -1,6 +1,11 @@
 import { createId } from "@opensteer/core";
 import type { RunnerAuxiliaryStream, RunnerStreamLossReason } from "@opensteer/orchestration";
-import { RunnerAuxiliaryFrameFenceSchema, RunnerBootIdSchema } from "@opensteer/protocol";
+import {
+  browserPoolSessionGoneReason,
+  RunnerAuxiliaryFrameFenceSchema,
+  RunnerBootIdSchema,
+  type ProtocolError,
+} from "@opensteer/protocol";
 import {
   BrowserRelayFrameHeaderSchema,
   encodeBrowserRelayFrame,
@@ -146,7 +151,7 @@ interface BootOptions {
    */
   readonly restartOnSend?: (message: BrowserRuntimeRelayRequest) => boolean;
   /** The Runner refuses every browser attach with this error. */
-  readonly refuseAttach?: { code: string; message: string; retryable: boolean };
+  readonly refuseAttach?: ProtocolError;
   readonly runtimeId?: string;
   /**
    * Booted by "Stop everything on this Mac": answers as `BrowserModuleRelay`
@@ -639,6 +644,25 @@ it.each([
     }
   },
 );
+
+it("preserves a guest's confirmed session end through a browser attach refusal", async () => {
+  const f = restartFixture();
+  try {
+    const refused: ProtocolError = {
+      code: "not_found",
+      message: "The browser page closed.",
+      reason: browserPoolSessionGoneReason,
+      retryable: false,
+    };
+    f.boot({ refuseAttach: refused });
+    const { connection } = f.agent();
+    const failure = Promise.withResolvers<Error>();
+    connection.on("error", failure.resolve);
+    await expect(failure.promise).resolves.toMatchObject(refused);
+  } finally {
+    f.close();
+  }
+});
 
 it("closes the person's tab with the reason when its Runner does not return within the deadline", async () => {
   useDeadlineClock();

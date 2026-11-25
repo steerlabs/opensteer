@@ -85,6 +85,7 @@ async function poolFixture(
     remote?: boolean;
     /** The runtime's page probe during a retire; a retire waits for it. */
     probePage?: (page: unknown, phase: "active" | "frozen") => Promise<readonly string[]>;
+    reachable?: boolean;
   } = {},
 ) {
   const fixture = await createStoreFixture();
@@ -138,15 +139,22 @@ async function poolFixture(
   const sinks = new Map<BrowserSessionId, Awaited<ReturnType<BrowserRuntime["attach"]>>>();
   const runtimeFaults: { kind: RuntimeKind; fault: "request" | "reply" }[] = [];
   const skip = new Set<BrowserSessionId>();
+  const gone = new Set<BrowserSessionId>();
   const surfaces = new Set<string>();
   let tabLoss: BrowserSessionId | undefined;
   let stalled: Promise<void> | undefined;
-  let afterReattach: ((sessions: readonly BrowserSessionId[]) => Promise<void>) | undefined;
+  let afterReattach:
+    | ((
+        sessions: readonly BrowserSessionId[],
+        back?: (id: BrowserSessionId) => void,
+      ) => Promise<void>)
+    | undefined;
   let scanning: (() => Promise<void>) | undefined;
   let unexpected: { sessionId: BrowserSessionId; surfaceId: string } | undefined;
   const adopter: BrowserPoolAdopter = {
     inventory: () => (unexpected ? [unexpected] : []),
     live: (id) => sinks.has(id),
+    ...(options.reachable === undefined ? {} : { reachable: () => options.reachable! }),
     // As the Home's: the ready sessions of the runtime with no channel here.
     pagesOf: async (id) => (id === sessionId ? [...surfaces] : []),
     withoutChannel: async (target) => {
@@ -161,7 +169,7 @@ async function poolFixture(
       for (const attachment of sinks.values()) await attachment.close().catch(() => undefined);
       sinks.clear();
     },
-    reattach: async ({ sessions, fence, attempt, documents, signal }) => {
+    reattach: async ({ sessions, fence, attempt, documents, signal, back, gone: reportGone }) => {
       // A stall ends when the attempt's own signal does: nothing is left running after it.
       if (stalled)
         await Promise.race([
@@ -172,6 +180,10 @@ async function poolFixture(
         ]);
       if (signal?.aborted) return [];
       for (const id of sessions) {
+        if (gone.has(id)) {
+          await reportGone?.(id);
+          continue;
+        }
         if (skip.has(id)) continue;
         const name = `reattach-${id}-${attempt}`;
         verifier.setClaims(name, {
@@ -182,8 +194,9 @@ async function poolFixture(
           pool: { ...fence, attachment: attempt },
         });
         sinks.set(id, await runtime.attach(name, new FakeSink()));
+        if (!afterReattach) back?.(id);
       }
-      await afterReattach?.(sessions);
+      await afterReattach?.(sessions, back);
       return tabLoss
         ? [
             {
@@ -331,6 +344,7 @@ async function poolFixture(
     signed,
     runtimeFaults,
     skip,
+    gone,
     crashSockets,
     setUnexpected: (value: typeof unexpected) => {
       unexpected = value;
@@ -2442,6 +2456,108 @@ it("drives a reconnect whose slot read fails to the session reattached and an op
     expect((await f.row())?.state).toBe("ready");
     expect(f.page.isClosed()).toBe(false);
   } finally {
+    await f.close();
+  }
+});
+
+it("records a guest-confirmed end and reattaches the other session in one round", async () => {
+  const f = await poolFixture("reconnect-gone");
+  try {
+    const home = f.home(undefined, f.controller, { channelDeadlineMs: 60_000 });
+    await home.recover();
+    await f.openSession(home);
+    const other = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    await f.openSession(home, other);
+    const before = (await f.slot())!.attachmentGeneration;
+    f.gone.add(f.sessionId);
+    await f.loseChannel(f.sessionId);
+    await f.loseChannel(other);
+    home.channelLost(f.sessionId);
+    home.channelLost(other);
+
+    await vi.waitFor(async () => expect((await f.row())?.state).toBe("failed"));
+    await vi.waitFor(() => {
+      expect(f.sinks.has(other)).toBe(true);
+      expect(home.gate.phase).toBe("open");
+    });
+    expect(await f.slot()).toMatchObject({ attachmentGeneration: before + 1 });
+    expect(
+      await f.database
+        .selectFrom("browserPoolDocumentLosses")
+        .select("reason")
+        .where("sessionId", "=", f.sessionId)
+        .execute(),
+    ).toEqual([{ reason: "session-gone" }]);
+  } finally {
+    await f.close();
+  }
+});
+
+it("serves a session that came back while another reattach is still waiting", async () => {
+  const f = await poolFixture("reconnect-partial", { reachable: true });
+  const waiting = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  try {
+    const home = f.home(undefined, f.controller, { channelDeadlineMs: 60_000 });
+    await home.recover();
+    await f.openSession(home);
+    const other = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    await f.openSession(home, other);
+    f.skip.add(f.sessionId);
+    await f.loseChannel(f.sessionId);
+    await f.loseChannel(other);
+    f.onReattached((_sessions, back) => {
+      back?.(other);
+      waiting.resolve();
+      return finish.promise;
+    });
+    home.channelLost(f.sessionId);
+    home.channelLost(other);
+    await waiting.promise;
+
+    expect(home.reattaching(f.sessionId)).toBe(true);
+    expect(home.reattaching(other)).toBe(false);
+    (await home.gate.reserve(AbortSignal.timeout(1_000), { sessionId: other })).release();
+    expect((await f.row())?.state).toBe("ready");
+  } finally {
+    finish.resolve();
+    await f.close();
+  }
+});
+
+it("ends unanswered retries one window after their first loss without blocking other work", async () => {
+  const f = await poolFixture("reconnect-first-loss", { reachable: true });
+  vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+  try {
+    const home = f.home(undefined, f.controller, { channelDeadlineMs: 2_000, retryMs: 10 });
+    await home.recover();
+    await f.openSession(home);
+    f.skip.add(f.sessionId);
+    await f.loseChannel();
+    let retries = 0;
+    f.onReattached(async () => {
+      retries++;
+      vi.setSystemTime(Date.now() + 750);
+      home.channelLost(f.sessionId);
+    });
+    home.channelLost(f.sessionId);
+    let sessionReady = false;
+    const bound = home.gate
+      .reserve(AbortSignal.timeout(4_000), { sessionId: f.sessionId })
+      .then((reservation) => {
+        sessionReady = true;
+        reservation.release();
+      });
+    void bound.catch(() => undefined);
+    (await home.gate.reserve(AbortSignal.timeout(1_000))).release();
+    expect(home.gate.phase).toBe("open");
+    expect(sessionReady).toBe(false);
+    await vi.waitFor(async () => expect((await f.row())?.state).toBe("failed"), { timeout: 3_000 });
+    await bound;
+    expect(retries).toBeGreaterThan(1);
+    expect(await f.slot()).toMatchObject({ phase: "running" });
+  } finally {
+    vi.useRealTimers();
     await f.close();
   }
 });
