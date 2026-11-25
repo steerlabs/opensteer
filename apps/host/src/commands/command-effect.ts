@@ -57,8 +57,20 @@ export async function runCommandEffect<T>(input: {
     return { status: "unknown", error: new Error(`An attempt with this key is ${begun.state}`) };
   // One that is done is replayed by the handler's own lookup, with no second attempt.
   const id = begun?.kind === "begun" ? begun.id : null;
+  // The attempt's receipt of what is already known: if it cannot be written, the caller is still
+  // told what happened (rule 4), never an error for an effect that ran. The attempt stays as it
+  // was, which reads as "may have happened" to anything that asks it later, so nothing runs twice.
   const settle = async (state: "done" | "failed" | "unknown") => {
-    if (id && input.attempts) await input.attempts.settle(id, state);
+    if (!id || !input.attempts) return;
+    try {
+      await input.attempts.settle(id, state);
+    } catch (error) {
+      console.warn("A command's attempt receipt could not be written", {
+        type: input.attempt.type,
+        state,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   };
   let output: T;
   try {

@@ -18,7 +18,8 @@ import {
   type DatabaseSchema,
 } from "@opensteer/database";
 import {
-  hostApi,
+  commandSchemaVariants,
+  parseCommandArguments,
   type HostApiCommand,
   type HostApiCommandOutput,
   type HostApiServerContext,
@@ -327,25 +328,13 @@ export function isCommandAuthority(value: unknown): value is CommandAuthority {
   return typeof value === "object" && value !== null && authorities.has(value);
 }
 
-/** Each command type's own schemas (a type may have more than one variant). */
-const variants = (() => {
-  const byType = new Map<string, z.ZodObject[]>();
-  for (const option of (
-    hostApi["commands.dispatch"].payload as unknown as z.ZodUnion<z.ZodObject[]>
-  ).options) {
-    const type = (option.shape.type as z.ZodLiteral<string>).value;
-    byType.set(type, [...(byType.get(type) ?? []), option]);
-  }
-  return byType;
-})();
-
 const connectionVariants = new Map<string, readonly z.ZodObject[]>();
 /**
  * A command's schemas as a caller may send them: under a connection's grant, without the kinds
  * only your own agents send, so such a kind reads like one the schema does not know.
  */
 export function commandVariants(type: string, underConnection: boolean): readonly z.ZodObject[] {
-  const all = variants.get(type) ?? [];
+  const all = commandSchemaVariants(type);
   const hidden = Object.hasOwn(commandTable, type)
     ? ((commandRow(type as CommandType) as CommandRow).ownAgentsOnly ?? [])
     : [];
@@ -366,22 +355,14 @@ export function commandVariants(type: string, underConnection: boolean): readonl
   return narrowed;
 }
 
-/** Reads a command with its own schema, leaving out each top-level secret field it does not carry. */
-function parseHeld(row: CommandRow, command: HostApiCommand, underConnection: boolean) {
-  const input = command as unknown as Record<string, unknown>;
-  const absent = (row.secretFields ?? []).filter(
-    (path) => !path.includes(".") && input[path] === undefined,
-  );
-  let first: ReturnType<z.ZodObject["safeParse"]> | undefined;
-  for (const variant of commandVariants(command.type, underConnection)) {
-    const schema = absent.length
-      ? variant.omit(Object.fromEntries(absent.map((key) => [key, true])) as never)
-      : variant;
-    const result = schema.safeParse(command);
-    if (result.success) return result;
-    first ??= result;
-  }
-  return first ?? hostApi["commands.dispatch"].payload.safeParse(command);
+/**
+ * Reads a command with its own schema, leaving out each secret field it does not carry: the one
+ * rule, shared with the Home's reading of a stored proposal (`parseCommandArguments`).
+ */
+function parseHeld(_row: CommandRow, command: HostApiCommand, underConnection: boolean) {
+  return parseCommandArguments(command as never, {
+    variants: commandVariants(command.type, underConnection),
+  });
 }
 
 /** A value only the person types never passes through an agent: found by the table's paths. */

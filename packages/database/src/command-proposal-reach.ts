@@ -4,7 +4,7 @@ import {
   type RequestId,
   type UserId,
 } from "@opensteer/core";
-import { hostApi, type HostApiCommand } from "@opensteer/protocol";
+import { parseCommandArguments, type HostApiCommand } from "@opensteer/protocol";
 import { sql, type Kysely, type Transaction } from "kysely";
 import { cancelPending } from "./request-cancellation.js";
 import { admitCommand, type AuthoritySubject } from "./resource-access.js";
@@ -61,9 +61,13 @@ export function standingSubject(row: {
   return null;
 }
 
-/** The stored proposal as the command it is, or null when it no longer reads as one. */
+/**
+ * The stored proposal as the command it is, or null when it no longer reads as one. Read by the
+ * door's own argument rules: a value only the person types was never stored, and its absence is
+ * how the agent was told to ask, so it reads as the command without it.
+ */
 export function storedProposal(part: { readonly type: string; readonly command: unknown }) {
-  const parsed = hostApi["commands.dispatch"].payload.safeParse({
+  const parsed = parseCommandArguments({
     ...(part.command as Record<string, unknown>),
     type: part.type,
     idempotencyKey: "proposal",

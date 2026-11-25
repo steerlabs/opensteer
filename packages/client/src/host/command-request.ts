@@ -101,6 +101,7 @@ export const commandRequestWords = {
   closed: "This ask closed before it was answered, so nothing changed.",
   continuesTask: "Approving it continues the task, even after the agent's turn has ended.",
   agentLooks: "The connected agent sees your answer the next time it looks.",
+  firingOwn: "Approving it does this now; nothing else follows from it.",
   now: "Now",
   needs: "Needs",
   more: "More below. Scroll to the end to approve.",
@@ -260,10 +261,14 @@ export function commandRequestView(
     sentence: outsideProse(part.sentence ?? part.summary).replace(/\n/gu, " "),
     askedBy: askedBy(part.proposer),
     asked: request.createdAt ? commandAskedAgo(request.createdAt, now) : null,
+    // What is true for whoever asked: a Run's task continues; a connected agent looks again; an
+    // automation's firing asked with no Run to resume, so approving only does it.
     next: pending
       ? part.proposer.kind === "connection"
         ? commandRequestWords.agentLooks
-        : commandRequestWords.continuesTask
+        : part.proposer.kind === "program"
+          ? commandRequestWords.firingOwn
+          : commandRequestWords.continuesTask
       : null,
     gives: part.gives === null ? null : outsideProse(part.gives).replace(/\n/gu, " "),
     agentWords: part.agentReason

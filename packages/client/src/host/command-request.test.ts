@@ -109,6 +109,18 @@ describe("a command Request as the person reviews it", () => {
     expect(direct.asked).toBe("Asked just now");
     expect(direct.next).toBe(commandRequestWords.agentLooks);
     expect(commandRequestView({ ...pending, status: "declined" }, now)!.next).toBeNull();
+    // An automation's firing asked with no Run: approving does it, and nothing continues.
+    const firing = commandRequestView(
+      {
+        ...pending,
+        command: {
+          ...part,
+          proposer: { kind: "program", name: "Morning plan", taskTitle: null, key: "automation:t" },
+        },
+      },
+      now,
+    )!;
+    expect(firing.next).toBe(commandRequestWords.firingOwn);
   });
 
   it("approves the Request for the revision reviewed, sending no command of its own; declines as before", () => {

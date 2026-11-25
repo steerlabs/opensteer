@@ -783,6 +783,32 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
         .where("requestId", "=", renameRequest as never)
         .execute(),
     ).toEqual([]);
+    // Q2: an ask whose value only the person types is still the agent's own to read and to
+    // withdraw: it proposes it with the value left out, as the tool tells it to.
+    const submitter = await connect({ scope: "everything" }, "Signing-in agent");
+    const submitAsk = await call(submitter.client, "opensteer_command", {
+      command: {
+        type: "harness.authentication.submit",
+        environmentId: machine.environmentId,
+        harnessInstanceId: machine.harnessInstanceId,
+      },
+    });
+    expect(submitAsk.structuredContent, JSON.stringify(submitAsk.content)).toMatchObject({
+      status: "pending",
+    });
+    const submitRequest = (submitAsk.structuredContent as { requestId: string }).requestId;
+    expect(
+      JSON.stringify(
+        (await call(submitter.client, "opensteer_state", { area: "requests" })).structuredContent,
+      ),
+    ).toContain(submitRequest);
+    const submitWithdrawn = await call(submitter.client, "opensteer_command", {
+      withdraw: submitRequest,
+    });
+    expect(
+      submitWithdrawn.structuredContent,
+      JSON.stringify(submitWithdrawn.content),
+    ).toMatchObject({ status: "withdrawn" });
     // M3: an answered ask reads, on every agent surface, as one value-free status, with nothing
     // of who answered or on which of the person's devices: here a Run's Request tools, on the
     // ask the person approved above.

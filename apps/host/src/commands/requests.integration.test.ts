@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { sql } from "kysely";
 import {
   isRaisedBeforeEffect,
   OpensteerError,
@@ -14,6 +15,9 @@ import {
   beginAgentSession,
   CommandRequestStore,
   endAgentSessions,
+  standingSubject,
+  stillReaches,
+  storedProposal,
   TriggerStore,
   commandSubject,
   needsYouPage,
@@ -37,6 +41,8 @@ import {
 } from "./dispatch.js";
 import type { CommandRegistry } from "./registry.js";
 import { CommandRequestService, proposerLineageKey, type ProposerLineageKey } from "./requests.js";
+import { commandActivity } from "./activity.js";
+import { everyFieldCommand } from "@opensteer/protocol/test-support/command-samples";
 import { commandSentence } from "@opensteer/protocol/command-words";
 import { commandReviewFields, commandReviewText } from "@opensteer/protocol/command-review";
 
@@ -2397,6 +2403,322 @@ describeStore("command Requests at the Home", (it) => {
     // A second press runs nothing again.
     await approve(proposed.requestId, asked.command!.command, key);
     expect(ran).toHaveLength(1);
+  });
+
+  it("closes a connection's ask in its cleanup only where its standing no longer reaches it, and an expired connection's with nothing said (Q1)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, store, service } = await setup(storeFixture);
+    const connections = new AgentConnectionStore(database);
+    const profile = `bpr_${randomUUID()}` as never;
+    await database
+      .insertInto("browserProfiles")
+      .values({
+        id: profile as never,
+        ownerId: f.userId,
+        name: "Work",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .execute();
+    const connection = await connections.create({
+      userId: f.userId,
+      label: "Agent",
+      clientName: "Agent",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+      grant: {
+        scope: "selected",
+        tasks: true,
+        resources: [{ kind: "browser-profile", profileId: profile }],
+      },
+    });
+    await connections.activate(connection.id, `hash-${randomUUID()}`);
+    const { session } = await beginAgentSession(database, {
+      userId: f.userId,
+      agentConnectionId: connection.id,
+    });
+    const asked = (await service.propose({
+      ownerUserId: f.userId,
+      command: {
+        type: "browser.profile.rename",
+        idempotencyKey: randomUUID(),
+        profileId: profile,
+        name: "Renamed",
+      } as unknown as HostApiCommand,
+      ask: { status: "ask", reason: "approval" },
+      face: undefined,
+      proposer: {
+        kind: "connection",
+        name: "Agent",
+        taskTitle: null,
+        key: `connection:${connection.id}` as ProposerLineageKey,
+        connectionId: connection.id,
+        grantRevision: 1,
+      },
+      origin: { agentSessionId: session.id },
+      originatingThreadId: session.threadId,
+      callKey: randomUUID(),
+    })) as { status: string; requestId: string };
+    expect(asked.status).toBe("pending");
+    // Tasks off, the profile kept: the direct ask still reaches what it is about.
+    await connections.update(f.userId, {
+      connectionId: connection.id,
+      expectedRevision: 1,
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: profile }],
+      },
+    });
+    expect((await store.requests.get(asked.requestId as never))!.status).toBe("pending");
+    await store.driveConnectionCleanups();
+    expect((await store.requests.get(asked.requestId as never))!.status).toBe("pending");
+    // The connection expires: it stands for nothing, so its cleanup closes the ask, and says
+    // nothing to its lineage.
+    await database
+      .updateTable("agentConnections")
+      .set({ expiresAt: new Date(Date.now() - 60_000) })
+      .where("id", "=", connection.id)
+      .execute();
+    await store.driveConnectionCleanups();
+    expect(await store.requests.get(asked.requestId as never)).toMatchObject({
+      status: "cancelled",
+      cancellationReason: "authority-revoked",
+    });
+    expect(
+      await database
+        .selectFrom("requestContinuations")
+        .select("requestId")
+        .where("requestId", "=", asked.requestId as never)
+        .execute(),
+    ).toEqual([]);
+  });
+
+  it("reads, re-admits and withdraws a connection's ask whose value only the person types, for every such command (Q2)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, store, service } = await setup(storeFixture);
+    const connections = new AgentConnectionStore(database);
+    const connection = await connections.create({
+      userId: f.userId,
+      label: "Agent",
+      clientName: "Agent",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+      grant: { scope: "everything" },
+    });
+    await connections.activate(connection.id, `hash-${randomUUID()}`);
+    const { session } = await beginAgentSession(database, {
+      userId: f.userId,
+      agentConnectionId: connection.id,
+    });
+    const secretTypes = types.filter((type) => commandTable[type].secretFields?.length);
+    expect(secretTypes.length).toBeGreaterThanOrEqual(10);
+    const subject = { kind: "connection", agentConnectionId: connection.id } as const;
+    const failures: string[] = [];
+    for (const type of secretTypes) {
+      // As the tool tells the agent: every value only the person types left out.
+      const command = everyFieldCommand(type);
+      for (const path of commandTable[type].secretFields ?? []) {
+        const keys = path.split(".");
+        let at = command as Record<string, unknown>;
+        for (const key of keys.slice(0, -1)) {
+          const next = at[key];
+          if (!next || typeof next !== "object") break;
+          at = next as Record<string, unknown>;
+        }
+        delete at[keys.at(-1)!];
+      }
+      // The generated sample's return path does not meet that schema's own rule.
+      if (type === "plugin.authorization.begin")
+        (command.input as Record<string, unknown>).returnPath = "/settings/plugins";
+      const ask = (asConnection: boolean) =>
+        service.propose({
+          ownerUserId: f.userId,
+          command: { ...command, idempotencyKey: randomUUID() } as unknown as HostApiCommand,
+          ask: { status: "ask", reason: "secret" },
+          face: undefined,
+          proposer: asConnection
+            ? {
+                kind: "connection",
+                name: "Agent",
+                taskTitle: null,
+                key: `connection:${connection.id}` as ProposerLineageKey,
+                connectionId: connection.id,
+                grantRevision: 1,
+              }
+            : {
+                kind: "run",
+                name: "Claude Code",
+                taskTitle: null,
+                key: `task:${f.threadId}` as ProposerLineageKey,
+              },
+          origin: asConnection ? { agentSessionId: session.id } : { runId: f.run.id },
+          originatingThreadId: asConnection ? session.threadId : f.threadId,
+          callKey: randomUUID(),
+        }) as Promise<{ status: string; requestId: string }>;
+      // A type no connection holds is asked by your own agent instead.
+      let asConnection = true;
+      let asked = await ask(true).catch(() => null);
+      if (!asked) {
+        asConnection = false;
+        asked = await ask(false).catch((error: unknown) => ({
+          status: `refused: ${String(error)}`,
+          requestId: "",
+        }));
+      }
+      if (asked.status !== "pending") {
+        failures.push(`${type}: ${asked.status}`);
+        continue;
+      }
+      const part = (await store.requests.get(asked.requestId as never))!.command!;
+      // Nothing only the person types was kept.
+      for (const path of part.secretPaths)
+        expect(JSON.stringify(part.command), `${type} ${path}`).not.toContain(
+          `"${path.split(".").at(-1)}"`,
+        );
+      // It reads back as the command it was asked as, and its proposer still reaches it.
+      const proposal = storedProposal(part);
+      if (!proposal) failures.push(`${type}: no stored proposal`);
+      else {
+        const standing = standingSubject(
+          asConnection
+            ? {
+                originatingAgentSessionId: session.id,
+                originatingThreadId: session.threadId,
+                connectionId: connection.id,
+              }
+            : { originatingThreadId: f.threadId },
+        )!;
+        // Re-admitted as it was asked: a connection's ask passed that check as it was written (an
+        // own agent's ask of a sample thing that does not exist is not checked at write here).
+        if (asConnection && !(await stillReaches(database, f.userId, standing, proposal)))
+          failures.push(`${type}: not reached`);
+      }
+      const withdrawn = await service
+        .withdraw({
+          ownerUserId: f.userId,
+          requestId: asked.requestId as never,
+          proposerKey: (asConnection
+            ? `connection:${connection.id}`
+            : `task:${f.threadId}`) as ProposerLineageKey,
+          ...(asConnection ? { caller: subject } : {}),
+        })
+        .catch((error: unknown) => ({ status: `refused: ${String(error)}` }));
+      if (withdrawn.status !== "withdrawn") failures.push(`${type}: withdraw ${withdrawn.status}`);
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it("answers an approval whose outside attempt's receipt cannot be written with what it did, settles it, and runs nothing twice (Q3)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, service, store, ran, approve } = await setup(storeFixture);
+    const connections = new AgentConnectionStore(database);
+    const connection = await connections.create({
+      userId: f.userId,
+      label: "Agent",
+      clientName: "Agent",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+      grant: { scope: "everything" },
+    });
+    await connections.activate(connection.id, `hash-${randomUUID()}`);
+    const { session } = await beginAgentSession(database, {
+      userId: f.userId,
+      agentConnectionId: connection.id,
+    });
+    const proposed = (await service.propose({
+      ownerUserId: f.userId,
+      command: {
+        type: "tab.open",
+        idempotencyKey: randomUUID(),
+        target: { kind: "page", url: "about:blank", guest: true },
+      } as unknown as HostApiCommand,
+      ask: { status: "ask", reason: "step" },
+      face: 0,
+      proposer: {
+        kind: "connection",
+        name: "Agent",
+        taskTitle: null,
+        key: `connection:${connection.id}` as ProposerLineageKey,
+        connectionId: connection.id,
+        grantRevision: 1,
+      },
+      origin: { agentSessionId: session.id },
+      originatingThreadId: session.threadId,
+      callKey: randomUUID(),
+    })) as { requestId: string };
+    const asked = (await store.requests.get(proposed.requestId as never))!;
+    // The database refuses the attempt's receipt of "done", after the effect ran.
+    const fn = `refuse_attempt_done_${randomUUID().replaceAll("-", "")}`;
+    await sql`create function ${sql.raw(fn)}() returns trigger language plpgsql as $$
+      begin if new.state = 'done' then raise exception 'fixture: attempt receipt refused'; end if;
+      return new; end $$`.execute(database);
+    await sql`create trigger ${sql.raw(fn)} before update on command_attempts
+      for each row execute function ${sql.raw(fn)}()`.execute(database);
+    try {
+      const key = randomUUID();
+      expect(await approve(proposed.requestId, asked.command!.command, key)).toMatchObject({
+        status: "done",
+      });
+      expect(ran).toHaveLength(1);
+      expect(
+        (await store.requests.get(proposed.requestId as never))!.command!.outcome,
+      ).toMatchObject({ status: "done" });
+      expect(await approve(proposed.requestId, asked.command!.command, key)).toMatchObject({
+        status: "done",
+      });
+      expect(ran).toHaveLength(1);
+    } finally {
+      await sql`drop trigger ${sql.raw(fn)} on command_attempts`.execute(database);
+      await sql`drop function ${sql.raw(fn)}()`.execute(database);
+    }
+  });
+
+  it("keeps the person's own answer distinct on the agent's activity, as on every agent surface (Q4)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, store, service } = await setup(storeFixture);
+    const asked = (await service.propose({
+      ownerUserId: f.userId,
+      command: {
+        type: "harness.authentication.submit",
+        idempotencyKey: randomUUID(),
+        environmentId: f.environmentId,
+        harnessInstanceId: "hin_00000000-0000-4000-8000-000000003301",
+      } as unknown as HostApiCommand,
+      ask: { status: "ask", reason: "secret" },
+      face: 0,
+      proposer: {
+        kind: "run",
+        name: "Claude Code",
+        taskTitle: null,
+        key: `task:${f.threadId}` as ProposerLineageKey,
+      },
+      origin: { runId: f.run.id },
+      originatingThreadId: f.threadId,
+      callKey: randomUUID(),
+    })) as { requestId: string };
+    await service.decline({
+      requestId: asked.requestId as never,
+      expectedRevision: (await store.requests.revision(asked.requestId as never))!,
+      resolvedBy: f.userId,
+      response: { kind: "form", answers: { decision: ["done-myself"] } },
+    });
+    const rows = await commandActivity(
+      database,
+      { name: async () => null },
+      { userId: f.userId, threadId: f.threadId } as never,
+      { reaches: async () => true },
+    );
+    expect(rows.find(({ requestId }) => requestId === asked.requestId)).toMatchObject({
+      status: "person-says-done",
+    });
   });
 
   it.for([

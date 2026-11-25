@@ -2351,7 +2351,10 @@ export class TriggerStore {
       .limit(1)
       .executeTakeFirst();
     if (!candidate) return { occurrences: [], changed: false, failures: [], runningFirings: [] };
-    return commitPersonalMutation(this.#database, async (transaction) => {
+    // Schedules this pass paused on its own: what their lineage asked closes once it commits.
+    const paused: TriggerId[] = [];
+    const pass = await commitPersonalMutation(this.#database, async (transaction) => {
+      paused.length = 0;
       const due = await dueSchedules(transaction)
         .selectAll("triggers")
         .orderBy("triggers.nextFireAt", "asc")
@@ -2392,6 +2395,7 @@ export class TriggerStore {
                 : triggerAuthorityLossPauseReason,
             pausedBy: "system",
           });
+          paused.push(trigger.id);
           const running = await transaction
             .selectFrom("triggerOccurrences")
             .select([
@@ -2503,6 +2507,36 @@ export class TriggerStore {
         runningFirings,
       };
     });
+    await this.#closeEndedAutomationAsks(paused);
+    return pass;
+  }
+
+  /**
+   * A paused or archived automation acts no more, however it got there: after a pass that paused
+   * or archived one on its own commits, what its lineage asked closes, its tasks locked first as
+   * every task is. One that is active again by then (a resume meanwhile, or a claim rolled back)
+   * keeps its asks; any left is still refused when the person approves.
+   */
+  async #closeEndedAutomationAsks(triggerIds: readonly TriggerId[]): Promise<void> {
+    for (const triggerId of new Set(triggerIds))
+      await commitPersonalMutation(this.#database, async (transaction) => {
+        await lockRequestThreads(
+          transaction,
+          (await automationProposalThreads(transaction, triggerId)) as ThreadId[],
+        );
+        const trigger = await transaction
+          .selectFrom("triggers")
+          .select("status")
+          .where("id", "=", triggerId)
+          .executeTakeFirst();
+        if (trigger && trigger.status !== "active")
+          await closeAutomationProposals(transaction, triggerId);
+      }).catch((error: unknown) =>
+        console.warn("An ended automation's asks could not be closed now", {
+          triggerId,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
   }
   async listPausedRunningFirings(): Promise<readonly RunningFiringRef[]> {
     const rows = await this.#database
@@ -2791,7 +2825,10 @@ export class TriggerStore {
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
   }): Promise<TriggerOccurrence | null> {
+    // A one-shot automation archived by its last firing: what its lineage asked closes after.
+    let archived: TriggerId | null = null;
     const completed = await commitPersonalMutation(this.#database, async (transaction) => {
+      archived = null;
       const occurrence = await transaction
         .selectFrom("triggerOccurrences")
         .selectAll()
@@ -2895,6 +2932,7 @@ export class TriggerStore {
             })
             .where("id", "=", trigger.id)
             .execute();
+          if (finished) archived = trigger.id;
         }
       } else if (
         input.output.status === "failed" &&
@@ -3021,6 +3059,7 @@ export class TriggerStore {
     if (completed) {
       await pruneCompletedOccurrenceOutputs(this.#database, completed.triggerId);
     }
+    if (archived) await this.#closeEndedAutomationAsks([archived]);
     return completed;
   }
 

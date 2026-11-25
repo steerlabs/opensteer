@@ -1,5 +1,11 @@
-import type { AgentCommandActivity, ThreadId, UserId } from "@opensteer/core";
-import { CommandRequestPartSchema } from "@opensteer/core";
+import type {
+  AgentCommandActivity,
+  CommandAgentStatus,
+  RequestResponse,
+  ThreadId,
+  UserId,
+} from "@opensteer/core";
+import { CommandRequestPartSchema, commandAgentStatus } from "@opensteer/core";
 import { commandRequestState, type DatabaseSchema } from "@opensteer/database";
 import {
   commandTable,
@@ -29,11 +35,44 @@ const pageLimit = 100;
 const sentenceLimit = 600;
 
 /**
+ * A row of the activity: the person's list of statuses, or for an agent, an ask's one value-free
+ * status (`commandAgentStatus`) as every agent surface reads it.
+ */
+export type CommandActivityEntry = Omit<AgentCommandActivity, "status"> & {
+  readonly status: AgentCommandActivity["status"] | CommandAgentStatus;
+};
+
+/**
  * The commands an agent sent through the door, as the person's activity shows them beside its
  * operations (C5): the door's own records, read as a second source. A command that ran at once
  * is its ledger row; one that asked is its Request, asked, then approved or ended. Each says,
  * in the Home's words, who sent it and from which task.
  */
+interface ActivityNaming {
+  name(resource: CommandResource, owner: UserId): Promise<string | null>;
+  /** An approval whose receipt was lost reads as what its attempt says, before it is shown. */
+  reconcileShown?(
+    requests: readonly { readonly id: string; readonly command?: unknown }[],
+  ): Promise<void>;
+}
+type ActivityInput = { readonly userId: UserId } & CommandActivityOf & CommandActivitySpan;
+interface ActivityAgent {
+  readonly reaches: (command: Command) => Promise<boolean>;
+}
+
+/** The person's activity: its own list of statuses. */
+export async function commandActivity(
+  database: Kysely<DatabaseSchema>,
+  naming: ActivityNaming,
+  input: ActivityInput,
+): Promise<readonly AgentCommandActivity[]>;
+/** An agent's activity: an ask reads its one value-free status. */
+export async function commandActivity(
+  database: Kysely<DatabaseSchema>,
+  naming: ActivityNaming,
+  input: ActivityInput,
+  agent: ActivityAgent,
+): Promise<readonly CommandActivityEntry[]>;
 export async function commandActivity(
   database: Kysely<DatabaseSchema>,
   naming: {
@@ -50,7 +89,7 @@ export async function commandActivity(
    * still reaches its command now.
    */
   agent?: { readonly reaches: (command: Command) => Promise<boolean> },
-): Promise<readonly AgentCommandActivity[]> {
+): Promise<readonly CommandActivityEntry[]> {
   const callerKey = sql<string>`commands.authority_source->>'callerKey'`;
   let ledger = database
     .selectFrom("commands")
@@ -112,7 +151,7 @@ export async function commandActivity(
     }
   };
 
-  const entries: AgentCommandActivity[] = [];
+  const entries: CommandActivityEntry[] = [];
   for (const row of done) {
     if (!Object.hasOwn(commandTable, row.type)) continue;
     const type = row.type as CommandType;
@@ -165,15 +204,25 @@ export async function commandActivity(
             commandAskedWords({ ...part.data.command, type } as Command),
             what,
           ),
-      status: !state
-        ? "asked"
-        : state.status === "answered"
-          ? "approved"
-          : state.status === "done-by-person"
-            ? "done"
-            : state.status === "person-says-done"
-              ? "closed"
-              : state.status,
+      // An agent reads an ask's one value-free status, as on every agent surface: the person's
+      // own answers stay distinct. The person's activity keeps its own list.
+      status: agent
+        ? row.status === "withdrawn"
+          ? "withdrawn"
+          : commandAgentStatus({
+              status: row.status,
+              response: (row.response ?? null) as RequestResponse | null,
+              command: part.data,
+            })
+        : !state
+          ? "asked"
+          : state.status === "answered"
+            ? "approved"
+            : state.status === "done-by-person"
+              ? "done"
+              : state.status === "person-says-done"
+                ? "closed"
+                : state.status,
       outcome:
         state?.status === "answered"
           ? (state.outcome.status as NonNullable<AgentCommandActivity["outcome"]>)
