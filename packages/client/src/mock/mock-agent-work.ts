@@ -24,6 +24,7 @@ export const mockAgentWorkThreads = {
   stopped: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-0000000000a3"),
   ended: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-0000000000a4"),
   shopping: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-0000000000a5"),
+  pastShopping: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-0000000000a6"),
 } as const;
 export const mockAgentOperationRequestId = RequestIdSchema.parse(
   "req_00000000-0000-4000-8000-0000000000b1",
@@ -37,9 +38,12 @@ const studioMac = {
   name: "Studio Mac",
 };
 
-function profile(name: string): AgentOperationTarget {
+function profile(
+  name: string,
+  profileId = "bpr_00000000-0000-4000-8000-000000000003",
+): AgentOperationTarget {
   return {
-    grant: { kind: "browser-profile", profileId: "bpr_00000000-0000-4000-8000-000000000003" },
+    grant: { kind: "browser-profile", profileId },
     name,
     device: studioMac,
   };
@@ -58,6 +62,8 @@ export const mockAgentWorkLiveScenes = [
   "long-panel",
   "long-one",
   "long-place",
+  "history",
+  "one-history",
 ] as const;
 export type MockAgentWorkLiveScene = (typeof mockAgentWorkLiveScenes)[number];
 
@@ -125,7 +131,9 @@ export function mockAgentWork(input: {
   const longPanel = livePanel === "long-panel";
   const longSolo = livePanel === "long-one";
   const longSoloPlace = livePanel === "long-place";
-  const solo = livePanel === "one" || longSolo || longSoloPlace;
+  const history = livePanel === "history" || livePanel === "one-history";
+  const liveShopping = livePanel && livePanel !== "history";
+  const solo = livePanel === "one" || longSolo || longSoloPlace || history;
   const longAgent = { ...grok, label: "Grok research assistant for the entire household" };
   const longPlace = "Household shopping and weekly groceries shared with family";
   const workingAgent = liveWaiting ? grok : claude;
@@ -286,7 +294,7 @@ export function mockAgentWork(input: {
     },
   };
   const shopperSession = "ags_00000000-0000-4000-8000-0000000000d5";
-  if (livePanel) {
+  if (liveShopping) {
     slots[mockAgentWorkThreads.shopping] = {
       sessionId: shopperSession,
       connection: longSolo ? longAgent : connectionOf(input.connections, "ChatGPT"),
@@ -369,6 +377,65 @@ export function mockAgentWork(input: {
             ),
           ]
         : [op(otherThread, sessions.waiting, { tool: "tab_open", target: otherPlace }, 2)],
+    };
+  }
+  const today = new Date(input.now);
+  today.setHours(0, 0, 0, 0);
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1, 11);
+  const todayAge = (input.now.getTime() - today.getTime()) / 120_000;
+  const yesterdayAge = (input.now.getTime() - yesterday.getTime()) / 60_000;
+
+  if (history) {
+    const connection = connectionOf(input.connections, "ChatGPT");
+    const recent = mockAgentWorkThreads.pastShopping;
+    const recentSession = "ags_00000000-0000-4000-8000-0000000000d6";
+    const travel = profile("Travel", "bpr_00000000-0000-4000-8000-000000000002");
+    const work = profile("Work", "bpr_00000000-0000-4000-8000-000000000001");
+    slots[recent] = {
+      connection,
+      sessionId: recentSession,
+      status: "ended",
+      endReason: "idle",
+      operations: [
+        op(recent, recentSession, { tool: "tab_open", target: profile("Shopping") }, todayAge),
+      ],
+    };
+    slots[mockAgentWorkThreads.ended] = {
+      ...slots[mockAgentWorkThreads.ended]!,
+      connection,
+      endReason: "idle",
+      operations: [
+        op(
+          mockAgentWorkThreads.ended,
+          sessions.ended,
+          { tool: "tab_list", target: travel },
+          yesterdayAge,
+        ),
+      ],
+    };
+    slots[mockAgentWorkThreads.stopped] = {
+      ...slots[mockAgentWorkThreads.stopped]!,
+      connection,
+      operations: [
+        op(
+          mockAgentWorkThreads.stopped,
+          sessions.stopped,
+          { tool: "tab_list", target: travel },
+          yesterdayAge + 30,
+        ),
+        op(
+          mockAgentWorkThreads.stopped,
+          sessions.stopped,
+          { tool: "tab_open", target: work },
+          yesterdayAge + 25,
+        ),
+        op(
+          mockAgentWorkThreads.stopped,
+          sessions.stopped,
+          { tool: "tab_close", target: work },
+          yesterdayAge + 20,
+        ),
+      ],
     };
   }
   const task = (
@@ -491,7 +558,7 @@ export function mockAgentWork(input: {
   });
   return {
     threads: [
-      ...(livePanel
+      ...(liveShopping
         ? [
             task(
               mockAgentWorkThreads.shopping,
@@ -525,8 +592,21 @@ export function mockAgentWork(input: {
               sessions.waiting,
             ),
           ]),
-      task(mockAgentWorkThreads.stopped, "Renew the parking permit", "idle", 90),
-      task(mockAgentWorkThreads.ended, "Compare running shoes", "idle", 45),
+      ...(history
+        ? [task(mockAgentWorkThreads.pastShopping, "Compare desk chairs", "idle", todayAge)]
+        : []),
+      task(
+        mockAgentWorkThreads.stopped,
+        "Renew the parking permit",
+        "idle",
+        history ? yesterdayAge + 20 : 90,
+      ),
+      task(
+        mockAgentWorkThreads.ended,
+        history ? "Check the itinerary" : "Compare running shoes",
+        "idle",
+        history ? yesterdayAge : 45,
+      ),
     ],
     requests: {
       ...(!livePanel || liveWaiting ? { [mockAgentWorkThreads.waiting]: [request] } : {}),

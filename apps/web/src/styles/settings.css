@@ -1549,7 +1549,8 @@ a.connected-agents__row:focus-visible {
   white-space: nowrap;
 }
 
-[aria-labelledby="connected-agent-now"] {
+[aria-labelledby="connected-agent-now"],
+[aria-labelledby="connected-agent-earlier"] {
   margin-block: var(--space-12);
 }
 
@@ -1602,4 +1603,40 @@ a.connected-agents__row:focus-visible {
 
 .connected-agent__session .request-stack {
   margin-block-start: var(--space-8);
+}
+
+.connected-agent__history-day + .connected-agent__history-day {
+  border-top: 1px solid var(--line);
+}
+
+.connected-agent__history-day h3 {
+  margin: 0;
+  padding: var(--space-8) var(--space-16) var(--space-4);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.connected-agent__history-row {
+  text-align: start;
+  width: 100%;
+}
+
+.connected-agent__history-row:hover {
+  background-color: var(--fill-quiet);
+}
+
+.connected-agent__history-row .card__row-detail {
+  overflow-wrap: anywhere;
+}
+
+.connected-agent__history-row > time,
+.connected-agent__history-row > .icon {
+  flex: none;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.connected-agent__show-earlier {
+  margin: var(--space-8) var(--space-16);
 }

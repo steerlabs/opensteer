@@ -227,8 +227,12 @@ export function operationRow(operation: AgentOperationView): OperationRow {
     allowedBy,
     outcome,
     detail: operation.outcome === "unknown" ? workWords("op.outcome.unknownDetail") : null,
-    at: operation.completedAt ?? operation.handedOffAt ?? operation.createdAt,
+    at: operationTime(operation),
   };
+}
+
+export function operationTime(operation: AgentOperationView): string {
+  return operation.completedAt ?? operation.handedOffAt ?? operation.createdAt;
 }
 
 function operationOutcome(operation: AgentOperationView): OperationRow["outcome"] {

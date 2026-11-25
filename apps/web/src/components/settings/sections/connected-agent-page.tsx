@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import {
   agentBrowserOptions,
@@ -8,6 +8,7 @@ import {
   chatFacts,
   chatTasksNow,
   connectedAgentConnected,
+  connectedAgentActivity,
   connectionsRead,
   connectedAgentDetail,
   chatScreenHost,
@@ -23,7 +24,6 @@ import {
 } from "@opensteer/client/host";
 import {
   useChromeTabGrantCatalog,
-  useConnectedAgentActivity,
   useConnectedAgents,
   useLiveTasks,
 } from "@opensteer/client/react";
@@ -38,6 +38,10 @@ import { AgentMark } from "../agent-mark.js";
 import { AgentWhoLine, AgentWithdrawnNotice } from "../agent-who.js";
 import { ChatFactsSection } from "./chat-facts.js";
 import { ConnectedAgentNowSection } from "./connected-agent-now-section.js";
+import {
+  ConnectedAgentEarlierSection,
+  useConnectedAgentHistory,
+} from "./connected-agent-earlier-section.js";
 import { SectionHeader, SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
 import { SentenceText } from "../../../ui/address-text.js";
 
@@ -64,10 +68,10 @@ export function ConnectedAgentPage({
   // What this page sends is what the chat parity script covers.
   const chatHost = chatScreenHost(client);
   const work = useConnectedAgentWork(client, connectionId);
-  const activity = useConnectedAgentActivity(
-    client,
-    connectionId,
-    work.view.agents[0]?.threadId ?? null,
+  const history = useConnectedAgentHistory(client, connectionId);
+  const activeSessionIds = useMemo(
+    () => new Set(work.view.agents.map(({ sessionId }) => sessionId)),
+    [work.view.agents],
   );
   const liveTasks = useLiveTasks(client);
   const chromeTabs = useChromeTabGrantCatalog(client, true);
@@ -128,7 +132,6 @@ export function ConnectedAgentPage({
   const detail = connectedAgentDetail(connection, names, {
     revoked: agents.revoked,
     grantsAvailable: agents.grantsAvailable,
-    ...(activity ? { activity } : {}),
   });
   const who = detail.row.identity.who;
   // A withdrawn verification offers Disconnect once, in its own notice.
@@ -253,6 +256,7 @@ export function ConnectedAgentPage({
           />
         ) : null}
         <ConnectedAgentNowSection client={client} work={work} />
+        <ConnectedAgentEarlierSection activeSessionIds={activeSessionIds} history={history} />
         {detail.editable ? (
           <>
             <AgentGrantEditor
@@ -297,12 +301,16 @@ export function ConnectedAgentPage({
             <SettingsError message={profileError} />
           </>
         ) : null}
-        <SettingsGroup
-          heading={agentWords("agent.activity.title")}
-          headingId="connected-agent-activity"
-        >
-          <ActivityRows activity={detail.activity} />
-        </SettingsGroup>
+        {history.page?.commands.length ? (
+          <SettingsGroup
+            heading={agentWords("agent.activity.title")}
+            headingId="connected-agent-activity"
+          >
+            <ActivityRows
+              activity={connectedAgentActivity({ operations: [], commands: history.page.commands })}
+            />
+          </SettingsGroup>
+        ) : null}
         <SettingsGroup heading={agentWords("agent.about.title")} headingId="connected-agent-about">
           {detail.about.map((row) => (
             <SettingsRow

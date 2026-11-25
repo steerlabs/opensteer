@@ -183,6 +183,38 @@ try {
   await page.locator(".connected-agents__work").getByText("Needs you", { exact: true }).waitFor();
   await page.locator(".connected-agents__work").filter({ hasText: "Working" }).first().waitFor();
   await save(page, "list-dark");
+
+  const earlier = page.getByRole("region", { name: "Earlier", exact: true });
+  const historyReady = async () => {
+    await earlier.getByRole("heading", { name: "Today", exact: true }).waitFor();
+    await earlier.getByRole("heading", { name: "Yesterday", exact: true }).waitFor();
+    if ((await earlier.locator(".connected-agent__history-row").count()) !== 3)
+      throw new Error("Earlier should show three past sessions.");
+    const overflow = await earlier.evaluate((section) => section.scrollWidth > section.clientWidth);
+    if (overflow) throw new Error("The Earlier section exceeds its available width.");
+  };
+  await openSettings("history", chatgpt);
+  await historyReady();
+  if (await now.count()) throw new Error("Now is visible in the idle history scene.");
+  await save(page, "page-earlier-dark");
+
+  await openSettings("one-history", chatgpt);
+  await historyReady();
+  await ready();
+  await save(page, "page-now-earlier-dark");
+
+  await page.setViewportSize({ width: 728, height: 820 });
+  await openSettings("history", chatgpt);
+  await historyReady();
+  await save(page, "page-earlier-728");
+  await earlier.getByRole("button", { name: /^Shopping · 1 action/ }).click();
+  await page.waitForURL(
+    (url) => url.pathname === "/tasks/thr_00000000-0000-4000-8000-0000000000a6",
+  );
+  await page
+    .locator(".session-activity")
+    .getByText("Opened a tab in Shopping on Studio Mac")
+    .waitFor();
   await context.close();
 } finally {
   await web.close();

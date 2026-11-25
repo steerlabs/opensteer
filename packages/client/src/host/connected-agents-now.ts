@@ -61,7 +61,7 @@ export function connectedAgentsNow(input: {
       threadId: task.id,
       sessionId: work.sessionId,
       state: waiting || task.status === "waiting" ? "needs-you" : "working",
-      places: distinctPlaces(targets),
+      places: distinctAgentPlaces(targets),
       action: waiting?.request.presentation.title ?? (latest ? operationAction(latest) : null),
       waiting,
     };
@@ -87,7 +87,9 @@ export function connectedAgentsNow(input: {
   };
 }
 
-function distinctPlaces(targets: readonly AgentOperationTarget[]): AgentOperationTarget[] {
+export function distinctAgentPlaces(
+  targets: readonly AgentOperationTarget[],
+): AgentOperationTarget[] {
   return [
     ...new Map(
       targets.map((target) => [JSON.stringify([target.grant, target.device?.id]), target]),
@@ -113,7 +115,7 @@ function headlineFor(
   const sessions = working[0];
   const only = sessions?.[0];
   if (!only) return [];
-  const places = distinctPlaces(sessions.flatMap((entry) => entry.places));
+  const places = distinctAgentPlaces(sessions.flatMap((entry) => entry.places));
   if (places.length > 1)
     return singleAgentHeadline("now.workingInPlaces", only.agent, { count: places.length });
   if (places[0]) return singleAgentHeadline("now.workingIn", only.agent, { place: places[0].name });

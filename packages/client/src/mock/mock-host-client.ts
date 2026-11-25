@@ -7856,13 +7856,16 @@ class MockHostState {
     const placed: Readonly<Record<string, string>> =
       options.livePanel === "one" ||
       options.livePanel === "long-one" ||
-      options.livePanel === "long-place"
+      options.livePanel === "long-place" ||
+      options.livePanel === "one-history"
         ? { "mock-tab-1-0": mockAgentWorkThreads.shopping }
-        : {
-            "mock-tab-1-0": mockAgentWorkThreads.working,
-            "mock-tab-0-0": mockAgentWorkThreads.waiting,
-            ...(options.livePanel ? { "mock-tab-1-1": mockAgentWorkThreads.shopping } : {}),
-          };
+        : options.livePanel === "history"
+          ? {}
+          : {
+              "mock-tab-1-0": mockAgentWorkThreads.working,
+              "mock-tab-0-0": mockAgentWorkThreads.waiting,
+              ...(options.livePanel ? { "mock-tab-1-1": mockAgentWorkThreads.shopping } : {}),
+            };
     const browserSessions = this.snapshot.browserSessions.map((session) => {
       if (!session.catalog?.tabs.some(({ id }) => id in placed)) return session;
       const tabs = session.catalog.tabs.map((tab) =>

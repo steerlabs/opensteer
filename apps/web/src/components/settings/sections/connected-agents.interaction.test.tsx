@@ -3,7 +3,12 @@ import { createId, ThreadIdSchema } from "@opensteer/core";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
-import { agentWords, HostClientRequestError, mutationIdempotencyKey } from "@opensteer/client/host";
+import {
+  agentWords,
+  HostClientRequestError,
+  mutationIdempotencyKey,
+  unwrapRpcResult,
+} from "@opensteer/client/host";
 import { HostTransportError } from "@opensteer/client/connections";
 import {
   MockHostClient,
@@ -229,6 +234,7 @@ describe("one connected agent", () => {
     expect(status(page)).toBe("");
     expect(watch()).toBeNull();
     await act(async () => client.mockAgentWork());
+    expect(activity).toHaveBeenCalledTimes(1);
     expect(watch()?.textContent).toBe("Watch");
     await act(async () => watch()!.click());
     expect(path).toBe(`/tasks/${threadId}`);
@@ -306,6 +312,60 @@ describe("one connected agent", () => {
     await vi.waitFor(() => expect(page.querySelector(".request-card")).toBeNull());
   });
 
+  it("paginates Earlier once per click, completes the counts, and opens the selected past task", async () => {
+    const client = seeded();
+    host = client;
+    await client.load();
+    client.mockAgentWork({ livePanel: "one-history" });
+    const original = client.rpc["connections.activity"];
+    const all = unwrapRpcResult(await original({ connectionId: chatgpt }));
+    const activity = vi.fn(async ({ before }: Parameters<typeof original>[0]) => ({
+      ok: true as const,
+      data: before
+        ? { ...all, operations: all.operations.slice(5) }
+        : { ...all, operations: all.operations.slice(0, 5), nextBefore: "page-2" },
+    }));
+    Object.defineProperty(client.rpc, "connections.activity", {
+      value: activity,
+      configurable: true,
+    });
+    const page = await mount(client, `${base}/${chatgpt}`);
+    const earlier = page.querySelector<HTMLElement>('[aria-labelledby="connected-agent-earlier"]')!;
+    const rowTitles = () =>
+      [...earlier.querySelectorAll(".card__row-title")].map((row) => row.textContent);
+    expect([...earlier.querySelectorAll("h3")].map((heading) => heading.textContent)).toEqual([
+      "Today",
+      "Yesterday",
+    ]);
+    expect(rowTitles()).toEqual(["Shopping", "Travel", "Work"]);
+    expect(earlier.textContent).toContain("Opened a tab in Shopping · Done");
+    expect(earlier.textContent).not.toContain("Run a script on Shopping");
+    expect(activity).toHaveBeenCalledTimes(1);
+    expect(activity).toHaveBeenNthCalledWith(
+      1,
+      { connectionId: chatgpt },
+      { signal: expect.any(AbortSignal) },
+    );
+
+    await act(async () => buttonNamed(earlier, "Show earlier").click());
+    expect(activity).toHaveBeenCalledTimes(2);
+    expect(activity).toHaveBeenNthCalledWith(
+      2,
+      { connectionId: chatgpt, before: "page-2" },
+      { signal: expect.any(AbortSignal) },
+    );
+    expect(rowTitles()).toEqual([
+      "Shopping · 1 action",
+      "Travel · 1 action",
+      "2 places · 3 actions",
+    ]);
+    expect(earlier.querySelector(".connected-agent__show-earlier")).toBeNull();
+    await act(async () =>
+      earlier.querySelector<HTMLButtonElement>(".connected-agent__history-row")!.click(),
+    );
+    expect(path).toBe(`/tasks/${mockAgentWorkThreads.pastShopping}`);
+  });
+
   it.each([390, 1440])("reads and saves the paired Chrome grant at %d px", async (width) => {
     const sourceId = createId("browserSource");
     host = seeded();
@@ -350,8 +410,8 @@ describe("one connected agent", () => {
     expect(page.textContent).toContain("Calls itself");
     expect(page.textContent).toContain("TravelBot Agent");
     expect(page.textContent).toContain("trips.example");
-    // Its Recent activity is what the Home reports for it (connections.activity): nothing yet.
-    expect(page.textContent).toContain("Recent activityNothing yet.");
+    expect(page.querySelector('[aria-labelledby="connected-agent-earlier"]')).toBeNull();
+    expect(page.querySelector('[aria-labelledby="connected-agent-activity"]')).toBeNull();
     expect(page.textContent).not.toContain("doesn’t keep a list");
     expect(
       page.querySelector<HTMLInputElement>('[aria-labelledby="agent-grant-tasks"]')!.checked,
