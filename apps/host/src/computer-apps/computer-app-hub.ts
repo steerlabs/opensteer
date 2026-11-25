@@ -1131,6 +1131,15 @@ export class ComputerAppHub {
     });
   }
 
+  /**
+   * Whether this computer has said what it supports since it connected. Until a
+   * Mac's first status arrives its versions are unknown, which is not "unsupported".
+   */
+  ownerViewReported(runnerId: ComputerTargetId): boolean {
+    if (this.#isScreen(runnerId)) return true;
+    return this.#targetEntry(runnerId)?.statusReceived === true;
+  }
+
   ownerViewSupported(runnerId: ComputerTargetId): boolean {
     const entry = this.#targetEntry(runnerId);
     if (this.#isScreen(runnerId)) {
