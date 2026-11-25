@@ -58,6 +58,13 @@ import type {
 } from "./types.js";
 
 const internalAuthPath = "/internal/better-auth";
+/** The Home web app's page for a sign-in that could not be completed. */
+const homeSignInErrorPath = "/auth/error";
+/** What Better Auth reports when the browser came back without this sign-in's state. */
+const lapsedStateErrors = new Set(["invalid_state", "state_mismatch", "state_not_found"]);
+/** As long as a started sign-in's state can come back (Better Auth keeps it ten minutes). */
+const restartedSignInLifetimeMs = 10 * 60_000;
+const maximumRestartedSignIns = 1_000;
 const publicNativeAuthPath = "/v1/auth/native";
 const idleSessionSeconds = 7 * 24 * 60 * 60;
 const absoluteSessionMilliseconds = 30 * 24 * 60 * 60 * 1_000;
@@ -153,6 +160,12 @@ export class IdentityService {
    * account behind.
    */
   #ownerSetup: Promise<unknown> = Promise.resolve();
+  /**
+   * The state of each sign-in this Home started again after its state lapsed,
+   * until it could no longer come back. One restart per attempt: a sign-in
+   * that comes back without its state twice ends on the Home's own page.
+   */
+  readonly #restartedSignIns = new Map<string, number>();
   readonly #database: Kysely<DatabaseSchema>;
   #options: IdentityServiceOptions;
 
@@ -1994,6 +2007,8 @@ export class IdentityService {
       new Request(url, { headers: forwardedAuthHeaders(request.headers), method: "GET" }),
     );
     if (response.status < 300 || response.status >= 400) return response;
+    const restart = await this.#restartLapsedSignIn(request, response);
+    if (restart) return restart;
     const admission = await this.#admissionFromHeaders(request.headers);
     const authenticatedHeaders = headersWithResponseCookies(request.headers, response.headers);
     if (!admission) return response;
@@ -2006,6 +2021,36 @@ export class IdentityService {
     for (const cookie of completionHeaders.getSetCookie()) headers.append("set-cookie", cookie);
     headers.set("location", this.#options.publicOrigin.origin);
     return new Response(response.body, { headers, status: response.status });
+  }
+
+  /**
+   * A sign-in whose state this browser no longer holds (its five-minute cookie
+   * lapsed while the person signed in at their identity provider) starts again
+   * once, from the Home's one provider: that provider's live session passes it
+   * straight back with a fresh state. Anything else stays on the Home's page.
+   */
+  async #restartLapsedSignIn(request: Request, response: Response): Promise<Response | null> {
+    const location = new URL(response.headers.get("location") ?? "/", this.#options.publicOrigin);
+    if (location.origin !== this.#options.publicOrigin.origin) return null;
+    if (location.pathname !== homeSignInErrorPath) return null;
+    if (!lapsedStateErrors.has(location.searchParams.get("error") ?? "")) return null;
+    const [provider, ...others] = this.#options.oidcProviders;
+    const now = Date.now();
+    for (const [state, until] of this.#restartedSignIns)
+      if (until <= now) this.#restartedSignIns.delete(state);
+    const state = new URL(request.url).searchParams.get("state");
+    if (!provider || others.length > 0 || !state || this.#restartedSignIns.has(state)) return null;
+    if (this.#restartedSignIns.size >= maximumRestartedSignIns) return null;
+    const begun = await this.beginOidcSignIn({
+      headers: request.headers,
+      providerId: provider.providerId,
+      returnPath: "/",
+    });
+    const restartedState = new URL(begun.data.redirectUrl).searchParams.get("state");
+    if (restartedState) this.#restartedSignIns.set(restartedState, now + restartedSignInLifetimeMs);
+    const headers = new Headers({ "cache-control": "no-store", location: begun.data.redirectUrl });
+    for (const cookie of begun.headers.getSetCookie()) headers.append("set-cookie", cookie);
+    return new Response(null, { headers, status: 302 });
   }
 
   async listSessions(current: AuthenticatedSession): Promise<readonly AuthSessionSummary[]> {
@@ -2418,6 +2463,9 @@ function createOpensteerAuth(
       useSecureCookies: false,
     },
     appName: "Opensteer",
+    // Every sign-in failure lands on the Home's own page, which says what
+    // happened and offers to start again. The default is an internal path.
+    onAPIError: { errorURL: new URL(homeSignInErrorPath, options.publicOrigin).toString() },
     basePath: internalAuthPath,
     baseURL: options.publicOrigin.origin,
     database: databaseOption,
