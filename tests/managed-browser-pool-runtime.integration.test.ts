@@ -103,6 +103,7 @@ import {
 } from "../apps/host/src/browser/managed-pool-keys.js";
 import { initializePersonalState } from "../apps/host/src/runtime/personal-state.js";
 import { createHostRuntime, type PersonalHostRuntime } from "../apps/host/src/runtime/runtime.js";
+import { createPersonalRunFixturePort } from "../packages/database/src/personal-run-fixture.test-support.js";
 
 const homeOrigin = "https://cc-pool-home.example.test";
 const accountOrigin = "https://accounts.example.test";
@@ -3622,6 +3623,275 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
       await home5.browser.retirePool(runnerId, "slot-gone");
       expect(home5.browser.resourcePlacements()).toEqual([]);
       expect((await home5.browser.workspaceBootstrap(ownerId)).available).toBe(false);
+    } finally {
+      primary?.terminate();
+      await host?.close();
+      await poolHost?.close();
+      await database.drop();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 45_000);
+
+  it("Rule 3 (Run): wakes a disk-parked pooled slot after a Home restart on a Run's first open", async () => {
+    const database = await cloneTestDatabase("host");
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-pool-rule3-run-"));
+    const port = await freePort();
+    const config = managedConfig(database.url, directory, port, { browserPool: true });
+    let registeredKeys:
+      | {
+          readonly homeKey: string;
+          readonly relayKey: string;
+          readonly ticketKey: { readonly keyId: string; readonly spki: string };
+        }
+      | undefined;
+    let targetResponse: ManagedBrowserPoolTargetResponse = { status: "preparing" };
+    let host: PersonalHostRuntime | undefined;
+    let poolHost: LoopbackPoolHost | undefined;
+    let primary: WebSocket | undefined;
+
+    const accountControlFetch: typeof globalThis.fetch = async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === managedBrowserPoolRegistrationPath && init?.method === "PUT") {
+        const parsed = ManagedBrowserPoolRegistrationRequestSchema.parse(
+          JSON.parse(String(init.body)),
+        );
+        registeredKeys = parsed.document.keys;
+        return Response.json(targetResponse);
+      }
+      if (url.pathname === managedBrowserPoolTargetPath && (init?.method ?? "GET") === "GET") {
+        return Response.json(registeredKeys ? targetResponse : { status: "unregistered" });
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const nextJson = (socket: WebSocket) =>
+      new Promise<Record<string, unknown>>((resolve, reject) => {
+        const onMessage = (raw: WebSocket.RawData) => {
+          socket.off("error", onError);
+          resolve(JSON.parse(String(raw)) as Record<string, unknown>);
+        };
+        const onError = (error: Error) => {
+          socket.off("message", onMessage);
+          reject(error);
+        };
+        socket.once("message", onMessage);
+        socket.once("error", onError);
+      });
+
+    const runnerId = createId("runner");
+    const runnerKeys = generateKeyPairSync("ed25519");
+    const runnerPublicKeyPem = runnerKeys.publicKey
+      .export({ format: "pem", type: "spki" })
+      .toString();
+
+    const connectMainRunner = async (enroll: boolean) => {
+      primary?.terminate();
+      primary = new WebSocket(`ws://127.0.0.1:${port}/internal/v1/runners`);
+      const challenge = RunnerChallengeSchema.parse(await nextJson(primary));
+      const descriptor = RunnerDescriptorSchema.parse({
+        bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
+        capabilities: [],
+        modules: { browser: { wireVersion: 2, runtimeId: "browser-main" } },
+        name: "Cloud Computer",
+        runnerId,
+        runnerKind: "main",
+        runtimeVersion: "test",
+      });
+      const welcomePromise = nextJson(primary);
+      if (enroll) {
+        const credential = {
+          enrollmentToken: mainRunnerToken,
+          kind: "host-enrollment-token" as const,
+        };
+        primary.send(
+          JSON.stringify({
+            challengeId: challenge.challengeId,
+            credential,
+            descriptor,
+            proofFormatVersion: runnerProofFormatVersion,
+            publicKeyPem: runnerPublicKeyPem,
+            signature: createRunnerEnrollmentSignature(runnerKeys.privateKey, {
+              challenge,
+              credential,
+              descriptor,
+              publicKeyPem: runnerPublicKeyPem,
+            }),
+            type: "runner.enroll",
+          }),
+        );
+      } else {
+        primary.send(
+          JSON.stringify({
+            challengeId: challenge.challengeId,
+            descriptor,
+            proofFormatVersion: runnerProofFormatVersion,
+            signature: createRunnerAuthenticationSignature(runnerKeys.privateKey, {
+              challenge,
+              descriptor,
+            }),
+            type: "runner.authenticate",
+          }),
+        );
+      }
+      expect((await welcomePromise).type).toBe("host.welcome");
+    };
+
+    const startHome = async (idleParkMs: number | null) => {
+      const started = await ownTestDatabaseProducer(database.url, async () => {
+        const runtime = await createHostRuntime(config, {
+          personalAccountGrantFetch: jwksFetch(),
+          accountControlFetch,
+          managedBrowserPoolTiming: {
+            firstDelayMs: 40,
+            maxDelayMs: 120,
+            idleParkMs,
+            statusEveryMs: 120,
+          },
+        });
+        if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
+        await runtime.listen();
+        return { host: runtime, close: () => runtime.close() };
+      });
+      host = started.host;
+      return started.host;
+    };
+
+    try {
+      const home1 = await startHome(120);
+      const { ownerId } = await claimHome(home1);
+      await connectMainRunner(true);
+      await initializePersonalState(home1.store.database, {
+        agentHome: config.personal!.agentHome,
+        environmentId: config.personal!.environmentId,
+      });
+
+      await vi.waitFor(() => expect(registeredKeys).toBeDefined(), { timeout: 5_000 });
+      poolHost = await startLoopbackPoolHost({
+        directory,
+        slotId: `bps_${randomUUID()}`,
+        term: 1,
+        registered: registeredKeys!,
+      });
+      targetResponse = { status: "ready", target: poolHost.target };
+
+      await vi.waitFor(
+        async () => {
+          expect((await home1.app.inject({ method: "GET", url: "/ready" })).json()).toEqual({
+            ok: true,
+            browserPool: "ready",
+          });
+        },
+        { timeout: 10_000 },
+      );
+
+      const profile = await home1.browser.createProfile({
+        ownerId,
+        name: "Rule 3 Run Profile",
+        idempotencyKey: `profile-rule3-run-${randomUUID()}`,
+      });
+      await home1.store.database
+        .updateTable("devices")
+        .set({
+          accessPolicy: {
+            reach: "owner",
+            commands: true,
+            browser: true,
+            apps: true,
+            forwarding: true,
+            shares: [],
+          },
+        })
+        .where("id", "=", runnerId as unknown as import("../packages/core/src/index.js").DeviceId)
+        .execute();
+
+      // Park the slot to DISK with 0 sessions, then restart the Home.
+      let savedId = "";
+      await vi.waitFor(
+        async () => {
+          const status = await poolHost!.currentAgent().status(poolHost!.slotId, poolHost!.term);
+          expect(status.phase).toBe("paused");
+          expect(status.savedState?.id).toBeTruthy();
+          savedId = status.savedState!.id;
+        },
+        { timeout: 10_000 },
+      );
+      expect(await poolHost.currentAgent().saveToDisk(poolHost.slotId, savedId)).toBe("saved");
+      expect(await home1.store.listBrowserSessions(ownerId)).toEqual([]);
+
+      primary?.terminate();
+      await home1.close();
+      host = undefined;
+
+      const home2 = await startHome(120);
+      await connectMainRunner(false);
+      await vi.waitFor(
+        async () => {
+          expect((await home2.app.inject({ method: "GET", url: "/ready" })).json()).toEqual({
+            ok: true,
+            browserPool: "ready",
+          });
+        },
+        { timeout: 10_000 },
+      );
+      expect(home2.browser.resourcePlacements()).toMatchObject([{ runnerId, available: true }]);
+
+      // Create a real personal task and live Run through the product store fixture port.
+      const settings = await home2.store.database
+        .selectFrom("personalSettings")
+        .select("agentHomeComputerId")
+        .executeTakeFirstOrThrow();
+      await home2.store.database
+        .insertInto("executionEnvironments")
+        .values({
+          capabilities: [],
+          id: config.personal!.environmentId,
+          kind: "main",
+          name: "Cloud Computer",
+          runnerId: settings.agentHomeComputerId,
+        })
+        .onConflict((conflict) => conflict.column("id").doNothing())
+        .execute();
+      const personalRuns = createPersonalRunFixturePort(home2.store);
+      const task = await personalRuns.createTask({ ownerId, suffix: "rule3-run" });
+      await home2.store.updateThreadAccessMode({
+        threadId: task.threadId,
+        requestedBy: ownerId,
+        accessMode: "full-access",
+      });
+      const started = await personalRuns.startTask(
+        task.threadId,
+        "Open the pooled browser from disk.",
+      );
+
+      // The Run's first open wakes the disk-parked slot on demand and opens the page.
+      const diskRunOpen = await home2.browser.openTab(
+        ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `run-disk-open-${randomUUID()}`,
+          identity: { kind: "profile", profileId: profile.id },
+          url: "https://example.test/from-disk-run",
+        },
+        {
+          ownerId,
+          agentBindingId: `run:${started.runId}`,
+          threadId: task.threadId,
+        },
+      );
+      expect(diskRunOpen.tabId).toBeTruthy();
+      expect((await poolHost.currentAgent().status(poolHost.slotId, poolHost.term)).phase).toBe(
+        "running",
+      );
+
+      // Releasing the Run's binding drops its idle hold so the slot can park again.
+      await home2.browser.detachAgentSessionsForBinding(`run:${started.runId}`);
+      await vi.waitFor(
+        async () => {
+          const status = await poolHost!.currentAgent().status(poolHost!.slotId, poolHost!.term);
+          expect(status.phase).toBe("paused");
+        },
+        { timeout: 10_000 },
+      );
     } finally {
       primary?.terminate();
       await host?.close();
