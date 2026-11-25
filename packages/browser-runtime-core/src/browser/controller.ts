@@ -1,4 +1,4 @@
-import { boundedJsonSize } from "@opensteer/browser-core/bounded-json";
+import { answerTooLargeMessage, boundedJsonSize } from "@opensteer/browser-core/bounded-json";
 import { isExtensionUrl } from "@opensteer/shared/extensionUrl";
 import { DeploymentIdSchema } from "@opensteer/core";
 import {
@@ -3759,10 +3759,12 @@ export class BrowserController {
       });
     }
     const reply = this.withTargetMetadata(command, result, attachedActivity);
+    // A7: the command ran and its answer is here, over the caller's limit: a failure of the
+    // command that names the answer's size, never an unknown outcome.
     if (message.replyBudget && boundedJsonSize(reply, message.replyBudget) === undefined)
       throw new BrowserRuntimeError(
         "bad_message",
-        "Browser result exceeds its byte or nesting limit.",
+        answerTooLargeMessage(reply, message.replyBudget.maxBytes, message.replyBudget),
         { reason: "browser-reply-limit" },
       );
     await this.send({
@@ -4119,7 +4121,7 @@ export class BrowserController {
         if (message.replyBudget && boundedJsonSize(result, message.replyBudget) === undefined)
           throw new BrowserRuntimeError(
             "bad_message",
-            "Browser result exceeds its byte or nesting limit.",
+            answerTooLargeMessage(result, message.replyBudget.maxBytes, message.replyBudget),
             { reason: "browser-reply-limit" },
           );
         if (hiddenFromConnection(binding.page)) throw absent();
@@ -4596,7 +4598,10 @@ function normalizeControllerError(error: unknown, cdpRequest = false): BrowserRu
   const unsent = error.unsent || error.code === "bad_command" || error.code === "forbidden";
   return new BrowserRuntimeError(code, error.message, {
     cause: error,
-    ...(error.code === "too_large" && !unsent ? { reason: "browser-reply-limit" } : {}),
+    // Only an answer that arrived over its limit proves the command ran: a failure of the command.
+    // The router's other "too large" refusals (too many attached targets, a command over its own
+    // limit) prove nothing of the kind and stay unknown.
+    ...(error.answerTooLarge ? { reason: "browser-reply-limit" } : {}),
     ...(unsent ? { unsent: true } : {}),
   });
 }

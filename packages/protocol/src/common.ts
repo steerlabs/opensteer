@@ -23,8 +23,9 @@ export const ProtocolErrorSchema = z.strictObject({
   retryable: z.boolean(),
   /**
    * A7: the command was refused before it was sent to the page: nothing happened. Without it, a
-   * browser command's error came after it may have run (the reply too large or too deep, the page
-   * gone mid-command, a lost reply), and its outcome is unknown.
+   * browser command's error came after it may have run (the page gone mid-command, a lost reply),
+   * and its outcome is unknown; except `reason: "browser-reply-limit"`, an answer that arrived
+   * over its limit: the command ran, and it fails with the answer's size, never unknown.
    */
   unsent: z.literal(true).optional(),
 });

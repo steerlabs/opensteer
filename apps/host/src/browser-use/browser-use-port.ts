@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { boundedJsonSize } from "@opensteer/browser-runtime-core";
+import { answerTooLargeMessage, boundedJsonSize } from "@opensteer/browser-runtime-core";
 import { OpensteerError, refused, TabIdSchema, type ThreadId } from "@opensteer/core";
 import {
   BrowserCdpCommandSchema,
@@ -83,8 +83,10 @@ function logAttachmentEnded(detail: {
   console.warn("browser.use.attachment.ended", JSON.stringify(detail));
 }
 
+/** A7: the answer arrived over its limit, so the command ran: a failure naming its size. */
 function checkReply(value: unknown, budget: BrowserUseBudget): void {
-  if (boundedJsonSize(value, budget) === undefined) throw tooLarge();
+  if (boundedJsonSize(value, budget) === undefined)
+    throw refused("resource_exhausted", answerTooLargeMessage(value, budget.maxBytes, budget));
 }
 
 function translate(
@@ -109,7 +111,10 @@ function translate(
     context?.onEnded?.();
     throw afterSubmit ? endedAfterSubmit() : ended();
   }
-  if (error instanceof OpensteerError && error.reason === "browser-reply-limit") throw tooLarge();
+  // A7: the browser's answer arrived over its limit: the command ran, and it fails with the
+  // runtime's words (its size, the limit, what to ask for instead).
+  if (error instanceof OpensteerError && error.reason === "browser-reply-limit")
+    throw refused("resource_exhausted", error.message);
   if (error instanceof OpensteerError && error.reason === "browser-cdp-protocol-error")
     throw new BrowserUseCdpError(-32000, error.message);
   throw error;

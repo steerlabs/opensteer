@@ -68,3 +68,35 @@ export function boundedJsonSize(value: unknown, budget: JsonSizeBudget): number 
   }
   return visit(value, 0) ? budget.maxBytes - bytes : undefined;
 }
+
+/**
+ * What an agent is told when a browser command ran but its answer was over the limit and was
+ * dropped: the answer's size where it can be measured (one too deep or with too many entries
+ * cannot), the limit, how to ask for less, and that the command itself ran. The answer arrived,
+ * so the command finished: this is a failure of that command, never an unknown outcome.
+ */
+export function answerTooLargeMessage(
+  value: unknown,
+  maxBytes: number,
+  shape: Pick<JsonSizeBudget, "maxDepth" | "maxEntries"> = { maxDepth: 32, maxEntries: 16_384 },
+): string {
+  return answerTooLargeWords(
+    boundedJsonSize(value, { ...shape, maxBytes: Number.MAX_SAFE_INTEGER }),
+    maxBytes,
+  );
+}
+
+/** The same words from an answer's measured size: undefined, or within the limit, when its shape was what failed. */
+export function answerTooLargeWords(size: number | undefined, maxBytes: number): string {
+  const what =
+    size === undefined || size <= maxBytes
+      ? "is too deeply nested or has too many entries"
+      : `is ${formatBytes(size)}, over the ${formatBytes(maxBytes)} limit for one answer`;
+  return `The page ran the command, but its answer ${what}, so it exceeds the bounded agent transport and was dropped. Ask the page for less: a slice of the text, an element by selector, or innerText instead of the HTML. If the command changed the page, do not run it again.`;
+}
+
+function formatBytes(bytes: number): string {
+  return bytes >= 1_024 * 1_024
+    ? `${(bytes / (1_024 * 1_024)).toFixed(1)} MiB`
+    : `${Math.ceil(bytes / 1_024)} KiB`;
+}

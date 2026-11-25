@@ -47,4 +47,9 @@ export {
   type StandardCdpAttachment,
 } from "@opensteer/browser-core";
 
-export { boundedJsonSize, type JsonSizeBudget } from "@opensteer/browser-core/bounded-json";
+export {
+  answerTooLargeMessage,
+  answerTooLargeWords,
+  boundedJsonSize,
+  type JsonSizeBudget,
+} from "@opensteer/browser-core/bounded-json";

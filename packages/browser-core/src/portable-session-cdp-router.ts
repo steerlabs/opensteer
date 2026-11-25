@@ -17,7 +17,7 @@ import { ThisHomeAddressSet, type ThisHomeAddresses } from "@opensteer/shared/ho
 import { contextScopedCdpMethods } from "./cdp-context.js";
 import { CdpProductIsolation } from "./cdp-product-isolation.js";
 import { ConnectionExtensionIsolation, isExtensionUrl } from "./connection-extension-isolation.js";
-import { boundedJsonSize, type JsonSizeBudget } from "./bounded-json.js";
+import { answerTooLargeMessage, boundedJsonSize, type JsonSizeBudget } from "./bounded-json.js";
 import { utf8Size } from "./bytes.js";
 import {
   cdpCommandRefusal,
@@ -156,16 +156,23 @@ export class SessionCdpRouterError extends Error {
   readonly code: "bad_command" | "conflict" | "forbidden" | "not_found" | "too_large";
   /** A7: refused before the command was handed on toward the browser: nothing happened. */
   readonly unsent: boolean;
+  /**
+   * A7: the command ran and its answer arrived, over the limit: a failure of that command, never
+   * an unknown outcome. Only the answer-size check says so; no other refusal proves the command
+   * finished.
+   */
+  readonly answerTooLarge: boolean;
 
   constructor(
     code: SessionCdpRouterError["code"],
     message: string,
-    options?: ErrorOptions & { readonly unsent?: boolean },
+    options?: ErrorOptions & { readonly unsent?: boolean; readonly answerTooLarge?: boolean },
   ) {
     super(message, options);
     this.name = "SessionCdpRouterError";
     this.code = code;
     this.unsent = options?.unsent === true;
+    this.answerTooLarge = options?.answerTooLarge === true;
   }
 }
 
@@ -808,7 +815,15 @@ export class SessionCdpRouter {
         }) === undefined
       : serializedBytes(result) > maxResultBytes;
     if (tooLarge)
-      throw new SessionCdpRouterError("too_large", tooLargeAnswer(result, maxResultBytes));
+      throw new SessionCdpRouterError(
+        "too_large",
+        answerTooLargeMessage(
+          result,
+          Math.min(maxResultBytes, budget?.maxBytes ?? Infinity),
+          budget ?? standardJsonBudget,
+        ),
+        { answerTooLarge: true },
+      );
   }
 
   /**
@@ -3020,29 +3035,6 @@ function assertIdentifier(value: string, label: string): void {
   if (value.length < 1 || value.length > 512 || /\p{Cc}/u.test(value)) {
     throw new SessionCdpRouterError("bad_command", `${label} is invalid.`);
   }
-}
-
-/**
- * What an agent is told of an answer over the limit: its size where it can be measured (an answer
- * too deep or with too many entries cannot), the limit, and how to ask for less.
- */
-function tooLargeAnswer(result: unknown, maxBytes: number): string {
-  const size = boundedJsonSize(result, {
-    maxBytes: Number.MAX_SAFE_INTEGER,
-    maxDepth: standardJsonBudget.maxDepth,
-    maxEntries: standardJsonBudget.maxEntries,
-  });
-  const what =
-    size === undefined
-      ? "is too deeply nested or has too many entries"
-      : `is ${formatBytes(size)}, over the ${formatBytes(maxBytes)} limit`;
-  return `The browser's answer ${what}, so it exceeds the bounded agent transport. Ask the page for less: a slice of the text, an element by selector, or innerText instead of the HTML.`;
-}
-
-function formatBytes(bytes: number): string {
-  return bytes >= 1_024 * 1_024
-    ? `${(bytes / (1_024 * 1_024)).toFixed(1)} MiB`
-    : `${Math.ceil(bytes / 1_024)} KiB`;
 }
 
 function serializedBytes(value: unknown): number {
