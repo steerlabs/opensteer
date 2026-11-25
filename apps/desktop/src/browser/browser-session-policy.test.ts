@@ -565,10 +565,42 @@ it("keeps a page an agent drives off this Home's addresses and sends the Home no
     sendHeaders({ url, webContentsId: personPage, requestHeaders: withCookie }, person);
     expect(person, url).toHaveBeenCalledWith({});
   }
-  const devServer = vi.fn();
+  // M4: the Home's cookies are kept by host, not by port: an agent's page sends them to no
+  // loopback destination (a server a Run started on another port), and keeps the page's own.
+  const homeAndTheirs = {
+    Cookie: "opensteer.session=secret; theirs=1; __Host-opensteer.session=remote",
+    Accept: "*/*",
+  };
+  for (const url of [
+    "http://localhost:5173/api",
+    "http://127.0.0.1:3000/",
+    "ws://[::1]:8080/socket",
+    "http://sub.localhost:9000/",
+  ]) {
+    const devServer = vi.fn();
+    sendHeaders({ url, webContentsId: agentPage, requestHeaders: homeAndTheirs }, devServer);
+    expect(devServer, url).toHaveBeenCalledWith({
+      requestHeaders: { Cookie: "theirs=1", Accept: "*/*" },
+    });
+    const person = vi.fn();
+    sendHeaders({ url, webContentsId: personPage, requestHeaders: homeAndTheirs }, person);
+    expect(person, url).toHaveBeenCalledWith({});
+  }
+  const onlyHome = vi.fn();
   sendHeaders(
-    { url: "http://localhost:5173/api", webContentsId: agentPage, requestHeaders: withCookie },
-    devServer,
+    {
+      url: "http://localhost:5173/",
+      webContentsId: agentPage,
+      requestHeaders: { Cookie: "opensteer.session=secret" },
+    },
+    onlyHome,
   );
-  expect(devServer).toHaveBeenCalledWith({});
+  expect(onlyHome).toHaveBeenCalledWith({ requestHeaders: {} });
+  // A web site is no loopback destination: the cookie rule is the browser's own.
+  const web = vi.fn();
+  sendHeaders(
+    { url: "https://site.test/", webContentsId: agentPage, requestHeaders: homeAndTheirs },
+    web,
+  );
+  expect(web).toHaveBeenCalledWith({});
 });

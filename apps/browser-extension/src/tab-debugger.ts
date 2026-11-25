@@ -12,6 +12,7 @@ import {
 } from "@opensteer/browser-source-wire/frames";
 import {
   ThisHomeAddressSet,
+  loopbackRequestPatterns,
   noHomeAddresses,
   type ThisHomeAddresses,
 } from "@opensteer/shared/homeAddress";
@@ -576,17 +577,31 @@ export class ChromeTabDebugger {
     if (this.#ruleIds.has(tabId)) return;
     // The same patterns the shared predicate refuses, over pages, frames, requests and sockets.
     const patterns = home.requestPatterns();
-    const ids = patterns.map(() => this.#nextRuleId++);
-    const installed = this.#rules
-      .updateSessionRules({
-        addRules: patterns.map((regexFilter, index) => ({
-          id: ids[index]!,
-          priority: 1,
-          action: { type: "block" },
-          condition: { tabIds: [tabId], regexFilter, resourceTypes: allResourceTypes },
-        })),
-      })
-      .then(() => ids);
+    // On a Mac the Home's session cookie is kept for the loopback host, not its port: an attached
+    // tab sends no cookie to any loopback destination (M4). A session rule can remove only the
+    // whole Cookie header, not one cookie, so a person's own local site sees that tab signed out
+    // while an agent is attached to it. A Linux Home's cookie is __Host- on its HTTPS origin and
+    // reaches no other host.
+    const loopback = loopbackRequestPatterns();
+    const ids = [...patterns, ...loopback].map(() => this.#nextRuleId++);
+    const rules: ChromeSessionRule[] = [
+      ...patterns.map((regexFilter, index) => ({
+        id: ids[index]!,
+        priority: 1,
+        action: { type: "block" as const },
+        condition: { tabIds: [tabId], regexFilter, resourceTypes: allResourceTypes },
+      })),
+      ...loopback.map((regexFilter, index) => ({
+        id: ids[patterns.length + index]!,
+        priority: 1,
+        action: {
+          type: "modifyHeaders" as const,
+          requestHeaders: [{ header: "cookie", operation: "remove" as const }],
+        },
+        condition: { tabIds: [tabId], regexFilter, resourceTypes: allResourceTypes },
+      })),
+    ];
+    const installed = this.#rules.updateSessionRules({ addRules: rules }).then(() => ids);
     this.#ruleIds.set(tabId, installed);
     try {
       await installed;

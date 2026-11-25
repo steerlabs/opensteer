@@ -67,7 +67,12 @@ interface ChromeNotificationOptions {
 interface ChromeSessionRule {
   id: number;
   priority: number;
-  action: { type: "block" };
+  action:
+    | { type: "block" }
+    | {
+        type: "modifyHeaders";
+        requestHeaders: { header: string; operation: "remove" }[];
+      };
   condition: { tabIds: number[]; regexFilter: string; resourceTypes: readonly string[] };
 }
 

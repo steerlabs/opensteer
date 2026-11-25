@@ -31,6 +31,7 @@ class Channel implements CdpChannel {
 
 class Backend implements BrowserCdpBackend {
   dedicatedContext = true;
+  allowsProfileCookieReads = false;
   readonly channels = new Map<string, Channel>();
   readonly listeners = new Set<(method: string, parameters: CdpParameters) => void>();
   readonly agentControlled: [string, boolean][] = [];
@@ -270,6 +271,30 @@ describe("SessionCdpRouter: a tab an agent drives may not be on an address of th
       });
     });
   }
+
+  for (const [who, connection] of agents)
+    it(`${who}: reads no cookie of the Home's, on loopback or its own address (M4)`, async () => {
+      const { backend, client } = await setup(connection);
+      // A shared Chrome tab: the one browser whose page cookies an agent reads.
+      backend.allowsProfileCookieReads = true;
+      const sessionId = await attach(client);
+      backend.channels.get("seed")!.results.set("Network.getCookies", {
+        cookies: [
+          { name: "opensteer.session", value: "home", domain: "127.0.0.1" },
+          { name: "__Host-opensteer.session", value: "remote", domain: "home.example.com" },
+          { name: "opensteer.admission", value: "a", domain: "localhost" },
+          { name: "theirs", value: "1", domain: "127.0.0.1" },
+          { name: "opensteer.session", value: "a site's own", domain: "web.test" },
+        ],
+      });
+      const read = (await client.send({ method: "Network.getCookies", sessionId })) as {
+        cookies: { name: string; domain: string }[];
+      };
+      expect(read.cookies.map((cookie) => `${cookie.name}@${cookie.domain}`)).toEqual([
+        "theirs@127.0.0.1",
+        "opensteer.session@web.test",
+      ]);
+    });
 
   describe("the same call sites ask both rules (C)", () => {
     for (const [who, connection] of agents) {

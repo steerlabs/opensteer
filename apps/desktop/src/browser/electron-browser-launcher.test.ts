@@ -5549,7 +5549,8 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       expect(toDevServer).not.toHaveBeenCalled();
       // A dev server on another loopback port is the agent's to use.
       expect(cancelled(id, "http://localhost:5173/")).toBe(false);
-      expect(sentCookie(id, "http://localhost:5173/")).toBe(true);
+      // But the Home's cookie, kept for the loopback host and not its port, does not go there (M4).
+      expect(sentCookie(id, "http://localhost:5173/")).toBe(false);
       // A window the agent's page opens is the agent's from its first request.
       const beforeViews = electron.views.length;
       popupHandler({ url: "about:blank", disposition: "new-window" }).createWindow({});

@@ -17,6 +17,8 @@ import { CdpProductIsolation } from "./cdp-product-isolation.js";
 import { ConnectionExtensionIsolation, isExtensionUrl } from "./connection-extension-isolation.js";
 import {
   ThisHomeAddressSet,
+  isHomeCookieName,
+  isLoopbackUrl,
   noHomeAddresses,
   type ThisHomeAddresses,
 } from "@opensteer/shared/homeAddress";
@@ -311,6 +313,34 @@ interface ConnectionState extends TargetRoot {
 }
 
 const standardJsonBudget = { maxBytes: Infinity, maxDepth: 32, maxEntries: 16_384 };
+
+const cookieReads = new Set(["Network.getCookies", "Network.getAllCookies", "Storage.getCookies"]);
+
+/**
+ * An agent's cookie read never returns the Home's own cookies (M4): on a Mac they are kept for the
+ * loopback host, so a page on any loopback port reads them as its own; on the Home's own
+ * addresses they are the person's sign-in. Other cookies are the page's, as before.
+ */
+function withoutHomeCookieReads(
+  method: string,
+  result: unknown,
+  home: ThisHomeAddressSet,
+): unknown {
+  if (!cookieReads.has(method)) return result;
+  const cookies = asRecord(result).cookies;
+  if (!Array.isArray(cookies)) return result;
+  const kept = cookies.filter((cookie) => {
+    const { name, domain } = asRecord(cookie);
+    if (typeof name !== "string" || !isHomeCookieName(name)) return true;
+    const host = typeof domain === "string" ? domain.replace(/^\./u, "") : "";
+    // A cookie names a host, never a port.
+    return !(
+      isLoopbackUrl(`http://${host}/`) ||
+      home.origins.some((origin) => new URL(origin).hostname === host.replace(/\.$/u, ""))
+    );
+  });
+  return kept.length === cookies.length ? result : { ...asRecord(result), cookies: kept };
+}
 
 /**
  * Whether any string in a (bounded) CDP value is an extension's address (when `extensions`) or an
@@ -1171,7 +1201,11 @@ export class SessionCdpRouter {
               ? connectionMethodRefusal(command.method)
               : "Remote CDP does not manage browser downloads.",
           );
-        const result = await this.#backend.send(command.method, command.parameters);
+        const result = withoutHomeCookieReads(
+          command.method,
+          await this.#backend.send(command.method, command.parameters),
+          this.#home,
+        );
         this.#assertResultSize(
           result,
           this.#sessionLimits(state).maxResultBytes,
@@ -2478,7 +2512,11 @@ export class SessionCdpRouter {
     };
     const tracked = () =>
       this.#trackPhysicalWork(state, () => this.#trackTargetWork(attached.physicalTargetId, send));
-    const answered = await (command.replyBudget ? tracked() : whileOpen(attached.pending, tracked));
+    const answered = withoutHomeCookieReads(
+      command.method,
+      await (command.replyBudget ? tracked() : whileOpen(attached.pending, tracked)),
+      this.#home,
+    );
     return isolation ? isolation.sanitizeResult(command.method, answered) : answered;
   }
 

@@ -10,7 +10,11 @@ import {
 import { mayReachExtensionResource } from "./extensions/web-accessible.js";
 import { isLoopbackHostname } from "@opensteer/core";
 import { browserPagePermissionsPolicy } from "@opensteer/browser-runtime-core/page-policy";
-import type { ThisHomeAddressSet } from "@opensteer/shared/homeAddress";
+import {
+  isLoopbackUrl,
+  withoutHomeCookies,
+  type ThisHomeAddressSet,
+} from "@opensteer/shared/homeAddress";
 
 export { browserIdentity, chromeUserAgent } from "@opensteer/browser-core";
 export type { BrowserIdentity, BrowserUserAgentMetadata } from "@opensteer/browser-core";
@@ -28,6 +32,18 @@ export function agentRequestToHome(
     options.isAgentWebContents?.(details.webContentsId) === true &&
     options.homeAddresses?.().includes(details.url) === true
   );
+}
+
+/** The request's headers with the Home's own cookies taken out of its Cookie header (M4). */
+export function withoutHomeCookiesIn(headers: Record<string, string>): Record<string, string> {
+  const name = Object.keys(headers).find((key) => key.toLowerCase() === "cookie");
+  if (name === undefined) return headers;
+  const kept = withoutHomeCookies(headers[name]!);
+  if (kept === headers[name]) return headers;
+  const next = { ...headers };
+  if (kept) next[name] = kept;
+  else delete next[name];
+  return next;
 }
 
 /** The request's headers without the cookies a browser would send with it. */
@@ -191,6 +207,20 @@ export function applyBrowserSessionPolicy(
       if (agentRequestToHome(options, details)) {
         requestHeaders = withoutCookies(requestHeaders);
         changed = true;
+      } else if (
+        details.webContentsId !== undefined &&
+        options.isAgentWebContents?.(details.webContentsId) === true &&
+        isLoopbackUrl(details.url)
+      ) {
+        // On a Mac the Home's session cookie is kept for the loopback host, not its port: a page
+        // an agent holds sends it to no loopback destination (a server an agent started on another
+        // port included). Only the Home's cookies go; the page's own stay (M4). Whether this hook
+        // sees the Cookie header at all on real Electron is for its smoke to show.
+        const stripped = withoutHomeCookiesIn(requestHeaders);
+        if (stripped !== requestHeaders) {
+          requestHeaders = stripped;
+          changed = true;
+        }
       }
       if (hints) {
         const hasHints = Object.keys(requestHeaders).some(

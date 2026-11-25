@@ -380,6 +380,7 @@ async function proveChromeShares(
   let chrome: BrowserContext | undefined;
   const clients: Browser[] = [];
   let pages: ReturnType<typeof createHttpServer> | undefined;
+  const cookieEchoes: string[] = [];
   await ownTestDatabaseProducer(fixture.databaseUrl, async () => ({
     close: async () => {
       for (const client of clients) await client.close().catch(() => undefined);
@@ -429,6 +430,13 @@ async function proveChromeShares(
   // The pages shared from Chrome are a web site's, never this Home's: a tab on the Home's own
   // address is not one an agent may be given (rule 1's page rule).
   pages = createHttpServer((request, response) => {
+    // A local server on another loopback port, such as one a Run starts (M4): what cookies reach it.
+    const echo = /^\/cookie-echo-([a-z]+)$/u.exec(request.url ?? "")?.[1];
+    if (echo) {
+      cookieEchoes.push(`${echo} ${request.headers.cookie ?? ""}`);
+      response.writeHead(200, { "content-type": "text/plain" }).end("echo");
+      return;
+    }
     const redirect = /^\/test-redirect-([a-z]+)$/u.exec(request.url ?? "")?.[1];
     if (redirect) {
       response.writeHead(302, { location: `${origin}/home-probe/redirect-${redirect}` }).end();
@@ -1349,6 +1357,27 @@ async function proveChromeShares(
       ),
     );
     expect(probeHits.filter((hit) => hit.includes("-agent"))).toEqual([]);
+    // M4: the Home's session cookie is kept for the loopback host, not its port. From the attached
+    // tab a server on another loopback port receives no cookie at all; from the person's own tab
+    // it receives theirs.
+    await chrome.addCookies([{ name: "opensteer.session", value: "home-secret", url: origin }]);
+    const echo = (who: string) =>
+      `fetch(location.origin + "/cookie-echo-${who}", { credentials: "include" }).then((r) => r.text())`;
+    await repl.command(
+      selected,
+      "Runtime.evaluate",
+      { expression: echo("agent"), awaitPromise: true, returnByValue: true },
+      undefined,
+      replCall,
+    );
+    const person = await chrome.newPage();
+    await person.goto(`${site}/test-tab/Person`);
+    await person.evaluate(echo("person"));
+    await person.close();
+    expect(cookieEchoes.find((entry) => entry.startsWith("agent "))).toBe("agent ");
+    expect(cookieEchoes.find((entry) => entry.startsWith("person "))).toContain(
+      "opensteer.session=home-secret",
+    );
     expect(probeHits.every((hit) => hit.includes("fixture=fixture-session"))).toBe(true);
     await control.close();
     probeHits.length = 0;

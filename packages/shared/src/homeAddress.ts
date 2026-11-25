@@ -180,6 +180,47 @@ const loopbackSpellings = [
 ];
 const loopbackHostname = new RegExp(`^(?:${loopbackSpellings.join("|")})\\.?$`, "u");
 
+/**
+ * A URL on this machine's loopback, whatever its port: what the Home's own session cookie reaches
+ * on a Mac, where cookies are kept by host and not by port (M4). On a Cloud Computer or a Linux
+ * Home that cookie is `__Host-` on the canonical HTTPS origin and reaches no other host.
+ */
+export function isLoopbackUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:", "ws:", "wss:"].includes(url.protocol)) return false;
+    return loopbackHostname.test(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** Request patterns (RE2) for every loopback spelling on any port, from the same list. */
+export function loopbackRequestPatterns(): string[] {
+  return loopbackSpellings.map(
+    (spelling) => `^(?:https?|wss?)://(?:[^/?#@]*@)?${spelling}\\.?(?::[0-9]+)?(?:[/?#]|$)`,
+  );
+}
+
+/**
+ * The Home's own cookies, by name: its session (`opensteer.session`, `__Host-opensteer.session`),
+ * its sign-in admission, its app gateway's, an integration authorization's binding, and the
+ * identity library's own.
+ */
+export function isHomeCookieName(name: string): boolean {
+  return /^(?:__Host-|__Secure-)?(?:opensteer|better-auth)[._-]/u.test(name.trim());
+}
+
+/** A Cookie header without the Home's own cookies; the page's other cookies stay. */
+export function withoutHomeCookies(header: string): string {
+  return header
+    .split(";")
+    .filter((pair) => !isHomeCookieName(pair.split("=", 1)[0] ?? ""))
+    .map((pair) => pair.trim())
+    .filter(Boolean)
+    .join("; ");
+}
+
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }

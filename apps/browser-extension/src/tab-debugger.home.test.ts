@@ -176,8 +176,25 @@ describe("ChromeTabDebugger: a shared tab an agent drives may not be on an addre
     expect((await f.evaluate()).ok).toBe(true);
     expect(f.order.slice(0, 2)).toEqual(["rules", "attach"]);
     expect(f.rules.remove).toEqual([]);
-    const patterns = f.rules.add.map((rule) => new RegExp(rule.condition.regexFilter, "u"));
+    const of = (type: string) =>
+      f.rules.add
+        .filter((rule) => rule.action.type === type)
+        .map((rule) => new RegExp(rule.condition.regexFilter, "u"));
+    const patterns = of("block");
     const blocked = (url: string) => patterns.some((pattern) => pattern.test(url));
+    // M4: the tab sends no cookie to any loopback destination (a whole-header removal).
+    const cookieless = of("modifyHeaders");
+    for (const url of ["http://localhost:5173/", "http://127.0.0.1:3000/x", "ws://[::1]:8080/"])
+      expect(
+        cookieless.some((pattern) => pattern.test(url)),
+        url,
+      ).toBe(true);
+    expect(cookieless.some((pattern) => pattern.test("https://web.test/"))).toBe(false);
+    for (const rule of f.rules.add.filter((entry) => entry.action.type === "modifyHeaders"))
+      expect(rule.action).toEqual({
+        type: "modifyHeaders",
+        requestHeaders: [{ header: "cookie", operation: "remove" }],
+      });
     for (const url of [
       "https://home.example.com/",
       "wss://home.example.com/v1/realtime",
@@ -198,7 +215,7 @@ describe("ChromeTabDebugger: a shared tab an agent drives may not be on an addre
       expect(rule.condition.resourceTypes).toContain("main_frame");
       expect(rule.condition.resourceTypes).toContain("sub_frame");
       expect(rule.condition.resourceTypes).toContain("xmlhttprequest");
-      expect(rule.action).toEqual({ type: "block" });
+      expect(["block", "modifyHeaders"]).toContain(rule.action.type);
     }
     await f.send({
       action: "detach",
