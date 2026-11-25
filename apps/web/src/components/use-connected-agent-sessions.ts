@@ -85,6 +85,7 @@ export function useConnectedAgentWork(
     readonly rpc: Pick<ChatScreenHost["rpc"], "threads.activity">;
   },
   connectionId?: string,
+  readActivity = true,
 ) {
   const {
     tasks,
@@ -96,12 +97,13 @@ export function useConnectedAgentWork(
     return tasks.filter(({ id }) => ids.has(id));
   }, [base, tasks]);
   const [activityRead, setActivityRead] = useState(0);
+  const refresh = useCallback(() => setActivityRead((revision) => revision + 1), []);
   const [read, setRead] = useState<{
     client: typeof hostClient;
     byTask: ReadonlyMap<string, readonly AgentOperationView[]>;
   }>();
   useEffect(() => {
-    if (!activeTasks.length) return;
+    if (!readActivity || !activeTasks.length) return;
     const controller = new AbortController();
     void Promise.all(
       activeTasks.map(async ({ id }) => {
@@ -117,7 +119,7 @@ export function useConnectedAgentWork(
       setRead({ client: hostClient, byTask });
     });
     return () => controller.abort();
-  }, [hostClient, activeTasks, activityRead]);
+  }, [hostClient, activeTasks, activityRead, readActivity]);
   const activity = read?.client === hostClient ? read.byTask : undefined;
   const view = useMemo(
     () =>
@@ -126,5 +128,5 @@ export function useConnectedAgentWork(
         : base,
     [activity, base, tasks, waitingRequests],
   );
-  return { view, tasks, activity, refresh: () => setActivityRead((revision) => revision + 1) };
+  return { view, tasks, activity, refresh };
 }

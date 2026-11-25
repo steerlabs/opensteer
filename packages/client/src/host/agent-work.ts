@@ -145,8 +145,13 @@ export function sessionAgent(
   };
 }
 
-export function sessionAgentPart(agent: SessionAgent): SentencePart {
+export function sessionAgentPart(agent: Pick<SessionAgent, "name" | "who">): SentencePart {
   return agent.who !== null && agent.name !== unknownAgent.name ? { name: agent.name } : agent.name;
+}
+
+/** Verified names can stand in the product's words. Self-declared names keep their boundary. */
+export function connectedAgentNamePart(agent: Pick<SessionAgent, "name" | "who">): SentencePart {
+  return agent.who?.verified ? agent.name : sessionAgentPart(agent);
 }
 
 export function tabNeedsYouParts(

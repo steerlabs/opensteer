@@ -110,19 +110,22 @@ describe("Connected agents list", () => {
     await vi.waitFor(() => expect(page.textContent).toContain("Grok"));
     expect(page.querySelector("h1")?.textContent).toBe("Connected agents");
     expect(rows(page, "Connected")).toEqual([
-      ["Grok", "Shopping profile · Supervised"],
+      ["“Grok”", "Shopping profile · Supervised"],
       ["Claude", "Everything · Full access"],
-      ["Trip planner", "Tasks · Auto"],
+      ["“Trip planner”", "Tasks · Auto"],
       ["Errand", "Nothing chosen · Supervised"],
-      ["Claude Code", "Tasks · Auto"],
+      ["“Claude Code”", "Tasks · Auto"],
       ["ChatGPT", "Nothing chosen · Supervised"],
     ]);
     expect(rows(page, "Disconnected")).toEqual([
-      ["Shop helper", "Check its last action"],
-      ["Old notes agent", "Disconnected"],
-      ["Old search agent", "Expired"],
+      ["“Shop helper”", "Check its last action"],
+      ["“Old notes agent”", "Disconnected"],
+      ["“Old search agent”", "Expired"],
     ]);
     expect(page.querySelector(`a[href="${base}/${grok}"]`)).not.toBeNull();
+    expect(page.querySelector(`a[href="${base}/${grok}"] .card__row-title bdi`)?.textContent).toBe(
+      "Grok",
+    );
     // A logo only for a platform the Home verified: Claude and ChatGPT, never Grok's domain.
     expect(page.querySelectorAll(".agent-mark .provider-logo")).toHaveLength(2);
   });
@@ -282,6 +285,18 @@ describe("one connected agent", () => {
     const now = page.querySelector<HTMLElement>('[aria-labelledby="connected-agent-now"]')!;
     await act(async () => buttonNamed(now, "Watch ChatGPT").click());
     expect(path).toBe(`/tasks/${mockAgentWorkThreads.shopping}`);
+  });
+
+  it("quotes and isolates self-declared names in Now’s action labels", async () => {
+    host = seeded();
+    const page = await mount(host, `${base}/${grok}`);
+    await act(async () => {
+      host!.mockAgentWork({ livePanel: "long-one" });
+    });
+    const now = page.querySelector<HTMLElement>('[aria-labelledby="connected-agent-now"]')!;
+    const name = "“\u2068Grok research assistant for the entire household\u2069”";
+    expect(buttonNamed(now, `Watch ${name}`)).toBeTruthy();
+    expect(buttonNamed(now, `Stop ${name}`)).toBeTruthy();
   });
 
   it("answers the existing task Request card inline in Now", async () => {

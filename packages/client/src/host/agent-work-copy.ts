@@ -22,6 +22,8 @@ export const agentWorkCopy = {
   "work.ended.narrowed": "Ended: {agent} can no longer use what this task used",
   "work.ended.idle": "Ended: {agent} went quiet",
   "work.stop": "Stop {agent}",
+  "work.watch": "Watch {agent}",
+  "work.review": "Review {agent}",
   "work.stopDetail": "Ends {agent}’s work on this task. It stays connected.",
   "work.noComposer": "{agent} works this task itself. You can’t write to it here.",
   "work.header": "Connected agent · {origin}",

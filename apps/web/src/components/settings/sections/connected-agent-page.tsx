@@ -8,6 +8,7 @@ import {
   chatFacts,
   chatTasksNow,
   connectedAgentConnected,
+  connectedAgentNamePart,
   connectedAgentActivity,
   connectionsRead,
   connectedAgentDetail,
@@ -211,7 +212,10 @@ export function ConnectedAgentPage({
         <div className="connected-agent__header">
           <AgentMark identity={detail.row.identity} large />
           <h1 className="settings-section__title">
-            <SentenceText parts={[{ name: agent }]} />
+            <SentenceText
+              parts={[connectedAgentNamePart({ name: agent, who })]}
+              quoteNames={!connection.bridge}
+            />
           </h1>
         </div>
         {chat ? null : <AgentWhoLine nameShown={agent !== who.heading} who={who} />}

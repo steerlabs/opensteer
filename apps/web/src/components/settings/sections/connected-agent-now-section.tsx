@@ -12,7 +12,12 @@ import { useHostSelector } from "@opensteer/client/react";
 import type { AgentOperationView } from "@opensteer/core";
 import { OutsideName } from "../../../ui/address-text.js";
 import { ActionLine } from "../../action-line.js";
-import { SessionActivity, useOpenSessionTask, useStopSession } from "../../agent-work.js";
+import {
+  SessionActivity,
+  sessionActionLabel,
+  useOpenSessionTask,
+  useStopSession,
+} from "../../agent-work.js";
 import { Icon } from "../../icon.js";
 import { RequestStack } from "../../input-surface.js";
 import { useReadFailed } from "../../read-gate.js";
@@ -94,7 +99,7 @@ function ActiveSession({
         </div>
         <div className="connected-agent__session-actions">
           <button
-            aria-label={`Watch ${entry.agent.name}`}
+            aria-label={sessionActionLabel("work.watch", entry.agent)}
             className="btn btn--small"
             onClick={() => open(entry.threadId)}
             type="button"
@@ -103,7 +108,7 @@ function ActiveSession({
             {agentWords("agent.watch")}
           </button>
           <button
-            aria-label={`Stop ${entry.agent.name}`}
+            aria-label={sessionActionLabel("work.stop", entry.agent)}
             className="btn btn--small"
             disabled={disabled || stop.running}
             onClick={() => void stop.run(undefined)}

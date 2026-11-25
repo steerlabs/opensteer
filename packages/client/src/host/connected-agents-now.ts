@@ -1,8 +1,9 @@
 import type { AgentOperationTarget, AgentOperationView } from "@opensteer/core";
 import {
+  connectedAgentNamePart,
   operationAction,
+  operationTime,
   sessionAgent,
-  sessionAgentPart,
   type SessionAgent,
 } from "./agent-work.js";
 import { workSentence, workWords, type SafeWorkCopyValues } from "./agent-work-copy.js";
@@ -26,7 +27,7 @@ export interface ConnectedAgentNow {
 export function connectedAgentsNow(input: {
   readonly tasks: readonly ConnectedAgentNowTask[];
   readonly waitingRequests: readonly WaitingRequestView[];
-  /** The task activity the client has read, newest first. */
+  /** The task activity the client has read. */
   readonly operations?: readonly AgentOperationView[] | undefined;
 }): {
   readonly agents: readonly ConnectedAgentNow[];
@@ -48,7 +49,15 @@ export function connectedAgentsNow(input: {
     const operations = (input.operations ?? []).filter(
       (operation) => operation.taskId === task.id && operation.sessionId === work.sessionId,
     );
-    const latest = operations[0];
+    let latest: AgentOperationView | undefined;
+    let latestTime = -Infinity;
+    for (const operation of operations) {
+      const at = Date.parse(operationTime(operation));
+      if (!latest || at > latestTime) {
+        latest = operation;
+        latestTime = at;
+      }
+    }
     const targets = [
       waiting?.request.agentOperation?.target,
       ...operations.filter(({ outcome }) => outcome === null).map(({ target }) => target),
@@ -129,5 +138,5 @@ function singleAgentHeadline(
   values?: SafeWorkCopyValues,
 ): readonly SentencePart[] {
   const [, ...detail] = workSentence(key, { agent: { name: agent.name } }, values);
-  return [agent.who?.verified ? agent.name : sessionAgentPart(agent), ...detail];
+  return [connectedAgentNamePart(agent), ...detail];
 }

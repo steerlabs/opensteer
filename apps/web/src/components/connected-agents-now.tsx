@@ -1,24 +1,119 @@
 import { hostsDeployment } from "@opensteer/client/computers";
 import {
-  connectedAgentsNow,
+  connectedAgentNamePart,
   isolatedPlainSentence,
   type ConnectedAgentNow,
   type HostClient,
   type HostSnapshot,
+  type SentencePart,
+  workWords,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
-import { useId, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { Link } from "react-router";
 import { OutsideName, SentenceText } from "../ui/address-text.js";
-import { stopSessionAction, useOpenSessionTask } from "./agent-work.js";
+import { sessionActionLabel, useOpenSessionTask, useStopSession } from "./agent-work.js";
 import { Icon } from "./icon.js";
 import { Popover } from "./popover.js";
 import { AgentMark } from "./settings/agent-mark.js";
-import { runAction } from "./use-action.js";
 import { useConnectedAgentWork } from "./use-connected-agent-sessions.js";
 
 const selectHomeName = (snapshot: HostSnapshot) =>
   snapshot.machines.find(hostsDeployment)?.name ?? null;
+
+type SessionStop = ReturnType<typeof useStopSession>;
+type StopState = Pick<SessionStop, "running" | "outcome">;
+type StopStatus = { readonly running: boolean; readonly unconfirmed: boolean };
+type ReportStop = (sessionId: string, state: StopState | null) => void;
+type AgentsView = ReturnType<typeof useConnectedAgentWork>["view"];
+
+const ConnectedAgentsContext = createContext<{
+  readonly view: AgentsView;
+  readonly refresh: () => void;
+  readonly stops: ReadonlyMap<string, StopStatus>;
+  readonly stop: (entries: readonly ConnectedAgentNow[]) => void;
+} | null>(null);
+
+/** One action per session, above the sidebar and header so moving the control keeps its outcome. */
+export function ConnectedAgentsProvider({
+  hostClient,
+  readActivity,
+  children,
+}: {
+  readonly hostClient: HostClient;
+  readonly readActivity: boolean;
+  readonly children: ReactNode;
+}) {
+  const { view, refresh } = useConnectedAgentWork(hostClient, undefined, readActivity);
+  const [actions] = useState(() => new Map<string, SessionStop["run"]>());
+  const [stops, setStops] = useState<ReadonlyMap<string, StopStatus>>(() => new Map());
+  const report = useCallback<ReportStop>((id, state) => {
+    setStops((previous) => {
+      const before = previous.get(id);
+      const running = state?.running ?? false;
+      const outcome = state?.outcome;
+      const unconfirmed =
+        outcome === undefined
+          ? false
+          : outcome === null
+            ? (before?.unconfirmed ?? false)
+            : outcome.kind !== "confirmed" ||
+              outcome.value.type !== "agent.session.stop" ||
+              !outcome.value.ended;
+      if (running === (before?.running ?? false) && unconfirmed === (before?.unconfirmed ?? false))
+        return previous;
+      const next = new Map(previous);
+      if (running || unconfirmed) next.set(id, { running, unconfirmed });
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+  const stop = useCallback(
+    (entries: readonly ConnectedAgentNow[]) => {
+      for (const { sessionId } of entries) void actions.get(sessionId)?.(undefined);
+    },
+    [actions],
+  );
+  const value = useMemo(() => ({ view, refresh, stops, stop }), [view, refresh, stops, stop]);
+  return (
+    <ConnectedAgentsContext value={value}>
+      {view.agents.map((entry) => (
+        <SessionStopOwner actions={actions} entry={entry} key={entry.sessionId} report={report} />
+      ))}
+      {children}
+    </ConnectedAgentsContext>
+  );
+}
+
+function SessionStopOwner({
+  actions,
+  entry: { threadId, sessionId },
+  report,
+}: {
+  readonly actions: Map<string, SessionStop["run"]>;
+  readonly entry: ConnectedAgentNow;
+  readonly report: ReportStop;
+}) {
+  const { run, running, outcome } = useStopSession(threadId, sessionId);
+  useEffect(() => {
+    actions.set(sessionId, run);
+    return () => {
+      actions.delete(sessionId);
+      report(sessionId, null);
+    };
+  }, [actions, sessionId, run, report]);
+  useEffect(() => report(sessionId, { running, outcome }), [sessionId, running, outcome, report]);
+  return null;
+}
 
 export function ConnectedAgentsNow({
   compact = false,
@@ -29,16 +124,18 @@ export function ConnectedAgentsNow({
   readonly hostClient: HostClient;
   readonly onNavigate?: () => void;
 }) {
-  const { view, refresh } = useConnectedAgentWork(hostClient);
-  if (!view.headline) return null;
+  const work = useContext(ConnectedAgentsContext);
+  if (!work?.view.headline) return null;
   return (
     <ActiveAgents
-      agents={view.agents}
+      agents={work.view.agents}
       compact={compact}
-      headlineParts={view.headlineParts}
+      headlineParts={work.view.headlineParts}
       hostClient={hostClient}
       onNavigate={onNavigate}
-      onOpen={refresh}
+      onOpen={work.refresh}
+      stop={work.stop}
+      stops={work.stops}
     />
   );
 }
@@ -50,52 +147,33 @@ function ActiveAgents({
   hostClient,
   onNavigate,
   onOpen,
+  stop,
+  stops,
 }: {
   readonly agents: readonly ConnectedAgentNow[];
   readonly compact: boolean;
-  readonly headlineParts: ReturnType<typeof connectedAgentsNow>["headlineParts"];
+  readonly headlineParts: AgentsView["headlineParts"];
   readonly hostClient: HostClient;
   readonly onNavigate: (() => void) | undefined;
   readonly onOpen: () => void;
+  readonly stop: (entries: readonly ConnectedAgentNow[]) => void;
+  readonly stops: ReadonlyMap<string, StopStatus>;
 }) {
   const openSessionTask = useOpenSessionTask();
   const panelId = useId();
   const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
-  const [stopping, setStopping] = useState(false);
-  const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
   const homeName = useHostSelector(hostClient, selectHomeName);
   const devices = new Set(
     agents.flatMap(({ places }) => places.flatMap(({ device }) => (device ? [device.name] : []))),
   );
   const deviceName = devices.size > 1 ? null : ([...devices][0] ?? homeName);
-  const remaining = agents.filter(({ sessionId }) => failed.has(sessionId));
+  const stopping = agents.some(({ sessionId }) => stops.get(sessionId)?.running);
+  const remaining = agents.filter(({ sessionId }) => stops.get(sessionId)?.unconfirmed);
+  const warning = remaining.length ? stopWarning(remaining) : null;
   const close = () => setAnchor(null);
   const leave = () => {
     close();
     onNavigate?.();
-  };
-  const stop = async (entries: readonly ConnectedAgentNow[]) => {
-    if (stopping) return;
-    setStopping(true);
-    const results = await Promise.all(
-      entries.map(({ threadId, sessionId }) =>
-        runAction(hostClient, stopSessionAction(hostClient, threadId, sessionId)),
-      ),
-    );
-    setFailed(
-      new Set(
-        entries
-          .filter((_, index) => {
-            const result = results[index]!;
-            return (
-              result.kind !== "confirmed" ||
-              (result.value.type === "agent.session.stop" && !result.value.ended)
-            );
-          })
-          .map(({ sessionId }) => sessionId),
-      ),
-    );
-    setStopping(false);
   };
   const first = agents[0]!;
   const oneWorking = !compact && agents.length === 1 && first.state === "working";
@@ -161,18 +239,18 @@ function ActiveAgents({
       </button>
       {oneWorking ? (
         <button
-          aria-label={`Stop ${first.agent.name}`}
+          aria-label={sessionActionLabel("work.stop", first.agent)}
           className="btn btn--small agents-now__quick-stop"
-          aria-disabled={stopping || undefined}
-          onClick={() => void stop([first])}
+          disabled={stopping}
+          onClick={() => stop([first])}
           type="button"
         >
-          Stop
+          {workWords("tab.stop")}
         </button>
       ) : null}
-      {!anchor && remaining.length ? (
+      {!anchor && warning ? (
         <span className="agents-now__inline-error" role="status">
-          Couldn’t confirm Stop for {remaining.map(({ agent }) => agent.name).join(", ")}.
+          <SentenceText parts={warning} />
         </span>
       ) : null}
       {anchor ? (
@@ -203,7 +281,7 @@ function ActiveAgents({
                   <div className="agents-now-panel__detail">
                     <div className="agents-now-panel__where">
                       <strong>
-                        <OutsideName value={agent.name} />
+                        <SentenceText parts={[connectedAgentNamePart(agent)]} quoteNames />
                       </strong>
                       {entry.places.map(({ device, name }, index) => (
                         <span key={index}>
@@ -221,7 +299,10 @@ function ActiveAgents({
                   </div>
                   <div className="agents-now-panel__actions">
                     <button
-                      aria-label={`${action} ${agent.name}`}
+                      aria-label={sessionActionLabel(
+                        entry.state === "needs-you" ? "work.review" : "work.watch",
+                        agent,
+                      )}
                       className={`btn btn--small${waiting ? " btn--primary" : ""}`}
                       onClick={() => {
                         leave();
@@ -232,29 +313,29 @@ function ActiveAgents({
                       {action}
                     </button>
                     <button
-                      aria-label={`Stop ${agent.name}`}
+                      aria-label={sessionActionLabel("work.stop", agent)}
                       className="btn btn--small"
-                      aria-disabled={stopping || undefined}
-                      onClick={() => void stop([entry])}
+                      disabled={stopping}
+                      onClick={() => stop([entry])}
                       type="button"
                     >
-                      Stop
+                      {workWords("tab.stop")}
                     </button>
                   </div>
                 </li>
               );
             })}
           </ul>
-          {remaining.length ? (
+          {warning ? (
             <p className="agents-now-panel__error" role="status">
-              Couldn’t confirm Stop for {remaining.map(({ agent }) => agent.name).join(", ")}.
+              <SentenceText parts={warning} />
             </p>
           ) : null}
           <div className="agents-now-panel__footer">
             <button
               className="btn btn--small agents-now-panel__stop-all"
-              aria-disabled={stopping || undefined}
-              onClick={() => void stop(agents)}
+              disabled={stopping}
+              onClick={() => stop(agents)}
               type="button"
             >
               Stop all
@@ -267,4 +348,15 @@ function ActiveAgents({
       ) : null}
     </div>
   );
+}
+
+function stopWarning(remaining: readonly ConnectedAgentNow[]): readonly SentencePart[] {
+  return [
+    "Couldn’t confirm Stop for ",
+    ...remaining.flatMap(({ agent }, index) => [
+      ...(index ? [", "] : []),
+      connectedAgentNamePart(agent),
+    ]),
+    ".",
+  ];
 }

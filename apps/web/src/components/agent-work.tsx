@@ -1,5 +1,6 @@
 import {
   accessModeOptions,
+  connectedAgentNamePart,
   isolatedPlainSentence,
   sessionSlotFromHome,
   agentSessionSlot,
@@ -16,6 +17,7 @@ import {
   type OperationGlyph,
   type OperationRequestView,
   type RequestView,
+  type SessionAgent,
   type HostClient,
   type SessionTaskView,
   workSentence,
@@ -56,7 +58,7 @@ export function useSessionTask(hostClient: HostClient, threadId: string): Sessio
 }
 
 /** Ends this agent's session on this task, bound to the session the person saw. */
-export function stopSessionAction(hostClient: HostClient, threadId: string, sessionId: string) {
+function stopSessionAction(hostClient: HostClient, threadId: string, sessionId: string) {
   return {
     label: "stop this agent",
     done: "stopped",
@@ -78,6 +80,13 @@ export function useStopSession(threadId: string, sessionId: string | null) {
     stopSessionAction(hostClient, threadId, sessionId!),
     `agent-session-stop:${sessionId ?? ""}`,
   );
+}
+
+export function sessionActionLabel(
+  key: "work.stop" | "work.watch" | "work.review",
+  agent: SessionAgent,
+) {
+  return isolatedPlainSentence(workSentence(key, { agent: connectedAgentNamePart(agent) }));
 }
 
 /** Watch a session in its existing task view, or focus its Request when reviewing it there. */
@@ -423,8 +432,10 @@ export function useNeedsYouAgentRequest(entry: NeedsYouEntry) {
   const question = operation?.question ?? (prompt || requestTitleText(presentation));
   return {
     agent,
-    listTitleParts: agent.who?.verified
-      ? workSentence("ask.listTitle", { agent: agent.name }, { question })
-      : workSentence("ask.title", { agent: sessionAgentPart(agent) }, { question }),
+    listTitleParts: workSentence(
+      agent.who?.verified ? "ask.listTitle" : "ask.title",
+      { agent: connectedAgentNamePart(agent) },
+      { question },
+    ),
   };
 }

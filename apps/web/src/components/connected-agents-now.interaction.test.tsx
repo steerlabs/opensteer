@@ -67,7 +67,7 @@ it("lists each active agent and sends Stop all once per session", async () => {
   await mount("/", options("three"));
   expect(trigger()?.getAttribute("aria-label")).toBe("3 agents working");
   const dialog = await openPanel();
-  for (const name of ["ChatGPT", "Claude", "Grok"]) {
+  for (const name of ["ChatGPT", "Claude", "“\u2068Grok\u2069”"]) {
     expect(button(`Watch ${name}`, dialog)).toBeDefined();
     expect(button(`Stop ${name}`, dialog)).toBeDefined();
   }
@@ -102,6 +102,102 @@ it("names only the agent whose Stop was not confirmed in a batch", async () => {
     "Couldn’t confirm Stop for Claude.",
   );
   expect(dialog.querySelectorAll("li")).toHaveLength(1);
+});
+
+it("quotes and isolates a self-declared product name on the row, its actions and Stop warning", async () => {
+  await mount("/", {
+    ...options("long-one"),
+    hostClient: (source) => {
+      source.mockAgentWork({ livePanel: "long-one" });
+      const connection = source
+        .getSnapshot()
+        .threads.find(({ id }) => id === mockAgentWorkThreads.shopping)!.externalWork!.connection;
+      (connection as { label: string }).label = "Opensteer";
+      return source;
+    },
+  });
+  const name = "“\u2068Opensteer\u2069”";
+  expect(trigger()?.getAttribute("aria-label")).toContain(name);
+  expect(button(`Stop ${name}`)).toBeDefined();
+  const dialog = await openPanel();
+  expect(dialog.querySelector("strong")?.textContent).toBe("“Opensteer”");
+  expect(dialog.querySelector("strong bdi")?.textContent).toBe("Opensteer");
+  expect(button(`Watch ${name}`, dialog)).toBeDefined();
+  const send = client.dispatch.bind(client);
+  vi.spyOn(client, "dispatch").mockImplementation((command) =>
+    command.type === "agent.session.stop"
+      ? Promise.reject(new Error("Lost the Stop answer"))
+      : send(command),
+  );
+  await act(async () => button(`Stop ${name}`, dialog)!.click());
+  const warning = dialog.querySelector('[role="status"]');
+  expect(warning?.textContent).toBe("Couldn’t confirm Stop for “Opensteer”.");
+  expect(warning?.querySelector("bdi")?.textContent).toBe("Opensteer");
+  await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+  const inline = document.querySelector(".agents-now__inline-error");
+  expect(inline?.querySelector("bdi")?.textContent).toBe("Opensteer");
+});
+
+it("keeps Claude’s unconfirmed Stop while another session’s Stop is confirmed", async () => {
+  await mount("/", options("three"));
+  let dialog = await openPanel();
+  const send = client.dispatch.bind(client);
+  const dispatch = vi
+    .spyOn(client, "dispatch")
+    .mockImplementation((command) =>
+      command.type === "agent.session.stop" && command.threadId === mockAgentWorkThreads.working
+        ? Promise.reject(new Error("Lost the Stop answer"))
+        : send(command),
+    );
+  const warning = () => dialog.querySelector('[role="status"]')?.textContent;
+  await act(async () => button("Stop Claude", dialog)!.click());
+  expect(warning()).toBe("Couldn’t confirm Stop for Claude.");
+  await act(async () => button("Stop ChatGPT", dialog)!.click());
+  expect(warning()).toBe("Couldn’t confirm Stop for Claude.");
+  await act(async () => button("Collapse sidebar")!.click());
+  dialog = await openPanel();
+  expect(warning()).toBe("Couldn’t confirm Stop for Claude.");
+  dispatch.mockRestore();
+  await act(async () => button("Stop Claude", dialog)!.click());
+  expect(warning()).toBeUndefined();
+});
+
+it("quotes and isolates a self-declared name on Review", async () => {
+  await mount("/", {
+    ...options("needs-you"),
+    hostClient: (source) => {
+      source.mockAgentWork({ livePanel: "needs-you" });
+      const threads = source.getSnapshot().threads;
+      const waiting = threads.find(({ id }) => id === mockAgentWorkThreads.waiting)!.externalWork!;
+      const grok = threads.find(({ id }) => id === mockAgentWorkThreads.working)!.externalWork!;
+      (waiting as { connection: typeof waiting.connection }).connection = {
+        ...grok.connection,
+        label: "Opensteer",
+      };
+      return source;
+    },
+  });
+  const dialog = await openPanel();
+  expect(button("Review “\u2068Opensteer\u2069”", dialog)).toBeDefined();
+});
+
+it("dispatches only one Stop while two presses overlap", async () => {
+  await mount("/", options("one"));
+  const dialog = await openPanel();
+  const send = client.dispatch.bind(client);
+  const released = Promise.withResolvers<void>();
+  const dispatch = vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
+    if (command.type === "agent.session.stop") await released.promise;
+    return send(command);
+  });
+  const stop = button("Stop ChatGPT", dialog)!;
+  await act(async () => {
+    stop.click();
+    stop.click();
+  });
+  const sentWhilePending = stopCommands(dispatch.mock.calls);
+  await act(async () => released.resolve());
+  expect(sentWhilePending).toHaveLength(1);
 });
 
 it("opens the existing task activity when the person watches an agent", async () => {

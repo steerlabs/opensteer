@@ -98,6 +98,7 @@ import {
 } from "./composer-drafts.js";
 import { belongsToPreviousLogin, draftTaskStart, startTask } from "./home/task-start.js";
 import { SidebarChromeProvider } from "./sidebar-chrome.js";
+import { ConnectedAgentsProvider } from "./connected-agents-now.js";
 import { useChromeConnectEnvironment } from "./chrome/chrome-environment.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
 import {
@@ -1238,7 +1239,11 @@ export function AppShell({
   );
   return (
     <ShellContext value={shell}>
-      <ConnectionGateScope>{workspace}</ConnectionGateScope>
+      <ConnectionGateScope>
+        <ConnectedAgentsProvider hostClient={hostClient} readActivity={!fullWindow}>
+          {workspace}
+        </ConnectedAgentsProvider>
+      </ConnectionGateScope>
     </ShellContext>
   );
 }

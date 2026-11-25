@@ -86,6 +86,30 @@ describe("connected agents working now", () => {
     });
   });
 
+  it("uses the latest operation time for the action and place when operations are out of order", () => {
+    const [script, tab] = operations.filter(({ taskId }) => taskId === chatgpt.id);
+    const latest = {
+      ...script!,
+      outcome: "completed" as const,
+      completedAt: now.toISOString(),
+    };
+    const older = {
+      ...tab!,
+      target: {
+        ...tab!.target,
+        grant: { kind: "browser-profile" as const, profileId: "travel" },
+        name: "Travel",
+      },
+    };
+    const result = connectedAgentsNow({
+      tasks: [chatgpt],
+      waitingRequests: [],
+      operations: [older, latest],
+    });
+    expect(result.agents[0]?.action).toBe("Ran a script on Shopping");
+    expect(result.headline).toBe("ChatGPT is working in Shopping");
+  });
+
   it("ignores idle, ended, stopped and disconnected sessions", () => {
     const busy = { status: "running" as const };
     const ended = {
