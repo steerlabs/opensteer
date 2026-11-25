@@ -99,7 +99,7 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
   const ask = props.ask ?? null;
   const said = ask ?? session?.line ?? null;
   const subtitle = line === null ? said : line;
-  const origin = props.origin ? phoneSentence(props.origin) : null;
+  const startedBy = props.origin ? phoneSentence(props.origin) : null;
 
   const content = (
     <Pressable
@@ -107,7 +107,7 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
       accessibilityHint="Opens this task"
       accessibilityLabel={`${taskRowLabel(row)}${row.unread && needsYou ? ", unread" : ""}${
         props.drafted === true ? `, ${draftPenLabel}` : ""
-      }${origin ? ` — ${origin}` : ""}`}
+      }${startedBy ? ` — ${startedBy}` : ""}`}
       accessibilityRole="button"
       accessibilityState={{ selected: props.selected }}
       onAccessibilityAction={(event: AccessibilityActionEvent) => {
@@ -144,7 +144,7 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
           size={markColumn}
         />
       )}
-      {subtitle === null && origin === null ? (
+      {subtitle === null && startedBy === null ? (
         <AppText
           maxFontSizeMultiplier={controlFontScaleLimit}
           numberOfLines={1}
@@ -163,9 +163,9 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
           >
             {row.title}
           </AppText>
-          {origin ? (
+          {startedBy ? (
             <AppText numberOfLines={1} role="caption" tone="muted">
-              {origin}
+              {startedBy}
             </AppText>
           ) : null}
           {subtitle === null ? null : line === null ? (
