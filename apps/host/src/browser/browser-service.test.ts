@@ -11447,13 +11447,45 @@ describe("work under a connection's authority never uses the clipboard or change
             message: JSON.stringify({ id: serial, result: {} }),
           });
         },
-        // A web tab of the session announced at the root: every subscriber may know it.
+        // A web tab of the session announced at the root: every subscriber may know it. Its
+        // opener, parent and their frames may be anything: a subscriber's own tab (on the web or
+        // on an extension page), another's, an extension's target, a tab announced before.
         () => {
           const id = ++serial;
+          const pool = [
+            ...subscribers.flatMap((sub) => sub.targets.map((t) => t.id)),
+            ...announced,
+            `tgt-ext-${serial - 1}`,
+          ];
+          const related = () => (random() < 0.7 ? pick(pool) : undefined);
+          const [openerId, openerFrameId, parentId, parentFrameId] = [
+            related(),
+            related(),
+            related(),
+            related(),
+          ];
           send("Target.targetCreated", {
-            targetInfo: { targetId: `tgt-web-${id}`, type: "page", url: `https://web-${id}.test/` },
+            targetInfo: {
+              targetId: `tgt-web-${id}`,
+              type: "page",
+              url: `https://web-${id}.test/`,
+              ...(openerId ? { openerId, canAccessOpener: true } : {}),
+              ...(openerFrameId ? { openerFrameId } : {}),
+              ...(parentId ? { parentId } : {}),
+              ...(parentFrameId ? { parentFrameId } : {}),
+            },
           });
           if (random() < 0.5) send("Target.targetDestroyed", { targetId: `tgt-web-${id}` });
+        },
+        // Its own session detaches while its tab sits on an extension page: not told (E1).
+        (sub) => {
+          const session = pick(sub.sessions.filter((s) => !s.ended && hiddenTarget(sub, s.target)));
+          if (!session) return;
+          session.ended = true;
+          terminal(sub, `detach:${session.id}`, "Target.detachedFromTarget", {
+            sessionId: session.id,
+            targetId: session.target,
+          });
         },
         // A close in mid-flight: from now on it hears nothing.
         (sub) => {
@@ -12001,6 +12033,42 @@ describe("work under a connection's authority never uses the clipboard or change
         if (end === "connection ended" && path !== "attach registering after the end")
           expect(closed, `${path} / ${end}`).toBe(true);
       }
+  });
+
+  it("keeps a tab that went to an extension page untold past the hidden set's bound (P8)", async () => {
+    const { runtime, attach } = await connectedRootAttachment("Hidden Bound Profile");
+    const { attached, events } = await attach();
+    let sequence = 1;
+    const send = (method: string, parameters: Record<string, unknown>) =>
+      runtime.sendServer({
+        type: "cdp.event",
+        event: { method, parameters, sequence: sequence++ },
+      });
+    const request = attached.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "own-tab", flatten: true },
+    });
+    const forward = await runtime.nextCommand();
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: forward.requestId,
+      result: { sessionId: "cdp_own" },
+    });
+    await request;
+    const extension = (n: number) => `chrome-extension://${"a".repeat(32)}/p-${n}.html`;
+    send("Target.targetInfoChanged", {
+      targetInfo: { targetId: "own-tab", type: "page", url: extension(0) },
+    });
+    // 4,096 other targets go to extension pages too: the hidden set no longer holds own-tab.
+    for (let index = 1; index <= 4_096; index += 1)
+      send("Target.targetInfoChanged", {
+        targetInfo: { targetId: `other-${index}`, type: "page", url: extension(index) },
+      });
+    send("Target.targetDestroyed", { targetId: "own-tab" });
+    send("Page.marker", {});
+    await vi.waitFor(() => expect(events.at(-1)?.method).toBe("Page.marker"), { timeout: 10_000 });
+    expect(events.filter((e) => e.method === "Target.targetDestroyed")).toEqual([]);
+    attached.close();
   });
 
   it("keeps a subscriber's own child however many children a neighbour opens on the shared root (S2)", async () => {
