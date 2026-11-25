@@ -303,7 +303,11 @@ operator instead of deleting a volume set. Move DNS once the restored Home is re
 
 A Home keeps each release whole in its own directory, `releases/<id>`: the release's files (its
 scripts, Compose files and the units it writes), its image selector (`images.env`), its sandbox
-policies and the database dump taken before it. `current` is a link to the release the Home runs;
+policies, the ids of every image it runs (`images.ids`) and the database dump taken before it,
+which lives exactly as long as that directory. Its selector names each image by its digest or by a
+tag the Home makes from the image's id (`opensteer-home-image/<service>:<id>`), so a tag moved
+later (a self-hosted release that reuses one) never changes what a release starts; the tags as the
+manifest named them stay in `release.env`. `current` is a link to the release the Home runs;
 the units and `/usr/local/bin/opensteer-home` run `current/opensteer-home`, so an ordinary release
 changes no unit. The Home's own state (`config.env`, `volumes.env`, `secrets/`, backups and
 results) lives beside `releases/`, never in it: no release can name, change or remove it.
@@ -316,8 +320,13 @@ way back, and that there is room (one release's images take about 4.5 GB on a Cl
 9.8 GB with the browser images; the dump about the database's size); lets the new release's own
 code ready it (`opensteer-home release-prepare`: every image its own Compose files name,
 PostgreSQL's too, its sandbox policies, and its units written into staging and read); and dumps
-the database into it. Any failure removes that directory and says `Nothing was changed`, which is
-then true.
+the database into it, when the database runs (a Home that is down takes a release without a dump:
+the last backup is its copy). Any failure removes that directory, with the images only it pulled,
+and says `Nothing was changed`, which is then true; a check that changes nothing removes nothing.
+Before `update.pending` or `current` names the new release, its directory is flushed to disk. One
+switch at a time: an update, the installer run again and `rollback` refuse while one is not
+finished, and no cleanup removes a release that `current`, `previous`, `update.pending` or
+`update.failed` names. Cleanup compares images by id.
 
 The switch writes `update.pending` (the two releases' names), stops the running release with its
 own files, starts the new one with the new release's own code and runs one maintenance check
@@ -332,10 +341,17 @@ starts the running release again. That release is remembered (`update.failed`, w
 
 | Where the update stopped                      | At the next start                                                                        |
 | --------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| while preparing                               | nothing: the next update removes the unfinished directory                                |
+| while preparing                               | nothing: the next update that commits removes the unfinished directory                   |
 | after `update.pending`, before the rename     | `current` is the running release: the new one's containers stop, it starts               |
 | after a failed check, before it is remembered | `current` is the running release: it starts; the next check tries that release once more |
 | after the rename                              | `current` is the new release: what follows the switch is finished                        |
+
+The update timer runs hourly with a fixed per-machine offset of up to a quarter of an hour
+(`RandomizedDelaySec=15min`, `FixedRandomDelay=true`), so a fleet on one feed does not switch in
+one minute, and it runs whether or not the Home is up: a Home that is down still takes the release
+that fixes it. Nothing goes back by itself after a commit: a committed release that turns out bad
+(at a later start, say) has migrated the database, and going back on it is a person's decision.
+`sudo opensteer-home rollback` makes `previous` current by the same switch an update makes.
 
 A rollback deliberately keeps the database as the new release's migrations left it (they are
 expand-only, so the previous Host runs on it; the dump stays in the failed release's directory, and
@@ -346,7 +362,8 @@ account and refuse a local manifest. Each fetch checks DNS again and connects on
 public addresses. PostgreSQL has its own fixed digest in each release's `compose.yaml`; inherited
 Compose variables cannot override images or volume selection. Set
 `OPENSTEER_HOME_RELEASE_MANIFEST_URL` in `config.env` for scheduled updates on a bring-your-own
-Home, or supply a manifest to `update` directly. The Opensteer account gives every Cloud Computer
+Home, or supply a manifest to `update` directly; the update reads that line from `config.env`
+itself (no Compose flag is needed), and a line it cannot read is a failed check. The Opensteer account gives every Cloud Computer
 a `releaseManifestUrl` in its boot response and its current feed at each update check; a managed
 Home updates from the account's feed only.
 
@@ -362,7 +379,8 @@ Home's problems show until an update goes through. A Cloud Computer installed be
 is replaced once; a bring-your-own Home installed before it cannot take it in place (the
 installer refuses a claimed Home, and `uninstall --purge` deletes its data). Do not run services
 of your own under the Home's Compose project name: a rollback stops the new release with
-`--remove-orphans`, which removes them (their volumes are kept).
+`--remove-orphans`, which removes them (their volumes are kept). Every Compose command names the
+Home's project explicitly, and a release whose Compose files resolve to another project is refused.
 
 ## Problems and reports
 

@@ -29,12 +29,19 @@ release_identity() { { cat "$1"; printf '%s\n' "$2"; } | digest; }
 # the directory of its first failure, with the dump taken before it, and since when.
 remember_failed() {
   local memory="$home_dir/update.failed" id=${1##*/} identity since known=''
-  identity=$(release_identity "$1/images.env" "$(cat "$1/recipe.sha256" 2>/dev/null)")
+  identity=$(release_identity "$(release_named "$1")" "$(cat "$1/recipe.sha256" 2>/dev/null)")
   since=$(date -u +'%Y-%m-%dT%H:%M:00Z')
   if [[ -f $memory ]]; then read -r id known since < "$memory"; fi
   if [[ $known != "$identity" ]]; then id=${1##*/} since=$(date -u +'%Y-%m-%dT%H:%M:00Z'); fi
   printf '%s %s %s\n' "$id" "$identity" "$since" > "$memory.new" && publish_file "$memory.new" "$memory" ||
     echo 'The failed release could not be remembered: the next check tries it again.' >&2
+}
+
+# settled VERSION: the Home runs the release its feed names; a result left from before (waiting, a
+# failed check, an update whose result was never written) says so now.
+settled() {
+  [[ $(jq -r '"\(.result) \(.toVersion)"' "$home_dir/last-update.json" 2>/dev/null) == "updated $1" ]] ||
+    record_update_result updated '' "$1"
 }
 
 # update_home [MANIFEST.json]: the Home's next release, prepared whole in its own directory beside
@@ -47,12 +54,14 @@ update_home() (
     [[ $# == 1 ]] || fail 'Managed Homes update only from the Account feed.'
   fi
   from=$(current_release) || fail 'This Home has no current release.'
+  # One switch at a time: a switch the last start could not finish is finished first.
+  [[ ! -e "$home_dir/update.pending" ]] ||
+    fail 'The last switch of releases is not finished yet; the next start finishes it. Nothing was changed.'
   to='' prepared=false
-  # Releases a stopped preparation or a rolled-back candidate left: nothing names them.
-  prune_releases
   manifest=$(mktemp "$home_dir/releases/.manifest.XXXXXX") ||
     fail 'The update could not start. Nothing was changed.'
-  trap 'rm -f -- "$manifest"*; if ! $prepared && [[ -n $to ]]; then rm -rf -- "$to"; fi' EXIT
+  # A release this run made and did not switch to goes, with the images only it pulled.
+  trap 'rm -f -- "$manifest"*; if ! $prepared && [[ -n $to ]]; then prune_releases "$to"; fi' EXIT
   if [[ $# == 2 ]]; then
     cp -- "$2" "$manifest" || fail 'The release manifest could not be read. Nothing was changed.'
   else
@@ -61,7 +70,7 @@ update_home() (
       # The recipe comes only from the account's answer, never from a manifest.
       feed=$(managed_feed "$manifest.recipe") || fail 'No update feed passed the checks.'
     else
-      feed=$(compose config --environment | sed -n 's/^OPENSTEER_HOME_RELEASE_MANIFEST_URL=//p')
+      feed=$(configured_feed) || fail "This Home's update feed could not be read from config.env."
     fi
     if [[ -z $feed ]]; then
       if [[ $1 == scheduled-update ]]; then
@@ -83,12 +92,13 @@ update_home() (
   old_version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$from/images.env")
   new_version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$manifest.env")
   # A release is its version, its image digests and its recipe together.
-  change=$(release_change "$from/images.env" "$manifest.env")
+  change=$(release_change "$(release_named "$from")" "$manifest.env")
   case $change in
     same)
       if [[ ! -s "$manifest.recipe" || $(jq -r .sha256 "$manifest.recipe") == "$(cat "$from/recipe.sha256" 2>/dev/null)" ]]; then
         rm -f -- "$home_dir/update.waiting"
         echo "Already on this release ($old_version)."
+        settled "$old_version"
         return 0
       fi
       echo "Same images, another recipe: updating the recipe of $new_version."
@@ -141,8 +151,13 @@ update_home() (
   images_present || fail "The running release's images are not all on this machine for a rollback. Nothing was changed."
   # The release readies itself with its own code: its images, sandbox policies and units.
   run_release "$to" release-prepare || fail 'The release could not be prepared. Nothing was changed.'
-  postgres_tool pg_dump --format=custom > "$to/database.dump" ||
-    fail 'The database could not be dumped before the update. Nothing was changed.'
+  # The database as it is before the switch, kept with this release for as long as its directory.
+  if pod_running; then
+    postgres_tool pg_dump --format=custom > "$to/database.dump" ||
+      fail 'The database could not be dumped before the update. Nothing was changed.'
+  else
+    echo 'The Home is not running: no dump is taken before this update (the last backup is the copy).'
+  fi
 
   prepared=true
   local status=0
@@ -164,12 +179,41 @@ update_home() (
       fail "The update failed, and $old_version did not start again (sudo opensteer-home logs host)."
       ;;
     2)
-      rm -rf -- "$to"
+      prune_releases "$to"
       fail 'The update could not be recorded. Nothing was changed.'
+      ;;
+    4)
+      echo "Updated Home to $new_version."
+      record_update_result updated "$old_version" "$new_version"
+      fail 'What follows the switch could not be finished; the next start finishes it, and no update runs until then.'
       ;;
     *)
       record_update_result failed "$old_version" "$new_version"
       fail "The update failed, and going back to $old_version is not finished: the next start finishes it."
       ;;
+  esac
+)
+
+# rollback_home: the way back after a committed release turns out bad (opensteer-home rollback):
+# `previous` becomes current by the same switch an update makes. Never automatic: the database is
+# as the bad release migrated it, and going back is a person's decision.
+rollback_home() (
+  local back status=0
+  [[ ! -e "$home_dir/update.pending" ]] || fail 'The last switch of releases is not finished yet; the next start finishes it.'
+  back=$(readlink -- "$home_dir/previous") && [[ $back =~ ^releases/[a-zA-Z0-9._-]+$ && -d "$home_dir/$back" ]] ||
+    fail 'This Home has no previous release to go back to.'
+  cutover "$(current_release)" "$home_dir/$back" || status=$?
+  case $status in
+    0 | 4)
+      echo "Back on the previous release ($(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$home_dir/$back/images.env"))."
+      ((status == 0)) || fail 'What follows the switch could not be finished; the next start finishes it.'
+      refresh_units || echo "This Home's units could not be refreshed; the next start tries again." >&2
+      ;;
+    1)
+      if start_pod; then fail 'The previous release did not pass its check; this one runs again.'; fi
+      fail 'The previous release did not pass its check, and this one did not start again.'
+      ;;
+    2) fail 'The switch could not be recorded. Nothing was changed.' ;;
+    *) fail 'The previous release did not pass its check; the next start puts this one back.' ;;
   esac
 )

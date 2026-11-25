@@ -646,7 +646,7 @@ A lease refused for any other reason (the admin port is one the Homes use: HTTP 
 - **What the operator does**:
   1. Inspect logs from the failed update: `journalctl -u opensteer-home-update.service` and `sudo opensteer-home logs <service>` (`postgres`, `host`, `gateway`, `runner`, `browser-runtime`, `browser-egress`, `channel-runtime`).
   2. Confirm the Home recovered on the previous release with `sudo opensteer-home status`.
-  3. Publish a fixed release (it is tried at the next hourly check), or, when what failed was the machine and not the release, run `sudo opensteer-home update --retry` to try the same release once more.
+  3. Publish a fixed release (it is tried at the next hourly check), or, when what failed was the machine and not the release, run `sudo opensteer-home update --retry` to try the same release once more. A release that passed its check and then turns out bad (at a later start, say) is not undone by itself: the database has been migrated, and going back is your decision. `sudo opensteer-home rollback` makes the previous release current by the same switch an update makes. A Home that is down still runs its hourly update check, without a dump, so a fixed release reaches it.
   4. If the previous release cannot run on the migrated database, restore the failed release's `/etc/opensteer-home/releases/<id>/database.dump` (kept until another release commits) or restore from the latest restic snapshot with `sudo opensteer-home restore --source-stopped --replace [SNAPSHOT_ID]`.
 
 ### Migrations from this release

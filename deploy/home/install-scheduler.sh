@@ -50,10 +50,14 @@ for task in update backup maintain; do
   esac
   subcommand=scheduled-$task
   if [[ $task == maintain ]]; then subcommand=maintain; fi
+  # Backups and maintenance need the Home started; an update does not: a Home that is down can still
+  # take the release that fixes it.
+  requisite="Requisite=$unit.service"
+  if [[ $task == update ]]; then requisite=''; fi
   cat > "$staged/$unit-$task.service" <<UNIT
 [Unit]
 Description=Opensteer Home $task
-Requisite=$unit.service
+$requisite
 After=$unit.service
 
 [Service]
@@ -64,6 +68,9 @@ ExecStart=$command $subcommand
 UNIT
   timer="OnCalendar=$calendar
 Persistent=true"
+  # A fleet on one feed takes a release over a quarter of an hour, not all at :00; each Home keeps
+  # its own fixed offset, so it still checks once an hour.
+  if [[ $task == update ]]; then timer+=$'\nRandomizedDelaySec=15min\nFixedRandomDelay=true'; fi
   if [[ $task == maintain ]]; then
     timer='OnBootSec=30s
 OnUnitInactiveSec=15s
@@ -98,11 +105,13 @@ for file in "$staged"/*; do
   mv -f -- "$unit_dir/$name.new" "$unit_dir/$name"
   changed=true
 done
-# systemd is told when something changed, or when it has not loaded or enabled what is there yet.
-if ! $changed && systemctl is-enabled --quiet "$unit.service" "${timers[@]}" &&
-  [[ $(systemctl show --property NeedDaemonReload --value "$unit.service" "${timers[@]}") != *yes* ]]; then
-  exit 0
-fi
+# systemd is told when something changed, or when any one unit is not loaded as written or not
+# enabled; a query that fails counts as not.
+for file in "$staged"/*; do
+  [[ $(systemctl show --property NeedDaemonReload --value "${file##*/}" 2>/dev/null) == no ]] || changed=true
+done
+for name in "$unit.service" "${timers[@]}"; do systemctl is-enabled --quiet "$name" 2>/dev/null || changed=true; done
+$changed || exit 0
 sync "$unit_dir"
 systemctl daemon-reload
 systemctl enable "$unit.service"

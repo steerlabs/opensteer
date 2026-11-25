@@ -58,7 +58,8 @@ compose() {
   fi
   if [[ -n ${volume_env:-} ]]; then args+=(--env-file "$volume_env");
   elif [[ -f "$home_dir/volumes.env" ]]; then args+=(--env-file "$home_dir/volumes.env"); fi
-  if [[ -n ${stage_project:-$project} ]]; then args+=(--project-name "${stage_project:-$project}"); fi
+  # Always named, so no release's own Compose files can move the Home to another project.
+  args+=(--project-name "${stage_project:-${project:-opensteer-home}}")
   env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \
     OPENSTEER_HOME_RUNNER_APPARMOR="$apparmor" OPENSTEER_HOME_OIDC_CLIENT_SECRET_PATH="$oidc_path" \
     OPENSTEER_HOME_RELEASE_DIR="$release_dir" \
@@ -407,12 +408,8 @@ install_sandbox_policies() {
     esac
     image=$(compose config --format json | jq -er --arg service "$service" '.services[$service].image') || return
     tmp=$(mktemp "$destination/$policy.XXXXXX") || return
-    if docker run --rm --network none --entrypoint cat "$image" "/usr/local/share/opensteer/$policy" > "$tmp"; then
-      mv -f -- "$tmp" "$destination/$policy"
-    else
-      rm -f -- "$tmp"
-      return 1
-    fi
+    docker run --rm --network none --entrypoint cat "$image" "/usr/local/share/opensteer/$policy" > "$tmp" &&
+      mv -f -- "$tmp" "$destination/$policy" || { rm -f -- "$tmp"; return 1; }
   done
 }
 
@@ -803,6 +800,37 @@ images_present() {
   done
 }
 
+# release_named RELEASE: its images as its manifest names them (release.env, what "the same
+# release" compares); images.env holds what they resolved to on this machine.
+release_named() {
+  if [[ -f $1/release.env ]]; then printf '%s\n' "$1/release.env"; else printf '%s\n' "$1/images.env"; fi
+}
+
+# pin_release: this release's images as their own identities on this machine: images.ids lists the
+# id of every image it runs (PostgreSQL's too), and images.env names each selected image by its
+# digest or by a tag of the Home's own made from its id, so a tag moved later never changes what
+# this release starts. Cleanup compares those ids.
+pin_release() {
+  local config service image id line key pins=() images="$release_dir/images.env"
+  [[ -f "$release_dir/release.env" ]] || cp -p -- "$images" "$release_dir/release.env" || return
+  config=$(compose config --format json) || return
+  : > "$release_dir/images.ids.new" || return
+  for service in postgres $(running_services); do
+    image=$(jq -er --arg service "$service" '.services[$service].image' <<< "$config") || return
+    id=$(docker image inspect --format '{{.Id}}' "$image") && [[ $id =~ ^sha256:[0-9a-f]{64}$ ]] ||
+      { echo "The image $image is not on this machine." >&2; return 1; }
+    printf '%s\n' "$id" >> "$release_dir/images.ids.new" || return
+    [[ $service == postgres || $image =~ @sha256:[0-9a-f]{64}$ ]] && continue
+    key="OPENSTEER_HOME_$(printf %s "$service" | tr 'a-z-' 'A-Z_')_IMAGE"
+    docker image tag "$id" "opensteer-home-image/$service:${id#sha256:}" || return
+    pins+=("$key=opensteer-home-image/$service:${id#sha256:}")
+  done
+  while IFS= read -r line; do
+    for key in "${pins[@]}"; do [[ ${key%%=*} != "${line%%=*}" ]] || line=$key; done
+    printf '%s\n' "$line"
+  done < "$images" > "$images.new" || return
+  publish_file "$images.new" "$images" && publish_file "$release_dir/images.ids.new" "$release_dir/images.ids"
+}
 # One release's images where Docker keeps them, in MiB, as measured (docs/cloud-computer-operations.md,
 # Disk); a Cloud Computer runs no browser images.
 release_image_mib() { if [[ -f "$home_dir/browser-pool" ]]; then echo 4600; else echo 9900; fi; }
@@ -812,46 +840,55 @@ release_image_mib() { if [[ -f "$home_dir/browser-pool" ]]; then echo 4600; else
 room_for_release() {
   local root database free need=256
   if [[ ${1:-} == images ]]; then
-    root=$(docker info --format '{{.DockerRootDir}}') || return
-    free=$(df -Pm -- "$root" | awk 'NR == 2 { print $4 }')
+    root=$(docker info --format '{{.DockerRootDir}}') && free=$(df -Pm -- "$root" | awk 'NR == 2 { print $4 }') &&
+      [[ $free =~ ^[0-9]+$ ]] || { echo "Docker's free disk could not be read." >&2; return 1; }
     ((free >= $(release_image_mib))) ||
       { echo "Docker's disk has $free MiB free; a release's images take about $(release_image_mib)." >&2; return 1; }
   fi
-  database=$(postgres_tool psql -tAc 'select pg_database_size(current_database())') && [[ $database =~ ^[0-9]+$ ]] || return
+  # The database's size, measured while it runs and kept for when it does not.
+  if pod_running; then
+    database=$(postgres_tool psql -tAc 'select pg_database_size(current_database())') && [[ $database =~ ^[0-9]+$ ]] &&
+      printf '%s\n' "$database" > "$home_dir/database.size" || { echo "The database's size could not be read." >&2; return 1; }
+  fi
+  database=$(cat "$home_dir/database.size" 2>/dev/null) && [[ $database =~ ^[0-9]+$ ]] || database=0
   need=$((need + database / 1048576))
-  free=$(df -Pm -- "$home_dir" | awk 'NR == 2 { print $4 }')
+  free=$(df -Pm -- "$home_dir" | awk 'NR == 2 { print $4 }') && [[ $free =~ ^[0-9]+$ ]] ||
+    { echo "The Home's free disk could not be read." >&2; return 1; }
   ((free >= need)) || { echo "The Home's disk has $free MiB free; its database dump takes about $need." >&2; return 1; }
 }
 
+# pod_running: the Home's database runs (what a dump needs).
+pod_running() { pod_snapshot | awk '$1 == "postgres" && $2 == "running" { found = 1 } END { exit !found }'; }
 # run_release RELEASE STEP: RELEASE's own code runs a step of a switch to it, under its caller's lock.
 run_release() { OPENSTEER_HOME_SWITCHING=${1##*/} "$1/opensteer-home" "$2"; }
 
 # prepare_release (release-prepare): this release readied while another runs: every image its own
 # Compose files name obtained and here, its sandbox policies read from them, its units checked.
 prepare_release() {
+  [[ $(compose_project) == "$(pod_project)" ]] || fail "The release's Compose project is not this Home's."
   fetch_release_images "$release_dir/images.env" "$(uses_local_images)" || fail "The release's images could not be obtained."
   if [[ -f "$home_dir/managed" ]]; then
     check_release_stamps "$release_dir/images.env" || fail "The release's images are not this release."
   fi
-  images_present || fail "The release's images are not all on this machine."
+  pin_release || fail "The release's images are not all on this machine."
   install_sandbox_policies || fail "The release's sandbox policies could not be read."
   check_units || fail "The release's units are incomplete."
 }
-
 # check_units: the units this release writes, in staging: the main service and each scheduled task's
 # service and timer, each running the Home's current command.
 check_units() {
-  local units="$release_dir/units.check" unit task command="$home_dir/current/opensteer-home"
+  local units="$release_dir/units.check" unit command="$home_dir/current/opensteer-home"
   unit=$(installed_unit_prefix)
   rm -rf -- "$units" && mkdir -- "$units" &&
-    OPENSTEER_HOME_UNITS_CHECK="$units" "$release_dir/install-scheduler.sh" "$home_dir" "$unit" &&
-    grep -qxF "ExecStart=$command start" "$units/$unit.service" || return
-  for task in update backup maintain; do
-    grep -qF "ExecStart=$command " "$units/$unit-$task.service" && grep -qxF '[Timer]' "$units/$unit-$task.timer" || return
-  done
+    OPENSTEER_HOME_UNITS_CHECK="$units" "$release_dir/install-scheduler.sh" "$home_dir" "$unit" || return
+  grep -qxF "ExecStart=$command start" "$units/$unit.service" && grep -qxF "ExecStop=$command stop" "$units/$unit.service" &&
+    grep -qxF "ExecStart=$command scheduled-update" "$units/$unit-update.service" &&
+    grep -qxF "ExecStart=$command scheduled-backup" "$units/$unit-backup.service" &&
+    grep -qxF "ExecStart=$command maintain" "$units/$unit-maintain.service" &&
+    grep -qxE 'OnCalendar=.+' "$units/$unit-update.timer" && grep -qxE 'OnCalendar=.+' "$units/$unit-backup.timer" &&
+    grep -qxE 'OnUnitInactiveSec=.+' "$units/$unit-maintain.timer" || return
   rm -rf -- "$units"
 }
-
 # gate_release (release-gate): this release started and checked once, as maintenance checks.
 gate_release() {
   local pid
@@ -867,35 +904,38 @@ gate_release() {
 # (the caller starts FROM); 2 when nothing changed; 3 when the next start must finish going back.
 cutover() {
   local from=$1 to=$2 pending="$home_dir/update.pending"
-  if ! { printf '%s %s\n' "${from##*/}" "${to##*/}" > "$pending.new" && publish_file "$pending.new" "$pending"; }; then
+  # What a record or the link names is on disk before it is named.
+  if ! { sync -f -- "$to" && printf '%s %s\n' "${from##*/}" "${to##*/}" > "$pending.new" &&
+    publish_file "$pending.new" "$pending"; }; then
     rm -f -- "$pending.new" "$pending"
     [[ -e $pending ]] && return 3
     return 2
   fi
-  if ! { release_dir=$from compose down && run_release "$to" release-gate &&
+  if ! { release_dir=$from compose down && run_release "$to" release-gate && sync -f -- "$to" &&
     switch_link "releases/${to##*/}" "$home_dir/current"; } && [[ $(current_release) != "$to" ]]; then
     release_dir=$from stop_switch || return 3
     return 1
   fi
-  # TO is current (the words follow the link, also when its sync failed).
-  finish_switch || echo 'The switch is made; what follows it is finished at the next start.' >&2
+  # TO is current (the words follow the link, also when its sync failed); until what follows the
+  # switch is finished, no other switch starts.
+  finish_switch || return 4
 }
-
 # stop_switch: a switch that did not commit is undone: the Home's whole Compose project stops with
 # the current release's files (--remove-orphans; volumes kept); the caller starts that release.
 stop_switch() { compose down --remove-orphans && rm -f -- "$home_dir/update.pending" && sync "$home_dir"; }
 
-# finish_switch: after a commit the release before stays as `previous`, the way back; older ones go
-# with their images. None of it undoes the commit; what fails is tried again at the next start.
+# finish_switch: after a commit the release before stays as `previous`, the way back, with its dump;
+# older ones go with their images. None of it undoes the commit; until it is done, no other switch
+# starts, and the next start tries it again.
 finish_switch() {
   local pending="$home_dir/update.pending" from to
   [[ -f $pending ]] || return 0
-  read -r from to < "$pending" && switch_link "releases/$from" "$home_dir/previous" || return
-  rm -f -- "$home_dir/releases/$from/database.dump" "$home_dir/update.failed"
-  prune_releases images
+  read -r from to < "$pending" && [[ -d "$home_dir/releases/$from" ]] &&
+    switch_link "releases/$from" "$home_dir/previous" || return
+  rm -f -- "$home_dir/update.failed"
+  prune_releases
   rm -f -- "$pending" && sync "$home_dir"
 }
-
 # recover_switch: a switch a stop left halfway, decided by `current` alone: FROM goes back, TO finishes.
 recover_switch() {
   local pending="$home_dir/update.pending" from to current
@@ -911,39 +951,38 @@ recover_switch() {
   esac
 }
 
-# prune_releases [images]: removes each release neither current nor previous and, with `images`, the
-# images it names that those two do not. A failure is said, never fatal, and tried again later.
+# prune_releases [RELEASE…]: removes each release (all of them by default) that neither `current`,
+# `previous`, an unfinished switch nor a failed release's memory names, with the images only it ran.
+# A failure is said, never fatal, and tried again later.
 prune_releases() {
-  local keep='' kept='' link dir image
+  local keep=' ' kept='' link dir id
   for link in current previous; do
-    if [[ -L "$home_dir/$link" ]]; then
-      keep+=" $(readlink -- "$home_dir/$link") "
-      kept+=$(release_named_images "$home_dir/$link")$'\n'
-    fi
+    if [[ -L "$home_dir/$link" ]]; then keep+="$(readlink -- "$home_dir/$link") "; fi
   done
-  # A release that failed its gate keeps its directory, with its dump, until another one commits.
-  if [[ -f "$home_dir/update.failed" ]]; then keep+=" releases/$(cut -d' ' -f1 "$home_dir/update.failed") "; fi
-  rm -f -- "$home_dir/releases/".manifest.*
-  for dir in "$home_dir/releases"/*/; do
+  # A switch not finished keeps both its releases; a release that failed its gate keeps its
+  # directory, with its dump, until another one commits.
+  if [[ -f "$home_dir/update.pending" ]]; then keep+="$(sed -E 's,([^ ]+),releases/\1,g' "$home_dir/update.pending") "; fi
+  if [[ -f "$home_dir/update.failed" ]]; then keep+="releases/$(cut -d' ' -f1 "$home_dir/update.failed") "; fi
+  for dir in $keep; do kept+=$(cat "$home_dir/$dir/images.ids" 2>/dev/null || :)$'\n'; done
+  if (($# == 0)); then rm -f -- "$home_dir/releases/".manifest.*; set -- "$home_dir/releases"/*/; fi
+  for dir in "$@"; do
     dir=${dir%/}
     [[ $keep != *" releases/${dir##*/} "* ]] || continue
-    if [[ ${1:-} == images ]]; then
-      for image in $(release_named_images "$dir"); do
-        grep -qxF -- "$image" <<< "$kept" || docker image rm -- "$image" >/dev/null 2>&1 ||
-          echo "An earlier release's image could not be removed: $image" >&2
-      done
-    fi
-    rm -rf -- "$dir" || echo "An earlier release could not be removed: ${dir##*/}" >&2
+    forget_release "$dir" "$kept" || echo "An earlier release is kept to be removed later: ${dir##*/}" >&2
   done
   return 0
 }
 
-# release_named_images RELEASE: its selector's images, and the fixed ones its Compose files name.
-release_named_images() {
-  sed -n 's/^OPENSTEER_HOME_[A-Z_]*_IMAGE=//p' "$1/images.env" 2>/dev/null
-  sed -n 's/^ *image: *\([a-z0-9][^${}[:space:]]*\) *$/\1/p' "$1"/compose*.yaml 2>/dev/null
+# forget_release RELEASE KEPT_IDS: removes a release and the images it ran that no kept release
+# runs, compared by id; when an image cannot be removed the release stays, to try again later.
+forget_release() {
+  local id
+  for id in $(cat "$1/images.ids" 2>/dev/null); do
+    grep -qxF -- "$id" <<< "$2" || docker image rm -f -- "$id" >/dev/null 2>&1 ||
+      ! docker image inspect -- "$id" >/dev/null 2>&1 || return
+  done
+  rm -rf -- "$1"
 }
-
 # refresh_units: the installed units follow what the current release writes, where they differ.
 refresh_units() {
   [[ -d /run/systemd/system || -n ${OPENSTEER_HOME_UNIT_DIR:-} ]] || return 0
@@ -977,9 +1016,11 @@ rerun_installed_home() {
   [[ $state == required ]] ||
     fail "This Home is already claimed, so the installer will not change it. Change its release with: sudo opensteer-home update ${manifest:-MANIFEST.json}. Or remove it with: sudo opensteer-home uninstall --purge. $unchanged"
 
+  recover_switch && [[ ! -e "$home_dir/update.pending" ]] ||
+    fail "The last switch of releases is not finished yet; start the Home first: sudo opensteer-home start. $unchanged"
   to=$(install_release "$source") || fail "The release could not be written. $unchanged"
   # refuse MESSAGE: nothing of the new release stays.
-  refuse() { rm -rf -- "$to"; fail "$1 $unchanged"; }
+  refuse() { prune_releases "$to"; fail "$1 $unchanged"; }
   if [[ -n $manifest ]]; then
     (release_to_env "$manifest" "$to/images.env" false) || refuse 'The release could not be written.'
     local_mode=$local_images
@@ -989,10 +1030,12 @@ rerun_installed_home() {
   fi
   release_dir=$to fetch_release_images "$to/images.env" "$local_mode" ||
     refuse "The release's images could not be obtained."
+  release_dir=$to pin_release || refuse "The release's images are not all on this machine."
   release_dir=$to install_sandbox_policies || refuse "The release's sandbox policies could not be read."
   if [[ -n $(compose ps -q host 2>/dev/null) ]]; then running=true; fi
   cutover "$from" "$to" || status=$?
   if ((status == 2)); then refuse 'The switch could not be recorded.'; fi
+  ((status != 4)) || fail 'The Home runs the new release; what follows the switch is finished at the next start: sudo opensteer-home start.'
   if ((status != 0)); then
     echo 'The new release did not start. Putting the previous one back.' >&2
     ((status == 1)) || fail 'The previous one is not back yet: the next start puts it back.'
@@ -1001,6 +1044,8 @@ rerun_installed_home() {
   fi
   release_dir=$to
   if [[ $local_mode == true ]]; then touch "$home_dir/local-images"; else rm -f -- "$home_dir/local-images"; fi
+  # Its units, by the same comparison every start makes: no success without them.
+  refresh_units || fail "The Home runs the new release, but its units could not be written; run: sudo opensteer-home start"
   echo "This Home was never claimed. It now runs release $(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$to/images.env")."
   if [[ -f "$home_dir/setup-link.pending" ]]; then
     print_setup_link "$(cat "$home_dir/setup-link.pending")"

@@ -49,7 +49,9 @@ function release(name: string, steps: Steps = {}) {
 [[ $OPENSTEER_HOME_SWITCHING == "$(basename "$(dirname "$0")")" ]] || exit 9
 printf 'release ${name} %s\\n' "$1" >> "${log}"
 case $1 in
-  release-prepare) ${steps.prepare ? `echo "${steps.says ?? ""}" >&2; exit ${steps.prepare}` : "exit 0"} ;;
+  release-prepare)
+    printf 'sha256:%s\\n' "$(printf '${name.toLowerCase()}%.0s' {1..64})" > "$(dirname "$0")/images.ids"
+    ${steps.prepare ? `echo "${steps.says ?? ""}" >&2; exit ${steps.prepare}` : "exit 0"} ;;
   release-gate) ${steps.gate ? `echo "${steps.says ?? ""}" >&2; exit ${steps.gate}` : "exit 0"} ;;
 esac
 `;
@@ -100,11 +102,32 @@ const selection = (version: string, digit: string) =>
     "",
   ].join("\n");
 
-/** Compose's configuration stood in for: the images of selector $2 and PostgreSQL's ($1), as JSON. */
+/**
+ * Compose's configuration stood in for: the images of selector $2 and PostgreSQL's ($1), as JSON,
+ * in project $3.
+ */
 const configured = `configured() {
-  jq -Rn --arg pg "$1" '[inputs | capture("^OPENSTEER_HOME_(?<s>[A-Z_]+)_IMAGE=(?<i>.*)$")? |
+  jq -Rn --arg pg "$1" --arg name "\${3:-recipe-test}" '[inputs |
+    capture("^OPENSTEER_HOME_(?<s>[A-Z_]+)_IMAGE=(?<i>.*)$")? |
     {key: (.s | ascii_downcase | gsub("_"; "-")), value: {image: .i}}] | from_entries |
-    {services: (. + {postgres: {image: $pg}})}' < "$2"
+    {name: $name, services: (. + {postgres: {image: $pg}})}' < "$2"
+}`;
+
+/**
+ * Docker stood in for: images on this machine are those in work/present, each with an id made from
+ * its name; the pod's PostgreSQL runs unless work/down exists; the rest is logged.
+ */
+const dockerStub = (work: string, log: string) => `docker() {
+  case "$1 \${2:-}" in
+    "info --format") echo "${work}" ;;
+    "image inspect")
+      grep -qxF -- "\${*: -1}" "${work}/present" || return 1
+      if [[ $3 == --format ]]; then printf 'sha256:%s\\n' "$(printf %s "\${*: -1}" | openssl dgst -sha256 -r | cut -c1-64)"; fi ;;
+    "ps -aq") [[ -e "${work}/down" ]] || echo pg ;;
+    "inspect --format") echo 'postgres running healthy 42' ;;
+    "run --rm") echo '{}' ;;
+    *) printf 'docker %s\\n' "$*" >> "${log}" ;;
+  esac
 }`;
 
 /** Stands in for curl: the account's release-feed answer, and the installer at its address. */
@@ -167,13 +190,7 @@ function update(
            exec) case "$*" in *psql*) echo 1048576 ;; *pg_dump*) echo 'dump of the database' ;; esac ;;
          esac
        }
-       docker() {
-         case "$1 \${2:-}" in
-           "info --format") echo "${work}" ;;
-           "image inspect") grep -qxF -- "$3" "${join(work, "present")}" ;;
-           *) printf 'docker %s\\n' "$*" >> "${log}" ;;
-         esac
-       }
+       ${dockerStub(work, log)}
        df() { printf 'Filesystem 1M-blocks Used Available Capacity Mounted\\nstand-in 100000 1 %s 1%% /\\n' "$(cat "${join(work, "free")}")"; }
        start_pod() { printf 'start_pod (%s)\\n' "\${release_dir##*/}" >> "${log}"; }
        ${fault}
@@ -208,7 +225,8 @@ const data = () =>
 /** Nothing changed: the Home runs A as it did, it never stopped, and no other release is left. */
 const untouched = () => {
   expect(current()).toBe(`releases/${running}`);
-  expect(releases()).toEqual([running]);
+  // A run that changes nothing removes nothing either, the stray directory included.
+  expect(releases()).toEqual([running, "1.2.4-stray0"]);
   expect(inCurrent("images.env")).toBe(selection("1.2.3", "a"));
   expect(said()).not.toContain("compose down");
   expect(existsSync(join(home, "update.pending"))).toBe(false);
@@ -532,13 +550,28 @@ it("goes by `current`: a switch whose rename happened is the update, even when i
        return 1
      }`,
   );
-  expect(result.status, result.stderr).toBe(0);
+  // B is current: the update is made, and what follows it (here `previous`) failed, which is said
+  // and is a failure until the next start finishes it; no update runs before that.
   expect(result.stdout).toContain("Updated Home to 1.2.4.");
   expect(result.stderr).not.toContain("rolled back");
   expect(current()).toMatch(/^releases\/1\.2\.4-/u);
-  // What follows the switch is finished at the next start.
-  expect(result.stderr).toContain("finished at the next start");
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain("the next start finishes it, and no update runs until then");
   expect(existsSync(join(home, "update.pending"))).toBe(true);
+  expect(lastUpdate()).toMatchObject({ result: "updated", toVersion: "1.2.4" });
+  // The next update (this checkout's code, as B is a stand-in) refuses before it changes anything.
+  const next = spawnSync(
+    "bash",
+    [
+      "-c",
+      `source "$1/common.sh"; source "$1/update.sh"; ${asOpensteerHomeCallsUpdate("update")}`,
+      "next",
+      source,
+    ],
+    { encoding: "utf8", env: { ...process.env, OPENSTEER_HOME_DIR: home } },
+  );
+  expect(next.status).not.toBe(0);
+  expect(next.stderr).toContain("The last switch of releases is not finished yet");
 });
 
 it("reports an update that switched as updated, whether or not its units or its result could be written", () => {
@@ -638,12 +671,13 @@ it("prepares a release with its own Compose files: PostgreSQL's image too, and s
          # compose() runs \`env -i … docker compose ARGS\`: Docker Compose stood in for, by its arguments.
          env() {
            while [[ $1 != docker ]]; do shift; done; shift 2
-           local file='' selector=''
+           local file='' selector='' project=''
            while (($#)); do
              case $1 in
                -f) [[ -n $file ]] || file=$2; shift 2 ;;
                --env-file) [[ $2 == */images.env ]] && selector=$2; shift 2 ;;
-               --project-directory | --project-name) shift 2 ;;
+               --project-name) project=$2; shift 2 ;;
+               --project-directory) shift 2 ;;
                *) break ;;
              esac
            done
@@ -653,15 +687,10 @@ it("prepares a release with its own Compose files: PostgreSQL's image too, and s
                [[ -z \${FAIL_PULL:-} ]] || return 1
                sed -n 's/^ *image: \\(postgres.*\\)$/\\1/p' "$file" >> "${join(work, "present")}"
                sed -n 's/^OPENSTEER_HOME_[A-Z_]*_IMAGE=//p' "$selector" >> "${join(work, "present")}" ;;
-             config) configured "$(sed -n 's/^ *image: \\(postgres.*\\)$/\\1/p' "$file")" "$selector" ;;
+             config) configured "$(sed -n 's/^ *image: \\(postgres.*\\)$/\\1/p' "$file")" "$selector" "$project" ;;
            esac
          }
-         docker() {
-           case "$1 $2" in
-             "image inspect") grep -qxF -- "$3" "${join(work, "present")}" ;;
-             "run --rm") echo '{}' ;;
-           esac
-         }
+         ${dockerStub(work, log)}
          check_release_stamps() { :; }
          prepare_release`,
         "prepare",
@@ -674,6 +703,21 @@ it("prepares a release with its own Compose files: PostgreSQL's image too, and s
   expect(said()).toContain(`by ${b}/compose.yaml`);
   expect(readFileSync(join(work, "present"), "utf8")).toContain(newPostgres);
   expect(existsSync(join(b, "runner-oci.json"))).toBe(true);
+  // Every image it runs is recorded by its id, PostgreSQL's too; digests stay as they are.
+  expect(readFileSync(join(b, "images.ids"), "utf8").trim().split("\n")).toHaveLength(7);
+  expect(readFileSync(join(b, "images.env"), "utf8")).toBe(selection("1.2.4", "b"));
+  // Images named by tag are named by their id instead, by a tag no release can move.
+  const tagged = selection("1.2.4", "b").replaceAll(/@sha256:b{64}/gu, ":1.2.4");
+  writeFileSync(join(b, "images.env"), tagged);
+  rmSync(join(b, "release.env"));
+  expect(prepare().status).toBe(0);
+  expect(readFileSync(join(b, "release.env"), "utf8")).toBe(tagged);
+  expect(readFileSync(join(b, "images.env"), "utf8")).toMatch(
+    /^OPENSTEER_HOME_HOST_IMAGE=opensteer-home-image\/host:[0-9a-f]{64}$/mu,
+  );
+  expect(said()).toMatch(
+    /docker image tag sha256:[0-9a-f]{64} opensteer-home-image\/host:[0-9a-f]{64}/u,
+  );
   // A pull that fails stops it, also a Home's own images' PostgreSQL pull.
   const failed = prepare({ FAIL_PULL: "1" });
   expect(failed.status).not.toBe(0);
@@ -721,6 +765,23 @@ it("writes a unit only where it differs, beside itself and renamed, and tells sy
   rmSync(log);
   expect(schedule().status).toBe(0);
   expect(said()).not.toContain("daemon-reload");
+  // One timer not enabled (an interrupted enable) is reconciled though no file differs.
+  fake(
+    "systemctl",
+    `printf 'systemctl %s\\n' "$*" >> "${log}"\n[[ $1 != show ]] || echo no\n[[ "$*" != *is-enabled*recipe-test-update.timer* ]]`,
+  );
+  expect(schedule().status).toBe(0);
+  expect(said()).toContain("systemctl daemon-reload");
+  // The fleet's update checks spread over a quarter of an hour; an update runs while the Home is down.
+  expect(readFileSync(join(units, "recipe-test-update.timer"), "utf8")).toContain(
+    "RandomizedDelaySec=15min\nFixedRandomDelay=true",
+  );
+  expect(readFileSync(join(units, "recipe-test-update.service"), "utf8")).not.toContain(
+    "Requisite=",
+  );
+  expect(readFileSync(join(units, "recipe-test-backup.service"), "utf8")).toContain(
+    "Requisite=recipe-test.service",
+  );
   // A unit that differs, whose copy into place dies before its first byte, stays as it was.
   writeFileSync(main, "[Service]\nExecStart=the installed one\n");
   fake("install", "exit 1");
@@ -846,4 +907,203 @@ it("starts A when the update stops between the failed gate and remembering it, a
   expect(existsSync(join(home, "update.pending"))).toBe(false);
   // Not remembered: the next check tries B again, once, and then remembers it.
   expect(existsSync(join(home, "update.failed"))).toBe(false);
+});
+
+it("removes the images a release it gave up on pulled, by their ids", () => {
+  pinned(release("B", { prepare: 1, says: "B's preparation fails late" }));
+  const result = update(newer);
+  expect(result.status).not.toBe(0);
+  expect(said()).toContain(`docker image rm -f -- sha256:${"b".repeat(64)}`);
+  untouched();
+});
+
+it("flushes a release to disk before anything names it", () => {
+  pinned(release("B"));
+  const result = update(
+    newer,
+    "scheduled-update",
+    undefined,
+    `sync() { printf 'sync %s\\n' "$*" >> "${log}"; }`,
+  );
+  expect(result.status, result.stderr).toBe(0);
+  const steps = said();
+  const flushed = [...steps.matchAll(/^sync -f -- .*\/releases\/1\.2\.4-[^/\n]+$/gmu)].map(
+    (m) => m.index,
+  );
+  expect(flushed).toHaveLength(2);
+  expect(flushed[0]).toBeLessThan(steps.indexOf(`compose down (${running})`));
+  expect(flushed[1]).toBeGreaterThan(steps.indexOf("release B release-gate"));
+  const install = readFileSync(join(source, "install.sh"), "utf8");
+  expect(install).toContain(
+    'sync -f -- "$release_dir"\n  switch_link "releases/${release_dir##*/}" "$home_dir/current"',
+  );
+});
+
+it("checks every sandbox policy it publishes", () => {
+  const b = join(work, "release-b");
+  mkdirSync(b);
+  for (const file of releaseFiles) cpSync(join(source, file), join(b, file));
+  writeFileSync(join(b, "images.env"), selection("1.2.4", "b"));
+  const published = spawnSync(
+    "bash",
+    [
+      "-c",
+      `source "$1/common.sh"
+       ${configured}
+       compose() { configured "${postgres}" "$release_dir/images.env"; }
+       docker() { echo '{}'; }
+       # The browser's policy is not moved into place, once.
+       mv() { if [[ $4 == */chromium-oci.json ]]; then return 1; fi; command mv "$@"; }
+       install_sandbox_policies`,
+      "policies",
+      b,
+    ],
+    { encoding: "utf8", env: { ...process.env, OPENSTEER_HOME_DIR: home } },
+  );
+  expect(published.status).not.toBe(0);
+});
+
+it("runs every Compose command in the Home's one project, whatever a release's files name", () => {
+  writeFileSync(join(home, "config.env"), "OPENSTEER_HOME_HOSTNAME=home.example.test\n");
+  const printed = execFileSync(
+    "bash",
+    [
+      "-c",
+      `source "$1"; env() { printf '%s\\n' "$@"; }; compose config`,
+      "project",
+      join(source, "common.sh"),
+    ],
+    { encoding: "utf8", env: { ...process.env, OPENSTEER_HOME_DIR: home } },
+  );
+  expect(printed).toContain("--project-name\nopensteer-home\n");
+  expect(readFileSync(join(source, "common.sh"), "utf8")).toContain(
+    `[[ $(compose_project) == "$(pod_project)" ]] || fail "The release's Compose project is not this Home's."`,
+  );
+});
+
+it("refuses a release whose units do not do what they are for", () => {
+  const b = join(work, "release-b");
+  mkdirSync(b);
+  for (const file of releaseFiles) cpSync(join(source, file), join(b, file));
+  // The real scheduler, then one change to what it wrote.
+  const broken = (change: string) => {
+    writeFileSync(
+      join(b, "install-scheduler.sh"),
+      `#!/usr/bin/env bash\nbash "${join(source, "install-scheduler.sh")}" "$@" && cd "$OPENSTEER_HOME_UNITS_CHECK" && ${change}\n`,
+    );
+    return spawnSync("bash", ["-c", 'source "$1/common.sh"; check_units', "units", b], {
+      encoding: "utf8",
+      env: { ...process.env, OPENSTEER_HOME_DIR: home },
+    });
+  };
+  expect(broken("true").status).toBe(0);
+  // The update service stops the Home; the backup timer has no schedule.
+  expect(
+    broken("sed -i.was 's/scheduled-update$/stop/' opensteer-home-update.service").status,
+  ).not.toBe(0);
+  expect(broken("sed -i.was '/^OnCalendar=/d' opensteer-home-backup.timer").status).not.toBe(0);
+});
+
+it("says the Home runs its feed's release when the pair agrees again, clearing what was waiting", () => {
+  writeFileSync(
+    join(home, "last-update.json"),
+    JSON.stringify({ result: "waiting", at: "2026-11-25T07:00:00Z", toVersion: "1.2.4" }),
+  );
+  network({
+    releaseManifestUrl: "https://releases.example.test/stable.json",
+    recipe: { url: recipeUrl, sha256: "a".repeat(64) },
+  });
+  const result = update({ version: "1.2.3", images: images("a") });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain("Already on this release (1.2.3).");
+  expect(lastUpdate()).toMatchObject({ result: "updated", toVersion: "1.2.3" });
+});
+
+it("keeps the dump a rollback names when the next check changes nothing (the runbook's steps)", () => {
+  pinned(release("B", { gate: 1, says: "B fails its gate" }));
+  const failed = update(newer);
+  const named = /kept in (\S+database\.dump)/u.exec(failed.stderr)?.[1];
+  expect(named).toBeDefined();
+  // Step 3: the operator pulls the feed back to A; the next check changes nothing, removes nothing.
+  network({
+    releaseManifestUrl: "https://releases.example.test/stable.json",
+    recipe: { url: recipeUrl, sha256: "a".repeat(64) },
+  });
+  const back = update({ version: "1.2.3", images: images("a") });
+  expect(back.stdout).toContain("Already on this release");
+  // Step 4: the dump is where the message said.
+  expect(readFileSync(named!, "utf8")).toBe("dump of the database\n");
+});
+
+it("updates a Home whose pod is down: no dump, and the new release started and checked", () => {
+  writeFileSync(join(work, "down"), "");
+  pinned(release("B"));
+  const result = update(newer);
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain("The Home is not running: no dump is taken");
+  expect(said()).not.toContain("pg_dump");
+  expect(current()).toMatch(/^releases\/1\.2\.4-/u);
+});
+
+it("goes back to the previous release when the operator asks, by the same switch", () => {
+  // P was the release before A; A runs now.
+  const p = join(home, "releases", "1.2.2-pppppp");
+  mkdirSync(p);
+  for (const [file, content] of Object.entries(release("P"))) {
+    writeFileSync(join(p, file), content);
+    chmodSync(join(p, file), 0o700);
+  }
+  writeFileSync(join(p, "images.env"), selection("1.2.2", "c"));
+  symlinkSync("releases/1.2.2-pppppp", join(home, "previous"));
+  const back = spawnSync(
+    "bash",
+    [
+      "-c",
+      `source "$1/common.sh"; source "$1/update.sh"
+       sync() { :; }
+       compose() { printf 'compose %s (%s)\\n' "$*" "\${release_dir##*/}" >> "${log}"; }
+       ${dockerStub(work, log)}
+       rollback_home`,
+      "rollback",
+      join(home, "current"),
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        OPENSTEER_HOME_DIR: home,
+        OPENSTEER_HOME_UNIT_DIR: join(work, "units"),
+      },
+    },
+  );
+  expect(back.status, back.stderr).toBe(0);
+  expect(back.stdout).toContain("Back on the previous release (1.2.2).");
+  expect(said()).toContain(`compose down (${running})`);
+  expect(said()).toContain("release P release-gate");
+  expect(current()).toBe("releases/1.2.2-pppppp");
+  expect(readlinkSync(join(home, "previous"))).toBe(`releases/${running}`);
+});
+
+it("reads a self-hosted Home's feed from config.env, and a line it cannot read is a failed check", () => {
+  rmSync(join(home, "managed"));
+  const fetched = update(
+    newer,
+    "scheduled-update",
+    undefined,
+    `fetch_manifest() { printf '%s\\n' "$1" > "${join(work, "fetched")}"; return 22; }`,
+  );
+  expect(fetched.status).not.toBe(0);
+  expect(readFileSync(join(work, "fetched"), "utf8")).toBe(
+    "https://releases.example.test/stable.json\n",
+  );
+  writeFileSync(
+    join(home, "config.env"),
+    readFileSync(join(home, "config.env"), "utf8").replace(
+      /MANIFEST_URL='([^']*)'/u,
+      'MANIFEST_URL="$1"',
+    ),
+  );
+  const unreadable = update(newer, "scheduled-update");
+  expect(unreadable.status).not.toBe(0);
+  expect(unreadable.stderr).toContain("could not be read from config.env");
 });

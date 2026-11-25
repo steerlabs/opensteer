@@ -122,6 +122,12 @@ case "${1:-}" in
     if ((update_status != 0)) && [[ ! -f "$home_dir/update.recorded" ]]; then record_update_result failed; fi
     exit "$update_status"
     ;;
+  rollback)
+    [[ $# == 1 ]] || fail "Usage: opensteer-home rollback"
+    lock_release
+    recover_home
+    rollback_home
+    ;;
   snapshots)
     backup_command "$@"
     ;;
@@ -179,5 +185,5 @@ case "${1:-}" in
       echo "Stopped. Home data and configuration are retained in Docker volumes and $home_dir."
     fi
     ;;
-  *) fail "Usage: opensteer-home {status|setup-link|update [--retry]|logs <service>|backup|snapshots|restore|uninstall [--purge]}" ;;
+  *) fail "Usage: opensteer-home {status|setup-link|update [--retry]|rollback|logs <service>|backup|snapshots|restore|uninstall [--purge]}" ;;
 esac

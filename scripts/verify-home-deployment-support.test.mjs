@@ -313,6 +313,8 @@ const switchFixture = `
     for name in a b c; do
       mkdir -p "$home_dir/releases/$name"
       printf 'OPENSTEER_HOME_VERSION=1.0.0\nOPENSTEER_HOME_HOST_IMAGE=host:%s\n' "$name" > "$home_dir/releases/$name/images.env"
+      # The ids of the images each runs: PostgreSQL's is shared by all three.
+      printf 'sha256:%064d\nsha256:%s\n' 0 "$(printf "$name%.0s" {1..64})" > "$home_dir/releases/$name/images.ids"
     done
     printf 'manual recovery copy\n' > "$home_dir/releases/b/database.dump"
     printf 'a b\n' > "$home_dir/update.pending"
@@ -411,6 +413,8 @@ const installedHome = ({ state = "required", fetch = "ok", start = "ok", running
     version_of() { sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$1/images.env"; }
     # The new release's own gate (it runs as root), and the old release started again.
     run_release() { echo "start $(version_of "$1")" >> "$log"; ${start === "ok" ? "true" : "false"}; }
+    pin_release() { echo "pin $(version_of "$release_dir")" >> "$log"; }
+    refresh_units() { echo units >> "$log"; }
     start_pod() { echo "start $(version_of "$release_dir")" >> "$log"; }
     rerun() { (rerun_installed_home "$@" "$(pwd)/deploy/home"); }
     report() { status=$1; checksums > "$staging/after"; if cmp -s "$staging/before" "$staging/after"; then echo unchanged; else echo changed; fi; cat "$log"; echo "status $status"; }
@@ -459,6 +463,12 @@ await test("the installer run again on a claimed, managed or mismatched Home cha
       message: /The release's images could not be obtained\. Nothing was changed\./u,
       log: "fetch true\n",
     },
+    {
+      // A switch the last start could not finish (its `previous` is gone): never a second one.
+      setup: `${installedHome()} printf 'gone old\\n' > "$home_dir/update.pending"; checksums > "$staging/before"`,
+      run: 'rerun home.example.test "$staging/new.json" true true',
+      message: /The last switch of releases is not finished yet; start the Home first/u,
+    },
   ];
   for (const { setup, run, message, log = "" } of cases) {
     const result = runHome(`${setup}
@@ -484,8 +494,10 @@ await test("the installer run again on an unclaimed Home replaces it, or puts it
       "The setup link printed by the first install still works. Run sudo opensteer-home setup-link for a new one.",
       "status 0",
       "fetch true",
+      "pin 1.0.1",
       "compose down",
       "start 1.0.1",
+      "units",
       "1.0.1",
       "local-images",
       "recipe-replaced",
@@ -499,13 +511,19 @@ await test("the installer run again on an unclaimed Home replaces it, or puts it
     rerun home.example.test "$staging/new.json" true true && report 0 || report $?`);
   assert.equal(
     restored.stdout,
-    "unchanged\nfetch true\ncompose down\nstart 1.0.1\ncompose down --remove-orphans\nstart 1.0.0\nstatus 1\n",
+    "unchanged\nfetch true\npin 1.0.1\ncompose down\nstart 1.0.1\ncompose down --remove-orphans\nstart 1.0.0\nstatus 1\n",
     restored.stderr,
   );
   assert.match(
     restored.stderr,
     /The new release did not start\. Putting the previous one back\.\nThe Home is back on its previous release\./u,
   );
+  // No success without the units every start compares.
+  const unitless = runHome(`${installedHome()}
+    refresh_units() { return 1; }
+    rerun home.example.test "$staging/new.json" true true && echo "status 0" || echo "status $?"`);
+  assert.match(unitless.stdout, /status 1/u);
+  assert.match(unitless.stderr, /its units could not be written; run: sudo opensteer-home start/u);
 });
 
 await test("the installer decides about an installed Home before it writes anything", () => {
@@ -882,7 +900,10 @@ await test("an interrupted switch is decided by `current` alone, and keeps the d
     readlink "$home_dir/current"; readlink "$home_dir/previous"
     ls "$home_dir/releases"; cat "$home_dir/docker.log"
   `);
-  assert.equal(ahead, "releases/b\nreleases/a\na\nb\ndocker image rm -- host:c\n");
+  assert.equal(
+    ahead,
+    `releases/b\nreleases/a\na\nb\ndocker image rm -f -- sha256:${"c".repeat(64)}\n`,
+  );
   // Anything else is the operator's: everything stays.
   const neither = runHome(`${switchFixture}
     current c
@@ -890,6 +911,14 @@ await test("an interrupted switch is decided by `current` alone, and keeps the d
     test -f "$home_dir/update.pending"; ls "$home_dir/releases"`);
   assert.equal(neither.stdout, "a\nb\nc\n", neither.stderr);
   assert.match(neither.stderr, /operator intervention is required/u);
+  // An image that cannot be removed keeps its release, to try again later.
+  const stuck = runRecovery(`${switchFixture}
+    current b
+    docker() { [[ $1 == image && $2 == inspect ]]; }
+    recover_switch 2>&1
+    ls "$home_dir/releases"
+  `);
+  assert.equal(stuck, "An earlier release is kept to be removed later: c\na\nb\nc\n");
 });
 
 for (const { name, fixture, recover, selector } of [

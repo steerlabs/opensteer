@@ -69,6 +69,7 @@ if [[ -n $managed ]]; then
     for file in "${release_files[@]}"; do
       install -m 0700 "$source_dir/$file" "$boot/$file"
     done
+    if [[ -f "$source_dir/version" ]]; then install -m 0600 "$source_dir/version" "$boot/version"; fi
     install -m 0600 "$managed" "$boot/spec.json.new"
     mv -f -- "$boot/spec.json.new" "$boot/spec.json"
     if [[ ! -s "$boot/token" ]]; then
@@ -172,6 +173,7 @@ if $resume_managed && [[ -L "$home_dir/current" ]]; then
   release_dir=$(current_release)
 else
   release_dir=$(install_release "$source_dir")
+  sync -f -- "$release_dir"
   switch_link "releases/${release_dir##*/}" "$home_dir/current"
 fi
 # The units this Home is installed under, so its own command finds them to remove them.
@@ -320,6 +322,7 @@ else
   fetch_release_images "$release_dir/images.env" "$local_images"
   if $local_images; then touch "$home_dir/local-images"; fi
   if $resume_managed; then check_release_stamps "$release_dir/images.env"; fi
+  pin_release || fail "The release's images are not all on this machine."
   install_sandbox_policies
   if $resume_managed; then
     snapshot=$(jq -r '.restoreSnapshot // empty' "$result")
