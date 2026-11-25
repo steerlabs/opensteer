@@ -1,9 +1,9 @@
 /**
  * "No upstream, no start" holds for the egress proxy process too. On a host that requires an
- * upstream (`pullsEgress`), `start` and wake (`resume` from memory or from disk) confirm the
- * slot's proxy is serving within a bounded wait before answering applied.
+ * upstream (`pullsEgress`), `start` confirms the proxy is serving before boot. A wake
+ * checks for failed units first and checks health alongside the restore.
  *
- * On a resume, host and proxy readiness (and closing the guest network gate) are confirmed before
+ * On a resume, host and proxy setup (and closing the guest network gate) are confirmed before
  * the right to resume is consumed (`consumed`). A refusal known before anything is loaded or
  * thawed (`egress-proxy-down`, or a failed host/network/proxy prepare step) returns a stored,
  * signed refusal that leaves the slot `paused` with its saved state intact so a later resume
@@ -36,17 +36,20 @@ const answer: SlotEgressAnswer = {
 class CountingProxyDriver extends FakeHypervisorDriver {
   proxyChecks = 0;
   hangProxy = false;
+  proxyHealth: Promise<boolean> | undefined;
 
   override async verifyProxy(slotId: string, signal: AbortSignal): Promise<boolean> {
     this.proxyChecks += 1;
-    if (this.hangProxy) {
-      await new Promise<void>((resolve) => {
-        if (signal.aborted) return resolve();
-        signal.addEventListener("abort", () => resolve(), { once: true });
+    if (!this.hangProxy && !this.proxyHealth) return super.verifyProxy(slotId, signal);
+    return new Promise<boolean>((resolve) => {
+      const abort = () => resolve(false);
+      if (signal.aborted) return abort();
+      signal.addEventListener("abort", abort, { once: true });
+      void this.proxyHealth?.then((healthy) => {
+        signal.removeEventListener("abort", abort);
+        resolve(healthy);
       });
-      return false;
-    }
-    return super.verifyProxy(slotId, signal);
+    });
   }
 }
 
@@ -54,6 +57,7 @@ async function setup(options: {
   readonly pullsEgress: boolean;
   readonly saveAfterMs?: number | null;
   readonly proxyMs?: number;
+  readonly hostCheckMs?: number;
   readonly checkpoint?: (point: string) => void;
 }) {
   const driver = new CountingProxyDriver({ pullsEgress: options.pullsEgress });
@@ -62,6 +66,7 @@ async function setup(options: {
     driver,
     ...(options.pullsEgress ? { egressFetch: async () => answer } : {}),
     ...(options.proxyMs !== undefined ? { deadlines: { proxy: options.proxyMs } } : {}),
+    ...(options.hostCheckMs !== undefined ? { hostCheckMs: options.hostCheckMs } : {}),
     ...(options.checkpoint ? { checkpoint: options.checkpoint } : {}),
   });
   open.push(running);
@@ -145,7 +150,7 @@ async function setup(options: {
   };
 }
 
-describe("start and wake confirm the slot proxy is serving when upstream is required", () => {
+describe("slot proxy readiness when upstream is required", () => {
   it("refuses start with stored, signed egress-proxy-down and boots nothing when proxy is down", async () => {
     const h = await setup({ pullsEgress: true });
     await h.create("bps-e2-start");
@@ -186,7 +191,7 @@ describe("start and wake confirm the slot proxy is serving when upstream is requ
     const jailIdsBefore = [...h.driver.processes.keys()];
     expect(jailIdsBefore).toHaveLength(1);
 
-    h.driver.proxyUnhealthy.add("bps-e4-mem");
+    h.driver.proxyDown.add("bps-e4-mem");
     const { call, result } = await h.apply("bps-e4-mem", "resume");
     expect(result).toMatchObject({
       applied: false,
@@ -213,7 +218,7 @@ describe("start and wake confirm the slot proxy is serving when upstream is requ
     expect(h.agent.agent.effects("bps-e4-mem")).not.toContain("lost");
 
     // Once the proxy is back, a second resume succeeds on the same guest instance and jail.
-    h.driver.proxyUnhealthy.delete("bps-e4-mem");
+    h.driver.proxyDown.delete("bps-e4-mem");
     const resumed = (await h.apply("bps-e4-mem", "resume")).result;
     expect(resumed).toMatchObject({
       applied: true,
@@ -241,7 +246,7 @@ describe("start and wake confirm the slot proxy is serving when upstream is requ
     expect(h.driver.processes.size).toBe(0);
     expect(h.driver.images.has(savedState.id)).toBe(true);
 
-    h.driver.proxyUnhealthy.add("bps-e4-disk");
+    h.driver.proxyDown.add("bps-e4-disk");
     const { call, result } = await h.apply("bps-e4-disk", "resume");
     expect(result).toMatchObject({
       applied: false,
@@ -268,7 +273,7 @@ describe("start and wake confirm the slot proxy is serving when upstream is requ
     expect(h.agent.agent.effects("bps-e4-disk")).not.toContain("lost");
 
     // Once the proxy is back, a second resume restores the same saved image and keeps its pages.
-    h.driver.proxyUnhealthy.delete("bps-e4-disk");
+    h.driver.proxyDown.delete("bps-e4-disk");
     const resumed = (await h.apply("bps-e4-disk", "resume")).result;
     expect(resumed).toMatchObject({
       applied: true,
@@ -282,6 +287,70 @@ describe("start and wake confirm the slot proxy is serving when upstream is requ
     expect(h.driver.loaded.get(savedState.id)).toBe(1);
     expect(h.driver.processes.size).toBe(1);
     expect(h.driver.violations).toEqual([]);
+  });
+
+  it("restores after the consumed journal write while proxy health is still pending", async () => {
+    const slotId = "bps-e4-wake-health";
+    const checkpoints: string[] = [];
+    const h = await setup({
+      pullsEgress: true,
+      proxyMs: 250,
+      checkpoint: (point) => {
+        if (point.startsWith("resume:")) checkpoints.push(point);
+      },
+    });
+    await h.create(slotId);
+    await h.apply(slotId, "start");
+    const paused = (await h.apply(slotId, "pause")).result;
+    const saved = paused.savedState!;
+    expect(await h.agent.agent.saveToDisk(slotId, saved.id)).toBe("saved");
+    const restore = h.driver.restore.bind(h.driver);
+    h.driver.restore = async (...args) => {
+      expect(checkpoints.at(-1)).toBe("resume:consumed");
+      expect(h.driver.proxyChecks).toBe(2);
+      await restore(...args);
+    };
+    const health = Promise.withResolvers<boolean>();
+    h.driver.proxyHealth = health.promise;
+    try {
+      expect((await h.apply(slotId, "resume")).result).toMatchObject({
+        applied: true,
+        status: { phase: "running" },
+      });
+      expect(h.driver.loaded.get(saved.id)).toBe(1);
+    } finally {
+      health.resolve(true);
+    }
+  });
+
+  it("reports a failed wake health check in signed status and repairs through pause and resume", async () => {
+    const slotId = "bps-e4-wake-repair";
+    const h = await setup({ pullsEgress: true, proxyMs: 250, hostCheckMs: 20 });
+    await h.create(slotId);
+    await h.apply(slotId, "start");
+    await h.apply(slotId, "pause");
+    const health = Promise.withResolvers<boolean>();
+    h.driver.proxyHealth = health.promise;
+    try {
+      expect((await h.apply(slotId, "resume")).result).toMatchObject({
+        applied: true,
+        status: { phase: "running" },
+      });
+    } finally {
+      health.resolve(false);
+    }
+    await expect.poll(h.signedStatus.bind(null, slotId)).toMatchObject({
+      phase: "running",
+      proxy: "down",
+    });
+    expect(await h.driver.proxiesDown()).toEqual([]);
+    expect((await h.apply(slotId, "pause")).result.status.phase).toBe("paused");
+    h.driver.proxyHealth = undefined;
+    expect((await h.apply(slotId, "resume")).result).toMatchObject({
+      applied: true,
+      status: { phase: "running" },
+    });
+    expect((await h.signedStatus(slotId)).proxy).toBeUndefined();
   });
 
   it("keeps savedState intact when host, network, proxy revive or gate close fails before resume is consumed", async () => {

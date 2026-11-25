@@ -170,6 +170,9 @@ interface Slot {
   failedAt: number | undefined;
   /** Idle saves of the current park that failed: the next one waits longer each time. */
   saveFailure: SaveFailure | undefined;
+  wakeProxy?: { readonly abort: AbortController; readonly settled: Promise<void> };
+  /** A wake health check can time out while systemd still considers the process active. */
+  wakeProxyDown?: true;
 }
 
 interface SaveFailure {
@@ -362,7 +365,10 @@ export class PoolAgent {
       ),
     );
     if (swept.length) this.#log({ event: "sweep", removed: swept });
-    for (const slot of this.#live()) this.#schedule(slot);
+    for (const slot of this.#live()) {
+      this.#schedule(slot);
+      if (slot.record.phase === "running") this.#checkWakeProxy(slot);
+    }
     // Review G4(a): a flush or reload of the host's ruleset is noticed and repaired.
     this.#hostCheck = setInterval(() => {
       void this.#ensureHost().catch((error: unknown) =>
@@ -407,12 +413,24 @@ export class PoolAgent {
    * ran out of time is drained before this returns, so the slot's lane is never released (and
    * the slot never deleted, nor its number reused) while that work may still run.
    */
-  async #prepareToRun(slotId: string, egress: SlotEgress | undefined): Promise<void> {
+  async #prepareToRun(
+    slotId: string,
+    egress: SlotEgress | undefined,
+    waking = false,
+  ): Promise<void> {
+    if (
+      waking &&
+      this.#driver.pullsEgress &&
+      (await this.#drained(slotId, "network", (signal) => this.#driver.proxyFailed(slotId, signal)))
+    ) {
+      this.#proxiesDown.add(slotId);
+      throw new EgressProxyDown("The slot's egress proxy has a failed unit.");
+    }
     await this.#drained(slotId, "network", (signal) =>
       this.#driver.prepareSlot(slotId, egress, signal),
     );
     await this.#reviveProxy(slotId, egress);
-    if (this.#driver.pullsEgress) {
+    if (this.#driver.pullsEgress && !waking) {
       if (!(await this.#verifyProxy(slotId))) {
         if (!this.#proxiesDown.has(slotId)) this.#log({ event: "proxy.down", slotId });
         this.#proxiesDown.add(slotId);
@@ -422,15 +440,42 @@ export class PoolAgent {
     }
   }
 
-  async #verifyProxy(slotId: string): Promise<boolean> {
+  async #verifyProxy(slotId: string, wakeSignal?: AbortSignal): Promise<boolean> {
     try {
       return await this.#drained(slotId, "proxy", (signal) =>
-        this.#driver.verifyProxy(slotId, signal),
+        wakeSignal
+          ? this.#driver.verifyProxy(slotId, AbortSignal.any([signal, wakeSignal]), false)
+          : this.#driver.verifyProxy(slotId, signal),
       );
     } catch (error) {
       if (error instanceof AgentCrashed || error instanceof DriverStateUncertain) throw error;
       return false;
     }
+  }
+
+  /** The health probe activates the socket while the guest is restoring. */
+  #checkWakeProxy(slot: Slot): void {
+    if (this.#closed || !this.#driver.pullsEgress) return;
+    const { slotId } = slot.record;
+    const abort = new AbortController();
+    const settled = this.#verifyProxy(slotId, abort.signal)
+      .catch(() => false)
+      .then((healthy) => {
+        if (abort.signal.aborted) return;
+        if (healthy) this.#proxiesDown.delete(slotId);
+        else {
+          slot.wakeProxyDown = true;
+          if (!this.#proxiesDown.has(slotId)) this.#log({ event: "proxy.down", slotId });
+        }
+      });
+    slot.wakeProxy = { abort, settled };
+  }
+
+  async #cancelWakeProxy(slot: Slot): Promise<void> {
+    if (!slot.wakeProxy) return;
+    slot.wakeProxy.abort.abort();
+    await slot.wakeProxy.settled;
+    delete slot.wakeProxy;
   }
 
   async #drained<T>(
@@ -473,7 +518,10 @@ export class PoolAgent {
   close(): void {
     this.#closed = true;
     if (this.#hostCheck) clearInterval(this.#hostCheck);
-    for (const slot of this.#slots.values()) this.#unschedule(slot);
+    for (const slot of this.#slots.values()) {
+      this.#unschedule(slot);
+      slot.wakeProxy?.abort.abort();
+    }
   }
 
   slotIds(): readonly string[] {
@@ -566,7 +614,7 @@ export class PoolAgent {
     this.#admit(slot, generation);
     this.#heardFromHome(slot);
     const withProxy = (status: BrowserPoolAgentStatus): BrowserPoolAgentStatus =>
-      this.#proxiesDown.has(slotId) && status.phase !== "stopped"
+      (this.#proxiesDown.has(slotId) || slot.wakeProxyDown) && status.phase !== "stopped"
         ? { ...status, proxy: "down" }
         : status;
     // A read never waits behind a long step: it reports what the journal holds now.
@@ -1237,6 +1285,21 @@ export class PoolAgent {
       if (error instanceof DriverStateUncertain) this.#die(error);
       return this.#fail(slot, call, "pause-failed", error);
     }
+    if (slot.wakeProxy) await this.#cancelWakeProxy(slot);
+    // The Home repairs a down proxy by parking and waking. Give that wake a fresh start.
+    if (this.#driver.pullsEgress && (slot.wakeProxyDown || this.#proxiesDown.has(before.slotId))) {
+      try {
+        await this.#drained(before.slotId, "network", (signal) =>
+          this.#driver.resetProxy(before.slotId, signal),
+        );
+        delete slot.wakeProxyDown;
+        this.#proxiesDown.delete(before.slotId);
+      } catch (error) {
+        if (error instanceof AgentCrashed) throw error;
+        if (error instanceof DriverStateUncertain) this.#die(error);
+        this.#log({ event: "proxy.reset-failed", slotId: before.slotId });
+      }
+    }
     const parkedAt = this.#now();
     const saved = {
       id: randomUUID(),
@@ -1274,14 +1337,14 @@ export class PoolAgent {
       steps[name] = Math.round((at - mark) * 10) / 10;
       mark = at;
     };
-    // Host rules, slot network, proxy readiness and closing the guest gate touch nothing of
+    // Host rules, slot network, proxy setup and closing the guest gate touch nothing of
     // the paused guest or its saved state. They run before the right to resume is consumed so a
     // refusal known here (such as `egress-proxy-down`) leaves the slot `paused` with its saved
     // state intact and the same resume can be asked again later.
     try {
       await this.#ensureHost();
       step("host");
-      await this.#prepareToRun(before.slotId, before.guest.egress);
+      await this.#prepareToRun(before.slotId, before.guest.egress, true);
       step("prepare");
       await this.#drained(before.slotId, "network", () => this.#driver.closeNetwork(before.slotId));
       step("close");
@@ -1308,11 +1371,15 @@ export class PoolAgent {
     step("journal");
     this.#checkpoint("resume:consumed");
     try {
+      delete slot.wakeProxyDown;
       if (saved.tier === "disk") {
         if (!saved.image || saved.diskGeneration !== before.diskGeneration)
           throw new Error("The saved state does not match the profile disk.");
         await this.#kill(slot);
         step("kill");
+      }
+      this.#checkWakeProxy(slot);
+      if (saved.tier === "disk") {
         await within(this.#deadlines.restore, "The guest restore", (signal) =>
           this.#driver.restore(
             this.#boot(slot, jailId!, before.sequence + 1),
@@ -1897,6 +1964,8 @@ export class PoolAgent {
   }
 
   async #kill(slot: Slot): Promise<void> {
+    if (slot.wakeProxy) await this.#cancelWakeProxy(slot);
+    delete slot.wakeProxyDown;
     await within(this.#deadlines.kill, "Ending the guest's processes", (signal) =>
       this.#driver.kill(slot.record.slotId, signal),
     );

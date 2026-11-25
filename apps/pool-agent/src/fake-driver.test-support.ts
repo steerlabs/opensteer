@@ -351,6 +351,14 @@ export class FakeHypervisorDriver implements HypervisorDriver {
     return [...this.proxyDown];
   }
 
+  async proxyFailed(slotId: string): Promise<boolean> {
+    return this.proxyDown.has(slotId);
+  }
+
+  async resetProxy(slotId: string): Promise<void> {
+    this.proxyDown.delete(slotId);
+  }
+
   async verifyProxy(slotId: string, _signal: AbortSignal): Promise<boolean> {
     return !this.proxyUnhealthy.has(slotId);
   }

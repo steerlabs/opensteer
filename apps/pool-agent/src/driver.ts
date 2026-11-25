@@ -135,6 +135,10 @@ export interface HypervisorDriver {
   prepareSlot(slotId: string, egress: SlotEgress | undefined, signal?: AbortSignal): Promise<void>;
   /** The slots whose egress proxy tripped its start limit and is down (round D, D1). */
   proxiesDown(): Promise<readonly string[]>;
+  /** Whether either unit is already failed before a wake repairs or activates the socket. */
+  proxyFailed(slotId: string, signal: AbortSignal): Promise<boolean>;
+  /** Stops a down proxy and resets its start limit so the next wake can try again. */
+  resetProxy(slotId: string, signal: AbortSignal): Promise<void>;
   /** At a start or wake: brings a slot's proxy back if it was down. True if it was. */
   reviveProxy(
     slotId: string,
@@ -145,7 +149,7 @@ export interface HypervisorDriver {
    * On a host that requires an upstream (`pullsEgress`), confirms the slot's proxy process is
    * actually serving (not merely socket-activated) within the signal's bound.
    */
-  verifyProxy(slotId: string, signal: AbortSignal): Promise<boolean>;
+  verifyProxy(slotId: string, signal: AbortSignal, reset?: boolean): Promise<boolean>;
   /** Every slot that holds a number (and so a namespace and proxy) on this host. */
   slotsKnown(): Promise<readonly string[]>;
   /** Removes everything prepareSlot made. Idempotent. */

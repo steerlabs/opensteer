@@ -56,6 +56,7 @@ import {
 import type { BrowserPoolAgentGuestSpec } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 import {
   confirmEgress,
+  egressFailed,
   defineEgress,
   egressDefined,
   egressDefinition,
@@ -358,10 +359,20 @@ export class FirecrackerDriver implements HypervisorDriver {
     );
   }
 
-  async verifyProxy(slotId: string, signal: AbortSignal): Promise<boolean> {
+  async proxyFailed(slotId: string, signal: AbortSignal): Promise<boolean> {
+    const index = this.#numbers.get(slotId);
+    return index !== undefined && egressFailed(index, signal);
+  }
+
+  async resetProxy(slotId: string, signal: AbortSignal): Promise<void> {
+    const index = this.#require(slotId);
+    await this.#numbers.using(slotId, () => withStepSignal(signal, () => sleepEgress(index)));
+  }
+
+  async verifyProxy(slotId: string, signal: AbortSignal, reset = true): Promise<boolean> {
     const index = this.#require(slotId);
     return this.#numbers.using(slotId, () =>
-      withStepSignal(signal, () => confirmEgress(index, signal)),
+      withStepSignal(signal, () => confirmEgress(index, signal, reset)),
     );
   }
 

@@ -249,6 +249,15 @@ export async function failedEgress(): Promise<readonly number[]> {
   return [...indices];
 }
 
+export async function egressFailed(index: number, signal: AbortSignal): Promise<boolean> {
+  const states = await run(
+    "systemctl",
+    ["show", "-p", "ActiveState", "--value", egressUnit(index), egressSocket(index)],
+    { allow: [1], signal },
+  );
+  return states.split(/\s+/u).includes("failed");
+}
+
 /** Ends the socket and the process: the slot is going away. */
 export async function removeEgress(index: number): Promise<void> {
   await run("systemctl", ["stop", egressSocket(index), egressUnit(index)], { allow: [5] });
@@ -260,20 +269,24 @@ export async function removeEgress(index: number): Promise<void> {
  * `false` immediately if the proxy service or socket has entered `failed`, or if `signal` aborts
  * before a healthy `{"ok":true}` answer is received.
  */
-export async function confirmEgress(index: number, signal: AbortSignal): Promise<boolean> {
+export async function confirmEgress(
+  index: number,
+  signal: AbortSignal,
+  reset = true,
+): Promise<boolean> {
   const unit = egressUnit(index);
-  const socket = egressSocket(index);
   // If a prior crash left the service in auto-restart backoff or failed while its socket is
   // still listening, reset it so the probe triggers an immediate fresh start instead of waiting
   // out a restart backoff timer.
-  const initialState = (
-    await run("systemctl", ["show", "-p", "ActiveState", "--value", unit], {
-      allow: [1],
-      signal,
-    }).catch(() => "")
-  ).trim();
-  if (initialState === "activating" || initialState === "failed") {
-    await sleepEgress(index).catch(() => undefined);
+  if (reset) {
+    const initialState = (
+      await run("systemctl", ["show", "-p", "ActiveState", "--value", unit], {
+        allow: [1],
+        signal,
+      }).catch(() => "")
+    ).trim();
+    if (initialState === "activating" || initialState === "failed")
+      await sleepEgress(index).catch(() => undefined);
   }
 
   const healthUrl = `http://${proxyAddress}:${proxyPort}/health`;
@@ -308,15 +321,7 @@ export async function confirmEgress(index: number, signal: AbortSignal): Promise
       }
     }
     if (signal.aborted) return false;
-    const states = (
-      await run("systemctl", ["show", "-p", "ActiveState", "--value", unit, socket], {
-        allow: [1],
-        signal,
-      }).catch(() => "")
-    )
-      .trim()
-      .split("\n");
-    if (states.some((state) => state.trim() === "failed")) return false;
+    if (await egressFailed(index, signal).catch(() => false)) return false;
     try {
       await sleep(150, undefined, { signal });
     } catch {
