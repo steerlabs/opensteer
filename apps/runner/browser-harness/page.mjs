@@ -12,6 +12,7 @@ export const COMMAND_TIMEOUT = 30_000;
 let nextOperation = 0;
 
 class RetryError extends Error {}
+class MissingElementError extends RetryError {}
 class DeadlineError extends Error {}
 export class CdpProtocolError extends Error {}
 
@@ -278,8 +279,8 @@ class Operation {
           );
         }
       }
-      throw new RetryError(
-        `element was not found${this.names.length ? `; available accessible names: ${[...new Set(this.names)].slice(0, 20).map(display).join(", ")}` : ""}`,
+      throw new MissingElementError(
+        `no element matched${this.names.length ? `; available accessible names: ${[...new Set(this.names)].slice(0, 20).map(display).join(", ")}` : ""}`,
       );
     }
     return elements[0];
@@ -400,7 +401,15 @@ class Operation {
           )
             throw error;
           this.reason = error.message;
-          await this.pause(BACKOFF[Math.min(this.attempt++, BACKOFF.length - 1)]);
+          const delay = BACKOFF[Math.min(this.attempt++, BACKOFF.length - 1)];
+          // A confirmed miss can end before the deadline so its object-group
+          // release is acknowledged while the script is still running.
+          if (
+            error instanceof MissingElementError &&
+            performance.now() + delay + Math.min(RELEASE_GRACE, this.timeout / 5) >= this.deadline
+          )
+            throw new DeadlineError("deadline exceeded");
+          await this.pause(delay);
         }
       }
     } catch (error) {
