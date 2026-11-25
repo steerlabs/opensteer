@@ -144,6 +144,11 @@ export const RunnerIntegrationsStatusSchema = z.strictObject({
   captureSupported: z.boolean().optional(),
   displayAvailable: z.boolean().optional(),
   ownerViewVersion: z.number().int().positive().max(1000).optional(),
+  /**
+   * This Mac's helper has not answered yet, so what it can show is not known:
+   * never read as a Mac without owner view. Sent without `ownerViewVersion`.
+   */
+  ownerViewPending: z.literal(true).optional(),
   type: z.literal("runner.integrations.status"),
 });
 export type RunnerIntegrationsStatus = z.infer<typeof RunnerIntegrationsStatusSchema>;

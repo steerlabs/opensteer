@@ -442,6 +442,52 @@ describe("ComputerAppHub", () => {
       expect(hub.displayStream(runnerId)).toMatchObject({ mac: true, displayProfile: 1 });
     });
 
+    it("reads a Mac whose helper has not answered as still connecting, then supported once it does", async () => {
+      const initial = integrationsStream({ runnerId });
+      const stream = {
+        ...initial,
+        identity: {
+          ...initial.identity,
+          modules: {
+            integrations: {
+              platform: "darwin" as const,
+              protocolVersion: runnerIntegrationsProtocolVersion,
+              computerUseVersion: 2 as const,
+              macWindowVideoVersion: 1 as const,
+              displayProfile: 1 as const,
+              ownerViewVersion: macOwnerViewVersion,
+            },
+          },
+        },
+      };
+      const peer = controlPeer();
+      hub.attach(peer, stream);
+      // The first status went out before the helper's handshake.
+      await hub.handleMessage(peer, stream, {
+        ...statusFrame(stream, [ready(messages)]),
+        ownerViewPending: true,
+        displayAvailable: false,
+      });
+      expect(hub.reportsApp(runnerId, messages)).toBe("reported");
+      expect(hub.ownerViewSupported(runnerId)).toBe(false);
+      expect(hub.ownerViewReported(runnerId)).toBe(false);
+      // The helper answers: the same stream, no restart.
+      await hub.handleMessage(peer, stream, {
+        ...statusFrame(stream, [ready(messages)]),
+        ownerViewVersion: macOwnerViewVersion,
+        displayAvailable: true,
+      });
+      expect(hub.ownerViewSupported(runnerId)).toBe(true);
+      expect(hub.ownerViewReported(runnerId)).toBe(true);
+      expect(hub.displayStream(runnerId)).toMatchObject({ mac: true, displayProfile: 1 });
+    });
+
+    it("reads a Mac whose helper answered without the owner-view version as unsupported", async () => {
+      await attachMac(undefined);
+      expect(hub.ownerViewReported(runnerId)).toBe(true);
+      expect(hub.ownerViewSupported(runnerId)).toBe(false);
+    });
+
     it.each([undefined, 1, macOwnerViewVersion + 1])(
       "refuses a Mac whose owner-view version is %s",
       async (ownerViewVersion) => {
