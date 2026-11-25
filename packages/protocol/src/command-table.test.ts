@@ -839,6 +839,73 @@ describe("the command table", () => {
     expect(commandTable["machine.access.update"].face?.({} as never)).toBeUndefined();
     expect(commandTable["connection.update"].face?.({} as never)).toBeUndefined();
   });
+
+  it("parses secret-omitted proposals with parseCommandArguments while keeping superRefine rules intact", async () => {
+    const { parseCommandArguments } = await import("./command-arguments.js");
+    const triggerId = "trg_00000000-0000-4000-8000-000000000001";
+    // Valid proposals with `set` absent pass cleanly.
+    expect(
+      parseCommandArguments({
+        type: "trigger.secrets.set",
+        idempotencyKey: "proposal",
+        triggerId,
+        names: ["API_KEY"],
+      }).success,
+    ).toBe(true);
+    expect(
+      parseCommandArguments({
+        type: "trigger.secrets.set",
+        idempotencyKey: "proposal",
+        triggerId,
+        remove: ["API_KEY"],
+      }).success,
+    ).toBe(true);
+    expect(
+      parseCommandArguments({
+        type: "trigger.secrets.set",
+        idempotencyKey: "proposal",
+        triggerId,
+        clearAll: true,
+      }).success,
+    ).toBe(true);
+    // Cross-field `.superRefine(...)` still rejects invalid combinations when `set` is absent.
+    expect(
+      parseCommandArguments({
+        type: "trigger.secrets.set",
+        idempotencyKey: "proposal",
+        triggerId,
+        names: ["API_KEY"],
+        clearAll: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      parseCommandArguments({
+        type: "trigger.secrets.set",
+        idempotencyKey: "proposal",
+        triggerId,
+        clearAll: true,
+        remove: ["API_KEY"],
+      }).success,
+    ).toBe(false);
+    // Required nested secret fields (e.g. `plugin.oauthApp.save.input.clientSecret`) remain omissible.
+    expect(
+      parseCommandArguments({
+        type: "plugin.oauthApp.save",
+        idempotencyKey: "proposal",
+        input: {
+          issuer: "https://oauth.example.test",
+          clientId: "client_123",
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      parseCommandArguments({
+        type: "integration.server.secrets.set",
+        idempotencyKey: "proposal",
+        serverId: "isv_00000000-0000-4000-8000-000000000001",
+      }).success,
+    ).toBe(true);
+  });
 });
 
 describe("activity's words for a command (C5)", () => {

@@ -2701,6 +2701,12 @@ describeStore("command Requests at the Home", (it) => {
       // The generated sample's return path does not meet that schema's own rule.
       if (type === "plugin.authorization.begin")
         (command.input as Record<string, unknown>).returnPath = "/settings/plugins";
+      // `trigger.secrets.set` accepts `names` (to ask) or `clearAll`/`remove`, never both at once.
+      if (type === "trigger.secrets.set") {
+        delete command.clearAll;
+        delete command.remove;
+        command.names = ["API_KEY"];
+      }
       const ask = (asConnection: boolean) =>
         service.propose({
           ownerUserId: f.userId,

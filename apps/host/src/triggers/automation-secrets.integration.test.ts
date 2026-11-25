@@ -1,5 +1,6 @@
 import { createHmac, generateKeyPairSync, randomUUID } from "node:crypto";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
+import { commandRequestView, commandRequestWords } from "@opensteer/client/host";
 import {
   createId,
   type AuthenticatedSession,
@@ -19,6 +20,7 @@ import {
   migrateToLatest,
   migrationProvider,
   personTaskReader,
+  storedProposal,
 } from "@opensteer/database";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
@@ -39,7 +41,7 @@ import { personActor } from "../commands/actor.js";
 import { agentCommandRegistry } from "../commands/agent-door.js";
 import { dispatchCommand, type CommandDoor } from "../commands/dispatch.js";
 import { createCommandRegistry } from "../commands/registry.js";
-import { CommandRequestService } from "../commands/requests.js";
+import { CommandRequestService, type ProposerLineageKey } from "../commands/requests.js";
 import { deriveCommandSecretDigestKey } from "../commands/secret-digest.js";
 import { SignedTokenService } from "../identity/host-keys.js";
 import type { AgentCaller } from "../mcp/agent-caller.js";
@@ -1307,6 +1309,7 @@ describeStore("automation secrets through the one door", (it) => {
   }) => {
     const {
       automationSecrets,
+      commandRequests,
       commandTools,
       database,
       f,
@@ -1470,6 +1473,192 @@ describeStore("automation secrets through the one door", (it) => {
       expect(refusedRes.statusCode).toBe(200);
       expect(refusedRes.json()).toMatchObject({ isError: true });
       expect(refusedRes.body).not.toContain(refusedMarker);
+
+      // 2b. Proposed (pending) secret-bearing commands through the REAL relay route + proposal storage:
+      // tool-call redaction (public.tool_calls) and Approve Card proposal storage (public.requests +
+      // parseCommandArguments) must agree that no secret value lands in either place or any table.
+      const proposedOauthRefusedMarker = `pg-proposed-oauth-refused-${randomUUID()}`;
+      const proposedServerRefusedMarker = `pg-proposed-server-refused-${randomUUID()}`;
+      const directProposeOauthMarker = `pg-direct-propose-oauth-${randomUUID()}`;
+      const directProposeServerMarker = `pg-direct-propose-server-${randomUUID()}`;
+
+      // Valid secret-bearing proposals through REAL relay `opensteer_command` -> pending Requests.
+      const pendingTriggerProposalRes = await app.inject({
+        method: "POST",
+        url: agentToolHostRoutePath,
+        headers: { authorization: "Bearer run-token" },
+        payload: {
+          callId: randomUUID(),
+          name: "opensteer_command",
+          input: {
+            command: {
+              type: "trigger.secrets.set",
+              triggerId,
+              names: ["PROPOSED_PENDING_KEY"],
+            },
+            reason: "Need API key for check",
+          },
+        },
+      });
+      expect(pendingTriggerProposalRes.statusCode).toBe(200);
+      const pendingTriggerRequestId = (
+        pendingTriggerProposalRes.json() as {
+          readonly structuredContent: { readonly status: string; readonly requestId: RequestId };
+        }
+      ).structuredContent;
+      expect(pendingTriggerRequestId.status).toBe("pending");
+      const pendingTriggerReq = await store.requests.get(pendingTriggerRequestId.requestId);
+      expect(pendingTriggerReq?.status).toBe("pending");
+      expect(pendingTriggerReq?.command?.secretPaths).toEqual(["set"]);
+      expect(pendingTriggerReq?.command?.command).not.toHaveProperty("set");
+      expect(storedProposal(pendingTriggerReq!.command!)).toMatchObject({
+        type: "trigger.secrets.set",
+        triggerId,
+        names: ["PROPOSED_PENDING_KEY"],
+      });
+
+      const pendingOauthProposalRes = await app.inject({
+        method: "POST",
+        url: agentToolHostRoutePath,
+        headers: { authorization: "Bearer run-token" },
+        payload: {
+          callId: randomUUID(),
+          name: "opensteer_command",
+          input: {
+            command: {
+              type: "plugin.oauthApp.save",
+              input: {
+                issuer: "https://oauth.pending.example.test",
+                clientId: "client_pending_123",
+              },
+            },
+            reason: "Set up OAuth app",
+          },
+        },
+      });
+      expect(pendingOauthProposalRes.statusCode).toBe(200);
+      const pendingOauthBody = pendingOauthProposalRes.json() as {
+        readonly structuredContent: { readonly status: string; readonly requestId: RequestId };
+      };
+      expect(pendingOauthBody.structuredContent.status).toBe("pending");
+      const pendingOauthReq = await store.requests.get(
+        pendingOauthBody.structuredContent.requestId,
+      );
+      expect(pendingOauthReq?.status).toBe("pending");
+      expect(pendingOauthReq?.command?.secretPaths).toEqual(["input.clientSecret"]);
+      expect(storedProposal(pendingOauthReq!.command!)).toMatchObject({
+        type: "plugin.oauthApp.save",
+        input: { issuer: "https://oauth.pending.example.test", clientId: "client_pending_123" },
+      });
+
+      // Agent mistakenly sends secret values on secret-bearing proposals through REAL relay:
+      // refused by the door, redacted in public.tool_calls, zero secret in public.requests.
+      const refusedOauthRes = await app.inject({
+        method: "POST",
+        url: agentToolHostRoutePath,
+        headers: { authorization: "Bearer run-token" },
+        payload: {
+          callId: randomUUID(),
+          name: "opensteer_command",
+          input: {
+            command: {
+              type: "plugin.oauthApp.save",
+              input: {
+                issuer: "https://oauth.refused.example.test",
+                clientId: "client_refused_123",
+                clientSecret: proposedOauthRefusedMarker,
+              },
+            },
+          },
+        },
+      });
+      expect(refusedOauthRes.statusCode).toBe(200);
+      expect(refusedOauthRes.json()).toMatchObject({ isError: true });
+      expect(refusedOauthRes.body).not.toContain(proposedOauthRefusedMarker);
+
+      const refusedServerId = `isv_${randomUUID()}`;
+      const refusedServerRes = await app.inject({
+        method: "POST",
+        url: agentToolHostRoutePath,
+        headers: { authorization: "Bearer run-token" },
+        payload: {
+          callId: randomUUID(),
+          name: "opensteer_command",
+          input: {
+            command: {
+              type: "integration.server.secrets.set",
+              serverId: refusedServerId,
+              secrets: { TOKEN: proposedServerRefusedMarker },
+            },
+          },
+        },
+      });
+      expect(refusedServerRes.statusCode).toBe(200);
+      expect(refusedServerRes.json()).toMatchObject({ isError: true });
+      expect(refusedServerRes.body).not.toContain(proposedServerRefusedMarker);
+
+      // Defense-in-depth: even if secret-bearing commands carrying secret values reach
+      // `CommandRequestService.propose` directly, the stored pending Requests strip every
+      // declared `secretFields` path and still parse via `storedProposal` / `parseCommandArguments`.
+      const directOauthProposed = (await commandRequests.propose({
+        ownerUserId: f.userId,
+        command: {
+          type: "plugin.oauthApp.save",
+          idempotencyKey: `direct-oauth-${randomUUID()}`,
+          input: {
+            issuer: "https://oauth.direct.example.test",
+            clientId: "client_direct_456",
+            clientSecret: directProposeOauthMarker,
+          },
+        } as unknown as HostApiCommand,
+        ask: { status: "ask", reason: "secret" },
+        face: 0,
+        proposer: {
+          kind: "run",
+          name: "Claude Code",
+          taskTitle: null,
+          key: `task:${createId("thread")}` as ProposerLineageKey,
+        },
+        origin: { runId: f.run.id },
+        originatingThreadId: f.threadId,
+        callKey: randomUUID(),
+      })) as { readonly status: string; readonly requestId: RequestId };
+      expect(directOauthProposed.status).toBe("pending");
+      const directOauthReq = await store.requests.get(directOauthProposed.requestId);
+      expect(directOauthReq?.status).toBe("pending");
+      expect(storedProposal(directOauthReq!.command!)).toMatchObject({
+        type: "plugin.oauthApp.save",
+        input: { issuer: "https://oauth.direct.example.test", clientId: "client_direct_456" },
+      });
+
+      const directServerId = `isv_${randomUUID()}`;
+      const directServerProposed = (await commandRequests.propose({
+        ownerUserId: f.userId,
+        command: {
+          type: "integration.server.secrets.set",
+          idempotencyKey: `direct-server-${randomUUID()}`,
+          serverId: directServerId,
+          secrets: { API_TOKEN: directProposeServerMarker },
+        } as unknown as HostApiCommand,
+        ask: { status: "ask", reason: "secret" },
+        face: 0,
+        proposer: {
+          kind: "run",
+          name: "Claude Code",
+          taskTitle: null,
+          key: `task:${createId("thread")}` as ProposerLineageKey,
+        },
+        origin: { runId: f.run.id },
+        originatingThreadId: f.threadId,
+        callKey: randomUUID(),
+      })) as { readonly status: string; readonly requestId: RequestId };
+      expect(directServerProposed.status).toBe("pending");
+      const directServerReq = await store.requests.get(directServerProposed.requestId);
+      expect(directServerReq?.status).toBe("pending");
+      expect(storedProposal(directServerReq!.command!)).toMatchObject({
+        type: "integration.server.secrets.set",
+        serverId: directServerId,
+      });
 
       // 3. Runner-reported `tool.started` event through runner-event-store.ts.
       const runRow = await database
@@ -1720,6 +1909,10 @@ describeStore("automation secrets through the one door", (it) => {
       const allMarkers = [
         admittedMarker,
         refusedMarker,
+        proposedOauthRefusedMarker,
+        proposedServerRefusedMarker,
+        directProposeOauthMarker,
+        directProposeServerMarker,
         runnerMarker,
         codexPadMarker,
         strCmdMarker,
@@ -1814,6 +2007,230 @@ describeStore("automation secrets through the one door", (it) => {
       expect(storedPinDigest).not.toBe(offlineGuess);
     } finally {
       await app.close();
+    }
+  });
+
+  it("binds an automation's own secret-removal ask to its lineage, shows firing-only copy, survives one-shot self-archive, and refuses paused or person-archived clicks (R4)", async ({
+    storeFixture,
+  }) => {
+    const {
+      automationSecrets,
+      commandRequests,
+      commandTools,
+      database,
+      f,
+      personDispatch,
+      store,
+      triggerStore,
+      triggers,
+    } = await setup(storeFixture, "approval-required");
+
+    // Seed a one-shot automation with a secret and a running firing.
+    const oneShotAt = new Date(Date.now() + 60_000).toISOString();
+    const created = await triggers.create(
+      {
+        anchorThreadId: f.threadId,
+        idempotencyKey: "r4-oneshot-create",
+        name: "One-shot secret cleaner",
+        ownerId: f.userId,
+        script,
+        source: {
+          kind: "schedule",
+          schedule: { kind: "at", at: oneShotAt },
+        },
+      },
+      null,
+    );
+    const triggerId = created.trigger.id;
+    await personDispatch({
+      type: "trigger.secrets.set",
+      triggerId,
+      set: { KEEP_ME: "keep-val", DROP_ME: "drop-val" },
+    });
+
+    const occurrence = await triggerStore.enqueueManual({
+      actorThreadId: null,
+      idempotencyKey: randomUUID(),
+      ownerId: f.userId,
+      triggerId,
+    });
+    const occurrenceId = occurrence.id;
+    await database
+      .updateTable("triggerOccurrences")
+      .set({
+        status: "running",
+        startedAt: new Date(),
+        runnerId: f.runnerId,
+        runnerBootId: f.runnerBootId,
+      })
+      .where("id", "=", occurrenceId)
+      .execute();
+    await database
+      .updateTable("triggers")
+      .set({ nextFireAt: null })
+      .where("id", "=", triggerId)
+      .execute();
+
+    // Automation firing proposes removing DROP_ME through `opensteer_command`.
+    const programCaller = {
+      kind: "program",
+      key: `trigger:${occurrenceId}`,
+      userId: f.userId as UserId,
+      accessMode: "approval-required",
+      anchor: { id: f.threadId, environmentId: f.environmentId, accessMode: "approval-required" },
+      program: { kind: "occurrence", occurrenceId, triggerId },
+    } as unknown as AgentCaller;
+    const proposed = (await commandTools.opensteer_command({
+      caller: programCaller,
+      input: {
+        command: {
+          type: "trigger.secrets.set",
+          triggerId,
+          remove: ["DROP_ME"],
+        },
+        reason: "Drop stale secret",
+      },
+      operationKey: `r4-firing-ask-${randomUUID()}`,
+    })) as { readonly status: string; readonly requestId: RequestId };
+    expect(proposed.status).toBe("pending");
+
+    // 1. Ask belongs to `automation:<triggerId>` lineage and card copy says firing-only line.
+    const req = (await store.requests.get(proposed.requestId))!;
+    expect(req.status).toBe("pending");
+    expect(req.command?.proposer).toMatchObject({
+      kind: "program",
+      name: "One-shot secret cleaner",
+      key: `automation:${triggerId}`,
+    });
+    const view = commandRequestView(req);
+    expect(view?.next).toBe("Approving it does this now; nothing else follows from it.");
+    expect(view?.next).toBe(commandRequestWords.firingOwn);
+    expect(view?.approve).toEqual({ label: "Approve" });
+
+    // 2. One-shot archives itself on completion (`pausedBy: "system"`): ask stays pending and
+    // approving it runs the secret removal.
+    const occRow = await database
+      .selectFrom("triggerOccurrences")
+      .select("executionGeneration")
+      .where("id", "=", occurrenceId)
+      .executeTakeFirstOrThrow();
+    await triggerStore.completeExecution({
+      executionGeneration: occRow.executionGeneration,
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+      output: {
+        occurrenceId,
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: 0,
+        result: null,
+        status: "succeeded",
+        stderr: "",
+        stdout: "",
+      },
+    });
+    const archivedRow = await database
+      .selectFrom("triggers")
+      .select(["status", "pausedBy"])
+      .where("id", "=", triggerId)
+      .executeTakeFirstOrThrow();
+    expect(archivedRow).toEqual({ status: "archived", pausedBy: "system" });
+    const afterSelfArchive = (await store.requests.get(proposed.requestId))!;
+    expect(afterSelfArchive.status).toBe("pending");
+    const approved = (await personDispatch({
+      type: "request.command.approve",
+      requestId: afterSelfArchive.id,
+      expectedRevision: (await store.requests.revision(afterSelfArchive.id))!,
+    })) as { readonly outcome: { readonly status: string } };
+    expect(approved.outcome).toMatchObject({ status: "done" });
+    expect(
+      await automationSecrets.values(
+        triggerId,
+        await triggerStore.getEncryptedSecrets(f.userId, triggerId),
+      ),
+    ).toEqual({ KEEP_ME: "keep-val" });
+
+    // 3. Paused or person-archived automation's ask is refused at the click (even before any sweep).
+    for (const ended of [
+      { label: "paused", status: "paused" as const, pausedBy: "person" as const },
+      { label: "person-archived", status: "archived" as const, pausedBy: null },
+    ]) {
+      const other = await triggers.create(
+        {
+          anchorThreadId: f.threadId,
+          idempotencyKey: `r4-${ended.label}-create`,
+          name: `Automation ${ended.label}`,
+          ownerId: f.userId,
+          script,
+          source: scheduleSource,
+        },
+        null,
+      );
+      await personDispatch({
+        type: "trigger.secrets.set",
+        triggerId: other.trigger.id,
+        set: { KEEP_SECRET: "untouched" },
+      });
+      const occ = await triggerStore.enqueueManual({
+        actorThreadId: null,
+        idempotencyKey: randomUUID(),
+        ownerId: f.userId,
+        triggerId: other.trigger.id,
+      });
+      await database
+        .updateTable("triggerOccurrences")
+        .set({
+          status: "running",
+          startedAt: new Date(),
+          runnerId: f.runnerId,
+          runnerBootId: f.runnerBootId,
+        })
+        .where("id", "=", occ.id)
+        .execute();
+      const ask = (await commandRequests.propose({
+        ownerUserId: f.userId,
+        command: {
+          type: "trigger.secrets.set",
+          idempotencyKey: `r4-${ended.label}-ask`,
+          triggerId: other.trigger.id,
+          remove: ["KEEP_SECRET"],
+        } as unknown as HostApiCommand,
+        ask: { status: "ask", reason: "approval" },
+        face: 0,
+        proposer: {
+          kind: "program",
+          name: `Automation ${ended.label}`,
+          taskTitle: null,
+          key: `automation:${other.trigger.id}` as ProposerLineageKey,
+        },
+        origin: { occurrenceId: occ.id },
+        originatingThreadId: f.threadId,
+        callKey: randomUUID(),
+      })) as { readonly status: string; readonly requestId: RequestId };
+      expect(ask.status).toBe("pending");
+      const pendingBefore = (await store.requests.get(ask.requestId))!;
+
+      // Mark paused or person-archived directly (simulating click racing ahead of any sweep).
+      await database
+        .updateTable("triggers")
+        .set({ status: ended.status, pausedBy: ended.pausedBy })
+        .where("id", "=", other.trigger.id)
+        .execute();
+
+      await expect(
+        personDispatch({
+          type: "request.command.approve",
+          requestId: pendingBefore.id,
+          expectedRevision: (await store.requests.revision(pendingBefore.id))!,
+        }),
+      ).rejects.toMatchObject({ code: "forbidden", reason: "proposer-gone" });
+      expect((await store.requests.get(ask.requestId))?.status).toBe("cancelled");
+      expect(
+        await automationSecrets.values(
+          other.trigger.id,
+          await triggerStore.getEncryptedSecrets(f.userId, other.trigger.id),
+        ),
+      ).toEqual({ KEEP_SECRET: "untouched" });
     }
   });
 });
