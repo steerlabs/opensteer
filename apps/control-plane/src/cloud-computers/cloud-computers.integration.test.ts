@@ -832,15 +832,13 @@ integration("Cloud Computer Account service", () => {
     // Every report the provisioner sent, and the provider's answer to the next create.
     const sent: CloudComputerReport[] = [];
     let createRefusal: Error | undefined;
-    // The shared firewall step's next answer: refused for the whole stack (an IAM change).
-    let firewallRefusal: Error | undefined;
+    // The shared firewall step refused for the whole stack while this is set (an IAM change).
+    let firewallRefused = false;
     let bootCount = 0;
     let booted: CloudComputerBootResponse | undefined;
     const provider = {
       ensureFirewall: async () => {
-        const refusal = firewallRefusal;
-        firewallRefusal = undefined;
-        if (refusal) throw refusal;
+        if (firewallRefused) throw new RemoteRequestError("Google Compute Engine", 403);
         return 1;
       },
       ensureFirewallAttached: async () => true,
@@ -1092,12 +1090,26 @@ integration("Cloud Computer Account service", () => {
     expect(await notReady()).toEqual([]);
     expect((await read()).json()).toMatchObject({ status: "ready" });
     // The firewall step every computer shares, refused (403) for the whole stack: the stack's
-    // problem, not this computer's, so nothing is reported and nothing pages (Q3).
-    firewallRefusal = new RemoteRequestError("Google Compute Engine", 403);
+    // problem, not this computer's, which is still read and reported as it is: ready, and
+    // nothing pages (Q3, Q4).
+    firewallRefused = true;
     await pass();
-    expect(firewallRefusal).toBeUndefined();
     expect(await clocks()).toMatchObject({ phase: "ready", lastError: null });
     expect(await notReady()).toEqual([]);
+    // And while it stays refused, a machine that stopped is still reported, so its outage begins
+    // and the watch pages it by the ordinary clocks (Q4).
+    server = { ...server!, status: "off" };
+    discovers = false;
+    await pass();
+    expect(await clocks()).toMatchObject({ phase: "booting", downAt: now });
+    now = new Date(now.getTime() + 31 * 60_000);
+    expect(await notReady()).toEqual([
+      expect.objectContaining({ computerId: id, phase: "booting" }),
+    ]);
+    firewallRefused = false;
+    discovers = true;
+    await pass();
+    expect(await clocks()).toMatchObject({ phase: "ready", lastError: null });
     // Evidence of a terminal state still fails it, and pages at once.
     newerGeneration = true;
     await pass();
@@ -1184,6 +1196,37 @@ integration("Cloud Computer Account service", () => {
           .executeTakeFirst()
       )?.tombstonedAt,
     ).toBeInstanceOf(Date);
+
+    // A new purchase while the shared firewall step is refused: no machine can be created for
+    // it, so it is reported provisioning, fails at its ten-minute deadline and pages (Q4).
+    const next = await buy();
+    firewallRefused = true;
+    await pass();
+    const phaseOf = async () =>
+      await database
+        .selectFrom("cloudComputers")
+        .select(["phase", "lastError"])
+        .where("id", "=", next.id)
+        .executeTakeFirstOrThrow();
+    expect(await phaseOf()).toEqual({ phase: "provisioning", lastError: null });
+    expect(server).toBeUndefined();
+    now = new Date(now.getTime() + 10 * 60_000);
+    await pass();
+    expect(await phaseOf()).toEqual({
+      phase: "failed",
+      lastError: "The Cloud Computer did not become ready before its deadline.",
+    });
+    expect(
+      (await cloud.watch(30 * 60_000)).filter(
+        (finding) => finding.event === "account.cloud_computer.not_ready",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        computerId: next.id,
+        phase: "failed",
+        code: "readiness-timeout",
+      }),
+    ]);
   });
 
   it("replays checkout requests and events, fences one live computer and honors billing without undoing manual suspension", async () => {

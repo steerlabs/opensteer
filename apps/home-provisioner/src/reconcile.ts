@@ -27,7 +27,8 @@ type Failure = NonNullable<CloudComputerReport["lastError"]>;
 class Superseded extends Error {}
 /**
  * A step done once a pass for every computer (the firewall) failed: the stack's problem, never
- * evidence about one computer, so none is reported failed for it.
+ * evidence about one computer. It is logged once a pass; only the two steps that need the
+ * firewall (creating a machine, attaching the rule to one) stop for it, and nothing else does.
  */
 class SharedStepFailed extends Error {
   constructor(cause: unknown) {
@@ -94,6 +95,9 @@ export class Reconciler {
                     rateLimited(error) !== undefined
                   )
                     throw error;
+                  // Once a pass, for the operator (the tick then sends no heartbeat): the
+                  // failing-pass digest names the cause.
+                  this.#options.onError?.(error);
                   throw new SharedStepFailed(error);
                 })),
               signal,
@@ -445,8 +449,18 @@ export class Reconciler {
         await withdraw();
       }
 
-      const firewallId = await act((job, check) => ensureFirewall(job, check));
+      // The shared firewall is needed to create a machine and to attach its rule to one, and for
+      // nothing else: when it failed this pass, a machine that must be created is reported
+      // provisioning (its deadline applies), and one that exists goes on to be powered on, read,
+      // discovered and reported as it is, its attachment left for a later pass.
+      let firewallId: number | undefined;
+      try {
+        firewallId = await act((job, check) => ensureFirewall(job, check));
+      } catch (error) {
+        if (!(error instanceof SharedStepFailed)) throw error;
+      }
       if (!current && computer.bootstrapToken) {
+        if (firewallId === undefined) return unready("provisioning");
         const userData = renderUserData(
           {
             cloudComputerId: id,
@@ -468,7 +482,7 @@ export class Reconciler {
                   region: computer.region ?? this.#options.defaultRegion,
                   serverType: computer.serverType ?? this.#options.defaultServerType,
                   image: this.#options.image,
-                  firewallId,
+                  firewallId: firewallId!,
                   userData,
                   requestId: token,
                 },
@@ -487,6 +501,7 @@ export class Reconciler {
 
       const server = current;
       if (
+        firewallId !== undefined &&
         !(await act((job, check) =>
           provider.ensureFirewallAttached(server, firewallId, job, check),
         ))
@@ -585,7 +600,7 @@ export class Reconciler {
       if (error instanceof Superseded || accountRefused(error)) throw error;
       const limited = rateLimited(error);
       if (limited) throw limited;
-      this.#options.onError?.(error instanceof SharedStepFailed ? error.cause : error);
+      this.#options.onError?.(error);
       if (error instanceof ProviderOutcomeUnknown) {
         if (state !== "active") return report(state === "deleted" ? "deleting" : "provisioning");
         // An unobserved create or power-on, or a Home that has not booted: still provisioning,
@@ -600,18 +615,13 @@ export class Reconciler {
         // confirmed this pass, never as a Home that missed its deadline.
         return report("booting");
       }
-      // A read that failed observed nothing, whatever its status, and a shared step's failure says
-      // nothing of this computer: unknown stays unknown, nothing new is reported, the error is the
-      // operator's (onError, the failing-pass digest), and the next pass looks again. A read is
-      // known by its request (`request` in http.ts: a GET), so what is left came from a write to
-      // this computer's own resources: failed only when the provider or DNS refused it, or when
-      // the provider holds a machine of it in another zone.
-      if (
-        error instanceof ObservationFailed ||
-        error instanceof SharedStepFailed ||
-        !refusedWrite(error)
-      )
-        return undefined;
+      // A read that failed observed nothing, whatever its status: unknown stays unknown, nothing
+      // new is reported, the error is the operator's (onError, the failing-pass digest), and the
+      // next pass looks again. A read is known by its request (`request` in http.ts: a GET), and
+      // the shared firewall never gets here, so what is left came from a write to this
+      // computer's own resources: failed only when the provider or DNS refused it, or when the
+      // provider holds a machine of it in another zone.
+      if (error instanceof ObservationFailed || !refusedWrite(error)) return undefined;
       return report("failed", failure);
     }
   }

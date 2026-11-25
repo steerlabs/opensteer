@@ -1269,13 +1269,63 @@ describe("a read inside a write, and a step shared by every computer (Q3)", () =
     return { compute, h, reported: h.reports.length };
   }
 
-  it("reports neither of two ready computers when the firewall's GET is refused (an IAM change)", async () => {
-    const { compute, h, reported } = await twoReady();
+  const refusedOnce = (h: Harness) =>
+    expect(failures(h).filter((failure) => "status" in failure && failure.status === 403)).toEqual([
+      refusedByCompute,
+    ]);
+  const refuseFirewallReads = (compute: ComputeFake) => {
     compute.refuseMatch = (method, path) =>
       method === "GET" && path.startsWith(`${globalPath}/firewalls`);
+  };
+
+  it("keeps two ready computers ready when the firewall's GET is refused (an IAM change)", async () => {
+    const { compute, h, reported } = await twoReady();
+    refuseFirewallReads(compute);
     await h.pass();
+    // Both ready, as they were: nothing new to send. The refusal is logged once a pass (Q4).
     expect(h.reports.slice(reported)).toEqual([]);
-    expect(failures(h)).toContainEqual(refusedByCompute);
+    refusedOnce(h);
+  });
+
+  it("still reports a stopped machine while the firewall's GET is refused, so its outage begins (Q4)", async () => {
+    const compute = new ComputeFake();
+    const h = harness({ compute });
+    h.status.desired = [{ ...home }];
+    await h.pass();
+    h.pin();
+    await h.pass();
+    expect(h.last()).toMatchObject({ phase: "ready" });
+    const reported = h.reports.length;
+    for (const instance of compute.instances.values()) instance.status = "TERMINATED";
+    h.status.identity = undefined;
+    refuseFirewallReads(compute);
+    await h.pass();
+    expect(h.reports.slice(reported)).toEqual([
+      expect.objectContaining({ id: home.id, phase: "booting" }),
+    ]);
+    refusedOnce(h);
+  });
+
+  it("reports a purchase it cannot create provisioning, and fails it at its deadline (Q4)", async () => {
+    const compute = new ComputeFake();
+    const h = harness({ compute });
+    h.status.desired = [{ ...home }];
+    refuseFirewallReads(compute);
+    await h.pass();
+    expect(h.reports).toEqual([expect.objectContaining({ phase: "provisioning" })]);
+    // Its own address may be reserved; no machine is inserted without the firewall.
+    expect(
+      compute.requests.some(
+        ({ method, path }) => method === "POST" && path === `${zonePath}/instances`,
+      ),
+    ).toBe(false);
+    h.status.now += 1000;
+    await h.pass();
+    expect(h.last()).toMatchObject({
+      phase: "failed",
+      lastError: "The Cloud Computer did not become ready before its deadline.",
+      judgedReadinessStartedAt: home.readinessStartedAt,
+    });
   });
 
   it("reports neither when the shared firewall's insert is refused", async () => {
@@ -1290,7 +1340,7 @@ describe("a read inside a write, and a step shared by every computer (Q3)", () =
       ),
     ).toBe(true);
     expect(h.reports.slice(reported)).toEqual([]);
-    expect(failures(h)).toContainEqual(refusedByCompute);
+    refusedOnce(h);
   });
 
   it("reports nothing for a computer whose own instance GET is refused inside a write", async () => {
