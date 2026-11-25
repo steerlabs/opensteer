@@ -1475,8 +1475,14 @@ export async function retireBrowserPoolTarget(
   /**
    * The target as the Home's account gave it (W8): kept, with the slot's fence, while a Stop it
    * held waits for its word, so a Home (this one, or one after a restart) goes on asking it.
+   * `endActiveSessions` ends any `starting`/`ready` sessions still owned by the retiring slot in
+   * the same transaction (used when retiring a pre-crash stale slot whose live coordinator never
+   * ran `retirePool`; Sol 4).
    */
-  retired?: { readonly target: Readonly<Record<string, unknown>> },
+  retired?: {
+    readonly target?: Readonly<Record<string, unknown>>;
+    readonly endActiveSessions?: boolean;
+  },
 ): Promise<void> {
   await commitPersonalMutation(
     database,
@@ -1497,7 +1503,7 @@ export async function retireBrowserPoolTarget(
         .where("runnerId", "=", runnerId)
         .returningAll()
         .executeTakeFirst(databaseOperationOptions());
-      if (slot) {
+      if (slot && retired?.endActiveSessions) {
         // End any non-closing sessions still bound to the retiring slot with their tab loss notes
         // in this same transaction (Sol 4: covers crash between target write and retirement).
         // Closing Stops keep state='closing' without fabricated close evidence (Rule 4 / W14).
@@ -1540,7 +1546,7 @@ export async function retireBrowserPoolTarget(
           );
         }
       }
-      if (slot && retired) {
+      if (slot && retired?.target) {
         const waiting = await tx
           .selectFrom("browserSessions")
           .select("id")

@@ -630,6 +630,7 @@ export async function startManagedBrowserPool(input: {
     for (const stale of staleBySlot) {
       await retireBrowserPoolTarget(input.database, stale.runnerId, {
         target: target as unknown as Readonly<Record<string, unknown>>,
+        endActiveSessions: true,
       });
       await drainRetired(stale.runnerId);
     }
@@ -642,7 +643,9 @@ export async function startManagedBrowserPool(input: {
       staleByRunner &&
       (staleByRunner.slotId !== target.slotId || staleByRunner.term !== target.term)
     ) {
-      await retireBrowserPoolTarget(input.database, staleByRunner.runnerId);
+      await retireBrowserPoolTarget(input.database, staleByRunner.runnerId, {
+        endActiveSessions: true,
+      });
       await drainRetired(staleByRunner.runnerId);
     }
     if (closed) return;

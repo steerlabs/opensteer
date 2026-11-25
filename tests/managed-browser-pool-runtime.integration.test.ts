@@ -701,6 +701,7 @@ describe("Managed browser pool wired into createHostRuntime", () => {
           managedBrowserPoolTiming: { firstDelayMs: 50, maxDelayMs: 150 },
         });
         if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
+        await runtime.listen();
         return { host: runtime, close: () => runtime.close() };
       });
       host = started.host;
@@ -1659,6 +1660,7 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
           managedBrowserPoolTiming: { firstDelayMs: 50, maxDelayMs: 150, idleParkMs: 60_000 },
         });
         if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
+        await runtime.listen();
         return { host: runtime, close: () => runtime.close() };
       });
       host = started.host;
