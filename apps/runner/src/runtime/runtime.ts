@@ -3064,7 +3064,9 @@ export class RunnerRuntime {
       return reject("conflict", "Thread already has an active run", true);
     }
     if (this.#runs.size >= this.#maxConcurrentRuns) {
-      return reject("conflict", "Runner Run concurrency limit is saturated", true);
+      return reject("conflict", "Runner Run concurrency limit is saturated", true, {
+        reason: "run-concurrency-limit",
+      });
     }
     if (command.context.environmentId !== command.environmentId) {
       return reject("forbidden", "Run context targets a different execution environment", false);

@@ -522,7 +522,8 @@ export type TaskWaitingReasonKind =
   | "account-preparing"
   | "computer-offline"
   | "open-helper"
-  | "stop-unconfirmed";
+  | "stop-unconfirmed"
+  | "waiting-for-run";
 export interface TaskWaitingReason {
   readonly kind: TaskWaitingReasonKind;
   readonly label: string;
@@ -598,7 +599,15 @@ export function taskWaitingReason(
         (entry) =>
           entry.threadId === threadId && entry.startHoldReason === "previous-stop-unconfirmed",
       );
-    return { kind: unconfirmed ? "stop-unconfirmed" : "account-preparing", label: preparing };
+    const waiting =
+      (thread.runStartHoldReason ?? shellRow?.runStartHoldReason) === "waiting-for-run" ||
+      own.some(
+        (entry) => entry.threadId === threadId && entry.startHoldReason === "waiting-for-run",
+      );
+    return {
+      kind: unconfirmed ? "stop-unconfirmed" : waiting ? "waiting-for-run" : "account-preparing",
+      label: preparing,
+    };
   }
   const environment = snapshot.environments.find(
     (environment) => environment.id === thread.environmentId,

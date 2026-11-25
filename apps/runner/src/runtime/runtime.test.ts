@@ -1547,6 +1547,45 @@ describe("RunnerRuntime", () => {
     }
   });
 
+  it("refuses a Run beyond its limit of Runs at once with a reason the Home holds it by", async () => {
+    const driverKind = HarnessIdSchema.parse("run-limit-test");
+    const registry = new HarnessRegistry();
+    registry.registerDriver({
+      ...catalogDriver(driverKind),
+      create: async ({ instanceId }) => ({
+        capabilities: fakeHarnessCapabilities,
+        accessModes: fakeHarnessAccessModes,
+        sources: fakeHarnessSources,
+        close: async () => undefined,
+        instanceId,
+        resumeSession: async () => new BlockingHarnessSession(),
+        startSession: async () => new BlockingHarnessSession(),
+      }),
+    });
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, maxConcurrentRuns: 1, registry });
+    const first = executeCommand(environmentId, driverKind);
+    const second = executeCommand(environmentId, driverKind);
+    const messages: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = {
+      send: async (message) => {
+        messages.push(message);
+      },
+    };
+    try {
+      await reconcile(registry, first, second);
+      await expect(runtime.handleCommand(first, sink)).resolves.toEqual({ status: "accepted" });
+      await waitUntil(() => hasEvent(messages, "run.started"));
+      // A second Run, in another task, waits for the first to end: the Home shows it waiting.
+      await expect(runtime.handleCommand(second, sink)).resolves.toMatchObject({
+        error: { code: "conflict", reason: "run-concurrency-limit", retryable: true },
+        status: "rejected",
+      });
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("refuses to sign an AI engine out or remove it while a Run is executing on it", async () => {
     const driverKind = HarnessIdSchema.parse("profile-busy-test");
     const registry = new HarnessRegistry();

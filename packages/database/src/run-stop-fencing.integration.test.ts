@@ -807,6 +807,54 @@ integration.sequential("Run stop fencing", () => {
     }
   });
 
+  it("holds a Run its Runner refused at its limit of Runs as waiting for another Run, offers it again, and starts it clear of the hold", async ({
+    storeFixture,
+  }) => {
+    const { fixture, database, store } = storeFixture;
+    const f = await fixture("waiting-for-run");
+    const sent = await store.enqueueThreadInput({
+      content: [{ text: "Write the essay", type: "text" }],
+      idempotencyKey: "waiting-for-run-msg",
+      policy: "queue",
+      requestedBy: f.userId,
+      source: { kind: "human" },
+      threadId: f.thread.id,
+    });
+    await store.claimCommand(sent.command!.id, "test-dispatcher");
+    // The Runner already runs as many Runs as it may (OPENSTEER_MAX_CONCURRENT_RUNS).
+    const busy = Object.assign(new Error("Runner Run concurrency limit is saturated"), {
+      cause: {
+        code: "conflict",
+        message: "Runner Run concurrency limit is saturated",
+        reason: "run-concurrency-limit",
+        retryable: true,
+      },
+    });
+    await store.retryCommand(sent.command!.id, busy);
+    const held = () =>
+      database
+        .selectFrom("runs")
+        .innerJoin("threads", "threads.id", "runs.threadId")
+        .select(["runs.status", "runs.startHoldReason", "threads.runStartHoldReason"])
+        .where("runs.id", "=", sent.run!.id)
+        .executeTakeFirstOrThrow();
+    expect(await held()).toEqual({
+      runStartHoldReason: "waiting-for-run",
+      startHoldReason: "waiting-for-run",
+      status: "queued",
+    });
+    // Unlike an unconfirmed stop, it is offered again: it starts when another Run ends.
+    expect((await store.listPendingCommands()).some(({ id }) => id === sent.command!.id)).toBe(
+      true,
+    );
+    await store.claimCommand(sent.command!.id, "test-dispatcher");
+    expect(await held()).toEqual({
+      runStartHoldReason: null,
+      startHoldReason: null,
+      status: "starting",
+    });
+  });
+
   it("H5(b)+(c): holds next Run on previous-stop-unconfirmed without cycling Starting, records failureCode, and promotes unproven stop to interrupted with stopConfirmedAt on late proof", async ({
     storeFixture,
   }) => {

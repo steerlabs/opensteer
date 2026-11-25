@@ -514,6 +514,7 @@ async function claimObservedCommand(
     const started = await transaction
       .updateTable("runs")
       .set({
+        startHoldReason: null,
         status: "starting",
       })
       .where("id", "=", run.id)
@@ -1547,7 +1548,11 @@ export async function listPendingCommands(
             expression("threads.inputQueuePaused", "=", false),
             expression("threads.unconfirmedStopRunId", "is", null),
             expression("runs.status", "=", "queued"),
-            expression("runs.startHoldReason", "is", null),
+            // A Run waiting for another to end is offered again; an unconfirmed stop holds it.
+            expression.or([
+              expression("runs.startHoldReason", "is", null),
+              expression("runs.startHoldReason", "=", "waiting-for-run"),
+            ]),
           ]),
         ]),
       )
@@ -1883,7 +1888,12 @@ export async function retryCommand(
       return returnRunToQueue(transaction, {
         run,
         startHoldReason:
-          causeReason === "previous-stop-unconfirmed" ? "previous-stop-unconfirmed" : null,
+          causeReason === "previous-stop-unconfirmed"
+            ? "previous-stop-unconfirmed"
+            : // The Runner runs as many Runs as it may: this one waits for one of them to end.
+              causeReason === "run-concurrency-limit"
+              ? "waiting-for-run"
+              : null,
       });
     } else if (command?.type === "trigger.execute") {
       await sql`

@@ -90,6 +90,13 @@ export function threadStopTarget(input: ThreadStopTargetInput): RunQueueEntry | 
  * ordinary start, which takes a moment and needs no reason, and once the Run
  * has been handed to its computer.
  */
+/** What the web and the phone say of a Run that waits for another Run on its computer to end. */
+export function waitingForAnotherRun(environmentName: string | undefined): string {
+  return environmentName
+    ? `Waiting for another Run on ${environmentName} to finish.`
+    : "Waiting for another Run to finish.";
+}
+
 export function threadStartHold(
   input: ThreadStopTargetInput & {
     readonly environments: readonly EnvironmentSummary[];
@@ -110,6 +117,12 @@ export function threadStartHold(
       ? `Waiting: Opensteer couldn’t confirm the last Run stopped on ${environment.name}.`
       : "Waiting: Opensteer couldn’t confirm the last Run stopped on that device.";
   }
+  // Its computer runs as many Runs as it may: this one starts when one of them ends.
+  if (
+    queued.startHoldReason === "waiting-for-run" ||
+    input.thread.runStartHoldReason === "waiting-for-run"
+  )
+    return waitingForAnotherRun(environment?.name);
   // The person stopped agents on the computer this task runs on.
   if (environment?.agentsStoppedSince)
     return `Waiting: agents are stopped on ${environment.name}. This starts when they’re resumed there.`;
