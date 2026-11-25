@@ -1068,6 +1068,60 @@ describe("BrowserController", () => {
     }
   });
 
+  it("reads a page's live address for a connection's fill and picture, not only the ledger's (P7)", async () => {
+    const controller = createController();
+    await controller.start();
+    const fill = vi.spyOn(HostSignIns.prototype, "fill").mockResolvedValue("filled");
+    try {
+      const attached = await cdpRouter.send(validClaims().sessionId, {
+        method: "Target.attachToTarget",
+        parameters: { targetId: await page.targetId(), flatten: true },
+        connection: true,
+      });
+      const sessionId = (attached as { sessionId: string }).sessionId;
+      const send = async (command: Record<string, unknown>) => {
+        const requestId = randomUUID();
+        await controller.handle({
+          type: "cdp.command",
+          requestId,
+          command,
+          connection: true,
+        } as BrowserClientMessage);
+        return sink.messages.findLast(
+          (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+        );
+      };
+      // The page is on an extension's address; the ledger has not heard yet.
+      (page as unknown as { pageUrl: string }).pageUrl =
+        `chrome-extension://${"a".repeat(32)}/options.html`;
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)?.url).not.toContain("chrome-extension:");
+      const loginRef = `lgn_${"a".repeat(32)}`;
+      const filled = await send({
+        method: "Opensteer.fillLogin",
+        sessionId,
+        parameters: { loginRef, field: "password" },
+      });
+      const absentFill = await send({
+        method: "Opensteer.fillLogin",
+        sessionId: "unknown",
+        parameters: { loginRef, field: "password" },
+      });
+      expect((filled as { error: unknown }).error).toEqual(
+        (absentFill as { error: unknown }).error,
+      );
+      expect(fill).not.toHaveBeenCalled();
+      const picture = await send({ method: "Page.captureScreenshot", sessionId, parameters: {} });
+      expect(picture).toMatchObject({
+        type: "cdp.error",
+        error: { code: "not_found", message: "The browser page closed." },
+      });
+    } finally {
+      fill.mockRestore();
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("lists suspended tabs within a byte budget, resumes explicitly, and closes by their old target", async () => {
     const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
     await controller.start();
