@@ -1616,26 +1616,36 @@ export class BrowserService {
         });
       },
       reattach: async ({ sessions, documents, fence, attempt, signal }) => {
-        const losses: BrowserPoolSessionLoss[] = [];
-        for (const sessionId of sessions) {
-          if (signal?.aborted) break;
-          try {
-            losses.push(
-              ...(await this.#adoptPooledSession(
-                runnerId,
-                sessionId,
-                documents,
-                fence,
-                attempt,
-                signal,
-              )),
-            );
-          } catch (error) {
-            // This session is not reattached; the runtime reports it lost, the rest proceed.
-            this.#onError(error);
-          }
-        }
-        return losses;
+        if (!sessions.length || this.#closed || !(this.#repository instanceof OpensteerStore))
+          return [];
+        const owner = await readBrowserPoolOwner(this.#repository.database);
+        if (!owner) return [];
+        const results = new Array<readonly BrowserPoolSessionLoss[]>(sessions.length).fill([]);
+        let cursor = 0;
+        const workerCount = Math.min(4, sessions.length);
+        await Promise.all(
+          Array.from({ length: workerCount }, async () => {
+            while (cursor < sessions.length && !signal?.aborted) {
+              const index = cursor++;
+              const sessionId = sessions[index]!;
+              try {
+                results[index] = await this.#adoptPooledSession(
+                  runnerId,
+                  owner,
+                  sessionId,
+                  documents,
+                  fence,
+                  attempt,
+                  signal,
+                );
+              } catch (error) {
+                // This session is not reattached; the runtime reports it lost, the rest proceed.
+                this.#onError(error);
+              }
+            }
+          }),
+        );
+        return results.flat();
       },
     };
   }
@@ -1643,6 +1653,7 @@ export class BrowserService {
   /** A ready session is reattached under a fresh attempt and kept. */
   async #adoptPooledSession(
     runnerId: RunnerId,
+    ownerId: UserId,
     sessionId: BrowserSessionId,
     documents: readonly BrowserPoolDocument[],
     fence: BrowserPoolRuntimeFence,
@@ -1654,10 +1665,7 @@ export class BrowserService {
     if (!pool || !target || this.#closed || !(this.#repository instanceof OpensteerStore))
       return [];
     const database = this.#repository.database;
-    const owner = await readBrowserPoolOwner(database);
-    const record = owner
-      ? await this.#repository.getBrowserSessionForOwner(sessionId, owner)
-      : null;
+    const record = await this.#repository.getBrowserSessionForOwner(sessionId, ownerId);
     // Stop or Disconnect while parked already ended this row: it is not reattached.
     if (
       !record ||
@@ -1669,7 +1677,6 @@ export class BrowserService {
       record.placementKey !== target.placementKey
     )
       return [];
-    const ownerId = owner!;
     const profile = record.profileId
       ? await this.#repository.getBrowserProfile(record.profileId, ownerId)
       : null;

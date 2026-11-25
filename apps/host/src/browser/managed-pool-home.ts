@@ -226,6 +226,18 @@ export function createManagedPooledRelay(input: {
       const capabilities = await bridge.capabilities(targetSignal);
       if (retired || targetSignal.aborted)
         throw new BrowserPoolAdmissionClosed("This browser target was retired.");
+      // Reuse the capabilities just fetched for `relay.attach`'s immediate check instead of
+      // opening a second mTLS tunnel for an identical `GET /health`.
+      const rawCapabilities = bridge.capabilities.bind(bridge);
+      let prefetchedCapabilities: typeof capabilities | undefined = capabilities;
+      bridge.capabilities = async (capSignal?: AbortSignal) => {
+        if (prefetchedCapabilities) {
+          const fresh = prefetchedCapabilities;
+          prefetchedCapabilities = undefined;
+          return fresh;
+        }
+        return rawCapabilities(capSignal);
+      };
       const relay = new BrowserModuleRelay(bridge, input.isAgentsStopped ?? false);
       const fence = RunnerAuxiliaryFrameFenceSchema.parse({
         runnerId: input.runnerId,

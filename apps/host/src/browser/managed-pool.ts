@@ -10,6 +10,8 @@ import type {
   BrowserPoolRuntimeState,
 } from "@opensteer/browser-runtime-core";
 import { createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
+import { Agent as HttpAgent, request as httpRequest } from "node:http";
+import type { Duplex } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   PoolRelayRefused,
@@ -37,6 +39,8 @@ export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel
   readonly #transport: Transport;
   readonly #guest: GuestStatus | undefined;
   readonly #controlTimeoutMs: number;
+  #wakeDepth = 0;
+  #pooled: { readonly agent: HttpAgent; readonly socket: Duplex; readonly bridgeToken: string } | undefined;
 
   /**
    * `guest`: the agent's signed status, which says whether there is a runtime to ask.
@@ -51,6 +55,26 @@ export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel
     this.#transport = transport;
     this.#guest = guest;
     this.#controlTimeoutMs = options.controlTimeoutMs ?? 30_000;
+  }
+
+  /** Reuses one HTTP/1.1 keep-alive control tunnel across a wake; closes it when done. */
+  beginWake(): () => void {
+    this.#wakeDepth++;
+    let ended = false;
+    return () => {
+      if (ended) return;
+      ended = true;
+      this.#wakeDepth--;
+      if (this.#wakeDepth === 0) this.#dropPooled();
+    };
+  }
+
+  #dropPooled(): void {
+    const current = this.#pooled;
+    if (!current) return;
+    this.#pooled = undefined;
+    current.agent.destroy();
+    current.socket.destroy();
   }
 
   /**
@@ -133,21 +157,96 @@ export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel
   }
 
   async #send(method: "GET" | "POST", path: string, body?: string, signal?: AbortSignal) {
-    const { socket, bridgeToken } = await this.#open(signal);
-    if (signal?.aborted) {
-      socket.destroy();
-      throw signal.reason;
+    if (this.#wakeDepth === 0) {
+      const { socket, bridgeToken } = await this.#open(signal);
+      if (signal?.aborted) {
+        socket.destroy();
+        throw signal.reason;
+      }
+      return requestOverTunnel(socket, {
+        method,
+        path,
+        maximumBytes: 1024 * 1024,
+        headers: {
+          "x-opensteer-browser-bridge-token": bridgeToken,
+          ...(body ? { "content-type": "application/json" } : {}),
+        },
+        ...(body === undefined ? {} : { body }),
+        ...(signal ? { signal } : {}),
+      });
     }
-    return requestOverTunnel(socket, {
-      method,
-      path,
-      maximumBytes: 1024 * 1024,
-      headers: {
-        "x-opensteer-browser-bridge-token": bridgeToken,
-        ...(body ? { "content-type": "application/json" } : {}),
-      },
-      ...(body === undefined ? {} : { body }),
-      ...(signal ? { signal } : {}),
+    let pooled = this.#pooled;
+    if (!pooled || !pooled.socket.readable || !pooled.socket.writable || pooled.socket.destroyed) {
+      this.#dropPooled();
+      const { socket, bridgeToken } = await this.#open(signal);
+      if (signal?.aborted) {
+        socket.destroy();
+        throw signal.reason;
+      }
+      let handedOut = false;
+      const agent = new HttpAgent({ keepAlive: true, maxSockets: 1 });
+      agent.createConnection = () => {
+        if (handedOut) throw new Error("Pooled keep-alive tunnel already in use.");
+        handedOut = true;
+        return socket as never;
+      };
+      socket.once("close", () => {
+        if (this.#pooled?.socket === socket) this.#dropPooled();
+      });
+      pooled = { agent, socket, bridgeToken };
+      this.#pooled = pooled;
+    }
+    const current = pooled;
+    // Never retry a request that failed after send (Rule 4): drop the socket and rethrow so the
+    // coordinator reads state on the next turn.
+    return new Promise<{ readonly status: number; readonly text: string }>((resolve, reject) => {
+      const req = httpRequest(
+        {
+          agent: current.agent,
+          method,
+          path,
+          host: "pool-guest",
+          headers: {
+            "x-opensteer-browser-bridge-token": current.bridgeToken,
+            connection: "keep-alive",
+            ...(body === undefined
+              ? {}
+              : {
+                  "content-type": "application/json",
+                  "content-length": String(Buffer.byteLength(body)),
+                }),
+          },
+          ...(signal ? { signal } : {}),
+        },
+        (response) => {
+          const chunks: Buffer[] = [];
+          let size = 0;
+          response.on("data", (chunk: Buffer) => {
+            size += chunk.length;
+            if (size > 1024 * 1024) {
+              response.destroy(new Error("The bridge answer exceeds its limit."));
+              return;
+            }
+            chunks.push(chunk);
+          });
+          response.once("end", () => {
+            if (response.headers.connection?.toLowerCase() === "close") this.#dropPooled();
+            resolve({
+              status: response.statusCode ?? 0,
+              text: Buffer.concat(chunks).toString("utf8"),
+            });
+          });
+          response.once("error", (error) => {
+            this.#dropPooled();
+            reject(error);
+          });
+        },
+      );
+      req.once("error", (error) => {
+        this.#dropPooled();
+        reject(error);
+      });
+      req.end(body);
     });
   }
 }

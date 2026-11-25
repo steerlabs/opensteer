@@ -70,6 +70,8 @@ export interface BrowserPoolRuntimeChannel {
    * knowing: the row stays closing and the end step asks again.
    */
   endSession(ticket: string, signal?: AbortSignal): Promise<BrowserPoolEndAnswer>;
+  /** Scopes a wake so control calls may reuse one keep-alive tunnel; returns its disposer. */
+  beginWake?(): () => void;
 }
 
 /**
@@ -1734,6 +1736,7 @@ export class BrowserPoolCoordinator {
       : undefined;
     this.#wakeTrace = trace;
     let finishHandshakes = trace ? this.#options.beginWakeTiming?.() : undefined;
+    const endWakeChannel = this.#options.runtime.beginWake?.();
     try {
       await this.#wake();
       this.#publish(this.#slot);
@@ -1762,6 +1765,7 @@ export class BrowserPoolCoordinator {
       }
       if (this.#slot?.phase === "running") this.#kickRelay();
     } finally {
+      endWakeChannel?.();
       finishHandshakes?.();
       this.#wakeTrace = undefined;
     }
