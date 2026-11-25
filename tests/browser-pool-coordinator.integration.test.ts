@@ -868,7 +868,6 @@ it.skipIf(poolControllerKind() === "fake")(
   async () => {
     const key = "resume-kept";
     const f = await poolFixture(key);
-    const wanting = new AbortController();
     try {
       const slotId = `slot-${key}`;
       const calls = vi.spyOn(f.controller, "apply");
@@ -885,9 +884,14 @@ it.skipIf(poolControllerKind() === "fake")(
         "closeNetwork",
         new Error("gate close failed"),
       );
-      void home.gate.reserve(wanting.signal).catch(() => undefined);
-      await vi.waitFor(() => expect(home.report()).toMatchObject({ refused: "resume-failed" }));
-      wanting.abort();
+      await expect(
+        home.gate.reserve(AbortSignal.timeout(5_000), { failOnRefusal: true }),
+      ).rejects.toMatchObject({
+        name: "BrowserPoolAttemptRefused",
+        refusedReason: "resume-failed",
+        savedStateKept: true,
+      });
+      expect(home.report()).toMatchObject({ refused: "resume-failed", savedStateKept: true });
       expect(await f.slot()).toMatchObject({
         phase: "parked",
         instanceId: parked.instance,
@@ -908,7 +912,6 @@ it.skipIf(poolControllerKind() === "fake")(
       expect(kinds()).toEqual(["start", "pause", "resume", "resume"]);
       expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
     } finally {
-      wanting.abort();
       await f.close();
     }
   },
