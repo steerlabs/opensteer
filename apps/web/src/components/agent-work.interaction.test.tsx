@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import {
   MockHostClient,
+  MockPersonalHost,
   mockAgentOperationRequestId,
   mockAgentWorkThreads,
   mockConnectedAgents,
@@ -12,7 +13,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ShellContext } from "./app-shell.js";
 import type { SettingsView } from "./settings/primitives.js";
 import { ExternalAgentsSection } from "./settings/sections/external-agents.js";
-import { mainDoneTasks, placeList, taskList } from "@opensteer/client/host";
+import { HttpHostClient, mainDoneTasks, placeList, taskList } from "@opensteer/client/host";
 import {
   client,
   goTo,
@@ -36,6 +37,67 @@ const button = (name: string | RegExp) =>
   );
 
 describe("a task a connected agent works itself", () => {
+  it("keeps the session bar and the same Stop after the client's detail frame arrives", async () => {
+    const id = mockAgentWorkThreads.working;
+    let wire: MockPersonalHost | undefined;
+    let real: HttpHostClient | undefined;
+    try {
+      await mount(task(id), {
+        ...options,
+        hostClient: (seed) => {
+          seed.mockAgentWork();
+          wire = new MockPersonalHost(seed);
+          real = new HttpHostClient({
+            baseUrl: "http://scoped-host",
+            fetch: wire.fetch,
+            webSocketFactory: wire.connect,
+          });
+          return real;
+        },
+      });
+      const sessionId = client.getSnapshot().threads.find(({ id: key }) => key === id)
+        ?.externalWork?.sessionId;
+      expect(sessionId).toBeTruthy();
+      await vi.waitFor(() =>
+        expect(real?.getSnapshot().threads.some(({ id: key }) => key === id)).toBe(true),
+      );
+      const stop = document.querySelector<HTMLButtonElement>(".session-bar__stop");
+      expect(stop?.textContent).toContain("Stop “Claude”");
+      expect(
+        document.querySelector(
+          ".thread .composer-dock [contenteditable], .thread .composer-dock textarea",
+        ),
+      ).toBeNull();
+      const opener = document.querySelector<HTMLButtonElement>(".agents-now__trigger")!;
+      vi.spyOn(opener, "getClientRects").mockReturnValue([new DOMRect()] as unknown as DOMRectList);
+      await act(async () => opener.click());
+      expect(
+        document.querySelector('.agents-now-panel button[aria-label="Stop Claude"]'),
+      ).not.toBeNull();
+      await act(async () =>
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })),
+      );
+      const dispatch = vi.spyOn(real!, "dispatch");
+      await act(async () => stop!.click());
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "agent.session.stop",
+          threadId: id,
+          agentSessionId: sessionId,
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(document.querySelector(".session-bar")?.textContent).toContain("Stopped by you"),
+      );
+      expect(document.querySelector(".session-bar__stop")).toBeNull();
+    } finally {
+      await act(async () => {
+        real?.dispose();
+        wire?.dispose();
+      });
+    }
+  });
+
   it("shows its activity, has no composer, and Stop ends that agent's session", async () => {
     await mount(task(mockAgentWorkThreads.working), options);
     await vi.waitFor(() => expect(document.querySelector(".session-bar")).not.toBeNull());

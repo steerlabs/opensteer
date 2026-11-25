@@ -1635,6 +1635,8 @@ export class HttpHostClient {
         const thread = this.#threadState.reconcile(
           {
             ...detailSummary,
+            agentSessionId: row.agentSessionId ?? null,
+            externalWork: row.externalWork ?? null,
             ...(row.thread ? { endedOrigin: row.endedOrigin ?? null } : {}),
             ...(row.originConnectionId ? { originConnectionId: row.originConnectionId } : {}),
             ...(row.retry === undefined ? {} : { retry: row.retry }),
