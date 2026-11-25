@@ -1,4 +1,4 @@
-import type { HostClient } from "../packages/client/src/host/client.js";
+import type { HostClient } from "../host/client.js";
 import { expect, it, vi } from "vitest";
 
 const unavailable = [

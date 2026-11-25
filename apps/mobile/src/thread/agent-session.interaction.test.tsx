@@ -3,7 +3,7 @@ import { MockHostClient, mockAgentWorkThreads, mockConnectedAgents } from "@open
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { testUnsentSessionStops } from "../../../../tests/session-stop-feedback.test-support.js";
+import { testUnsentSessionStops } from "../../../../packages/client/src/test-support/session-stop-feedback.test-support.js";
 
 vi.mock("react-native", () => ({
   AccessibilityInfo: { announceForAccessibility: vi.fn(async () => undefined) },

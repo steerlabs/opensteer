@@ -8,7 +8,7 @@ import {
 } from "@opensteer/client/mock";
 import { act } from "react";
 import { expect, it, vi } from "vitest";
-import { testUnsentSessionStops } from "../../../../tests/session-stop-feedback.test-support.js";
+import { testUnsentSessionStops } from "../../../../packages/client/src/test-support/session-stop-feedback.test-support.js";
 import {
   client,
   goTo,
