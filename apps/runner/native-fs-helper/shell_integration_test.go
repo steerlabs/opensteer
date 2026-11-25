@@ -59,7 +59,10 @@ func TestShellProxyProcess(t *testing.T) {
 	// process stands in for the target Runner as well as the proxy, so it has to
 	// outlive that signal to copy the records shell-serve writes while it winds
 	// down; otherwise the last audits of a short session are lost with the pipe.
-	signal.Ignore(syscall.SIGHUP)
+	// The same holds for SIGPIPE: relaying shell-serve's last bytes to a client
+	// that has exited writes to a broken stdout, and Go ends a process on that
+	// unless SIGPIPE is ignored. The write then fails, and the rest is discarded.
+	signal.Ignore(syscall.SIGHUP, syscall.SIGPIPE)
 	initContent, err := base64.RawStdEncoding.DecodeString(os.Getenv("OPENSTEER_SHELL_TEST_INIT"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -114,7 +117,9 @@ func TestShellProxyProcess(t *testing.T) {
 		_ = stdin.Close()
 		close(inputDone)
 	}()
-	_, _ = io.Copy(os.Stdout, stdout)
+	if _, err := io.Copy(os.Stdout, stdout); err != nil {
+		_, _ = io.Copy(io.Discard, stdout)
+	}
 	_ = command.Wait()
 	close(processDone)
 	<-recordDone
