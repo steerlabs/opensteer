@@ -61,7 +61,7 @@ Every step, in order, before the first Account or reconciler of this release sta
 4. **The lease**: after the new reconciler started, check that it reported the pool network: `select host(pool_network) || '/' || masklen(pool_network) from cloud_computer_provisioner_lease` names the subnet. Until it does, every new Cloud Computer's boot is answered 503 and its installer keeps retrying, which uses up its 20-minute bootstrap token (reissue it if it runs out).
 5. **Cloud Computers made before this release**: each is replaced by a fresh one: delete it and create a new one. None is updated in place, none is replaced from a snapshot onto this release, and its browser profiles are not carried over. One whose browser ran on its own machine is given a pool slot by Account's missing-slot pass after the upgrade, although its Home cannot use it; that slot is erased with it when it is deleted.
 6. **An Account database that ran any earlier build of this branch** is rebuilt, not upgraded. One whose last recorded migration is `0038_remove_platform_verification` (as on the test stack) upgrades normally.
-7. **Pool ports**: the agent and relay ports (`OPENSTEER_CLOUD_COMPUTER_POOL_AGENT_PORT`, `OPENSTEER_CLOUD_COMPUTER_POOL_RELAY_PORT`) are fixed for running pool hosts: each host takes them when it is created, while Homes follow Account's values at their next maintenance pass. Changing them means replacing every pool host (`pool-host-replace`) at the same time; Account refuses ports that equal each other, 25, 465, 587 or the provisioner's admin port, and refuses the lease of a provisioner whose admin port is one of them.
+7. **Pool ports**: the agent and relay ports (`OPENSTEER_CLOUD_COMPUTER_POOL_AGENT_PORT`, `OPENSTEER_CLOUD_COMPUTER_POOL_RELAY_PORT`) are fixed for running pool hosts: each host takes them when it is created, while Homes follow Account's values at their next maintenance pass. Changing them means replacing every pool host (`pool-host-replace`) at the same time; Account refuses ports that equal each other, 25, 465, 587 or the provisioner's admin port, and refuses (400) the lease of a provisioner whose admin port is one of them.
 
 ## First-time setup
 
@@ -487,6 +487,14 @@ Each failure below is logged as one stable event, `jsonPayload.event` in Cloud L
   3. Account bumps `generation`, stores `restoreSnapshot`, issues a fresh bootstrap token, removes the old deployment listing, clears the stored credentials, and moves the record back to `provisioning`. Normal `replace` keeps the OIDC client record and rotates its secret at boot; reissue can delete the record.
   4. The reconciler powers off the previous VM. The new VM restores the named snapshot before sending `boot-complete`. The reconciler verifies the pinned identity. Account claims the replacement using a signed assertion and matching link credential. First setup checks the enrollment code; a replacement carries the code field but checks the restored Account link instead. Once Account issues the owner a sign-in to the claimed replacement, the reconciler can delete the previous VM. Account does not wait for the Home callback to create a session. The source backup remains the way back.
   5. Watch progress with `node dist/cloud-computer-operator-main.js show <computer-id>` until `phase` is `"ready"` and `claim.receiptAt` is set.
+
+### Upgrading the reconciler
+
+1. Stop the old reconciler (its pod gets SIGTERM). On a clean stop it gives its lease back (`home-provisioner.lease.released`) before it exits, so nothing waits for the lease to run out.
+2. Start the new one. It takes the lease at once. While another reconciler still holds it, it waits inside its process, asking every 10 seconds (`home-provisioner.lease.waiting`, then `home-provisioner.lease.acquired` with how long it waited), instead of exiting and restarting.
+3. A reconciler that crashed, or was killed without a clean stop, keeps its lease until it runs out: up to ten minutes with nothing provisioning a purchase or observing an outage. The `Recreate` strategy already stops the old pod before it starts the new one; keep that order when upgrading by hand.
+
+A lease refused for any other reason (the admin port is one the Homes use: HTTP 400) stops the new reconciler with its error; fix its settings and start it again.
 
 ### Second reconciler started by mistake
 

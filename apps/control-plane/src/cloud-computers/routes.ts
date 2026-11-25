@@ -139,15 +139,27 @@ export function registerCloudComputerRoutes(
     await options.verifyProvisioner(request.headers.authorization);
     const { holder, poolNetwork, poolAdminPort } = CloudComputerLeaseSchema.parse(request.body);
     const { agentPort, relayPort } = store.poolPorts;
+    // A configuration error, not a held lease: the provisioner stops rather than waits.
     if (poolAdminPort === agentPort || poolAdminPort === relayPort)
       throw new ControlPlaneError(
-        "conflict",
+        "bad_request",
         `The provisioner's admin port ${poolAdminPort} is the browser pool's agent or relay port`,
       );
     if (!(await store.lease(holder, true, poolNetwork))) {
       throw new ControlPlaneError("conflict", "Another Cloud Computer provisioner holds the lease");
     }
     return { acquired: true };
+  });
+  // A provisioner gives its lease back when it stops cleanly (P2), so the next one need not wait
+  // for it to run out. Fenced by the holder: anyone else's release, or an expired one, changes
+  // nothing and is no error.
+  app.delete(cloudComputerLeasePath, async (request, reply) => {
+    privateResponse(reply);
+    await options.verifyProvisioner(request.headers.authorization);
+    const holder = CloudComputerLeaseSchema.shape.holder.safeParse(
+      request.headers[cloudComputerLeaseHeader],
+    );
+    return { released: holder.success && (await store.giveBackLease(holder.data)) };
   });
   app.post(`${provisionerPath}/check`, async (request, reply) => {
     privateResponse(reply);

@@ -69,6 +69,8 @@ export interface PoolAccountApi {
 
 export interface AccountApi {
   acquire(signal: AbortSignal): Promise<void>;
+  /** Gives the lease back, as its holder; false when it held none. */
+  release?(signal: AbortSignal): Promise<boolean>;
   check(id: CloudComputerId, check: CloudComputerCheck, signal: AbortSignal): Promise<boolean>;
   desired(signal: AbortSignal): Promise<readonly CloudComputerDesired[]>;
   report(report: CloudComputerReport, signal: AbortSignal): Promise<boolean>;
@@ -147,6 +149,17 @@ export function accountClient(
           headers: await headers(signal),
         },
       );
+    },
+    async release(signal) {
+      const { released } = await request(
+        "Account",
+        new URL(cloudComputerLeasePath, origin),
+        http,
+        signal,
+        json(z.object({ released: z.boolean() })),
+        { method: "DELETE", headers: await headers(signal) },
+      );
+      return released;
     },
     async check(id, check, signal) {
       return (

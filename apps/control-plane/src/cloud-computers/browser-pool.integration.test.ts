@@ -1052,6 +1052,55 @@ integration("Browser pool Account service", () => {
     }
   });
 
+  it("gives the lease back on a clean stop, fenced by its holder, and lets the next take it at once (P2)", async () => {
+    const h = await buildHarness("2");
+    try {
+      const take = (holder: string) =>
+        h.app.inject({
+          method: "POST",
+          url: cloudComputerLeasePath,
+          headers: { authorization: "Bearer provisioner-ok" },
+          payload: { holder, poolNetwork: "10.40.0.0/20" },
+        });
+      const giveBack = (holder: string) =>
+        h.app.inject({
+          method: "DELETE",
+          url: cloudComputerLeasePath,
+          headers: { authorization: "Bearer provisioner-ok", [cloudComputerLeaseHeader]: holder },
+        });
+      const first = randomUUID();
+      const second = randomUUID();
+      expect((await take(first)).statusCode).toBe(200);
+      // Held: the next provisioner is refused.
+      expect((await take(second)).statusCode).toBe(409);
+      // A release by anyone but the holder changes nothing, and is no error.
+      const stale = await giveBack(second);
+      expect(stale.statusCode).toBe(200);
+      expect(JSON.parse(stale.body)).toEqual({ released: false });
+      expect((await take(second)).statusCode).toBe(409);
+      // The holder's own release frees it: the next takes it at once.
+      const released = await giveBack(first);
+      expect(JSON.parse(released.body)).toEqual({ released: true });
+      expect((await take(second)).statusCode).toBe(200);
+      // An old holder releasing again cannot take it from the new one.
+      expect(JSON.parse((await giveBack(first)).body)).toEqual({ released: false });
+      expect((await take(first)).statusCode).toBe(409);
+      // The pool network stays with the lease, so no Home's boot waits for it.
+      const network = await sql<{ poolNetwork: string | null }>`
+        select host(pool_network) || '/' || masklen(pool_network) as "poolNetwork"
+          from cloud_computer_provisioner_lease
+      `.execute(database);
+      expect(network.rows).toEqual([{ poolNetwork: "10.40.0.0/20" }]);
+      // A provisioner that crashed holds it until it runs out (ten minutes).
+      const third = randomUUID();
+      expect((await take(third)).statusCode).toBe(409);
+      now = new Date(now.getTime() + 10 * 60_000 + 1);
+      expect((await take(third)).statusCode).toBe(200);
+    } finally {
+      await h.app.close();
+    }
+  });
+
   it("tells a booted Home its pool network now, and nobody else (S2)", async () => {
     const h = await buildHarness("2");
     try {
@@ -1102,7 +1151,8 @@ integration("Browser pool Account service", () => {
         headers: { authorization: "Bearer provisioner-ok" },
         payload: { holder: randomUUID(), poolNetwork: "10.40.0.0/20", poolAdminPort: 7312 },
       });
-      expect(colliding.statusCode).toBe(409);
+      // A configuration error (400), not a held lease (409), which a provisioner waits out.
+      expect(colliding.statusCode).toBe(400);
       expect(colliding.body).toContain("admin port 7312");
       const bare = await h.app.inject({
         method: "POST",

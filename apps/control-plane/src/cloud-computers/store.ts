@@ -1280,6 +1280,17 @@ export class CloudComputerStore {
       throw new ControlPlaneError("conflict", "The holder does not have an expired lease");
   }
 
+  /** Ends a lease its holder gives back; its pool network stays for the next holder's Homes. */
+  async giveBackLease(holder: string): Promise<boolean> {
+    const now = this.#now();
+    const result = await sql`
+      update cloud_computer_provisioner_lease set expires_at = ${now}
+      where singleton and holder = ${holder}::uuid and expires_at > ${now}
+      returning holder
+    `.execute(this.#db);
+    return result.rows.length === 1;
+  }
+
   async lease(holder: string, acquire: boolean, poolNetwork?: string): Promise<boolean> {
     const now = this.#now();
     const expires = new Date(now.getTime() + 10 * 60_000);
