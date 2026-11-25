@@ -62,6 +62,10 @@ const internalAuthPath = "/internal/better-auth";
 const homeSignInErrorPath = "/auth/error";
 /** What Better Auth reports when the browser came back without this sign-in's state. */
 const lapsedStateErrors = new Set(["invalid_state", "state_mismatch", "state_not_found"]);
+/** The refusal of a sign-in by an identity this Home has no person for. */
+const signupAdmissionRequiredCode = "SIGNUP_ADMISSION_REQUIRED";
+/** The Home's page names a managed Home's refusal of another Opensteer account by this. */
+export const anotherAccountSignInError = "another_account";
 /** As long as a started sign-in's state can come back (Better Auth keeps it ten minutes). */
 const restartedSignInLifetimeMs = 10 * 60_000;
 const maximumRestartedSignIns = 1_000;
@@ -2006,6 +2010,8 @@ export class IdentityService {
     const response = await this.#auth.handler(
       new Request(url, { headers: forwardedAuthHeaders(request.headers), method: "GET" }),
     );
+    const refused = await this.#anotherAccount(response);
+    if (refused) return refused;
     if (response.status < 300 || response.status >= 400) return response;
     const restart = await this.#restartLapsedSignIn(request, response);
     if (restart) return restart;
@@ -2021,6 +2027,32 @@ export class IdentityService {
     for (const cookie of completionHeaders.getSetCookie()) headers.append("set-cookie", cookie);
     headers.set("location", this.#options.publicOrigin.origin);
     return new Response(response.body, { headers, status: response.status });
+  }
+
+  /**
+   * A managed Home's one owner is its Opensteer account. An account the Home has
+   * no person for is refused where Better Auth would create one, which answers
+   * the browser with bare JSON; this ends it on the Home's own page instead,
+   * under the one error that page names. The refusal's cookies (the cleared
+   * sign-in state) go with it.
+   */
+  async #anotherAccount(response: Response): Promise<Response | null> {
+    if (!this.#options.managedOwner || response.status !== 403) return null;
+    const body: unknown = await response
+      .clone()
+      .json()
+      .catch(() => null);
+    if (
+      typeof body !== "object" ||
+      body === null ||
+      (body as { code?: unknown }).code !== signupAdmissionRequiredCode
+    )
+      return null;
+    const location = new URL(homeSignInErrorPath, this.#options.publicOrigin);
+    location.searchParams.set("error", anotherAccountSignInError);
+    const headers = new Headers({ "cache-control": "no-store", location: location.toString() });
+    for (const cookie of response.headers.getSetCookie()) headers.append("set-cookie", cookie);
+    return new Response(null, { headers, status: 302 });
   }
 
   /**
@@ -2388,7 +2420,10 @@ export class IdentityService {
   async #requireSignupAdmission(_request: Request | undefined): Promise<void> {
     if (this.#options.signupPolicy === "open") return;
     // A Home's one owner is created by its setup claim, never by a sign-up.
-    throw new APIError("FORBIDDEN", { message: "Signup admission required" });
+    throw new APIError("FORBIDDEN", {
+      code: signupAdmissionRequiredCode,
+      message: "Signup admission required",
+    });
   }
 
   async #consumeAdmission(id: AuthAdmissionId, userId: UserId): Promise<void> {
