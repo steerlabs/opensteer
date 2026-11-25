@@ -5,7 +5,7 @@ import { mockConnectedAgents } from "../mock/mock-connected-agents.js";
 import { describe, expect, it } from "vitest";
 import { agentClaim } from "./agent-identity.js";
 import { chatFacts, chatTasksNow, messagingAccountView } from "./chat-view.js";
-import { plainSentence, type SentencePart } from "./sentence-parts.js";
+import { isolatedPlainSentence, plainSentence, type SentencePart } from "./sentence-parts.js";
 import {
   agentAppOptions,
   agentBrowserOptions,
@@ -28,6 +28,7 @@ import {
   sameGrant,
   setDraftPluginAccess,
   toggleDraftResource,
+  taskOriginLabels,
   type AgentGrantDraft,
 } from "./connected-agent-view.js";
 import type { ThreadSummary } from "./client.js";
@@ -67,6 +68,26 @@ function connection(patch: Partial<AgentConnection> = {}): AgentConnection {
     ...patch,
   };
 }
+
+it("names a task's held connected agent and leaves bridges, ended agents and unknown IDs unresolved", () => {
+  const { connections } = mockConnectedAgents("seeded", now);
+  const verified = connections.find(({ label }) => label === "ChatGPT")!;
+  const declared = connection({ label: "Opensteer" });
+  const bridge = mockConnectedAgents("chats", now).connections.find(({ bridge }) => bridge)!;
+  const revoked = connection({
+    id: "mcn_00000000-0000-4000-8000-0000000000af",
+    state: "stopped",
+  });
+  const labels = taskOriginLabels([verified, declared, bridge, revoked], new Set(), now);
+  expect(isolatedPlainSentence(labels.get(verified.id)!)).toBe("started by ChatGPT");
+  expect(isolatedPlainSentence(labels.get(declared.id)!)).toBe(
+    "started by “\u2068Opensteer\u2069”",
+  );
+  expect(labels.has(bridge.id)).toBe(false);
+  expect(labels.has(revoked.id)).toBe(false);
+  expect(labels.has("unknown")).toBe(false);
+  expect(taskOriginLabels([verified], new Set([verified.id]), now).size).toBe(0);
+});
 
 describe("a chat's tasks as they are now", () => {
   it("reads the chat's list again for a running task no live update holds", () => {

@@ -45,6 +45,9 @@ function encodeTaskBoundary(
 export function taskView(task: Task) {
   return {
     id: task.id,
+    ...(!task.externalWork && task.originConnectionId !== null
+      ? { originConnectionId: task.originConnectionId }
+      : {}),
     title: task.title,
     revision: task.revision,
     status: task.status,

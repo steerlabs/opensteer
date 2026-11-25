@@ -17,6 +17,7 @@ import {
   type OperationRequestView,
   type RequestView,
   type SessionAgent,
+  type SentencePart,
   type HostClient,
   type SessionTaskView,
   workSentence,
@@ -86,6 +87,14 @@ export function sessionActionLabel(
   agent: SessionAgent,
 ) {
   return isolatedPlainSentence(workSentence(key, { agent: connectedAgentNamePart(agent) }));
+}
+
+export function TaskOriginLine({ parts }: { readonly parts: readonly SentencePart[] | undefined }) {
+  return parts ? (
+    <span className="side-task__origin">
+      <SentenceText parts={parts} />
+    </span>
+  ) : null;
 }
 
 /** Watch a session in its existing task view, or focus its Request when reviewing it there. */

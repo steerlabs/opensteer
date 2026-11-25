@@ -1,11 +1,18 @@
 import { useCallback, useEffect, useRef, useState, type Ref } from "react";
-import { seenThroughOf, taskMark, type HostClient, type TaskRow } from "@opensteer/client/host";
+import {
+  seenThroughOf,
+  taskMark,
+  type HostClient,
+  type SentencePart,
+  type TaskRow,
+} from "@opensteer/client/host";
 import type { QuietTaskDays } from "@opensteer/core";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { useToast } from "../toast.js";
 import { act, failureWords } from "../use-action.js";
 import { TaskMark } from "./task-mark.js";
+import { TaskOriginLine } from "../agent-work.js";
 
 /** At most this many tasks move back at once, so a long list does not flood a slow link. */
 const moveBackConcurrency = 4;
@@ -63,6 +70,7 @@ export function DoneLine({
   onOpen,
   onOpenTask,
   onSeen,
+  origins,
   quietTaskDays,
 }: {
   /** The open conversation is one of the Done tasks. */
@@ -74,6 +82,7 @@ export function DoneLine({
   readonly onOpen: () => void;
   readonly onOpenTask: (threadId: string) => void;
   readonly onSeen: (rows: readonly TaskRow[]) => void;
+  readonly origins: ReadonlyMap<string, readonly SentencePart[]>;
   readonly quietTaskDays: QuietTaskDays | null;
 }) {
   const chip = useRef<HTMLButtonElement | null>(null);
@@ -151,6 +160,7 @@ export function DoneLine({
               onOpenTask(threadId);
             }}
             quietTaskDays={quietTaskDays}
+            origins={origins}
             rows={card.left}
           />
         </Popover>
@@ -165,12 +175,14 @@ function QuietMovedCard({
   onOpenTask,
   quietTaskDays,
   rows,
+  origins,
 }: {
   readonly hostClient: HostClient;
   readonly onMovedBack: (threadId: string) => void;
   readonly onOpenTask: (threadId: string) => void;
   readonly quietTaskDays: QuietTaskDays | null;
   readonly rows: readonly TaskRow[];
+  readonly origins: ReadonlyMap<string, readonly SentencePart[]>;
 }) {
   const toast = useToast();
   const [moving, setMoving] = useState<ReadonlySet<string>>(new Set());
@@ -223,7 +235,10 @@ function QuietMovedCard({
               type="button"
             >
               <TaskMark size={20} mark={taskMark(row)} quiet={row.quiet} />
-              <span className="quiet-moved__name">{row.title}</span>
+              <span className="side-task__text">
+                <span className="quiet-moved__name">{row.title}</span>
+                <TaskOriginLine parts={origins.get(row.originConnectionId ?? "")} />
+              </span>
             </button>
             <button
               aria-label={`Move back: ${row.title}`}

@@ -2747,6 +2747,9 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
           asOfSequence: SequenceSchema.parse(String(client.getSnapshot().revision)),
           tasks: page.map((entry) => ({
             ...entry,
+            ...(entry.thread.originConnectionId
+              ? { originConnectionId: entry.thread.originConnectionId }
+              : {}),
             thread: mockThread(entry.thread),
           })),
           window: {
@@ -4051,6 +4054,9 @@ export class MockHostClient implements HostClient {
         asOfSequence: SequenceSchema.parse(sequence),
         tasks: entries.slice(0, 100).map((entry) => ({
           ...entry,
+          ...(entry.thread.originConnectionId
+            ? { originConnectionId: entry.thread.originConnectionId }
+            : {}),
           thread: mockThread(entry.thread),
         })),
         window: {
@@ -5165,6 +5171,11 @@ export class MockHostClient implements HostClient {
     } = {},
   ): void {
     this.#state.mockAgentWork(options);
+  }
+
+  /** A task their own agents can run under a connected agent's lineage. */
+  mockStartedTask(originConnectionId: string, title = "Summarize my notes"): string {
+    return this.#state.mockStartedTask(originConnectionId, title);
   }
 
   /** The person's Stop on a connected agent's task, bound to the session they saw. */
@@ -7898,6 +7909,36 @@ class MockHostState {
       requests: { ...this.snapshot.requests, ...seed.requests } as typeof this.snapshot.requests,
       browserSessions,
     });
+  }
+
+  mockStartedTask(originConnectionId: string, title: string): string {
+    const template = this.snapshot.threads.find(
+      ({ purpose, listed }) => purpose === "task" && listed,
+    );
+    if (!template) throw new Error("No mock task to copy.");
+    const id = createId("thread");
+    const at = this.now().toISOString();
+    const task: ThreadSummary = {
+      ...template,
+      id,
+      title,
+      originConnectionId,
+      startedByOther: true,
+      parentThreadId: null,
+      status: "idle",
+      pendingRequests: 0,
+      doneAt: null,
+      doneReason: null,
+      askedAt: at,
+      createdAt: at,
+      updatedAt: at,
+      latestRunCompletedAt: null,
+      lastVisitedAt: null,
+      runQueued: false,
+      unread: false,
+    };
+    this.update({ ...this.snapshot, threads: [...this.snapshot.threads, task] });
+    return id;
   }
 
   mockDeviceStates(): void {

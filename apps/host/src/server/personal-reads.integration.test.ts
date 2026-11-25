@@ -1,5 +1,5 @@
 import { createId } from "@opensteer/core";
-import { republishThreads } from "@opensteer/database";
+import { AgentConnectionStore, beginAgentSession, republishThreads } from "@opensteer/database";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { createPersonalRunFixturePort } from "@opensteer/database/test-support/personal-run";
 import type { PersonalResumeCursor, ScopedHostMessage } from "@opensteer/protocol/personal-sync";
@@ -28,6 +28,109 @@ async function fixture(database: { url: string }) {
     host.store.database.selectFrom("clientSyncState").selectAll().executeTakeFirstOrThrow();
   return { host, owner, other, reads, state, surface: session.sessionSurface };
 }
+
+it("carries connection lineage on the owner's task views", async () => {
+  const database = await cloneTestDatabase("host");
+  let host: PrivateMachineHost | undefined;
+  try {
+    host = await startPrivateMachineHost(database.url, { logger: false });
+    const { ownerId, store } = host;
+    const tasks = createPersonalRunFixturePort(store);
+    const { thread: ownerTask } = await tasks.createTask({ ownerId, suffix: "origin-owner" });
+    const { id: environmentId, runnerId } = (await store.getEnvironment(ownerTask.environmentId))!;
+    if (!runnerId) throw new Error("Fixture task needs a hosting computer");
+    const connections = new AgentConnectionStore(store.database);
+    const connection = await connections.create({
+      userId: ownerId,
+      clientName: "Fixture agent",
+      label: "Fixture agent",
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+      resource: "https://fixture.test/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    expect(await connections.activate(connection.id, crypto.randomUUID())).toBe(true);
+    const create = (
+      title: string,
+      authority?: Parameters<typeof store.createThread>[0]["authority"],
+    ) =>
+      store.createThread({
+        ...(authority ? { authority } : {}),
+        createdBy: ownerId,
+        environmentId,
+        harnessInstanceId: ownerTask.harnessInstanceId,
+        modelSelection: ownerTask.modelSelection,
+        idempotencyKey: `origin:${title}`,
+        title,
+      });
+    const { thread: delegated } = await create("Connection task", {
+      kind: "connection",
+      connectionId: connection.id,
+      userId: ownerId,
+      accessMode: "full-access",
+    });
+    const createFromRun = async (threadId: typeof ownerTask.id, title: string) => {
+      const started = await tasks.startTask(threadId, title);
+      return create(title, {
+        kind: "run",
+        userId: ownerId,
+        accessMode: "full-access",
+        scope: {
+          bindingGeneration: started.bindingGeneration,
+          runnerBootId: started.runnerBootId,
+          runId: started.runId,
+          runnerId,
+          environmentId,
+          threadId,
+          requestedBy: ownerId,
+        },
+      });
+    };
+    const { thread: withinLineage } = await createFromRun(delegated.id, "Run with lineage");
+    const { thread: ordinary } = await createFromRun(ownerTask.id, "Run without lineage");
+    const { session: direct } = await beginAgentSession(store.database, {
+      userId: ownerId,
+      agentConnectionId: connection.id,
+    });
+    expect(delegated).not.toHaveProperty("originConnectionId");
+    expect(withinLineage).not.toHaveProperty("originConnectionId");
+
+    const shell = await host.api["personal.shell.get"]({});
+    if (!shell.ok) throw new Error(shell.error.message);
+    const row = (id: string) => shell.data.tasks.find((task) => task.id === id)!;
+    for (const task of [delegated, withinLineage])
+      expect(row(task.id)).toHaveProperty("originConnectionId", connection.id);
+    for (const task of [ownerTask, ordinary]) {
+      expect(row(task.id)).toBeDefined();
+      expect(row(task.id)).not.toHaveProperty("originConnectionId");
+    }
+    expect(row(direct.threadId)).toMatchObject({ externalWork: { sessionId: direct.id } });
+    expect(row(direct.threadId)).not.toHaveProperty("originConnectionId");
+
+    const page = await host.api["tasks.page"]({});
+    if (!page.ok) throw new Error(page.error.message);
+    const paged = page.data.tasks.find(({ thread }) => thread.id === withinLineage.id)!;
+    expect(paged).toHaveProperty("originConnectionId", connection.id);
+    expect(paged.thread).not.toHaveProperty("originConnectionId");
+    const ordinaryEntry = page.data.tasks.find(({ thread }) => thread.id === ordinary.id)!;
+    expect(ordinaryEntry).toBeDefined();
+    expect(ordinaryEntry).not.toHaveProperty("originConnectionId");
+    expect(shell.data.activeTaskIds).toContain(direct.threadId);
+    const active = await host.api["tasks.page"]({ active: true });
+    if (!active.ok) throw new Error(active.error.message);
+    const directEntry = active.data.tasks.find(({ thread }) => thread.id === direct.threadId);
+    expect(directEntry).toBeDefined();
+    expect(directEntry).not.toHaveProperty("originConnectionId");
+
+    const detail = await host.api["thread.snapshot.get"]({ threadId: delegated.id });
+    if (!detail.ok) throw new Error(detail.error.message);
+    expect(detail.data.thread).toHaveProperty("originConnectionId", connection.id);
+    expect(detail.data.thread.thread).not.toHaveProperty("originConnectionId");
+  } finally {
+    await host?.close();
+    await database.drop();
+  }
+});
 
 it("replays a waiting message's queue row once, with this cut's lease for each session", async () => {
   const database = await cloneTestDatabase("host");

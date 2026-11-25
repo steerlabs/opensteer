@@ -480,6 +480,9 @@ export function createPersonalReads(
           if (!thread) return unavailable();
           const entry = {
             thread,
+            ...(!task.externalWork && task.originConnectionId !== null
+              ? { originConnectionId: task.originConnectionId }
+              : {}),
             failure: task.failurePreview?.slice(0, 280) ?? null,
             lastReply: task.lastReplyPreview?.slice(0, 280) ?? null,
             runQueued: task.runQueued,

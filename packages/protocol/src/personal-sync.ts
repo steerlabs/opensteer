@@ -21,6 +21,7 @@ import {
   UserIdSchema,
 } from "@opensteer/core";
 import { z } from "zod";
+import { AgentConnectionIdSchema } from "./agent-connections.js";
 import { AgentConnectionIdentityAtConsentViewSchema } from "@opensteer/control-plane-protocol";
 import {
   AuthenticatedUserViewSchema,
@@ -175,6 +176,8 @@ export const ScopedClientMessageSchema = z.discriminatedUnion("type", [
 ]);
 
 const task = z.object({
+  /** A task's connection lineage, for the person's own task views. */
+  originConnectionId: AgentConnectionIdSchema.optional(),
   id: ThreadIdSchema,
   title: z.string().max(240),
   revision: PersonalRevisionSchema,

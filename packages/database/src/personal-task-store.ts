@@ -47,6 +47,7 @@ const taskFields = [
   "latestRunCompletedAt",
   "environmentId",
   "harnessInstanceId",
+  "originConnectionId",
 ] as const;
 
 /** A Run of this thread waits to start and none is executing (the task row's `runQueued`). */

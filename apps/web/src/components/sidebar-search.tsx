@@ -39,12 +39,15 @@ import { DeviceLabel } from "./computers/device-label.js";
 import { useScrollEdges } from "./workspace/scroll-edges.js";
 import { tabGroupStyle } from "./workspace/tab-group.js";
 import { TaskMark, TaskState } from "./workspace/task-mark.js";
+import { TaskOriginLine } from "./agent-work.js";
+import type { SentencePart } from "@opensteer/client/host";
 
 /** What search can find, as the sidebar holds it. */
 export interface SidebarSearchSources {
   /** Every task row the sidebar has loaded, in its order: Working, Ready, Done. */
   readonly tasks: readonly TaskRow[];
   readonly attention: ReadonlyMap<string, TaskAttention>;
+  readonly origins: ReadonlyMap<string, readonly SentencePart[]>;
   /** Where each task's harness and runner labels come from. */
   readonly snapshot: Pick<HostSnapshot, "tasks">;
 }
@@ -303,6 +306,7 @@ export function SidebarSearch({
                             <TaskResult
                               key={result.key}
                               open={result.row.threadId === openThreadId}
+                              origin={sources.origins.get(result.row.originConnectionId ?? "")}
                               result={result}
                               {...row}
                             />
@@ -470,10 +474,12 @@ function optionProps({ id, selected, onChoose, onPoint }: ResultRow) {
 
 function TaskResult({
   open,
+  origin,
   result,
   ...row
 }: ResultRow & {
   readonly open: boolean;
+  readonly origin: readonly SentencePart[] | undefined;
   readonly result: Extract<Result, { kind: "task" }>;
 }) {
   const { ask, match, row: task } = result;
@@ -483,7 +489,7 @@ function TaskResult({
     "side-task",
     "side-result",
     `side-task--${task.tone}`,
-    ask || hint ? "has-ask" : "",
+    ask || hint || origin ? "has-ask" : "",
     open ? "is-filled" : quiet ? "is-quiet" : "",
     row.selected ? "is-selected" : "",
   ];
@@ -495,6 +501,7 @@ function TaskResult({
           <span className="side-task__title">
             <Lit ranges={match.ranges} text={task.title} />
           </span>
+          <TaskOriginLine parts={origin} />
           {/* The line under the title says why it matched when the title does not. */}
           {hint && result.fields[hint.field]!.name !== "ask" ? (
             <span className="side-result__hint">

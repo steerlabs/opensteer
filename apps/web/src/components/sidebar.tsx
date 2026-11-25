@@ -1,4 +1,4 @@
-import { useOpenSessionTask } from "./agent-work.js";
+import { TaskOriginLine, useOpenSessionTask } from "./agent-work.js";
 import { runAction, toastOutcome } from "./use-action.js";
 import { NeedsYouList } from "./needs-you-list.js";
 import { placeByKey } from "@opensteer/client/host";
@@ -44,12 +44,16 @@ import {
   quietlyMoved,
   quietSeenScope,
   actingOccupants,
+  isolatedPlainSentence,
+  taskOriginLabels,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
+  type SentencePart,
   type TaskRow,
 } from "@opensteer/client/host";
 import {
+  useConnectedAgents,
   useHostSelector,
   usePlace,
   usePlaceActivity,
@@ -328,13 +332,19 @@ export function Sidebar({
 
   // Search keeps the full directory, including a connected agent's own task.
   const allTasks = useMemo(() => [...list.working, ...list.ready, ...list.done], [list]);
+  const wantsOrigins =
+    allTasks.some(({ originConnectionId }) => originConnectionId !== undefined) ||
+    doneRows.some(({ originConnectionId }) => originConnectionId !== undefined);
+  const { connections, revoked } = useConnectedAgents(wantsOrigins ? hostClient : null);
+  const origins = useMemo(() => taskOriginLabels(connections, revoked), [connections, revoked]);
   const searchSources = useMemo<SidebarSearchSources>(
     () => ({
       tasks: allTasks,
       attention: directory.attentionByThread,
+      origins,
       snapshot,
     }),
-    [allTasks, directory.attentionByThread, snapshot],
+    [allTasks, directory.attentionByThread, origins, snapshot],
   );
 
   const openSearch = useCallback(() => {
@@ -567,6 +577,7 @@ export function Sidebar({
       onNavigate={onCloseMobile}
       onSetDone={onSetTaskDone}
       open={row.threadId === openRowThreadId}
+      origin={origins.get(row.originConnectionId ?? "")}
       row={row}
       unsent={drafts.replies.has(row.threadId)}
       workspace={workspace}
@@ -886,6 +897,7 @@ export function Sidebar({
                               onOpen={openDone}
                               onOpenTask={openTask}
                               onSeen={markQuietSeen}
+                              origins={origins}
                               quietTaskDays={directory.snapshot.quietTaskDays}
                             />,
                           ]
@@ -1133,6 +1145,7 @@ interface TaskRowItemProps {
   readonly onNavigate: () => void;
   readonly onSetDone: (threadId: string, done: boolean) => void;
   readonly open: boolean;
+  readonly origin: readonly SentencePart[] | undefined;
   readonly row: TaskRow;
   /** A reply is waiting here, unsent. */
   readonly unsent: boolean;
@@ -1146,6 +1159,7 @@ const TaskRowItem = memo(function TaskRowItem({
   onNavigate,
   onSetDone,
   open,
+  origin,
   row,
   unsent,
   workspace,
@@ -1168,7 +1182,7 @@ const TaskRowItem = memo(function TaskRowItem({
     `side-task--${row.tone}`,
     open ? (work ? "is-open" : "is-filled") : quiet ? "is-quiet" : "",
     lit ? "is-match" : "",
-    needsYou ? "has-ask" : "",
+    needsYou || origin ? "has-ask" : "",
   ];
   const words = taskStateWords(row.tone);
   const mainRef = useRef<HTMLAnchorElement | null>(null);
@@ -1178,6 +1192,7 @@ const TaskRowItem = memo(function TaskRowItem({
   }, [open]);
   const label = [
     row.unread && row.tone !== "needs-you" ? `${row.title}, unread` : row.title,
+    origin ? isolatedPlainSentence(origin) : null,
     words ? `${words}${needsYou && ask ? `: ${ask}` : ""}` : null,
     unsent ? "unsent draft" : null,
   ]
@@ -1236,6 +1251,7 @@ const TaskRowItem = memo(function TaskRowItem({
           <TaskMark size={20} mark={taskMark(row)} quiet={quiet} />
           <span className="side-task__text">
             <span className="side-task__title">{row.title}</span>
+            <TaskOriginLine parts={origin} />
             {needsYou ? <span className="side-task__ask">{ask}</span> : null}
           </span>
           {unsent ? <UnsentMark /> : null}

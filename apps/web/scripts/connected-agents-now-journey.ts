@@ -59,6 +59,7 @@ async function checkSoloLine(
 }
 
 async function save(page: Page, name: string) {
+  if (process.argv.includes("--task-origin") && !name.startsWith("tasks-started-by")) return;
   await page.evaluate(() => document.fonts.ready);
   await page.screenshot({ path: path.join(output!, `${name}.png`), animations: "disabled" });
   process.stdout.write(`${name}.png\n`);
@@ -261,6 +262,17 @@ try {
   await checkPersonTasks();
   await page.mouse.move(650, 640);
   await save(page, "tasks-idle-dark");
+  await page.goto(`${web.origin}/?mock-agents&mock-task-origin`);
+  const origin = tasks.getByText("started by ChatGPT", { exact: true });
+  await origin.scrollIntoViewIfNeeded();
+  await save(page, "tasks-started-by-dark");
+  await page.setViewportSize({ width: 728, height: 820 });
+  await page
+    .getByRole("button", { name: /Open sidebar/ })
+    .first()
+    .click();
+  await origin.scrollIntoViewIfNeeded();
+  await save(page, "tasks-started-by-728");
   await context.close();
 } finally {
   await web.close();

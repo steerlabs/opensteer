@@ -8,6 +8,7 @@ import { plainSentence, sentenceWith, type SentencePart } from "./sentence-parts
  */
 export const agentWorkCopy = {
   "work.someAgent": "A connected agent",
+  "work.startedBy": "started by {agent}",
   "work.working": "{agent} is working",
   "now.workingIn": "{agent} is working in {place}",
   "now.workingInPlaces": "{agent} is working in {count} places",

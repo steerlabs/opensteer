@@ -1,5 +1,5 @@
-import { workWords } from "./agent-work-copy.js";
-import { activityRows } from "./agent-work.js";
+import { workSentence, workWords } from "./agent-work-copy.js";
+import { activityRows, connectedAgentNamePart } from "./agent-work.js";
 import {
   BrowserProfileIdSchema,
   agentGrantPluginTargetKey,
@@ -236,6 +236,28 @@ export function connectedAgentPhase(
 /** Still connected, as far as the person can tell: it may act, or will once it is back. */
 export function connectedAgentConnected(phase: ConnectedAgentPhase): boolean {
   return phase === "active" || phase === "paused" || phase === "unknown";
+}
+
+/** A task can name its origin only while the owner's catalog still holds the agent. */
+export function taskOriginLabels(
+  connections: readonly AgentConnection[] | null,
+  revoked: ReadonlySet<string>,
+  now = new Date(),
+): ReadonlyMap<string, readonly SentencePart[]> {
+  const labels = new Map<string, readonly SentencePart[]>();
+  for (const connection of connections ?? []) {
+    if (
+      connection.bridge ||
+      !connectedAgentConnected(connectedAgentPhase(connection, revoked, now))
+    )
+      continue;
+    const { label, who } = connectedAgentIdentity(connection);
+    labels.set(
+      connection.id,
+      workSentence("work.startedBy", { agent: connectedAgentNamePart({ name: label, who }) }),
+    );
+  }
+  return labels;
 }
 
 /** A connection listed without a grant reads as holding nothing (this Home always sends one). */

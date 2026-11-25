@@ -29,6 +29,7 @@ export interface TaskRow {
   readonly threadId: string;
   /** This row can be searched and opened, but belongs to a connected agent's own work. */
   readonly connectedAgentTask?: true;
+  readonly originConnectionId?: string;
   readonly title: string;
   readonly icon: IconName | null;
   readonly color: MarkColor | null;
@@ -309,6 +310,10 @@ function rowOf(
 ): TaskRow {
   const { thread } = entry;
   const held = snapshot.threads.find(({ id }) => id === thread.id) ?? thread;
+  const connectedAgentTask = isConnectedAgentTask(held) || isConnectedAgentTask(thread);
+  const originConnectionId = connectedAgentTask
+    ? undefined
+    : (thread.originConnectionId ?? held.originConnectionId);
   const tone = thread.pendingRequests > 0 || asks.length > 0 ? "needs-you" : taskTone(thread);
   const failureCode = entry.failureCode ?? thread.failureCode ?? null;
   const done = thread.doneAt !== null;
@@ -320,9 +325,8 @@ function rowOf(
   const surface = tone === "working" ? workingSurface(snapshot, thread.id) : null;
   return {
     threadId: thread.id,
-    ...(isConnectedAgentTask(held) || isConnectedAgentTask(thread)
-      ? { connectedAgentTask: true }
-      : {}),
+    ...(connectedAgentTask ? { connectedAgentTask: true } : {}),
+    ...(originConnectionId ? { originConnectionId } : {}),
     title: held.title,
     icon: held.icon,
     color: held.color,
@@ -461,6 +465,7 @@ export function sameTaskRow(left: TaskRow, right: TaskRow): boolean {
   return (
     left.threadId === right.threadId &&
     left.connectedAgentTask === right.connectedAgentTask &&
+    left.originConnectionId === right.originConnectionId &&
     left.title === right.title &&
     left.icon === right.icon &&
     left.color === right.color &&

@@ -161,12 +161,13 @@ async function renderOpensteer(): Promise<void> {
               // `?mock-home=server|cloud`: the Home is reached at its own address, a server or
               // (with `?mock-desktop=home&mock-cloud=ready`) the person's Cloud Computer.
               const mockHome = search.get("mock-home");
+              const agentFixtures = agents ? mockConnectedAgents(agents) : null;
               const client = new MockHostClient({
                 ...(cloudScene ? { portalOrigin: "https://app.opensteer.example" } : {}),
                 ...(mockHome === "server" || mockHome === "cloud"
                   ? { exposure: "networked" as const }
                   : {}),
-                ...(agents ? mockConnectedAgents(agents) : {}),
+                ...agentFixtures,
                 // `?mock-sessions=browser`: this window is a web browser's session.
                 ...(desktopScenario === "new-mac" || desktopScenario === "blocked"
                   ? { sessions: mockUnboundSessions("Opensteer for Mac") }
@@ -185,6 +186,10 @@ async function renderOpensteer(): Promise<void> {
               if (search.has("mock-asleep-step")) client.mockAsleepStep();
               // `?mock-device-states`: a Device asleep and one waiting for an update.
               if (search.has("mock-device-states")) client.mockDeviceStates();
+              if (search.has("mock-task-origin")) {
+                const chatgpt = agentFixtures?.connections.find(({ label }) => label === "ChatGPT");
+                if (chatgpt) client.mockStartedTask(chatgpt.id);
+              }
               // `?mock-agent-work`: connected agents working tasks themselves (with `?mock-agents`).
               const mockWork = search.get("mock-agent-work");
               if (mockWork !== null) {

@@ -1182,6 +1182,7 @@ button.side-needs:hover {
    The name fills the row, so a short one never reaches the fade. */
 .side-task__title,
 .side-tab__title,
+.side-task__origin,
 .side-task__ask {
   mask-image: linear-gradient(to right, var(--mask-ink) calc(100% - var(--space-24)), transparent);
 }
@@ -1201,15 +1202,20 @@ button.side-needs:hover {
   color: var(--muted);
 }
 
-/* The one second line: what the task asks of you, in amber. One line, so
-   every task is two lines at most and the list keeps its rhythm; the whole
-   ask is in the task. */
-.side-task__ask {
+.side-task__ask,
+.side-task__origin {
   overflow: hidden;
-  color: var(--amber-text);
   font-size: var(--text-sm);
   line-height: 1.36;
   white-space: nowrap;
+}
+
+.side-task__ask {
+  color: var(--amber-text);
+}
+
+.side-task__origin {
+  color: var(--muted);
 }
 
 /* A task with no state to show keeps no column for one. */

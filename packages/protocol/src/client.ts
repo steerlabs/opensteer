@@ -35,6 +35,7 @@ import {
   RunnerIdSchema,
 } from "@opensteer/core";
 import { z } from "zod";
+import { AgentConnectionIdSchema } from "./agent-connections.js";
 
 import { ProtocolErrorSchema, type RealtimeFrameDiagnostic } from "./common.js";
 import { ComputerUseSessionIdSchema, computerUseMaxSessionApps } from "./computer-use.js";
@@ -191,6 +192,8 @@ export const taskLineMaxLength = 280;
  * `taskLineMaxLength`, read from the latest published reply and latest Run.
  */
 export const TaskEntryViewSchema = z.object({
+  /** Kept beside Thread because the person's task pages alone carry this lineage. */
+  originConnectionId: AgentConnectionIdSchema.optional(),
   failure: z.string().max(taskLineMaxLength).nullable(),
   lastReply: z.string().max(taskLineMaxLength).nullable(),
   thread: ThreadViewSchema,
