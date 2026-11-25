@@ -2862,6 +2862,131 @@ describe("SessionCdpRouter: Chrome extension boundaries (2a and 2b)", () => {
     }
   });
 
+  it("tells a connection again of a tab that was shown, hidden and shown again (G1)", async () => {
+    const backend = new FakeBackend();
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("session", "root", async () => true, "/files/a");
+    const events: CdpEvent[] = [];
+    const budget = { maxBytes: 64_000, maxDepth: 16, maxEntries: 1_024 };
+    router.openScriptAttachment("session", "script", "root", budget, (e) => events.push(e), {
+      connection: true,
+    });
+    try {
+      const web = (url: string) => ({ targetId: "tab-1", type: "page", openerId: "root", url });
+      backend.targetInfos.push(web("https://a.test/"));
+      backend.emit("Target.targetCreated", { targetInfo: web("https://a.test/") });
+      const { sessionId } = (await router.send("session", {
+        method: "Target.attachToTarget",
+        parameters: { targetId: "tab-1", flatten: true },
+        scriptAttachmentId: "script",
+      })) as { sessionId: string };
+      backend.emit("Target.targetInfoChanged", {
+        targetInfo: web(`chrome-extension://${"a".repeat(32)}/page.html`),
+      });
+      backend.emit("Target.targetInfoChanged", { targetInfo: web("https://b.test/") });
+      backend.emit("Target.targetCrashed", { targetId: "tab-1", status: "crashed", errorCode: 1 });
+      backend.emit("Target.targetDestroyed", { targetId: "tab-1" });
+      expect(JSON.stringify(events)).not.toContain("chrome-extension:");
+      expect(
+        events.map(({ method, parameters }) => [method, readId(parameters), parameters.sessionId]),
+      ).toEqual([
+        ["Target.targetCreated", "tab-1", undefined],
+        ["Target.targetInfoChanged", "tab-1", undefined],
+        ["Target.targetCrashed", "tab-1", undefined],
+        ["Target.targetDestroyed", "tab-1", undefined],
+        ["Target.detachedFromTarget", "tab-1", sessionId],
+      ]);
+    } finally {
+      await router.close();
+    }
+  });
+
+  it("names a hidden target in no browser-level event and in no related field (G2)", async () => {
+    const backend = new FakeBackend();
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("session", "root", async () => true, "/files/a");
+    const extensionPage = `chrome-extension://${"a".repeat(32)}/page.html`;
+    const scriptEvents: CdpEvent[] = [];
+    const budget = { maxBytes: 64_000, maxDepth: 16, maxEntries: 1_024 };
+    router.openScriptAttachment("session", "script", "root", budget, (e) => scriptEvents.push(e), {
+      connection: true,
+    });
+    const standard = router.openStandardClient("session", {
+      wholeContext: false,
+      connection: true,
+      lineage: { attachmentId: "lineage", seedTargetId: "root" },
+    });
+    const standardEvents: CdpEvent[] = [];
+    standard.onEvent((event) => standardEvents.push(event));
+    try {
+      backend.targetInfos.push({ targetId: "root", type: "page", url: "https://root.test/" });
+      await standard.send({ method: "Target.setDiscoverTargets", parameters: { discover: true } });
+      backend.emit("Target.targetCreated", {
+        targetInfo: { targetId: "ext-popup", type: "page", openerId: "root", url: extensionPage },
+      });
+      backend.emit("Browser.downloadWillBegin", {
+        frameId: "ext-popup",
+        guid: "g-1",
+        url: extensionPage,
+        suggestedFilename: "secret.txt",
+      });
+      backend.emit("Browser.someEvent", { targetId: "ext-popup" });
+      backend.emit("Target.targetCreated", {
+        targetInfo: {
+          targetId: "web-from-ext",
+          type: "page",
+          openerId: "ext-popup",
+          openerFrameId: "ext-popup",
+          canAccessOpener: true,
+          url: "https://c.test/",
+        },
+      });
+      backend.emit("Target.targetCreated", {
+        targetInfo: {
+          targetId: "frame-in-ext",
+          type: "iframe",
+          parentId: "ext-popup",
+          parentFrameId: "ext-popup",
+          url: "https://d.test/",
+        },
+      });
+      // A shown web target's own download, at a web address, still reaches both.
+      backend.emit("Browser.downloadWillBegin", {
+        frameId: "root",
+        guid: "g-2",
+        url: "https://root.test/file.txt",
+        suggestedFilename: "file.txt",
+      });
+      backend.emit("Browser.someEvent", { targetId: "root" });
+      for (const events of [scriptEvents, standardEvents]) {
+        expect(JSON.stringify(events)).not.toContain("ext-popup");
+        expect(JSON.stringify(events)).not.toContain("chrome-extension:");
+        expect(JSON.stringify(events)).not.toContain("secret.txt");
+        expect(events).toContainEqual(
+          expect.objectContaining({
+            method: "Browser.someEvent",
+            parameters: { targetId: "root" },
+          }),
+        );
+      }
+      // A script hears browser-level events by target ID only, as before; a standard client also
+      // by frame ID.
+      expect(standardEvents).toContainEqual(
+        expect.objectContaining({
+          method: "Browser.downloadWillBegin",
+          parameters: expect.objectContaining({ guid: "g-2" }),
+        }),
+      );
+      const webFromExt = scriptEvents.find(
+        ({ parameters }) => readId(parameters) === "web-from-ext",
+      );
+      expect(webFromExt?.parameters.targetInfo).toMatchObject({ canAccessOpener: false });
+    } finally {
+      standard.close();
+      await router.close();
+    }
+  });
+
   it("never tells a connection's script of another session's or another tab's target ending", async () => {
     const backend = new FakeBackend();
     const router = new SessionCdpRouter(backend);

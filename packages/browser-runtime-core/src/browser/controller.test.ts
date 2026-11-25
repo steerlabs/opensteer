@@ -882,6 +882,63 @@ describe("BrowserController", () => {
     }
   });
 
+  it("opens a connected agent's script attachment as a connection's when the Home says so (S-3)", async () => {
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+    await controller.start();
+    const surfaceId = ledger.snapshot()[0]!.id;
+    const budget = { maxBytes: 65_536, maxDepth: 16, maxEntries: 256 };
+    const reply = (requestId: string) =>
+      sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    const scriptCommand = async (
+      scriptAttachmentId: string,
+      method: string,
+      parameters: Record<string, unknown>,
+      extra: Record<string, unknown> = {},
+    ) => {
+      const requestId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId,
+        scriptAttachmentId,
+        replyBudget: budget,
+        command: { method, parameters },
+        ...extra,
+      } as BrowserClientMessage);
+      return reply(requestId);
+    };
+    try {
+      for (const connection of [true, false]) {
+        const scriptAttachmentId = randomUUID();
+        expect(
+          await scriptCommand(
+            scriptAttachmentId,
+            browserHostMethods.resumeTab,
+            { surfaceId },
+            { scriptEventBudget: budget, ...(connection ? { connection: true } : {}) },
+          ),
+        ).toMatchObject({ type: "cdp.result" });
+        // A later command that does not itself say it is a connection's is still held to a
+        // connection's rules on a connection's attachment, and only there.
+        const listed = await scriptCommand(scriptAttachmentId, "Extensions.getExtensions", {});
+        if (connection)
+          expect(listed).toMatchObject({
+            type: "cdp.error",
+            error: {
+              code: "forbidden",
+              message: expect.stringContaining("not available to a connected agent"),
+            },
+          });
+        else expect(JSON.stringify(listed)).not.toContain("not available to a connected agent");
+      }
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
   it("lists suspended tabs within a byte budget, resumes explicitly, and closes by their old target", async () => {
     const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
     await controller.start();
