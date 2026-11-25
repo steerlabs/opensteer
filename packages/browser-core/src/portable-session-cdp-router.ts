@@ -1289,7 +1289,9 @@ export class SessionCdpRouter {
             unsent: true,
           });
         }
-        void this.#endChannel(state, attached);
+        // A connection that detaches a child session (an auto-attached frame or worker) itself is
+        // told that it ended, as it is for its pages.
+        void this.#endChannel(state, attached, attached.connection);
         return {};
       }
       case "Target.setAutoAttach": {
@@ -2353,10 +2355,23 @@ export class SessionCdpRouter {
           return;
         }
         seen.add(targetId);
-      } else {
-        if (!seen.has(targetId)) return;
-        if (method === "Target.targetDestroyed") seen.delete(targetId);
-      }
+      } else if (!seen.has(targetId)) {
+        // A connection's target that was hidden when it was created (an extension page) is
+        // announced when it is first shown, so it hears that target's later end.
+        const info = asRecord(parameters.targetInfo);
+        if (
+          !state.connection ||
+          method !== "Target.targetInfoChanged" ||
+          !state.hiddenTargets.has(targetId) ||
+          isExtensionUrl(info.url) ||
+          !this.#canReach(state, targetId) ||
+          !targetMatchesFilter(info, root.discoveryFilter)
+        )
+          return;
+        seen.add(targetId);
+        method = "Target.targetCreated";
+        parameters = { targetInfo: info };
+      } else if (method === "Target.targetDestroyed") seen.delete(targetId);
     }
     this.#appendEvent(state, method, parameters, root.aliasId);
   }
@@ -2485,7 +2500,13 @@ export class SessionCdpRouter {
             const oldest = retired.keys().next().value;
             if (oldest !== undefined) retired.delete(oldest);
           }
-          void this.#endChannel(connection, attached);
+          // A connection's auto-attached child whose target the browser ended before its page
+          // said so is told now: the page's own detach then finds no child, so it is told once.
+          void this.#endChannel(
+            connection,
+            attached,
+            attached.connection && attached.parentSessionId !== undefined,
+          );
         }
       }
       if (connection.lineagePages?.delete(targetId) && connection.connection) {
