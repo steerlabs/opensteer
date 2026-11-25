@@ -62,6 +62,7 @@ export function mockScopedTask(
   lastReplyPreview: string | null,
   failurePreview: string | null,
   runs: readonly { readonly threadId: string; readonly status: string }[] = [],
+  session?: Pick<ThreadSummary, "agentSessionId" | "externalWork">,
 ) {
   const own = runs.filter(({ threadId }) => threadId === thread.id);
   return {
@@ -80,6 +81,8 @@ export function mockScopedTask(
     latestRunCompletedAt: thread.latestRunCompletedAt,
     environmentId: thread.environmentId,
     harnessInstanceId: thread.harnessInstanceId,
+    ...(session?.agentSessionId ? { agentSessionId: session.agentSessionId } : {}),
+    ...(session?.externalWork ? { externalWork: session.externalWork } : {}),
     runQueued:
       own.some(({ status }) => status === "queued") &&
       !own.some(({ status }) => status !== "queued"),
@@ -102,7 +105,7 @@ export function mockScopedShell(
   const tasks = [...threads.values()]
     .slice(0, 256)
     .map(({ thread, lastReply, failure }) =>
-      mockScopedTask(toThread(thread), revision, lastReply, failure, snapshot.runQueue),
+      mockScopedTask(toThread(thread), revision, lastReply, failure, snapshot.runQueue, thread),
     );
   const listed = new Set<string>(tasks.map(({ id }) => id));
   const activeIds = active.map(({ thread }) => thread.id).filter((id) => listed.has(id));
@@ -435,7 +438,7 @@ export function mockScopedDetail(
     ).flatMap(([kind, entries]) => (entries.length > 20 ? [[kind, `${revision}:20`]] : [])),
   );
   const snapshotThread = {
-    ...mockScopedTask(toThread(thread), revision, null, null, snapshot.runQueue),
+    ...mockScopedTask(toThread(thread), revision, null, null, snapshot.runQueue, thread),
     thread: toThread(thread),
   };
   const activeItems = [...tools, ...nodes].slice(0, 20);

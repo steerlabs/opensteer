@@ -15,6 +15,7 @@ import {
   type RequestId,
   type ThreadAccessMode,
 } from "@opensteer/core";
+import { connectedAgentsNow, sessionSlotFromHome, sessionTaskView } from "@opensteer/client/host";
 import {
   AgentConnectionStore,
   BrowserPoolAdmissionClosed,
@@ -52,6 +53,7 @@ import {
 } from "../mcp/connection-caller.test-support.js";
 import type { TabServicePort } from "../tabs/ports.js";
 import { AgentSessionService, OperationOutcomeUnknown } from "./agent-session-service.js";
+import { createPersonalReads } from "../server/personal-reads.js";
 
 type Fixture = Awaited<ReturnType<typeof createStoreFixture>>;
 const profile = createId("browserProfile") as BrowserProfileId;
@@ -1091,6 +1093,106 @@ describeStore("an external agent's direct work through sessions", (it) => {
     expect(fresh.operationId).not.toBe(first.operationId);
     expect(fresh.endpoint).not.toBe(first.endpoint);
     expect(issueTicket).toHaveBeenCalledTimes(2);
+  });
+
+  it("names the same stoppable session in the owner's task and Now while an approved call runs", async ({
+    storeFixture,
+  }) => {
+    const s = await setUp(storeFixture, "session-owner-stop", { accessMode: "approval-required" });
+    const { database, store } = storeFixture;
+    const pending = await s.ok("browser_use", script);
+    expect(pending.status).toBe("pending");
+    const threadId = ThreadIdSchema.parse(pending.taskId);
+    const requestId = pending.requestId as RequestId;
+    const request = await store.requests.get(requestId);
+    const sessionId = request?.originatingAgentSessionId;
+    if (!sessionId) throw new Error("The pending Request did not name its session");
+    const sessions = () =>
+      database
+        .selectFrom("agentSessions")
+        .select(["id", "threadId", "status"])
+        .where("connectionId", "=", s.agent.id)
+        .execute();
+    expect(await sessions()).toEqual([{ id: sessionId, threadId, status: "active" }]);
+    const revision = await store.requests.revision(requestId);
+    if (!revision) throw new Error("Missing Request revision");
+    await s.sessions.respond({
+      requestId,
+      expectedRevision: revision,
+      resolvedBy: s.f.userId,
+      response: { kind: "form", answers: { decision: ["allow"] } },
+    });
+    expect(await sessions()).toEqual([{ id: sessionId, threadId, status: "active" }]);
+
+    const held = s.holdNext();
+    const running = s.call("browser_use", { ...script, operationId: pending.operationId });
+    try {
+      await held.started;
+      expect(await sessions()).toEqual([{ id: sessionId, threadId, status: "active" }]);
+      const owner = {
+        session: {
+          id: createId("authSession"),
+          user: {
+            id: s.f.userId,
+            disabledAt: null,
+            displayName: "Owner",
+            email: "owner@example.test",
+            emailVerified: true,
+            image: null,
+          },
+        },
+        surface: "canonical",
+      } as Parameters<ReturnType<typeof createPersonalReads>["handlers"]["personal.shell.get"]>[1];
+      const { handlers } = createPersonalReads({ store } as never, {} as never);
+      const shell = await handlers["personal.shell.get"]({}, owner);
+      const detail = await handlers["thread.snapshot.get"]({ threadId }, owner);
+      const activity = await createConnectionRpcHandlers({
+        store: new AgentConnectionStore(database),
+      } as never)["threads.activity"]({ threadId }, owner);
+      if (!shell.ok || !detail.ok || !activity.ok) throw new Error("The owner's read failed");
+      const row = shell.data.tasks.find(({ id }) => id === threadId);
+      if (!row) throw new Error("The owner’s shell did not include the running task");
+      expect(shell.data.activeTaskIds).toContain(threadId);
+      expect(row).toMatchObject({
+        status: "running",
+        agentSessionId: sessionId,
+        externalWork: { sessionId },
+      });
+      expect(detail.data.thread).toMatchObject({
+        status: "running",
+        agentSessionId: sessionId,
+        externalWork: { sessionId },
+      });
+      expect(activity.data.operations).toMatchObject([
+        { id: pending.operationId, state: "handed-off" },
+      ]);
+      const now = connectedAgentsNow({
+        tasks: [{ ...row, externalWork: row.externalWork ?? null }],
+        waitingRequests: [],
+        operations: activity.data.operations,
+      });
+      expect(now.agents).toMatchObject([{ threadId, sessionId }]);
+      const view = sessionTaskView({
+        thread: detail.data.thread,
+        slot: sessionSlotFromHome(detail.data.thread.externalWork, activity.data.operations),
+      });
+      expect(view?.stop?.sessionId).toBe(sessionId);
+
+      await s.sessions.stopSession({ ownerUserId: s.f.userId, threadId, sessionId });
+      expect(await running).toMatchObject({
+        structuredContent: {
+          taskId: threadId,
+          operationId: pending.operationId,
+          status: "unknown",
+          error: { code: "stopped_by_person" },
+        },
+      });
+      expect(await sessions()).toEqual([{ id: sessionId, threadId, status: "ended" }]);
+      expect(s.runBrowserScript).toHaveBeenCalledOnce();
+    } finally {
+      held.release();
+      await running.catch(() => undefined);
+    }
   });
 
   it("resumes by operationId without a key and replays the receipt after idle and restart", async ({
