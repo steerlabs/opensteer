@@ -35,6 +35,7 @@ import type { TabActor } from "../tabs/ports.js";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import {
   TabStore,
+  storablePageUrl,
   acquireBrowserStandardCdpLease,
   admitExecution,
   listBrowserStandardCdpLeases,
@@ -4636,6 +4637,9 @@ export class BrowserService {
       return pending;
     for (const descriptor of descriptors) {
       if (this.#pendingPageCloses.get(record.id)?.has(descriptor.id)) continue;
+      // A page at an address a tab row does not keep (an extension's options page, say) is
+      // skipped: its row keeps its last web address, and the rest of the batch goes through (P4).
+      if (!storablePageUrl(descriptor.url)) continue;
       const binding: PageBinding = { lineageId, sessionId: record.id, surfaceId: descriptor.id };
       let row: TabRecord | null;
       if (descriptor.creatorAttachmentId) {
