@@ -28,7 +28,7 @@ import { createIntegrationId } from "@opensteer/integration-core";
 import { describeStore, enrollTestRunner } from "@opensteer/database/test-support/store";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import {
   AdministrationService,
   type AdministrationDependencies,
@@ -678,13 +678,14 @@ describeStore("a selected grant's listings show only what it names", (it) => {
         { kind: "plugin", target: { kind: "local-server", serverId: shown }, access: "read" },
       ],
     };
+    const listInstalled = vi.fn(async () => []);
     const plugins = new PluginToolHandlers({
       authority: new PluginAuthority({
         store: storeFixture.store,
         settings: { settings: async () => [] } as never,
         owner: async () => f.userId,
       }),
-      service: { list: async () => [] } as never,
+      service: { list: listInstalled } as never,
       localProviders: {
         providers: async () => [
           {
@@ -727,6 +728,7 @@ describeStore("a selected grant's listings show only what it names", (it) => {
       nextCursor: null,
     });
     expect(names(discovered, [hidden, "Hidden server", "hidden-server"])).toEqual([]);
+    expect(listInstalled).not.toHaveBeenCalled();
     const listed = await localServerToolHandlers(registry).local_server_list!({
       caller: {
         kind: "run",

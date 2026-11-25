@@ -26,7 +26,13 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
-import { AgentGrantSchema, createId } from "../packages/core/src/index.js";
+import {
+  AgentGrantSchema,
+  AgentOperationIdSchema,
+  createId,
+  ThreadIdSchema,
+  type ThreadId,
+} from "../packages/core/src/index.js";
 import { sql } from "kysely";
 import { expect, it, vi } from "vitest";
 import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
@@ -56,6 +62,11 @@ import {
   tabReadAuthority,
 } from "../apps/host/src/tabs/tab-authority.js";
 import { requireDeviceAccess } from "../apps/host/src/administration/device-access.js";
+import { AgentSessionService } from "../apps/host/src/agent-sessions/agent-session-service.js";
+import {
+  BrowserScriptConfinement,
+  BrowserToolHandlers,
+} from "../apps/host/src/mcp/handlers/browser.js";
 
 /** A Home and a Device with a real headless Chromium, as the browser script journeys use them. */
 async function browserUseHome() {
@@ -326,6 +337,12 @@ async function browserUseHome() {
       return;
     }
     response.setHeader("content-type", "text/html");
+    if (request.url === "/large-result") {
+      response.end(
+        `<!doctype html><title>Large result</title><body><!--${"x".repeat(410_000)}--></body>`,
+      );
+      return;
+    }
     if (request.url === "/without-heading") {
       response.end("<!doctype html><title>No heading</title><p>A paragraph.</p>");
       return;
@@ -441,6 +458,7 @@ async function browserUseHome() {
     store,
     browser,
     scripts,
+    tabs,
     tabStore,
     setBrowserAccess,
     hold,
@@ -788,6 +806,143 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         },
       },
     });
+  },
+);
+
+it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
+  "reports screenshot refusals and oversized images as failed browser-use calls",
+  async () => {
+    const { first, database, store, scripts, tabs, origin, profile } = await browserUseHome();
+    const connections = new AgentConnectionStore(database);
+    const grant = AgentGrantSchema.parse({
+      scope: "selected",
+      tasks: false,
+      resources: [{ kind: "browser-profile", profileId: profile.id }],
+    });
+    const direct = await connections.create({
+      userId: first.userId,
+      label: "Browser results",
+      clientName: "Fixture",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+      grant,
+    });
+    expect(await connections.activate(direct.id, randomUUID())).toBe(true);
+    const { grantRevision } = await database
+      .selectFrom("agentConnections")
+      .select("grantRevision")
+      .where("id", "=", direct.id)
+      .executeTakeFirstOrThrow();
+    const handlers = new BrowserToolHandlers({
+      sessions: new AgentSessionService({ store, holdMs: 0 }),
+      confinement: new BrowserScriptConfinement(),
+      scripts,
+      tabs,
+      origin: new URL(origin),
+      profiles: async () => [
+        {
+          ...profile,
+          purpose: profile.purpose ?? "person",
+          home: { runnerId: first.runnerId, name: "Browser Device" },
+        },
+      ],
+      requireDevice: (runnerId) => store.requireSelfDeviceId(runnerId),
+      issueTicket: async () => {
+        throw new Error("This fixture only uses scripts");
+      },
+    });
+    const caller = {
+      kind: "connection" as const,
+      connectionId: direct.id,
+      key: `connection:${direct.id}`,
+      userId: first.userId,
+      accessMode: "full-access" as const,
+      grantRevision,
+      grant,
+    };
+    let taskId: ThreadId | undefined;
+    const use = async (code: string) => {
+      const result = await handlers.browser_use({
+        caller,
+        input: { code, profileId: profile.id, ...(taskId ? { taskId } : {}) },
+        operationKey: randomUUID(),
+      });
+      taskId = ThreadIdSchema.parse(result.structuredContent.taskId);
+      return result;
+    };
+    const expectFailed = async (result: Awaited<ReturnType<typeof use>>, message: RegExp) => {
+      expect(result.structuredContent).toMatchObject({
+        status: "failed",
+        error: { message: expect.stringMatching(message) },
+      });
+      expect(
+        await database
+          .selectFrom("agentOperations")
+          .select(["state", "contactLostAt"])
+          .where("id", "=", AgentOperationIdSchema.parse(result.structuredContent.operationId))
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ state: "failed", contactLostAt: null });
+    };
+    expect(
+      (
+        await use(`
+      globalThis.page = await newPage(${JSON.stringify(`${origin}/large-result`)}, { profileId: ${JSON.stringify(profile.id)} });
+    `)
+      ).structuredContent,
+    ).toMatchObject({ status: "completed" });
+    const html = (bytes: number) =>
+      `await page.js("document.documentElement.outerHTML.slice(0,${bytes})")`;
+    for (const bytes of [100_000, 300_000, 400_000]) {
+      const result = await use(`return ${html(bytes)};`);
+      expect(result.structuredContent).toMatchObject({ status: "completed" });
+      const block = result.content[0];
+      expect(block?.type === "text" ? JSON.parse(block.text).length : null).toBe(bytes);
+    }
+    expect(
+      (await use("await page.screenshot()")).content.some(({ type }) => type === "image"),
+    ).toBe(true);
+    const combined = await use(`print(${html(400_000)}); await page.screenshot();`);
+    expect(combined.structuredContent).toMatchObject({ status: "completed" });
+    expect(combined.content.some(({ type }) => type === "image")).toBe(true);
+    const full = await use(
+      'await page.cdp("Page.captureScreenshot", { captureBeyondViewport: true });',
+    );
+    await expectFailed(full, /Scroll and capture each part/u);
+    expect(
+      (
+        await use(`
+      await page.evaluate(() => {
+        const canvas = document.createElement("canvas");
+        canvas.width = innerWidth;
+        canvas.height = innerHeight;
+        canvas.style.cssText = "position:fixed;inset:0";
+        document.body.append(canvas);
+        const context = canvas.getContext("2d");
+        const image = context.createImageData(canvas.width, canvas.height);
+        let bits = 983275;
+        for (let i = 0; i < image.data.length; i += 4) {
+          bits ^= bits << 13; bits ^= bits >>> 17; bits ^= bits << 5;
+          image.data[i] = bits & 255;
+          image.data[i + 1] = (bits >>> 8) & 255;
+          image.data[i + 2] = (bits >>> 16) & 255;
+          image.data[i + 3] = 255;
+        }
+        context.putImageData(image, 0, 0);
+      });
+    `)
+      ).structuredContent,
+    ).toMatchObject({ status: "completed" });
+    for (const code of [
+      "await page.screenshot();",
+      `print(${html(400_000)}); await page.screenshot();`,
+      'await page.cdp("Page.captureScreenshot", { format: "png", clip: { x: 0, y: 0, width: 600, height: 400, scale: 1 } });',
+    ]) {
+      await expectFailed(
+        await use(code),
+        /Screenshot was [0-9]+ KiB.*limit is 323 KiB.*smaller viewport clip/u,
+      );
+    }
   },
 );
 
