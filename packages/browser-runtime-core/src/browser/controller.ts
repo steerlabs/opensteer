@@ -182,6 +182,16 @@ interface ScriptRun {
 /** Agent commands whose point is where a person's pointer would be. */
 /** TS11: how long an agent's wake waits for the woken page to load. */
 const resumeLoadedMs = 15_000;
+/** The longest an agent's open holds its page waiting for the first load to settle (I). */
+const firstLoadHoldMs = 30_000;
+
+function asNavigationResult(result: unknown): { readonly errorText?: string } {
+  const errorText =
+    result !== null && typeof result === "object"
+      ? (result as { errorText?: unknown }).errorText
+      : undefined;
+  return typeof errorText === "string" && errorText ? { errorText } : {};
+}
 /** Z2: the one answer of a command a cancel ended. */
 const commandCancelled = () =>
   new BrowserRuntimeError("conflict", "The browser command was cancelled.", {
@@ -439,6 +449,8 @@ export class BrowserController {
   >();
   private readonly keyOwners = new Map<BrowserSurfaceId, string>();
   private readonly lanes = new Map<BrowserSurfaceId, BrowserInputLane>();
+  /** The relays the Home opened through this connection that have not ended (II). */
+  private readonly relays = new Set<string>();
   private readonly scriptCommands = new Map<
     string,
     {
@@ -503,9 +515,6 @@ export class BrowserController {
     });
     this.cdpRouter = options.cdpRouter;
     this.claims = options.claims;
-    // The Home's addresses as they were when it signed this attachment's ticket: a tab an agent
-    // drives may not be on one (rule 1's page rule, carried here).
-    if (options.claims.homeAddresses) this.cdpRouter.setHomeAddresses(options.claims.homeAddresses);
     this.editing =
       options.claims.editingVersion === 2 ||
       (options.claims.editingVersion === 1 && options.clipboard !== undefined);
@@ -949,6 +958,9 @@ export class BrowserController {
     );
     this.observers.clear();
     this.closed = true;
+    // The relays this Home opened end with its connection, and every page session they own (II).
+    for (const relayId of this.relays) this.cdpRouter.endRelay(this.claims.sessionId, relayId);
+    this.relays.clear();
     for (const timer of this.laneIdleTimers.values()) clearTimeout(timer);
     this.laneIdleTimers.clear();
     this.unsubscribeCdp?.();
@@ -983,10 +995,63 @@ export class BrowserController {
     }).catch(() => undefined);
   }
 
+  /**
+   * An agent's open holds its page through its real first load (I): the hold ends once that load
+   * has settled (the document loaded, the navigation failed or was refused, the tab closed), and in
+   * any case past `firstLoadHoldMs`. The agent's own hold, a channel or a script, takes over from
+   * there; a page no agent took over is no agent's.
+   */
+  private releaseAfterFirstLoad(
+    surfaceId: BrowserSurfaceId,
+    navigation: Promise<unknown>,
+    release: () => void,
+  ): void {
+    void navigation
+      .then((result) =>
+        asNavigationResult(result).errorText === undefined
+          ? this.ledger.documentLoaded(surfaceId, firstLoadHoldMs)
+          : undefined,
+      )
+      .catch(() => undefined)
+      .finally(release);
+  }
+
   private enqueue(message: BrowserClientMessage): Promise<void> {
+    // The Home's addresses are this runtime's state, applied as they arrive, ahead of any command
+    // still queued; the Home serves no agent here until it hears this revision applied (item 1).
+    if (message.type === "home.addresses") {
+      this.cdpRouter.setHomeAddresses(message.homeAddresses);
+      return this.send({ type: "home.addresses.applied", revision: message.revision });
+    }
     if (!isCdpRequest(message)) return this.enqueueCommand(message);
     if (message.command.method === browserHostMethods.cancelScriptCommand)
       return this.cancelScriptCommand(message);
+    // A relay's life on the session's root is the runtime's (II): it opens before its commands and
+    // ends in one act, ahead of any command of it still queued.
+    if (
+      message.command.method === browserHostMethods.openRelay ||
+      message.command.method === browserHostMethods.closeRelay
+    ) {
+      if (!message.relayId || message.scriptAttachmentId)
+        return this.send({
+          type: "cdp.error",
+          requestId: message.requestId,
+          error: new BrowserRuntimeError(
+            "bad_message",
+            "A relay is named by its relayId.",
+          ).toProtocolError(),
+        });
+      if (message.command.method === browserHostMethods.openRelay) {
+        if (!this.closed) {
+          this.relays.add(message.relayId);
+          this.cdpRouter.openRelay(this.claims.sessionId, message.relayId);
+        }
+      } else {
+        this.relays.delete(message.relayId);
+        this.cdpRouter.endRelay(this.claims.sessionId, message.relayId);
+      }
+      return this.send({ type: "cdp.result", requestId: message.requestId, result: {} });
+    }
     // An open, and a wake that waits for its page (V3), are cancellable without an attachment.
     if (
       !message.replyBudget ||
@@ -1607,6 +1672,7 @@ export class BrowserController {
                 this.claims.sessionId,
                 sessionId,
                 message.scriptAttachmentId,
+                message.relayId,
               );
         return targetId ? (this.ledger.surfaceIdForTarget(targetId) ?? null) : null;
       }
@@ -1838,6 +1904,7 @@ export class BrowserController {
               this.claims.sessionId,
               message.command.sessionId,
               message.scriptAttachmentId,
+              message.relayId,
             );
       if (!params.success || !targetId || this.#onPageHiddenFromAgent(message, targetId))
         throw new BrowserRuntimeError(
@@ -1868,6 +1935,7 @@ export class BrowserController {
               this.claims.sessionId,
               message.command.sessionId,
               message.scriptAttachmentId,
+              message.relayId,
             );
       if (!params.success || !targetId || this.#onPageHiddenFromAgent(message, targetId)) {
         throw new BrowserRuntimeError(
@@ -3562,8 +3630,6 @@ export class BrowserController {
   private async dispatchAgentCommand(
     message: Extract<BrowserClientMessage, { type: "cdp.command" }>,
   ): Promise<void> {
-    // An agent's attach brings this Home's addresses as they are now (B1).
-    if (message.homeAddresses) this.cdpRouter.setHomeAddresses(message.homeAddresses);
     this.cursorAgentCommands++;
     for (const entry of this.cursorHints.values()) entry.hints.invalidate();
     const finish = this.clipboard?.agentStarted();
@@ -3602,6 +3668,7 @@ export class BrowserController {
       ...(message.scriptAttachmentId ? { scriptAttachmentId: message.scriptAttachmentId } : {}),
       ...(message.connection ? { connection: true as const } : {}),
       ...(message.manageExtensions ? { manageExtensions: true as const } : {}),
+      ...(message.relayId ? { relayId: message.relayId } : {}),
       ...(requested.parameters === undefined ? {} : { parameters: requested.parameters }),
       ...(requested.sessionId === undefined ? {} : { sessionId: requested.sessionId }),
     };
@@ -3612,6 +3679,7 @@ export class BrowserController {
             this.claims.sessionId,
             command.sessionId,
             command.scriptAttachmentId,
+            command.relayId,
           );
     const pageSurfaceId = pageTargetId ? this.ledger.surfaceIdForTarget(pageTargetId) : undefined;
     const navigation = async <T>(send: () => Promise<T>): Promise<T> => {
@@ -3676,7 +3744,12 @@ export class BrowserController {
       this.cdpRouter.send(
         this.claims.sessionId,
         tabUrl
-          ? { ...command, parameters: { ...command.parameters, url: "about:blank" } }
+          ? {
+              ...command,
+              parameters: { ...command.parameters, url: "about:blank" },
+              // One hold from this create call through the real first load below (I, item 2).
+              openThenLoad: true as const,
+            }
           : command,
         agentActivity,
       );
@@ -3723,15 +3796,24 @@ export class BrowserController {
     }
     if (command.method === "Target.createTarget") {
       const targetId = targetIdFromResult(result);
-      if (targetId && (await this.ledger.adoptTarget(targetId))) {
-        this.ledger.recordAgentCommand(targetId);
-        const surfaceId = this.ledger.surfaceIdForTarget(targetId);
-        const binding = surfaceId ? this.ledger.binding(surfaceId) : null;
-        // As CDP's own createTarget does, the tab loads in the background; a
-        // failed load stays visible in the tab.
-        if (tabUrl && binding) {
-          void binding.cdp.send("Page.navigate", { url: tabUrl }).catch(() => undefined);
+      // The hold the router kept from the create call, on the session's root (item 2).
+      let release = targetId && tabUrl ? this.cdpRouter.takeOpenHold(targetId) : undefined;
+      try {
+        if (targetId && (await this.ledger.adoptTarget(targetId))) {
+          this.ledger.recordAgentCommand(targetId);
+          const surfaceId = this.ledger.surfaceIdForTarget(targetId);
+          const binding = surfaceId ? this.ledger.binding(surfaceId) : null;
+          // As CDP's own createTarget does, the tab loads in the background; a
+          // failed load stays visible in the tab.
+          if (tabUrl && binding && surfaceId) {
+            const navigation = this.ledger.navigate(surfaceId, tabUrl);
+            void navigation.catch(() => undefined);
+            if (release) this.releaseAfterFirstLoad(surfaceId, navigation, release);
+            release = undefined;
+          }
         }
+      } finally {
+        release?.();
       }
     }
     const createdTargetId =
@@ -4294,7 +4376,7 @@ export class BrowserController {
             release?.();
             throw error;
           }
-          if (release) void navigation.then(release, release);
+          if (release) this.releaseAfterFirstLoad(tabId, navigation, release);
           if (message.replyBudget) {
             // Stop during the first load stops the load.
             const stop = () => void binding.cdp.send("Page.stopLoading").catch(() => undefined);

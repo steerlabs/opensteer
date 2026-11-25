@@ -6401,6 +6401,8 @@ async function startFakeRuntime(
     readonly core?: { runtime: BrowserRuntime; verifier: FakeTicketVerifier; sink: FakeSink };
     readonly beforeInitialSnapshot?: readonly Record<string, unknown>[];
     readonly deferInitialSnapshot?: boolean;
+    /** The test answers `home.addresses` itself, when it chooses (item 1). */
+    readonly manualAddresses?: boolean;
     readonly initialTabCount?: number;
     readonly initialDialog?: Record<string, unknown> | null;
     readonly inputLanes?: boolean;
@@ -6648,6 +6650,23 @@ async function startFakeRuntime(
       if (isBinary) return;
       const command = JSON.parse(raw.toString()) as Record<string, unknown>;
       receivedCommands.push(command);
+      // A runtime answers the Home's own state messages at once, as the real one does: its
+      // addresses (item 1) and a relay's opening and end (II).
+      if (command.type === "home.addresses" && !options.manualAddresses) {
+        socket.send(JSON.stringify({ type: "home.addresses.applied", revision: command.revision }));
+        return;
+      }
+      const relayMethod = (command.command as { method?: unknown } | undefined)?.method;
+      if (
+        command.type === "cdp.command" &&
+        (relayMethod === browserHostMethods.openRelay ||
+          relayMethod === browserHostMethods.closeRelay)
+      ) {
+        socket.send(
+          JSON.stringify({ type: "cdp.result", requestId: command.requestId, result: {} }),
+        );
+        return;
+      }
       const waiter = waiters.shift();
       if (waiter) waiter(command);
       else commands.push(command);
@@ -9196,7 +9215,152 @@ it.each([
   },
 );
 
-it("records no popup of a task's tab on an address of this Home for the task, and closes it (B3)", async () => {
+it("records no popup of a tab a Run holds on an address of this Home for the task, and closes it; once the Run ends, closes none (B3, item 6)", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+  const ownerId = createId("user");
+  const repository = new MemoryBrowserRepository(ownerId);
+  const memory = memoryTabs();
+  vi.spyOn(repository, "listBrowserSessionViewers").mockResolvedValue({ userIds: [ownerId] });
+  const service = new BrowserService({
+    ...nativeProfileOptions(),
+    ...profileStateOptions,
+    repository,
+    signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
+    targetResolver: runnerTarget({ url: runtime.url, tabRestoreVersion: true }),
+    tabs: memory.store,
+    tabPlaces: { write: async () => false, notice: () => {} },
+    homeAddresses: () =>
+      new ThisHomeAddressSet({ origins: ["https://home.example.com"], loopbackPorts: [4310] }),
+  });
+  cleanups.push(() => service.close());
+  const taskId = createId("thread");
+  const descriptor = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "opener",
+  );
+  await memory.add({ ...descriptor, openedBy: { taskId } });
+  const opener = descriptor.id;
+  const row = (id: string, url: string, order: number) =>
+    BrowserTabRecordSchema.parse({
+      id,
+      state: "live",
+      title: id,
+      url,
+      icon: null,
+      order,
+      openerId: opener,
+      documentId: `document-${id}`,
+      geometryRevision: 0,
+      loading: false,
+      navigationFailed: false,
+      canGoBack: false,
+      canGoForward: false,
+      sizedByAgent: false,
+    });
+  const closes: string[] = [];
+  void (async () => {
+    for (;;) {
+      const command = (await runtime.nextCommand()) as {
+        type?: unknown;
+        requestId?: unknown;
+        command?: { method?: unknown; parameters?: Record<string, unknown> };
+      };
+      if (command.type !== "cdp.command") continue;
+      const closing = command.command?.method === browserHostMethods.closeTab;
+      if (closing) closes.push(String(command.command?.parameters?.surfaceId));
+      runtime.sendServer({
+        type: "cdp.result",
+        requestId: command.requestId,
+        result: closing ? { outcome: "tab-closed" } : {},
+      });
+    }
+  })().catch(() => undefined);
+  runtime.sendServer({ type: "browser.tabs", stream: { op: "begin", generation: "popups" } });
+  runtime.sendServer({
+    type: "browser.tabs",
+    stream: { op: "end", revision: 1, count: 0, meta: { activeId: null, inventoryRevision: 1 } },
+  });
+  runtime.sendServer({ type: "browser.tabs", stream: { op: "begin", generation: "popups" } });
+  runtime.sendServer({
+    type: "browser.tabs",
+    stream: { op: "end", revision: 1, count: 0, meta: { activeId: null, inventoryRevision: 1 } },
+  });
+  // A Run of the task holds the tab now: its popups are the Run's (item 6 asks this, not who
+  // opened the tab once).
+  const runId = createId("run");
+  repository.resolveResourceAccess = async () => ({
+    access: "read-write",
+    runAccess: "read-write",
+    grantAccess: "read-write",
+    execution: {
+      ownerUserId: ownerId,
+      subject: { kind: "binding", bindingId: `run:${runId}` },
+      actor: "native",
+      threadId: taskId,
+      runId,
+      agentConnection: null,
+      taskMode: "full-access",
+      runMode: "full-access",
+      mode: "full-access",
+    },
+  });
+  await service.bindPage(
+    {
+      requestedBy: ownerId,
+      runId,
+      threadId: taskId,
+    } as unknown as import("../agents/run-tool-tokens.js").RunToolScope,
+    memory.rows.get(opener)!,
+  );
+  runtime.sendServer({
+    type: "browser.tabs",
+    stream: {
+      op: "change",
+      generation: "popups",
+      base: 1,
+      revision: 2,
+      add: [
+        row("page-home", "http://127.0.0.1:4310/settings", 10),
+        row("page-web", "https://popup.test/", 11),
+      ],
+    },
+  });
+  // The rows reach the session's inventory first; a flush then writes their descriptors.
+  await vi.waitFor(() =>
+    expect(service.pageInventory(descriptor.pageBinding!.sessionId)?.records.size).toBe(2),
+  );
+  await service.flushPendingTabDescriptors();
+  await vi.waitFor(() => expect(memory.rows.has("page-web")).toBe(true), { timeout: 3000 });
+  // While the Run holds the tab, its popup on the Home is neither the task's tab nor kept open.
+  expect(memory.rows.has("page-home")).toBe(false);
+  expect(memory.rows.get("page-web")?.openedBy).toEqual({ taskId });
+  await vi.waitFor(() => expect(closes).toContain("page-home"), { timeout: 3000 });
+  // The Run ends: the tab is no agent's now, whoever opened it, and its popup on the Home is the
+  // person's, and stays (item 6).
+  await service.detachAgentSessionsForBinding(`run:${runId}`);
+  runtime.sendServer({
+    type: "browser.tabs",
+    stream: {
+      op: "change",
+      generation: "popups",
+      base: 2,
+      revision: 3,
+      add: [row("page-person-home", "https://home.example.com/", 12)],
+    },
+  });
+  await vi.waitFor(() =>
+    expect(service.pageInventory(descriptor.pageBinding!.sessionId)?.records.size).toBe(3),
+  );
+  await service.flushPendingTabDescriptors();
+  await vi.waitFor(() => expect(memory.rows.has("page-person-home")).toBe(true), {
+    timeout: 6000,
+  });
+  expect(closes).not.toContain("page-person-home");
+});
+
+it("closes no popup the person opens from a tab a task opened once, after that task let it go (item 6)", async () => {
   const keys = generateKeyPairSync("ed25519");
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
   const ownerId = createId("user");
@@ -9270,42 +9434,17 @@ it("records no popup of a task's tab on an address of this Home for the task, an
       generation: "popups",
       base: 1,
       revision: 2,
-      add: [
-        row("page-home", "http://127.0.0.1:4310/settings", 10),
-        row("page-web", "https://popup.test/", 11),
-      ],
+      add: [row("page-home", "http://127.0.0.1:4310/settings", 10)],
     },
   });
-  // The rows reach the session's inventory first; a flush then writes their descriptors.
+  // No Run holds the task's tab any more (its binding ended): the page's popup is the person's.
   await vi.waitFor(() =>
-    expect(service.pageInventory(descriptor.pageBinding!.sessionId)?.records.size).toBe(2),
+    expect(service.pageInventory(descriptor.pageBinding!.sessionId)?.records.size).toBe(1),
   );
   await service.flushPendingTabDescriptors();
-  await vi.waitFor(() => expect(memory.rows.has("page-web")).toBe(true), { timeout: 3000 });
-  // The task's popup on the Home is neither the task's tab nor kept open.
-  expect(memory.rows.has("page-home")).toBe(false);
-  expect(memory.rows.get("page-web")?.openedBy).toEqual({ taskId });
-  await vi.waitFor(() => expect(closes).toContain("page-home"), { timeout: 3000 });
-  // A popup of the person's own tab on the Home is the person's, and stays.
-  memory.rows.get(opener)!.openedBy = "person";
-  runtime.sendServer({
-    type: "browser.tabs",
-    stream: {
-      op: "change",
-      generation: "popups",
-      base: 2,
-      revision: 3,
-      add: [row("page-person-home", "https://home.example.com/", 12)],
-    },
-  });
-  await vi.waitFor(() =>
-    expect(service.pageInventory(descriptor.pageBinding!.sessionId)?.records.size).toBe(3),
-  );
-  await service.flushPendingTabDescriptors();
-  await vi.waitFor(() => expect(memory.rows.get("page-person-home")?.openedBy).toBe("person"), {
-    timeout: 6000,
-  });
-  expect(closes).not.toContain("page-person-home");
+  // Recorded, not closed: the close would have come before any record of it.
+  await vi.waitFor(() => expect(memory.rows.has("page-home")).toBe(true), { timeout: 3000 });
+  expect(closes).not.toContain("page-home");
 });
 
 function memoryTabs() {
@@ -11854,111 +11993,140 @@ describe("work under a connection's authority never uses the clipboard or change
     }
   });
 
-  it("ends every agent's attachment when this Home's addresses change, and an agent's next attach brings the new set (B1)", async () => {
-    const ownerId = createId("user");
-    const repository = new MemoryBrowserRepository(ownerId);
-    const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-    let home = new ThisHomeAddressSet({
-      origins: ["http://127.0.0.1:4310"],
-      loopbackPorts: [4310],
-    });
-    const service = freshService({
-      keys,
-      runtime,
-      repository,
-      actorClaim: true,
-      homeAddresses: () => home,
-    });
-    cleanups.push(async () => service.close());
-    const profile = await repository.createBrowserProfile({ ownerId, name: "Route Profile" });
-    const agent = { agentBindingId: `run:${createId("run")}`, ownerId };
-    repository.resolveResourceAccess = async () => ({
-      access: "read-write",
-      runAccess: "read-write",
-      grantAccess: "read-write",
-      execution: {
-        ownerUserId: ownerId,
-        subject: { kind: "binding", bindingId: agent.agentBindingId },
-        actor: "native",
-        threadId: createId("thread"),
-        runId: createId("run"),
-        agentConnection: null,
-        taskMode: "full-access",
-        runMode: "full-access",
-        mode: "full-access",
-      },
-    });
-    const opened = await service.openAgentSession({ ...agent, profileId: profile.id });
-    const attach = async () => {
-      let closed = false;
-      const attached = await service.attachCdpForAgent(
-        { ...agent, sessionId: opened.session.id },
-        () => undefined,
-        () => {
-          closed = true;
+  describe("a browser runtime holds this Home's addresses and owns a relay's page sessions (items 1, 5)", () => {
+    const setup = async (manualAddresses = false) => {
+      const ownerId = createId("user");
+      const repository = new MemoryBrowserRepository(ownerId);
+      const keys = generateKeyPairSync("ed25519");
+      const runtime = await startFakeRuntime(keys.publicKey, "host-primary", { manualAddresses });
+      const book = {
+        set: new ThisHomeAddressSet({ origins: ["http://127.0.0.1:4310"], loopbackPorts: [4310] }),
+      };
+      const service = freshService({
+        keys,
+        runtime,
+        repository,
+        actorClaim: true,
+        homeAddresses: () => book.set,
+      });
+      cleanups.push(async () => service.close());
+      const profile = await repository.createBrowserProfile({ ownerId, name: "Route Profile" });
+      const agent = { agentBindingId: `run:${createId("run")}`, ownerId };
+      repository.resolveResourceAccess = async () => ({
+        access: "read-write",
+        runAccess: "read-write",
+        grantAccess: "read-write",
+        execution: {
+          ownerUserId: ownerId,
+          subject: { kind: "binding", bindingId: agent.agentBindingId },
+          actor: "native",
+          threadId: createId("thread"),
+          runId: createId("run"),
+          agentConnection: null,
+          taskMode: "full-access",
+          runMode: "full-access",
+          mode: "full-access",
         },
-      );
-      return { attached, closed: () => closed };
+      });
+      const opened = await service.openAgentSession({ ...agent, profileId: profile.id });
+      const attach = () =>
+        service.attachCdpForAgent(
+          { ...agent, sessionId: opened.session.id },
+          () => undefined,
+          () => undefined,
+        );
+      const next = async (type: string) => {
+        for (;;) {
+          const command = await runtime.nextCommand();
+          if (command.type === type) return command;
+        }
+      };
+      return { runtime, service, book, attach, next, agent };
     };
-    const forwarded = async (method: string, attached: Awaited<ReturnType<typeof attach>>) => {
-      void attached.attached
-        .request({ method, parameters: { targetId: "page-1", flatten: true } })
-        .catch(() => undefined);
-      for (;;) {
-        const command = await runtime.nextCommand();
-        if (command.type === "cdp.command") return command;
-      }
-    };
-    const first = await attach();
-    const attaching = first.attached.request({
-      method: "Target.attachToTarget",
-      parameters: { targetId: "page-1", flatten: true },
+
+    it("relays no agent's command until the runtime has applied the Home's current addresses (item 1)", async () => {
+      const { runtime, service, book, attach, next } = await setup(true);
+      const applied = (command: Record<string, unknown>) =>
+        runtime.sendServer({ type: "home.addresses.applied", revision: command.revision });
+      // The runtime is told the set as it becomes ready.
+      const ready = await next("home.addresses");
+      expect(ready.homeAddresses).toEqual(book.set.toJSON());
+      applied(ready);
+      const relay = await attach();
+      // The person turns Remote access on, on a warm browser: the runtime is told before the
+      // route takes effect, and an agent's wake waits for its answer.
+      book.set = new ThisHomeAddressSet({
+        origins: ["http://127.0.0.1:4310", "https://route.opensteer.test"],
+        loopbackPorts: [4310],
+      });
+      const pushed = service.pushHomeAddresses();
+      const told = await next("home.addresses");
+      expect(told.homeAddresses).toEqual(book.set.toJSON());
+      const waking = relay.request({
+        method: "Target.attachToTarget",
+        parameters: { targetId: "page-1", flatten: true },
+      });
+      void waking.catch(() => undefined);
+      for (let turn = 0; turn < 10; turn += 1) await new Promise((done) => setImmediate(done));
+      expect(
+        runtime
+          .receivedCommands()
+          .filter(
+            (command) =>
+              command.type === "cdp.command" &&
+              (command.command as { method: string }).method === "Target.attachToTarget",
+          ),
+      ).toEqual([]);
+      applied(told);
+      await pushed;
+      const attachCommand = await next("cdp.command");
+      expect((attachCommand.command as { method: string }).method).toBe("Target.attachToTarget");
+      // No command carries the set any more: it is the runtime's own.
+      expect(attachCommand).not.toHaveProperty("homeAddresses");
+      runtime.sendServer({ type: "cdp.result", requestId: attachCommand.requestId, result: {} });
+      await waking;
     });
-    let attachCommand: Record<string, unknown>;
-    for (;;) {
-      attachCommand = await runtime.nextCommand();
-      if (attachCommand.type === "cdp.command") break;
-    }
-    expect(attachCommand.homeAddresses).toEqual(home.toJSON());
-    runtime.sendServer({
-      type: "cdp.result",
-      requestId: attachCommand.requestId,
-      result: { sessionId: "cdp-old" },
+
+    it("opens a relay in its runtime, names it on every command, and ends it there with the Run (item 5)", async () => {
+      const { runtime, service, attach, next, agent } = await setup();
+      const relay = await attach();
+      const relayCommands = (method: string) =>
+        runtime
+          .receivedCommands()
+          .filter(
+            (command) =>
+              command.type === "cdp.command" &&
+              (command.command as { method: string }).method === method,
+          );
+      await vi.waitFor(() => expect(relayCommands(browserHostMethods.openRelay)).toHaveLength(1));
+      const relayId = relayCommands(browserHostMethods.openRelay)[0]!.relayId;
+      expect(typeof relayId).toBe("string");
+      // A session the relay names is checked against it in the runtime, which answers for it: the
+      // Home keeps no list of them.
+      const sending = relay.request({
+        method: "Runtime.evaluate",
+        parameters: { expression: "1" },
+        sessionId: "another-relays-session",
+      });
+      void sending.catch(() => undefined);
+      const forwarded = await next("cdp.command");
+      expect(forwarded.relayId).toBe(relayId);
+      runtime.sendServer({
+        type: "cdp.error",
+        requestId: forwarded.requestId,
+        error: {
+          code: "not_found",
+          message: "CDP session is not attached here.",
+          retryable: false,
+          unsent: true,
+        },
+      });
+      await expect(sending).rejects.toMatchObject({ code: "not_found" });
+      // The Run ends: its relay ends in its runtime in one act, pending attaches included.
+      await service.detachAgentSessionsForBinding(agent.agentBindingId);
+      await vi.waitFor(() => expect(relayCommands(browserHostMethods.closeRelay)).toHaveLength(1));
+      expect(relayCommands(browserHostMethods.closeRelay)[0]!.relayId).toBe(relayId);
     });
-    await attaching;
-    const other = await forwarded("Runtime.evaluate", first);
-    expect(other.homeAddresses).toBeUndefined();
-    // The person turns Remote access on: the set changes, and the agent's attachment ends, its
-    // page sessions ended in the browser too (M5).
-    home = new ThisHomeAddressSet({
-      origins: ["http://127.0.0.1:4310", "https://route.opensteer.test"],
-      loopbackPorts: [4310],
-    });
-    service.endAgentAttachments("This browser attachment has ended.");
-    await vi.waitFor(() => expect(first.closed()).toBe(true));
-    let detach: Record<string, unknown>;
-    for (;;) {
-      detach = await runtime.nextCommand();
-      if (detach.type === "cdp.command") break;
-    }
-    runtime.sendServer({ type: "cdp.result", requestId: detach.requestId, result: {} });
-    expect(detach.command).toEqual({
-      method: "Target.detachFromTarget",
-      parameters: { sessionId: "cdp-old" },
-    });
-    const again = await attach();
-    // The old page session is no page session of the new attachment: refused before the browser.
-    const before = runtime.receivedCommands().length;
-    await expect(
-      again.attached.request({
-        method: "Page.navigate",
-        parameters: { url: "https://route.opensteer.test/" },
-        sessionId: "cdp-old",
-      }),
-    ).rejects.toMatchObject({ code: "not_found", message: "CDP session is not attached here." });
-    expect(runtime.receivedCommands()).toHaveLength(before);
-    expect((await forwarded("Target.attachToTarget", again)).homeAddresses).toEqual(home.toJSON());
   });
 
   it("delivers nothing to a connection's shared-root attachment after its Disconnect or its binding's end", async () => {

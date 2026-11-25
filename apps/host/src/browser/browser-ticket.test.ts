@@ -4,7 +4,7 @@ import {
   createBrowserSessionId,
 } from "@opensteer/protocol/browser";
 import { generateKeyPairSync, randomUUID, verify } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { BrowserAttachTicketSigner } from "./browser-ticket.js";
 
 describe("BrowserAttachTicketSigner", () => {
@@ -52,47 +52,6 @@ describe("BrowserAttachTicketSigner", () => {
       );
     expect(claimsOf("agent")).toMatchObject({ creationOrigin: "person", actor: "agent" });
     expect(claimsOf()).not.toHaveProperty("actor");
-  });
-  it("carries this Home's addresses only beside the actor claim, read from memory at issue", () => {
-    const keys = generateKeyPairSync("ed25519");
-    let home = { origins: ["https://home.example.com"], loopbackPorts: [4310] };
-    const supplier = vi.fn(() => home);
-    const signer = new BrowserAttachTicketSigner({
-      keyId: "home",
-      privateKey: keys.privateKey,
-      homeAddresses: supplier,
-    });
-    const claimsOf = (actor?: "agent" | "person") =>
-      BrowserAttachTicketClaimsSchema.parse(
-        JSON.parse(
-          Buffer.from(
-            signer
-              .issue({
-                creationOrigin: "agent",
-                ...(actor ? { actor } : {}),
-                access: "read-write",
-                identity: { kind: "fresh" },
-                runtimeId: "browser",
-                sessionId: createBrowserSessionId(),
-                subject: "usr_owner",
-              })
-              .split(".")[1]!,
-            "base64url",
-          ).toString(),
-        ),
-      );
-    expect(claimsOf("agent").homeAddresses).toEqual(home);
-    expect(claimsOf("person").homeAddresses).toEqual(home);
-    // A phone browser reads neither the actor claim nor this one, and refuses a claim it does not
-    // know: it is never given it.
-    expect(claimsOf()).not.toHaveProperty("homeAddresses");
-    // A ticket without the actor claim never asks for the set (B4).
-    supplier.mockClear();
-    claimsOf();
-    expect(supplier).not.toHaveBeenCalled();
-    // The set as it is when the ticket is issued.
-    home = { origins: ["https://home.example.com", "https://route.test"], loopbackPorts: [4310] };
-    expect(claimsOf("agent").homeAddresses).toEqual(home);
   });
   it("binds initial navigation to the signed ticket", () => {
     const keys = generateKeyPairSync("ed25519");

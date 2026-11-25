@@ -237,13 +237,6 @@ export const BrowserAttachTicketClaimsSchema = z
      */
     personFillVersion: PersonFillVersionSchema.optional(),
     initialSurfaceId: BrowserSurfaceIdSchema.optional(),
-    /**
-     * The addresses of this Home as they are when the ticket is issued (`ThisHomeAddresses`): a
-     * tab an agent drives may not be on one (rule 1, `authorizePageAddress`). The runtime keeps
-     * the latest it was given; a route that changes while a channel is open is covered at the
-     * next attach, since no channel pushes it.
-     */
-    homeAddresses: BrowserHomeAddressesSchema.optional(),
     expiresAt: IsoDateTimeSchema,
     identity: BrowserAttachTicketIdentitySchema,
     issuedAt: IsoDateTimeSchema,
@@ -796,13 +789,25 @@ const BaselineBrowserClientMessageSchema = z
       /** Host-only attribution for Page.navigate and Opensteer.openTab. */
       navigationId: z.uuid().optional(),
       /**
-       * Host-only: this Home's addresses as they are now, on an agent's command that attaches a
-       * page (`Opensteer.resumeTab`, `Target.attachToTarget`, `Target.createTarget`), sent to a
-       * runtime that reads the actor claim. An agent whose attachments the Home ended when the
-       * set changed brings the new set with its next attach (B1).
+       * Host-only: the agent's relay this command is part of, on a session's root. The page
+       * sessions it opens are the relay's own in the runtime: no other relay names them, and
+       * `Opensteer.closeRelay` with this id ends every one of them, attaches still pending
+       * included.
        */
-      homeAddresses: BrowserHomeAddressesSchema.optional(),
+      relayId: z.uuid().optional(),
       type: z.literal("cdp.command"),
+    }),
+    /**
+     * Host-only. This Home's addresses (`ThisHomeAddresses`), the runtime's own state from now on:
+     * sent when the runtime is ready and again before a route change takes effect. The runtime
+     * answers `home.addresses.applied` with the same revision once every page is held to it; the
+     * Home relays no agent's work to a runtime that has not answered the current revision.
+     */
+    z.strictObject({
+      ...browserBase,
+      homeAddresses: BrowserHomeAddressesSchema,
+      revision: z.number().int().positive(),
+      type: z.literal("home.addresses"),
     }),
     /**
      * Host-only; the Host never relays it from a viewer or an agent. Replaces
@@ -1179,6 +1184,11 @@ const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...browserBase,
+    revision: z.number().int().positive(),
+    type: z.literal("home.addresses.applied"),
+  }),
+  z.strictObject({
+    ...browserBase,
     passwords: PasswordSignInAvailabilitySchema,
     probeId: z.uuid(),
     type: z.literal("signin.probe.result"),
@@ -1447,6 +1457,10 @@ export const browserHostMethods = {
   contextCandidate: "Opensteer.contextCandidate",
   closeScriptAttachment: "Opensteer.closeScriptAttachment",
   cancelScriptCommand: "Opensteer.cancelScriptCommand",
+  /** Host-only: an agent's relay opens on the session's root (`relayId`), before its commands. */
+  openRelay: "Opensteer.openRelay",
+  /** Host-only: an agent's relay ended; its page sessions end with it (`relayId`). */
+  closeRelay: "Opensteer.closeRelay",
 } as const;
 export const TargetedBrowserClientMessageSchema = BrowserClientMessageSchema.superRefine(
   (message, context) => {

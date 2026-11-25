@@ -18,6 +18,7 @@ import { ConnectionExtensionIsolation, isExtensionUrl } from "./connection-exten
 import {
   ThisHomeAddressSet,
   isHomeCookieName,
+  withoutHomeCookies,
   isLoopbackUrl,
   noHomeAddresses,
   type ThisHomeAddresses,
@@ -78,6 +79,18 @@ export interface CdpCommand {
    * extensions (`Extensions.loadUnpacked`, `Extensions.uninstall`). Never defaulted on.
    */
   readonly manageExtensions?: true;
+  /**
+   * The relay (a Run's or a connection's CDP over the Home) whose command this is, on a session's
+   * root. The page sessions it opens are its own: no other relay's command names them, and ending
+   * the relay ends them all here, attaches still pending included (II).
+   */
+  readonly relayId?: string;
+  /**
+   * The caller creates this page blank and loads its URL next itself: the router keeps the
+   * agent's open hold past the blank load, for the caller to take (`takeOpenHold`) and release
+   * when the real first load has settled (I).
+   */
+  readonly openThenLoad?: true;
 }
 
 export interface CdpEvent {
@@ -189,6 +202,8 @@ export class SessionCdpRouterError extends Error {
 
 interface AttachedChannel {
   readonly channel: CdpChannel;
+  /** On a session's root: the relay whose page session this is (II). */
+  owner?: string;
   /**
    * Popups of pages this channel holds, on a session root (which outlives every agent): held by
    * this channel, so they end with it (M1).
@@ -235,6 +250,11 @@ interface DiscoveryReplay {
 
 interface BrowserSessionState {
   readonly connections: Set<ConnectionState>;
+  /**
+   * The relays open on this session's root (II), from `openRelay` to `endRelay`: a page session
+   * there is opened and named only by the live relay that owns it. Nothing is kept once one ends.
+   */
+  readonly liveRelays: Set<string>;
   readonly scripts: Map<string, ConnectionState>;
   readonly adopting: Set<string>;
   readonly exclusiveWorkers: Set<string>;
@@ -314,32 +334,164 @@ interface ConnectionState extends TargetRoot {
 
 const standardJsonBudget = { maxBytes: Infinity, maxDepth: 32, maxEntries: 16_384 };
 
-const cookieReads = new Set(["Network.getCookies", "Network.getAllCookies", "Storage.getCookies"]);
+/**
+ * Every CDP reply and event that can carry a cookie's value (M4, item 7): the cookie reads, a
+ * request's or response's headers (raw text included), a WebSocket handshake's, an intercepted
+ * request's, and a cookie issue's raw line. `homeCookieCarriers.test.ts` walks this list. Nothing
+ * else carries one: the Home's session cookie is HttpOnly, so no script reads it.
+ */
+export const homeCookieCarriers: ReadonlySet<string> = new Set([
+  "Network.getCookies",
+  "Network.getAllCookies",
+  "Storage.getCookies",
+  "Page.getCookies",
+  "Network.loadNetworkResource",
+  "Network.requestWillBeSent",
+  "Network.requestWillBeSentExtraInfo",
+  "Network.responseReceived",
+  "Network.responseReceivedExtraInfo",
+  "Network.responseReceivedEarlyHints",
+  "Network.webSocketWillSendHandshakeRequest",
+  "Network.webSocketHandshakeResponseReceived",
+  "Network.requestIntercepted",
+  "Fetch.requestPaused",
+  "Fetch.authRequired",
+  "Audits.issueAdded",
+]);
+/** What a relay opens or names a page session with. */
+const relayOpeners = new Set([
+  "Target.attachToTarget",
+  "Target.createTarget",
+  "Target.sendMessageToTarget",
+  "Target.setAutoAttach",
+]);
 
 /**
- * An agent's cookie read never returns the Home's own cookies (M4): on a Mac they are kept for the
- * loopback host, so a page on any loopback port reads them as its own; on the Home's own
- * addresses they are the person's sign-in. Other cookies are the page's, as before.
+ * The one place an agent's CDP reply or event loses the Home's own cookies, whoever the agent is
+ * (a Run's script or relay, a connected agent's standard CDP, a shared Chrome tab), with or
+ * without a page session: on a Mac they are kept for the loopback host, so a page on any loopback
+ * port would read them as its own; on the Home's own addresses they are the person's sign-in.
+ * A cookie object goes when it is named as one and kept for loopback or a Home host; a header or
+ * cookie line (which names no host) loses every cookie named as the Home's. Other cookies stay.
  */
-function withoutHomeCookieReads(
+export function withoutHomeCookieValues(
   method: string,
-  result: unknown,
+  value: unknown,
   home: ThisHomeAddressSet,
 ): unknown {
-  if (!cookieReads.has(method)) return result;
-  const cookies = asRecord(result).cookies;
-  if (!Array.isArray(cookies)) return result;
-  const kept = cookies.filter((cookie) => {
-    const { name, domain } = asRecord(cookie);
-    if (typeof name !== "string" || !isHomeCookieName(name)) return true;
-    const host = typeof domain === "string" ? domain.replace(/^\./u, "") : "";
-    // A cookie names a host, never a port.
-    return !(
-      isLoopbackUrl(`http://${host}/`) ||
-      home.origins.some((origin) => new URL(origin).hostname === host.replace(/\.$/u, ""))
-    );
-  });
-  return kept.length === cookies.length ? result : { ...asRecord(result), cookies: kept };
+  if (!homeCookieCarriers.has(method)) return value;
+  return scrubCookies(value, home, 0);
+}
+
+function scrubCookies(value: unknown, home: ThisHomeAddressSet, depth: number): unknown {
+  if (depth > 12 || value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    let changed = false;
+    const kept: unknown[] = [];
+    for (const entry of value) {
+      if (isHomeCookieEntry(entry, home)) {
+        changed = true;
+        continue;
+      }
+      const next = scrubHeaderEntry(entry) ?? scrubCookies(entry, home, depth + 1);
+      if (next !== entry) changed = true;
+      kept.push(next);
+    }
+    return changed ? kept : value;
+  }
+  let copy: Record<string, unknown> | undefined;
+  for (const [key, entry] of Object.entries(value)) {
+    const lower = key.toLowerCase();
+    let next = entry;
+    if (typeof entry === "string") {
+      if (lower === "cookie") next = withoutHomeCookies(entry);
+      else if (lower === "set-cookie") next = withoutHomeSetCookieLines(entry);
+      else if (lower === "headerstext" || lower === "requestheaderstext")
+        next = withoutHomeHeaderLines(entry);
+      else if (lower === "rawcookieline" || lower === "cookieline")
+        next =
+          cookieLineName(entry) !== undefined && isHomeCookieName(cookieLineName(entry)!)
+            ? ""
+            : entry;
+    } else next = scrubCookies(entry, home, depth + 1);
+    if (next !== entry) (copy ??= { ...(value as Record<string, unknown>) })[key] = next;
+  }
+  return copy ?? value;
+}
+
+/** A cookie object, or an entry holding one (`{cookie}`, `{cookieLine}`), that is the Home's. */
+function isHomeCookieEntry(entry: unknown, home: ThisHomeAddressSet): boolean {
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return false;
+  const record = entry as Record<string, unknown>;
+  if (typeof record.name === "string" && typeof record.domain === "string")
+    return isHomeCookie(record.name, record.domain, home);
+  const cookie = asRecord(record.cookie);
+  if (typeof cookie.name === "string")
+    return typeof cookie.domain === "string"
+      ? isHomeCookie(cookie.name, cookie.domain, home)
+      : isHomeCookieName(cookie.name);
+  const line =
+    typeof record.cookieLine === "string" ? cookieLineName(record.cookieLine) : undefined;
+  return line !== undefined && isHomeCookieName(line);
+}
+
+function isHomeCookie(name: string, domain: string, home: ThisHomeAddressSet): boolean {
+  if (!isHomeCookieName(name)) return false;
+  // A cookie names a host, never a port.
+  const host = domain.replace(/^\./u, "").replace(/\.$/u, "").toLowerCase();
+  return (
+    isLoopbackUrl(`http://${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}/`) ||
+    home.origins.some((origin) => new URL(origin).hostname === host)
+  );
+}
+
+/** A `{name, value}` header entry (`Fetch`'s) without the Home's cookies; undefined if not one. */
+function scrubHeaderEntry(entry: unknown): unknown {
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+  const { name, value } = entry as Record<string, unknown>;
+  if (typeof name !== "string" || typeof value !== "string") return undefined;
+  const lower = name.toLowerCase();
+  const next =
+    lower === "cookie"
+      ? withoutHomeCookies(value)
+      : lower === "set-cookie"
+        ? withoutHomeSetCookieLines(value)
+        : value;
+  return next === value ? entry : { ...(entry as Record<string, unknown>), value: next };
+}
+
+function cookieLineName(line: string): string | undefined {
+  const name = line.split("=", 1)[0]?.trim();
+  return name ? name : undefined;
+}
+
+/** `Set-Cookie` values, one per line as CDP joins them, without the Home's. */
+function withoutHomeSetCookieLines(value: string): string {
+  const lines = value.split("\n");
+  const kept = lines.filter((line) => !isHomeCookieName(cookieLineName(line) ?? ""));
+  return kept.length === lines.length ? value : kept.join("\n");
+}
+
+/** Raw header text without the Home's cookies in its `Cookie` and `Set-Cookie` lines. */
+function withoutHomeHeaderLines(text: string): string {
+  const lines = text.split(/\r?\n/u);
+  let changed = false;
+  const kept: string[] = [];
+  for (const line of lines) {
+    const colon = line.indexOf(":");
+    const name = colon < 0 ? "" : line.slice(0, colon).trim().toLowerCase();
+    if (name === "cookie") {
+      const cookies = withoutHomeCookies(line.slice(colon + 1));
+      if (cookies !== line.slice(colon + 1).trim()) changed = true;
+      kept.push(`${line.slice(0, colon)}: ${cookies}`);
+    } else if (
+      name === "set-cookie" &&
+      isHomeCookieName(cookieLineName(line.slice(colon + 1)) ?? "")
+    ) {
+      changed = true;
+    } else kept.push(line);
+  }
+  return changed ? kept.join("\r\n") : text;
 }
 
 /**
@@ -449,6 +601,10 @@ export class SessionCdpRouter {
   readonly #ownerByTargetId = new Map<string, TargetClaim>();
   readonly #connectionTargetCounts = new Map<string, number>();
   readonly #agentTargetCounts = new Map<string, number>();
+  /** Agents' opens, each holding its page and its popups until its first load settles (I). */
+  readonly #openOwners = new Set<{ readonly held: Set<string> }>();
+  /** Opens a caller loads itself, kept for it past the blank load (`takeOpenHold`). */
+  readonly #openHolds = new Map<string, () => void>();
   /** This Home's addresses, as the Home last told this browser; none until it has. */
   #home = new ThisHomeAddressSet(noHomeAddresses);
   /** Targets whose page the browser last reported on an address of this Home. */
@@ -530,6 +686,7 @@ export class SessionCdpRouter {
       ledgerDialogEvents: false,
       filesRoot,
       ownedTargetIds: new Set([rootTargetId]),
+      liveRelays: new Set(),
       rootTargetId,
       sessionId,
     };
@@ -687,13 +844,47 @@ export class SessionCdpRouter {
    * before its first navigation until that open settles. The returned release is idempotent.
    */
   holdAgentPage(targetId: string): () => void {
+    // An open is an owner of its own: a popup its page opens during that first load is held by it
+    // too, and goes with it (I).
+    const owner = { held: new Set([targetId]) };
+    this.#openOwners.add(owner);
     this.#holdTarget(targetId, false);
     let held = true;
     return () => {
       if (!held) return;
       held = false;
-      this.#letGoTarget(targetId, false);
+      this.#openOwners.delete(owner);
+      for (const target of owner.held) this.#letGoTarget(target, false);
+      owner.held.clear();
     };
+  }
+
+  /**
+   * The open hold a session root's `Target.createTarget` with `openThenLoad` kept for its caller,
+   * who releases it once the page's real first load has settled; undefined when there is none.
+   */
+  takeOpenHold(targetId: string): (() => void) | undefined {
+    const release = this.#openHolds.get(targetId);
+    this.#openHolds.delete(targetId);
+    return release;
+  }
+
+  /** A relay opens on a session's root (II): from now its page sessions are its own. */
+  openRelay(sessionId: string, relayId: string): void {
+    this.#sessions.get(sessionId)?.session.liveRelays.add(relayId);
+  }
+
+  /**
+   * A relay on a session's root ended (II): every page session it opened ends here in one act,
+   * with the holds they had; an attach of it still pending is refused when it answers; and a later
+   * command of it names nothing and opens nothing.
+   */
+  endRelay(sessionId: string, relayId: string): void {
+    const root = this.#sessions.get(sessionId);
+    if (!root) return;
+    root.session.liveRelays.delete(relayId);
+    for (const attached of root.channels.values())
+      if (attached.owner === relayId) void this.#endChannel(root, attached, true);
   }
 
   /** That hold ends; the mark is released when the last one lets the target go. */
@@ -721,16 +912,25 @@ export class SessionCdpRouter {
     if (JSON.stringify(next) === JSON.stringify(this.#home)) return;
     this.#home = next;
     this.#backend.setHomeAddresses?.(next);
-    this.#homeTargets.clear();
+    // The new set applies at once to every page whose address the router knows: a page on a new
+    // address of the Home is refused from here, one that is no longer is released (I).
+    for (const [targetId, url] of this.#targetUrls) {
+      if (next.includesReported(url)) {
+        this.#homeTargets.add(targetId);
+        this.#endHomeChannels(targetId);
+      } else this.#homeTargets.delete(targetId);
+    }
     if (next.empty) return;
-    // Pages already open learn their place now, not only at their next navigation.
+    // Pages the router has not heard of yet learn their place from the browser's list; the list
+    // may be older than an event that came since, so it only adds.
     void Promise.resolve()
       .then(() => this.#backend.send("Target.getTargets"))
       .then((reply) => {
         if (this.#home !== next) return;
         const infos = asRecord(reply).targetInfos;
         if (!Array.isArray(infos)) return;
-        for (const info of infos) this.#noteTargetAddress(asRecord(info));
+        for (const info of infos)
+          if (next.includesReported(asRecord(info).url)) this.#noteTargetAddress(asRecord(info));
       })
       .catch(() => undefined);
   }
@@ -948,8 +1148,15 @@ export class SessionCdpRouter {
   }
 
   /** The page an agent's attached CDP session drives, or null when it is not attached here. */
-  attachedTargetId(sessionId: string, cdpSessionId: string, attachmentId?: string): string | null {
+  /** The page a session names, for `relayId`'s commands only: another relay's reads as none (II). */
+  attachedTargetId(
+    sessionId: string,
+    cdpSessionId: string,
+    attachmentId?: string,
+    relayId?: string,
+  ): string | null {
     const state = this.#sessions.get(sessionId);
+    if (!attachmentId && state?.channels.get(cdpSessionId)?.owner !== relayId) return null;
     return this.#attachedTargetId(
       attachmentId ? state?.session.scripts.get(attachmentId) : state,
       cdpSessionId,
@@ -1048,13 +1255,35 @@ export class SessionCdpRouter {
     );
   }
 
+  /** Every reply to an agent leaves here, without the Home's cookies (item 7). */
   async #send(
+    state: ConnectionState,
+    command: CdpCommand,
+    beforeActivity?: (targetId: string) => void,
+  ): Promise<unknown> {
+    const result = await this.#sendCommand(state, command, beforeActivity);
+    return homeCookieCarriers.has(command.method)
+      ? withoutHomeCookieValues(command.method, result, this.#home)
+      : result;
+  }
+
+  async #sendCommand(
     state: ConnectionState,
     command: CdpCommand,
     beforeActivity?: (targetId: string) => void,
   ): Promise<unknown> {
     this.#assertOpen();
     state.closed.signal.throwIfAborted();
+    // A relay that is not open (it ended, or never opened) names nothing and opens nothing (II); a
+    // command that names no page is still answered, as for any ended work.
+    if (
+      command.relayId !== undefined &&
+      !state.session.liveRelays.has(command.relayId) &&
+      (command.sessionId !== undefined || relayOpeners.has(command.method))
+    )
+      throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
+        unsent: true,
+      });
     const bytes = validateCommand(command, this.#sessionLimits(state).maxCommandBytes);
     if (state.script) {
       const operation = this.#dispatch(state, command, beforeActivity);
@@ -1201,11 +1430,7 @@ export class SessionCdpRouter {
               ? connectionMethodRefusal(command.method)
               : "Remote CDP does not manage browser downloads.",
           );
-        const result = withoutHomeCookieReads(
-          command.method,
-          await this.#backend.send(command.method, command.parameters),
-          this.#home,
-        );
+        const result = await this.#backend.send(command.method, command.parameters);
         this.#assertResultSize(
           result,
           this.#sessionLimits(state).maxResultBytes,
@@ -1350,7 +1575,12 @@ export class SessionCdpRouter {
       case "Target.sendMessageToTarget": {
         const virtualSessionId = requiredString(parameters, "sessionId");
         const attached = state.channels.get(virtualSessionId);
-        if (!attached || (root.aliasId && attached.rootAlias !== root))
+        if (
+          !attached ||
+          (root.aliasId && attached.rootAlias !== root) ||
+          // A session named inside a command is its relay's as much as one named outside (II).
+          attached.owner !== command.relayId
+        )
           throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
             unsent: true,
           });
@@ -1362,6 +1592,7 @@ export class SessionCdpRouter {
           ...(command.replyBudget ? { replyBudget: command.replyBudget } : {}),
           ...(command.connection ? { connection: true as const } : {}),
           ...(command.manageExtensions ? { manageExtensions: true as const } : {}),
+          ...(command.relayId !== undefined ? { relayId: command.relayId } : {}),
           sessionId: virtualSessionId,
         });
         if (!root.aliasId || state.aliases.has(root.aliasId))
@@ -1398,6 +1629,11 @@ export class SessionCdpRouter {
         const response = asRecord(
           this.#backend.createAgentTarget
             ? await this.#backend.createAgentTarget(parameters, (created) => {
+                if (onSessionRoot && command.openThenLoad) {
+                  // Its caller loads it next: the open outlives the blank load, until it lets go.
+                  this.#openHolds.set(created, this.holdAgentPage(created));
+                  return () => undefined;
+                }
                 if (onSessionRoot) return this.holdAgentPage(created);
                 this.#holdPage(state, created);
                 return () => undefined;
@@ -1490,7 +1726,15 @@ export class SessionCdpRouter {
               "forbidden",
               "Use its parent page to attach a child target.",
             );
-          return this.#attachTarget(state, targetId, targetInfo, undefined, root, connection);
+          return this.#attachTarget(
+            state,
+            targetId,
+            targetInfo,
+            undefined,
+            root,
+            connection,
+            command.relayId,
+          );
         }
         // A connection's attach, and any agent's once this Home's addresses are known, reads the
         // target as it is now: a page on this Home is not there to attach (C4).
@@ -1499,7 +1743,15 @@ export class SessionCdpRouter {
           await this.#readTargetInfo(state, targetId, claim, undefined, connection);
           this.#assertCurrentClaim(state, targetId, claim);
         }
-        return this.#attachTarget(state, targetId, undefined, undefined, root, connection);
+        return this.#attachTarget(
+          state,
+          targetId,
+          undefined,
+          undefined,
+          root,
+          connection,
+          command.relayId,
+        );
       }
       case "Target.detachFromTarget": {
         const virtualSessionId = requiredString(parameters, "sessionId");
@@ -1513,7 +1765,9 @@ export class SessionCdpRouter {
           this.#detachRootAlias(state, virtualSessionId);
           return {};
         }
-        const attached = state.channels.get(virtualSessionId);
+        const named = state.channels.get(virtualSessionId);
+        // Another relay's page session is no session of this one's (II).
+        const attached = named?.owner === command.relayId ? named : undefined;
         if (root.aliasId && attached && attached.rootAlias !== root)
           throw new SessionCdpRouterError(
             "forbidden",
@@ -1865,6 +2119,7 @@ export class SessionCdpRouter {
     current?: () => boolean,
     root: TargetRoot = state,
     connection = state.connection,
+    owner?: string,
   ): Promise<{ sessionId: string }> {
     const assertRoot = () => {
       if (root.aliasId && !state.aliases.has(root.aliasId))
@@ -1896,6 +2151,14 @@ export class SessionCdpRouter {
         throw new SessionCdpRouterError("not_found", "Browser auto-attach ended.");
       assertRoot();
       if (state.standard) this.#assertChannelCapacity(state);
+      // Asked again after every await, as the channel is installed (I, II): the page may have
+      // committed this Home's address, or its agent's state or relay ended, while it attached.
+      if (
+        this.#homeTargets.has(targetId) ||
+        state.closed.signal.aborted ||
+        (owner !== undefined && !state.session.liveRelays.has(owner))
+      )
+        throw new SessionCdpRouterError("not_found", "The target is no longer available.");
     } catch (error) {
       const closing = channel.close().catch(() => undefined);
       if (root.aliasId) await closing;
@@ -1904,6 +2167,7 @@ export class SessionCdpRouter {
     const virtualSessionId = `cdp_${this.#ports.uuid()}`;
     const attached: AttachedChannel = {
       channel,
+      ...(owner !== undefined ? { owner } : {}),
       pending: new Set(),
       ended: new AbortController(),
       physicalTargetId: targetId,
@@ -2187,7 +2451,15 @@ export class SessionCdpRouter {
 
   #admitAttachedCommand(state: ConnectionState, command: CdpCommand): AttachedChannel {
     const attached = state.channels.get(command.sessionId ?? "");
-    if (!attached) {
+    // A page session is its relay's alone (II); and none runs a command on a page that is on this
+    // Home's address, whatever reached it first (I).
+    if (!attached || attached.owner !== command.relayId) {
+      throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
+        unsent: true,
+      });
+    }
+    if (this.#homeTargets.has(attached.physicalTargetId)) {
+      void this.#endChannel(state, attached, true);
       throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
         unsent: true,
       });
@@ -2512,11 +2784,7 @@ export class SessionCdpRouter {
     };
     const tracked = () =>
       this.#trackPhysicalWork(state, () => this.#trackTargetWork(attached.physicalTargetId, send));
-    const answered = withoutHomeCookieReads(
-      command.method,
-      await (command.replyBudget ? tracked() : whileOpen(attached.pending, tracked)),
-      this.#home,
-    );
+    const answered = await (command.replyBudget ? tracked() : whileOpen(attached.pending, tracked));
     return isolation ? isolation.sanitizeResult(command.method, answered) : answered;
   }
 
@@ -2795,6 +3063,12 @@ export class SessionCdpRouter {
           if (attached.physicalTargetId === openerId || attached.heldPages?.has(openerId))
             this.#holdForChannel(attached, targetId);
       }
+      // An agent's open holds what its page opens during its first load (I).
+      for (const owner of this.#openOwners)
+        if (owner.held.has(openerId) && !owner.held.has(targetId)) {
+          owner.held.add(targetId);
+          this.#holdTarget(targetId, false);
+        }
     }
     // A place kept under this id is stale unless this claim wakes from it: ids are not trusted
     // to be unique for ever.
@@ -2869,6 +3143,11 @@ export class SessionCdpRouter {
         if (attached.heldPages?.delete(targetId)) this.#letGoTarget(targetId, attached.connection);
       if (connection.script?.root === targetId) this.#closeConnection(connection);
     }
+    for (const owner of this.#openOwners)
+      if (owner.held.delete(targetId)) this.#letGoTarget(targetId, false);
+    // An open hold no caller took for a page that ended is released here, not kept.
+    this.#openHolds.get(targetId)?.();
+    this.#openHolds.delete(targetId);
     for (const childId of state.session.ownedTargetIds)
       if (this.#ownerByTargetId.get(childId)?.parentId === targetId) this.#releaseTarget(childId);
   }
@@ -2945,6 +3224,9 @@ export class SessionCdpRouter {
     sessionId?: string,
   ): void {
     if (state.script?.closing) return;
+    // Every event to an agent passes here, without the Home's cookies (item 7).
+    if (homeCookieCarriers.has(method))
+      parameters = withoutHomeCookieValues(method, parameters, this.#home) as CdpParameters;
     if (
       state.script &&
       !sessionId &&

@@ -1024,12 +1024,10 @@ describe("BrowserController", () => {
 
   it("never lists, wakes for, fills into or pictures a page on an address of this Home to any agent", async () => {
     const homeAddresses = { origins: ["https://home.example.com"], loopbackPorts: [4310] };
-    const controller = createController(
-      undefined,
-      {},
-      validClaims({ tabRestoreVersion: 1, homeAddresses }),
-    );
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
     await controller.start();
+    // The Home tells the runtime its addresses as its own state (item 1).
+    await controller.handle({ type: "home.addresses", revision: 1, homeAddresses });
     const fill = vi.spyOn(HostSignIns.prototype, "fill").mockResolvedValue("filled");
     const surfaceId = ledger.snapshot()[0]!.id;
     const budget = { maxBytes: 65_536, maxDepth: 16, maxEntries: 256 };
@@ -1187,25 +1185,136 @@ describe("BrowserController", () => {
     }
   });
 
-  it("takes this Home's addresses from an agent's attach command, as from its ticket (B1)", async () => {
+  it("holds the Home's addresses as its own state, ahead of any agent's command, and says so (item 1)", async () => {
+    // A warm browser: started long ago, its pages up, when the person turns Remote access on.
     const controller = createController();
     await controller.start();
     try {
       expect(cdpRouter.isHomeAddress("https://route.opensteer.test/")).toBe(false);
+      await controller
+        .handle({
+          type: "home.addresses",
+          revision: 7,
+          homeAddresses: { origins: ["https://route.opensteer.test"], loopbackPorts: [4310] },
+        } as BrowserClientMessage)
+        .catch(() => undefined);
+      expect(sink.messages).toContainEqual(
+        expect.objectContaining({ type: "home.addresses.applied", revision: 7 }),
+      );
+      // No agent's command carries the set any more: the next one already meets it.
+      const requestId = randomUUID();
       await controller.handle({
         type: "cdp.command",
-        requestId: randomUUID(),
-        homeAddresses: { origins: ["https://route.opensteer.test"], loopbackPorts: [4310] },
+        requestId,
         command: {
-          method: "Target.attachToTarget",
-          parameters: { targetId: await page.targetId(), flatten: true },
+          method: "Target.createTarget",
+          parameters: { url: "https://route.opensteer.test/settings" },
         },
-      } as BrowserClientMessage);
-      expect(cdpRouter.isHomeAddress("https://route.opensteer.test/")).toBe(true);
-      expect(cdpRouter.isHomeAddress("http://localhost:4310/")).toBe(true);
+      });
+      expect(
+        sink.messages.findLast(
+          (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+        ),
+      ).toMatchObject({ type: "cdp.error" });
     } finally {
       await controller.close();
       await ledger.close();
+    }
+  });
+
+  it("holds an agent's new tab from its create call through its real first load, popups included (items 2, 3)", async () => {
+    await ledger.close();
+    // As Electron's backend: the page is held from creation, and its blank load lets go at once.
+    const marks: [string, boolean][] = [];
+    const navigatedWhileHeld: boolean[] = [];
+    const held = (targetId: string) => marks.filter(([id]) => id === targetId).at(-1)?.[1] === true;
+    let created: FakePage | undefined;
+    const browserEvents = new Set<(method: string, parameters: Record<string, unknown>) => void>();
+    const backend = Object.assign(new FakeBrowserCdpBackend(context), {
+      onEvent(listener: (method: string, parameters: Record<string, unknown>) => void) {
+        browserEvents.add(listener);
+        return () => browserEvents.delete(listener);
+      },
+      emit(method: string, parameters: Record<string, unknown>) {
+        for (const listener of browserEvents) listener(method, parameters);
+      },
+      setAgentControlled(targetId: string, controlled: boolean) {
+        marks.push([targetId, controlled]);
+      },
+      async createAgentTarget(
+        parameters: Record<string, unknown>,
+        hold: (targetId: string) => () => void,
+      ) {
+        const next = (await context.createPage()) as FakePage;
+        created = next;
+        const targetId = await next.targetId();
+        next.cdpSession.responses.set("Page.navigate", () => {
+          navigatedWhileHeld.push(held(targetId));
+          return { frameId: targetId, loaderId: "loader-1" };
+        });
+        const release = hold(targetId);
+        if (parameters.url === "about:blank") release();
+        return { targetId };
+      },
+    });
+    const router = new SessionCdpRouter(backend);
+    const claims = validClaims();
+    const pages = new SurfaceLedger(context, {
+      claimTarget: (targetId) => router.claimTarget(claims.sessionId, targetId),
+      releaseTarget: (targetId) => router.releaseTarget(claims.sessionId, targetId),
+      initialViewport: { devicePixelRatio: 1, height: 720, width: 1_280 },
+      rootPages: [page],
+    });
+    router.registerSession(
+      claims.sessionId,
+      await page.targetId(),
+      (targetId) => pages.resolveTarget(targetId),
+      files.root,
+    );
+    await pages.start();
+    const controller = new BrowserController({
+      cdpRouter: router,
+      claims,
+      files,
+      ledger: pages,
+      replaceSiteCookies,
+      platform: "darwin",
+      signIns: noSignIns(),
+      sink,
+    });
+    await controller.start();
+    try {
+      // A Run's relay opens a tab at a URL, as `Target.createTarget` on the session's root.
+      const requestId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId,
+        command: { method: "Target.createTarget", parameters: { url: "http://localhost:5173/" } },
+      });
+      const targetId = await created!.targetId();
+      await vi.waitFor(() => expect(navigatedWhileHeld).toEqual([true]));
+      // Its first load is under way: still held, and a popup it opens meanwhile is held too.
+      for (let turn = 0; turn < 5; turn += 1) await new Promise((done) => setImmediate(done));
+      expect(held(targetId)).toBe(true);
+      backend.emit("Target.targetCreated", {
+        targetInfo: {
+          targetId: "first-load-popup",
+          type: "page",
+          url: "about:blank",
+          openerId: targetId,
+          attached: false,
+        },
+      });
+      expect(held("first-load-popup")).toBe(true);
+      // The load settles: the hold ends, and nothing of it is left.
+      created!.cdpSession.responses.set("Runtime.evaluate", {
+        result: { value: ["complete", "http://localhost:5173/"] },
+      });
+      await vi.waitFor(() => expect(held(targetId)).toBe(false), { timeout: 5_000 });
+      expect(held("first-load-popup")).toBe(false);
+    } finally {
+      await controller.close();
+      await pages.close();
     }
   });
 
@@ -1738,6 +1847,19 @@ describe("BrowserController", () => {
             method: browserHostMethods.openTab,
             parameters: { idempotencyKey: `held-${creationOrigin}`, operationAuthority: "s", url },
           },
+        });
+        await vi.waitFor(() =>
+          expect(order).toEqual(creationOrigin === "agent" ? ["hold", "navigate"] : ["navigate"]),
+        );
+        // Held through the real first load, not only until the navigation answers (I): the hold
+        // ends once the page says its document has loaded.
+        if (creationOrigin === "agent") {
+          for (let turn = 0; turn < 10; turn += 1) await new Promise((done) => setImmediate(done));
+          expect(order).toEqual(["hold", "navigate"]);
+        }
+        const opened = (await create.mock.results.at(-1)?.value) as FakePage;
+        opened.cdpSession.responses.set("Runtime.evaluate", {
+          result: { value: ["complete", url] },
         });
         await vi.waitFor(() =>
           expect(order).toEqual(

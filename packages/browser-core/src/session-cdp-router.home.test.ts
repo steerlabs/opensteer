@@ -464,6 +464,135 @@ describe("SessionCdpRouter: a tab an agent drives may not be on an address of th
       release();
       expect(marks(backend, "opened")).toEqual([true, false]);
     });
+
+    it("hands over no page that commits the Home while its attach awaits the browser (item 4)", async () => {
+      for (const [who, connection] of agents) {
+        const { backend, client } = await setup(connection);
+        let answer!: () => void;
+        const slow = new Promise<void>((resolve) => (answer = resolve));
+        const attach = backend.attach.bind(backend);
+        backend.attach = async (targetId: string) => {
+          await slow;
+          return attach(targetId);
+        };
+        const attaching = client.send({
+          method: "Target.attachToTarget",
+          parameters: { targetId: "seed", flatten: true },
+        });
+        void attaching.catch(() => undefined);
+        await Promise.resolve();
+        backend.emit("Target.targetInfoChanged", {
+          targetInfo: { targetId: "seed", type: "page", url: "http://127.0.0.1:4310/settings" },
+        });
+        answer();
+        await expect(attaching, who).rejects.toMatchObject({ code: "not_found" });
+        expect(backend.channels.get("seed")?.closed ?? true, who).toBe(true);
+      }
+    });
+
+    it("ends everything a relay owns when it ends, and lets no other relay name it anywhere (item 5)", async () => {
+      const backend = new Backend();
+      backend.targetInfos = [
+        { targetId: "seed", type: "page", url: "https://web.test/" },
+        { targetId: "t2", type: "page", url: "https://web.test/2" },
+        { targetId: "t3", type: "page", url: "https://web.test/3" },
+      ];
+      const router = new SessionCdpRouter(backend);
+      router.registerSession("s", "seed", async () => true, "/files/s");
+      router.claimTarget("s", "t2");
+      router.claimTarget("s", "t3");
+      router.setHomeAddresses(home);
+      const relayA = "00000000-0000-4000-8000-00000000000a";
+      const relayB = "00000000-0000-4000-8000-00000000000b";
+      const open = (router as { openRelay?: (session: string, relay: string) => void }).openRelay;
+      open?.call(router, "s", relayA);
+      open?.call(router, "s", relayB);
+      const send = (relayId: string, command: Record<string, unknown>) =>
+        router.send("s", { ...command, relayId } as never);
+      const { sessionId: s1 } = (await send(relayA, {
+        method: "Target.attachToTarget",
+        parameters: { targetId: "seed", flatten: true },
+      })) as { sessionId: string };
+      // Relay A attaches t2 through its own page session (a nested attach, as Probe C did).
+      const { sessionId: s2 } = (await send(relayA, {
+        method: "Target.attachToTarget",
+        parameters: { targetId: "t2", flatten: true },
+        sessionId: s1,
+      })) as { sessionId: string };
+      expect(marks(backend, "t2")).toEqual([true]);
+      // Relay B names A's sessions inside its commands: refused before the browser, every way.
+      await expect(
+        send(relayB, {
+          method: "Target.sendMessageToTarget",
+          parameters: {
+            sessionId: s2,
+            message: JSON.stringify({
+              id: 1,
+              method: "Page.navigate",
+              params: { url: "https://web.test/x" },
+            }),
+          },
+        }),
+      ).rejects.toMatchObject({ code: "not_found" });
+      await send(relayB, {
+        method: "Target.detachFromTarget",
+        parameters: { sessionId: s2 },
+      }).catch(() => undefined);
+      expect(marks(backend, "t2")).toEqual([true]);
+      // An attach of A's is still pending in the browser when A ends.
+      let answer!: () => void;
+      const slow = new Promise<void>((resolve) => (answer = resolve));
+      const attach = backend.attach.bind(backend);
+      backend.attach = async (targetId: string) => {
+        await slow;
+        return attach(targetId);
+      };
+      const pending = send(relayA, {
+        method: "Target.attachToTarget",
+        parameters: { targetId: "t3", flatten: true },
+      });
+      void pending.catch(() => undefined);
+      await Promise.resolve();
+      router.endRelay("s", relayA);
+      answer();
+      await expect(pending).rejects.toMatchObject({ code: "not_found" });
+      // Everything A held is let go, the nested session's page too; nothing of A's is drivable.
+      expect(marks(backend, "t2")).toEqual([true, false]);
+      expect(marks(backend, "t3").at(-1) ?? false).toBe(false);
+      await expect(
+        send(relayA, {
+          method: "Target.sendMessageToTarget",
+          parameters: {
+            sessionId: s2,
+            message: JSON.stringify({
+              id: 2,
+              method: "Page.navigate",
+              params: { url: "https://route.test/" },
+            }),
+          },
+        }),
+      ).rejects.toMatchObject({ code: "not_found" });
+    });
+
+    it("holds a popup a page opens during its first load, until that load's hold ends (item 3)", async () => {
+      const backend = new Backend();
+      backend.targetInfos = [
+        { targetId: "seed", type: "page", url: "https://web.test/" },
+        { targetId: "opened", type: "page", url: "about:blank" },
+      ];
+      const router = new SessionCdpRouter(backend);
+      router.registerSession("s", "seed", async () => true, "/files/s");
+      router.setHomeAddresses(home);
+      router.claimTarget("s", "opened");
+      // As `Opensteer.openTab` and a session root's `Target.createTarget` hold an agent's open.
+      const release = router.holdAgentPage("opened");
+      backend.emit("Target.targetCreated", popup("pop", "opened"));
+      for (let turn = 0; turn < 5; turn += 1) await new Promise((done) => setImmediate(done));
+      expect(marks(backend, "pop")).toEqual([true]);
+      release();
+      expect(marks(backend, "opened")).toEqual([true, false]);
+      expect(marks(backend, "pop")).toEqual([true, false]);
+    });
   });
 
   it("refuses nothing before the Home has told the browser its addresses", async () => {

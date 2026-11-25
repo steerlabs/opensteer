@@ -898,12 +898,21 @@ export async function createHostRuntime(
           onAccountLinkChanged: () => {
             void ownerProfile.refresh().catch(reportOwnerProfileError);
           },
-          onRouteChanged: (routeOrigin) => {
-            // A new set is published from the committed route; agents attached under the old
-            // one end their attachments and attach again with it (B1).
-            if (!homeAddresses.publish(routeOrigin)) return;
-            browser.endAgentAttachments("This browser attachment has ended.");
+          // This Home's addresses are each browser runtime's own state (item 1): before a route can
+          // take effect every runtime holds it, and after the change only the committed one. A
+          // shared Chrome tab is given them at its attachment, so its agents attach again.
+          onRouteChanging: async (routeOrigin) => {
+            if (!homeAddresses.prepare(routeOrigin)) return;
             chromeTabs.endAgentAttachments();
+            await browser.pushHomeAddresses();
+          },
+          onRouteKept: () => {
+            if (homeAddresses.abandon()) void browser.pushHomeAddresses();
+          },
+          onRouteChanged: (routeOrigin) => {
+            if (!homeAddresses.publish(routeOrigin)) return;
+            chromeTabs.endAgentAttachments();
+            void browser.pushHomeAddresses();
           },
         })
       : undefined;
@@ -1326,7 +1335,6 @@ export async function createHostRuntime(
       signer: new BrowserAttachTicketSigner({
         keyId: browserAttachKeyId,
         privateKey: keys.privateKey,
-        homeAddresses: () => homeAddresses.current().toJSON(),
       }),
       homeAddresses: () => homeAddresses.current(),
       targetResolver: runnerBrowsers,

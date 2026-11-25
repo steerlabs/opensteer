@@ -475,16 +475,24 @@ The connection is confined (`packages/browser-core/src/portable-session-cdp-rout
 origin, its current remote route, loopback on the ports the Host listens on; `ThisHomeAddressSet`
 in `@opensteer/shared/homeAddress`) does not exist to any agent's work, a connected agent's or a Run
 of the person's own agents. Rule 1 decides it (`authorizePageAddress`); the Host holds the set in
-memory (`apps/host/src/browser/home-addresses.ts`) and every attach ticket that carries the actor
-claim, and every new shared Chrome tab attachment, carries it to the browser. An agent's
-navigation, new tab and history step there are refused as any refused address; such a page is not
-listed, attached, woken, filled or pictured; a page that commits one by any route ends the agent's
-channels to it. A page is agent-controlled only while a hold that ends with its agent holds it (a
-channel, a script, a client or a lineage, or the runtime through an agent's first load; never a
-session's root): holding is what marks it, and an attachment that ends ends its page sessions in the
-browser. When the set
-changes (Remote access on, off, or a new route), every agent's attachment ends and attaches again
-with the new set. In the Mac's browser a page any agent holds also cannot navigate, frame, redirect
+memory (`apps/host/src/browser/home-addresses.ts`). The set is each browser runtime's own state:
+the Home sends it (`home.addresses`) when the runtime is ready and again before a route change can
+take effect (the set holds the old and the new route until the change commits or is given up), and
+no command reaches a runtime until it has answered that revision applied; a new shared Chrome tab
+attachment carries it, and a route change ends those attachments. An agent's navigation, new tab
+and history step there are refused as any refused address; such a page is not listed, attached,
+woken, filled or pictured; a page that commits one by any route ends the agent's channels to it, an
+attach that answers after it committed one is refused, and no command runs on it. A page is
+agent-controlled only while a live owner holds it, asked at the moment of each effect: a channel, a
+script, a client or a lineage, or an agent's open from its create call until its first load has
+settled (a popup inherits the holders of its opener at that instant, that open included; never a
+session's root). A relay's page sessions on a session's root are the relay's own in the runtime
+(`Opensteer.openRelay`, `relayId` on each command, `Opensteer.closeRelay`): no other relay names
+one in any position of a command, and its end ends them all there in one act, attaches still
+pending included; the Home keeps no list of them. Every CDP reply and event an agent gets passes
+one filter that drops the Home's cookies from cookie reads, request and response headers and
+cookie issues (`homeCookieCarriers` in `portable-session-cdp-router.ts`). The Home asks the same of
+a popup it records: it is an agent's only while an agent binding holds its opener now. In the Mac's browser a page any agent holds also cannot navigate, frame, redirect
 or open a window there and sends the Home no cookie, nor the Home's cookies to any loopback
 port (a Mac keeps them by host); a shared Chrome tab an agent drives has session
 rules, from the same address list, that block its pages, requests and web sockets to the Home. No

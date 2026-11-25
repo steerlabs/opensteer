@@ -75,9 +75,14 @@ class Backend implements BrowserCdpBackend {
     this.loads.push({ targetId, settle: release });
     return { targetId };
   }
-  attach(targetId: string): Promise<CdpChannel> {
-    if (!this.infos.has(targetId)) return Promise.reject(new Error("No such target."));
-    return Promise.resolve(new Channel());
+  /** When set, the next attach waits for it: the browser answering slowly. */
+  pause: Promise<void> | undefined;
+  async attach(targetId: string): Promise<CdpChannel> {
+    const pause = this.pause;
+    this.pause = undefined;
+    if (pause) await pause;
+    if (!this.infos.has(targetId)) throw new Error("No such target.");
+    return new Channel();
   }
   onEvent(listener: Listener): () => void {
     this.listeners.add(listener);
@@ -106,6 +111,8 @@ class Backend implements BrowserCdpBackend {
 interface Holder {
   readonly name: string;
   readonly kind: "root-channel" | "script" | "client" | "lineage" | "first-load";
+  /** A root channel's relay. */
+  readonly relay?: string;
   readonly pages: Set<string>;
   /** For a channel: the page it is on (a popup of it, or of what it holds, is its too). */
   readonly target?: string;
@@ -121,7 +128,23 @@ async function run(seed: number, steps: number): Promise<string | undefined> {
   const router = new SessionCdpRouter(backend);
   backend.add("root");
   router.registerSession("s", "root", async () => true, "/files/s");
+  const origins: string[] = [];
+  router.setHomeAddresses({ origins, loopbackPorts: [4310] });
   const trace: string[] = [];
+  const homes = new Set<string>();
+  const endedRelays = new Set<string>();
+  // The relays the Home has opened on the session's root; an ended one stays known to the model,
+  // so a late command of it is tried.
+  const relays = ["relay-a", "relay-b", "relay-c"];
+  for (const relay of relays) router.openRelay("s", relay);
+  /** The page commits an address of this Home: every channel on it ends, root channels' holds too. */
+  const commitHome = (target: string, url: string) => {
+    homes.add(target);
+    backend.infos.set(target, { ...backend.infos.get(target)!, url });
+    backend.emit("Target.targetInfoChanged", { targetInfo: backend.infos.get(target)! });
+    for (const holder of holders.slice())
+      if (holder.kind === "root-channel" && holder.target === target) drop(holder);
+  };
   const holders: Holder[] = [];
   const openerOf = new Map<string, string>();
   /** The lineage that adopted a page first, which it stays with. */
@@ -136,7 +159,15 @@ async function run(seed: number, steps: number): Promise<string | undefined> {
       return `${step}: marked ${JSON.stringify(have)}, held ${JSON.stringify(want)}\n${trace.join("\n")}`;
     return undefined;
   };
-  const drop = (holder: Holder) => holders.splice(holders.indexOf(holder), 1);
+  const drop = (holder: Holder) => {
+    const at = holders.indexOf(holder);
+    if (at >= 0) holders.splice(at, 1);
+  };
+  const endRelay = (relay: string) => {
+    endedRelays.add(relay);
+    router.endRelay("s", relay);
+    for (const holder of holders.slice()) if (holder.relay === relay) drop(holder);
+  };
   const actions: (() => Promise<void>)[] = [
     // An agent creates a page through the session's root: held through its first load only.
     async () => {
@@ -164,29 +195,71 @@ async function run(seed: number, steps: number): Promise<string | undefined> {
       trace.push(`settle ${holder.name}`);
       await holder.end();
     },
-    // An agent's channel on the root: attach, which holds its page until it detaches.
+    // A relay's channel on the root: attach, which holds its page until it detaches or its relay
+    // ends. The browser may answer slowly, while the page commits the Home or the relay ends.
     async () => {
-      const target = pick(live());
+      const target = pick(live().filter((id) => !homes.has(id)));
+      const relay = pick(relays)!;
       if (!target) return;
-      const { sessionId } = (await router.send("s", {
-        method: "Target.attachToTarget",
-        parameters: { targetId: target, flatten: true },
-      })) as { sessionId: string };
-      trace.push(`root attaches ${target} as ${sessionId}`);
+      const meanwhile = pick(["nothing", "home", "route", "relay-ends"] as const)!;
+      const paused = Promise.withResolvers<void>();
+      if (meanwhile !== "nothing") backend.pause = paused.promise;
+      const attaching = router
+        .send("s", {
+          method: "Target.attachToTarget",
+          parameters: { targetId: target, flatten: true },
+          relayId: relay,
+        })
+        .then(
+          (reply) => (reply as { sessionId: string }).sessionId,
+          () => undefined,
+        );
+      await Promise.resolve();
+      if (meanwhile === "home") commitHome(target, "http://127.0.0.1:4310/settings");
+      if (meanwhile === "route") {
+        // The person turns Remote access on: a route joins this Home's addresses.
+        const route = `https://route-${++serial}.test`;
+        origins.push(route);
+        router.setHomeAddresses({ origins: [...origins], loopbackPorts: [4310] });
+        commitHome(target, `${route}/`);
+      }
+      if (meanwhile === "relay-ends") endRelay(relay);
+      paused.resolve();
+      const sessionId = await attaching;
+      trace.push(`${relay} attaches ${target} (${meanwhile}): ${sessionId ?? "refused"}`);
+      const refused = homes.has(target) || endedRelays.has(relay);
+      if (refused !== (sessionId === undefined))
+        throw new Error(`${relay}'s attach to ${target} (${meanwhile}) answered ${sessionId}`);
+      if (!sessionId) return;
       const holder: Holder = {
         name: `channel:${sessionId}`,
         kind: "root-channel",
+        relay,
         target,
         pages: new Set([target]),
         end: async () => {
           await router.send("s", {
             method: "Target.detachFromTarget",
             parameters: { sessionId },
+            relayId: relay,
           });
           drop(holder);
         },
       };
       holders.push(holder);
+    },
+    // A relay ends: every page session it opened, and what they held, ends with it.
+    async () => {
+      const relay = pick(relays)!;
+      trace.push(`${relay} ends`);
+      endRelay(relay);
+    },
+    // The Home opens a new relay on the root.
+    async () => {
+      const relay = `relay-${++serial}`;
+      relays.push(relay);
+      router.openRelay("s", relay);
+      trace.push(`${relay} opens`);
     },
     // A script on a page, or a client (outside a lineage, or a connection's lineage).
     async () => {
@@ -276,7 +349,6 @@ async function run(seed: number, steps: number): Promise<string | undefined> {
         return reaches(holder, openerOf.get(id));
       };
       for (const holder of holders) {
-        if (holder.kind === "first-load") continue;
         const held = holder.kind === "lineage" ? reaches(holder, opener) : holder.pages.has(opener);
         if (!held) continue;
         holder.pages.add(popup);
