@@ -71,6 +71,7 @@ const manifest = {
     { resources: ["war.html", "war.txt"], matches: ["<all_urls>"] },
     { resources: ["trusted-only.html"], matches: ["http://127.0.0.1/*"] },
     { resources: ["callback.html"], matches: ["http://localhost/*"] },
+    { resources: ["dyn.html", "dyn.txt"], matches: ["<all_urls>"], use_dynamic_url: true },
   ],
 };
 const KNOWN_MAIN_WINDOWS_STEP = "chrome.windows.create and remove";
@@ -118,7 +119,14 @@ if (location.pathname === "/open") chrome.runtime.sendMessage({ open: location.o
 if (location.pathname === "/window")
   chrome.runtime.sendMessage({ window: location.origin + "/in-window" }).then((reply) => {
     document.documentElement.dataset.windowReply = JSON.stringify(reply);
-  });`,
+  });
+window.addEventListener("message", (event) => {
+  if (event.data !== "smoke-dyn") return;
+  const url = chrome.runtime.getURL("dyn.html");
+  fetch(chrome.runtime.getURL("dyn.txt"))
+    .then((response) => response.text(), (error) => "rejected " + error.name)
+    .then((own) => window.postMessage({ smokeDyn: url, own }, "*"));
+});`,
   "popup.html": `<!doctype html><body style="width:180px;height:60px">Popup<script src="popup.js"></script></body>`,
   "popup.js": `chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => { document.title = "tab:" + tabs.map((tab) => tab.id).join(","); });`,
   "options.html": `<!doctype html><title>Smoke options</title>`,
@@ -127,6 +135,8 @@ if (location.pathname === "/window")
   "nonwar.html": `<!doctype html><title>Smoke non-WAR</title><p>nonwar</p>`,
   "trusted-only.html": `<!doctype html><title>Smoke trusted-only</title><p>trusted-only</p>`,
   "callback.html": `<!doctype html><title>Smoke callback</title><p>callback</p>`,
+  "dyn.html": `<!doctype html><title>Smoke dyn</title><p>dyn</p>`,
+  "dyn.txt": "extension-dyn-secret",
 };
 
 function writeFixtureExtension(extensionFolder: string): void {
@@ -1232,6 +1242,62 @@ async function checkWebAccessibleResources(
       `[extensions-smoke] extension-web-accessible: widgets=${JSON.stringify(widgets)} ownOpens=${JSON.stringify(ownOpens)} iframeOpens=${JSON.stringify(iframeOpens)}`,
     );
     sectionChecks.push("window.open judged by the frame that opens");
+
+    // An extension's dynamic address (use_dynamic_url, S2): its own page and its content script
+    // use it, a web page it hands it to reaches the listed resource, and a guessed dynamic host
+    // reaches nothing and reads like the extension's own page that is not listed there.
+    await load(page, `${base}options.html`);
+    const dynamicPage = String(
+      await contents(page).executeJavaScript(`chrome.runtime.getURL("dyn.html")`),
+    );
+    const dynamicBase = dynamicPage.replace(/dyn\.html$/u, "");
+    assert.match(
+      dynamicBase,
+      /^chrome-extension:\/\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/$/u,
+      `getURL gave no dynamic address: ${dynamicPage}`,
+    );
+    assert.equal(
+      await contents(page).executeJavaScript(
+        `fetch(${JSON.stringify(`${dynamicBase}dyn.txt`)}).then((r) => r.text(), (e) => "rejected " + e.name)`,
+      ),
+      "extension-dyn-secret",
+      "the extension's own page could not fetch its dynamic address",
+    );
+    await contents(page).executeJavaScript(
+      `location.href = ${JSON.stringify(dynamicPage)}; "started"`,
+    );
+    await waitFor(() => page.url() === `${base}dyn.html`);
+    assert.equal(await contents(page).executeJavaScript("document.title"), "Smoke dyn");
+    await load(page, `${web}/start`);
+    const handed = (await contents(page).executeJavaScript(`new Promise((done) => {
+      window.addEventListener("message", (event) => { if (event.data && event.data.smokeDyn) done(event.data); });
+      window.postMessage("smoke-dyn", "*");
+      setTimeout(() => done(null), 3000);
+    })`)) as { smokeDyn: string; own: string } | null;
+    assert.deepEqual(
+      handed,
+      { smokeDyn: dynamicPage, own: "extension-dyn-secret" },
+      "the content script could not use its dynamic address",
+    );
+    const fetchFromWeb = (url: string) =>
+      contents(page).executeJavaScript(
+        `fetch(${JSON.stringify(url)}).then((r) => r.text().then((b) => "ok " + b), (e) => "rejected " + e.name + ": " + e.message)`,
+      ) as Promise<string>;
+    assert.equal(await fetchFromWeb(`${dynamicBase}dyn.txt`), "ok extension-dyn-secret");
+    const guessedBase = `chrome-extension://${randomUUID()}/`;
+    const guessed = await fetchFromWeb(`${guessedBase}dyn.txt`);
+    assert.match(guessed, /^rejected TypeError/u, `a guessed dynamic host answered: ${guessed}`);
+    assert.equal(
+      await fetchFromWeb(`${dynamicBase}nonwar.html`),
+      guessed,
+      "a guessed dynamic host read differently from a resource not listed there",
+    );
+    assert.equal(
+      await fetchFromWeb(`${base}dyn.txt`),
+      guessed,
+      "the static address of a use_dynamic_url resource was reachable",
+    );
+    sectionChecks.push("an extension's dynamic address works, a guessed one reaches nothing");
 
     // The extension's own page moves to its own page that is not web-accessible, and the
     // product itself still opens any of the extension's pages.

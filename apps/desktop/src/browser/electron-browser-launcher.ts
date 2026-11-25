@@ -70,7 +70,7 @@ import path from "node:path";
 import { z } from "zod";
 import { desktopBrowserAppShortcut } from "../app/application-menu.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
-import { takeExtensionRedirectOrigin } from "./extensions/extension-redirects.js";
+import { takeExtensionRedirect } from "./extensions/extension-redirects.js";
 import { mayReachExtensionResource } from "./extensions/web-accessible.js";
 import { boundPageRestore, ElectronPageRestoreSchema, WakeSeeds } from "./page-restore.js";
 import {
@@ -1614,12 +1614,17 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       } catch {
         frameTreeNodeId = undefined;
       }
-      const from = pageContents.isDestroyed()
+      const redirect = pageContents.isDestroyed()
         ? undefined
-        : takeExtensionRedirectOrigin(pageContents.id, frameTreeNodeId, url);
+        : takeExtensionRedirect(pageContents.id, frameTreeNodeId, url);
+      // Chromium's own rewrite of an extension's dynamic address into its static one: Chromium
+      // enforces the resource's access at the static address itself.
+      if (redirect?.dynamicHop) return;
       if (
-        from === undefined ||
-        !mayReachExtensionResource(url, from, profileManifests(pageContents), { redirect: true })
+        redirect?.from === undefined ||
+        !mayReachExtensionResource(url, redirect.from, profileManifests(pageContents), {
+          redirect: true,
+        })
       )
         event.preventDefault();
     });

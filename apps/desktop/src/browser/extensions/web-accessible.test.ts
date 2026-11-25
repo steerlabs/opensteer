@@ -235,3 +235,26 @@ describe("a server redirect into an extension (W1)", () => {
     expect(redirect(ext("war.html"), "https://evil.test", mv2)).toBe(true);
   });
 });
+
+describe("an extension's dynamic host (use_dynamic_url, S2)", () => {
+  const dynamic = "chrome-extension://e7c508fa-1f5c-471b-9065-5bf03292faaa";
+
+  it("lets an address at a dynamic host through for every initiator: Chromium enforces it", () => {
+    for (const initiator of [web, `chrome-extension://${id}`, "null", undefined])
+      for (const path of ["dyn.html", "nonwar.html", "war.html"])
+        expect(reach(`${dynamic}/${path}`, initiator), `${path} from ${initiator}`).toBe(true);
+    expect(reach(`${dynamic}/dyn.html`, "https://evil.test", mv3, { redirect: true })).toBe(true);
+    expect(reach(`${dynamic.toUpperCase()}/dyn.html`, web)).toBe(true);
+  });
+
+  it("still refuses a host that is neither an extension id nor a dynamic host", () => {
+    expect(reach("chrome-extension://e7c508fa-1f5c-471b-9065/dyn.html", web)).toBe(false);
+    expect(reach("chrome-extension://e7c508fa1f5c471b90655bf03292faaa/dyn.html", web)).toBe(false);
+    expect(reach(`${dynamic}:80/dyn.html`, web)).toBe(false);
+    expect(reach(`blob:${dynamic}/0b1c`, web)).toBe(false);
+  });
+
+  it("grants nothing at the static address through a use_dynamic_url entry", () => {
+    expect(reach(ext("dynamic.html"), web)).toBe(false);
+  });
+});

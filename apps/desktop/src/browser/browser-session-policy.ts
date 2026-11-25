@@ -1,7 +1,12 @@
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import type { Session } from "electron";
 import { browserIdentity, isExtensionUrl } from "@opensteer/browser-core";
-import { recordExtensionRedirect } from "./extensions/extension-redirects.js";
+import {
+  isDynamicExtensionHop,
+  recordDynamicExtensionRequestHop,
+  recordExtensionRedirect,
+  takeDynamicExtensionRequestHop,
+} from "./extensions/extension-redirects.js";
 import { mayReachExtensionResource } from "./extensions/web-accessible.js";
 import { isLoopbackHostname } from "@opensteer/core";
 import { browserPagePermissionsPolicy } from "@opensteer/browser-runtime-core/page-policy";
@@ -94,16 +99,20 @@ export function applyBrowserSessionPolicy(
     else callback({ cancel: false });
   });
   // A navigation a server redirects into an extension is judged by the origin that redirects
-  // (W1): only this hook names it, before the page's `will-redirect` takes it.
+  // (W1): only this hook names it, before the page's `will-redirect` takes it. It also sees
+  // Chromium's own rewrite of an extension's dynamic address into its static one, for any request.
   session.webRequest.onBeforeRedirect(
-    { types: ["mainFrame", "subFrame"], urls: ["<all_urls>"] },
+    { urls: ["<all_urls>", "chrome-extension://*/*"] },
     (details) => {
-      if (
-        details.webContentsId === undefined ||
-        !details.redirectURL.includes("chrome-extension:") ||
-        !isExtensionUrl(details.redirectURL)
-      )
+      if (!details.redirectURL.includes("chrome-extension:")) return;
+      const navigation =
+        details.resourceType === "mainFrame" || details.resourceType === "subFrame";
+      if (!navigation) {
+        if (isDynamicExtensionHop(details.url, details.redirectURL))
+          recordDynamicExtensionRequestHop(details.id, details.redirectURL);
         return;
+      }
+      if (details.webContentsId === undefined || !isExtensionUrl(details.redirectURL)) return;
       let frameTreeNodeId: number | undefined;
       try {
         frameTreeNodeId = details.frame?.frameTreeNodeId;
@@ -240,6 +249,9 @@ function mayRequestExtensionResource(
   details: Electron.OnBeforeRequestListenerDetails,
 ): boolean {
   if (details.resourceType === "mainFrame" || details.resourceType === "subFrame") return true;
+  // Chromium's own rewrite of an extension's dynamic address: it enforces the resource's access
+  // at this static address itself.
+  if (takeDynamicExtensionRequestHop(details.id, details.url)) return true;
   let origin: string | undefined;
   try {
     origin = details.frame ? details.frame.origin : details.initiatorOrigin;

@@ -465,6 +465,31 @@ it("loads a page's own request for an extension resource only when the extension
   expect(cancelled(`chrome-extension://${extId}/war.txt`, gone, "xhr", web.origin)).toBe(false);
   expect(cancelled(`chrome-extension://${extId}/nonwar.html`, gone, "xhr", web.origin)).toBe(true);
   expect(cancelled(`chrome-extension://${extId}/worker.js`, null, "script")).toBe(false);
+  // An extension's dynamic address (use_dynamic_url) is let through, and so is Chromium's own
+  // rewrite of it into the static address, followed by its request id (S2).
+  const dynamicHost = "chrome-extension://e7c508fa-1f5c-471b-9065-5bf03292faaa";
+  expect(cancelled(`${dynamicHost}/dyn.txt`, web)).toBe(false);
+  const beforeRedirect = session.webRequest.onBeforeRedirect.mock.calls[0]!.at(-1) as (
+    details: object,
+  ) => void;
+  const hop = (requestId: number, from: string, to: string) =>
+    beforeRedirect({ id: requestId, url: from, redirectURL: to, resourceType: "xhr" });
+  const staticDyn = `chrome-extension://${extId}/dyn.txt`;
+  const nextRequest = (requestId: number, url: string) => {
+    const answer = vi.fn();
+    before(
+      { id: requestId, url, webContentsId: 7, resourceType: "xhr", frame: web, method: "GET" },
+      answer,
+    );
+    return answer.mock.calls[0]![0].cancel as boolean;
+  };
+  hop(91, `${dynamicHost}/dyn.txt`, staticDyn);
+  expect(nextRequest(91, staticDyn), "Chromium's hop").toBe(false);
+  expect(nextRequest(91, staticDyn), "the hop is taken once").toBe(true);
+  hop(92, `${dynamicHost}/dyn.txt`, staticDyn);
+  expect(nextRequest(93, staticDyn), "another request").toBe(true);
+  hop(94, "https://evil.test/dyn.txt", staticDyn);
+  expect(nextRequest(94, staticDyn), "a web redirect is no hop").toBe(true);
   // Rule 7: an ordinary web request never reads a manifest.
   getExtension.mockClear();
   expect(cancelled("https://site.test/app.js", web, "script")).toBe(false);

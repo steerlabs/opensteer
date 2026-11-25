@@ -10,6 +10,15 @@ import {
 export type ExtensionManifestLookup = (extensionId: string) => unknown;
 
 const extensionScheme = "chrome-extension:";
+const dynamicHostPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
+/**
+ * Whether `hostname` is an extension's dynamic host: the per-session random host
+ * `chrome.runtime.getURL()` gives a `use_dynamic_url` resource on Electron 44.
+ */
+export function isDynamicExtensionHost(hostname: string): boolean {
+  return dynamicHostPattern.test(hostname.toLowerCase());
+}
 
 /**
  * Whether a page whose frame has `initiatorOrigin` may reach the extension address `target` by
@@ -22,9 +31,15 @@ const extensionScheme = "chrome-extension:";
  * Stricter than Chrome where Chrome's behavior is not documented: the path is compared after
  * decoding, case-sensitively; a path with `.`/`..` segments, a backslash or a NUL is refused;
  * MV3 `matches` match only web (http/https) initiators and only with the path `/*`; an entry
- * with `use_dynamic_url` grants nothing at the extension's own address (Electron 44 serves such
- * an entry only at a dynamic host it does not otherwise route); an unknown or opaque initiator
- * matches no MV3 entry.
+ * with `use_dynamic_url` grants nothing at the extension's own address; an unknown or opaque
+ * initiator matches no MV3 entry.
+ *
+ * An address at an extension's dynamic host (`use_dynamic_url`) is let through for every
+ * initiator: the host is a per-session random value only the extension hands out, so it says
+ * nothing about what is installed, and on real Electron 44 Chromium rewrites every request to it
+ * into a redirect to the static address, where it enforces the resource's access itself (probe
+ * 20261125T022627Z-0fb895a2). That hop is let through by the redirect and request gates, which
+ * see Chromium's own rewrite in the session's `onBeforeRedirect`.
  *
  * `options.redirect: true` judges a server redirect into an extension: `initiatorOrigin` is then
  * the origin of the response that redirects, which must be a web (http/https) origin; neither the
@@ -56,6 +71,7 @@ export function mayReachExtensionResource(
   if (url.protocol !== extensionScheme) return true;
   // Chromium treats chrome-extension as a standard scheme: its host is case-insensitive.
   const extensionId = url.hostname.toLowerCase();
+  if (isDynamicExtensionHost(extensionId)) return !url.port && !url.username && !url.password;
   if (!isExtensionId(extensionId) || url.port || url.username || url.password) return false;
   if (redirect) {
     if (!isWebOrigin(initiatorOrigin)) return false;

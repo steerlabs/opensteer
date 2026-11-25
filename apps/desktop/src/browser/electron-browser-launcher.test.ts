@@ -5495,6 +5495,18 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
         // Ordinary addresses are not this rule's.
         expect(refuses("https://example.test/", null), `${gate} web`).toBe(false);
       }
+      // An extension's dynamic address (use_dynamic_url) is not this rule's: Chromium enforces it.
+      const dynamicPage = "chrome-extension://e7c508fa-1f5c-471b-9065-5bf03292faaa/dyn.html";
+      expect(refused.navigate(dynamicPage, web)).toBe(false);
+      expect(refused.frame(dynamicPage, web)).toBe(false);
+      withFrames(view.webContents, ["https://site.test"]);
+      expect(
+        popupHandler({
+          url: dynamicPage,
+          disposition: "new-window",
+          referrer: { url: "https://site.test/", policy: "strict-origin-when-cross-origin" },
+        }),
+      ).toMatchObject({ action: "allow" });
       // The extension's own pages move among their own pages.
       expect(refused.navigate(nonWar, own)).toBe(false);
       expect(refused.frame(nonWar, own)).toBe(false);
@@ -5667,6 +5679,20 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       });
       expect(refuses(page("callback.html"), null, null)).toBe(false);
       expect(refuses(page("callback.html"), null, null)).toBe(true);
+      // Chromium's own rewrite of an extension's dynamic address into its static one (S2) is let
+      // through: Chromium enforces the resource's access there itself.
+      const dynamicHost = "chrome-extension://e7c508fa-1f5c-471b-9065-5bf03292faaa";
+      expect(refuses(page("dyn.html"), `${dynamicHost}/dyn.html`, trusted), "dynamic hop").toBe(
+        false,
+      );
+      expect(
+        refuses(page("nonwar.html"), `${dynamicHost}/dyn.html`, trusted),
+        "not the same path",
+      ).toBe(true);
+      expect(
+        refuses(`${dynamicHost}/dyn.html`, "https://evil.test/bounce", trusted),
+        "into a dynamic host",
+      ).toBe(false);
       // Ordinary redirects are not this rule's, and a redirect from a non-web origin is refused.
       expect(refuses("https://example.test/next", null, null)).toBe(false);
       expect(refuses(page("war.html"), page("war.html", peerId), null)).toBe(true);
