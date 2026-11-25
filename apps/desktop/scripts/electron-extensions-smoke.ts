@@ -1268,6 +1268,18 @@ async function checkWebAccessibleResources(
     );
     await waitFor(() => page.url() === `${base}dyn.html`);
     assert.equal(await contents(page).executeJavaScript("document.title"), "Smoke dyn");
+    // With a #fragment (a hash route): the navigation carries it, Chromium's loader does not.
+    await load(page, `${base}options.html`);
+    await contents(page).executeJavaScript(
+      `location.href = ${JSON.stringify(`${dynamicPage}#/settings`)}; "started"`,
+    );
+    await waitFor(() => page.url().startsWith(`${base}dyn.html`));
+    assert.equal(
+      page.url(),
+      `${base}dyn.html#/settings`,
+      "the extension's own hash route to its dynamic address did not arrive",
+    );
+    assert.equal(await contents(page).executeJavaScript("document.title"), "Smoke dyn");
     await load(page, `${web}/start`);
     const handed = (await contents(page).executeJavaScript(`new Promise((done) => {
       window.addEventListener("message", (event) => { if (event.data && event.data.smokeDyn) done(event.data); });
