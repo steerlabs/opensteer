@@ -8,7 +8,10 @@ import {
   type PageAgentBinding,
 } from "@opensteer/protocol";
 import { z } from "zod";
-import type { PooledBrowserSend } from "../agent-sessions/agent-session-service.js";
+import {
+  OperationOutcomeUnknown,
+  type PooledBrowserSend,
+} from "../agent-sessions/agent-session-service.js";
 import { BrowserCdpConnectionEnded, type BrowserService } from "../browser/browser-service.js";
 import type { CdpAuthority } from "../browser/standard-cdp-tickets.js";
 import { browserReplLimits, browserTargetSchema } from "./browser-repl-messages.js";
@@ -65,13 +68,47 @@ const ended = () =>
     "The browser page attachment has ended.",
     "Use pages() and openPage(tabId) to bind an available tab.",
   );
+const endedAfterSubmit = () =>
+  new OperationOutcomeUnknown(
+    "The browser page attachment ended after a command was sent. Check the page before trying again.",
+  );
+
+function logAttachmentEnded(detail: {
+  readonly tabId?: string;
+  readonly sessionId?: string;
+  readonly method?: string;
+  readonly reason: string;
+  readonly afterSubmit?: boolean;
+}): void {
+  console.warn("browser.use.attachment.ended", JSON.stringify(detail));
+}
 
 function checkReply(value: unknown, budget: BrowserUseBudget): void {
   if (boundedJsonSize(value, budget) === undefined) throw tooLarge();
 }
 
-function translate(error: unknown): never {
-  if (error instanceof BrowserCdpConnectionEnded) throw ended();
+function translate(
+  error: unknown,
+  context?: {
+    readonly tabId?: string;
+    readonly sessionId?: string;
+    readonly method?: string;
+    readonly browserSend?: PooledBrowserSend;
+    readonly onEnded?: () => void;
+  },
+): never {
+  if (error instanceof BrowserCdpConnectionEnded) {
+    const afterSubmit = context?.browserSend?.hasSubmitted?.() === true;
+    logAttachmentEnded({
+      ...(context?.tabId ? { tabId: context.tabId } : {}),
+      ...(context?.sessionId ? { sessionId: context.sessionId } : {}),
+      ...(context?.method ? { method: context.method } : {}),
+      reason: error.message || "BrowserCdpConnectionEnded",
+      ...(afterSubmit ? { afterSubmit } : {}),
+    });
+    context?.onEnded?.();
+    throw afterSubmit ? endedAfterSubmit() : ended();
+  }
   if (error instanceof OpensteerError && error.reason === "browser-reply-limit") throw tooLarge();
   if (error instanceof OpensteerError && error.reason === "browser-cdp-protocol-error")
     throw new BrowserUseCdpError(-32000, error.message);
@@ -132,6 +169,11 @@ export function createBrowserUsePort({
           const endedSession =
             event.method === "Target.detachedFromTarget" && event.parameters.sessionId;
           if ((root && destroyed === root) || (target && endedSession === target.sessionId)) {
+            logAttachmentEnded({
+              tabId: binding.tabId,
+              sessionId: binding.sessionId,
+              reason: destroyed ? "Target.targetDestroyed" : "Target.detachedFromTarget",
+            });
             stop();
             close();
             return;
@@ -172,18 +214,35 @@ export function createBrowserUsePort({
       if (closed || detached.has(channel.sessionId)) throw ended();
       const fields = browserTargetSchema.parse({ ...page, ...channel, tabId: binding.tabId });
       checkReply({ ...fields, handle: "0000000000000000" }, call);
-      target = {
-        ...fields,
-        relay,
-        port,
-        closed,
-        ...(relay.pooledWitness ? { pooledWitness: relay.pooledWitness } : {}),
-      };
+      const attachedRelay = relay;
+      const initialWitness = attachedRelay.pooledWitness;
+      const bound: Target =
+        initialWitness !== undefined
+          ? {
+              ...fields,
+              relay: attachedRelay,
+              port,
+              closed,
+              get pooledWitness(): string {
+                return attachedRelay.pooledWitness ?? initialWitness;
+              },
+            }
+          : {
+              ...fields,
+              relay: attachedRelay,
+              port,
+              closed,
+            };
+      target = bound;
       call.signal.throwIfAborted();
-      return target;
+      return bound;
     } catch (error) {
       close();
-      translate(error);
+      translate(error, {
+        tabId: binding.tabId,
+        sessionId: binding.sessionId,
+        ...(call.browserSend ? { browserSend: call.browserSend } : {}),
+      });
     }
   }
   const port: BrowserUsePort<Target> = {
@@ -214,7 +273,10 @@ export function createBrowserUsePort({
         const args = call.browserSend ? ([call.browserSend] as const) : ([] as const);
         return await bind(await tabs.bind(tabId, call.signal, ...args), call);
       } catch (error) {
-        translate(error);
+        translate(error, {
+          tabId,
+          ...(call.browserSend ? { browserSend: call.browserSend } : {}),
+        });
       }
     },
     async newPage(input, call) {
@@ -223,27 +285,60 @@ export function createBrowserUsePort({
         const args = call.browserSend ? ([call.browserSend] as const) : ([] as const);
         return await bind(await tabs.open(input, randomUUID(), call.signal, ...args), call);
       } catch (error) {
-        translate(error);
+        translate(error, call.browserSend ? { browserSend: call.browserSend } : undefined);
       }
     },
     async rebind(previous, call) {
       const { pooledWitness, relay } = previous;
       const tabId = TabIdSchema.parse(previous.tabId);
+      const afterSubmit = call.browserSend?.hasSubmitted?.() === true;
       if (
         !call.browserSend ||
         !pooledWitness ||
         (await browser.pooledScriptPageWitness?.(authority.ownerId, relay.session.id, tabId)) !==
           pooledWitness
-      )
-        throw ended();
-      const admitted = await tabs.bind(tabId, call.signal, call.browserSend);
-      if (admitted.binding.sessionId !== relay.session.id || admitted.binding.reloaded)
-        throw ended();
-      return bind(admitted, call, pooledWitness);
+      ) {
+        logAttachmentEnded({
+          tabId,
+          sessionId: relay.session.id,
+          reason: "rebind-witness-mismatch",
+          ...(afterSubmit ? { afterSubmit } : {}),
+        });
+        throw afterSubmit ? endedAfterSubmit() : ended();
+      }
+      try {
+        const admitted = await tabs.bind(tabId, call.signal, call.browserSend);
+        if (admitted.binding.sessionId !== relay.session.id || admitted.binding.reloaded) {
+          logAttachmentEnded({
+            tabId,
+            sessionId: relay.session.id,
+            reason: admitted.binding.reloaded ? "rebind-reloaded" : "rebind-session-changed",
+            ...(afterSubmit ? { afterSubmit } : {}),
+          });
+          throw afterSubmit ? endedAfterSubmit() : ended();
+        }
+        return await bind(admitted, call, pooledWitness);
+      } catch (error) {
+        translate(error, {
+          tabId,
+          sessionId: relay.session.id,
+          ...(call.browserSend ? { browserSend: call.browserSend } : {}),
+        });
+      }
     },
     async command(target, method, params, sessionId, call) {
       call.signal.throwIfAborted();
-      if (target.closed) throw ended();
+      if (target.closed) {
+        const afterSubmit = call.browserSend?.hasSubmitted?.() === true;
+        logAttachmentEnded({
+          tabId: target.tabId,
+          sessionId: target.relay.session.id,
+          method,
+          reason: "target-closed",
+          ...(afterSubmit ? { afterSubmit } : {}),
+        });
+        throw afterSubmit ? endedAfterSubmit() : ended();
+      }
       const parsed = BrowserCdpCommandSchema.safeParse({
         method,
         ...(params === undefined ? {} : { parameters: params }),
@@ -288,7 +383,20 @@ export function createBrowserUsePort({
             "resource_exhausted",
             "Screenshot exceeds its image budget (up to 323 KiB per capture). Use a smaller viewport clip or JPEG via CDP.",
           );
-        translate(error);
+        translate(error, {
+          tabId: target.tabId,
+          sessionId: target.relay.session.id,
+          method,
+          ...(call.browserSend ? { browserSend: call.browserSend } : {}),
+          onEnded: () => {
+            target.closed = true;
+            const notify = target.onEnd;
+            delete target.listen;
+            delete target.onEnd;
+            notify?.();
+            target.relay.close();
+          },
+        });
       }
     },
     release(target) {

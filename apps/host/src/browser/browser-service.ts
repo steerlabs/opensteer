@@ -1252,7 +1252,7 @@ export class BrowserService {
     };
   }
 
-  async pooledScriptPageWitness(ownerId: UserId, sessionId: BrowserSessionId, tabId: TabId) {
+  async #pooledScriptWitnesses(ownerId: UserId, sessionId: BrowserSessionId, tabId: TabId) {
     const tab = await this.#workspaceTabs?.get(ownerId, tabId);
     const documentId = this.pageInventory(sessionId)?.records.get(tabId)?.documentId;
     if (
@@ -1262,7 +1262,14 @@ export class BrowserService {
       !documentId
     )
       return undefined;
-    return JSON.stringify([tab.profileId, tab.generation, tab.pageBinding.lineageId, documentId]);
+    return {
+      tab: JSON.stringify([tab.profileId, tab.generation, tab.pageBinding.lineageId]),
+      page: JSON.stringify([tab.profileId, tab.generation, tab.pageBinding.lineageId, documentId]),
+    };
+  }
+
+  async pooledScriptPageWitness(ownerId: UserId, sessionId: BrowserSessionId, tabId: TabId) {
+    return (await this.#pooledScriptWitnesses(ownerId, sessionId, tabId))?.page;
   }
 
   /**
@@ -6262,14 +6269,18 @@ export class BrowserService {
     const runtimeHoldsConnection =
       connectionWork && this.#resolveTarget(placementOf(record))?.connectionCommands === true;
     const pool = input.browserSend && this.#pool(record.runnerId);
-    const pageWitness = (tabId: TabId) =>
-      this.pooledScriptPageWitness(input.ownerId, record.id, tabId);
-    const expectedPage = pool && input.scriptTabId && (await pageWitness(input.scriptTabId));
+    const readWitnesses = (tabId: TabId) =>
+      this.#pooledScriptWitnesses(input.ownerId, record.id, tabId);
+    const initialWitness =
+      pool && input.scriptTabId ? await readWitnesses(input.scriptTabId) : undefined;
+    const expectedTab = initialWitness?.tab;
+    let currentPageWitness = initialWitness?.page;
     if (
       input.browserSend &&
       (!pool ||
-        !expectedPage ||
-        (input.expectedPooledWitness && input.expectedPooledWitness !== expectedPage))
+        !expectedTab ||
+        !currentPageWitness ||
+        (input.expectedPooledWitness && input.expectedPooledWitness !== currentPageWitness))
     )
       throw new BrowserCdpConnectionEnded("This browser page is stale.");
     if (input.scriptTabId && (this.#endedBindings.has(input.agentBindingId) || this.#closed))
@@ -6564,7 +6575,10 @@ export class BrowserService {
                   await this.#requireAgentAccess(record.runnerId);
                   if (lease && !(await fillAllowed())) throw new BrowserCdpConnectionEnded();
                   await browserSend.recheck();
-                  if (!input.scriptTabId || (await pageWitness(input.scriptTabId)) !== expectedPage)
+                  if (
+                    !input.scriptTabId ||
+                    (await readWitnesses(input.scriptTabId))?.tab !== expectedTab
+                  )
                     throw new BrowserCdpConnectionEnded("This browser page is stale.");
                   assertAttached(false);
                 },
@@ -6665,17 +6679,20 @@ export class BrowserService {
                   .catch(this.#onError);
               }
             }
+            if (pool && input.scriptTabId && !attachmentClosed) {
+              const latest = await readWitnesses(input.scriptTabId);
+              if (latest && latest.tab === expectedTab) currentPageWitness = latest.page;
+            }
             return response.result;
           }),
         };
       });
     };
-    return {
+    const base = {
       close,
       dispatch,
-      request: async (command) => (await dispatch(command)).result,
+      request: async (command: BrowserCdpRequest["command"]) => (await dispatch(command)).result,
       session: publicSession(record),
-      ...(expectedPage ? { pooledWitness: expectedPage } : {}),
       ...(pooledRelay
         ? {
             pooledClose: async () => {
@@ -6685,6 +6702,14 @@ export class BrowserService {
           }
         : {}),
     };
+    return currentPageWitness
+      ? {
+          ...base,
+          get pooledWitness(): string {
+            return currentPageWitness!;
+          },
+        }
+      : base;
   }
 
   /**

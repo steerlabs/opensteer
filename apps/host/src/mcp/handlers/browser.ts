@@ -369,7 +369,7 @@ export class BrowserToolHandlers {
       generation: seen
         ? JSON.stringify([...(JSON.parse(seen.tab) as unknown[]), seen.document])
         : null,
-      recheckTarget: async () => {
+      recheckTarget: async (afterSubmit = false) => {
         const profile = (await this.#ports.profiles(caller.userId)).find(
           ({ id }) => id === target.profileId,
         );
@@ -380,7 +380,10 @@ export class BrowserToolHandlers {
           throw tabNotFound();
         if (!target.tabId || !seen) return;
         const now = await witness(target.tabId);
-        if (now.tab !== seen.tab || (document !== null && now.document !== document))
+        if (
+          now.tab !== seen.tab ||
+          (!afterSubmit && document !== null && now.document !== document)
+        )
           throw tabNotFound();
         document ??= now.document;
       },

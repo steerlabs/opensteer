@@ -31,14 +31,19 @@ type Home = Awaited<ReturnType<Journey["startHome"]>>;
  */
 async function directWork(j: Journey, home: () => Home) {
   let tabChange: ((tab: TabRecord) => TabRecord | Promise<TabRecord>) | undefined;
-  const refuse = async (): Promise<never> => {
-    throw new Error("Unexpected tab operation in this fixture.");
-  };
   const ownerId = j.task.userId;
   const row = async (tabId: string) => {
     const tab = await j.tabs.get(ownerId, tabId as TabRecord["id"]);
     if (!tab) throw new Error("No such tab.");
     return tab;
+  };
+  // The agent's own page: the Home's page service opens it and its tab row is written, as the
+  // tab service does (whose authorization this fixture does not repeat).
+  const open = async (actor: never, target: never, key: string) => {
+    const write = await home().service.pageTabs.open(actor, target, `fixture:${key}`);
+    await j.tabs.open(write, `fixture:${key}`);
+    await home().service.pageTabs.admitted?.(write);
+    return { tab: { tabId: write.id } };
   };
   const scriptTabs = {
     browserScriptPages: async function* () {
@@ -47,7 +52,7 @@ async function directWork(j: Journey, home: () => Home) {
     },
     bindBrowserScript: async (actor: never, tabId: string) =>
       home().service.pageTabs.bindBrowserScript!(actor, await row(tabId)),
-    open: refuse,
+    open,
     get: async (_owner: unknown, tabId: string) => {
       const tab = await row(tabId);
       return { kind: tab.kind, profile: tab.profileId ? { profileId: tab.profileId } : null };
@@ -60,14 +65,6 @@ async function directWork(j: Journey, home: () => Home) {
     store: j.store,
     tabs: confinement.tabs(scriptTabs as never),
   } as never);
-  // The agent's own page: the Home's page service opens it and its tab row is written, as the
-  // tab service does (whose authorization this fixture does not repeat).
-  const open = async (actor: never, target: never, key: string) => {
-    const write = await home().service.pageTabs.open(actor, target, `fixture:${key}`);
-    await j.tabs.open(write, `fixture:${key}`);
-    await home().service.pageTabs.admitted?.(write);
-    return { tab: { tabId: write.id } };
-  };
   /** The tab row a connection reads; a test can make the next reads see a changed tab. */
   const tabRow = async (tabId: string) => {
     const tab = await row(tabId);
@@ -255,6 +252,84 @@ it("runs a connected agent's script on a parked browser after one wake, and rebi
     ).toMatchObject({ state: "failed", outcome: "failed", handedOffAt: expect.any(Date) });
     expect(j.controller.effects).toEqual(["start", "pause", "resume", "pause", "resume"]);
   } finally {
+    await j.close();
+  }
+});
+
+it("keeps a connected agent's pooled browser_use page attachment alive across multiple commands, navigations, and openPage, and settles unknown if attachment ends after a command was sent", async () => {
+  const site = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    const step = url.searchParams.get("r") ?? "0";
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(
+      `<!doctype html><title>Step ${step}</title><p id="step">step-${step}</p><a href="/?r=linked">Next</a>`,
+    );
+  });
+  site.listen(0, "127.0.0.1");
+  await once(site, "listening");
+  const origin = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
+  const j = await journey("direct-script-goto", { profile: true });
+  try {
+    const home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const work = await directWork(j, () => home);
+    // 1. newPage + multiple commands (url, title, goto, url, title, locator click + waitForURL)
+    const first = await work.use(
+      `globalThis.p = await newPage(${JSON.stringify(`${origin}/?r=0`)}); print(await p.url()); print(await p.title()); await p.goto(${JSON.stringify(`${origin}/?r=1`)}); print(await p.url(), await p.title()); await p.locator("a").first().click(); await p.waitForURL(${JSON.stringify(`${origin}/?r=linked`)}); print(await p.title()); return p.tabId;`,
+    );
+    expect(first.isError, text(first)).not.toBe(true);
+    expect(text(first)).toContain(`${origin}/?r=0`);
+    expect(text(first)).toContain("Step 0");
+    expect(text(first)).toContain(`${origin}/?r=1 Step 1`);
+    expect(text(first)).toContain("Step linked");
+
+    // 2. A second script using openPage(tabId) on the tab created by the first script succeeds on
+    // its first and subsequent commands (including goto).
+    const pages = await home.service.savedPages(j.task.userId, session.id);
+    const createdTab = pages.find((row) => row.url?.includes("r=linked"));
+    if (!createdTab?.pageBinding) throw new Error("Expected the navigated page tab.");
+    const second = await work.use(
+      `const q = await openPage(${JSON.stringify(createdTab.id)}); print(await q.url()); await q.goto(${JSON.stringify(`${origin}/?r=2`)}); return await q.title();`,
+    );
+    expect(second.isError, text(second)).not.toBe(true);
+    expect(text(second)).toContain(`${origin}/?r=linked`);
+    expect(text(second)).toContain("Step 2");
+
+    // 2b. Tab-targeted browser_use({ tabId, code }) also stays attached across its own goto.
+    const tabTargeted = await work.useTab(
+      `const t = await openPage(${JSON.stringify(createdTab.id)}); await t.goto(${JSON.stringify(`${origin}/?r=tab-nav`)}); return await t.title();`,
+      createdTab.id,
+    );
+    expect(tabTargeted.isError, text(tabTargeted)).not.toBe(true);
+    expect(text(tabTargeted)).toContain("Step tab-nav");
+
+    // 3. A park/wake after the script's own navigation still rebinds the cached handle to the new document.
+    await vi.waitFor(() => expect(home.coordinator.gate.held).toBe(0));
+    expect(await home.coordinator.tryPark()).toBe("parked");
+    const afterWake = await work.use(`return await p.title()`);
+    expect(afterWake.isError, text(afterWake)).not.toBe(true);
+    expect(text(afterWake)).toContain("Step tab-nav");
+
+    // 4. Rule 4: if the attachment ends after a command was sent (e.g. target closes mid-script),
+    // the operation settles as `unknown`, never `failed`.
+    const endedAfterSend = await work.use(
+      `await p.goto(${JSON.stringify(`${origin}/?r=3`)}); await p.close(); return await p.title();`,
+    );
+    expect(endedAfterSend.structuredContent, text(endedAfterSend)).toMatchObject({
+      status: "unknown",
+    });
+    expect(
+      await j.database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome"])
+        .orderBy("createdAt", "desc")
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ state: "unknown", outcome: "unknown" });
+  } finally {
+    site.close();
     await j.close();
   }
 });
