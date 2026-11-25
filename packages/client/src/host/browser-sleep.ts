@@ -83,7 +83,8 @@ export interface BrowserPoolReport {
    * awaited), `egress-required`, `profile-disk-missing`, `unreachable` (nothing answered for
    * long), or one this client does not know. Absent while it can be used.
    */
-  readonly notReady?: { readonly reason: string } | undefined;
+  readonly notReady?:
+    { readonly reason: string; readonly savedStateKept?: boolean | undefined } | undefined;
   /**
    * W15: sessions of a replaced browser whose Stop never confirmed, with their open tabs, until
    * the person removes them from their list.
@@ -123,10 +124,16 @@ export type BrowserSleep =
   | { readonly kind: "setting-up"; readonly computerId: string }
   /**
    * Cannot be used now and nothing the person does will help: its exit address is missing
-   * (`egress-required`), its host is not ready, or it cannot be reached. Tabs and sign-ins kept.
+   * (`egress-required`), its host is not ready, or it cannot be reached. `savedStateKept` is true
+   * only when signed host evidence proved the saved state stayed paused.
    */
-  | { readonly kind: "paused"; readonly computerId: string; readonly reason: string }
-  /** Could not start. Tabs and sign-ins are kept. `repeated` from the second failure in a row. */
+  | {
+      readonly kind: "paused";
+      readonly computerId: string;
+      readonly reason: string;
+      readonly savedStateKept?: boolean | undefined;
+    }
+  /** Could not start. `repeated` from the second failure in a row. */
   | {
       readonly kind: "failed";
       readonly computerId: string;
@@ -201,7 +208,13 @@ function browserOf(report: BrowserPoolReport): BrowserSleep {
   const since = report.since;
   const notReady = report.notReady?.reason;
   if (notReady === "setting-up") return { kind: "setting-up", computerId };
-  if (notReady) return { kind: "paused", computerId, reason: notReady };
+  if (notReady)
+    return {
+      kind: "paused",
+      computerId,
+      reason: notReady,
+      ...(report.notReady?.savedStateKept === true ? { savedStateKept: true } : {}),
+    };
   switch (report.phase) {
     case "running":
     case "preparing":
@@ -403,15 +416,14 @@ export const browserSleepWords = {
   settingUp: "Setting up your browser…",
   settingUpDetail: "This can take a few minutes.",
   paused: "Browsing paused",
-  pausedDetail:
+  pausedKeptDetail:
     "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
-  pausedStartRefusedDetail:
-    "Your Cloud Computer’s browser can’t start right now. Try again in a moment.",
+  pausedDetail: "Your Cloud Computer’s browser can’t start right now. Try again in a moment.",
+  pausedUnreachableDetail: "Your browser isn’t answering yet. Opensteer keeps trying.",
 
   failedTitle: "Your browser couldn’t start",
-  failedDetail: "Your tabs and sign-ins are kept. Try again in a moment.",
-  failedRepeatedDetail:
-    "Your tabs and sign-ins are kept. If this keeps happening, contact support.",
+  failedDetail: "Try again in a moment.",
+  failedRepeatedDetail: "If this keeps happening, contact support.",
   tryAgain: "Try again",
   trying: "Trying…",
   contactSupport: "Contact support",
@@ -524,14 +536,17 @@ export function browserNotReady(browser: BrowserSleep): {
   if (browser.kind !== "paused") return null;
   return {
     title: browserSleepWords.paused,
-    // The exit address's own sentence, as an ordinary Cloud Computer says it today.
+    // The exit address's own sentence, as an ordinary Cloud Computer says it today; otherwise
+    // promise saved state was kept only when signed host evidence proved it.
     detail:
       // Its way out to the internet is missing or down: the same words as for a missing address.
       browser.reason === "egress-required" || browser.reason === "egress-proxy-down"
         ? cloudWords("cloud.ip.pausedDetail")
-        : browser.reason === "start-refused"
-          ? browserSleepWords.pausedStartRefusedDetail
-          : browserSleepWords.pausedDetail,
+        : browser.reason === "unreachable"
+          ? browserSleepWords.pausedUnreachableDetail
+          : browser.savedStateKept === true
+            ? browserSleepWords.pausedKeptDetail
+            : browserSleepWords.pausedDetail,
     waiting: false,
   };
 }

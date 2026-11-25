@@ -4625,8 +4625,26 @@ export class BrowserService {
         return current;
       };
       if (pool) await recheck();
-      const reservation =
-        pool && signal ? await this.#reservePool(pool.gate, signal, pooledSession!.id) : undefined;
+      let reservation: BrowserPoolReservation | undefined;
+      if (pool && signal) {
+        try {
+          reservation = await this.#reservePool(pool.gate, signal, pooledSession!.id, {
+            failOnRefusal: true,
+          });
+        } catch (error) {
+          if (error instanceof BrowserPoolAttemptRefused) {
+            const refusal = this.#pooledWakeRefusal(error, pool);
+            throw new OpensteerError({
+              code: "runner_offline",
+              reason: refusal.reason,
+              message: refusal.message,
+              retryable: true,
+              cause: error,
+            });
+          }
+          throw error;
+        }
+      }
       try {
         if (pool) await recheck();
         const session = await this.#restoreWorkspacePage(ownerId, row, undefined, signal);
@@ -8451,6 +8469,7 @@ export class BrowserService {
               agentSignal,
               waiterSignal,
               startRecheck,
+              { failOnRefusal: true },
             );
             poolStart.pool = { target: pooled, reservation };
             try {
@@ -8480,7 +8499,24 @@ export class BrowserService {
           },
         );
       } else {
-        const reservation = await this.#reservePool(pooled.gate, poolStart.signal);
+        let reservation: BrowserPoolReservation;
+        try {
+          reservation = await this.#reservePool(pooled.gate, poolStart.signal, undefined, {
+            failOnRefusal: true,
+          });
+        } catch (error) {
+          if (error instanceof BrowserPoolAttemptRefused) {
+            const refusal = this.#pooledWakeRefusal(error, pooled);
+            throw new OpensteerError({
+              code: "runner_offline",
+              reason: refusal.reason,
+              message: refusal.message,
+              retryable: true,
+              cause: error,
+            });
+          }
+          throw error;
+        }
         poolStart.pool = { target: pooled, reservation };
         poolStart.signal.throwIfAborted();
         if (boundRunnerId) this.#requireProfileHome(profile!, boundRunnerId, homes);
@@ -13415,7 +13451,7 @@ const poolOverReasons = new Set(["slot-deleted", "fenced", "browser-replaced"]);
  */
 function poolNotReady(
   shown: ReturnType<BrowserPoolCoordinator["report"]>,
-): { readonly reason: string } | undefined {
+): { readonly reason: string; readonly savedStateKept?: boolean } | undefined {
   if (shown?.refused) {
     if (poolOverReasons.has(shown.refused)) return { reason: "setting-up" };
     if (
@@ -13423,7 +13459,10 @@ function poolNotReady(
       shown.refused === "egress-proxy-down" ||
       shown.savedStateKept
     )
-      return { reason: shown.refused };
+      return {
+        reason: shown.refused,
+        ...(shown.savedStateKept ? { savedStateKept: true } : {}),
+      };
     return { reason: "start-refused" };
   }
   if (shown?.unreachable) return { reason: "unreachable" };

@@ -179,12 +179,13 @@ it("keeps a waking picture undimmed by the quiet moment, and says a tap on it wa
   expect(document.querySelector('.browser-stage p.visually-hidden[role="status"]')).toBeNull();
 });
 
-it("puts a browser that could not start in place of the page, tabs and sign-ins kept", async () => {
+it("puts a browser that could not start in place of the page", async () => {
   await openPage();
   await report("failed");
   const state = await until("The failure was never shown", () => element(".place-state"));
   expect(state.textContent).toContain("Your browser couldn’t start");
-  expect(state.textContent).toContain("Your tabs and sign-ins are kept. Try again in a moment.");
+  expect(state.textContent).toContain("Try again in a moment.");
+  expect(state.textContent).not.toContain("Your tabs and sign-ins are kept.");
   const retry = [...state.querySelectorAll("button")].find(
     (button) => button.textContent === "Try again",
   )!;
@@ -196,8 +197,9 @@ it("puts a browser that could not start in place of the page, tabs and sign-ins 
   );
   await report("failed-again");
   expect(element(".place-state").textContent).toContain(
-    "Your tabs and sign-ins are kept. If this keeps happening, contact support.",
+    "If this keeps happening, contact support.",
   );
+  expect(element(".place-state").textContent).not.toContain("Your tabs and sign-ins are kept.");
 });
 
 it("says once that a page reloaded, and the note leaves when seen", async () => {

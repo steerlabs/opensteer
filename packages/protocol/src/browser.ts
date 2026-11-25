@@ -1594,7 +1594,9 @@ export const BrowserPoolReportSchema = z.object({
    * answered for long), or a reason this client does not know. Optional; a released client
    * ignores it.
    */
-  notReady: z.object({ reason: z.string().min(1).max(64) }).optional(),
+  notReady: z
+    .object({ reason: z.string().min(1).max(64), savedStateKept: z.boolean().optional() })
+    .optional(),
   /**
    * W15: sessions of a replaced browser whose Stop never confirmed, with their open tabs, until
    * the person removes them from their list.

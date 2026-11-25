@@ -265,15 +265,15 @@ describe("the note a tab says once", () => {
 });
 
 describe("a browser that could not start", () => {
-  it("keeps tabs and sign-ins, and points to support from the second failure", () => {
+  it("reports the start failure without promising saved state, and points to support from the second failure", () => {
     expect(browserStartFailure(view("failed").browser)).toEqual({
       title: "Your browser couldn’t start",
-      detail: "Your tabs and sign-ins are kept. Try again in a moment.",
+      detail: "Try again in a moment.",
       contactSupport: false,
     });
     expect(browserStartFailure(view("failed-again").browser)).toEqual({
       title: "Your browser couldn’t start",
-      detail: "Your tabs and sign-ins are kept. If this keeps happening, contact support.",
+      detail: "If this keeps happening, contact support.",
       contactSupport: true,
     });
     expect(browserStartFailure(view("waking").browser)).toBeNull();
@@ -352,6 +352,7 @@ describe("a browser that cannot be used now", () => {
   const report = (
     notReady: string | undefined,
     phase: "running" | "parked" | "waking" = "parked",
+    savedStateKept?: boolean,
   ) =>
     browserSleepFromHome(
       [
@@ -359,7 +360,14 @@ describe("a browser that cannot be used now", () => {
           runnerId: computer,
           phase,
           since,
-          ...(notReady ? { notReady: { reason: notReady } } : {}),
+          ...(notReady
+            ? {
+                notReady: {
+                  reason: notReady,
+                  ...(savedStateKept !== undefined ? { savedStateKept } : {}),
+                },
+              }
+            : {}),
         },
       ],
       computer,
@@ -387,18 +395,48 @@ describe("a browser that cannot be used now", () => {
     },
   );
 
-  it.each(["profile-disk-missing", "unreachable", "a-reason-this-client-does-not-know"])(
-    "is paused for %s with its tabs and sign-ins kept, never as a lost profile",
+  it("gives an unanswered browser its own words with no retention promise", () => {
+    expect(report("unreachable", "running")).toEqual({
+      kind: "paused",
+      computerId: computer,
+      reason: "unreachable",
+    });
+    expect(browserNotReady(report("unreachable", "running"))).toEqual({
+      title: "Browsing paused",
+      detail: "Your browser isn’t answering yet. Opensteer keeps trying.",
+      waiting: false,
+    });
+    expect(browserWakeLine(report("unreachable"), 60_000, { picture: true })).toBeNull();
+    expect(browserStartFailure(report("unreachable"))).toBeNull();
+  });
+
+  it.each(["profile-disk-missing", "a-reason-this-client-does-not-know"])(
+    "promises tabs and sign-ins were kept for %s only when savedStateKept is true",
     (reason) => {
-      expect(report(reason, "running")).toEqual({ kind: "paused", computerId: computer, reason });
-      expect(browserNotReady(report(reason, "running"))).toEqual({
+      expect(report(reason, "running", true)).toEqual({
+        kind: "paused",
+        computerId: computer,
+        reason,
+        savedStateKept: true,
+      });
+      expect(browserNotReady(report(reason, "running", true))).toEqual({
         title: "Browsing paused",
         detail:
           "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
         waiting: false,
       });
-      expect(browserWakeLine(report(reason), 60_000, { picture: true })).toBeNull();
-      expect(browserStartFailure(report(reason))).toBeNull();
+      expect(browserNotReady(report(reason, "running"))).toEqual({
+        title: "Browsing paused",
+        detail: "Your Cloud Computer’s browser can’t start right now. Try again in a moment.",
+        waiting: false,
+      });
+      expect(browserNotReady(report(reason, "running", false))).toEqual({
+        title: "Browsing paused",
+        detail: "Your Cloud Computer’s browser can’t start right now. Try again in a moment.",
+        waiting: false,
+      });
+      expect(browserWakeLine(report(reason, "parked", true), 60_000, { picture: true })).toBeNull();
+      expect(browserStartFailure(report(reason, "parked", true))).toBeNull();
     },
   );
 

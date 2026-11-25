@@ -13293,4 +13293,132 @@ describe("pooled identity open authority precheck and outage refusal words (pool
       });
     },
   );
+
+  it("answers with the refusal words at once when selecting a sleeping tab or restoring an ended tab", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const ownerId = createId("user");
+    const runnerId = createId("runner");
+    const repository = new SelectedGrantRepository(ownerId);
+    const memory = memoryTabs();
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Default" });
+    const gate = new BrowserPoolGate();
+    gate.set({ recovered: true, away: "parked", hold: null });
+    let lastRefusal:
+      | { readonly refused: string; readonly savedStateKept: boolean; readonly since: Date }
+      | undefined;
+    const coordinator = {
+      runtimeId: "browser-main",
+      gate,
+      unanswered: false,
+      over: undefined,
+      report: () => (lastRefusal ? { phase: "failed" as const, ...lastRefusal } : undefined),
+      setAdopter: () => undefined,
+      recover: async () => undefined,
+      retire: async () => undefined,
+      close: () => undefined,
+      ensureRelayAttached: async () => undefined,
+    } as unknown as BrowserPoolCoordinator;
+    const service = new BrowserService({
+      ...profileStateOptions,
+      repository,
+      tabs: memory.store,
+      tabPlaces: { write: async () => false, notice: () => {} },
+      signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+      personal: true,
+      pooledOnly: true,
+      targetResolver: { resolve: () => undefined, placements: () => [] },
+      onSessionsChanged: () => undefined,
+      onError: () => undefined,
+    });
+    const originalList = repository.listEligibleBrowserRunners.bind(repository);
+    repository.listEligibleBrowserRunners = async () => [
+      ...(await originalList()),
+      {
+        id: runnerId,
+        kind: "main",
+        name: "Cloud Computer",
+        allowedModules: ["browser"],
+        ownerKind: "deployment",
+        ownerUserId: null,
+      },
+    ];
+    await service.adoptPool(runnerId, coordinator, {
+      label: "Cloud Computer",
+      environmentIds: [],
+    });
+    cleanups.push(() => service.close());
+
+    const liveSessionId = createBrowserSessionId();
+    await repository.createBrowserSession({
+      id: liveSessionId,
+      ownerId,
+      opener: { kind: "person", userId: ownerId },
+      placementKey: `runner:${runnerId}`,
+      runnerId,
+      origin: "person",
+      profileId: profile.id,
+      runtimeId: "browser-main",
+      pooled: true,
+    });
+    await repository.transitionBrowserSession({ sessionId: liveSessionId, state: "ready" });
+
+    const liveTabId = createId("surface");
+    const liveRow = {
+      id: liveTabId,
+      ownerId,
+      kind: "page",
+      generation: 1,
+      computerId: runnerId,
+      profileId: profile.id,
+      title: "Sleeping",
+      url: "https://example.test/sleeping",
+      pageBinding: { sessionId: liveSessionId, surfaceId: liveTabId },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      closedAt: null,
+    } as unknown as TabRecord;
+    memory.rows.set(liveTabId, liveRow);
+
+    // 1. Selecting an existing sleeping tab refuses at once with savedStateKept wording.
+    const startedActivate = Date.now();
+    const activating = service.pageTabs.activate(ownerId, liveRow, "activate-refused");
+    await vi.waitFor(() => expect(gate.demand).toBe(true));
+    lastRefusal = {
+      refused: "profile-disk-missing",
+      savedStateKept: true,
+      since: new Date(),
+    };
+    gate.noteAttemptRefused("profile-disk-missing", true);
+    await expect(activating).rejects.toMatchObject({
+      reason: "browser-pool-refused",
+      message:
+        "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
+    });
+    expect(Date.now() - startedActivate).toBeLessThan(2_000);
+
+    // 2. Restoring a tab whose session ended refuses at once without promising saved state kept.
+    const endedTabId = createId("surface");
+    const endedRow = {
+      ...liveRow,
+      id: endedTabId,
+      profileId: null,
+      pageBinding: { sessionId: createBrowserSessionId(), surfaceId: endedTabId },
+    } as unknown as TabRecord;
+    memory.rows.set(endedTabId, endedRow);
+    const startedRestore = Date.now();
+    const restoring = service.pageTabs.activate(ownerId, endedRow, "restore-refused");
+    void restoring.catch(() => undefined);
+    await vi.waitFor(() => expect(gate.demand).toBe(true));
+    lastRefusal = {
+      refused: "resume-failed",
+      savedStateKept: false,
+      since: new Date(),
+    };
+    gate.noteAttemptRefused("resume-failed", false);
+    await expect(restoring).rejects.toMatchObject({
+      reason: "browser-pool-start-refused",
+      message: "Your Cloud Computer’s browser can’t start right now. Try again in a moment.",
+    });
+    expect(Date.now() - startedRestore).toBeLessThan(2_000);
+  });
 });

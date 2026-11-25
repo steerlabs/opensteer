@@ -2132,6 +2132,11 @@ export class BrowserPoolCoordinator {
       resumed = result;
       status = result.status;
     }
+    // A signed applied resume supersedes any prior refusal while adoption/reattach runs.
+    if (this.#refused) {
+      this.#refused = undefined;
+      this.#publish(this.#slot);
+    }
     const adopt = resumed.control!;
     // The resume moves the epoch on; slot, term and instance stay the slot's.
     if (

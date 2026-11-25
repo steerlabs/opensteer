@@ -261,7 +261,6 @@ async function poolFixture(
       runtimeId: "pool-runtime",
       pooled: true,
     });
-    await transitionBrowserSession(database, { sessionId: id, state: "ready" });
     verifier.setClaims(`open-${id}`, { ...claims, sessionId: id, pool: coordinator.fence() });
     const sink = new FakeSink();
     const attachment = await runtime.attach(`open-${id}`, sink);
@@ -269,7 +268,10 @@ async function poolFixture(
     await attachment.handle(
       JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
     );
+    // Install the channel before marking the row ready so a periodic `#withoutChannel` scan
+    // cannot observe a ready session without its channel and start a reconnect before parking.
     sinks.set(id, attachment);
+    await transitionBrowserSession(database, { sessionId: id, state: "ready" });
   };
   const row = (id = sessionId) => getBrowserSessionForOwner(database, id, task.userId);
   const slot = () => readBrowserPoolSlot(database, task.runnerId);
@@ -3180,3 +3182,69 @@ it.each(["fenced", "slot-deleted"] as const)(
     }
   },
 );
+
+it("clears a prior refusal and reports waking as soon as a retry resume applies, before reattach finishes", async () => {
+  const f = await poolFixture("refusal-cleared-on-applied-resume");
+  try {
+    let refuseNextResume = false;
+    const appliedResume = Promise.withResolvers<void>();
+    const releaseReattach = Promise.withResolvers<void>();
+    const port: BrowserPoolPhysicalController = {
+      status: (slot, term) => f.controller.status(slot, term),
+      result: (slot, term, id) => f.controller.result(slot, term, id),
+      apply: async (call) => {
+        if (call.kind === "resume" && refuseNextResume) {
+          refuseNextResume = false;
+          return {
+            id: call.id,
+            applied: false,
+            reason: "profile-disk-missing",
+            status: await f.controller.status(call.slotId, call.term),
+          };
+        }
+        const result = await f.controller.apply(call);
+        if (call.kind === "resume" && result.applied) appliedResume.resolve();
+        return result;
+      },
+    };
+    const home = f.home(undefined, port, { refusedRetryMs: 60_000 });
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+
+    // First wake refused while saved state stays paused.
+    refuseNextResume = true;
+    await expect(
+      home.gate.reserve(AbortSignal.timeout(5_000), { failOnRefusal: true }),
+    ).rejects.toMatchObject({
+      name: "BrowserPoolAttemptRefused",
+      refusedReason: "profile-disk-missing",
+      savedStateKept: true,
+    });
+    expect(home.report()).toMatchObject({
+      refused: "profile-disk-missing",
+      savedStateKept: true,
+    });
+
+    // Retry succeeds at the host (signed applied resume), then stalls during reattach.
+    f.stallReattach(releaseReattach.promise);
+    const waking = home.gate.reserve(AbortSignal.timeout(10_000), { failOnRefusal: true });
+    await withTimeout(appliedResume.promise, 5_000, {
+      timeoutError: () => new Error("retry resume did not apply"),
+    });
+    // Wait until the slot has advanced to epoch 2 (waking, in reattach), then assert the stale
+    // refusal is already gone while the gate stays waking (never ready).
+    await vi.waitFor(async () => expect((await f.slot())?.epoch).toBe(2), { timeout: 5_000 });
+    expect(home.report()).toBeUndefined();
+    expect(home.gate.phase).toBe("waking");
+    expect((await f.slot())?.phase).toBe("waking");
+
+    releaseReattach.resolve();
+    (await waking).release();
+    expect(home.report()).toBeUndefined();
+    expect(home.gate.phase).toBe("open");
+    expect((await f.slot())?.phase).toBe("running");
+  } finally {
+    await f.close();
+  }
+});
