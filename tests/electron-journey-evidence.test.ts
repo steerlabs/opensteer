@@ -74,7 +74,7 @@ it("rejects early success without result evidence and records smoke failures", (
     const knownMainFault = {
       step: "chrome.windows.create and remove",
       refusal:
-        "Creating separate browser windows is not supported; use chrome.tabs.create() to open a tab.",
+        "Error invoking remote method 'opensteer-crx:call': Error: Creating separate browser windows is not supported; use chrome.tabs.create() to open a tab.",
       phases: ["install", "reopen"],
     };
     const writeExtArtifacts = (overrides: {
@@ -128,6 +128,22 @@ it("rejects early success without result evidence and records smoke failures", (
         "different lifecycle refusal rejected",
         0,
         { lifecycle: { knownMainFault: { ...knownMainFault, refusal: "Some other refusal." } } },
+        1,
+        undefined,
+        undefined,
+      ],
+      [
+        "the bare sentence without the IPC wrapper rejected",
+        0,
+        {
+          lifecycle: {
+            knownMainFault: {
+              ...knownMainFault,
+              refusal:
+                "Creating separate browser windows is not supported; use chrome.tabs.create() to open a tab.",
+            },
+          },
+        },
         1,
         undefined,
         undefined,

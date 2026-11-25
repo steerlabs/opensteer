@@ -74,8 +74,10 @@ const manifest = {
   ],
 };
 const KNOWN_MAIN_WINDOWS_STEP = "chrome.windows.create and remove";
+// What the extension's worker receives on real Electron 44 (run 20261125T013319Z-972ac5ad): the
+// refusal comes back over the extension API's IPC call, wrapped by ipcRenderer.invoke.
 const KNOWN_MAIN_WINDOWS_REFUSAL =
-  "Creating separate browser windows is not supported; use chrome.tabs.create() to open a tab.";
+  "Error invoking remote method 'opensteer-crx:call': Error: Creating separate browser windows is not supported; use chrome.tabs.create() to open a tab.";
 
 interface KnownMainFault {
   readonly step: string;
@@ -320,8 +322,8 @@ async function main(): Promise<void> {
 
     // chrome.windows.create opens its own window of tabs; removing it closes them,
     // and the profile's window stays current. On main (1e6300ad3), profile-extensions.ts:476-480
-    // always refuses chrome.windows.create with KNOWN_MAIN_WINDOWS_REFUSAL. Record ONLY that exact
-    // refusal as knownMainFault so the smoke can still verify options, reopen, and uninstalled;
+    // always refuses chrome.windows.create; its worker receives exactly KNOWN_MAIN_WINDOWS_REFUSAL.
+    // Record ONLY that exact refusal as knownMainFault so the smoke can still verify options, reopen, and uninstalled;
     // any other failure throws, and a pass clears knownMainFault so validation catches pin rot.
     const open = browser.context.pages().length;
     await load(page, `${origin}/window`);

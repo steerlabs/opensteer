@@ -33,8 +33,10 @@ try {
       break;
     case "extensions": {
       const KNOWN_STEP = "chrome.windows.create and remove";
+      // Exactly what the extension's worker receives on real Electron: the refusal wrapped by
+      // the extension API's IPC call.
       const KNOWN_REFUSAL =
-        "Creating separate browser windows is not supported; use chrome.tabs.create() to open a tab.";
+        "Error invoking remote method 'opensteer-crx:call': Error: Creating separate browser windows is not supported; use chrome.tabs.create() to open a tab.";
       const report = local("extensions.json");
       assert.equal(report.passed, true);
       assert.equal(report.boundaryPassed, true);
