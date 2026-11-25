@@ -97,13 +97,15 @@ export class BrowserRelayError extends Error {
  * inside is unchanged.
  */
 export interface BrowserBridgeTransport {
-  open(): Promise<{ readonly socket: Duplex; readonly bridgeToken: string }>;
+  open(signal?: AbortSignal): Promise<{ readonly socket: Duplex; readonly bridgeToken: string }>;
 }
 
 export class LocalBrowserRuntimeBridge {
   readonly #channels = new Map<BrowserChannelId, { readonly socket: WebSocket }>();
   readonly #bridgeToken: string;
   readonly #maxBufferedBytes: number;
+  readonly #maxTextFrameBytes: number | undefined;
+  readonly #maxBinaryFrameBytes: number | undefined;
   readonly #runtimeId: string;
   readonly #url: URL;
   #passkeys = false;
@@ -111,13 +113,16 @@ export class LocalBrowserRuntimeBridge {
     this.#passkeys = enabled;
   }
 
-  async localProfileInventory() {
+  async localProfileInventory(signal?: AbortSignal) {
+    const maintenanceSignal = signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(120_000)])
+      : AbortSignal.timeout(120_000);
     return z
       .strictObject({
         storage: z.strictObject({ storageInstanceId: z.uuid(), engine: BrowserEngineSchema }),
         profiles: z.array(HeldLocalProfileSchema),
       })
-      .parse(await this.#maintenance("/v1/local-profiles"));
+      .parse(await this.#maintenance("/v1/local-profiles", undefined, maintenanceSignal));
   }
   async deleteLocalProfile(
     binding: LocalProfileBinding,
@@ -142,7 +147,12 @@ export class LocalBrowserRuntimeBridge {
     signal = AbortSignal.timeout(120_000),
   ): Promise<unknown> {
     if (this.#transport) {
-      const { socket, bridgeToken } = await this.#transport.open();
+      signal.throwIfAborted();
+      const { socket, bridgeToken } = await this.#transport.open(signal);
+      if (signal.aborted) {
+        socket.destroy();
+        throw signal.reason;
+      }
       const answer = await requestOverTunnel(socket, {
         method: input ? "POST" : "GET",
         path: pathname,
@@ -183,6 +193,8 @@ export class LocalBrowserRuntimeBridge {
       | {
           readonly bridgeToken: string;
           readonly maxBufferedBytes?: number;
+          readonly maxTextFrameBytes?: number;
+          readonly maxBinaryFrameBytes?: number;
           readonly runtimeId: string;
           readonly url: URL;
         }
@@ -190,10 +202,14 @@ export class LocalBrowserRuntimeBridge {
           /** A pooled target: every connection is a tunnel with its own token. */
           readonly transport: BrowserBridgeTransport;
           readonly maxBufferedBytes?: number;
+          readonly maxTextFrameBytes?: number;
+          readonly maxBinaryFrameBytes?: number;
           readonly runtimeId: string;
         },
   ) {
     this.#maxBufferedBytes = options.maxBufferedBytes ?? 8 * 1_024 * 1_024;
+    this.#maxTextFrameBytes = options.maxTextFrameBytes;
+    this.#maxBinaryFrameBytes = options.maxBinaryFrameBytes;
     this.#runtimeId = options.runtimeId;
     if ("transport" in options) {
       this.#transport = options.transport;
@@ -238,38 +254,49 @@ export class LocalBrowserRuntimeBridge {
     this.#attachKeysHeader = encoded;
   }
 
-  async #healthText(): Promise<string> {
+  async #healthText(signal?: AbortSignal): Promise<string> {
     if (this.#transport) {
-      const { socket } = await this.#transport.open();
+      signal?.throwIfAborted();
+      const healthSignal = signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+        : AbortSignal.timeout(10_000);
+      const { socket } = await this.#transport.open(healthSignal);
+      if (healthSignal.aborted) {
+        socket.destroy();
+        throw healthSignal.reason;
+      }
       const answer = await requestOverTunnel(socket, {
         method: "GET",
         path: "/health",
         headers: { accept: "application/json" },
         maximumBytes: 32 * 1_024,
-        signal: AbortSignal.timeout(10_000),
+        signal: healthSignal,
       });
       if (answer.status !== 200) throw new BrowserRelayError("Browser health is unavailable.");
       return answer.text;
     }
+    const fetchSignal = signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(2_000)])
+      : AbortSignal.timeout(2_000);
     const response = await fetch(new URL("/health", this.#url), {
       headers: { accept: "application/json" },
       redirect: "error",
-      signal: AbortSignal.timeout(2_000),
+      signal: fetchSignal,
     });
     if (!response.ok) throw new BrowserRelayError("Browser health is unavailable.");
     return readBoundedText(response, { maximumBytes: 32 * 1_024 });
   }
 
-  async #readHealth() {
-    const health = LocalHealthSchema.parse(JSON.parse(await this.#healthText()));
+  async #readHealth(signal?: AbortSignal) {
+    const health = LocalHealthSchema.parse(JSON.parse(await this.#healthText(signal)));
     if (health.runtimeId !== this.#runtimeId)
       throw new BrowserRelayError("Browser runtime identity does not match configuration.");
     return health;
   }
 
   /** Facts from the running engine, before the Host negotiates its auxiliary stream. */
-  async capabilities() {
-    const health = await this.#readHealth();
+  async capabilities(signal?: AbortSignal) {
+    const health = await this.#readHealth(signal);
     return {
       wireVersion: health.wireVersion,
       ...(health.standardCdp === 1 ? { standardCdp: 1 as const } : {}),
@@ -365,9 +392,16 @@ export class LocalBrowserRuntimeBridge {
           sink.onRawCdp(channelId, frame);
         } else if (isBinary) {
           if (standardCdp) throw new Error("Unexpected raw CDP readiness.");
+          if (
+            this.#maxBinaryFrameBytes !== undefined &&
+            frame.byteLength > this.#maxBinaryFrameBytes
+          )
+            throw new Error("Browser runtime binary frame exceeds the size limit.");
           validateBrowserRuntimeFrame(frame);
           sink.onFrame(channelId, frame);
         } else {
+          if (this.#maxTextFrameBytes !== undefined && frame.byteLength > this.#maxTextFrameBytes)
+            throw new Error("Browser runtime text frame exceeds the size limit.");
           const value: unknown = JSON.parse(frame.toString("utf8"));
           const ready = createBrowserBridgeAttachedSchema().safeParse(value);
           if (ready.success) {

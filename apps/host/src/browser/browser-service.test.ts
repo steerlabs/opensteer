@@ -1,3 +1,5 @@
+import { BrowserPoolGate } from "./browser-pool-gate.js";
+import type { BrowserPoolCoordinator } from "./browser-pool-coordinator.js";
 import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import { RunnerIdSchema, type DeviceId } from "@opensteer/core";
 import { DeviceIdSchema } from "@opensteer/core";
@@ -9532,7 +9534,11 @@ describe("a connected agent's selected grant admits the exact profile before any
         },
         { ownerId, agentBindingId: "run:selected-open", threadId: createId("thread") },
       ),
-    ).rejects.toMatchObject(refusal);
+    ).rejects.toMatchObject(
+      which === "withdrawn"
+        ? { code: "not_found", message: "Browser profile not found." }
+        : refusal,
+    );
     nothingStarted();
   });
 
@@ -12316,5 +12322,1101 @@ describe("work under a connection's authority never uses the clipboard or change
     for (let i = 0; i < 5; i++) await new Promise<void>((r) => setImmediate(r));
     expect(resolved).toBe(false);
     expect(sent.filter((message) => message.type === "session.state")).toEqual([]);
+  });
+});
+
+describe("pooled identity open authority precheck and outage refusal words (pool-wake review)", () => {
+  const makePooledSetup = async (options?: {
+    readonly gateOpen?: boolean;
+    readonly requireAgentAccess?: (runnerId: RunnerId) => Promise<void>;
+    readonly unavailableReason?: () => string | undefined;
+    readonly unanswered?: boolean;
+    readonly refused?: string;
+    readonly onReserve?: () => void;
+    readonly onEnsureRelay?: () => Promise<void>;
+  }) => {
+    const keys = generateKeyPairSync("ed25519");
+    const ownerId = createId("user");
+    const runnerId = createId("runner");
+    const repository = new SelectedGrantRepository(ownerId);
+    const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+    const withdrawn = await repository.createBrowserProfile({ ownerId, name: "Withdrawn" });
+    repository.granted = [kept.id];
+    const gate = new BrowserPoolGate();
+    if (options?.gateOpen) gate.set({ recovered: true, away: null });
+    else gate.set({ recovered: true, away: "parked" });
+    let reserveCalls = 0;
+    const realReserve = gate.reserve.bind(gate);
+    gate.reserve = ((...args: Parameters<typeof gate.reserve>) => {
+      reserveCalls++;
+      options?.onReserve?.();
+      return realReserve(...args);
+    }) as typeof gate.reserve;
+    let ensureRelayCalls = 0;
+    const coordinator = {
+      runtimeId: "browser-main",
+      gate,
+      get unanswered() {
+        return options?.unanswered ?? false;
+      },
+      report: () =>
+        options?.refused
+          ? { phase: "failed" as const, since: new Date(), refused: options.refused }
+          : options?.unanswered
+            ? { phase: "waking" as const, since: new Date() }
+            : undefined,
+      setAdopter: () => undefined,
+      recover: async () => undefined,
+      retire: async () => undefined,
+      close: () => undefined,
+      ensureRelayAttached: async () => {
+        ensureRelayCalls++;
+        await options?.onEnsureRelay?.();
+      },
+    } as unknown as BrowserPoolCoordinator;
+    const service = new BrowserService({
+      ...profileStateOptions,
+      repository,
+      signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+      personal: true,
+      pooledOnly: true,
+      requireAgentAccess: options?.requireAgentAccess ?? (async () => undefined),
+      targetResolver: {
+        resolve: () => undefined,
+        placements: () => [],
+      },
+      onSessionsChanged: () => undefined,
+      onError: () => undefined,
+    });
+    if (options?.unavailableReason) service.setPooledUnavailableReason(options.unavailableReason);
+    const originalList = repository.listEligibleBrowserRunners.bind(repository);
+    repository.listEligibleBrowserRunners = async () => [
+      ...(await originalList()),
+      {
+        id: runnerId,
+        kind: "main",
+        name: "Cloud Computer",
+        allowedModules: ["browser"],
+        ownerKind: "deployment",
+        ownerUserId: null,
+      },
+    ];
+    await service.adoptPool(runnerId, coordinator, {
+      label: "Cloud Computer",
+      environmentIds: [],
+    });
+    cleanups.push(() => service.close());
+    return {
+      ownerId,
+      runnerId,
+      repository,
+      kept,
+      withdrawn,
+      gate,
+      service,
+      getReserveCalls: () => reserveCalls,
+      getEnsureRelayCalls: () => ensureRelayCalls,
+    };
+  };
+
+  it("checks exact agent profile grant and device switch before taking any hold or dialing a running pool with detached relay", async () => {
+    let deviceBrowserAllowed = true;
+    const setup = await makePooledSetup({
+      gateOpen: true,
+      requireAgentAccess: async (id) => {
+        if (!deviceBrowserAllowed)
+          throw new DeviceAccessRefusal("device-access-off", DeviceIdSchema.parse(id), "browser");
+      },
+    });
+    const agent = {
+      ownerId: setup.ownerId,
+      agentBindingId: "session:selected",
+      threadId: createId("thread"),
+    };
+
+    // Narrowed grant before entry: profile outside grant gets not_found with 0 reservations and 0 relay dials.
+    await expect(
+      setup.service.openTab(
+        setup.ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `narrowed-${randomUUID()}`,
+          identity: { kind: "profile", profileId: setup.withdrawn.id },
+          url: "https://example.test/denied",
+        },
+        agent,
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(setup.getReserveCalls()).toBe(0);
+    expect(setup.getEnsureRelayCalls()).toBe(0);
+    expect(setup.gate.held).toBe(0);
+
+    // Narrowed grant AFTER entry check (while listing eligible runners), with gate admitting and
+    // relay detached: must still get not_found with 0 reservations and 0 relay dials, never an
+    // availability refusal.
+    const baseList = setup.repository.listEligibleBrowserRunners.bind(setup.repository);
+    let narrowOnNextList = true;
+    setup.repository.listEligibleBrowserRunners = async () => {
+      if (narrowOnNextList) {
+        narrowOnNextList = false;
+        setup.repository.granted = [];
+      }
+      return baseList();
+    };
+    await expect(
+      setup.service.openTab(
+        setup.ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `narrowed-mid-${randomUUID()}`,
+          identity: { kind: "profile", profileId: setup.kept.id },
+          url: "https://example.test/denied-mid",
+        },
+        agent,
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(setup.getReserveCalls()).toBe(0);
+    expect(setup.getEnsureRelayCalls()).toBe(0);
+    expect(setup.gate.held).toBe(0);
+
+    // Device browser switch off: granted profile must get device-access-off with 0 reservations and 0 relay dials.
+    setup.repository.granted = [setup.kept.id];
+    deviceBrowserAllowed = false;
+    await expect(
+      setup.service.openTab(
+        setup.ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `device-off-${randomUUID()}`,
+          identity: { kind: "profile", profileId: setup.kept.id },
+          url: "https://example.test/device-off",
+        },
+        agent,
+      ),
+    ).rejects.toMatchObject({ code: "forbidden", reason: "device-access-off" });
+    expect(setup.getReserveCalls()).toBe(0);
+    expect(setup.getEnsureRelayCalls()).toBe(0);
+    expect(setup.gate.held).toBe(0);
+  });
+
+  it("runs the exact grant read last before reserving so narrowing during the device read takes zero reservations or dials", async () => {
+    let setup!: Awaited<ReturnType<typeof makePooledSetup>>;
+    setup = await makePooledSetup({
+      gateOpen: true,
+      requireAgentAccess: async () => {
+        // Narrow the grant while the device-access read is in flight.
+        setup.repository.granted = [];
+      },
+    });
+    const agent = {
+      ownerId: setup.ownerId,
+      agentBindingId: "session:selected",
+      threadId: createId("thread"),
+    };
+    await expect(
+      setup.service.openTab(
+        setup.ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `narrow-during-device-${randomUUID()}`,
+          identity: { kind: "profile", profileId: setup.kept.id },
+          url: "https://example.test/narrow-during-device",
+        },
+        agent,
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(setup.getReserveCalls()).toBe(0);
+    expect(setup.getEnsureRelayCalls()).toBe(0);
+    expect(setup.gate.held).toBe(0);
+  });
+
+  it("refuses immediately instead of waiting on a pending pooled relay when Browser access is off before or during wait", async () => {
+    vi.useFakeTimers();
+    try {
+      let deviceBrowserAllowed = false;
+      let waitCalls = 0;
+      let waitEntered!: () => void;
+      const enteredWait = new Promise<void>((resolve) => {
+        waitEntered = resolve;
+      });
+      let waitSignalAborted = false;
+      const keys = generateKeyPairSync("ed25519");
+      const ownerId = createId("user");
+      const runnerId = createId("runner");
+      const repository = new SelectedGrantRepository(ownerId);
+      const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+      repository.granted = [kept.id];
+      const gate = new BrowserPoolGate();
+      gate.set({ recovered: true, away: null });
+      let reserveCalls = 0;
+      const realReserve = gate.reserve.bind(gate);
+      gate.reserve = ((...args: Parameters<typeof gate.reserve>) => {
+        reserveCalls++;
+        return realReserve(...args);
+      }) as typeof gate.reserve;
+      const coordinator = {
+        runtimeId: "browser-main",
+        gate,
+        unanswered: false,
+        report: () => undefined,
+        setAdopter: () => undefined,
+        recover: async () => undefined,
+        retire: async () => undefined,
+        close: () => undefined,
+        ensureRelayAttached: async () => undefined,
+      } as unknown as BrowserPoolCoordinator;
+      const service = new BrowserService({
+        ...profileStateOptions,
+        repository,
+        signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+        personal: true,
+        pooledOnly: true,
+        requireAgentAccess: async (id) => {
+          if (!deviceBrowserAllowed)
+            throw new DeviceAccessRefusal("device-access-off", DeviceIdSchema.parse(id), "browser");
+        },
+        targetResolver: {
+          resolve: () => undefined,
+          placements: () => [],
+          pendingAdmission: (id) => id === runnerId,
+          waitForTarget: (_id, signal) => {
+            waitCalls++;
+            waitEntered();
+            return new Promise<void>((_resolve, reject) => {
+              signal?.addEventListener(
+                "abort",
+                () => {
+                  waitSignalAborted = true;
+                  reject(signal.reason);
+                },
+                { once: true },
+              );
+            });
+          },
+        },
+        onSessionsChanged: () => undefined,
+        onError: () => undefined,
+      });
+      const originalList = repository.listEligibleBrowserRunners.bind(repository);
+      repository.listEligibleBrowserRunners = async () => [
+        ...(await originalList()),
+        {
+          id: runnerId,
+          kind: "main",
+          name: "Cloud Computer",
+          allowedModules: ["browser"],
+          ownerKind: "deployment",
+          ownerUserId: null,
+        },
+      ];
+      await service.adoptPool(runnerId, coordinator, {
+        label: "Cloud Computer",
+        environmentIds: [],
+      });
+      cleanups.push(() => service.close());
+      const agent = {
+        ownerId,
+        agentBindingId: "session:selected",
+        threadId: createId("thread"),
+      };
+
+      // Switch off BEFORE pending-admission wait: immediate refusal, zero waitForTarget or reserve calls.
+      await expect(
+        service.openTab(
+          ownerId,
+          {
+            type: "browser.tab.open",
+            idempotencyKey: `pending-off-before-${randomUUID()}`,
+            identity: { kind: "profile", profileId: kept.id },
+            placement: { kind: "runner", runnerId },
+            url: "https://example.test/pending-off-before",
+          },
+          agent,
+        ),
+      ).rejects.toMatchObject({ code: "forbidden", reason: "device-access-off" });
+      expect(waitCalls).toBe(0);
+      expect(reserveCalls).toBe(0);
+
+      // Switch turned off DURING pending-admission wait: aborts waitForTarget and refuses immediately.
+      deviceBrowserAllowed = true;
+      const opening = service.openTab(
+        ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `pending-off-during-${randomUUID()}`,
+          identity: { kind: "profile", profileId: kept.id },
+          placement: { kind: "runner", runnerId },
+          url: "https://example.test/pending-off-during",
+        },
+        agent,
+      );
+      await withTimeout(enteredWait, 5_000, {
+        timeoutError: () => new Error("waitForTarget was not entered"),
+      });
+      deviceBrowserAllowed = false;
+      await service.withRunnerAdmission(runnerId, () => service.disableAgentAccess(runnerId));
+      await expect(opening).rejects.toMatchObject({
+        code: "forbidden",
+        reason: "device-access-off",
+      });
+      expect(waitCalls).toBe(1);
+      expect(waitSignalAborted).toBe(true);
+      expect(reserveCalls).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("carries the pool's unreachable reason (not generic timeout) when an ordinary 18s person open gets no answer, while keeping the placement offered", async () => {
+    vi.useFakeTimers();
+    try {
+      const setup = await makePooledSetup({
+        gateOpen: false,
+        unanswered: true,
+        unavailableReason: () =>
+          "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
+      });
+      // Placement stays offered so asking is the retry.
+      expect(setup.service.resourcePlacements()).toMatchObject([
+        { runnerId: setup.runnerId, available: true },
+      ]);
+      const opening = setup.service.openTab(setup.ownerId, {
+        type: "browser.tab.open",
+        idempotencyKey: `unreachable-18s-${randomUUID()}`,
+        identity: { kind: "profile", profileId: setup.kept.id },
+        url: "https://example.test/unreachable",
+      });
+      const settled = opening.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      await vi.advanceTimersByTimeAsync(18_000);
+      expect(await settled).toMatchObject({
+        error: {
+          code: "conflict",
+          reason: "browser-pool-unreachable",
+          message: "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
+        },
+      });
+      // Placement still stays offered for a retry.
+      expect(setup.service.resourcePlacements()).toMatchObject([
+        { runnerId: setup.runnerId, available: true },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ends a waiting person open at once with the pool's start-refusal reason when the controller answers no, and retries on the next open", async () => {
+    vi.useFakeTimers();
+    try {
+      let refused: string | undefined;
+      let demandCount = 0;
+      const setup = await makePooledSetup({
+        gateOpen: false,
+        unavailableReason: () =>
+          refused
+            ? "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept."
+            : "Setting up your browser… This can take a few minutes.",
+      });
+      // Wire the coordinator's refusal into the mock report() too.
+      const pool = setup.service.resourcePlacements();
+      expect(pool).toMatchObject([{ runnerId: setup.runnerId, available: true }]);
+      setup.gate.onChange = () => {
+        demandCount++;
+        if (demandCount === 1) {
+          refused = "egress-proxy-down";
+          setup.gate.noteAttemptRefused("egress-proxy-down", true);
+        } else {
+          refused = undefined;
+          setup.gate.set({ recovered: true, away: null });
+        }
+      };
+
+      // Ordinary person open (18s deadline): must end immediately on refusal without advancing timers.
+      const firstOpen = setup.service.openTab(setup.ownerId, {
+        type: "browser.tab.open",
+        idempotencyKey: `refused-now-${randomUUID()}`,
+        identity: { kind: "profile", profileId: setup.kept.id },
+        url: "https://example.test/refused",
+      });
+      await expect(firstOpen).rejects.toMatchObject({
+        code: "conflict",
+        reason: "browser-pool-refused",
+        message:
+          "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
+      });
+      // Placement stays offered so asking is the retry.
+      expect(setup.service.resourcePlacements()).toMatchObject([
+        { runnerId: setup.runnerId, available: true },
+      ]);
+      // Next open creates fresh demand, wakes the gate, and reaches target resolution (0 holds leaked).
+      await expect(
+        setup.service.openTab(setup.ownerId, {
+          type: "browser.tab.open",
+          idempotencyKey: `retry-after-refusal-${randomUUID()}`,
+          identity: { kind: "profile", profileId: setup.kept.id },
+          url: "https://example.test/retry",
+        }),
+      ).rejects.toMatchObject({ reason: "browser-pool-disconnected" });
+      expect(demandCount).toBe(2);
+      expect(setup.gate.held).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("releases and re-waits in the identity-open loop when a running gate closes to reconnecting before a target is ready", async () => {
+    let transitionOnce = true;
+    let targetReady = false;
+    const keys = generateKeyPairSync("ed25519");
+    const ownerId = createId("user");
+    const runnerId = createId("runner");
+    const repository = new SelectedGrantRepository(ownerId);
+    const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+    const gate = new BrowserPoolGate();
+    gate.set({ recovered: true, away: null });
+    let reserveCalls = 0;
+    const realReserve = gate.reserve.bind(gate);
+    gate.reserve = ((...args: Parameters<typeof gate.reserve>) => {
+      reserveCalls++;
+      return realReserve(...args);
+    }) as typeof gate.reserve;
+    const coordinator = {
+      runtimeId: "browser-main",
+      gate,
+      unanswered: false,
+      report: () => undefined,
+      identity: () => ({
+        runnerId,
+        runtimeId: "browser-main",
+        slotId: "bps_test",
+        term: 1,
+        instanceId: "guest-1",
+        epoch: 1,
+      }),
+      fence: () => ({ slot: "bps_test", term: 1, instance: "guest-1", epoch: 1 }),
+      setAdopter: () => undefined,
+      recover: async () => undefined,
+      retire: async () => undefined,
+      close: () => undefined,
+      ensureRelayAttached: async () => {
+        if (transitionOnce) {
+          transitionOnce = false;
+          // Simulates a running gate closing to reconnecting as pendingChannelLoss lands.
+          gate.set({ recovered: true, away: "reconnecting" });
+          setTimeout(() => {
+            targetReady = true;
+            gate.set({ recovered: true, away: null });
+          }, 10);
+        }
+      },
+    } as unknown as BrowserPoolCoordinator;
+    const bindSpy = vi.spyOn(repository, "bindBrowserTabOpen");
+    const service = new BrowserService({
+      ...profileStateOptions,
+      repository,
+      signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+      personal: true,
+      pooledOnly: true,
+      onSessionsChanged: () => undefined,
+      onError: () => undefined,
+      targetResolver: {
+        resolve: () =>
+          targetReady
+            ? ({
+                runnerId,
+                runtimeId: "browser-main",
+                openSocket: async () => {
+                  throw new OpensteerError({ code: "conflict", message: "reached-connect" });
+                },
+              } as unknown as import("./browser-service.js").BrowserRuntimeTarget)
+            : undefined,
+        placements: () => [],
+      },
+    });
+    const originalList = repository.listEligibleBrowserRunners.bind(repository);
+    repository.listEligibleBrowserRunners = async () => [
+      ...(await originalList()),
+      {
+        id: runnerId,
+        kind: "main",
+        name: "Cloud Computer",
+        allowedModules: ["browser"],
+        ownerKind: "deployment",
+        ownerUserId: null,
+      },
+    ];
+    await service.adoptPool(runnerId, coordinator, { label: "Cloud Computer", environmentIds: [] });
+    cleanups.push(() => service.close());
+
+    // The open enters with gate open (reserve #1), transitions to reconnecting, releases & continues,
+    // waits for reconnect (reserve #2), and enters session start with zero leaked holds afterwards.
+    await expect(
+      service.openTab(ownerId, {
+        type: "browser.tab.open",
+        idempotencyKey: `reconnect-continue-${randomUUID()}`,
+        identity: { kind: "profile", profileId: kept.id },
+        url: "https://example.test/reconnected",
+      }),
+    ).rejects.toMatchObject({ reason: "browser-tab-open-failed" });
+    expect(bindSpy).toHaveBeenCalledTimes(1);
+    expect(reserveCalls).toBe(2);
+    expect(gate.held).toBe(0);
+  });
+
+  it("cancels an agent's post-reservation pending-relay wait and releases its gate hold when Browser access is turned off", async () => {
+    vi.useFakeTimers();
+    try {
+      let deviceBrowserAllowed = true;
+      let pending = false;
+      let waitEntered!: () => void;
+      const enteredWait = new Promise<void>((resolve) => {
+        waitEntered = resolve;
+      });
+      let waitSignalAborted = false;
+      const keys = generateKeyPairSync("ed25519");
+      const ownerId = createId("user");
+      const runnerId = createId("runner");
+      const repository = new SelectedGrantRepository(ownerId);
+      const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+      repository.granted = [kept.id];
+      const gate = new BrowserPoolGate();
+      gate.set({ recovered: true, away: null });
+      const realReserve = gate.reserve.bind(gate);
+      gate.reserve = ((...args: Parameters<typeof gate.reserve>) => {
+        // Relay becomes pending right after reservation is granted (after initial selection check).
+        pending = true;
+        return realReserve(...args);
+      }) as typeof gate.reserve;
+      const coordinator = {
+        runtimeId: "browser-main",
+        gate,
+        unanswered: false,
+        report: () => undefined,
+        setAdopter: () => undefined,
+        recover: async () => undefined,
+        retire: async () => undefined,
+        close: () => undefined,
+        ensureRelayAttached: async () => undefined,
+      } as unknown as BrowserPoolCoordinator;
+      const service = new BrowserService({
+        ...profileStateOptions,
+        repository,
+        signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+        personal: true,
+        pooledOnly: true,
+        requireAgentAccess: async (id) => {
+          if (!deviceBrowserAllowed)
+            throw new DeviceAccessRefusal("device-access-off", DeviceIdSchema.parse(id), "browser");
+        },
+        targetResolver: {
+          resolve: () => undefined,
+          placements: () => [],
+          pendingAdmission: (id) => pending && id === runnerId,
+          waitForTarget: (_id, signal) => {
+            waitEntered();
+            return new Promise<void>((_resolve, reject) => {
+              signal?.addEventListener(
+                "abort",
+                () => {
+                  waitSignalAborted = true;
+                  reject(signal.reason);
+                },
+                { once: true },
+              );
+            });
+          },
+        },
+        onSessionsChanged: () => undefined,
+        onError: () => undefined,
+      });
+      const originalList = repository.listEligibleBrowserRunners.bind(repository);
+      repository.listEligibleBrowserRunners = async () => [
+        ...(await originalList()),
+        {
+          id: runnerId,
+          kind: "main",
+          name: "Cloud Computer",
+          allowedModules: ["browser"],
+          ownerKind: "deployment",
+          ownerUserId: null,
+        },
+      ];
+      await service.adoptPool(runnerId, coordinator, {
+        label: "Cloud Computer",
+        environmentIds: [],
+      });
+      cleanups.push(() => service.close());
+      const agent = {
+        ownerId,
+        agentBindingId: "session:selected",
+        threadId: createId("thread"),
+      };
+
+      const opening = service.openTab(
+        ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `post-reserve-off-${randomUUID()}`,
+          identity: { kind: "profile", profileId: kept.id },
+          placement: { kind: "runner", runnerId },
+          url: "https://example.test/post-reserve-off",
+        },
+        agent,
+      );
+      await withTimeout(enteredWait, 5_000, {
+        timeoutError: () => new Error("post-reservation waitForTarget was not entered"),
+      });
+      expect(gate.held).toBe(1);
+      deviceBrowserAllowed = false;
+      await service.withRunnerAdmission(runnerId, () => service.disableAgentAccess(runnerId));
+      await expect(opening).rejects.toMatchObject({
+        code: "forbidden",
+        reason: "device-access-off",
+      });
+      expect(waitSignalAborted).toBe(true);
+      expect(gate.held).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("runs the exact grant read last before reserving on existing-page bind and restore so narrowing during device or ownership reads takes zero reservations", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const ownerId = createId("user");
+    const runnerId = createId("runner");
+    const repository = new SelectedGrantRepository(ownerId);
+    const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+    repository.granted = [kept.id];
+    const memory = memoryTabs();
+    const gate = new BrowserPoolGate();
+    gate.set({ recovered: true, away: null });
+    let reserveCalls = 0;
+    const realReserve = gate.reserve.bind(gate);
+    gate.reserve = ((...args: Parameters<typeof gate.reserve>) => {
+      reserveCalls++;
+      return realReserve(...args);
+    }) as typeof gate.reserve;
+    const coordinator = {
+      runtimeId: "browser-main",
+      gate,
+      unanswered: false,
+      report: () => undefined,
+      setAdopter: () => undefined,
+      recover: async () => undefined,
+      retire: async () => undefined,
+      close: () => undefined,
+      ensureRelayAttached: async () => undefined,
+    } as unknown as BrowserPoolCoordinator;
+    let narrowOnDeviceRead = false;
+    const service = new BrowserService({
+      ...profileStateOptions,
+      repository,
+      tabs: memory.store,
+      tabPlaces: { write: async () => false, notice: () => {} },
+      signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+      personal: true,
+      pooledOnly: true,
+      requireAgentAccess: async () => {
+        if (narrowOnDeviceRead) {
+          narrowOnDeviceRead = false;
+          repository.granted = [];
+        }
+      },
+      targetResolver: {
+        resolve: () => undefined,
+        placements: () => [],
+      },
+      onSessionsChanged: () => undefined,
+      onError: () => undefined,
+    });
+    const originalList = repository.listEligibleBrowserRunners.bind(repository);
+    repository.listEligibleBrowserRunners = async () => [
+      ...(await originalList()),
+      {
+        id: runnerId,
+        kind: "main",
+        name: "Cloud Computer",
+        allowedModules: ["browser"],
+        ownerKind: "deployment",
+        ownerUserId: null,
+      },
+    ];
+    await service.adoptPool(runnerId, coordinator, { label: "Cloud Computer", environmentIds: [] });
+    cleanups.push(() => service.close());
+
+    // 1) Existing-page bind: narrowing grant during the device-access read before reservation takes 0 holds.
+    const existingSession = await repository.createBrowserSession({
+      id: createBrowserSessionId(),
+      placementKey: `runner:${runnerId}`,
+      runnerId,
+      runtimeId: "browser-main",
+      profileId: kept.id,
+      origin: "person",
+      opener: { kind: "person", userId: ownerId },
+    });
+    const surfaceId = createId("tab");
+    const existingRow = {
+      id: surfaceId,
+      ownerId,
+      kind: "page" as const,
+      generation: 1,
+      computerId: runnerId,
+      profileId: kept.id,
+      url: "https://example.test/existing",
+      title: "Existing",
+      state: "open" as const,
+      pageBinding: {
+        sessionId: existingSession.id,
+        surfaceId,
+        lineageId: existingSession.id,
+      },
+    };
+    memory.rows.set(surfaceId, existingRow as never);
+    narrowOnDeviceRead = true;
+    await expect(
+      service.pageTabs.bindBrowserScript!(
+        {
+          authority: { ownerId, agentBindingId: "session:selected" },
+          threadId: createId("thread"),
+        } as never,
+        existingRow as never,
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(reserveCalls).toBe(0);
+    expect(gate.held).toBe(0);
+
+    // 2) Restore path (ended session -> #restoreWorkspacePage -> #admitStart): narrowing during device read takes 0 holds.
+    repository.granted = [kept.id];
+    await repository.transitionBrowserSession({
+      sessionId: existingSession.id,
+      from: ["starting", "ready"],
+      state: "closed",
+    });
+    narrowOnDeviceRead = true;
+    await expect(
+      service.pageTabs.bindBrowserScript!(
+        {
+          authority: { ownerId, agentBindingId: "session:selected" },
+          threadId: createId("thread"),
+        } as never,
+        existingRow as never,
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(reserveCalls).toBe(0);
+    expect(gate.held).toBe(0);
+  });
+
+  it("omits the tabs-and-sign-ins-kept promise when a refusal did not prove saved state was kept", async () => {
+    vi.useFakeTimers();
+    try {
+      const setup = await makePooledSetup({ gateOpen: false });
+      setup.gate.onChange = () => {
+        setup.gate.noteAttemptRefused("resume-refused", false);
+      };
+      await expect(
+        setup.service.openTab(setup.ownerId, {
+          type: "browser.tab.open",
+          idempotencyKey: `refused-no-saved-state-${randomUUID()}`,
+          identity: { kind: "profile", profileId: setup.kept.id },
+          url: "https://example.test/refused-fresh",
+        }),
+      ).rejects.toMatchObject({
+        code: "conflict",
+        reason: "browser-pool-start-refused",
+        message: "Your Cloud Computer’s browser can’t start right now. Try again in a moment.",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports unreachable instead of a stale refusal when a new open times out while retrying a refused wake", async () => {
+    vi.useFakeTimers();
+    try {
+      const keys = generateKeyPairSync("ed25519");
+      const ownerId = createId("user");
+      const runnerId = createId("runner");
+      const repository = new SelectedGrantRepository(ownerId);
+      const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+      const gate = new BrowserPoolGate();
+      gate.set({ recovered: true, away: "parked" });
+      const coordinator = {
+        runtimeId: "browser-main",
+        gate,
+        unanswered: false,
+        retryingRefused: true,
+        report: () => ({
+          phase: "failed" as const,
+          since: new Date(),
+          refused: "egress-required",
+          savedStateKept: true,
+        }),
+        setAdopter: () => undefined,
+        recover: async () => undefined,
+        retire: async () => undefined,
+        close: () => undefined,
+        ensureRelayAttached: async () => undefined,
+      } as unknown as BrowserPoolCoordinator;
+      const service = new BrowserService({
+        ...profileStateOptions,
+        repository,
+        signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+        personal: true,
+        pooledOnly: true,
+        targetResolver: { resolve: () => undefined, placements: () => [] },
+        onSessionsChanged: () => undefined,
+        onError: () => undefined,
+      });
+      const originalList = repository.listEligibleBrowserRunners.bind(repository);
+      repository.listEligibleBrowserRunners = async () => [
+        ...(await originalList()),
+        {
+          id: runnerId,
+          kind: "main",
+          name: "Cloud Computer",
+          allowedModules: ["browser"],
+          ownerKind: "deployment",
+          ownerUserId: null,
+        },
+      ];
+      await service.adoptPool(runnerId, coordinator, {
+        label: "Cloud Computer",
+        environmentIds: [],
+      });
+      cleanups.push(() => service.close());
+
+      const opening = service.openTab(ownerId, {
+        type: "browser.tab.open",
+        idempotencyKey: `retry-timeout-${randomUUID()}`,
+        identity: { kind: "profile", profileId: kept.id },
+        url: "https://example.test/retry-timeout",
+      });
+      const settled = opening.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      await vi.advanceTimersByTimeAsync(18_000);
+      expect(await settled).toMatchObject({
+        error: {
+          code: "conflict",
+          reason: "browser-pool-unreachable",
+          message: "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["fenced", "slot-deleted"] as const)(
+    "reports a definitively ended (%s) pool target as setting up instead of an outage",
+    async (overReason) => {
+      const keys = generateKeyPairSync("ed25519");
+      const ownerId = createId("user");
+      const runnerId = createId("runner");
+      const repository = new SelectedGrantRepository(ownerId);
+      const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+      const gate = new BrowserPoolGate();
+      gate.set({ recovered: true, away: null, hold: "over" });
+      const coordinator = {
+        runtimeId: "browser-main",
+        gate,
+        unanswered: false,
+        over: overReason,
+        report: () => ({
+          phase: "failed" as const,
+          since: new Date(),
+          refused: overReason,
+          savedStateKept: false,
+        }),
+        setAdopter: () => undefined,
+        recover: async () => undefined,
+        retire: async () => undefined,
+        close: () => undefined,
+        ensureRelayAttached: async () => undefined,
+      } as unknown as BrowserPoolCoordinator;
+      const service = new BrowserService({
+        ...profileStateOptions,
+        repository,
+        signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+        personal: true,
+        pooledOnly: true,
+        targetResolver: { resolve: () => undefined, placements: () => [] },
+        onSessionsChanged: () => undefined,
+        onError: () => undefined,
+      });
+      const originalList = repository.listEligibleBrowserRunners.bind(repository);
+      repository.listEligibleBrowserRunners = async () => [
+        ...(await originalList()),
+        {
+          id: runnerId,
+          kind: "main",
+          name: "Cloud Computer",
+          allowedModules: ["browser"],
+          ownerKind: "deployment",
+          ownerUserId: null,
+        },
+      ];
+      await service.adoptPool(runnerId, coordinator, {
+        label: "Cloud Computer",
+        environmentIds: [],
+      });
+      cleanups.push(() => service.close());
+
+      // Both default-placement open and explicit-placement open report setting up, not an outage.
+      await expect(
+        service.openTab(ownerId, {
+          type: "browser.tab.open",
+          idempotencyKey: `over-${overReason}-${randomUUID()}`,
+          identity: { kind: "profile", profileId: kept.id },
+          url: "https://example.test/over",
+        }),
+      ).rejects.toMatchObject({
+        code: "conflict",
+        reason: "browser-pool-setting-up",
+        message: "Setting up your browser… This can take a few minutes.",
+      });
+      await expect(
+        service.openTab(ownerId, {
+          type: "browser.tab.open",
+          idempotencyKey: `over-explicit-${overReason}-${randomUUID()}`,
+          identity: { kind: "profile", profileId: kept.id },
+          placement: { kind: "runner", runnerId },
+          url: "https://example.test/over-explicit",
+        }),
+      ).rejects.toMatchObject({
+        code: "conflict",
+        reason: "browser-pool-setting-up",
+        message: "Setting up your browser… This can take a few minutes.",
+      });
+    },
+  );
+
+  it("answers with the refusal words at once when selecting a sleeping tab or restoring an ended tab", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const ownerId = createId("user");
+    const runnerId = createId("runner");
+    const repository = new SelectedGrantRepository(ownerId);
+    const memory = memoryTabs();
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Default" });
+    const gate = new BrowserPoolGate();
+    gate.set({ recovered: true, away: "parked", hold: null });
+    let lastRefusal:
+      | { readonly refused: string; readonly savedStateKept: boolean; readonly since: Date }
+      | undefined;
+    const coordinator = {
+      runtimeId: "browser-main",
+      gate,
+      unanswered: false,
+      over: undefined,
+      report: () => (lastRefusal ? { phase: "failed" as const, ...lastRefusal } : undefined),
+      setAdopter: () => undefined,
+      recover: async () => undefined,
+      retire: async () => undefined,
+      close: () => undefined,
+      ensureRelayAttached: async () => undefined,
+    } as unknown as BrowserPoolCoordinator;
+    const service = new BrowserService({
+      ...profileStateOptions,
+      repository,
+      tabs: memory.store,
+      tabPlaces: { write: async () => false, notice: () => {} },
+      signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
+      personal: true,
+      pooledOnly: true,
+      targetResolver: { resolve: () => undefined, placements: () => [] },
+      onSessionsChanged: () => undefined,
+      onError: () => undefined,
+    });
+    const originalList = repository.listEligibleBrowserRunners.bind(repository);
+    repository.listEligibleBrowserRunners = async () => [
+      ...(await originalList()),
+      {
+        id: runnerId,
+        kind: "main",
+        name: "Cloud Computer",
+        allowedModules: ["browser"],
+        ownerKind: "deployment",
+        ownerUserId: null,
+      },
+    ];
+    await service.adoptPool(runnerId, coordinator, {
+      label: "Cloud Computer",
+      environmentIds: [],
+    });
+    cleanups.push(() => service.close());
+
+    const liveSessionId = createBrowserSessionId();
+    await repository.createBrowserSession({
+      id: liveSessionId,
+      opener: { kind: "person", userId: ownerId },
+      placementKey: `runner:${runnerId}`,
+      runnerId,
+      origin: "person",
+      profileId: profile.id,
+      runtimeId: "browser-main",
+    });
+    await repository.transitionBrowserSession({ sessionId: liveSessionId, state: "ready" });
+
+    const liveTabId = BrowserSurfaceIdSchema.parse(`srf_${randomUUID()}`);
+    const liveRow = {
+      id: liveTabId,
+      ownerId,
+      kind: "page",
+      generation: 1,
+      computerId: runnerId,
+      profileId: profile.id,
+      title: "Sleeping",
+      url: "https://example.test/sleeping",
+      pageBinding: { sessionId: liveSessionId, surfaceId: liveTabId },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      closedAt: null,
+    } as unknown as TabRecord;
+    memory.rows.set(liveTabId, liveRow);
+
+    // 1. Selecting an existing sleeping tab refuses at once with savedStateKept wording.
+    const startedActivate = Date.now();
+    const activating = service.pageTabs.activate(ownerId, liveRow, "activate-refused");
+    await vi.waitFor(() => expect(gate.demand).toBe(true));
+    lastRefusal = {
+      refused: "profile-disk-missing",
+      savedStateKept: true,
+      since: new Date(),
+    };
+    gate.noteAttemptRefused("profile-disk-missing", true);
+    await expect(activating).rejects.toMatchObject({
+      reason: "browser-pool-refused",
+      message:
+        "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
+    });
+    expect(Date.now() - startedActivate).toBeLessThan(2_000);
+
+    // 2. Restoring a tab whose session ended refuses at once without promising saved state kept.
+    const endedTabId = BrowserSurfaceIdSchema.parse(`srf_${randomUUID()}`);
+    const endedRow = {
+      ...liveRow,
+      id: endedTabId,
+      profileId: null,
+      pageBinding: { sessionId: createBrowserSessionId(), surfaceId: endedTabId },
+    } as unknown as TabRecord;
+    memory.rows.set(endedTabId, endedRow);
+    const startedRestore = Date.now();
+    const restoring = service.pageTabs.activate(ownerId, endedRow, "restore-refused");
+    void restoring.catch(() => undefined);
+    await vi.waitFor(() => expect(gate.demand).toBe(true));
+    lastRefusal = {
+      refused: "resume-failed",
+      savedStateKept: false,
+      since: new Date(),
+    };
+    gate.noteAttemptRefused("resume-failed", false);
+    await expect(restoring).rejects.toMatchObject({
+      reason: "browser-pool-start-refused",
+      message: "Your Cloud Computer’s browser can’t start right now. Try again in a moment.",
+    });
+    expect(Date.now() - startedRestore).toBeLessThan(2_000);
   });
 });

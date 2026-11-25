@@ -843,7 +843,7 @@ export async function confirmThreadUnconfirmedStop(
       .select("id")
       .where("threadId", "=", threadId)
       .where("status", "=", "queued")
-      .where("startHoldReason", "is not", null)
+      .where("startHoldReason", "=", "previous-stop-unconfirmed")
       .execute();
     const lockRunIds = [...new Set<RunId>([runId, ...heldRows.map(({ id }) => id)])].sort();
     const locked = await transaction
@@ -855,7 +855,9 @@ export async function confirmThreadUnconfirmedStop(
       .execute();
     const unproven = locked.find((row) => row.id === runId);
     const heldIds = locked
-      .filter((row) => row.status === "queued" && row.startHoldReason !== null)
+      .filter(
+        (row) => row.status === "queued" && row.startHoldReason === "previous-stop-unconfirmed",
+      )
       .map((row) => row.id);
     const shouldPromote =
       unproven !== undefined &&
@@ -946,7 +948,7 @@ async function reconcileUnconfirmedStopsOnAttach(
     .where((eb) =>
       eb.or([
         eb("threads.unconfirmedStopRunId", "is not", null),
-        eb("threads.runStartHoldReason", "is not", null),
+        eb("threads.runStartHoldReason", "=", "previous-stop-unconfirmed"),
       ]),
     )
     .execute();
@@ -1007,7 +1009,7 @@ export async function clearThreadStartHold(
       .select("id")
       .where("threadId", "=", threadId)
       .where("status", "=", "queued")
-      .where("startHoldReason", "is not", null)
+      .where("startHoldReason", "=", "previous-stop-unconfirmed")
       .orderBy("id", "asc")
       .forNoKeyUpdate()
       .execute();

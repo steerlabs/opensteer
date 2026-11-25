@@ -233,16 +233,12 @@ export class UntrackedPoolProfileDiskError extends Error {
   }
 }
 
-export class PoolConfigMismatchError extends Error {
-  constructor() {
-    super(
-      "Account has browser pooling enabled, but OPENSTEER_POOL_PROVISIONER_KEY is not configured " +
-        "on home-provisioner. Pool hosts and slots cannot be reconciled until both switches are set.",
-    );
-  }
-}
+/** OPENSTEER_POOL_HOME_CIDR is not the Homes' subnet's range: the provisioner does not start. */
+export class PoolNetworkMismatchError extends Error {}
 
 export function provisionerFailure(error: unknown) {
+  if (error instanceof PoolNetworkMismatchError)
+    return { event: "home-provisioner.pool.network-mismatch", message: error.message };
   if (error instanceof ObservationFailed) return provisionerFailure(error.cause);
   if (error instanceof ProviderPlacementError)
     return { event: "home-provisioner.provider.wrong-zone", message: error.message };
@@ -253,8 +249,6 @@ export function provisionerFailure(error: unknown) {
       hostId: error.hostId,
       message: error.message,
     };
-  if (error instanceof PoolConfigMismatchError)
-    return { event: "home-provisioner.pool.misconfigured", message: error.message };
   if (error instanceof BootstrapScrubFailure)
     return { event: "home-provisioner.provider.bootstrap-scrub-failed" };
   if (error instanceof ProviderOutcomeUnknown)

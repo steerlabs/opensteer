@@ -61,6 +61,8 @@ function dispatcher(
   },
   sent: RunnerCommand[],
   issued: (readonly string[])[],
+  /** A one-slot Runner as RunnerRegistry counts it: attached, agents running, full or not. */
+  capacity?: { readonly full: () => boolean },
 ) {
   const { store } = storeFixture;
   const identity = {
@@ -130,6 +132,10 @@ function dispatcher(
         if (options?.beforeAck) hooks.holdAck?.(options.beforeAck);
         return { type: "runner.command-accepted" };
       },
+      isAttached: () => true,
+      areAgentsStopped: () => false,
+      isHarnessPreparing: () => false,
+      hasRunCapacity: () => !(capacity?.full() ?? false),
     } as unknown as RunnerRegistry,
   });
 }
@@ -369,6 +375,91 @@ describeStore("a connected agent's authority at the send", (it) => {
     );
     expect(resumed).toBe(true);
     expect(claimed?.terminalFailure ?? null).toBeNull();
+  });
+
+  it("says a Run waits for another when its computer's one slot is taken, with no Runner refusal, and writes it once", async ({
+    storeFixture,
+  }) => {
+    const { fixture } = await storeFixture.createChannelDeliveryFixture("waiting-for-run-slot");
+    const { database, store } = storeFixture;
+    // Run A owns the Runner's one slot elsewhere; Run B is queued on this task.
+    const queued = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: fixture.thread.id,
+      content: [{ type: "text", text: "Write the essay" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "waiting-for-run-slot",
+    });
+    if (!queued.run || !queued.command) throw new Error("Expected a queued Run");
+    const sent: RunnerCommand[] = [];
+    const host = dispatcher(
+      storeFixture,
+      fixture.runnerId,
+      { planning: async () => {} },
+      sent,
+      [],
+      {
+        full: () => true,
+      },
+    );
+    const holds = vi.spyOn(store, "holdRunForAnotherRun");
+    const pending = (await store.listPendingCommands()).find(({ id }) => id === queued.command!.id);
+    if (!pending) throw new Error("Expected Run B's command to be pending");
+    // The Home's own capacity decision: no offer, so no Runner ever refuses it.
+    expect(host.isAvailable(pending, 0)).toBe(false);
+    const held = () =>
+      database
+        .selectFrom("runs")
+        .innerJoin("threads", "threads.id", "runs.threadId")
+        .innerJoin("commands", "commands.runId", "runs.id")
+        .select([
+          "runs.status",
+          "runs.startHoldReason",
+          "threads.runStartHoldReason",
+          "commands.status as command",
+        ])
+        .where("runs.id", "=", queued.run!.id)
+        .executeTakeFirstOrThrow();
+    await vi.waitFor(async () =>
+      expect(await held()).toEqual({
+        command: "pending",
+        runStartHoldReason: "waiting-for-run",
+        startHoldReason: "waiting-for-run",
+        status: "queued",
+      }),
+    );
+    // Each later pass while the slot stays taken writes nothing more, on the row it read or on
+    // the row a new listing reads.
+    expect(host.isAvailable(pending, 0)).toBe(false);
+    const listed = async () =>
+      (await store.listPendingCommands()).find(({ id }) => id === queued.command!.id)!;
+    expect(host.isAvailable(await listed(), 0)).toBe(false);
+    expect(host.isAvailable(await listed(), 0)).toBe(false);
+    expect(holds).toHaveBeenCalledTimes(1);
+    expect(sent).toEqual([]);
+    // A ends; its Runner refuses B once for no stated reason (as while an engine profile is
+    // maintained), which returns B to the queue with no hold; C then takes the slot.
+    await store.claimCommand(queued.command.id, "waiting-for-run-slot");
+    await store.retryCommand(
+      queued.command.id,
+      Object.assign(new Error("Engine profile maintenance"), {
+        cause: { code: "conflict", message: "Engine profile maintenance", retryable: true },
+      }),
+    );
+    expect((await held()).startHoldReason).toBeNull();
+    // The Home sees the computer full again and reads B's row: it says B waits, once more.
+    expect(host.isAvailable(await listed(), 0)).toBe(false);
+    await vi.waitFor(async () =>
+      expect(await held()).toEqual({
+        command: "pending",
+        runStartHoldReason: "waiting-for-run",
+        startHoldReason: "waiting-for-run",
+        status: "queued",
+      }),
+    );
+    expect(host.isAvailable(await listed(), 0)).toBe(false);
+    expect(holds).toHaveBeenCalledTimes(2);
   });
 
   it("holds a chat's queued Run while the chat is paused, and never fails it for that", async ({

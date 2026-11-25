@@ -19,6 +19,12 @@ export interface NativeSettingsAction {
 
 export type NativeSettingsRow =
   | {
+      readonly kind: "content";
+      readonly key: string;
+      readonly label: string;
+      readonly content: ReactElement;
+    }
+  | {
       readonly key: string;
       readonly kind: "chips";
       readonly label: string;

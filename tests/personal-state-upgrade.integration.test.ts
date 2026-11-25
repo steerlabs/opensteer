@@ -278,6 +278,7 @@ test("carries a person's work from a database the released Home last migrated th
       "0117_stop_truth_and_recovery",
       "0118_problem_reports",
       "0119_automation_secret_names",
+      "0120_run_waiting_for_run",
     ]);
     await migrateToLatest(database, {
       async getMigrations() {

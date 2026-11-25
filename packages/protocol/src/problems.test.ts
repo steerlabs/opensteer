@@ -11,6 +11,7 @@ import {
   diskBucket,
   problemCodes,
   problemTable,
+  problemText,
   reportRefinements,
   type HomeHealthReport,
 } from "./problems.js";
@@ -516,5 +517,20 @@ describe("problems", () => {
       "stop.unconfirmed",
       "operation.outcome_unknown",
     ]);
+  });
+});
+
+describe("an update that did not install", () => {
+  const update = (updateResult: "rolled-back" | "waiting" | "not-retried") =>
+    problemText({ code: "update.failed", fields: { updateTarget: "home", updateResult } });
+
+  it("says what Opensteer does next, truly, for a release still being published and for one that did not start here", () => {
+    expect(update("rolled-back")).toBe(problemTable["update.failed"]);
+    expect(update("waiting").next).toContain("tries again by itself");
+    expect(update("not-retried").next).toContain("waits for a newer release");
+    for (const result of ["waiting", "not-retried"] as const) {
+      expect(update(result).words).not.toBe(problemTable["update.failed"].words);
+      expect(update(result).next).not.toContain("tries again with its next update");
+    }
   });
 });

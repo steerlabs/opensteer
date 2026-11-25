@@ -17,6 +17,16 @@
  */
 export type SentencePart = string | { readonly address: string } | { readonly name: string };
 
+/** Join composed parts without flattening the names or addresses. */
+export function joinSentenceParts(
+  lines: readonly (readonly SentencePart[])[],
+  separator = " · ",
+): readonly SentencePart[] {
+  return lines
+    .filter((parts) => parts.length)
+    .flatMap((parts, index) => (index ? [separator, ...parts] : parts));
+}
+
 /**
  * A name from outside as it stands in a sentence. The Home cleans every name where it enters
  * (`outsideName` in `@opensteer/shared`): no control, format or line-break character reaches a
@@ -101,13 +111,15 @@ export function partText(part: { readonly address: string } | { readonly name: s
  * The sentence as plain text: Opensteer's words as written, each address cleaned, each name
  * cleaned and in quotation marks (unquoted when it is the whole sentence).
  */
-export function plainSentence(parts: readonly SentencePart[]): string {
-  const quote = parts.length > 1;
+export function plainSentence(
+  parts: readonly SentencePart[],
+  { quoteNames = parts.length > 1 }: { readonly quoteNames?: boolean } = {},
+): string {
   return parts
     .map((part) =>
       typeof part === "string"
         ? part
-        : "address" in part || !quote
+        : "address" in part || !quoteNames
           ? partText(part)
           : `“${partText(part)}”`,
     )
@@ -142,13 +154,16 @@ export function isolatedPlainSentence(parts: readonly SentencePart[]): string {
  * stands in quotation marks unless it is the whole sentence. Its words are the same as
  * `plainSentence`'s; what it adds is invisible, so it is for drawing, never for a copy.
  */
-export function phoneSentence(parts: readonly SentencePart[]): string {
+export function phoneSentence(
+  parts: readonly SentencePart[],
+  { quoteNames = parts.length > 1 }: { readonly quoteNames?: boolean } = {},
+): string {
   const isolate = (text: string) => `\u2068${text}\u2069`;
-  const quote = parts.length > 1;
   return parts
     .map((part) => {
       if (typeof part === "string") return part;
-      if ("name" in part) return quote ? `“${isolate(partText(part))}”` : isolate(partText(part));
+      if ("name" in part)
+        return quoteNames ? `“${isolate(partText(part))}”` : isolate(partText(part));
       return isolate(
         addressParts(partText(part))
           .map((piece) => Array.from(piece).join("\u2060"))

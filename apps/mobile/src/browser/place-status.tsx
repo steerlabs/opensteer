@@ -257,7 +257,11 @@ export function usePlaceStatusRow(props: {
           },
         );
   }, [threads, agents, tabId, sharedFromChrome, threadId]);
-  const sessionStop = useAgentSessionStop(hostClient, session?.threadId ?? "");
+  const sessionStop = useAgentSessionStop(
+    hostClient,
+    session?.threadId ?? "",
+    session?.stop?.sessionId ?? null,
+  );
   const sessionThreadId = session?.threadId ?? null;
   const selectSessionNeedsYou = useCallback(
     (snapshot: HostSnapshot): boolean =>
@@ -330,7 +334,7 @@ export function usePlaceStatusRow(props: {
             session.stop === null
               ? null
               : () => {
-                  if (session.stop) void sessionStop.run(session.stop.sessionId);
+                  if (session.stop) void sessionStop.run();
                 }
           }
           session={session}

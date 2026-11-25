@@ -30,7 +30,8 @@ export function readGateSections(
             row.kind === "toggle" ||
             row.kind === "input" ||
             row.kind === "chips" ||
-            row.kind === "choice"
+            row.kind === "choice" ||
+            row.kind === "content"
           ? []
           : [row],
     ),

@@ -10,6 +10,7 @@ import {
   pageOpenTarget,
   type TabStore,
 } from "@opensteer/client/host";
+import { browserPoolRefusalWords } from "@opensteer/client/feedback";
 import { computerNotReadyStatus, computerReasonWords } from "@opensteer/client/integrations";
 import { useHostSelector } from "@opensteer/client/react";
 import { DeviceIdSchema, type TabId, type TabTarget } from "@opensteer/core";
@@ -197,6 +198,15 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
     const { outcome, issue } = opener.state;
     // The target computer's own reason, said about it, where the Host gave one.
     if (outcome?.kind === "rejected" && issue?.reason !== undefined && opening !== null) {
+      const poolWords = browserPoolRefusalWords(issue.reason);
+      if (poolWords) {
+        return {
+          key: `rejected:${issue.reason}`,
+          text: poolWords,
+          tone: "danger",
+          haptic: "error",
+        };
+      }
       const machine = hostClient.getSnapshot().machines.find(({ id }) => id === opening.machineId);
       return {
         key: `rejected:${issue.reason}`,

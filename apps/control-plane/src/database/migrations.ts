@@ -14,7 +14,10 @@ import {
   cloudComputerGoogleServerRefMigration,
   cloudComputersMigration,
 } from "../cloud-computers/migration.js";
-import { browserPoolMigration } from "../cloud-computers/pool-migration.js";
+import {
+  browserAlwaysPooledMigration,
+  browserPoolMigration,
+} from "../cloud-computers/pool-migration.js";
 import { CONTROL_PLANE_BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
 import type { ControlPlaneDatabaseSchema } from "./schema.js";
 
@@ -536,6 +539,8 @@ const migrationProvider = {
       ...onePersonAccountMigrations,
       "0038_remove_platform_verification": platformVerificationRemovalMigration,
       "0039_problem_reports": problemReportsMigration,
+      // Lands after 0039 (problem reports): the migrator applies in name order.
+      "0040_browser_always_pooled": browserAlwaysPooledMigration,
     };
   },
 };

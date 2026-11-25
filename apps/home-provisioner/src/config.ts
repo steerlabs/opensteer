@@ -2,6 +2,7 @@ import { createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
 import { openSync, closeSync, fstatSync, readFileSync, constants } from "node:fs";
 import { isBareOrigin, refused } from "@opensteer/core";
 import {
+  BrowserPoolNetworkCidrSchema,
   CloudComputerHostnameSchema,
   defaultBrowserPoolAdminPort,
 } from "@opensteer/control-plane-protocol";
@@ -32,7 +33,8 @@ const googleSchema = z.object({
     .max(63),
   OPENSTEER_HOME_GCP_NETWORK: googleName,
   OPENSTEER_HOME_GCP_SUBNET: googleName,
-  OPENSTEER_HOME_GCP_MACHINE_TYPE: googleName.default("e2-standard-4"),
+  // 4 GiB: the Home's own VM, its browser being in the browser pool (deploy/home sizes from it).
+  OPENSTEER_HOME_GCP_MACHINE_TYPE: googleName.default("e2-medium"),
   OPENSTEER_HOME_GCP_IMAGE: z
     .string()
     .regex(
@@ -48,7 +50,8 @@ const googleSchema = z.object({
 const ipv4Cidr = z.string().regex(/^(?:\d{1,3}\.){3}\d{1,3}\/(?:[0-9]|[12][0-9]|3[0-2])$/u);
 
 const poolSchema = z.object({
-  OPENSTEER_POOL_HOME_CIDR: ipv4Cidr,
+  // Each Home's firewall opens exactly this network (on the pool's two ports): private only.
+  OPENSTEER_POOL_HOME_CIDR: BrowserPoolNetworkCidrSchema,
   OPENSTEER_POOL_PROVISIONER_CIDR: ipv4Cidr,
   OPENSTEER_POOL_LOCAL_SSD_COUNT: integer(1, 24).default(1),
   OPENSTEER_POOL_BOOT_DISK_SIZE_GB: integer(20, 65_536).default(40),
@@ -96,7 +99,7 @@ export function loadConfig(env: NodeJS.ProcessEnv) {
     region: google.OPENSTEER_HOME_GCP_ZONE,
     serverType: google.OPENSTEER_HOME_GCP_MACHINE_TYPE,
     image: google.OPENSTEER_HOME_GCP_IMAGE,
-    ...(pool ? { pool } : {}),
+    pool,
   };
 }
 
@@ -156,9 +159,14 @@ function readSecret(env: NodeJS.ProcessEnv, name: string): string {
   return secret!.trim();
 }
 
-function loadPoolConfig(env: NodeJS.ProcessEnv): PoolProvisionerConfig | undefined {
+/** Every Cloud Computer's browser runs in the browser pool: this provisioner always serves it. */
+function loadPoolConfig(env: NodeJS.ProcessEnv): PoolProvisionerConfig {
   const keyName = "OPENSTEER_POOL_PROVISIONER_KEY";
-  if (env[keyName] === undefined && env[`${keyName}_FILE`] === undefined) return undefined;
+  if (env[keyName] === undefined && env[`${keyName}_FILE`] === undefined)
+    throw refused(
+      "bad_request",
+      `Cloud Computers need the browser pool: set ${keyName} (or ${keyName}_FILE)`,
+    );
   const parsed = readConfig(poolSchema, env);
   const rawKey = readKeySecret(env, keyName);
   const provisionerPrivateKey = parseEd25519PrivateKey(rawKey);

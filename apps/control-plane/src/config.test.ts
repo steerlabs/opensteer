@@ -58,9 +58,41 @@ it("loads optional managed Home settings from the Account runtime directory", ()
       OPENSTEER_CLOUD_COMPUTER_CURRENCY: "usd",
       OPENSTEER_CLOUD_COMPUTER_PRICE_MINOR: "2900",
     };
+    const poolFiles = {
+      OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST: "10",
+      OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON: JSON.stringify({
+        version: "1.0.0",
+        installerUrl: "https://releases.example.com/pool-host.sh",
+        installerSha256: "a".repeat(64),
+        artifacts: Object.fromEntries(
+          ["agent", "relay", "rootfs", "kernel", "egress"].flatMap((name) => [
+            [`${name}Url`, `https://releases.example.com/${name}`],
+            [`${name}Sha256`, "c".repeat(64)],
+          ]),
+        ),
+      }),
+    };
     for (const [name, value] of Object.entries(files)) {
       writeFileSync(join(directory, name), value + "\n", { mode: 0o600 });
     }
+    // A Cloud Computer's browser runs in the browser pool, always: without the pool settings
+    // the Account service refuses to start rather than sell a Cloud Computer it cannot serve.
+    expect(() => loadControlPlaneConfig(environment)).toThrow(
+      "Cloud Computers need the browser pool: set OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST and OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON",
+    );
+    for (const [name, value] of Object.entries(poolFiles)) {
+      writeFileSync(join(directory, name), value + "\n", { mode: 0o600 });
+    }
+    // A Cloud Computer updates only from the feed its boot answer gave it: none is born without one.
+    rmSync(join(directory, "OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL"));
+    expect(() => loadControlPlaneConfig(environment)).toThrow(
+      "Cloud Computers need a release feed to update from: set OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL",
+    );
+    writeFileSync(
+      join(directory, "OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL"),
+      files.OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL + "\n",
+      { mode: 0o600 },
+    );
     const config = loadControlPlaneConfig({
       ...environment,
       OPENSTEER_CLOUD_COMPUTER_REGION: "europe-west3-a",
@@ -70,8 +102,21 @@ it("loads optional managed Home settings from the Account runtime directory", ()
       stripeWebhookSecret: files.OPENSTEER_CLOUD_COMPUTER_STRIPE_WEBHOOK_SECRET,
       releaseManifestUrl: files.OPENSTEER_CLOUD_COMPUTER_RELEASE_MANIFEST_URL,
       region: "europe-west3-a",
+      browserPool: { slotsPerHost: 10 },
       notReadyAfterMinutes: 30,
     });
+    // Review S4: pool ports the Home's firewall would refuse (equal, or the mail ports it rejects
+    // first) would leave every Home without a path to its browser: refused at start.
+    for (const ports of [
+      { OPENSTEER_CLOUD_COMPUTER_POOL_AGENT_PORT: "7312" },
+      { OPENSTEER_CLOUD_COMPUTER_POOL_RELAY_PORT: "25" },
+      { OPENSTEER_CLOUD_COMPUTER_POOL_AGENT_PORT: "587" },
+      // The provisioner's admin port on every pool host (review A3), unless it says otherwise.
+      { OPENSTEER_CLOUD_COMPUTER_POOL_RELAY_PORT: "7311" },
+    ])
+      expect(() => loadControlPlaneConfig({ ...environment, ...ports })).toThrow(
+        "The browser pool's agent and relay ports must differ and must not be 25, 465, 587 or the pool's admin port",
+      );
     expect(config.cloudComputers?.heartbeatUrl).toBeUndefined();
     const watched = loadControlPlaneConfig({
       ...environment,

@@ -6,8 +6,11 @@ import {
   type BrowserPoolAdopter,
   type BrowserPoolRuntimeChannel,
 } from "../apps/host/src/browser/browser-pool-coordinator.js";
+import { BrowserPoolAttemptRefused } from "../apps/host/src/browser/browser-pool-gate.js";
 import type {
   BrowserPoolControllerCall,
+  BrowserPoolControllerResult,
+  BrowserPoolPhysicalStatus,
   BrowserPoolPhysicalController,
 } from "../apps/host/src/browser/browser-pool-controller.js";
 import {
@@ -33,11 +36,11 @@ import {
   beginBrowserPoolPark,
   settleBrowserPoolControllerCall,
   browserPoolSlotIdentity,
-  listBrowserPoolDocumentLosses,
   readBrowserPoolSlot,
   listBrowserPoolReadySessions,
   requireBrowserPoolAdmission,
 } from "../packages/database/src/browser-pool-store.js";
+import { listBrowserPoolDocumentLosses } from "./browser-pool-journey.test-support.js";
 import {
   createBrowserSession,
   getBrowserSessionForOwner,
@@ -258,7 +261,6 @@ async function poolFixture(
       runtimeId: "pool-runtime",
       pooled: true,
     });
-    await transitionBrowserSession(database, { sessionId: id, state: "ready" });
     verifier.setClaims(`open-${id}`, { ...claims, sessionId: id, pool: coordinator.fence() });
     const sink = new FakeSink();
     const attachment = await runtime.attach(`open-${id}`, sink);
@@ -266,7 +268,10 @@ async function poolFixture(
     await attachment.handle(
       JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
     );
+    // Install the channel before marking the row ready so a periodic `#withoutChannel` scan
+    // cannot observe a ready session without its channel and start a reconnect before parking.
     sinks.set(id, attachment);
+    await transitionBrowserSession(database, { sessionId: id, state: "ready" });
   };
   const row = (id = sessionId) => getBrowserSessionForOwner(database, id, task.userId);
   const slot = () => readBrowserPoolSlot(database, task.runnerId);
@@ -665,52 +670,113 @@ it("waits longer after each failure in a row, retryMs or not", async () => {
   }
 });
 
-it("keeps a parked browser whose wake the host refused for a down egress proxy, counts no failed start, starts nothing at once, and wakes it later", async () => {
-  const f = await poolFixture("proxy-refused");
+it("wakes with a down proxy, then parks and wakes the same browser to repair it without a failed start or a lost page", async () => {
+  const f = await poolFixture("proxy-wake-repair");
+  const slotId = "slot-proxy-wake-repair";
+  const agent = poolControllerKind() === "agent";
+  const repairWake = Promise.withResolvers<BrowserPoolControllerCall>();
+  const allowRepair = Promise.withResolvers<void>();
   try {
-    // Against the real agent the host itself refuses (it pulls egress, and the slot's proxy
-    // fails its check); against the fake, the refusal is the signed answer's shape.
-    const agent = poolControllerKind() === "agent";
-    let refusing = false;
     const calls: string[] = [];
+    let firstWake: BrowserPoolControllerResult | undefined;
+    let firstWakeSavedId: string | null | undefined;
+    let repairPark: BrowserPoolControllerResult | undefined;
+    let down: BrowserPoolPhysicalStatus | undefined;
     const physical: BrowserPoolPhysicalController = {
-      status: (slot, term) => f.controller.status(slot, term),
+      status: async (slot, term) => {
+        const status = await f.controller.status(slot, term);
+        if (status.phase === "running" && status.proxy === "down") down = status;
+        return status;
+      },
       result: (slot, term, id) => f.controller.result(slot, term, id),
       apply: async (call) => {
         if (call.kind !== "sign") calls.push(call.kind);
-        // The host's proxy did not serve within its bound: the resume left nothing running.
-        return !agent && refusing && call.kind === "resume"
-          ? {
-              id: call.id,
-              applied: false,
-              reason: "egress-proxy-down",
-              status: await f.controller.status(call.slotId, call.term),
-            }
-          : f.controller.apply(call);
+        if (call.kind === "resume" && call.expect.epoch === 2) {
+          repairWake.resolve(call);
+          await allowRepair.promise;
+        }
+        const result = await f.controller.apply(call);
+        if (call.kind === "resume" && call.expect.epoch === 1) {
+          firstWake = result;
+          firstWakeSavedId = call.expect.savedStateId;
+          if (!agent) f.controller.observe({ proxy: "down" });
+        }
+        if (call.kind === "pause" && call.expect.epoch === 2) repairPark = result;
+        return result;
       },
     };
-    // A refusal is asked again only after a long while here: whatever is sent at once shows.
-    const home = f.home(undefined, physical, { refusedRetryMs: 60_000 });
+    const home = f.home(undefined, physical, { statusEveryMs: 50 });
     await home.recover();
+    await f.openSession(home);
+    const runtime = f.runtime;
+    const loader = f.page.loaderId;
     expect(await home.tryPark()).toBe("parked");
-    refusing = true;
-    f.controller.refuseProxy?.(true);
-    const waiting = home.gate.reserve(AbortSignal.timeout(30_000));
-    await vi.waitFor(() => expect(home.report()).toMatchObject({ refused: "egress-proxy-down" }));
-    // Nothing given up at once: no start after the refused resume (today's agent loses the saved
-    // state with its refusal; a fresh guest into the same refusal would be futile), and no
-    // failed start counted. Still parked.
-    expect(calls).toEqual(["start", "pause", "resume"]);
-    expect(await f.slot()).toMatchObject({ phase: "parked", failedStarts: 0 });
-    refusing = false;
-    f.controller.refuseProxy?.(false);
-    // Asked again (here by a second waiter), it wakes: from its saved state when the host kept
-    // it, or as a fresh guest when the host's refusal took the state with it.
-    (await home.gate.reserve(AbortSignal.timeout(30_000))).release();
-    (await waiting).release();
-    expect(await f.slot()).toMatchObject({ phase: "running", failedStarts: 0 });
-    if (!agent) expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
+    const parked = await f.controller.status(slotId, 1);
+    expect(parked).toMatchObject({ phase: "paused", epoch: 1 });
+    expect(parked.savedState?.id).toBeDefined();
+    f.controller.setProxyUnhealthy?.(true);
+    const waiting = home.gate.reserve(AbortSignal.timeout(30_000)).then(
+      (lease) => lease.release(),
+      (error: unknown) => error,
+    );
+
+    const repair = await repairWake.promise;
+    expect(firstWakeSavedId).toBe(parked.savedState?.id);
+    expect(firstWake).toMatchObject({
+      applied: true,
+      status: { phase: "running", instance: parked.instance, epoch: 2, savedState: null },
+    });
+    expect(down).toMatchObject({
+      phase: "running",
+      instance: parked.instance,
+      epoch: 2,
+      proxy: "down",
+    });
+    expect(repairPark).toMatchObject({
+      applied: true,
+      status: { phase: "paused", instance: parked.instance, epoch: 2 },
+    });
+    expect(repairPark?.savedState?.id).toBeDefined();
+    expect(repair.expect.savedStateId).toBe(repairPark?.savedState?.id);
+    expect(await f.controller.status(slotId, 1)).toMatchObject({
+      phase: "paused",
+      instance: parked.instance,
+      savedState: repairPark?.savedState,
+    });
+    expect(await f.slot()).toMatchObject({ instanceId: parked.instance, failedStarts: 0 });
+    expect(home.report()).toMatchObject({ phase: "waking" });
+    expect(home.report()?.refused).toBeUndefined();
+
+    f.controller.setProxyUnhealthy?.(false);
+    if (!agent) f.controller.observe({ proxy: "up" as never });
+    allowRepair.resolve();
+    expect(await waiting).toBeUndefined();
+    await vi.waitFor(async () =>
+      expect(await f.slot()).toMatchObject({
+        phase: "running",
+        instanceId: parked.instance,
+        epoch: 3,
+        failedStarts: 0,
+        outcome: { adopted: [f.sessionId], lost: [] },
+      }),
+    );
+    expect(await f.controller.status(slotId, 1)).toMatchObject({
+      phase: "running",
+      instance: parked.instance,
+      epoch: 3,
+      savedState: null,
+    });
+    expect((await f.controller.status(slotId, 1)).proxy).toBe(agent ? undefined : "up");
+    expect(calls).toEqual(["start", "pause", "resume", "pause", "resume"]);
+    expect(f.controller.effects).toEqual(calls);
+    expect(f.runtime).toBe(runtime);
+    expect(f.page.isClosed()).toBe(false);
+    expect(f.page.loaderId).toBe(loader);
+    expect((await f.row())?.state).toBe("ready");
+    expect(f.sinks.has(f.sessionId)).toBe(true);
+    await f.admitted();
   } finally {
+    allowRepair.resolve();
     await f.close();
   }
 });
@@ -796,6 +862,57 @@ it("counts no failed start for a fresh start into a target that is over, and end
     await f.close();
   }
 });
+
+it.skipIf(poolControllerKind() === "fake")(
+  "keeps a refused wake parked with the same saved state, then wakes it without starting a new guest",
+  async () => {
+    const key = "resume-kept";
+    const f = await poolFixture(key);
+    const wanting = new AbortController();
+    try {
+      const slotId = `slot-${key}`;
+      const calls = vi.spyOn(f.controller, "apply");
+      const kinds = () =>
+        calls.mock.calls.map(([call]) => call.kind).filter((kind) => kind !== "sign");
+      const home = f.home(undefined, f.controller, { refusedRetryMs: 60_000 });
+      await home.recover();
+      expect(await home.tryPark()).toBe("parked");
+      const parked = await f.controller.status(slotId, 1);
+      expect(parked.savedState?.id).toBeDefined();
+
+      // The real agent refuses this one wake before consuming the saved state.
+      (f.controller as AgentPoolController).failNext(
+        "closeNetwork",
+        new Error("gate close failed"),
+      );
+      void home.gate.reserve(wanting.signal).catch(() => undefined);
+      await vi.waitFor(() => expect(home.report()).toMatchObject({ refused: "resume-failed" }));
+      wanting.abort();
+      expect(await f.slot()).toMatchObject({
+        phase: "parked",
+        instanceId: parked.instance,
+        savedState: { id: parked.savedState?.id },
+        failedStarts: 0,
+      });
+      expect(await f.controller.status(slotId, 1)).toEqual(parked);
+      expect(kinds()).toEqual(["start", "pause", "resume"]);
+      expect(f.controller.effects).toEqual(["start", "pause"]);
+
+      (await home.gate.reserve(AbortSignal.timeout(20_000))).release();
+      expect(await f.slot()).toMatchObject({
+        phase: "running",
+        instanceId: parked.instance,
+        savedState: null,
+        failedStarts: 0,
+      });
+      expect(kinds()).toEqual(["start", "pause", "resume", "resume"]);
+      expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
+    } finally {
+      wanting.abort();
+      await f.close();
+    }
+  },
+);
 
 // Against the real agent only: the host's own resume, after it consumed the right to resume.
 it.skipIf(poolControllerKind() === "fake")(
@@ -1663,13 +1780,22 @@ it("reads the state a refused resume returns: the stopped guest is replaced, the
   const f = await poolFixture("refused-resume");
   try {
     const port = refusing(f, "resume");
-    const home = f.home(undefined, port);
+    let sawRefusal: { readonly savedStateKept?: boolean; readonly refused?: string } | undefined;
+    const home = f.home(undefined, port, {
+      onStateChanged: () => {
+        const current = home.report();
+        if (current?.refused) sawRefusal = current;
+      },
+    });
     await home.recover();
     await f.openSession(home);
     expect(await home.tryPark()).toBe("parked");
     const woken = await home.gate.reserve(AbortSignal.timeout(10_000));
     woken.release();
     expect(port.refused).toBe(1);
+    // The refused resume saw the guest already stopped (no saved state kept), so it must never
+    // claim saved state was kept.
+    expect(sawRefusal).toMatchObject({ refused: "undone", savedStateKept: false });
     // Nothing assumed the guest was still paused: no stop of a stopped guest, a fresh start.
     expect(f.controller.effects).toEqual(["start", "pause", "start"]);
     expect(home.gate.phase).toBe("open");
@@ -2671,6 +2797,453 @@ it("never serves from a guest whose lost session's pages could not be confirmed 
     // Both sessions ended with the replaced guest, with their notes; none is closed on a guess.
     expect((await f.row(f.sessionId))?.state).toBe("failed");
     expect((await f.row(other))?.state).toBe("failed");
+  } finally {
+    await f.close();
+  }
+});
+
+it("clears a prior refusal when a follow-up wake goes unanswered instead of repeating the stale refusal", async () => {
+  const f = await poolFixture("refusal-then-silence");
+  try {
+    let mode: "normal" | "refuse" | "silent" = "normal";
+    const port: BrowserPoolPhysicalController = {
+      status: (slot, term) =>
+        mode === "silent"
+          ? Promise.reject(
+              Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+            )
+          : f.controller.status(slot, term),
+      result: (slot, term, id) =>
+        mode === "silent"
+          ? Promise.reject(
+              Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+            )
+          : f.controller.result(slot, term, id),
+      apply: async (call) => {
+        if (mode === "silent") {
+          throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+        }
+        if (mode === "refuse" && (call.kind === "resume" || call.kind === "start")) {
+          return {
+            id: call.id,
+            applied: false,
+            reason: "egress-required",
+            status: await f.controller.status(call.slotId, call.term),
+          };
+        }
+        return f.controller.apply(call);
+      },
+    };
+    const home = f.home(undefined, port, {
+      unreachableAfterMs: 30,
+      refusedRetryMs: 10_000,
+    });
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+
+    // First wake is refused by the controller.
+    mode = "refuse";
+    await expect(
+      home.gate.reserve(AbortSignal.timeout(5_000), { failOnRefusal: true }),
+    ).rejects.toBeInstanceOf(BrowserPoolAttemptRefused);
+    expect(home.report()?.refused).toBe("egress-required");
+
+    // Next wake goes unanswered (host outage): the stale refusal must clear and unreachable take over.
+    mode = "silent";
+    await expect(
+      home.gate.reserve(AbortSignal.timeout(150), { failOnRefusal: true }),
+    ).rejects.toBeInstanceOf(BrowserPoolAdmissionClosed);
+    expect(home.unanswered).toBe(true);
+    expect(home.report()?.refused).toBeUndefined();
+    expect(home.report()?.unreachable).toBe(true);
+  } finally {
+    await f.close();
+  }
+});
+
+it("delivers a refusal after an outage without waiting for the database announce bound", async () => {
+  const f = await poolFixture("outage-then-refusal");
+  try {
+    let mode: "normal" | "silent" | "refuse" = "normal";
+    let refusalReturned = false;
+    let releaseAnnounce: (() => void) | undefined;
+    let holdNextAnnounce = false;
+    const rawConnection = f.database.connection.bind(f.database);
+    vi.spyOn(f.database, "connection").mockImplementation(() => {
+      const builder = rawConnection();
+      const rawExecute = builder.execute.bind(builder);
+      builder.execute = async (...args) => {
+        if (holdNextAnnounce) {
+          holdNextAnnounce = false;
+          await new Promise<void>((resolve) => {
+            releaseAnnounce = resolve;
+          });
+        }
+        return rawExecute(...args);
+      };
+      return builder;
+    });
+    const port: BrowserPoolPhysicalController = {
+      status: (slot, term) =>
+        mode === "silent"
+          ? Promise.reject(
+              Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+            )
+          : f.controller.status(slot, term),
+      result: (slot, term, id) =>
+        mode === "silent"
+          ? Promise.reject(
+              Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+            )
+          : f.controller.result(slot, term, id),
+      apply: async (call) => {
+        if (mode === "silent") {
+          throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+        }
+        if (mode === "refuse" && (call.kind === "resume" || call.kind === "start")) {
+          refusalReturned = true;
+          return {
+            id: call.id,
+            applied: false,
+            reason: "egress-required",
+            status: await f.controller.status(call.slotId, call.term),
+          };
+        }
+        return f.controller.apply(call);
+      },
+    };
+    const home = f.home(undefined, port, {
+      unreachableAfterMs: 20,
+      unansweredRetryMaxMs: 20,
+      refusedRetryMs: 10_000,
+      onStateChanged: () => {
+        if (refusalReturned) {
+          refusalReturned = false;
+          holdNextAnnounce = true;
+        }
+      },
+    });
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+
+    // Put the coordinator into unreachable state first.
+    mode = "silent";
+    await expect(
+      home.gate.reserve(AbortSignal.timeout(120), { failOnRefusal: true }),
+    ).rejects.toBeInstanceOf(BrowserPoolAdmissionClosed);
+    await vi.waitFor(() => expect(home.report()?.unreachable).toBe(true), { timeout: 2_000 });
+
+    // Now the host answers with a refusal while the DB announce is stalled: the waiting caller
+    // must receive BrowserPoolAttemptRefused immediately, not miss its deadline waiting on #announce.
+    mode = "refuse";
+    try {
+      await expect(
+        home.gate.reserve(AbortSignal.timeout(250), { failOnRefusal: true }),
+      ).rejects.toMatchObject({
+        name: "BrowserPoolAttemptRefused",
+        refusedReason: "egress-required",
+      });
+      expect(home.report()?.unreachable).toBeUndefined();
+      expect(home.report()?.refused).toBe("egress-required");
+    } finally {
+      releaseAnnounce?.();
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+it("records savedStateKept only when signed status proves saved state stayed paused, never when consumed", async () => {
+  const f = await poolFixture("refusal-saved-state-evidence");
+  try {
+    let mode: "normal" | "refuse-kept" | "refuse-lost" = "normal";
+    const port: BrowserPoolPhysicalController = {
+      status: (slot, term) => f.controller.status(slot, term),
+      result: (slot, term, id) => f.controller.result(slot, term, id),
+      apply: async (call) => {
+        if (call.kind === "resume" && mode === "refuse-kept") {
+          return {
+            id: call.id,
+            applied: false,
+            reason: "egress-required",
+            status: await f.controller.status(call.slotId, call.term),
+          };
+        }
+        if (call.kind === "resume" && mode === "refuse-lost") {
+          mode = "normal";
+          const stopped = await f.controller.apply({
+            id: randomUUID(),
+            slotId: call.slotId,
+            term: call.term,
+            kind: "stop",
+            expect: call.expect,
+          });
+          return {
+            id: call.id,
+            applied: false,
+            reason: "resume-failed",
+            status: stopped.status,
+          };
+        }
+        return f.controller.apply(call);
+      },
+    };
+    const home = f.home(undefined, port, { refusedRetryMs: 60_000 });
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+
+    // Saved state still paused on same fence -> savedStateKept: true.
+    mode = "refuse-kept";
+    await expect(
+      home.gate.reserve(AbortSignal.timeout(5_000), { failOnRefusal: true }),
+    ).rejects.toMatchObject({
+      name: "BrowserPoolAttemptRefused",
+      refusedReason: "egress-required",
+      savedStateKept: true,
+    });
+    expect(home.report()).toMatchObject({ refused: "egress-required", savedStateKept: true });
+
+    // Saved state consumed/stopped -> savedStateKept: false.
+    if (poolControllerKind() === "agent") {
+      mode = "normal";
+      (f.controller as AgentPoolController).failNext("resume", new Error("resume failed"));
+    } else {
+      mode = "refuse-lost";
+    }
+    await expect(
+      home.gate.reserve(AbortSignal.timeout(5_000), { failOnRefusal: true }),
+    ).rejects.toMatchObject({
+      name: "BrowserPoolAttemptRefused",
+      refusedReason: "resume-failed",
+      savedStateKept: false,
+    });
+    expect(home.report()).toMatchObject({ refused: "resume-failed", savedStateKept: false });
+
+    // A follow-up open after the lost saved state gets a fresh guest rather than timing out.
+    (await home.gate.reserve(AbortSignal.timeout(5_000), { failOnRefusal: true })).release();
+    expect(await f.slot()).toMatchObject({
+      phase: "running",
+      failedStarts: 0,
+      lastStart: { reason: "expired" },
+    });
+  } finally {
+    await f.close();
+  }
+});
+
+it("never announces ready through onStateChanged while retrying a refused wake from parked", async () => {
+  const f = await poolFixture("refusal-retry-no-ready-flicker");
+  try {
+    let refuse = false;
+    let holdSecondResume: (() => void) | undefined;
+    let secondResumeEntered!: () => void;
+    const enteredSecondResume = new Promise<void>((resolve) => {
+      secondResumeEntered = resolve;
+    });
+    let resumeAttempts = 0;
+    const port: BrowserPoolPhysicalController = {
+      status: (slot, term) => f.controller.status(slot, term),
+      result: (slot, term, id) => f.controller.result(slot, term, id),
+      apply: async (call) => {
+        if (refuse && call.kind === "resume") {
+          resumeAttempts++;
+          if (resumeAttempts === 2) {
+            secondResumeEntered();
+            await new Promise<void>((resolve) => {
+              holdSecondResume = resolve;
+            });
+          }
+          return {
+            id: call.id,
+            applied: false,
+            reason: "egress-required",
+            status: await f.controller.status(call.slotId, call.term),
+          };
+        }
+        return f.controller.apply(call);
+      },
+    };
+    const observations: { readonly phase: string; readonly refused?: string }[] = [];
+    let recording = false;
+    const home = f.home(undefined, port, {
+      refusedRetryMs: 60_000,
+      onStateChanged: () => {
+        if (!recording) return;
+        const report = home.report();
+        observations.push({
+          phase: home.gate.phase,
+          ...(report?.refused ? { refused: report.refused } : {}),
+        });
+      },
+    });
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+
+    // First wake refused.
+    refuse = true;
+    await expect(
+      home.gate.reserve(AbortSignal.timeout(5_000), { failOnRefusal: true }),
+    ).rejects.toBeInstanceOf(BrowserPoolAttemptRefused);
+    expect(home.report()?.refused).toBe("egress-required");
+
+    // Trigger retry: while in flight and through the second refusal, status must NEVER drop refusal
+    // while parked (which would emit managed status "ready").
+    recording = true;
+    const secondOpen = home.gate.reserve(AbortSignal.timeout(5_000), { failOnRefusal: true });
+    void secondOpen.catch(() => undefined);
+    await withTimeout(enteredSecondResume, 5_000, {
+      timeoutError: () => new Error("second resume was not entered"),
+    });
+    expect(home.retryingRefused).toBe(true);
+    expect(home.report()?.refused).toBe("egress-required");
+    expect(observations.some((obs) => obs.phase === "parked" && obs.refused === undefined)).toBe(
+      false,
+    );
+    holdSecondResume?.();
+    await expect(secondOpen).rejects.toBeInstanceOf(BrowserPoolAttemptRefused);
+    expect(home.retryingRefused).toBe(false);
+    expect(observations.some((obs) => obs.phase === "parked" && obs.refused === undefined)).toBe(
+      false,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+it.each(["fenced", "slot-deleted"] as const)(
+  "clears prior unreachability on a signed %s terminal answer",
+  async (terminal) => {
+    const f = await poolFixture(`outage-then-${terminal}`);
+    try {
+      let mode: "normal" | "silent" | "terminal" = "normal";
+      const port: BrowserPoolPhysicalController = {
+        status: (slot, term) =>
+          mode === "silent"
+            ? Promise.reject(
+                Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+              )
+            : mode === "terminal" && terminal === "slot-deleted"
+              ? Promise.reject(new BrowserPoolAgentSlotDeleted("The slot was deleted."))
+              : f.controller.status(slot, term),
+        result: (slot, term, id) =>
+          mode === "silent"
+            ? Promise.reject(
+                Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+              )
+            : f.controller.result(slot, term, id),
+        apply: async (call) => {
+          if (mode === "silent")
+            throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+          if (mode === "terminal" && terminal === "fenced") {
+            return {
+              id: call.id,
+              applied: false,
+              reason: "fenced",
+              status: await f.controller.status(call.slotId, call.term),
+            };
+          }
+          if (mode === "terminal" && terminal === "slot-deleted") {
+            throw new BrowserPoolAgentSlotDeleted("The slot was deleted.");
+          }
+          return f.controller.apply(call);
+        },
+      };
+      const home = f.home(undefined, port, {
+        unreachableAfterMs: 20,
+        unansweredRetryMaxMs: 20,
+      });
+      await home.recover();
+      await f.openSession(home);
+      expect(await home.tryPark()).toBe("parked");
+
+      // Establish unanswered/unreachable state first.
+      mode = "silent";
+      await expect(
+        home.gate.reserve(AbortSignal.timeout(120), { failOnRefusal: true }),
+      ).rejects.toBeInstanceOf(BrowserPoolAdmissionClosed);
+      await vi.waitFor(() => expect(home.report()?.unreachable).toBe(true), { timeout: 2_000 });
+      expect(home.unanswered).toBe(true);
+
+      // Now receive signed terminal answer: must clear unreachability and report over.
+      mode = "terminal";
+      await expect(
+        home.gate.reserve(AbortSignal.timeout(2_000), { failOnRefusal: true }),
+      ).rejects.toBeInstanceOf(BrowserPoolAdmissionClosed);
+      await vi.waitFor(() => expect(home.over).toBe(terminal), { timeout: 2_000 });
+      expect(home.unanswered).toBe(false);
+      expect(home.report()?.unreachable).toBeUndefined();
+      expect(home.report()?.refused).toBe(terminal);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+it("clears a prior refusal and reports waking as soon as a retry resume applies, before reattach finishes", async () => {
+  const f = await poolFixture("refusal-cleared-on-applied-resume");
+  try {
+    let refuseNextResume = false;
+    const appliedResume = Promise.withResolvers<void>();
+    const releaseReattach = Promise.withResolvers<void>();
+    const port: BrowserPoolPhysicalController = {
+      status: (slot, term) => f.controller.status(slot, term),
+      result: (slot, term, id) => f.controller.result(slot, term, id),
+      apply: async (call) => {
+        if (call.kind === "resume" && refuseNextResume) {
+          refuseNextResume = false;
+          return {
+            id: call.id,
+            applied: false,
+            reason: "profile-disk-missing",
+            status: await f.controller.status(call.slotId, call.term),
+          };
+        }
+        const result = await f.controller.apply(call);
+        if (call.kind === "resume" && result.applied) appliedResume.resolve();
+        return result;
+      },
+    };
+    const home = f.home(undefined, port, { refusedRetryMs: 60_000 });
+    await home.recover();
+    await f.openSession(home);
+    expect(await home.tryPark()).toBe("parked");
+
+    // First wake refused while saved state stays paused.
+    refuseNextResume = true;
+    await expect(
+      home.gate.reserve(AbortSignal.timeout(5_000), { failOnRefusal: true }),
+    ).rejects.toMatchObject({
+      name: "BrowserPoolAttemptRefused",
+      refusedReason: "profile-disk-missing",
+      savedStateKept: true,
+    });
+    expect(home.report()).toMatchObject({
+      refused: "profile-disk-missing",
+      savedStateKept: true,
+    });
+
+    // Retry succeeds at the host (signed applied resume), then stalls during reattach.
+    f.stallReattach(releaseReattach.promise);
+    const waking = home.gate.reserve(AbortSignal.timeout(10_000), { failOnRefusal: true });
+    await withTimeout(appliedResume.promise, 5_000, {
+      timeoutError: () => new Error("retry resume did not apply"),
+    });
+    // Wait until the slot has advanced to epoch 2 (waking, in reattach), then assert the stale
+    // refusal is already gone while the gate stays waking (never ready).
+    await vi.waitFor(async () => expect((await f.slot())?.epoch).toBe(2), { timeout: 5_000 });
+    expect(home.report()).toBeUndefined();
+    expect(home.gate.phase).toBe("waking");
+    expect((await f.slot())?.phase).toBe("waking");
+
+    releaseReattach.resolve();
+    (await waking).release();
+    expect(home.report()).toBeUndefined();
+    expect(home.gate.phase).toBe("open");
+    expect((await f.slot())?.phase).toBe("running");
   } finally {
     await f.close();
   }

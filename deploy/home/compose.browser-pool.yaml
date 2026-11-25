@@ -1,6 +1,41 @@
 # A Cloud Computer whose boot answer said browserPool: true. Its browser runs on a pool host, not
-# here. Only this file changes the shape; compose.yaml is the self-hosted default, unchanged.
+# here. Only this file sets it apart from a self-hosted Home's shape (compose.yaml).
+# Each service's limits come from this machine (home_limits in common.sh), so together they never
+# ask for more memory than it has.
 services:
+  postgres:
+    cpus: ${OPENSTEER_HOME_LIMIT_POSTGRES_CPUS:?Machine limits required}
+    mem_limit: ${OPENSTEER_HOME_LIMIT_POSTGRES_MEMORY:?Machine limits required}
+    memswap_limit: ${OPENSTEER_HOME_LIMIT_POSTGRES_MEMORY:?Machine limits required}
   host:
+    cpus: ${OPENSTEER_HOME_LIMIT_HOST_CPUS:?Machine limits required}
+    mem_limit: ${OPENSTEER_HOME_LIMIT_HOST_MEMORY:?Machine limits required}
+    memswap_limit: ${OPENSTEER_HOME_LIMIT_HOST_MEMORY:?Machine limits required}
     environment:
       OPENSTEER_MANAGED_HOME_BROWSER_POOL: "true"
+  gateway:
+    cpus: ${OPENSTEER_HOME_LIMIT_GATEWAY_CPUS:?Machine limits required}
+    mem_limit: ${OPENSTEER_HOME_LIMIT_GATEWAY_MEMORY:?Machine limits required}
+    memswap_limit: ${OPENSTEER_HOME_LIMIT_GATEWAY_MEMORY:?Machine limits required}
+  runner:
+    cpus: ${OPENSTEER_HOME_LIMIT_RUNNER_CPUS:?Machine limits required}
+    mem_limit: ${OPENSTEER_HOME_LIMIT_RUNNER_MEMORY:?Machine limits required}
+    memswap_limit: ${OPENSTEER_HOME_LIMIT_RUNNER_MEMORY:?Machine limits required}
+    environment:
+      # As many Runs at once as its memory holds (home_limits); the Host holds the next back.
+      OPENSTEER_MAX_CONCURRENT_RUNS: ${OPENSTEER_HOME_LIMIT_RUNNER_RUNS:?Machine limits required}
+      # No local Browser Runtime runs here: the Host reaches the pool host itself, and the Runner
+      # is not pointed at a runtime that is not there.
+      OPENSTEER_BROWSER_BRIDGE_URL: !reset null
+      OPENSTEER_BROWSER_BRIDGE_TOKEN_FILE: !reset null
+      OPENSTEER_BROWSER_RUNTIME_ID: !reset null
+  # No browser runs in the VM: not Chromium, not the person's profiles, and no egress proxy that
+  # could send a page out from the VM's own address. Compose creates no container for either.
+  browser-runtime:
+    scale: 0
+  browser-egress:
+    scale: 0
+  channel-runtime:
+    cpus: ${OPENSTEER_HOME_LIMIT_CHANNEL_CPUS:?Machine limits required}
+    mem_limit: ${OPENSTEER_HOME_LIMIT_CHANNEL_MEMORY:?Machine limits required}
+    memswap_limit: ${OPENSTEER_HOME_LIMIT_CHANNEL_MEMORY:?Machine limits required}

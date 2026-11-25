@@ -86,17 +86,17 @@ describe("Connected agents on the phone", () => {
     );
     expect(section("connected")?.title).toBe("Connected");
     expect(lines("connected")).toEqual([
-      ["Grok", "Shopping profile · Supervised"],
+      ["“Grok”", "Shopping profile · Supervised"],
       ["Claude", "Everything · Full access"],
-      ["Trip planner", "Tasks · Auto"],
+      ["“Trip planner”", "Tasks · Auto"],
       ["Errand", "Nothing chosen · Supervised"],
-      ["Claude Code", "Tasks · Auto"],
+      ["“Claude Code”", "Tasks · Auto"],
       ["ChatGPT", "Nothing chosen · Supervised"],
     ]);
     expect(lines("disconnected")).toEqual([
-      ["Shop helper", "Check its last action"],
-      ["Old notes agent", "Disconnected"],
-      ["Old search agent", "Expired"],
+      ["“Shop helper”", "Check its last action"],
+      ["“Old notes agent”", "Disconnected"],
+      ["“Old search agent”", "Expired"],
     ]);
     const grok = section("connected")!.rows[0] as Extract<NativeSettingsRow, { kind: "button" }>;
     expect(grok).toMatchObject({ opens: true });
@@ -137,7 +137,7 @@ describe("Connected agents on the phone", () => {
     );
     await vi.waitFor(() => expect(section("connected")?.rows).toHaveLength(6));
     // Without includeRevoked an older Home leaves a stopped connection off the list.
-    expect(section("disconnected")?.rows.map((row) => row.label)).toEqual(["Shop helper"]);
+    expect(section("disconnected")?.rows.map((row) => row.label)).toEqual(["“Shop helper”"]);
   });
 
   it("draws placeholders until the list arrives, and Try again when it can't be read", async () => {

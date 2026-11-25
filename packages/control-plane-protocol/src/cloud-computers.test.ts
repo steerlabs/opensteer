@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  cloudComputerReleaseFeedPath,
+  CloudComputerReleaseFeedResponseSchema,
+  BrowserPoolNetworkCidrSchema,
+  CloudComputerBrowserPoolNetworkSchema,
+  CloudComputerLeaseSchema,
   CloudComputerBootRequestSchema,
   CloudComputerBootCompleteRequestSchema,
   CloudComputerDeleteRequestSchema,
@@ -223,4 +228,79 @@ it("accepts only a credential-free HTTPS update feed and the egress-only refresh
   expect(
     CloudComputerEgressResponseSchema.safeParse({ backup: { password: "secret" } }).success,
   ).toBe(false);
+});
+
+it("accepts only a private IPv4 network, at its own address, as the pool network a Home may reach", () => {
+  for (const cidr of [
+    "10.128.0.0/20",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "172.31.4.0/24",
+    "192.168.1.0/24",
+    "10.1.2.3/32",
+  ])
+    expect(BrowserPoolNetworkCidrSchema.safeParse(cidr).success, cidr).toBe(true);
+  for (const cidr of [
+    "0.0.0.0/0", // everything
+    "10.0.0.0/7", // wider than a private range
+    "172.0.0.0/8",
+    "192.168.0.0/15",
+    "8.8.8.0/24", // public
+    "10.128.0.1/20", // not the network's own address
+    "10.128.0.0/33",
+    "10.128.0.0",
+    "10.256.0.0/16",
+    "010.1.0.0/16",
+    " 10.1.0.0/16",
+    "10.1.0.0/16\n",
+  ])
+    expect(BrowserPoolNetworkCidrSchema.safeParse(cidr).success, cidr).toBe(false);
+  expect(
+    CloudComputerBrowserPoolNetworkSchema.parse({
+      cidr: "10.128.0.0/20",
+      agentPort: 7310,
+      relayPort: 7312,
+    }),
+  ).toEqual({ cidr: "10.128.0.0/20", agentPort: 7310, relayPort: 7312 });
+  for (const ports of [
+    { agentPort: 0, relayPort: 7312 },
+    { agentPort: 7310, relayPort: 65_536 },
+    { agentPort: 7310, relayPort: 7310 },
+    { agentPort: 7310.5, relayPort: 7312 },
+  ])
+    expect(
+      CloudComputerBrowserPoolNetworkSchema.safeParse({ cidr: "10.128.0.0/20", ...ports }).success,
+    ).toBe(false);
+  expect(
+    CloudComputerLeaseSchema.safeParse({ holder: crypto.randomUUID(), poolNetwork: "8.8.8.0/24" })
+      .success,
+  ).toBe(false);
+});
+
+it("names a Home's release feed route and answers only an allowed feed address", () => {
+  const id = CloudComputerIdSchema.parse("cc_00000000-0000-4000-8000-000000000001");
+  expect(cloudComputerReleaseFeedPath(id)).toBe(`/v1/cloud-computers/${id}/release-feed`);
+  expect(
+    CloudComputerReleaseFeedResponseSchema.parse({
+      releaseManifestUrl: "https://releases.example.test/managed/stable.json",
+    }),
+  ).toEqual({ releaseManifestUrl: "https://releases.example.test/managed/stable.json" });
+  for (const releaseManifestUrl of ["http://releases.example.test/x", "https://a.test/x?y=1"])
+    expect(CloudComputerReleaseFeedResponseSchema.safeParse({ releaseManifestUrl }).success).toBe(
+      false,
+    ); // The recipe for the account's release: its installer and SHA-256, from the account's config.
+  const releaseManifestUrl = "https://releases.example.test/managed/stable.json";
+  const recipe = { url: "https://releases.example.test/home.sh", sha256: "a".repeat(64) };
+  expect(CloudComputerReleaseFeedResponseSchema.parse({ releaseManifestUrl, recipe })).toEqual({
+    releaseManifestUrl,
+    recipe,
+  });
+  for (const bad of [
+    { ...recipe, sha256: "A".repeat(64) },
+    { ...recipe, url: "http://releases.example.test/home.sh" },
+    { url: recipe.url },
+  ])
+    expect(
+      CloudComputerReleaseFeedResponseSchema.safeParse({ releaseManifestUrl, recipe: bad }).success,
+    ).toBe(false);
 });

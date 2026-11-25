@@ -15,7 +15,7 @@ import {
   type ThreadSummary,
 } from "./client.js";
 import { startOfDay } from "./automation-presentation.js";
-import { threadStartHold } from "./thread-activity.js";
+import { threadStartWait } from "./thread-activity.js";
 import { compareTaskOrder, mergeTaskEntries } from "./task-entries.js";
 import { conversationSurfaces, type SurfaceItem } from "./surfaces.js";
 import { formatRelativeTime } from "./thread-list-model.js";
@@ -522,7 +522,8 @@ export type TaskWaitingReasonKind =
   | "account-preparing"
   | "computer-offline"
   | "open-helper"
-  | "stop-unconfirmed";
+  | "stop-unconfirmed"
+  | "waiting-for-run";
 export interface TaskWaitingReason {
   readonly kind: TaskWaitingReasonKind;
   readonly label: string;
@@ -579,7 +580,7 @@ export function taskWaitingReason(
       ? [queuedRun(thread)]
       : [];
   if (own.length === 0) return null;
-  const preparing = threadStartHold({
+  const wait = threadStartWait({
     thread: {
       ...thread,
       runStartHoldReason: thread.runStartHoldReason ?? shellRow?.runStartHoldReason ?? null,
@@ -591,14 +592,10 @@ export function taskWaitingReason(
     runQueue: own,
     environments: snapshot.environments,
   });
-  if (preparing) {
-    const unconfirmed =
-      (thread.runStartHoldReason ?? shellRow?.runStartHoldReason) === "previous-stop-unconfirmed" ||
-      own.some(
-        (entry) =>
-          entry.threadId === threadId && entry.startHoldReason === "previous-stop-unconfirmed",
-      );
-    return { kind: unconfirmed ? "stop-unconfirmed" : "account-preparing", label: preparing };
+  if (wait) {
+    // The task list names an account getting ready, and its agents stopped, as it always has.
+    const kind = wait.kind === "agents-stopped" ? "account-preparing" : wait.kind;
+    return { kind, label: wait.label };
   }
   const environment = snapshot.environments.find(
     (environment) => environment.id === thread.environmentId,
@@ -631,6 +628,15 @@ export function doneTaskList(snapshot: TaskListSource, deploymentId?: string): D
         right.threadId.localeCompare(left.threadId),
     );
   return { rows, total: list.window.totalItems, hasMore: list.window.hasMore };
+}
+
+/** The Home counts the person's Done window. Hide any session row still held from a frame. */
+export function personDoneTaskList(
+  snapshot: TaskListSource,
+  deploymentId?: string,
+): DoneTaskList | null {
+  const list = doneTaskList(snapshot, deploymentId);
+  return list && { ...list, rows: list.rows.filter((row) => !row.connectedAgentTask) };
 }
 
 export interface DoneDay {

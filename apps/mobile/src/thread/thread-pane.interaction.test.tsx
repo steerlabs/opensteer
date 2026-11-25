@@ -7022,7 +7022,7 @@ describe("the Run's page above the conversation", () => {
     const showTab = vi.fn();
     const { container } = await mount(host, workId, { withPage: { page: null, showTab } });
     await press(container, "Live page 1, example.com");
-    expect(showTab).toHaveBeenCalledExactlyOnceWith({ tabId: pageTab });
+    expect(showTab).toHaveBeenCalledExactlyOnceWith(pageTab);
     expect(harness.dispatch).not.toHaveBeenCalled();
   });
 });

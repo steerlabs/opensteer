@@ -31,6 +31,7 @@ afterEach(async () => {
 function setup(
   overrides: Partial<BrowserUsePort> = {},
   clock?: ConstructorParameters<typeof BrowserReplService>[0]["clock"],
+  workerEntry?: URL,
 ) {
   const subscribers = new Set<(event: BrowserUseEvent) => void>();
   const closures = new Set<() => void>();
@@ -55,7 +56,11 @@ function setup(
     }),
     ...overrides,
   } satisfies BrowserUsePort;
-  const service = new BrowserReplService({ port, ...(clock ? { clock } : {}) });
+  const service = new BrowserReplService({
+    port,
+    ...(clock ? { clock } : {}),
+    ...(workerEntry ? { workerEntry } : {}),
+  });
   services.push(service);
   return {
     service,
@@ -559,30 +564,50 @@ describe("browser REPL", () => {
     expect(port.command).toHaveBeenCalledTimes(8);
   });
 
-  it("measures a request on the Host, so one inside the byte limit is never refused for CPU", async () => {
-    const { run, port } = setup();
-    expect(
-      await run(`${bind} const payload = "x".repeat(1_000_000);
+  // Each value is built before an await, so the slice that sends the request
+  // spends only the guest library's serialization of it. A slow worker's CPU
+  // counts four times, as on a machine four times slower than this one.
+  it.each([
+    ["", undefined],
+    [
+      " on a slow worker",
+      new URL(
+        "../computer-use/computer-repl/computer-repl-worker.slow.test-support.ts",
+        import.meta.url,
+      ),
+    ],
+  ])(
+    "measures a request on the Host, so one inside the byte limit is never refused for CPU%s",
+    async (_, workerEntry) => {
+      const { run, port } = setup({}, undefined, workerEntry);
+      expect(
+        await run(`${bind} const payload = "x".repeat(1_000_000); await 0;
       await page.cdp("Runtime.evaluate", { payload }); return "sent";`),
-    ).toEqual({ content: [text("sent")] });
-    expect(port.command).toHaveBeenCalledOnce();
-    expect(JSON.stringify(vi.mocked(port.command).mock.calls[0])).toContain("x".repeat(1_000_000));
-    for (const code of [
-      // Over the limit in UTF-8 bytes, under it in UTF-16 units: measured exactly.
-      `${bind} await page.cdp("Runtime.evaluate", { value: "é".repeat(600_000) });`,
-      // Far over the limit in units: refused before the Host copies it.
-      `${bind} await page.cdp("Runtime.evaluate", { value: "x".repeat(4 * 1024 * 1024) });`,
-    ]) {
-      const refused = await run(code);
-      expect(refused).toMatchObject({
-        structuredContent: {
-          error: { code: "bridge-limit", message: expect.stringContaining("byte") },
-        },
-      });
-      expect(JSON.stringify(refused)).not.toContain("slice-limit");
-    }
-    expect(port.command).toHaveBeenCalledOnce();
-  });
+      ).toEqual({ content: [text("sent")] });
+      expect(port.command).toHaveBeenCalledOnce();
+      expect(JSON.stringify(vi.mocked(port.command).mock.calls[0])).toContain(
+        "x".repeat(1_000_000),
+      );
+      for (const code of [
+        // Over the limit in UTF-8 bytes, under it in UTF-16 units: measured exactly.
+        `${bind} const value = "é".repeat(600_000); await 0;
+      await page.cdp("Runtime.evaluate", { value });`,
+        // Over the limit in units on its own (the request's other fields only add
+        // to it): refused by its length before the Host copies it.
+        `${bind} const value = "x".repeat(${limits.bridgeBytes + 1}); await 0;
+      await page.cdp("Runtime.evaluate", { value });`,
+      ]) {
+        const refused = await run(code);
+        expect(refused).toMatchObject({
+          structuredContent: {
+            error: { code: "bridge-limit", message: expect.stringContaining("byte") },
+          },
+        });
+        expect(JSON.stringify(refused)).not.toContain("slice-limit");
+      }
+      expect(port.command).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each([
     // The guest library captured JSON.stringify before any script ran.

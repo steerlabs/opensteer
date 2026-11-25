@@ -2297,7 +2297,7 @@ export async function touchRunnerConnectionForAttach(
         from threads
         inner join execution_environments on execution_environments.id = threads.environment_id
         where execution_environments.runner_id = runners.id
-          and (threads.unconfirmed_stop_run_id is not null or threads.run_start_hold_reason is not null)
+          and (threads.unconfirmed_stop_run_id is not null or threads.run_start_hold_reason = 'previous-stop-unconfirmed')
       )`.as("hasUnconfirmedStop"),
     )
     .executeTakeFirst(databaseOperationOptions());

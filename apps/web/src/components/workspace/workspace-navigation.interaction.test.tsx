@@ -8,6 +8,7 @@ import type { MockHostClient } from "@opensteer/client/mock";
 import {
   doneTaskList,
   heldThread,
+  HostClientRequestError,
   placeList,
   taskAfter,
   taskList,
@@ -15,7 +16,13 @@ import {
   type TranscriptFixtureSnapshot,
   type TaskRow,
 } from "@opensteer/client/host";
-import { BrowserProfileIdSchema, createId, ThreadIdSchema } from "@opensteer/core";
+import {
+  BrowserProfileIdSchema,
+  BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
+  createId,
+  ThreadIdSchema,
+} from "@opensteer/core";
 
 import { rememberPlace } from "./navigation.js";
 
@@ -856,4 +863,82 @@ describe("a link arriving at the start page", () => {
       { typed: true },
     );
   });
+
+  it.each([
+    [
+      "browser-pool-refused",
+      "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
+    ],
+    [
+      "browser-pool-start-refused",
+      "Your Cloud Computer’s browser can’t start right now. Try again in a moment.",
+    ],
+    ["browser-pool-setting-up", "Setting up your browser… This can take a few minutes."],
+    [
+      "browser-pool-unreachable",
+      "Your Cloud Computer’s browser couldn’t be reached. Try again in a moment.",
+    ],
+  ])(
+    "shows the Cloud Computer pool reason (%s) on the start page without telling the person to choose another profile",
+    async (reason, expectedText) => {
+      await mount((source) => {
+        vi.spyOn(source, "openTab").mockRejectedValueOnce(
+          new HostClientRequestError({
+            code: "conflict",
+            message: expectedText,
+            reason,
+            status: 409,
+          }),
+        );
+        return { pathname: "/", search: "?panel=browser", state };
+      });
+      await until("The start page never showed the pool refusal", () => {
+        const alert = document.querySelector(".start-page__refusal");
+        expect(alert?.textContent).toContain(expectedText);
+        expect(alert?.textContent).not.toContain("Choose another profile");
+        return alert;
+      });
+    },
+  );
+});
+
+it("keeps the person on their tab when a docked task moves tabs, and jumps from its live card", async () => {
+  await mount((source) => {
+    const places = placeList(source.getSnapshot());
+    const acting = places.find((place) => place.title === "Le Petit Jardin")!;
+    const threadId = acting.occupants[0]!.threadId;
+    return `/tasks/${threadId}?panel=browser&tab=${acting.key}`;
+  });
+  const places = placeList(client.getSnapshot());
+  const acting = places.find((place) => place.title === "Le Petit Jardin")!;
+  const reading = places.find((place) => place.title === "Your reading list")!;
+  const threadId = acting.occupants[0]!.threadId;
+  const shownTab = () => element<HTMLElement>(".browser-view").dataset.browserTab;
+  const liveCard = () => document.querySelector(".conv-header .viewfinder");
+  const composer = element("[data-composer-input]");
+  const run = client
+    .getSnapshot()
+    .runQueue.find((entry) => entry.threadId === threadId && entry.status === "running")!;
+  const actingViewer = client.tabViewer(acting.key);
+  if (actingViewer?.kind !== "page") throw new Error("Expected page viewer");
+
+  await act(async () => {
+    client.actInPlace(threadId, reading.key);
+    client.enterPlace(run.id, threadId, {
+      place: {
+        kind: "browser",
+        sessionId: BrowserSessionIdSchema.parse(actingViewer.sessionId),
+        surfaceId: BrowserSurfaceIdSchema.parse(reading.key),
+      },
+      title: reading.title,
+      site: null,
+    });
+  });
+
+  expect(shownTab(), "The stage must stay on the person's tab").toBe(acting.key);
+  expect(liveCard()?.getAttribute("aria-label")).toContain(`Show ${reading.title}`);
+
+  await click(liveCard()!);
+  expect(shownTab()).toBe(reading.key);
+  expect(element("[data-composer-input]")).toBe(composer);
 });

@@ -12,7 +12,8 @@ afterEach(() => {
     rmSync(directory, { recursive: true, force: true });
 });
 
-/** Runs deploy/home/machine-status.sh with Docker stood in for, as the maintenance timer would. */
+/** Runs deploy/home/machine-status.sh with Docker stood in for, as the maintenance timer would:
+ * the pod as `pod_snapshot` (common.sh) reads it, and `compose exec` into the Host. */
 function run(script: string) {
   const home = mkdtempSync(join(tmpdir(), "machine-status-"));
   directories.push(home);
@@ -24,13 +25,12 @@ function run(script: string) {
       `set -euo pipefail
 source deploy/home/machine-status.sh
 home_dir=$HOME_DIR
+pod_snapshot() {
+  printf '%s\\n' 'host running healthy 101' 'runner running unhealthy 102' \\
+    'my-laptop-name running healthy 103' 'postgres exited none 0'
+}
 compose() {
-  if [[ $1 == ps ]]; then
-    printf '%s\\n' '{"Service":"host","State":"running","Health":"healthy"}' \\
-      '{"Service":"runner","State":"running","Health":"unhealthy"}' \\
-      '{"Service":"my-laptop-name","State":"running","Health":"healthy"}' \\
-      '{"Service":"postgres","State":"exited","Health":""}'
-  elif [[ $1 == exec ]]; then
+  if [[ $1 == exec ]]; then
     cat > "$OUT"; echo exec >> "$HOME_DIR/exec-calls"
   fi
 }
@@ -62,7 +62,7 @@ publish_machine_status`);
     const bytes = readFileSync(out, "utf8");
     const [backupAt, updateAt] = [...bytes.matchAll(/"at":"([^"]+)"/gu)].map((match) => match[1]);
     expect(bytes).toBe(
-      '{"services":{"host":"healthy","runner":"unhealthy","postgres":"stopped"},' +
+      '{"services":{"host":"healthy","postgres":"stopped","runner":"unhealthy"},' +
         `"lastBackup":{"result":"ok","at":"${backupAt}"},` +
         `"lastUpdate":{"result":"updated","at":"${updateAt}","fromVersion":"1.3.9","toVersion":"1.4.0"}}`,
     );

@@ -277,6 +277,79 @@ integration("Account OAuth freshness PostgreSQL boundary", () => {
       .execute();
   });
 
+  it("starts a sign-in page left open past its expiry again, for every provider, never showing JSON", async () => {
+    const appReview = {
+      email: "appreview@opensteer.com",
+      password: "review-test-password-with-at-least-24-characters",
+    };
+    const auth = createControlPlaneAuth(database, { ...config, appReview });
+    const server = await createControlPlaneServer({
+      appReviewSignIn: true,
+      appleSignIn: {
+        clientId: "com.opensteer.test.web",
+        keyId: "ABCDE12345",
+        privateKeyPem: "unused before the provider is called",
+        teamId: "TEAM123456",
+      },
+      auth,
+      authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
+      connectLifecycle,
+      portalOrigin: config.portalOrigin,
+      publicOrigin,
+      store,
+    });
+    const post = (path: string, fields: Record<string, string>) =>
+      server.inject({
+        method: "POST",
+        url: path,
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          origin: publicOrigin.origin,
+        },
+        payload: new URLSearchParams(fields).toString(),
+      });
+    try {
+      const page = await beginAuthorization(server, "", "login consent");
+      page.searchParams.delete("test_verifier");
+      const signed = page.search.slice(1);
+      const original = new URLSearchParams(signed);
+      for (const name of ["sig", "exp", "ba_iat", "ba_pl", "ba_param"]) original.delete(name);
+      // The page stays open past the five minutes its signed query lasts.
+      vi.useFakeTimers({ now: Date.now() + 5 * 60_000 + 1_000, toFake: ["Date"] });
+      for (const [path, fields] of [
+        ["/sign-in/app-review", appReview],
+        ["/sign-in/google", {}],
+        ["/sign-in/apple", {}],
+      ] as const) {
+        const late = await post(path, { ...fields, oauth_query: signed });
+        expect(late.statusCode, `${path}: ${late.body}`).toBe(303);
+        expect(late.body).not.toContain("invalid_signature");
+        const restart = new URL(String(late.headers.location), publicOrigin);
+        expect(restart.pathname).toBe("/api/auth/oauth2/authorize");
+        expect(restart.searchParams.toString()).toBe(original.toString());
+        // Authorize takes the original request again and hands out a fresh sign-in.
+        const again = await server.inject({
+          headers: { accept: "application/json" },
+          method: "GET",
+          url: restart.pathname + restart.search,
+        });
+        expect(again.statusCode, again.body).toBe(200);
+        const fresh = new URL(String(again.json<{ url?: unknown }>().url), publicOrigin);
+        expect(fresh.pathname).toBe(page.pathname);
+        expect(Number(fresh.searchParams.get("exp"))).toBeGreaterThan(Date.now() / 1000);
+      }
+      // A query with no request in it to start again: the page that says so.
+      const unreadable = await post("/sign-in/google", { oauth_query: "sig=invalid&exp=1" });
+      expect(unreadable.statusCode).toBe(400);
+      expect(unreadable.headers["content-type"]).toContain("text/html");
+      expect(unreadable.body).toContain("That request expired");
+      expect(unreadable.body).not.toContain("invalid_signature");
+    } finally {
+      vi.useRealTimers();
+      await server.close();
+    }
+  });
+
   it("admits only the configured App Review credentials into a normal Account session", async () => {
     const appReview = {
       email: "appreview@opensteer.com",
@@ -327,8 +400,17 @@ integration("Account OAuth freshness PostgreSQL boundary", () => {
         }),
       );
       expect(direct.status).toBe(403);
+      // A query that does not verify starts authorization again, which refuses
+      // what a fresh request with it would be refused.
       const forged = await signIn({ oauth_query: "client_id=forged&sig=invalid" });
-      expect(forged.statusCode).toBe(400);
+      expect(forged.statusCode).toBe(303);
+      const forgedRestart = new URL(String(forged.headers.location), publicOrigin);
+      expect(forgedRestart.pathname).toBe("/api/auth/oauth2/authorize");
+      expect(forgedRestart.searchParams.toString()).toBe("client_id=forged");
+      expect(
+        (await server.inject({ method: "GET", url: forgedRestart.pathname + forgedRestart.search }))
+          .statusCode,
+      ).toBe(400);
       expect(
         await database
           .selectFrom("users")

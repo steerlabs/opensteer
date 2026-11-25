@@ -2,7 +2,7 @@ import { readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { createId } from "@opensteer/core";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
-import { type SavedHostView, type SavedViewScope } from "@opensteer/client/host";
+import { savedViewScopeKey, type SavedHostView, type SavedViewScope } from "@opensteer/client/host";
 import { afterEach, expect, it } from "vitest";
 import { createSavedHostViewStore } from "./saved-host-view-store.js";
 import { savedViewFixture, savedViewTestCrypto as crypto } from "../../test-support/saved-views.js";
@@ -12,7 +12,7 @@ afterEach(() => {
 });
 const fixture = () => savedViewFixture(cleanup);
 const scope = (): SavedViewScope => ({
-  schema: 1,
+  schema: 2,
   epoch: hostApiVersion,
   hostIdentity: {
     deploymentId: createId("deployment"),
@@ -41,7 +41,7 @@ it("uses real AEAD, fresh nonces, one small key slot and rejects other scopes/ta
   expect(f.slots()).toHaveLength(1);
   for (const changed of [
     { epoch: value.epoch + 1 },
-    { schema: 2 },
+    { schema: 1 },
     { loginId: globalThis.crypto.randomUUID() },
     { hostIdentity: { ...value.hostIdentity, hostInstanceId: createId("hostInstance") } },
     {
@@ -59,6 +59,24 @@ it("uses real AEAD, fresh nonces, one small key slot and rejects other scopes/ta
   writeFileSync(path, corrupt);
   expect(await store.load(value, () => true)).toBeNull();
 });
+it("does not draw the old offline list after its membership changed", async () => {
+  const f = fixture();
+  const store = f.open();
+  const current = view();
+  await store.write(current, () => true);
+  const name = f.list()[0]!.name;
+  const path = `${f.directory}/${name}`;
+  const envelope = readFileSync(path).subarray(0, 9);
+  const slot = JSON.parse((await f.keys.getItemAsync(f.slots()[0]!))!) as { key: string };
+  const legacy = { ...current, schema: 1 };
+  const legacyKey = savedViewScopeKey(current).replace('"schema":2', '"schema":1');
+  const encoder = new TextEncoder();
+  const aad = encoder.encode(`OSVIEW01\x01opensteer.saved-host-view:${legacyKey}`);
+  const ciphertext = await crypto.encrypt(slot.key, encoder.encode(JSON.stringify(legacy)), aad);
+  writeFileSync(path, Buffer.concat([envelope, ciphertext]));
+  expect(await store.load(current, () => true)).toBeNull();
+});
+
 it("missing/locked keys miss, and deletion erases before failed ciphertext cleanup", async () => {
   const f = fixture(),
     value = view(),

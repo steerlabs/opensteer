@@ -6,7 +6,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./crypto": "./src/crypto.ts"
+    "./crypto": "./src/crypto.ts",
+    "./opensteer-error": "./src/opensteer-error.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

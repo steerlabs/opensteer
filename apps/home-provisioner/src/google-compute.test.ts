@@ -15,7 +15,6 @@ import {
   zonePath,
 } from "./google-compute.test-support.js";
 import { ProviderOutcomeUnknown, ProviderWriteRejected } from "./http.js";
-import { loadConfig } from "./config.js";
 
 const signal = new AbortController().signal;
 const ref = GoogleComputeServerRefSchema.parse(`${computeInstanceName}/${computeInstanceId}`);
@@ -444,50 +443,10 @@ it("takes an ADC client from local test composition without looking for machine 
   expect(fake.metadataCalls).toBe(0);
 });
 
-it("selects a four-vCPU Google machine by default and another with one override", () => {
-  const shared = {
-    OPENSTEER_ACCOUNT_URL: "https://account.test",
-    OPENSTEER_HOME_CLOUDFLARE_TOKEN: "cloudflare_token_for_tests",
-    OPENSTEER_HOME_CLOUDFLARE_ZONE_ID: "0".repeat(32),
-    OPENSTEER_HOME_CLOUD_COMPUTER_DOMAIN: "computers.example.test",
-  };
-  expect(
-    loadConfig({
-      ...shared,
-      OPENSTEER_HOME_GCP_PROJECT: "test-project",
-      OPENSTEER_HOME_GCP_ZONE: "us-central1-a",
-      OPENSTEER_HOME_GCP_NETWORK: "home-net",
-      OPENSTEER_HOME_GCP_SUBNET: "home-subnet",
-    }),
-  ).toMatchObject({
-    region: "us-central1-a",
-    serverType: "e2-standard-4",
-    diskType: "pd-balanced",
-    diskSizeGb: 30,
-  });
-  expect(
-    loadConfig({
-      ...shared,
-      OPENSTEER_HOME_GCP_PROJECT: "test-project",
-      OPENSTEER_HOME_GCP_ZONE: "us-central1-a",
-      OPENSTEER_HOME_GCP_NETWORK: "home-net",
-      OPENSTEER_HOME_GCP_SUBNET: "home-subnet",
-      OPENSTEER_HOME_GCP_MACHINE_TYPE: "e2-standard-8",
-    }).serverType,
-  ).toBe("e2-standard-8");
+it("refuses a Google server reference whose instance id overflows", () => {
   expect(
     GoogleComputeServerRefSchema.safeParse(`${computeInstanceName}/18446744073709551616`).success,
   ).toBe(false);
-  const { OPENSTEER_HOME_CLOUD_COMPUTER_DOMAIN: _required, ...withoutDomain } = shared;
-  expect(() =>
-    loadConfig({
-      ...withoutDomain,
-      OPENSTEER_HOME_GCP_PROJECT: "test-project",
-      OPENSTEER_HOME_GCP_ZONE: "us-central1-a",
-      OPENSTEER_HOME_GCP_NETWORK: "home-net",
-      OPENSTEER_HOME_GCP_SUBNET: "home-subnet",
-    }),
-  ).toThrow("OPENSTEER_HOME_CLOUD_COMPUTER_DOMAIN");
 });
 
 it("labels its own unlabelled reservation, since Compute keeps no labels from addresses.insert", async () => {

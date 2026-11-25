@@ -40,6 +40,8 @@ import {
   CloudComputerDesiredPageSchema,
   CloudComputerIdSchema,
   CloudComputerEgressResponseSchema,
+  CloudComputerPoolNetworkResponseSchema,
+  CloudComputerReleaseFeedResponseSchema,
   CloudComputerListResponseSchema,
   CloudComputerOfferResponseSchema,
   cloudComputerOfferPath,
@@ -113,10 +115,10 @@ export function registerCloudComputerRoutes(
 
   async function requireLease(request: FastifyRequest) {
     await options.verifyProvisioner(request.headers.authorization);
-    const lease = CloudComputerLeaseSchema.safeParse({
-      holder: request.headers[cloudComputerLeaseHeader],
-    });
-    if (!lease.success || !(await store.lease(lease.data.holder, false))) {
+    const holder = CloudComputerLeaseSchema.shape.holder.safeParse(
+      request.headers[cloudComputerLeaseHeader],
+    );
+    if (!holder.success || !(await store.lease(holder.data, false))) {
       throw new ControlPlaneError("forbidden", "Cloud Computer provisioner lease is not held");
     }
   }
@@ -135,11 +137,29 @@ export function registerCloudComputerRoutes(
   app.post(cloudComputerLeasePath, async (request, reply) => {
     privateResponse(reply);
     await options.verifyProvisioner(request.headers.authorization);
-    const { holder, poolConfigured } = CloudComputerLeaseSchema.parse(request.body);
-    if (!(await store.lease(holder, true, poolConfigured))) {
+    const { holder, poolNetwork, poolAdminPort } = CloudComputerLeaseSchema.parse(request.body);
+    const { agentPort, relayPort } = store.poolPorts;
+    // A configuration error, not a held lease: the provisioner stops rather than waits.
+    if (poolAdminPort === agentPort || poolAdminPort === relayPort)
+      throw new ControlPlaneError(
+        "bad_request",
+        `The provisioner's admin port ${poolAdminPort} is the browser pool's agent or relay port`,
+      );
+    if (!(await store.lease(holder, true, poolNetwork))) {
       throw new ControlPlaneError("conflict", "Another Cloud Computer provisioner holds the lease");
     }
     return { acquired: true };
+  });
+  // A provisioner gives its lease back when it stops cleanly (P2), so the next one need not wait
+  // for it to run out. Fenced by the holder: anyone else's release, or an expired one, changes
+  // nothing and is no error.
+  app.delete(cloudComputerLeasePath, async (request, reply) => {
+    privateResponse(reply);
+    await options.verifyProvisioner(request.headers.authorization);
+    const holder = CloudComputerLeaseSchema.shape.holder.safeParse(
+      request.headers[cloudComputerLeaseHeader],
+    );
+    return { released: holder.success && (await store.giveBackLease(holder.data)) };
   });
   app.post(`${provisionerPath}/check`, async (request, reply) => {
     privateResponse(reply);
@@ -218,6 +238,40 @@ export function registerCloudComputerRoutes(
     );
   });
 
+  // A booted Home asks at each maintenance pass, so it follows a pool network that moves (S2).
+  const poolNetworkLimit = new BootRateLimit();
+  app.get(`${provisionerPath}/pool-network`, async (request, reply) => {
+    privateResponse(reply);
+    const { id } = params.parse(request.params);
+    if (!poolNetworkLimit.allow(id, request.ip))
+      return reply
+        .code(429)
+        .header("retry-after", "60")
+        .send({
+          error: { code: "rate_limited", message: "Too many Cloud Computer pool network requests" },
+        });
+    return CloudComputerPoolNetworkResponseSchema.parse(
+      await store.poolNetworkForHome(id, request.headers.authorization),
+    );
+  });
+
+  // A booted Home asks at each update check, so it follows a feed this account moves later.
+  const feedLimit = new BootRateLimit();
+  app.get(`${provisionerPath}/release-feed`, async (request, reply) => {
+    privateResponse(reply);
+    const { id } = params.parse(request.params);
+    if (!feedLimit.allow(id, request.ip))
+      return reply
+        .code(429)
+        .header("retry-after", "60")
+        .send({
+          error: { code: "rate_limited", message: "Too many Cloud Computer release feed requests" },
+        });
+    return CloudComputerReleaseFeedResponseSchema.parse(
+      await store.releaseFeedForHome(id, request.headers.authorization),
+    );
+  });
+
   app.post(`${provisionerPath}/backup`, { bodyLimit: 1024 }, async (request, reply) => {
     privateResponse(reply);
     const { id } = params.parse(request.params);
@@ -254,10 +308,8 @@ export function registerCloudComputerRoutes(
   app.get(browserPoolHostsDesiredPath, async (request, reply) => {
     privateResponse(reply);
     await requireLease(request);
-    const { after, limit, probe } = BrowserPoolHostDesiredPageSchema.parse(request.query);
-    return BrowserPoolHostDesiredResponseSchema.parse(
-      await store.desiredPoolHosts(after, limit, probe ?? false),
-    );
+    const { after, limit } = BrowserPoolHostDesiredPageSchema.parse(request.query);
+    return BrowserPoolHostDesiredResponseSchema.parse(await store.desiredPoolHosts(after, limit));
   });
 
   app.post(`${poolHostPath}/check`, async (request, reply) => {

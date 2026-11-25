@@ -242,7 +242,7 @@ await page.getByRole('button',{name:'Shadow action',exact:true}).click();`);
       await kit.run(`for(const id of ['disabled','fieldset','aria-disabled'])
   await fails(()=>page.locator('#'+id).click({timeout:1500}),/element is disabled/);
 assert(Object.keys(await page.evaluate(()=>fixture.counts)).length===0,'disabled did not activate');
-const missing=await fails(()=>page.getByRole('button',{name:'Missing action'}).click({timeout:1500}),/element was not found/);
+const missing=await fails(()=>page.getByRole('button',{name:'Missing action'}).click({timeout:1500}),/no element matched/);
 assert(/Available action/.test(missing.message),'available role names');
 await page.evaluate(()=>enableButtons());
 for(const id of ['disabled','fieldset','aria-disabled']) await page.locator('#'+id).click();`);

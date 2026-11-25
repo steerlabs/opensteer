@@ -1,15 +1,20 @@
 import {
+  accessModeOptions,
   deriveSurface,
   mutationIdempotencyKey,
   phoneSentence,
+  connectedAgentNamePart,
+  formatClockTime,
   requestDecision,
   canRespondToRequests,
+  sessionQuestionTitleParts,
   sessionQuestions,
   workWords,
   type HostClient,
   type HostSnapshot,
   type OperationRow,
   type OperationRequestView,
+  type RequestView,
   type SessionTaskView,
 } from "@opensteer/client/host";
 import { useStackedLayout } from "../ui/stacked-layout.js";
@@ -90,13 +95,10 @@ export function AgentSessionPane(props: {
     [thread, threadId, transcript.requests],
   );
   const questions = useMemo(() => sessionQuestions(transcript.requests), [transcript.requests]);
-  const user = useHostValue(hostClient, selectUser, null);
-  const canRespond = useHostValue(hostClient, canRespondToRequests, false);
   // Where the agent works now, and the page its questions are about: the task's own tabs.
   const place = useThreadAgentPlace(hostClient, threadId);
-  const drafts = useMobileClient().drafts;
   const showTab = useShowTab(props.deploymentId, threadId);
-  const stop = useAgentSessionStop(hostClient, threadId);
+  const stop = useAgentSessionStop(hostClient, threadId, view.stop?.sessionId ?? null);
   const activity = view.activity;
   return (
     <View style={styles.pane} testID="agent-session">
@@ -115,28 +117,14 @@ export function AgentSessionPane(props: {
             title={workWords("work.usingNow")}
           />
         )}
-        {user === null
-          ? null
-          : questions.map((request) => {
-              const surface = deriveSurface([request], user);
-              return surface === null ? null : (
-                <View
-                  key={request.id}
-                  style={styles.question}
-                  testID={`session-question:${request.id}`}
-                >
-                  <RequestPageLink hostClient={hostClient} onOpen={showTab} request={request} />
-                  <QuestionCard
-                    canRespond={canRespond}
-                    deploymentId={props.deploymentId}
-                    drafts={drafts}
-                    hostClient={hostClient}
-                    surface={surface}
-                    userId={user.id}
-                  />
-                </View>
-              );
-            })}
+        {questions.map((request) => (
+          <SessionQuestionCard
+            key={request.id}
+            hostClient={hostClient}
+            deploymentId={props.deploymentId}
+            request={request}
+          />
+        ))}
         <AppText role="secondaryMedium" tone="muted">
           {workWords("work.activity")}
         </AppText>
@@ -179,7 +167,7 @@ export function AgentSessionPane(props: {
               kind="stop"
               label={phoneSentence(view.stop.labelParts)}
               onPress={() => {
-                if (view.stop) void stop.run(view.stop.sessionId);
+                if (view.stop) void stop.run();
               }}
             />
           )}
@@ -187,8 +175,43 @@ export function AgentSessionPane(props: {
         <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" tone="muted">
           {phoneSentence(view.noComposerParts)}
         </AppText>
-        {stop.line === null ? null : <ActionLine line={stop.line} onDismiss={stop.dismiss} />}
+        {stop.line === null ? null : <ActionLine line={stop.line} />}
       </View>
+    </View>
+  );
+}
+
+/** The connected agent's own question, on its task and in Now. */
+export function SessionQuestionCard({
+  hostClient,
+  deploymentId,
+  request,
+}: {
+  readonly hostClient: HostClient;
+  readonly deploymentId: string;
+  readonly request: RequestView;
+}): ReactNode {
+  const thread = useSessionThread(hostClient, request.originatingThreadId);
+  const titleParts = sessionQuestionTitleParts(request, thread);
+  const user = useHostValue(hostClient, selectUser, null);
+  const canRespond = useHostValue(hostClient, canRespondToRequests, false);
+  const { drafts } = useMobileClient();
+  const showTab = useShowTab(deploymentId, request.originatingThreadId);
+  if (user === null) return null;
+  const surface = deriveSurface([request], user);
+  if (surface === null) return null;
+  return (
+    <View style={styles.question} testID={`session-question:${request.id}`}>
+      <RequestPageLink hostClient={hostClient} onOpen={showTab} request={request} />
+      <QuestionCard
+        canRespond={canRespond}
+        deploymentId={deploymentId}
+        drafts={drafts}
+        hostClient={hostClient}
+        surface={surface}
+        title={titleParts ? phoneSentence(titleParts) : undefined}
+        userId={user.id}
+      />
     </View>
   );
 }
@@ -208,15 +231,33 @@ const tones: Readonly<Record<OperationRow["outcome"]["tone"], string>> = {
 };
 
 /** One operation: what it did, who allowed it, and how it ended, stated plainly. */
-export function OperationRowView({ row }: { readonly row: OperationRow }): ReactNode {
+export function OperationRowView({
+  row,
+  showModeAndTime,
+}: {
+  readonly row: OperationRow;
+  readonly showModeAndTime?: boolean;
+}): ReactNode {
   const stacked = useStackedLayout();
   const glyph = <Symbol name={glyphs[row.glyph]} size={15} tint={color.textSoft} />;
+  const mode = showModeAndTime
+    ? accessModeOptions.find((option) => option.mode === row.mode)?.label
+    : null;
   const words = (
     <View style={stacked ? undefined : styles.grow}>
-      <AppText role="secondary">{row.action}</AppText>
-      <AppText role="caption" tone="muted">
-        {row.allowedBy === null ? row.outcome.label : `${row.allowedBy} · ${row.outcome.label}`}
+      <AppText role="secondary">
+        {phoneSentence(row.actionParts ?? [row.action], { quoteNames: false })}
       </AppText>
+      <AppText role="caption" tone="muted">
+        {[mode, row.allowedBy !== mode ? row.allowedBy : null, row.outcome.label]
+          .filter(Boolean)
+          .join(" · ")}
+      </AppText>
+      {showModeAndTime ? (
+        <AppText role="caption" tone="muted">
+          {formatClockTime(row.at)}
+        </AppText>
+      ) : null}
       {row.detail === null ? null : (
         <AppText role="caption" tone="muted">
           {row.detail}
@@ -291,12 +332,16 @@ export function OperationRequestCard(props: {
           size={20}
         />
         <AppText role="secondaryMedium" tone="muted">
-          {view.agent.name}
+          {phoneSentence([connectedAgentNamePart(view.agent)], { quoteNames: true })}
         </AppText>
       </View>
       <AppText role="bodyMedium">{view.question}</AppText>
       {(view.context ?? view.summary) ? (
-        <AppText role="secondary">{view.context ?? view.summary}</AppText>
+        <AppText role="secondary">
+          {view.contextParts
+            ? phoneSentence(view.contextParts, { quoteNames: false })
+            : view.summary}
+        </AppText>
       ) : null}
       {view.agentWords === null ? null : (
         <View style={styles.agentWords}>

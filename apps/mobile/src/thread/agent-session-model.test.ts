@@ -1,11 +1,17 @@
 import { readAsDrawn } from "../screens/read-as-drawn.test-support.js";
-import { agentWho, connectedAgentIdentity, type HostSnapshot } from "@opensteer/client/host";
+import {
+  agentSessionSlot,
+  agentWho,
+  connectedAgentIdentity,
+  needsYouAgentRequest,
+  plainSentence,
+  type HostSnapshot,
+} from "@opensteer/client/host";
 import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
 import type { Request } from "@opensteer/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { isAddress } from "../ui/address-words.js";
 import {
-  needsYouOperation,
   operationRequestsOf,
   placeSessionLine,
   sessionRowOf,
@@ -110,17 +116,12 @@ describe("a direct operation's Request on the phone", () => {
   it("names the agent and the question in Needs you, and nothing for another Request", () => {
     const snapshot = seeded();
     const request = requestsOf(snapshot, mockAgentWorkThreads.waiting)[0]!;
+    const session = agentSessionSlot(snapshot, mockAgentWorkThreads.waiting);
+    const row = needsYouAgentRequest(request, session)!;
+    expect(row.agent.name).toBe("Grok");
+    expect(plainSentence(row.listTitleParts)).toBe("“Grok”: Run a script in Shopping?");
     expect(
-      needsYouOperation(snapshot, { request, threadId: mockAgentWorkThreads.waiting }),
-    ).toMatchObject({
-      listTitle: "“Grok”: Run a script in Shopping?",
-      agent: { name: "Grok" },
-    });
-    expect(
-      needsYouOperation(snapshot, {
-        request: { ...request, originatingAgentSessionId: null },
-        threadId: mockAgentWorkThreads.waiting,
-      }),
+      needsYouAgentRequest({ ...request, originatingAgentSessionId: null }, session),
     ).toBeNull();
     expect(request.originatingAgentSessionId).toBeTruthy();
   });

@@ -10,6 +10,7 @@ import {
   CloudComputerRegionSchema,
   CloudComputerReleaseSchema,
   CloudComputerReleaseManifestUrlSchema,
+  defaultBrowserPoolAdminPort,
   defaultBrowserPoolAgentPort,
   defaultBrowserPoolRelayPort,
 } from "@opensteer/control-plane-protocol";
@@ -76,58 +77,80 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
   const integer = (min: number, max: number) =>
     z.string().regex(/^\d+$/u).transform(Number).pipe(z.number().int().min(min).max(max));
   const region = read("REGION", CloudComputerLocationSchema);
-  const browserPool = has("POOL_SLOTS_PER_HOST")
-    ? (() => {
-        const slotsPerHost = read("POOL_SLOTS_PER_HOST", integer(1, 16_384));
-        const profileMib = has("POOL_PROFILE_MIB")
-          ? read("POOL_PROFILE_MIB", integer(64, 1_048_576))
-          : 2048;
-        const profileDiskSizeGb = has("POOL_PROFILE_DISK_SIZE_GB")
-          ? read("POOL_PROFILE_DISK_SIZE_GB", integer(10, 65_536))
-          : 500;
-        const usableProfileDiskMib = Math.floor(
-          profileDiskSizeGb * 1024 * (1 - browserPoolProfileDiskOverheadRatio),
-        );
-        if (slotsPerHost * profileMib > usableProfileDiskMib) {
-          throw new Error(
-            `Browser pool slots (${slotsPerHost} * ${profileMib} MiB) exceed usable profile disk ` +
-              `capacity (${usableProfileDiskMib} MiB of ${profileDiskSizeGb} GiB with 10% filesystem overhead reserved)`,
-          );
-        }
-        return {
-          slotsPerHost,
-          release: read(
-            "POOL_RELEASE_JSON",
-            z
-              .string()
-              .transform((text, ctx) => {
-                try {
-                  return JSON.parse(text) as unknown;
-                } catch {
-                  ctx.addIssue({ code: "custom", message: "Invalid pool release JSON" });
-                  return z.NEVER;
-                }
-              })
-              .pipe(BrowserPoolHostReleaseSchema),
-          ),
-          machineType: has("POOL_MACHINE_TYPE")
-            ? read("POOL_MACHINE_TYPE", CloudComputerLocationSchema)
-            : "n2-standard-8",
-          guestVcpus: has("POOL_GUEST_VCPUS") ? read("POOL_GUEST_VCPUS", integer(1, 32)) : 2,
-          guestMemoryMib: has("POOL_GUEST_MEMORY_MIB")
-            ? read("POOL_GUEST_MEMORY_MIB", integer(256, 65_536))
-            : 2048,
-          profileMib,
-          profileDiskSizeGb,
-          agentPort: has("POOL_AGENT_PORT")
-            ? read("POOL_AGENT_PORT", integer(1, 65_535))
-            : defaultBrowserPoolAgentPort,
-          relayPort: has("POOL_RELAY_PORT")
-            ? read("POOL_RELAY_PORT", integer(1, 65_535))
-            : defaultBrowserPoolRelayPort,
-        };
-      })()
-    : undefined;
+  // An installed Cloud Computer updates only from the feed its boot answer gave it: without one it
+  // could never be updated short of a replacement.
+  if (!has("RELEASE_MANIFEST_URL"))
+    throw new Error(
+      `Cloud Computers need a release feed to update from: set ${prefix}RELEASE_MANIFEST_URL`,
+    );
+  // A Cloud Computer's browser runs in the browser pool, always: none runs in its own VM.
+  if (!has("POOL_SLOTS_PER_HOST") || !has("POOL_RELEASE_JSON"))
+    throw new Error(
+      `Cloud Computers need the browser pool: set ${prefix}POOL_SLOTS_PER_HOST and ${prefix}POOL_RELEASE_JSON`,
+    );
+  const browserPool = (() => {
+    const slotsPerHost = read("POOL_SLOTS_PER_HOST", integer(1, 16_384));
+    const profileMib = has("POOL_PROFILE_MIB")
+      ? read("POOL_PROFILE_MIB", integer(64, 1_048_576))
+      : 2048;
+    const profileDiskSizeGb = has("POOL_PROFILE_DISK_SIZE_GB")
+      ? read("POOL_PROFILE_DISK_SIZE_GB", integer(10, 65_536))
+      : 500;
+    const usableProfileDiskMib = Math.floor(
+      profileDiskSizeGb * 1024 * (1 - browserPoolProfileDiskOverheadRatio),
+    );
+    if (slotsPerHost * profileMib > usableProfileDiskMib) {
+      throw new Error(
+        `Browser pool slots (${slotsPerHost} * ${profileMib} MiB) exceed usable profile disk ` +
+          `capacity (${usableProfileDiskMib} MiB of ${profileDiskSizeGb} GiB with 10% filesystem overhead reserved)`,
+      );
+    }
+    return {
+      slotsPerHost,
+      release: read(
+        "POOL_RELEASE_JSON",
+        z
+          .string()
+          .transform((text, ctx) => {
+            try {
+              return JSON.parse(text) as unknown;
+            } catch {
+              ctx.addIssue({ code: "custom", message: "Invalid pool release JSON" });
+              return z.NEVER;
+            }
+          })
+          .pipe(BrowserPoolHostReleaseSchema),
+      ),
+      machineType: has("POOL_MACHINE_TYPE")
+        ? read("POOL_MACHINE_TYPE", CloudComputerLocationSchema)
+        : "n2-standard-8",
+      guestVcpus: has("POOL_GUEST_VCPUS") ? read("POOL_GUEST_VCPUS", integer(1, 32)) : 2,
+      guestMemoryMib: has("POOL_GUEST_MEMORY_MIB")
+        ? read("POOL_GUEST_MEMORY_MIB", integer(256, 65_536))
+        : 2048,
+      profileMib,
+      profileDiskSizeGb,
+      agentPort: has("POOL_AGENT_PORT")
+        ? read("POOL_AGENT_PORT", integer(1, 65_535))
+        : defaultBrowserPoolAgentPort,
+      relayPort: has("POOL_RELAY_PORT")
+        ? read("POOL_RELAY_PORT", integer(1, 65_535))
+        : defaultBrowserPoolRelayPort,
+    };
+  })();
+  // Every Home's firewall lets its Host reach these two ports only, after rejecting the mail
+  // ports (deploy/home/firewall.sh): ports it would refuse leave no path to any browser. Each
+  // pool host also serves the provisioner's admin port (7311 unless the provisioner says
+  // otherwise with its lease, which is refused on a clash); none may be the same.
+  const refusedPorts = [25, 465, 587, defaultBrowserPoolAdminPort];
+  if (
+    browserPool.agentPort === browserPool.relayPort ||
+    refusedPorts.includes(browserPool.agentPort) ||
+    refusedPorts.includes(browserPool.relayPort)
+  )
+    throw new Error(
+      "The browser pool's agent and relay ports must differ and must not be 25, 465, 587 or the pool's admin port",
+    );
   return {
     provisionerEmail: read(
       "PROVISIONER_EMAIL",
@@ -135,17 +158,14 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
     ),
     domain: read("DOMAIN", CloudComputerHostnameSchema.max(214)),
     region,
-    ...(browserPool ? { browserPool } : {}),
+    browserPool,
     ...(env[`${prefix}REGION_LABEL`] !== undefined ||
     env[`${prefix}REGION_LABEL_FILE`] !== undefined
       ? { regionLabel: read("REGION_LABEL", CloudComputerRegionSchema.shape.label) }
       : {}),
     serverType: read("SERVER_TYPE", CloudComputerLocationSchema),
     release,
-    ...(env[`${prefix}RELEASE_MANIFEST_URL`] !== undefined ||
-    env[`${prefix}RELEASE_MANIFEST_URL_FILE`] !== undefined
-      ? { releaseManifestUrl: read("RELEASE_MANIFEST_URL", CloudComputerReleaseManifestUrlSchema) }
-      : {}),
+    releaseManifestUrl: read("RELEASE_MANIFEST_URL", CloudComputerReleaseManifestUrlSchema),
     ...(env[`${prefix}BACKUP_KEY_PROJECT`] !== undefined ||
     env[`${prefix}BACKUP_KEY_PROJECT_FILE`] !== undefined
       ? {

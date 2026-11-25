@@ -125,6 +125,12 @@ function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
   // At the largest sizes a row's mark takes a line of its own (`stacked-layout.ts`).
   const stacked = useStackedLayout();
   switch (row.kind) {
+    case "content":
+      return (
+        <RNHostView matchContents={{ vertical: true }} modifiers={[fillMaxWidth()]}>
+          {row.content}
+        </RNHostView>
+      );
     case "chips":
       return (
         <ChoiceRow

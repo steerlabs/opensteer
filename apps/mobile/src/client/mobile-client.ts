@@ -2245,7 +2245,7 @@ export class MobileClient {
     if (!loginId) return null;
     const identity = connection.authority.document;
     const base = {
-      schema: 1 as const,
+      schema: 2 as const,
       epoch: hostApiVersion,
       hostIdentity: {
         deploymentId: identity.deploymentId,

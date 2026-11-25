@@ -44,3 +44,42 @@ if (port && typeof plans === "object" && plans !== null) {
     post(message);
   };
 }
+
+/**
+ * Makes this worker a slow one. `cpuScale`: every microsecond of CPU this thread
+ * spends counts `cpuScale` times, as the same work on a machine that many times
+ * slower: the guest's own code and the Host's alike. `hostParseMs`: the Host's
+ * JSON.parse (the guest has QuickJS's own) of a string over 64 KiB first spends
+ * that much real CPU, as a Host slow to take in what a guest hands it.
+ */
+export function slowThisThread(slowed: { cpuScale?: number; hostParseMs?: number }): void {
+  const realCpu = process.threadCpuUsage.bind(process);
+  const scale = slowed.cpuScale;
+  if (scale !== undefined)
+    process.threadCpuUsage = (previous?: NodeJS.CpuUsage) => {
+      const { user, system } = realCpu();
+      return {
+        user: user * scale - (previous?.user ?? 0),
+        system: system * scale - (previous?.system ?? 0),
+      };
+    };
+  if (slowed.hostParseMs !== undefined) {
+    const burnUs = slowed.hostParseMs * 1000;
+    const parse = JSON.parse;
+    JSON.parse = (text: string, reviver?: Parameters<typeof JSON.parse>[1]) => {
+      if (typeof text === "string" && text.length > 64 * 1024) {
+        const start = realCpu();
+        for (;;) {
+          const { user, system } = realCpu(start);
+          if (user + system >= burnUs) break;
+        }
+      }
+      return parse(text, reviver) as unknown;
+    };
+  }
+}
+
+// Preloaded with `workerData.slowed = {cpuScale?, hostParseMs?}`: a slow worker.
+const slowed =
+  typeof data === "object" && data !== null && "slowed" in data ? data.slowed : undefined;
+if (typeof slowed === "object" && slowed !== null) slowThisThread(slowed);

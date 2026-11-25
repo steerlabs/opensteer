@@ -1,0 +1,7 @@
+{"at":"2026-11-25T16:11:44.934Z","kind":"proxy-usage","slot":"bench-0","connections":0,"memory":0,"samples":0}
+{"at":"2026-11-25T16:11:58.760Z","kind":"pull-disk-wake","sample":1,"save_ms":1850,"resume_call_ms":259.2806930000006,"first_cdp_reply_ms":682.9684730000008,"https_after_wake":"opaque","https_ms":1166.3904409999996,"ok":true}
+{"at":"2026-11-25T16:12:05.711Z","kind":"pull-disk-wake","sample":2,"save_ms":1906,"resume_call_ms":191.44607299999916,"first_cdp_reply_ms":569.6968409999972,"https_after_wake":"opaque","https_ms":904.6670749999976,"ok":true}
+{"at":"2026-11-25T16:12:12.151Z","kind":"pull-disk-wake","sample":3,"save_ms":1536,"resume_call_ms":176.54248300000108,"first_cdp_reply_ms":396.71664600000076,"https_after_wake":"opaque","https_ms":716.8548489999994,"ok":true}
+{"at":"2026-11-25T16:13:04.682Z","kind":"pull-proxy-down-wake","https_first":"opaque","loop":{"kills":8,"service":"failed","result":"signal","socket":"failed","pid1_cpu_ms":1310,"seconds":45},"resume_call_ms":176.5693570000003,"phase_while_down":"running","status_proxy_down_after_ms":5165.269837,"first_cdp_reply_while_down_ms":5218.7356720000025,"https_while_down":"TimeoutError: signal timed out","resume_again_call_ms":95.8554210000002,"https_after_park_and_wake":"opaque","status_proxy_after":null,"ok":true}
+{"at":"2026-11-25T16:13:04.683Z","kind":"assertions","rows":5,"failed":[],"ok":true}
+{"at":"2026-11-25T16:13:04.683Z","kind":"done"}

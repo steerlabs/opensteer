@@ -1,14 +1,10 @@
-import {
-  connectedAgentsNow,
-  readTaskActivity,
-  threadInDirectory,
-  type ChatScreenHost,
-  type HostSnapshot,
-  type HostSnapshotSource,
-  type ThreadSummary,
-  type WaitingRequestView,
-} from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
+import { readTaskActivity } from "../host/agent-work.js";
+import type { ChatScreenHost } from "../host/chat-screen-host.js";
+import type { HostSnapshot, ThreadSummary, WaitingRequestView } from "../host/client.js";
+import { connectedAgentsNow } from "../host/connected-agents-now.js";
+import { threadInDirectory } from "../host/host-snapshot-selectors.js";
+import type { HostSnapshotSource } from "../host/host-snapshot-store.js";
+import { useHostSelector } from "./use-host-snapshot.js";
 import type { AgentOperationView } from "@opensteer/core";
 import { useCallback, useEffect, useMemo, useState } from "react";
 

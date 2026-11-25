@@ -26,7 +26,6 @@ import {
   PlaceBrowserView,
   type BrowserChromeSignIn,
 } from "../browser/browser-view.js";
-import { useBrowserThreadPair } from "../browser/browser-thread-pair.js";
 import { Icon } from "../icon.js";
 import { useToastToolbar } from "../toast.js";
 import { ConnectedAgentsHeader, SidebarRestoreButton } from "../sidebar-chrome.js";
@@ -143,8 +142,7 @@ function SelectedPlace({
   readonly onReportError: (error: unknown) => void;
   readonly trailing: ReactNode;
 }) {
-  const { dock, nav, phone, selection } = useWorkspace();
-  const { pathname } = useLocation();
+  const { nav, phone, selection } = useWorkspace();
   const toolbarRef = useToastToolbar();
   const presentations = useListedBrowserPresentations(hostClient);
   const pageVisible = usePageVisible();
@@ -164,21 +162,6 @@ function SelectedPlace({
   // page activates, it holds the last page's picture and waits for this page's own binding.
   const lastPageSession = useRef<string | null>(null);
   if (pageSession) lastPageSession.current = pageSession;
-  const dockedThread = !phone && dock.open ? conversationAt(pathname) : null;
-  const showBrowserTab = useCallback(
-    (destination: { readonly tabId: TabId }, options: { replace: boolean }) =>
-      nav.showPlace({ kind: "tab", tabId: destination.tabId }, options),
-    [nav],
-  );
-  const pair = useBrowserThreadPair({
-    hostClient,
-    mark: dockedThread ? (
-      <TaskMark mark={threadMark(dockedThread, directory.snapshot)} size={16} />
-    ) : null,
-    onShow: showBrowserTab,
-    shown: live?.kind === "page" ? { tabId: live.key } : null,
-    threadId: live?.kind === "page" ? dockedThread : null,
-  });
   const [activation, setActivation] = useState<{
     readonly tabId: string;
     readonly state: "activating" | "failed";
@@ -217,8 +200,11 @@ function SelectedPlace({
         : tabViewerStands(viewer, tabState)
           ? ("show" as const)
           : ("ask-again" as const);
-  // A tab still asleep after its answer is asked for again only by Try again.
+  // A tab still asleep after its answer is asked for again only by Try again. Nothing asks while
+  // the page is hidden: the Home lets a tab nobody sees sleep, and asking would wake it again.
+  // The moment the page is seen, it asks.
   const needsActivation =
+    pageVisible &&
     placeKey !== null &&
     !!kind &&
     tabState !== "unavailable" &&
@@ -448,7 +434,6 @@ function SelectedPlace({
             setRetry((value) => value + 1);
           }}
           compact={phone}
-          pair={pair}
           marks={marks}
           hostClient={hostClient}
           leading={leading}

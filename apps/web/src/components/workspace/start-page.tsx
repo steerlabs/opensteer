@@ -45,7 +45,11 @@ import { useHostSelector, usePlaceList } from "@opensteer/client/react";
 import { computerGlyph, orderDevices } from "@opensteer/client/computers";
 import type { ApprovedComputerApp, OwnerWindowInfo } from "@opensteer/protocol";
 import { classifyClientFailure } from "@opensteer/client/connections";
-import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
+import {
+  browserPoolRefusalWords,
+  clientIssue,
+  presentClientIssue,
+} from "@opensteer/client/feedback";
 import { act, failureWords } from "../use-action.js";
 import { AppMark } from "../computer-apps/app-icons.js";
 import { computerIcon } from "../computers/device-art.js";
@@ -364,7 +368,9 @@ export const StartPage = memo(function StartPage({
     const issue = clientIssue(error, { operation: "action", label: "open this" });
     const words = issue ? presentClientIssue(issue).title : "";
     const name = selected.presentation.name;
-    if (reason === "browser-placement-ambiguous")
+    const poolWords = browserPoolRefusalWords(reason);
+    if (poolWords) setRefusal({ kind: "message", text: poolWords });
+    else if (reason === "browser-placement-ambiguous")
       setRefusal({
         kind: "choose-computer",
         result,

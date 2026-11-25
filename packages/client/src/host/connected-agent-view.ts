@@ -13,7 +13,7 @@ import {
 } from "@opensteer/core";
 import type { AgentConnection } from "@opensteer/protocol";
 import { accessModeOptions } from "./access-modes.js";
-import { agentWho, agentWithdrawnLine, type AgentWho } from "./agent-identity.js";
+import { agentWithdrawnLine, type AgentWho } from "./agent-identity.js";
 import type { ThreadSummary } from "./client.js";
 import {
   agentSentence,
@@ -195,22 +195,14 @@ export function connectedAgentIdentity(
   withdrawnAt?: string | null,
 ): ConnectedAgentIdentity {
   const redirect = redirectUri ?? source.client?.redirectOrigin ?? null;
-  const who = agentWho({
-    clientName: source.clientName,
-    redirect,
-    identity: source.identity,
-    identityAtConsent: source.identityAtConsent,
-    withdrawnAt: source.verificationWithdrawnAt ?? withdrawnAt,
-  });
-  const label = who.providerId ? who.heading : source.label;
-  const initial = Array.from(label.trim() || source.clientName)[0]?.toUpperCase() ?? "?";
+  const { who, name: label, initial, providerId } = sessionAgent(source, withdrawnAt, redirectUri);
   return {
     label,
     clientName: source.clientName,
     // Where it signed in from is a site a person decides about: its origin, parsed.
     origin: redirect === null ? null : siteOrigin(redirect),
     local: who.local,
-    providerId: who.providerId,
+    providerId,
     initial,
     who,
   };
@@ -231,6 +223,11 @@ export function connectedAgentPhase(
   return connection.expiresAt !== null && Date.parse(connection.expiresAt) <= now.getTime()
     ? "expired"
     : "active";
+}
+
+/** Direct work has its own Now section. Disconnect progress always stays visible. */
+export function showConnectedAgentStatus(row: ConnectedAgentRow): boolean {
+  return row.phase !== "active" || !!row.connection.bridge;
 }
 
 /** Still connected, as far as the person can tell: it may act, or will once it is back. */

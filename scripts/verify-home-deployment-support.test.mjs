@@ -308,20 +308,19 @@ const restoreJournal = `
     }
 `;
 
-const updateJournal = `
-    source deploy/home/update.sh
-    journal=$home_dir/update.pending
-    mkdir "$journal"
-    for version in 1 2; do
-      selector="$journal/previous.env"
-      if [[ $version == 2 ]]; then selector="$journal/candidate.env"; fi
-      printf 'OPENSTEER_HOME_VERSION=%s.0.0\n' "$version" > "$selector"
-      for service in "\${services[@]}"; do
-        printf 'OPENSTEER_HOME_%s_IMAGE=%s:%s\n' "$(echo "$service" | tr 'a-z-' 'A-Z_')" "$service" "$version" >> "$selector"
-      done
+/** A switch from release a to b that stopped halfway, with an older release c beside them. */
+const switchFixture = `
+    for name in a b c; do
+      mkdir -p "$home_dir/releases/$name"
+      printf 'OPENSTEER_HOME_VERSION=1.0.0\nOPENSTEER_HOME_HOST_IMAGE=host:%s\n' "$name" > "$home_dir/releases/$name/images.env"
+      # What each pulled or made, by id and name: PostgreSQL's is shared by all three.
+      printf 'sha256:%064d postgres:shared\nsha256:%s host:%s\n' 0 "$(printf "$name%.0s" {1..64})" "$name" > "$home_dir/releases/$name/images.ids"
     done
-    cp "$journal/previous.env" "$journal/original.env"
-    cp "$journal/candidate.env" "$home_dir/images.env"
+    printf 'manual recovery copy\n' > "$home_dir/releases/b/database.dump"
+    printf 'a b\n' > "$home_dir/update.pending"
+    current() { ln -sfn "releases/$1" "$home_dir/current"; }
+    docker() { echo "docker $*" >> "$home_dir/docker.log"; }
+    compose() { echo "compose $*"; }
 `;
 
 function runRecovery(script) {
@@ -381,18 +380,24 @@ const homeServices = [
   "channel-runtime",
 ];
 
-/** An installed Home in a temporary directory, its old recipe and release, and stubs that log. */
+/** An installed Home in a temporary directory, its old release, and stubs that log. */
 const installedHome = ({ state = "required", fetch = "ok", start = "ok", running = true } = {}) => `
     log=$(mktemp); staging=$(mktemp -d)
     printf '%s\\n' ${quote(releaseManifest("1.0.0", "old"))} > "$staging/old.json"
     printf '%s\\n' ${quote(releaseManifest("1.0.1", "new"))} > "$staging/new.json"
-    for name in "\${recipe_files[@]}" chromium-oci.json runner-oci.json; do echo old > "$home_dir/$name"; done
+    mkdir -p "$home_dir/releases/old"
+    for name in "\${release_files[@]}" chromium-oci.json runner-oci.json; do echo old > "$home_dir/releases/old/$name"; done
+    release_to_env "$staging/old.json" "$home_dir/releases/old/images.env" false
+    ln -s releases/old "$home_dir/current"
     printf 'tls internal\\n' > "$home_dir/tls.caddy"
     printf "OPENSTEER_HOME_HOSTNAME=home.example.test\\n" > "$home_dir/config.env"
-    release_to_env "$staging/old.json" "$home_dir/images.env" false
-    cp "$staging/old.json" "$staging/old-manifest.json"
     mkdir "$staging/run"
-    checksums() { (cd "$home_dir" && find . -type f | LC_ALL=C sort | xargs cksum); }
+    # What a run that changes nothing leaves alone: the Home's files, and the release it runs.
+    checksums() {
+      readlink "$home_dir/current"
+      (cd "$home_dir" && find . -type f ! -path './releases/*' | LC_ALL=C sort | xargs cksum)
+      (cd "$home_dir/releases/old" && find . -type f | LC_ALL=C sort | xargs cksum)
+    }
     checksums > "$staging/before"
     compose() {
       case $1 in
@@ -404,13 +409,15 @@ const installedHome = ({ state = "required", fetch = "ok", start = "ok", running
     docker() { echo "docker $*" >> "$log"; false; }
     claimed_state() { echo ${state}; }
     fetch_release_images() { echo "fetch $2" >> "$log"; ${fetch === "ok" ? "true" : "false"}; }
-    install_sandbox_policies() { echo new > "$1/chromium-oci.json"; echo new > "$1/runner-oci.json"; }
-    start_pod() {
-      local version; version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$home_dir/images.env")
-      echo "start $version" >> "$log"
-      ${start === "ok" ? "true" : "[[ $version == 1.0.0 ]]"}
-    }
-    rerun() { (rerun_installed_home "$@" "$(pwd)/deploy/home" "$staging/run"); }
+    install_sandbox_policies() { echo new > "$release_dir/chromium-oci.json"; echo new > "$release_dir/runner-oci.json"; }
+    version_of() { sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$1/images.env"; }
+    # The new release's own gate (it runs as root), and the old release started again.
+    run_release() { echo "start $(version_of "$1")" >> "$log"; ${start === "ok" ? "true" : "false"}; }
+    pin_release() { echo "pin $(version_of "$release_dir")" >> "$log"; }
+    plan_inventory() { :; }
+    install_units() { echo units >> "$log"; }
+    start_pod() { echo "start $(version_of "$release_dir")" >> "$log"; }
+    rerun() { (rerun_installed_home "$@" "$(pwd)/deploy/home"); }
     report() { status=$1; checksums > "$staging/after"; if cmp -s "$staging/before" "$staging/after"; then echo unchanged; else echo changed; fi; cat "$log"; echo "status $status"; }
 `;
 
@@ -457,6 +464,19 @@ await test("the installer run again on a claimed, managed or mismatched Home cha
       message: /The release's images could not be obtained\. Nothing was changed\./u,
       log: "fetch true\n",
     },
+    {
+      // Without a manifest it reuses the running release's images where they are: no registry.
+      setup: installedHome({ fetch: "fails" }),
+      run: "rerun home.example.test '' false true",
+      message: /The release's images could not be obtained\. Nothing was changed\./u,
+      log: "fetch true\n",
+    },
+    {
+      // A switch the last start could not finish (its `previous` is gone): never a second one.
+      setup: `${installedHome()} printf 'gone old\\n' > "$home_dir/update.pending"; checksums > "$staging/before"`,
+      run: 'rerun home.example.test "$staging/new.json" true true',
+      message: /The last switch of releases is not finished yet; start the Home first/u,
+    },
   ];
   for (const { setup, run, message, log = "" } of cases) {
     const result = runHome(`${setup}
@@ -470,10 +490,11 @@ await test("the installer run again on an unclaimed Home replaces it, or puts it
   const replaced = runHome(`${installedHome()}
     rerun home.example.test "$staging/new.json" true true && status=0 || status=$?
     echo "status $status"; cat "$log"
-    sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$home_dir/images.env"
+    sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$home_dir/current/images.env"
     test -f "$home_dir/local-images" && echo local-images
-    cmp -s "$home_dir/common.sh" deploy/home/common.sh && echo recipe-replaced
-    cat "$home_dir/runner-oci.json"`);
+    cmp -s "$home_dir/current/common.sh" deploy/home/common.sh && echo recipe-replaced
+    cat "$home_dir/current/runner-oci.json"
+    readlink "$home_dir/previous"`);
   assert.equal(
     replaced.stdout,
     [
@@ -481,12 +502,15 @@ await test("the installer run again on an unclaimed Home replaces it, or puts it
       "The setup link printed by the first install still works. Run sudo opensteer-home setup-link for a new one.",
       "status 0",
       "fetch true",
+      "pin 1.0.1",
       "compose down",
       "start 1.0.1",
+      "units",
       "1.0.1",
       "local-images",
       "recipe-replaced",
       "new",
+      "releases/old",
       "",
     ].join("\n"),
     replaced.stderr,
@@ -495,13 +519,19 @@ await test("the installer run again on an unclaimed Home replaces it, or puts it
     rerun home.example.test "$staging/new.json" true true && report 0 || report $?`);
   assert.equal(
     restored.stdout,
-    "unchanged\nfetch true\ncompose down\nstart 1.0.1\nstart 1.0.0\nstatus 1\n",
+    "unchanged\nfetch true\npin 1.0.1\ncompose down\nstart 1.0.1\ncompose down --remove-orphans\nstart 1.0.0\nstatus 1\n",
     restored.stderr,
   );
   assert.match(
     restored.stderr,
     /The new release did not start\. Putting the previous one back\.\nThe Home is back on its previous release\./u,
   );
+  // No success without the units every start compares.
+  const unitless = runHome(`${installedHome()}
+    install_units() { return 1; }
+    rerun home.example.test "$staging/new.json" true true && echo "status 0" || echo "status $?"`);
+  assert.match(unitless.stdout, /status 1/u);
+  assert.match(unitless.stderr, /its units could not be written; run this installer again/u);
 });
 
 await test("the installer decides about an installed Home before it writes anything", () => {
@@ -510,7 +540,7 @@ await test("the installer decides about an installed Home before it writes anyth
   assert.ok(rerun > 0);
   for (const write of [
     'install -d -m 0700 "$home_dir/secrets"',
-    'install_recipe "$source_dir" "$home_dir"',
+    'release_dir=$(install_release "$source_dir")',
     "/usr/local/bin/opensteer-home",
   ])
     assert.ok(installer.indexOf(write) > rerun, `${write} runs before the rerun is decided`);
@@ -525,7 +555,7 @@ await test("the installer decides about an installed Home before it writes anyth
   );
   assert.match(
     readFileSync("deploy/home/install-scheduler.sh", "utf8"),
-    /if \[\[ \$unit == opensteer-home && \$home_dir == \/etc\/opensteer-home \]\]; then/u,
+    /\[\[ -z \$check \]\] \|\| exit 0\n\n# Only the Home in the default directory owns the command on the path: a link to its current one\.\nif \[\[ \$unit == opensteer-home && \$home_dir == \/etc\/opensteer-home && /u,
   );
 });
 
@@ -540,8 +570,9 @@ await test("only the default Home owns the command on the path, and purge remove
     owner.stderr,
   );
   const purged = runHome(`
-    mkdir -p "$home_dir/"{secrets,boot,backup.abc123,install.def456,update.ghi789,restore.pending.retired}
-    touch "$home_dir/"{config.env,backup.resume,local-images,runner-apparmor.name,images.env.Xy12Ab} "$home_dir/someone-else.txt"
+    mkdir -p "$home_dir/"{secrets,boot,backup.abc123,install.def456,restore.pending.retired,releases/1.0.0-abc123}
+    ln -s releases/1.0.0-abc123 "$home_dir/current"; ln -s releases/1.0.0-abc123 "$home_dir/previous"
+    touch "$home_dir/"{config.env,backup.resume,local-images,runner-apparmor.name,update.pending,update.waiting,images.env.Xy12Ab} "$home_dir/someone-else.txt"
     printf 'opensteer-home-proof\n' > "$home_dir/unit-prefix"
     installed_unit_prefix
     remove_home_files
@@ -566,16 +597,14 @@ await test("only the default Home owns the command on the path, and purge remove
   assert.equal(apparmor.status, 0, apparmor.stderr);
   assert.equal(apparmor.stdout, "name-removed\n");
   const home = readFileSync("deploy/home/opensteer-home", "utf8");
-  assert.ok(home.indexOf("[[ $EUID == 0 ]]") < home.indexOf('source "$home_dir/common.sh"'));
+  assert.ok(home.indexOf("[[ $EUID == 0 ]]") < home.indexOf('source "${own%/*}/common.sh"'));
   assert.ok(
     home.indexOf("$(stat -c '%u:%a' \"$home_dir\") != 0:700") <
-      home.indexOf('source "$home_dir/common.sh"'),
+      home.indexOf('source "${own%/*}/common.sh"'),
   );
   assert.match(home, /if owns_operator_command; then rm -f \/usr\/local\/bin\/opensteer-home; fi/u);
-  assert.match(
-    home,
-    /if \[\[ -f "\$own_dir\/common\.sh" && -f "\$own_dir\/install-scheduler\.sh" \]\]; then default_dir=\$own_dir; fi/u,
-  );
+  // The command is a release's, and operates the Home whose releases/ holds it.
+  assert.match(home, /own=\$\(readlink -f -- "\$0"\)\nhome_dir=\$\{own%\/releases\/\*\}\n/u);
 });
 
 await test("a Home installed with local images checks the machine's images instead of pulling them", () => {
@@ -858,17 +887,59 @@ await test("restore rollback reselects the previous volume set before restarting
   assert.equal(output, "live down\nprevious\nproof-restore-aa1234567890 down --volumes\n");
 });
 
-await test("interrupted update reselects the previous images without touching the database dump", () => {
-  const output = runRecovery(`${updateJournal}
-    printf 'manual recovery copy\n' > "$home_dir/update-database.dump"
-    compose() { printf '%s %s\n' "$(head -1 "$release_env")" "$*"; }
-    install_sandbox_policies() { cmp -s "$journal/previous.env" "$home_dir/images.env"; }
-    start_pod() { head -1 "$home_dir/images.env"; }
-    update_recovery
-    test ! -e "$journal"
-    test "$(cat "$home_dir/update-database.dump")" = 'manual recovery copy'
+await test("an interrupted switch is decided by `current` alone, and keeps the dump", () => {
+  // Stopped before `current` named b: b's containers stop, a stays, and so does the dump.
+  const back = runRecovery(`${switchFixture}
+    current a
+    recover_switch
+    test ! -e "$home_dir/update.pending"
+    readlink "$home_dir/current"
+    cat "$home_dir/releases/b/database.dump"
   `);
-  assert.match(output, /^OPENSTEER_HOME_VERSION=2\.0\.0 down\nOPENSTEER_HOME_VERSION=1\.0\.0\n/u);
+  assert.equal(
+    back,
+    "compose down --remove-orphans\nAn update stopped before it switched releases: the Home runs its previous release.\nreleases/a\nmanual recovery copy\n",
+  );
+  // Stopped after: b stays, a is kept as the way back, and the older c goes with its image.
+  const ahead = runRecovery(`${switchFixture}
+    current b
+    recover_switch
+    test ! -e "$home_dir/update.pending"
+    readlink "$home_dir/current"; readlink "$home_dir/previous"
+    ls "$home_dir/releases"; cat "$home_dir/docker.log"
+  `);
+  // Only the name c pulled, never by id or forced: an image goes when nothing else names it.
+  assert.equal(ahead, "releases/b\nreleases/a\na\nb\ndocker image rm -- host:c\n");
+  // Anything else is the operator's: everything stays.
+  const neither = runHome(`${switchFixture}
+    current c
+    if recover_switch; then exit 97; fi
+    test -f "$home_dir/update.pending"; ls "$home_dir/releases"`);
+  assert.equal(neither.stdout, "a\nb\nc\n", neither.stderr);
+  assert.match(neither.stderr, /operator intervention is required/u);
+  // An image that cannot be removed keeps its release, to try again later.
+  const stuck = runRecovery(`${switchFixture}
+    current b
+    docker() { [[ $1 == image && $2 == inspect ]]; }
+    recover_switch 2>&1
+    ls "$home_dir/releases"
+  `);
+  assert.equal(stuck, "An earlier release is kept to be removed later: c\na\nb\nc\n");
+  // A Docker that cannot answer is not an image that is gone: c stays; a missing one is gone.
+  const unknown = runRecovery(`${switchFixture}
+    current b
+    docker() { [[ $2 == inspect ]] && echo 'Cannot connect to the Docker daemon' >&2; return 1; }
+    recover_switch 2>&1
+    ls "$home_dir/releases"
+  `);
+  assert.equal(unknown, "An earlier release is kept to be removed later: c\na\nb\nc\n");
+  const missing = runRecovery(`${switchFixture}
+    current b
+    docker() { [[ $2 == inspect ]] && echo "Error: No such image: $4" >&2; return 1; }
+    recover_switch 2>&1
+    ls "$home_dir/releases"
+  `);
+  assert.equal(missing, "a\nb\n");
 });
 
 for (const { name, fixture, recover, selector } of [
@@ -878,7 +949,6 @@ for (const { name, fixture, recover, selector } of [
     recover: "restore_rollback",
     selector: "volumes.env",
   },
-  { name: "update", fixture: updateJournal, recover: "update_recovery", selector: "images.env" },
 ]) {
   await test(`interrupted ${name} journal deletion never reopens the cutover`, () => {
     runRecovery(`${fixture}
@@ -994,7 +1064,7 @@ await test("production Host parses file-only enrollment and Account credentials 
   assert.equal(config.managedHome?.oidc.clientSecret, secret);
 });
 
-await test("the managed scheduler enables the update timer only with a saved feed", (t) => {
+await test("the managed scheduler enables the update timer from install, with or without a feed", (t) => {
   const temp = mkdtempSync(resolve(tmpdir(), "home-schedule-"));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const units = resolve(temp, "units");
@@ -1002,30 +1072,30 @@ await test("the managed scheduler enables the update timer only with a saved fee
   mkdirSync(units);
   writeFileSync(resolve(temp, "managed"), "");
   writeFileSync(resolve(temp, "systemctl"), '#!/bin/sh\nprintf "%s\\n" "$*"\n', { mode: 0o700 });
-  const scheduler = readFileSync("deploy/home/install-scheduler.sh", "utf8").replace(
-    "unit_dir=/etc/systemd/system",
-    `unit_dir=${quote(units)}`,
-  );
   const run = () =>
-    execFileSync("bash", ["-c", scheduler, "schedule", temp, "opensteer-home-proof"], {
-      env: { ...process.env, PATH: `${temp}:${process.env.PATH}` },
+    execFileSync("bash", ["deploy/home/install-scheduler.sh", temp, "opensteer-home-proof"], {
+      env: { ...process.env, PATH: `${temp}:${process.env.PATH}`, OPENSTEER_HOME_UNIT_DIR: units },
       encoding: "utf8",
     });
   const updateTimer = resolve(units, "opensteer-home-proof-update.timer");
-  writeFileSync(
-    config,
+  // A managed Home asks its account for its feed at each check, so it has the timer either way.
+  for (const content of [
     "OPENSTEER_HOME_RELEASE_MANIFEST_URL='https://release.example.test/home/stable.json'\n",
-  );
-  assert.match(run(), /enable --now .*opensteer-home-proof-update\.timer/u);
-  assert.match(readFileSync(updateTimer, "utf8"), /OnCalendar=hourly/u);
-  writeFileSync(config, "");
-  const output = run();
-  assert.match(output, /disable --now opensteer-home-proof-update\.timer/u);
-  assert.match(
-    output,
-    /enable --now opensteer-home-proof-backup\.timer opensteer-home-proof-maintain\.timer/u,
-  );
-  assert.equal(existsSync(updateTimer), false);
+    "",
+  ]) {
+    writeFileSync(config, content);
+    // A first install: no units yet, nothing marked enabled.
+    rmSync(units, { recursive: true, force: true });
+    mkdirSync(units);
+    rmSync(resolve(temp, "units.enabled"), { force: true });
+    const output = run();
+    assert.match(
+      output,
+      /enable opensteer-home-proof\.service opensteer-home-proof-update\.timer opensteer-home-proof-backup\.timer opensteer-home-proof-maintain\.timer/u,
+    );
+    assert.doesNotMatch(output, /disable/u);
+    assert.match(readFileSync(updateTimer, "utf8"), /OnCalendar=hourly/u);
+  }
 });
 
 await test("managed update feed refuses nonpublic addresses, including mixed DNS answers, before curl", () => {

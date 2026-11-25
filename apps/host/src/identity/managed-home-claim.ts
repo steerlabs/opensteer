@@ -38,6 +38,7 @@ export class ManagedHomeClaimService {
   };
   readonly #keys: Pick<HostKeyPair, "privateKey" | "publicKey">;
   readonly #now: () => Date;
+  readonly #onClaimed: (() => void) | undefined;
 
   constructor(options: {
     readonly identity: Pick<IdentityService, "claimManagedOwner">;
@@ -51,6 +52,7 @@ export class ManagedHomeClaimService {
     };
     readonly keys: Pick<HostKeyPair, "privateKey" | "publicKey">;
     readonly now?: () => Date;
+    readonly onClaimed?: () => void;
   }) {
     this.#identity = options.identity;
     this.#verifier = options.verifier;
@@ -58,6 +60,7 @@ export class ManagedHomeClaimService {
     this.#authority = options.authority;
     this.#keys = options.keys;
     this.#now = options.now ?? (() => new Date());
+    this.#onClaimed = options.onClaimed;
   }
 
   async claim(input: unknown): Promise<ManagedHomeClaimReceipt> {
@@ -161,6 +164,7 @@ export class ManagedHomeClaimService {
         message: "This Home was claimed with a different Account link credential",
         reason: "managed-home-link-mismatch",
       });
+    this.#onClaimed?.();
     return committed;
   }
 }

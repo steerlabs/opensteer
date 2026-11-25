@@ -57,6 +57,9 @@ const suffix = randomBytes(5).toString("hex");
 const project = `opensteer-home-proof-${suffix}`;
 const managedProject = `${project}-managed`;
 const replacementProject = `${project}-replacement`;
+// A self-hosted Home with its units, through every kind of update (updatesProof).
+const updatesProject = `${project}-updates`;
+const updatesHostname = `updates-${suffix}.test`;
 const failedCandidate = `local/${project}-failed-host:proof`;
 const registryName = `${project}-registry`;
 const registryImage = "registry:3";
@@ -180,21 +183,34 @@ function vmAsync(command, { managed = false, timeout = 600_000 } = {}) {
   });
 }
 
+/** The Compose project of each proof Home: false, true (managed), "replacement" or "updates". */
+function homeName(managed) {
+  if (managed === "replacement") return replacementProject;
+  if (managed === "updates") return updatesProject;
+  return managed ? managedProject : project;
+}
+
+/** Its HTTP port; HTTPS is the next one. */
+function homePort(managed) {
+  if (managed === "updates") return bind + 4;
+  return bind + (managed ? 2 : 0);
+}
+
 function vmScript(command, managed) {
-  const name = managed === "replacement" ? replacementProject : managed ? managedProject : project;
+  const name = homeName(managed);
   return `set -euo pipefail
 umask 077
 export OPENSTEER_HOME_DIR=${quote(`${vmDirectory}/${name}`)}
 export COMPOSE_PROJECT_NAME=${quote(name)}
-export OPENSTEER_HOME_BIND_IP=127.0.0.1 OPENSTEER_HOME_HTTP_PORT=${bind + (managed ? 2 : 0)} OPENSTEER_HOME_HTTPS_PORT=${bind + (managed ? 3 : 1)}
-operator() { "$OPENSTEER_HOME_DIR/opensteer-home" "$@"; }
-load_compose() { source "$OPENSTEER_HOME_DIR/common.sh"; }
+export OPENSTEER_HOME_BIND_IP=127.0.0.1 OPENSTEER_HOME_HTTP_PORT=${homePort(managed)} OPENSTEER_HOME_HTTPS_PORT=${homePort(managed) + 1}
+operator() { "$OPENSTEER_HOME_DIR/current/opensteer-home" "$@"; }
+load_compose() { source "$OPENSTEER_HOME_DIR/current/common.sh"; }
 ${command}
 `;
 }
 
 function container(service, managed = false) {
-  const name = managed === "replacement" ? replacementProject : managed ? managedProject : project;
+  const name = homeName(managed);
   const id = docker([
     "ps",
     "-aq",
@@ -749,9 +765,9 @@ async function verifyAuthenticatedUpstream(api, cookie, ca) {
     await probe("direct-control");
     vm(`load_compose
       cp "$home_dir/config.env" "$home_dir/config.egress.original"
-      cp "$home_dir/common.sh" "$home_dir/common.egress.original"
+      cp "$release_dir/common.sh" "$home_dir/common.egress.original"
       printf '%s\n' ${quote(override)} > "$home_dir/egress-upstream.proof.yaml"
-      sed -i '/local apparmor=/i\\  if [[ -s "$home_dir/secrets/egress_url" ]]; then args+=(-f "$home_dir/egress-upstream.proof.yaml"); fi' "$home_dir/common.sh"
+      sed -i '/local apparmor=/i\\  if [[ -s "$home_dir/secrets/egress_url" ]]; then args+=(-f "$home_dir/egress-upstream.proof.yaml"); fi' "$release_dir/common.sh"
       printf '%s\n' ${quote(`OPENSTEER_HOME_ACCOUNT_ORIGIN='${accountOrigin}'
 OPENSTEER_HOME_MANAGED_ID='${id}'
 OPENSTEER_HOME_OIDC_CLIENT_ID='${oidc.clientId}'`)} >> "$home_dir/config.env"
@@ -810,7 +826,7 @@ OPENSTEER_HOME_OIDC_CLIENT_ID='${oidc.clientId}'`)} >> "$home_dir/config.env"
         nsenter -t ${hostPid} -n ip address del ${originAddress}/32 dev lo 2>/dev/null || true
         if [[ -f "$OPENSTEER_HOME_DIR/common.egress.original" ]]; then
           load_compose
-          mv "$home_dir/common.egress.original" "$home_dir/common.sh"
+          mv "$home_dir/common.egress.original" "$release_dir/common.sh"
           mv "$home_dir/config.egress.original" "$home_dir/config.env"
           rm -f "$home_dir/egress-upstream.proof.yaml" "$home_dir/managed" "$home_dir/egress.pending" "$home_dir/secrets/"egress_{url,username,password}
           : | save_secret "$home_dir/secrets/oidc_client_secret"
@@ -1063,7 +1079,7 @@ function managedInstaller(directory, certificate, shipped) {
     { mode: 0o644 },
   );
   const common = readFileSync(resolve(home, "common.sh"), "utf8");
-  const anchor = '-f "$home_dir/compose.yaml")';
+  const anchor = '-f "$release_dir/compose.yaml")';
   assert.ok(common.includes(anchor), "The Compose recipe anchor moved");
   const layered = common.replace(anchor, `${anchor}\n  args+=(-f ${quote(layer)})`);
   writeFileSync(resolve(home, "common.sh"), layered);
@@ -1152,6 +1168,7 @@ async function managedProof(directory, shipped) {
   let feedServerAttempted = false;
   const unit = managedProject;
   let bootRequests = 0;
+  let releaseFeedRequests = 0;
   let completeRequests = 0;
   let identity;
   let snapshotId;
@@ -1222,6 +1239,16 @@ async function managedProof(directory, shipped) {
         assert.equal(id, cloudComputerId);
         assert.ok(homeCredentials(authorization), "Egress poll without the Home's credentials");
         return CloudComputerEgressResponseSchema.parse({});
+      },
+      // The account's release feed: the feed's address and the installer it pins with it.
+      async releaseFeedForHome(id, authorization) {
+        releaseFeedRequests++;
+        assert.equal(id, cloudComputerId);
+        assert.ok(homeCredentials(authorization), "Release feed without the Home's credentials");
+        return {
+          releaseManifestUrl: feedUrl,
+          recipe: { url: spec.installerUrl, sha256: spec.installerSha256 },
+        };
       },
       async reportBackupForHome(id, authorization) {
         assert.equal(id, cloudComputerId);
@@ -1495,11 +1522,16 @@ async function managedProof(directory, shipped) {
       exit 1`,
       { managed: true },
     );
-    const refusedFeed = vm(`CURL_CA_BUNDLE=${quote(feedCertificate)} operator update`, {
-      managed: true,
-      allowFailure: true,
-    });
+    // The Home asks the Account for its feed and the installer it pins, then fetches the feed: it
+    // trusts both fixtures' certificates. Asked without blocking, so the Account fixture, served
+    // by this process, can answer.
+    const refusedFeed = await vmAsync(
+      `cat ${quote(certificate)} ${quote(feedCertificate)} > ${quote(`${feedDirectory}/both.pem`)}
+      CURL_CA_BUNDLE=${quote(`${feedDirectory}/both.pem`)} operator update`,
+      { managed: true },
+    );
     assert.notEqual(refusedFeed.status, 0);
+    assert.equal(releaseFeedRequests, 1, refusedFeed.stderr);
     assert.match(refusedFeed.stderr, /Managed Home releases require a digest/u);
     assert.equal(
       vm(
@@ -1613,6 +1645,218 @@ async function managedProof(directory, shipped) {
   }
 }
 
+/**
+ * A self-hosted Home installed with its units from the standalone installer, taken through every
+ * kind of update on this machine's systemd and Docker Compose: one that commits, a restart of its
+ * main unit, one whose release fails its gate (not retried by itself, retried by hand), a kill
+ * between the switch's record and its rename, and the operator's rollback.
+ */
+async function updatesProof(directory, bootPackage) {
+  const home = `${vmDirectory}/${updatesProject}`;
+  const bundleServer = `${updatesProject}-bundle`;
+  const bundlePort = bind + 6;
+  const unitFiles = ["", "-update", "-backup", "-maintain"].flatMap((name) =>
+    name
+      ? [`${updatesProject}${name}.service`, `${updatesProject}${name}.timer`]
+      : [`${updatesProject}.service`],
+  );
+  const run = (command, options = {}) => vm(command, { managed: "updates", ...options });
+  const current = () => run('readlink "$OPENSTEER_HOME_DIR/current"');
+  const units = () => run(`cd /etc/systemd/system && sha256sum ${unitFiles.join(" ")}`);
+  const healthy = () => {
+    for (const service of ["postgres", ...components])
+      assert.equal(health(service, "updates"), "running/healthy", service);
+  };
+  /** The Home answers discovery over HTTPS with its own signed identity. */
+  const serves = async () => {
+    const api = client(updatesHostname, homePort("updates") + 1, caddyRoot("updates"));
+    const authority = expectStatus(await api("/.well-known/opensteer", { negotiation: false }), 200)
+      .json.authority;
+    verifyHostDiscoveryEnvelope(authority);
+  };
+  /** A release of these images, with the standalone installer as its recipe. */
+  const manifestOf = (name, imagesOf, sha256) => {
+    const path = `${home}/${name}.json`;
+    run(
+      `printf '%s' ${quote(
+        JSON.stringify({
+          version,
+          images: imagesOf,
+          recipe: { url: `https://127.0.0.1:${bundlePort}/installer.sh`, sha256 },
+        }),
+      )} > ${quote(path)}`,
+    );
+    return path;
+  };
+  const retagged = (label) =>
+    Object.fromEntries(
+      components.map((service) => {
+        const ref = `local/opensteer-home-${service}:${tag}-${label}`;
+        docker(["tag", images[service], ref]);
+        updatesImages.push(ref);
+        return [service, ref];
+      }),
+    );
+  const certificate = `${home}-bundle/certificate.pem`;
+  const update = (args, options = {}) =>
+    run(`CURL_CA_BUNDLE=${quote(certificate)} operator update ${args}`, options);
+  let ok = true;
+  const step = async (name, task) => {
+    ok = Boolean(await check(name, task, ok, "an earlier update step failed"));
+  };
+  const sha256 = createHash("sha256").update(readFileSync(bootPackage)).digest("hex");
+  let first;
+  let b;
+  let dump;
+
+  await step(
+    "a self-hosted Home installs from the standalone installer with its units on systemd",
+    async () => {
+      updatesPrepared = true;
+      run(`install -d -m 0700 "$OPENSTEER_HOME_DIR"
+      printf '%s' ${quote(JSON.stringify(manifest))} > "$OPENSTEER_HOME_DIR/a.json"
+      OPENSTEER_HOME_UNIT_PREFIX=${quote(updatesProject)} bash ${quote(bootPackage)} --local --local-images --manifest "$OPENSTEER_HOME_DIR/a.json" ${quote(updatesHostname)}`);
+      first = current();
+      assert.match(first, /^releases\/[0-9.]+-[A-Za-z0-9]{6}$/u);
+      // The units run the Home through `current`; systemd reads the update timer's random delay.
+      const main = run(`cat /etc/systemd/system/${updatesProject}.service`);
+      assert.match(main, new RegExp(`^ExecStart=${home}/current/opensteer-home start$`, "mu"));
+      assert.equal(
+        run(
+          `systemctl show ${updatesProject}-update.timer -p RandomizedDelayUSec -p FixedRandomDelay`,
+        ),
+        "RandomizedDelayUSec=15min\nFixedRandomDelay=yes",
+      );
+      for (const unit of [
+        `${updatesProject}.service`,
+        ...unitFiles.filter((name) => name.endsWith(".timer")),
+      ])
+        assert.equal(run(`systemctl is-enabled ${unit}`), "enabled", unit);
+      assert.equal(run(`systemctl is-active ${updatesProject}.service`), "active");
+      healthy();
+      // Compose runs the release's images by their ids, under the Home's project name.
+      assert.match(
+        docker(["inspect", "--format", "{{.Config.Image}}", container("host", "updates")]),
+        /^opensteer-home-image\/host:[0-9a-f]{64}$/u,
+      );
+      await serves();
+    },
+  );
+
+  await step(
+    "an update to a second release commits: `current` moves, `previous` is kept, units untouched",
+    async () => {
+      run(`install -d -m 0700 ${quote(`${home}-bundle`)}
+      cd ${quote(`${home}-bundle`)}
+      openssl req -x509 -newkey rsa:2048 -nodes -days 1 -keyout key.pem -out certificate.pem \\
+        -subj /CN=127.0.0.1 -addext subjectAltName=IP:127.0.0.1 2>/dev/null
+      { printf 'HTTP/1.0 200 OK\\r\\nContent-Type: text/plain\\r\\n\\r\\n'; cat ${quote(bootPackage)}; } > installer.sh
+      systemd-run --quiet --unit=${bundleServer} --working-directory=${quote(`${home}-bundle`)} \\
+        openssl s_server -quiet -accept 127.0.0.1:${bundlePort} -cert certificate.pem -key key.pem -HTTP
+      for attempt in {1..50}; do
+        if ss -Hltn 'sport = :${bundlePort}' | grep -Fq 127.0.0.1; then exit 0; fi
+        sleep 0.1
+      done
+      exit 1`);
+      bundleServed = true;
+      const before = units();
+      const updated = update(manifestOf("b", retagged("b"), sha256));
+      assert.match(
+        updated,
+        new RegExp(`Updated Home to ${version.replaceAll(".", "\\.")}\\.`, "u"),
+      );
+      b = current();
+      assert.notEqual(b, first);
+      assert.equal(run('readlink "$OPENSTEER_HOME_DIR/previous"'), first);
+      assert.equal(units(), before);
+      run(`test -s "$OPENSTEER_HOME_DIR/${b}/database.dump"`);
+      healthy();
+      await serves();
+    },
+  );
+
+  await step("a restart of the main unit keeps the committed release", async () => {
+    run(`systemctl restart ${updatesProject}.service`);
+    assert.equal(current(), b);
+    healthy();
+    await serves();
+  });
+
+  await step(
+    "a release that fails its gate leaves the Home serving, is remembered, and is not tried again by itself",
+    async () => {
+      const fixture = docker(["create", "--name", `${updatesProject}-gatefail`, images.host]);
+      try {
+        docker(["commit", "--change", 'ENTRYPOINT ["/bin/false"]', fixture, gateFailing]);
+      } finally {
+        docker(["rm", "-v", fixture]);
+      }
+      const failing = manifestOf("c", { ...retagged("c"), host: gateFailing }, sha256);
+      const failed = update(failing, { allowFailure: true });
+      assert.notEqual(failed.status, 0);
+      assert.match(failed.stderr, /The update was rolled back\./u);
+      dump = failed.stderr.match(/kept in (\S+\/database\.dump)/u)?.[1];
+      assert.ok(dump, failed.stderr);
+      assert.equal(current(), b);
+      run('test -s "$OPENSTEER_HOME_DIR/update.failed"');
+      healthy();
+      await serves();
+      // The next check of the same release stops nothing, and the dump is where it said.
+      const host = container("host", "updates");
+      const again = update(failing);
+      assert.match(again, /did not start here: waiting for the next one/u);
+      assert.equal(container("host", "updates"), host);
+      run(`test -s ${quote(dump)}`);
+      // The operator can try it once more; it fails again and A serves.
+      const retried = update(`--retry ${failing}`, { allowFailure: true });
+      assert.notEqual(retried.status, 0);
+      assert.match(retried.stderr, /The update was rolled back\./u);
+      assert.equal(current(), b);
+      run(`test -s ${quote(dump)}`);
+      healthy();
+    },
+  );
+
+  await step(
+    "a kill between the switch's record and its rename is undone by the next start",
+    async () => {
+      const killed = manifestOf("d", retagged("d"), sha256);
+      run(
+        `setsid bash -c 'CURL_CA_BUNDLE=${certificate} "$OPENSTEER_HOME_DIR/current/opensteer-home" update ${killed}' \\
+        > "$OPENSTEER_HOME_DIR/killed.log" 2>&1 &
+      leader=$!
+      for attempt in {1..3000}; do [[ ! -e "$OPENSTEER_HOME_DIR/update.pending" ]] || break; sleep 0.1; done
+      test -e "$OPENSTEER_HOME_DIR/update.pending"
+      sleep 2
+      kill -KILL -- -"$leader"
+      wait "$leader" || true
+      test -e "$OPENSTEER_HOME_DIR/update.pending"`,
+        { timeout: 900_000 },
+      );
+      assert.equal(current(), b);
+      run(`systemctl restart ${updatesProject}.service`);
+      run('test ! -e "$OPENSTEER_HOME_DIR/update.pending"');
+      assert.equal(current(), b);
+      healthy();
+      await serves();
+    },
+  );
+
+  await step(
+    "the operator's rollback makes the previous release current by the same switch",
+    async () => {
+      const before = units();
+      const back = run("operator rollback");
+      assert.match(back, /Back on the previous release/u);
+      assert.equal(current(), first);
+      assert.equal(run('readlink "$OPENSTEER_HOME_DIR/previous"'), b);
+      assert.equal(units(), before);
+      healthy();
+      await serves();
+    },
+  );
+}
+
 function prepareBuilder() {
   assertBuildSpace(
     target.checkoutLabel,
@@ -1673,6 +1917,10 @@ try {
 }
 let checkoutTemp;
 let managedPrepared = false;
+let updatesPrepared = false;
+let bundleServed = false;
+const updatesImages = [];
+const gateFailing = `local/${project}-gatefail-host:proof`;
 let cleaningUp = false;
 let resourcesAllowed = false;
 const publicImageRefs = [
@@ -1826,8 +2074,8 @@ OPENSTEER_HOME_PROOF
 awk '/^  local args=/{ recipe=1 } { print } recipe && /compose.yaml/ {
   print "  args+=(-f \\"$home_dir/compose.proof.yaml\\")"
   recipe=0
-}' "$OPENSTEER_HOME_DIR/common.sh" > "$OPENSTEER_HOME_DIR/common.proof.sh"
-mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
+}' "$OPENSTEER_HOME_DIR/current/common.sh" > "$OPENSTEER_HOME_DIR/current/common.proof.sh"
+mv "$OPENSTEER_HOME_DIR/current/common.proof.sh" "$OPENSTEER_HOME_DIR/current/common.sh"
 `);
   });
   const podHealthy = await check(
@@ -2105,6 +2353,13 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
           url: `${loopbackOrigin}/`,
           title: "Runner loopback",
         });
+      } catch (error) {
+        // What the browser, its egress and the Host said, with the error.
+        const logs = ["browser-runtime", "browser-egress", "host"].map((service) => {
+          const output = result("docker", ["logs", "--tail", "25", container(service)]);
+          return `--- ${service}\n${output.stdout}${output.stderr}`;
+        });
+        throw new Error(`${error.message}\n${logs.join("\n")}`);
       } finally {
         vm(`load_compose
         rm -f "$home_dir/secrets/"egress_{url,username,password}
@@ -2200,7 +2455,7 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
         check_firewall ${pid}`);
       assert.equal(container("host"), id);
       vm(`unshare --net bash -euc '
-        firewall="$OPENSTEER_HOME_DIR/firewall.sh"
+        firewall="$OPENSTEER_HOME_DIR/current/firewall.sh"
         "$firewall" "$$" apply false
         "$firewall" "$$" check false
         iptables -w -D OPENSTEER-HOME -d 169.254.0.0/16 -j REJECT
@@ -2396,7 +2651,7 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
   await check(
     "an interrupted unhealthy candidate restores previous images without rolling back database writes",
     () => {
-      const previous = vm('cat "$OPENSTEER_HOME_DIR/images.env"');
+      const previous = vm('cat "$OPENSTEER_HOME_DIR/current/images.env"');
       const before = Object.fromEntries(
         components.map((service) => [
           service,
@@ -2412,25 +2667,26 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
       const candidateId = docker(["image", "inspect", "--format", "{{.Id}}", failedCandidate]);
       assert.notEqual(candidateId, before.host);
       vm(`load_compose
-      source "$home_dir/backup.sh"
-      journal="$home_dir/update.pending"
-      mkdir "$journal"
-      cp "$home_dir/images.env" "$journal/previous.env"
-      cp "$home_dir/images.env" "$journal/original.env"
-      sed 's|^OPENSTEER_HOME_HOST_IMAGE=.*|OPENSTEER_HOME_HOST_IMAGE=${failedCandidate}|' "$journal/previous.env" > "$journal/candidate.env"
-      postgres_tool pg_dump --format=custom > "$home_dir/update-database.dump"
+      source "$release_dir/backup.sh"
+      # A switch to a candidate release, stopped after the candidate started: as cutover leaves it.
+      candidate_release=$(install_release "$release_dir")
+      sed 's|^OPENSTEER_HOME_HOST_IMAGE=.*|OPENSTEER_HOME_HOST_IMAGE=${failedCandidate}|' "$release_dir/images.env" > "$candidate_release/images.env"
+      cp "$release_dir/"*-oci.json "$candidate_release/"
+      postgres_tool pg_dump --format=custom > "$candidate_release/database.dump"
+      printf '%s %s\n' "\${release_dir##*/}" "\${candidate_release##*/}" > "$home_dir/update.pending"
       compose down
-      release_env="$journal/candidate.env" compose up -d --pull never host
-      candidate=$(release_env="$journal/candidate.env" compose ps --all -q host)
+      release_dir=$candidate_release compose up -d --pull never host
+      candidate=$(release_dir=$candidate_release compose ps --all -q host)
       test "$(docker inspect --format '{{.Image}}' "$candidate")" = ${quote(candidateId)}
       test "$(timeout 20s docker wait "$candidate")" = 1
       postgres_tool psql -v ON_ERROR_STOP=1 -c 'CREATE TABLE home_proof_expand (value integer); INSERT INTO home_proof_expand VALUES (42)'
       operator start
-      test ! -e "$journal"
-      test -s "$home_dir/update-database.dump"
+      test ! -e "$home_dir/update.pending"
+      test "$(readlink "$home_dir/current")" = "releases/\${release_dir##*/}"
+      test -s "$candidate_release/database.dump"
       test "$(postgres_tool psql -Atc 'SELECT value FROM home_proof_expand')" = 42
       postgres_tool psql -v ON_ERROR_STOP=1 -c 'DROP TABLE home_proof_expand'`);
-      assert.equal(vm('cat "$OPENSTEER_HOME_DIR/images.env"'), previous);
+      assert.equal(vm('cat "$OPENSTEER_HOME_DIR/current/images.env"'), previous);
       for (const service of components)
         assert.equal(
           docker(["inspect", "--format", "{{.Image}}", container(service)]),
@@ -2509,6 +2765,7 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
     },
     Boolean(setupToken && bucketReady),
   );
+  if (setupToken) await updatesProof(checkoutTemp, bootPackage);
   // The deployment proof above is complete; the other platform is built afterwards so it
   // cannot block it.
   proofPassed = steps.fail === 0 && steps.blocked === 0;
@@ -2554,6 +2811,42 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
             fi`),
               ) && unitsStopped;
         }
+        if (updatesPrepared)
+          unitsStopped =
+            clean(() =>
+              vm(`
+            units=()
+            for suffix in .service -update.timer -backup.timer -maintain.timer -update.service -backup.service -maintain.service; do
+              name=${quote(updatesProject)}"$suffix"
+              if [[ -f "/etc/systemd/system/$name" ]]; then units+=("$name"); fi
+            done
+            if (( \${#units[@]} )); then
+              systemctl stop "\${units[@]}"
+              systemctl disable "\${units[@]}"
+              for name in "\${units[@]}"; do rm -f -- "/etc/systemd/system/$name"; done
+              systemctl daemon-reload
+            fi`),
+            ) && unitsStopped;
+        // Any unit that runs something of this run's Homes is a leak: removed, and said.
+        clean(() => {
+          const leaked = vm(
+            `grep -l -- ${quote(`${vmDirectory}/`)} /etc/systemd/system/*.service /etc/systemd/system/*.timer 2>/dev/null | xargs -r -n1 basename || true`,
+          )
+            .split("\n")
+            .filter(Boolean);
+          if (!leaked.length) return;
+          vm(`systemctl stop ${leaked.join(" ")} || true
+            systemctl disable ${leaked.join(" ")} || true
+            rm -f ${leaked.map((name) => `/etc/systemd/system/${name}`).join(" ")}
+            systemctl daemon-reload`);
+          throw new Error(`Units of this run outlived it: ${leaked.join(", ")}`);
+        });
+        if (bundleServed)
+          clean(() =>
+            vm(`if systemctl show ${updatesProject}-bundle.service -p LoadState --value | grep -qx loaded; then
+              systemctl stop ${updatesProject}-bundle.service
+            fi`),
+          );
         clean(() => {
           if (!s3Id) s3Id = docker(["ps", "-aq", "--filter", `name=^/${s3Name}$`]);
           if (s3Id) docker(["rm", "-f", s3Id]);
@@ -2562,15 +2855,16 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
         if (unitsStopped) {
           clean(() => cleanupProject(managedProject));
           clean(() => cleanupProject(replacementProject));
+          clean(() => cleanupProject(updatesProject));
         }
         clean(() => {
           if (registryId) docker(["rm", "-fv", registryId]);
         });
-        for (const managed of [false, true, "replacement"]) {
+        for (const managed of [false, true, "replacement", "updates"]) {
           if (managed && !unitsStopped) continue;
           clean(() =>
             vm(
-              'if [[ -f "$OPENSTEER_HOME_DIR/common.sh" ]]; then load_compose; remove_runner_apparmor; fi',
+              'if [[ -f "$OPENSTEER_HOME_DIR/current/common.sh" ]]; then load_compose; remove_runner_apparmor; fi',
               { managed },
             ),
           );
@@ -2600,8 +2894,10 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
         }
         for (const image of [
           ...registryReferences,
+          ...updatesImages,
           ...Object.values(images),
           failedCandidate,
+          gateFailing,
           ...publicImageRefs.filter((ref) => !preexisting.has(ref)),
         ]) {
           clean(() => {
@@ -2609,6 +2905,13 @@ mv "$OPENSTEER_HOME_DIR/common.proof.sh" "$OPENSTEER_HOME_DIR/common.sh"
               docker(["image", "rm", image]);
           });
         }
+        // The tags the Homes made from their images' ids (opensteer-home-image/<service>:<id>).
+        clean(() => {
+          for (const ref of docker(["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"])
+            .split("\n")
+            .filter((line) => line.startsWith("opensteer-home-image/")))
+            docker(["image", "rm", ref]);
+        });
         if (unitsStopped) clean(() => vm(`rm -rf -- ${quote(vmDirectory)}`));
         else errors.push(`Preserved ${vmDirectory} because unit cleanup failed.`);
         if (errors.length) throw new Error(errors.join("\n"));

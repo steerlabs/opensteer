@@ -15,7 +15,7 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import { commandAttempts, runCommandEffect } from "./command-effect.js";
+import { commandAttempts, laterBy, runCommandEffect, type LaterWork } from "./command-effect.js";
 import {
   admitCommand,
   AgentConnectionStore,
@@ -188,8 +188,8 @@ export class CommandRequestService {
   readonly #database: Kysely<DatabaseSchema>;
   readonly #requests: { get(id: RequestId): Promise<Request | null> };
   readonly #homeKind: HostHomeKind | undefined;
-  /** How long after a lost receipt the record is read again from its attempt. */
-  readonly #reconcileDelayMs: number;
+  /** Runs a lost receipt's one later write: the Request's own, and its outside attempt's. */
+  readonly #later: LaterWork;
   /**
    * Approvals in flight in this process, counted from before the approval begins until its
    * receipt is written or given up: a read leaves their receipt alone. A count, so a second
@@ -210,13 +210,14 @@ export class CommandRequestService {
     readonly requests: { get(id: RequestId): Promise<Request | null> };
     /** What this Home's own computer is (its configuration): where its own work runs. */
     readonly homeKind?: HostHomeKind | undefined;
-    readonly reconcileDelayMs?: number;
+    /** When a lost receipt is written once more (default: after 30 seconds). */
+    readonly later?: LaterWork;
   }) {
     this.#store = options.store;
     this.#database = options.database;
     this.#requests = options.requests;
     this.#homeKind = options.homeKind;
-    this.#reconcileDelayMs = options.reconcileDelayMs ?? 30_000;
+    this.#later = options.later ?? laterBy(30_000);
   }
 
   /**
@@ -224,15 +225,14 @@ export class CommandRequestService {
    * restart; the reads the person's apps make stay as they are (rule 7).
    */
   #reconcileLater(requestId: RequestId) {
-    const timer = setTimeout(() => {
-      void this.reconcile(requestId).catch((error: unknown) =>
+    this.#later(() =>
+      this.reconcile(requestId).catch((error: unknown) =>
         console.warn("A lost receipt could not be read from its attempt", {
           requestId,
           error: error instanceof Error ? error.message : String(error),
         }),
-      );
-    }, this.#reconcileDelayMs);
-    timer.unref?.();
+      ),
+    );
   }
 
   /** Opens the person's Request for a command the door put to the person. */
@@ -589,7 +589,7 @@ export class CommandRequestService {
             idempotencyKey: `command-request:${input.requestId}`,
           },
           readmit,
-          receiptRetryMs: this.#reconcileDelayMs,
+          later: this.#later,
           act: () =>
             run(approver, {
               ...command,

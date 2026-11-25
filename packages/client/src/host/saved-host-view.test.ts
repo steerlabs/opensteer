@@ -1,6 +1,7 @@
 import { createId } from "@opensteer/core";
 import { expect, it } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
+import { mockAgentWorkThreads, mockConnectedAgents } from "../mock/index.js";
 import {
   SavedHostViewSchema,
   SavedTaskSchema,
@@ -74,7 +75,7 @@ it("bounds Unicode subjects and retains the newest fifty across working, ready a
 });
 it("binds saved rows to the expected Host, epoch and login", () => {
   const scope = {
-    schema: 1 as const,
+    schema: 2 as const,
     epoch: 6,
     hostIdentity: {
       deploymentId: createId("deployment"),
@@ -97,4 +98,21 @@ it("binds saved rows to the expected Host, epoch and login", () => {
       chat: { messages: [] },
     }).success,
   ).toBe(false);
+});
+
+it("leaves connected agents' direct tasks out of the saved Tasks list", () => {
+  const seed = mockConnectedAgents("seeded");
+  const client = new MockHostClient({ ...seed, latencyMs: 0 });
+  try {
+    client.mockAgentWork({ livePanel: "three" });
+    const snapshot = client.getSnapshot();
+    expect(
+      snapshot.activeTasks.some(({ thread }) => thread.id === mockAgentWorkThreads.working),
+    ).toBe(true);
+    const ids = projectSavedTasks(snapshot).map(({ id }) => id);
+    expect(ids.length).toBeGreaterThan(0);
+    expect(ids).not.toContain(mockAgentWorkThreads.working);
+  } finally {
+    client.dispose();
+  }
 });

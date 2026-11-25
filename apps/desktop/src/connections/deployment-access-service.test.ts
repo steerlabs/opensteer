@@ -2177,6 +2177,27 @@ describe("DeploymentAccessService", () => {
       service.dispose();
     });
 
+    it("opens an account's one Cloud Computer after the sign-in once it answers, and not when it does not", async () => {
+      for (const outcome of ["reachable", "unreachable"] as const) {
+        const cloud = deployment({
+          accountAccess: "owner",
+          name: "Cloud Computer",
+          source: "account",
+        });
+        const fixture = fakePorts({ deployments: [cloud] });
+        fixture.probe.mockResolvedValue(outcome);
+        const service = new DeploymentAccessService(fixture.ports, fixture.options);
+        await service.initialize();
+        await signInHere(fixture, service);
+        await settle();
+        expect(fixture.probe).toHaveBeenCalledWith(cloud.id, expect.anything());
+        if (outcome === "reachable")
+          expect(fixture.select).toHaveBeenCalledExactlyOnceWith(cloud.id);
+        else expect(fixture.select).not.toHaveBeenCalled();
+        service.dispose();
+      }
+    });
+
     it("opens nothing for a sign-in this Mac didn't start, or a re-authorisation", async () => {
       const server = otherMac({ livenessExpiresAt: liveLease });
       const restored = fakePorts({ deployments: [server] });
@@ -2377,6 +2398,25 @@ describe("DeploymentAccessService", () => {
         status: "attention",
       });
       expect(fixture.establish).not.toHaveBeenCalled();
+      service.dispose();
+    });
+
+    it("reopens a Cloud Computer the person is in without the Account: it signs in at its own address", async () => {
+      const cloud = deployment({
+        accountAccess: "owner",
+        name: "Cloud Computer",
+        source: "account",
+      });
+      const fixture = fakePorts({
+        deployments: [{ ...cloud, lastUsedAt: "2026-10-19T10:00:00.000Z" }],
+        selectedDeploymentId: cloud.id,
+      });
+      fixture.currentState.mockResolvedValueOnce(expiredAccount());
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+      await settle();
+
+      expect(fixture.establish).toHaveBeenCalledExactlyOnceWith(cloud.id, false);
       service.dispose();
     });
 
@@ -2619,6 +2659,55 @@ describe("DeploymentAccessService", () => {
       });
       expect(sleeping?.availableActions).toEqual([]);
       expect(off?.availableActions).toEqual([]);
+      service.dispose();
+    });
+
+    it("judges an Account place reached at its own address (a Cloud Computer) by reaching it", async () => {
+      // A Cloud Computer is listed by the Account but reached natively at its
+      // canonical origin: no Connect route and no Account lease, ever.
+      const reached = deployment({
+        accountAccess: "owner",
+        name: "Cloud Computer",
+        routes: [{ kind: "canonical", origin: "https://host.example.test" }],
+        source: "account",
+      });
+      const silent = deployment({
+        accountAccess: "owner",
+        name: "Linux Home",
+        routes: [{ kind: "canonical", origin: "https://host.example.test" }],
+        source: "account",
+      });
+      const fixture = fakePorts({ deployments: [reached, silent] });
+      fixture.probe.mockImplementation(async (id) =>
+        id === reached.id ? "reachable" : "unreachable",
+      );
+      fixture.currentState.mockResolvedValueOnce(signedInAccount());
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+
+      // Not checked yet: nothing is claimed, and nothing says Remote access or asleep.
+      expect(service.snapshot().deployments.map(({ statusInfo }) => statusInfo)).toEqual([
+        { reason: null, status: "checking" },
+        { reason: null, status: "checking" },
+      ]);
+      await service.checkDeployments();
+      expect(fixture.probe).toHaveBeenCalledTimes(2);
+      const [ready, notResponding] = service.snapshot().deployments;
+      expect(ready?.statusInfo).toEqual({ reason: null, status: "ready" });
+      expect(ready?.availableActions).toEqual(["select"]);
+      expect(notResponding?.statusInfo).toEqual({
+        label: "Not responding",
+        reason:
+          "Linux Home didn’t answer just now. Make sure it’s on and reachable, then try again.",
+        status: "attention",
+      });
+      // Long after any lease could have lapsed, a reached place is still ready.
+      fixture.clock.now += 60 * 60_000;
+      await service.checkDeployments();
+      expect(service.snapshot().deployments[0]?.statusInfo).toEqual({
+        reason: null,
+        status: "ready",
+      });
       service.dispose();
     });
 
@@ -3038,8 +3127,16 @@ function deployment(
 ): CatalogProjection["deployments"][number] {
   const origin = "https://host.example.test";
   const summary = DesktopDeploymentSummarySchema.parse({
-    // This computer's own Host is reached as its owner while it is serving.
-    access: overrides.attachmentKey === null ? null : overrides.onThisComputer ? "owner" : "native",
+    // This computer's own Host is reached as its owner while it is serving; an
+    // Account row with a Connect route through that route; any other natively.
+    access:
+      overrides.attachmentKey === null
+        ? null
+        : overrides.onThisComputer
+          ? "owner"
+          : overrides.connect != null
+            ? "connect"
+            : "native",
     activeOrigin: origin,
     canonicalOrigin: origin,
     id: overrides.id ?? createId("deployment"),

@@ -1080,6 +1080,7 @@ function pendingCommand(overrides: Partial<PendingCommandRow> = {}): PendingComm
   const now = new Date();
   return {
     requestResponseKeyVersion: null,
+    runStartHoldReason: null,
     actorPrincipalId: "pri_00000000-0000-4000-8000-000000000099" as CommandRow["actorPrincipalId"],
     attempts: 0,
     authoritySource: {

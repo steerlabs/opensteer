@@ -90,7 +90,27 @@ export function threadStopTarget(input: ThreadStopTargetInput): RunQueueEntry | 
  * ordinary start, which takes a moment and needs no reason, and once the Run
  * has been handed to its computer.
  */
-export function threadStartHold(
+/** What the web and the phone say of a Run that waits for another Run on its computer to end. */
+export function waitingForAnotherRun(environmentName: string | undefined): string {
+  return environmentName
+    ? `Waiting for another Run on ${environmentName} to finish.`
+    : "Waiting for another Run to finish.";
+}
+
+/** Why the next Run has not started, in the order a person needs it: what is true now first. */
+export type ThreadStartWaitKind =
+  | "stop-unconfirmed"
+  | "computer-offline"
+  | "agents-stopped"
+  | "waiting-for-run"
+  | "account-preparing";
+
+/**
+ * Why a task's next Run waits, for the web and the phone alike. What holds it now comes before
+ * what held it last: an unconfirmed stop, then the computer offline or its agents stopped, then
+ * the wait for another Run there (recorded when its Runner had no free slot), then its account.
+ */
+export function threadStartWait(
   input: ThreadStopTargetInput & {
     readonly environments: readonly EnvironmentSummary[];
     readonly thread: Pick<
@@ -98,24 +118,39 @@ export function threadStartHold(
       "environmentId" | "harnessInstanceId" | "harnessLabel" | "runStartHoldReason"
     >;
   },
-): string | null {
+): { readonly kind: ThreadStartWaitKind; readonly label: string } | null {
   const queued = nextQueuedRun(input);
   if (queued === null) return null;
   const environment = input.environments.find(({ id }) => id === input.thread.environmentId);
-  if (
-    queued.startHoldReason === "previous-stop-unconfirmed" ||
-    input.thread.runStartHoldReason === "previous-stop-unconfirmed"
-  ) {
-    return environment
-      ? `Waiting: Opensteer couldn’t confirm the last Run stopped on ${environment.name}.`
-      : "Waiting: Opensteer couldn’t confirm the last Run stopped on that device.";
+  const held = (reason: string) =>
+    queued.startHoldReason === reason || input.thread.runStartHoldReason === reason;
+  if (held("previous-stop-unconfirmed")) {
+    return {
+      kind: "stop-unconfirmed",
+      label: environment
+        ? `Waiting: Opensteer couldn’t confirm the last Run stopped on ${environment.name}.`
+        : "Waiting: Opensteer couldn’t confirm the last Run stopped on that device.",
+    };
   }
+  if (environment && !environment.connected)
+    return { kind: "computer-offline", label: `${environment.name} is offline` };
   // The person stopped agents on the computer this task runs on.
   if (environment?.agentsStoppedSince)
-    return `Waiting: agents are stopped on ${environment.name}. This starts when they’re resumed there.`;
+    return {
+      kind: "agents-stopped",
+      label: `Waiting: agents are stopped on ${environment.name}. This starts when they’re resumed there.`,
+    };
+  // Its computer runs as many Runs as it may: this one starts when one of them ends.
+  if (held("waiting-for-run"))
+    return { kind: "waiting-for-run", label: waitingForAnotherRun(environment?.name) };
   return threadAccountPreparing(input.environments, input.thread)
-    ? accountGettingReady(input.thread.harnessLabel)
+    ? { kind: "account-preparing", label: accountGettingReady(input.thread.harnessLabel) }
     : null;
+}
+
+/** The words of `threadStartWait`, which the transcript shows in place of "Starting". */
+export function threadStartHold(input: Parameters<typeof threadStartWait>[0]): string | null {
+  return threadStartWait(input)?.label ?? null;
 }
 
 /**

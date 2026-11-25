@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
-import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
+import { MockHostClient, mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { testUnsentSessionStops } from "../../../../packages/client/src/test-support/session-stop-feedback.test-support.js";
 
 vi.mock("react-native", () => ({
   AccessibilityInfo: { announceForAccessibility: vi.fn(async () => undefined) },
@@ -44,6 +45,7 @@ vi.mock(
 );
 vi.mock("../ui/primitives.js", () => ({
   AppText: (props: { children?: ReactNode }) => <span>{props.children}</span>,
+  SectionLabel: (props: { children?: ReactNode }) => <h2>{props.children}</h2>,
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("../screens/external-agent-mark.js", () => ({
@@ -69,6 +71,7 @@ vi.mock("../ui/mobile-client-context.js", async (actual) => ({
 vi.mock("./waiting-questions.js", () => ({
   QuestionCard: (props: {
     readonly canRespond: boolean;
+    readonly title?: string;
     readonly surface: {
       readonly request: {
         readonly presentation: {
@@ -80,7 +83,7 @@ vi.mock("./waiting-questions.js", () => ({
     };
   }) => (
     <section data-testid="question-card">
-      <h2>{props.surface.request.presentation.title}</h2>
+      <h2>{props.title ?? props.surface.request.presentation.title}</h2>
       <p>{props.surface.request.presentation.detail}</p>
       {props.surface.request.presentation.fields?.[0]?.choices?.map(({ label }) => (
         <button disabled={!props.canRespond} key={label}>
@@ -91,6 +94,7 @@ vi.mock("./waiting-questions.js", () => ({
   ),
 }));
 
+const { ConnectedAgentsSection } = await import("../sidebar/connected-agents-section.js");
 const { AgentSessionPane, useSessionTask } = await import("./agent-session.js");
 const { sessionTaskOf } = await import("./agent-session-model.js");
 
@@ -104,7 +108,7 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-function seeded(options: { readonly question?: boolean } = {}) {
+function seeded(options: Parameters<MockHostClient["mockAgentWork"]>[0] = {}) {
   host = new MockHostClient({
     latencyMs: 0,
     connections: mockConnectedAgents("seeded").connections,
@@ -128,10 +132,14 @@ function Pane(props: { readonly client: MockHostClient; readonly threadId: strin
   );
 }
 
-async function render(client: MockHostClient, threadId: string) {
-  const container = document.createElement("div");
-  document.body.append(container);
+function mountMobile() {
+  const container = document.body.appendChild(document.createElement("div"));
   root = createRoot(container);
+  return container;
+}
+
+async function render(client: MockHostClient, threadId: string) {
+  const container = mountMobile();
   await act(async () => root!.render(<Pane client={client} threadId={threadId} />));
   return container;
 }
@@ -151,7 +159,7 @@ describe("a connected agent's own task on the phone", () => {
     const page = await render(client, threadId);
     expect(read).toHaveBeenCalledWith({ threadId }, { signal: expect.any(AbortSignal) });
     const text = page.textContent ?? "";
-    expect(text).toContain("Listed tabs in Travel on Studio Mac");
+    expect(text).toContain("Listed tabs in \u2068Travel\u2069 on \u2068Studio Mac\u2069");
     expect(text).toContain("Reading only · Done");
     expect(text).toContain("Allowed by you · Failed");
     expect(text).toContain("Uncertain");
@@ -193,7 +201,11 @@ describe("a connected agent's own task on the phone", () => {
     const dispatch = vi.spyOn(client, "dispatch");
     const page = await render(client, threadId);
     await vi.waitFor(() => expect(page.textContent).toContain("Run a script in Shopping?"));
-    expect(page.textContent).toContain("Shopping · Studio Mac");
+    expect(page.textContent).toContain("\u2068Shopping\u2069 · \u2068Studio Mac\u2069");
+    const card = [...page.querySelectorAll("div")].find((node) =>
+      node.getAttribute("data-testid")?.startsWith("operation-request:"),
+    );
+    expect(card?.textContent).toContain("“\u2068Grok\u2069”Run a script in Shopping?");
     expect(page.textContent).toContain("“\u2068Grok\u2069” says:");
     expect(page.textContent).toContain("Buy the $12 phone case you asked for.");
     expect(page.textContent).not.toContain("Place order");
@@ -216,7 +228,9 @@ describe("a connected agent's own task on the phone", () => {
     const threadId = idOf(client, "Find flights to Lisbon");
     const page = await render(client, threadId);
     await vi.waitFor(() =>
-      expect(page.textContent).toContain("Connected agent Claude asks in Find flights to Lisbon"),
+      expect(page.textContent).toContain(
+        "Connected agent Claude asks in “\u2068Find flights to Lisbon\u2069”",
+      ),
     );
     const card = page.querySelector('[data-testid="question-card"]')!;
     expect(card.textContent).toContain("Enter passwords and codes only in the page.");
@@ -251,3 +265,24 @@ describe("a connected agent's own task on the phone", () => {
     expect(page.textContent).not.toContain("Using now");
   });
 });
+
+testUnsentSessionStops(
+  async (stop) => {
+    await act(async () => stop.click());
+  },
+  {
+    "phone drawer": async () => {
+      const client = seeded({ livePanel: "one" });
+      const shown = mountMobile();
+      await act(async () =>
+        root!.render(<ConnectedAgentsSection host={client} onOpen={vi.fn()} />),
+      );
+      return { client, shown, stop: button(shown, "Stop ChatGPT") };
+    },
+    "phone task": async () => {
+      const client = seeded({ livePanel: "one" });
+      const shown = await render(client, mockAgentWorkThreads.shopping);
+      return { client, shown, stop: button(shown, "Stop “\u2068ChatGPT\u2069”") };
+    },
+  },
+);

@@ -2,7 +2,7 @@
 
 import { createId, ThreadIdSchema } from "@opensteer/core";
 import { readAsDrawn } from "./read-as-drawn.test-support.js";
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { HostTransportError } from "@opensteer/client/connections";
 import { agentWords, HostClientRequestError, mutationIdempotencyKey } from "@opensteer/client/host";
@@ -28,11 +28,41 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("react-native", () => ({
+  Platform: { OS: "ios", Version: "26", select: (choices: { ios?: unknown }) => choices.ios },
+  StyleSheet: { create: (styles: object) => styles, hairlineWidth: 1 },
+  View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  Pressable: ({
+    children,
+    onPress,
+    accessibilityLabel,
+  }: {
+    children?: ReactNode;
+    onPress?: () => void;
+    accessibilityLabel?: string;
+  }) => (
+    <button aria-label={accessibilityLabel} onClick={onPress}>
+      {children}
+    </button>
+  ),
   Alert: {
     alert: (title: string, body: string, buttons: readonly AlertButton[]) =>
       state.alerts.push({ title, body, buttons }),
   },
 }));
+vi.mock("../thread/agent-session.js", () => ({
+  OperationRowView: ({ row }: { row: { action: string } }) => <div>{row.action}</div>,
+  OperationRequestCard: ({ item }: { item: { view: { question: string } } }) => (
+    <div>{item.view.question}</div>
+  ),
+  SessionQuestionCard: ({ request }: { request: { presentation: { title: string } } }) => (
+    <div>{request.presentation.title}</div>
+  ),
+}));
+vi.mock("./external-agent-mark.js", () => ({ ExternalAgentMark: () => null }));
+vi.mock("../ui/primitives.js", () => ({
+  AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+}));
+vi.mock("../ui/action-line.js", () => ({ ActionLine: () => null }));
 vi.mock("@react-navigation/native", () => ({
   useNavigation: () => ({
     goBack: state.goBack,
@@ -57,7 +87,15 @@ vi.mock("./native-settings-page.js", async () => {
         },
         [sheet],
       );
-      return null;
+      return (
+        <>
+          {props.sections.flatMap(({ rows }) =>
+            rows.map((row) =>
+              row.kind === "content" ? <div key={row.key}>{row.content}</div> : null,
+            ),
+          )}
+        </>
+      );
     },
   };
 });
@@ -104,7 +142,9 @@ async function open(
       />,
     ),
   );
-  await vi.waitFor(() => expect(section("status")).toBeDefined());
+  await vi.waitFor(() =>
+    expect(section("status") ?? section("now") ?? section("who")).toBeDefined(),
+  );
   return client;
 }
 function section(key: string, page = state.page): NativeSettingsSection | undefined {
@@ -129,25 +169,172 @@ async function answer(text: string) {
 const status = () => section("status")!.rows[0] as Extract<NativeSettingsRow, { kind: "status" }>;
 
 describe("one connected agent on the phone", () => {
-  it("shows the working task, opens it from Watch, and hides Watch when work stops", async () => {
-    const client = await open(claude);
-    expect(status().label).toBe("Not doing anything");
-    expect(section("status")?.rows.some(({ key }) => key === "watch")).toBe(false);
-    await act(async () => client.mockAgentWork());
-    expect(status().label).toBe("Working now");
-    expect(section("status")?.footer?.text).toBe("Find flights to Lisbon");
+  it("shows Now, opens its task, and removes Now after Stop", async () => {
+    const client = new MockHostClient({ ...mockConnectedAgents("seeded"), latencyMs: 0 });
+    client.mockAgentWork();
+    const history = vi.fn(client.rpc["connections.activity"]);
+    Object.defineProperty(client.rpc, "connections.activity", { value: history });
+    await open(claude, client);
+    expect(section("earlier")).toBeUndefined();
     const threadId = mockAgentWorkThreads.working;
-    await press(row("status", "watch"));
+    const sessionId = client.getSnapshot().activeTasks.find(({ thread }) => thread.id === threadId)
+      ?.thread.agentSessionId;
+    expect(sessionId).toBeTruthy();
+    expect(section("now")?.rows[0]?.label).toBe("Find flights to Lisbon");
+    expect(section("status")).toBeUndefined();
+    const buttons = [...document.querySelectorAll("button")];
+    await act(async () =>
+      buttons.find((button) => button.textContent?.includes("Find flights to Lisbon"))!.click(),
+    );
     expect(state.navigate).toHaveBeenCalledWith("Thread", {
       deploymentId: "deployment-a",
       threadId,
     });
-    const sessionId = client.getSnapshot().activeTasks.find(({ thread }) => thread.id === threadId)
-      ?.thread.agentSessionId;
-    expect(sessionId).toBeTruthy();
-    await act(async () => expect(client.stopAgentSession(threadId, sessionId!)).toBe(true));
-    expect(status().label).toBe("Not doing anything");
-    expect(section("status")?.rows.some(({ key }) => key === "watch")).toBe(false);
+    const dispatch = vi.spyOn(client, "dispatch");
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>('button[aria-label="Stop Claude"]')!.click(),
+    );
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "agent.session.stop",
+        threadId,
+        agentSessionId: sessionId,
+      }),
+    );
+    expect(section("now")).toBeUndefined();
+    await vi.waitFor(() => expect(section("earlier")).toBeDefined());
+    expect(history).toHaveBeenCalledOnce();
+  });
+
+  it("quotes and isolates a self-declared name in the navigation title", async () => {
+    await open(grok);
+    expect(state.setOptions).toHaveBeenLastCalledWith({ title: "“\u2068Grok\u2069”" });
+  });
+
+  it("shows Now activity in task order and only for the displayed session", async () => {
+    const client = new MockHostClient({ ...mockConnectedAgents("seeded"), latencyMs: 0 });
+    client.mockAgentWork();
+    const original = client.rpc["threads.activity"];
+    Object.defineProperty(client.rpc, "threads.activity", {
+      value: async (...args: Parameters<typeof original>) => {
+        const result = await original(...args);
+        if (!result.ok || args[0].threadId !== mockAgentWorkThreads.working) return result;
+        return {
+          ...result,
+          data: {
+            ...result.data,
+            operations: [
+              {
+                ...result.data.operations[0]!,
+                target: { ...result.data.operations[0]!.target, name: "Another session" },
+                id: createId("agentOperation"),
+                sessionId: createId("agentSession"),
+              },
+              ...result.data.operations,
+            ],
+          },
+        };
+      },
+    });
+    await open(claude, client);
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Listed tabs in Travel"));
+    const text = document.body.textContent!;
+    expect(text.indexOf("Listed tabs in Travel")).toBeLessThan(
+      text.indexOf("Run a script on Travel"),
+    );
+    expect(text).not.toContain("Another session");
+  });
+
+  it("keeps Disconnect progress visible while there is still activity in Now", async () => {
+    const seed = mockConnectedAgents("seeded");
+    const fixture = seed.connections.find(({ id }) => id === shopHelper)!;
+    const client = new MockHostClient({
+      ...seed,
+      connections: seed.connections.map((connection) =>
+        connection.id === claude
+          ? { ...connection, revokedAt: fixture.revokedAt, state: fixture.state }
+          : connection,
+      ),
+      latencyMs: 0,
+    });
+    client.mockAgentWork();
+    await open(claude, client);
+    expect(section("now")).toBeDefined();
+    expect(section("status")?.rows[0]).toMatchObject({ label: "Stopping its work" });
+    expect(status().steps?.map(({ state }) => state)).toEqual(["done", "current", "pending"]);
+  });
+
+  it("puts the waiting operation's Request in Now and opens the exact question", async () => {
+    const seed = mockConnectedAgents("seeded");
+    const client = new MockHostClient({ ...seed, latencyMs: 0 });
+    client.mockAgentWork({ livePanel: "needs-you" });
+    const threadId = mockAgentWorkThreads.waiting;
+    const request = client
+      .getSnapshot()
+      .waitingRequests.find(({ request }) => request.originatingThreadId === threadId)!.request;
+    await open(claude, client);
+    await vi.waitFor(() => expect(document.body.textContent).toContain(request.presentation.title));
+    expect(document.body.textContent).toContain("Needs you");
+    const openTask = [...document.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Needs you"),
+    )!;
+    await act(async () => openTask.click());
+    expect(state.navigate).toHaveBeenCalledWith("Thread", {
+      deploymentId: "deployment-a",
+      threadId,
+      requestId: request.id,
+    });
+  });
+
+  it("embeds the existing question card for a connected agent's own question", async () => {
+    const seed = mockConnectedAgents("seeded");
+    const client = new MockHostClient({ ...seed, latencyMs: 0 });
+    client.mockAgentWork({ question: true });
+    await open(claude, client);
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain(
+        "Connected agent Claude asks in Find flights to Lisbon",
+      ),
+    );
+    expect(document.body.textContent).toContain("Needs you");
+  });
+
+  it("groups and pages Earlier, and opens the task of a previous session", async () => {
+    const seeded = mockConnectedAgents("seeded");
+    const agent = seeded.connections.find(({ label }) => label === "ChatGPT")!;
+    const client = new MockHostClient({ ...seeded, latencyMs: 0 });
+    client.mockAgentWork({ livePanel: "one-history" });
+    const original = client.rpc["connections.activity"];
+    const all = await original({ connectionId: agent.id });
+    if (!all.ok) throw new Error("Missing history fixture");
+    const activity = vi.fn(async ({ before }: Parameters<typeof original>[0]) => ({
+      ok: true as const,
+      data: before
+        ? { ...all.data, operations: all.data.operations.slice(5), nextBefore: null }
+        : { ...all.data, operations: all.data.operations.slice(0, 5), nextBefore: "page-2" },
+    }));
+    Object.defineProperty(client.rpc, "connections.activity", { value: activity });
+    await open(agent.id, client);
+    await vi.waitFor(() => expect(section("earlier")).toBeDefined());
+    expect(
+      section("earlier")
+        ?.rows.filter((item) => item.kind === "text")
+        .map(({ label }) => label),
+    ).toEqual(["Today", "Yesterday"]);
+    expect(section("earlier")?.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ detail: "Opened a tab in Shopping · Done" }),
+      ]),
+    );
+    expect(activity).toHaveBeenCalledTimes(1);
+    await press(row("earlier", "more"));
+    expect(activity).toHaveBeenCalledTimes(2);
+    const past = section("earlier")!.rows.find((item) => item.kind === "button")!;
+    await press(past);
+    expect(state.navigate).toHaveBeenCalledWith(
+      "Thread",
+      expect.objectContaining({ deploymentId: "deployment-a", threadId: expect.any(String) }),
+    );
   });
 
   it.each([390, 1440])(
@@ -206,26 +393,23 @@ describe("one connected agent on the phone", () => {
     },
   );
 
-  it("shows its state, what it can use, its mode, who it says it is, and honest empty activity", async () => {
+  it("shows what it can use, its mode, and who it says it is while idle", async () => {
     await open(trips);
-    expect(state.setOptions).toHaveBeenCalledWith({ title: "Trip planner" });
-    expect(status()).toMatchObject({ tone: "neutral", label: "Not doing anything" });
-    expect(section("status")?.footer?.text).toBe("Not used yet.");
+    expect(state.setOptions).toHaveBeenCalledWith({ title: "“\u2068Trip planner\u2069”" });
+    expect(section("now")).toBeUndefined();
+    expect(section("status")).toBeUndefined();
     expect(state.page?.sections.map(({ key }) => key)).toEqual([
       "who",
-      "status",
       "scope",
       "resources",
       "tasks",
       "mode",
-      "activity",
       "about",
       "end",
     ]);
     expect(row("tasks", "tasks")).toMatchObject({ value: true });
     expect(row("mode", "auto")).toMatchObject({ selected: true });
-    // Its Recent activity is what the Home reports for it (connections.activity): nothing yet.
-    expect(row("activity", "empty").label).toBe("Nothing yet.");
+    expect(section("earlier")).toBeUndefined();
     expect(
       section("about")?.rows.map((candidate) => [
         candidate.label,
@@ -301,7 +485,7 @@ describe("one connected agent on the phone", () => {
     const dispatch = vi.spyOn(client, "dispatch");
     await press(row("scope", "selected"));
     expect(state.alerts.at(-1)).toMatchObject({
-      title: "Limit “Claude” to what you choose?",
+      title: "Limit “\u2068Claude\u2069” to what you choose?",
       body: "It stops being able to use anything you don’t pick.",
     });
     expect(dispatch).not.toHaveBeenCalled();
@@ -360,7 +544,7 @@ describe("one connected agent on the phone", () => {
     const dispatch = vi.spyOn(client, "dispatch");
     await press(row("end", "disconnect"));
     expect(state.alerts.at(-1)).toMatchObject({
-      title: "Disconnect “Grok”?",
+      title: "Disconnect “\u2068Grok\u2069”?",
       body: "It stops right away and can’t use anything again unless you connect it again. Tabs it was using stay open so you can check them.",
     });
     expect(dispatch).not.toHaveBeenCalled();

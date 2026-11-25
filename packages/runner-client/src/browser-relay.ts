@@ -50,7 +50,7 @@ interface ActiveChannel {
  */
 export class BrowserModuleRelay {
   readonly #bridge: LocalBrowserRuntimeBridge;
-  readonly #stopped: boolean;
+  readonly #stopped: () => boolean;
   readonly #channels = new Map<BrowserChannelId, ActiveChannel>();
   #inventoryComplete = false;
   #capability: BrowserCapabilityLease | undefined;
@@ -58,9 +58,9 @@ export class BrowserModuleRelay {
   #stream: RunnerModuleStream | undefined;
   #streamLifetime = new AbortController();
 
-  constructor(bridge: LocalBrowserRuntimeBridge, stopped = false) {
+  constructor(bridge: LocalBrowserRuntimeBridge, stopped: boolean | (() => boolean) = false) {
     this.#bridge = bridge;
-    this.#stopped = stopped;
+    this.#stopped = typeof stopped === "function" ? stopped : () => stopped;
   }
 
   get busy(): boolean {
@@ -71,13 +71,18 @@ export class BrowserModuleRelay {
     return this.#bridge.runtimeId;
   }
 
-  async attach(stream: RunnerModuleStream): Promise<void> {
+  async attach(stream: RunnerModuleStream, signal?: AbortSignal): Promise<void> {
     this.#stream = stream;
     this.#streamLifetime.abort();
     this.#streamLifetime = new AbortController();
+    const attachSignal = signal
+      ? AbortSignal.any([signal, this.#streamLifetime.signal])
+      : this.#streamLifetime.signal;
+    attachSignal.throwIfAborted();
     if (stream.browserWireVersion !== 2)
       throw new BrowserRelayError("Update this Host to use the current browser runtime contract.");
-    const capabilities = await this.#bridge.capabilities();
+    const capabilities = await this.#bridge.capabilities(attachSignal);
+    attachSignal.throwIfAborted();
     if (capabilities.wireVersion !== 2)
       throw new BrowserRelayError(
         "Update the Browser Runtime on this computer. The current native browser contract is required.",
@@ -90,8 +95,10 @@ export class BrowserModuleRelay {
     }
     this.#bridge.setAttachPublicKeys(stream.browserAttachPublicKeys);
     if (capabilities.localProfileStorage) {
-      const inventory = await this.#bridge.localProfileInventory();
+      const inventory = await this.#bridge.localProfileInventory(attachSignal);
+      attachSignal.throwIfAborted();
       for (let offset = 0; offset < inventory.profiles.length || offset === 0; offset += 128) {
+        attachSignal.throwIfAborted();
         if (this.#stream !== stream)
           throw new BrowserRelayError("The browser inventory stream was superseded.");
         await stream.send(
@@ -107,6 +114,7 @@ export class BrowserModuleRelay {
         );
       }
     }
+    attachSignal.throwIfAborted();
     if (this.#stream !== stream)
       throw new BrowserRelayError("The browser inventory stream was superseded.");
     this.#inventoryComplete = true;
@@ -230,7 +238,7 @@ export class BrowserModuleRelay {
         });
         return;
       case "browser.attach": {
-        if (this.#stopped && (message.standardCdp || !isPersonTicket(message.attachTicket)))
+        if (this.#stopped() && (message.standardCdp || !isPersonTicket(message.attachTicket)))
           throw new BrowserRelayError(stoppedError.message, { runtimeError: stoppedError });
         if (!this.#inventoryComplete)
           throw new BrowserRelayError("Local browser profile inventory has not completed.");
@@ -310,7 +318,7 @@ export class BrowserModuleRelay {
         if (!this.#channels.has(message.channelId)) return;
         const channel = this.#assertChannel(message.channelId, message.capability);
         if (
-          this.#stopped &&
+          this.#stopped() &&
           (message.message.type === "cdp.raw" || !isPersonFrame(message.message))
         ) {
           if (message.message.type === "cdp.command")

@@ -7,8 +7,6 @@ import {
   ManagedBrowserPoolTargetResponseSchema,
   browserPoolHostSlotEgressSigningBytes,
   browserPoolHostSlotEgressWindowMs,
-  defaultBrowserPoolAgentPort,
-  defaultBrowserPoolRelayPort,
   managedBrowserPoolRegistrationSigningBytes,
   managedBrowserPoolRegistrationWindowMs,
   type BrowserPoolHostBootCompleteRequest,
@@ -107,7 +105,6 @@ export class BrowserPoolStore {
     now: Date,
   ): Promise<void> {
     const pool = this.#config.browserPool;
-    if (!pool) return;
     const slotId = BrowserPoolSlotIdSchema.parse(`bps_${randomUUID()}`);
     await tx
       .insertInto("browserPoolSlots")
@@ -144,6 +141,92 @@ export class BrowserPoolStore {
   }
 
   /**
+   * The one settlement of a deleted Cloud Computer's browser: nothing of it is left to erase
+   * (its slot erased, never placed, or never given). Records it once, and completes the
+   * deletion when the VM and the backup key are gone too. Caller holds the `cloudComputers` lock.
+   */
+  async #settleBrowserSlotErasure(tx: TransactionDb, computerId: CloudComputerId, now: Date) {
+    const computer = await tx
+      .selectFrom("cloudComputers")
+      .select(["vmDestroyedAt", "backupsUnreadableAt", "browserSlotErasedAt", "tombstonedAt"])
+      .where("id", "=", computerId)
+      .executeTakeFirst();
+    if (!computer || computer.browserSlotErasedAt) return;
+    const settled =
+      computer.vmDestroyedAt !== null &&
+      computer.backupsUnreadableAt !== null &&
+      computer.tombstonedAt === null;
+    await tx
+      .updateTable("cloudComputers")
+      .where("id", "=", computerId)
+      .set({
+        browserSlotErasedAt: now,
+        ...(settled ? { phase: "deleted", tombstonedAt: now, updatedAt: now } : {}),
+      })
+      .executeTakeFirstOrThrow();
+  }
+
+  /**
+   * A fresh Home replaces this Cloud Computer's (a new deployment, without the old one's
+   * profiles): its slot is erased as a deletion erases one, profile included, and the computer
+   * gets a new slot once that one is gone. Its own profiles' bindings would otherwise make the
+   * pool host refuse the fresh Home's whole inventory. Caller holds the `cloudComputers` lock.
+   */
+  async retireSlotForFreshHome(
+    tx: TransactionDb,
+    computerId: CloudComputerId,
+    now: Date,
+  ): Promise<void> {
+    const slot = await tx
+      .selectFrom("browserPoolSlots")
+      .select([
+        "slotId",
+        "hostId",
+        "state",
+        "slotErasedAt",
+        "profileErasedAt",
+        "credentialsErasedAt",
+      ])
+      .where("computerId", "=", computerId)
+      .where("tombstonedAt", "is", null)
+      .forNoKeyUpdate()
+      .executeTakeFirst();
+    if (slot?.hostId === null) {
+      // Never placed on a host: nothing to erase there.
+      await tx
+        .updateTable("browserPoolSlots")
+        .where("slotId", "=", slot.slotId)
+        .set({
+          state: "deleted",
+          phase: "deleted",
+          controlKey: null,
+          slotErasedAt: slot.slotErasedAt ?? now,
+          profileErasedAt: slot.profileErasedAt ?? now,
+          credentialsErasedAt: slot.credentialsErasedAt ?? now,
+          failedAt: null,
+          tombstonedAt: now,
+          lastError: null,
+          updatedAt: now,
+        })
+        .executeTakeFirstOrThrow();
+    } else if (slot?.state === "active") {
+      await tx
+        .updateTable("browserPoolSlots")
+        .where("slotId", "=", slot.slotId)
+        .set({
+          state: "deleting",
+          phase: "deleting",
+          failedAt: null,
+          lastError: null,
+          updatedAt: now,
+        })
+        .executeTakeFirstOrThrow();
+      return;
+    } else if (slot) return;
+    await this.createSlotForComputer(tx, computerId, now);
+  }
+
+  /**
    * Transitions a deleted Cloud Computer's browser slot to `deleting` (or tombstones it immediately
    * when it was never placed on any pool host). Caller must already hold `cloudComputers` lock.
    */
@@ -159,7 +242,25 @@ export class BrowserPoolStore {
       .where("tombstonedAt", "is", null)
       .forNoKeyUpdate()
       .executeTakeFirst();
-    if (!slot) return;
+    if (!slot) {
+      // Review A2: no live slot (deleted before this account gave it one, or a row moved by
+      // 0040). Nothing is left to erase once every slot it ever had confirmed its erasure; one
+      // whose erasure is unconfirmed still holds the deletion.
+      const unconfirmed = await tx
+        .selectFrom("browserPoolSlots")
+        .select("slotId")
+        .where("computerId", "=", computerId)
+        .where((eb) =>
+          eb.or([
+            eb("slotErasedAt", "is", null),
+            eb("profileErasedAt", "is", null),
+            eb("credentialsErasedAt", "is", null),
+          ]),
+        )
+        .executeTakeFirst();
+      if (!unconfirmed) await this.#settleBrowserSlotErasure(tx, computerId, now);
+      return;
+    }
     if (slot.hostId === null) {
       await tx
         .updateTable("browserPoolSlots")
@@ -177,25 +278,7 @@ export class BrowserPoolStore {
           updatedAt: now,
         })
         .executeTakeFirstOrThrow();
-      const computer = await tx
-        .selectFrom("cloudComputers")
-        .select(["vmDestroyedAt", "backupsUnreadableAt", "browserSlotErasedAt", "tombstonedAt"])
-        .where("id", "=", computerId)
-        .executeTakeFirst();
-      if (computer && !computer.browserSlotErasedAt) {
-        const settled =
-          computer.vmDestroyedAt !== null &&
-          computer.backupsUnreadableAt !== null &&
-          computer.tombstonedAt === null;
-        await tx
-          .updateTable("cloudComputers")
-          .where("id", "=", computerId)
-          .set({
-            browserSlotErasedAt: now,
-            ...(settled ? { phase: "deleted", tombstonedAt: now, updatedAt: now } : {}),
-          })
-          .executeTakeFirstOrThrow();
-      }
+      await this.#settleBrowserSlotErasure(tx, computerId, now);
       return;
     }
     if (slot.state === "active") {
@@ -218,27 +301,45 @@ export class BrowserPoolStore {
    * (`cloud_computers -> browser_pool_slots`), then reconciles capacity and placement in declared
    * lock order (`advisory:browser-pool-capacity -> browser_pool_hosts -> browser_pool_slots`).
    */
-  async #hasLivePoolRows(): Promise<boolean> {
-    const [host, slot] = await Promise.all([
-      this.#db
-        .selectFrom("browserPoolHosts")
-        .select("id")
-        .where("tombstonedAt", "is", null)
-        .limit(1)
-        .executeTakeFirst(),
-      this.#db
-        .selectFrom("browserPoolSlots")
-        .select("slotId")
-        .where("tombstonedAt", "is", null)
-        .limit(1)
-        .executeTakeFirst(),
-    ]);
-    return host !== undefined || slot !== undefined;
-  }
-
   async #reconcileCapacity(): Promise<void> {
     const pool = this.#config.browserPool;
-    if (!pool && !(await this.#hasLivePoolRows())) return;
+
+    // 0. Every live Cloud Computer has a slot (one moved forward by 0040_browser_always_pooled
+    // has none yet), at the size this account is configured with now: a migration cannot know
+    // it. Lock order cloud_computers -> browser_pool_slots, as everywhere.
+    await this.#db.transaction().execute(async (tx) => {
+      const missing = await tx
+        .selectFrom("cloudComputers")
+        .select("id")
+        .where("state", "in", ["active", "suspended"])
+        .where("deletionRequestedAt", "is", null)
+        .where("tombstonedAt", "is", null)
+        .where((eb) =>
+          eb.not(
+            eb.exists(
+              eb
+                .selectFrom("browserPoolSlots")
+                .select("slotId")
+                .whereRef("browserPoolSlots.computerId", "=", "cloudComputers.id")
+                .where("browserPoolSlots.tombstonedAt", "is", null),
+            ),
+          ),
+        )
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .skipLocked()
+        .execute();
+      const now = this.#now();
+      for (const { id } of missing) {
+        const live = await tx
+          .selectFrom("browserPoolSlots")
+          .select("slotId")
+          .where("computerId", "=", id)
+          .where("tombstonedAt", "is", null)
+          .executeTakeFirst();
+        if (!live) await this.createSlotForComputer(tx, id, now);
+      }
+    });
 
     // 1. Separate transaction so slot locks are never held before host locks (T7).
     await this.#db.transaction().execute(async (tx) => {
@@ -299,7 +400,7 @@ export class BrowserPoolStore {
         (slot) => slot.state === "active" && (!slot.hostId || activeHostIds.has(slot.hostId)),
       ).length;
 
-      while (pool && activeCapacity < neededOnActive) {
+      while (activeCapacity < neededOnActive) {
         const id = BrowserPoolHostIdSchema.parse(`ph_${randomUUID()}`);
         const profileDiskName = `osp-disk-${id.slice("ph_".length)}`;
         await tx
@@ -387,11 +488,7 @@ export class BrowserPoolStore {
   async desiredHosts(
     after?: BrowserPoolHostId,
     limit = 100,
-    probe = false,
   ): Promise<BrowserPoolHostDesiredResponse> {
-    const pool = this.#config.browserPool;
-    if (probe) return { hosts: [], poolEnabled: Boolean(pool) };
-    if (!pool && !(await this.#hasLivePoolRows())) return { hosts: [], poolEnabled: false };
     await this.#reconcileCapacity();
     let query = this.#db
       .selectFrom("browserPoolHosts")
@@ -456,8 +553,8 @@ export class BrowserPoolStore {
           profileDiskName: row.profileDiskName,
           profileDiskSizeGb: row.profileDiskSizeGb,
           ...(row.profileDiskRef ? { profileDiskRef: row.profileDiskRef } : {}),
-          agentPort: pool?.agentPort ?? defaultBrowserPoolAgentPort,
-          relayPort: pool?.relayPort ?? defaultBrowserPoolRelayPort,
+          agentPort: this.#config.browserPool.agentPort,
+          relayPort: this.#config.browserPool.relayPort,
           release: row.release,
           ...(row.providerServerRef ? { providerServerRef: row.providerServerRef } : {}),
           ...(row.previousProviderServerRef
@@ -480,7 +577,6 @@ export class BrowserPoolStore {
       }),
     );
     return {
-      poolEnabled: Boolean(pool),
       hosts,
       ...(rows.length > limit ? { next: page.at(-1)!.id } : {}),
     };
@@ -866,7 +962,6 @@ export class BrowserPoolStore {
     after?: BrowserPoolSlotId,
     limit = 100,
   ): Promise<BrowserPoolSlotDesiredResponse> {
-    if (!this.#config.browserPool && !(await this.#hasLivePoolRows())) return { slots: [] };
     await this.#reconcileCapacity();
     let query = this.#db
       .selectFrom("browserPoolSlots as slot")
@@ -1078,6 +1173,8 @@ export class BrowserPoolStore {
               .selectFrom("cloudComputers")
               .select([
                 "id",
+                "state",
+                "deletionRequestedAt",
                 "vmDestroyedAt",
                 "backupsUnreadableAt",
                 "browserSlotErasedAt",
@@ -1159,19 +1256,18 @@ export class BrowserPoolStore {
         })
         .executeTakeFirstOrThrow();
 
-      if (deleted && computer) {
-        const settled =
-          computer.vmDestroyedAt !== null &&
-          computer.backupsUnreadableAt !== null &&
-          computer.tombstonedAt === null;
-        await tx
-          .updateTable("cloudComputers")
-          .where("id", "=", computer.id)
-          .set({
-            browserSlotErasedAt: computer.browserSlotErasedAt ?? now,
-            ...(settled ? { phase: "deleted", tombstonedAt: now, updatedAt: now } : {}),
-          })
-          .executeTakeFirstOrThrow();
+      if (
+        deleted &&
+        computer &&
+        computer.state !== "deleted" &&
+        computer.deletionRequestedAt === null &&
+        computer.tombstonedAt === null
+      ) {
+        // The slot of a Home a fresh one replaced (retireSlotForFreshHome): the computer lives on
+        // and its new Home gets a slot of its own.
+        await this.createSlotForComputer(tx, computer.id, now);
+      } else if (deleted && computer) {
+        await this.#settleBrowserSlotErasure(tx, computer.id, now);
       }
       return { recorded: true };
     });
@@ -1270,6 +1366,7 @@ export class BrowserPoolStore {
         .selectFrom("browserPoolSlots")
         .select("hostId")
         .where("computerId", "=", computer.id)
+        .where("tombstonedAt", "is", null)
         .executeTakeFirst();
       const host = slotPeek?.hostId
         ? await tx
@@ -1284,6 +1381,7 @@ export class BrowserPoolStore {
         .selectFrom("browserPoolSlots")
         .selectAll()
         .where("computerId", "=", computer.id)
+        .where("tombstonedAt", "is", null)
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!slot || slot.state !== "active" || slot.tombstonedAt !== null) {
@@ -1364,8 +1462,11 @@ export class BrowserPoolStore {
       .selectFrom("browserPoolSlots")
       .selectAll()
       .where("computerId", "=", computer.id)
+      .where("tombstonedAt", "is", null)
       .executeTakeFirst();
-    if (!slot || slot.tombstonedAt !== null || slot.state !== "active") {
+    // The previous Home's slot is being erased; this Home's own comes once it is gone.
+    if (slot?.state === "deleting") return { status: "preparing" };
+    if (!slot || slot.state !== "active") {
       return { status: "failed" };
     }
     const host = slot.hostId
@@ -1398,8 +1499,7 @@ export class BrowserPoolStore {
       slot.appliedHostGeneration === host?.generation;
     if (!hostReady || !slotReady) return { status: "preparing" };
 
-    const agentPort = this.#config.browserPool?.agentPort ?? defaultBrowserPoolAgentPort;
-    const relayPort = this.#config.browserPool?.relayPort ?? defaultBrowserPoolRelayPort;
+    const { agentPort, relayPort } = this.#config.browserPool;
     return ManagedBrowserPoolTargetResponseSchema.parse({
       status: "ready",
       target: {
@@ -1418,42 +1518,23 @@ export class BrowserPoolStore {
     });
   }
 
-  async #poolProvisionerWarning(): Promise<string | undefined> {
-    if (!this.#config.browserPool) return undefined;
-    const result = await sql<{ poolConfigured: boolean | null }>`
-      select pool_configured as "poolConfigured" from cloud_computer_provisioner_lease where singleton
-    `.execute(this.#db);
-    const lease = result.rows[0];
-    if (lease && lease.poolConfigured !== true) {
-      return (
-        "Browser pooling is enabled in Account, but the active home-provisioner does not have " +
-        "OPENSTEER_POOL_PROVISIONER_KEY configured. Pool hosts and slots will not be reconciled."
-      );
-    }
-    return undefined;
-  }
-
   async operatorListHosts() {
-    const [rows, warning] = await Promise.all([
-      this.#db.selectFrom("browserPoolHosts").selectAll().orderBy("createdAt", "desc").execute(),
-      this.#poolProvisionerWarning(),
-    ]);
-    return {
-      hosts: rows.map(poolHostOperatorView),
-      ...(warning ? { warning } : {}),
-    };
+    const rows = await this.#db
+      .selectFrom("browserPoolHosts")
+      .selectAll()
+      .orderBy("createdAt", "desc")
+      .execute();
+    return { hosts: rows.map(poolHostOperatorView) };
   }
 
   async operatorShowHost(id: BrowserPoolHostId) {
-    const [row, warning] = await Promise.all([
-      this.#db.selectFrom("browserPoolHosts").selectAll().where("id", "=", id).executeTakeFirst(),
-      this.#poolProvisionerWarning(),
-    ]);
+    const row = await this.#db
+      .selectFrom("browserPoolHosts")
+      .selectAll()
+      .where("id", "=", id)
+      .executeTakeFirst();
     if (!row) throw new ControlPlaneError("not_found", "Browser pool host was not found");
-    return {
-      ...poolHostOperatorView(row),
-      ...(warning ? { warning } : {}),
-    };
+    return poolHostOperatorView(row);
   }
 
   async operatorDrainHost(id: BrowserPoolHostId) {
@@ -1473,6 +1554,13 @@ export class BrowserPoolStore {
   }
 
   /** W1 + S6/S7: Bumps host generation while preserving its durable profile disk. */
+  /**
+   * An operator's replace of a pool host. A host row's release is the release that host runs:
+   * the replace sets it to this account's current pool release in the same transaction as the
+   * new generation, so the replacement boots it on the same profile disk. This is how a pool
+   * release is rolled out, host by host. A replacement the reconciler makes on its own
+   * (`replaceUnenrolledHost`) keeps the row's release: a release never changes unasked.
+   */
   async operatorReplaceHost(id: BrowserPoolHostId) {
     return this.#db.transaction().execute(async (tx) => {
       const row = await lockedPoolHost(tx, id);
@@ -1486,6 +1574,7 @@ export class BrowserPoolStore {
         .set({
           ...clearBootToken,
           generation: row.generation + 1,
+          release: JSON.stringify(this.#config.browserPool.release),
           previousProviderServerRef: row.providerServerRef ?? row.previousProviderServerRef,
           providerServerRef: null,
           internalIp: null,
@@ -1554,30 +1643,22 @@ export class BrowserPoolStore {
   }
 
   async operatorListSlots() {
-    const [rows, warning] = await Promise.all([
-      this.#db.selectFrom("browserPoolSlots").selectAll().orderBy("createdAt", "desc").execute(),
-      this.#poolProvisionerWarning(),
-    ]);
-    return {
-      slots: rows.map(poolSlotOperatorView),
-      ...(warning ? { warning } : {}),
-    };
+    const rows = await this.#db
+      .selectFrom("browserPoolSlots")
+      .selectAll()
+      .orderBy("createdAt", "desc")
+      .execute();
+    return { slots: rows.map(poolSlotOperatorView) };
   }
 
   async operatorShowSlot(slotId: BrowserPoolSlotId) {
-    const [row, warning] = await Promise.all([
-      this.#db
-        .selectFrom("browserPoolSlots")
-        .selectAll()
-        .where("slotId", "=", slotId)
-        .executeTakeFirst(),
-      this.#poolProvisionerWarning(),
-    ]);
+    const row = await this.#db
+      .selectFrom("browserPoolSlots")
+      .selectAll()
+      .where("slotId", "=", slotId)
+      .executeTakeFirst();
     if (!row) throw new ControlPlaneError("not_found", "Browser pool slot was not found");
-    return {
-      ...poolSlotOperatorView(row),
-      ...(warning ? { warning } : {}),
-    };
+    return poolSlotOperatorView(row);
   }
 
   /** X2: Operator retries a failed active slot immediately while keeping lastError visible until ready. */
@@ -1620,6 +1701,8 @@ function poolHostOperatorView(row: PoolHost) {
     profileDiskName: row.profileDiskName,
     profileDiskSizeGb: row.profileDiskSizeGb,
     profileDiskRef: row.profileDiskRef,
+    /** The release this host runs, or boots next after a replace. */
+    release: row.release,
     providerServerRef: row.providerServerRef,
     previousProviderServerRef: row.previousProviderServerRef,
     internalIp: row.internalIp,

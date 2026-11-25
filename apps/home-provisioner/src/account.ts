@@ -53,7 +53,6 @@ export interface PoolAccountApi {
     input: BrowserPoolHostReplaceUnreadyRequest,
     signal: AbortSignal,
   ): Promise<BrowserPoolHostReplaceUnreadyResponse>;
-  isPoolEnabled?(signal: AbortSignal): Promise<boolean>;
   desiredSlots(signal: AbortSignal): Promise<readonly BrowserPoolSlotDesired[]>;
   checkSlot(
     slotId: BrowserPoolSlotId,
@@ -70,6 +69,8 @@ export interface PoolAccountApi {
 
 export interface AccountApi {
   acquire(signal: AbortSignal): Promise<void>;
+  /** Gives the lease back, as its holder; false when it held none. */
+  release?(signal: AbortSignal): Promise<boolean>;
   check(id: CloudComputerId, check: CloudComputerCheck, signal: AbortSignal): Promise<boolean>;
   desired(signal: AbortSignal): Promise<readonly CloudComputerDesired[]>;
   report(report: CloudComputerReport, signal: AbortSignal): Promise<boolean>;
@@ -121,7 +122,10 @@ export function accountClient(
   http: HttpOptions,
   holder: string = randomUUID(),
   provider?: "google",
-  poolConfigured?: boolean,
+  /** The subnet it creates Homes and pool hosts in, which each Home's firewall may reach. */
+  poolNetwork?: string,
+  /** Its admin port on every pool host, which the account refuses if Homes use it. */
+  poolAdminPort?: number,
 ): AccountApi {
   const headers = async (signal: AbortSignal) => ({
     authorization: `Bearer ${await token(signal)}`,
@@ -137,10 +141,25 @@ export function accountClient(
         json(z.object({ acquired: z.literal(true) })),
         {
           method: "POST",
-          body: poolConfigured !== undefined ? { holder, poolConfigured } : { holder },
+          body: {
+            holder,
+            ...(poolNetwork !== undefined ? { poolNetwork } : {}),
+            ...(poolAdminPort !== undefined ? { poolAdminPort } : {}),
+          },
           headers: await headers(signal),
         },
       );
+    },
+    async release(signal) {
+      const { released } = await request(
+        "Account",
+        new URL(cloudComputerLeasePath, origin),
+        http,
+        signal,
+        json(z.object({ released: z.boolean() })),
+        { method: "DELETE", headers: await headers(signal) },
+      );
+      return released;
     },
     async check(id, check, signal) {
       return (
@@ -247,20 +266,6 @@ export function accountClient(
           json(BrowserPoolHostReplaceUnreadyResponseSchema),
           { method: "POST", body: input, headers: await headers(signal) },
         );
-      },
-      async isPoolEnabled(signal) {
-        const url = new URL(browserPoolHostsDesiredPath, origin);
-        url.searchParams.set("probe", "true");
-        url.searchParams.set("limit", "1");
-        const page = await request(
-          "Account",
-          url,
-          http,
-          signal,
-          json(BrowserPoolHostDesiredResponseSchema),
-          { headers: await headers(signal) },
-        );
-        return page.poolEnabled === true;
       },
       async desiredSlots(signal) {
         const slots: BrowserPoolSlotDesired[] = [];

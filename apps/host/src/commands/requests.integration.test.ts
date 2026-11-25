@@ -32,7 +32,7 @@ import {
 } from "@opensteer/database/test-support/store";
 import { hostApi, type HostApiCommand, type HostApiServerContext } from "@opensteer/protocol";
 import { commandTable, type CommandType } from "@opensteer/protocol/command-table";
-import { expect, vi } from "vitest";
+import { expect } from "vitest";
 import { commandContinuation } from "../agents/continuation-service.js";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 import { personActor, type PersonActor } from "./actor.js";
@@ -65,12 +65,19 @@ describeStore("command Requests at the Home", (it) => {
         .where("id", "=", id as never)
         .execute();
     const commandStore = new CommandRequestStore(database, store.requests);
+    // A lost receipt's one later write (the Request's, or its outside attempt's) runs when the
+    // test turns it, never on a clock, so no test races the machine's speed.
+    const later: (() => Promise<unknown>)[] = [];
+    const runLater = async () => {
+      while (later.length) await later.shift()!();
+    };
     const service = new CommandRequestService({
       store: commandStore,
       database,
       requests: store.requests,
-      // A lost receipt is read again from its attempt this soon after, with no read asking.
-      reconcileDelayMs: 100,
+      later: (work) => {
+        later.push(work);
+      },
     });
     // Every handler the person's: what ran, and as whom.
     const ran: { actor: PersonActor; command: HostApiCommand }[] = [];
@@ -178,6 +185,8 @@ describeStore("command Requests at the Home", (it) => {
       approve,
       context,
       registry,
+      later,
+      runLater,
       failWith: (error: Error) => (fail = error),
     };
   }
@@ -2538,7 +2547,8 @@ describeStore("command Requests at the Home", (it) => {
   it("answers an approval whose receipt cannot be written with what is known, runs nothing twice, and settles the record later with no read (M4)", async ({
     storeFixture,
   }) => {
-    const { store, ran, run, door, rename, approve, commandStore } = await setup(storeFixture);
+    const { store, ran, run, door, rename, approve, commandStore, later, runLater } =
+      await setup(storeFixture);
     const proposed = (await dispatchCommand(run, rename("Work"), door(run))) as {
       requestId: string;
     };
@@ -2558,14 +2568,16 @@ describeStore("command Requests at the Home", (it) => {
       result: expect.anything(),
     });
     expect(ran).toHaveLength(1);
-    // With no read asking, the record is read again from its attempt.
-    await vi.waitFor(
-      async () =>
-        expect(
-          (await store.requests.get(proposed.requestId as never))!.command!.outcome,
-        ).not.toEqual({ status: "running" }),
-      { timeout: 5_000 },
-    );
+    // The record is still the lost receipt's; its one later read waits to be run.
+    expect((await store.requests.get(proposed.requestId as never))!.command!.outcome).toEqual({
+      status: "running",
+    });
+    expect(later).toHaveLength(1);
+    // With no read asking, that later read takes the record from its attempt.
+    await runLater();
+    expect((await store.requests.get(proposed.requestId as never))!.command!.outcome).not.toEqual({
+      status: "running",
+    });
     // A second press runs nothing again.
     await approve(proposed.requestId, asked.command!.command, key);
     expect(ran).toHaveLength(1);
@@ -2788,7 +2800,8 @@ describeStore("command Requests at the Home", (it) => {
   it("answers an approval whose outside attempt's receipt cannot be written with what it did, settles it, and runs nothing twice (Q3)", async ({
     storeFixture,
   }) => {
-    const { f, database, service, store, ran, approve } = await setup(storeFixture);
+    const { f, database, service, store, ran, approve, later, runLater } =
+      await setup(storeFixture);
     const connections = new AgentConnectionStore(database);
     const connection = await connections.create({
       userId: f.userId,
@@ -2847,19 +2860,18 @@ describeStore("command Requests at the Home", (it) => {
       });
       expect(ran).toHaveLength(1);
       // Once the database takes it again, the attempt's own row reaches what is known, with no
-      // restart: its receipt is written once more a little later.
+      // restart: its receipt is written once more, later. The order is the test's: the refusal,
+      // the trigger dropped, then that one later write.
+      expect(later).toHaveLength(1);
       await sql`drop trigger ${sql.raw(fn)} on command_attempts`.execute(database);
-      await vi.waitFor(
-        async () =>
-          expect(
-            await database
-              .selectFrom("commandAttempts")
-              .select("state")
-              .where("callerKey", "=", `request:${proposed.requestId}`)
-              .execute(),
-          ).toEqual([{ state: "done" }]),
-        { timeout: 5_000 },
-      );
+      await runLater();
+      expect(
+        await database
+          .selectFrom("commandAttempts")
+          .select("state")
+          .where("callerKey", "=", `request:${proposed.requestId}`)
+          .execute(),
+      ).toEqual([{ state: "done" }]);
     } finally {
       await sql`drop trigger if exists ${sql.raw(fn)} on command_attempts`.execute(database);
       await sql`drop function ${sql.raw(fn)}()`.execute(database);

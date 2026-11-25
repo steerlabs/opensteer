@@ -25,9 +25,12 @@ export * from "./use-computer-app-approval.js";
 export * from "./use-personal-remote-access.js";
 export * from "./use-remote-access.js";
 export * from "./use-app-view.js";
+export * from "./use-connected-agent-history.js";
+export * from "./use-connected-agent-row-distinctions.js";
+export * from "./use-connected-agent-sessions.js";
+export * from "./use-session-stop.js";
 export * from "./use-connected-agents.js";
 export { useVoice, useVoiceOn, useVoiceValue, VoiceContext } from "./use-voice.js";
-export * from "./use-browser-agent-follow.js";
 
 export * from "./use-thread-server-approvals.js";
 export * from "./use-paged-list.js";
@@ -36,6 +39,7 @@ export * from "./use-tool-output.js";
 
 export * from "./use-browser-tabs.js";
 export * from "./use-browser-sleep.js";
+export * from "./use-viewer-grace.js";
 export * from "./use-tabs.js";
 export * from "./use-browser-tab-icon.js";
 export * from "./use-syncing-placeholder.js";
