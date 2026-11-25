@@ -411,8 +411,12 @@ const installedHome = ({ state = "required", fetch = "ok", start = "ok", running
     fetch_release_images() { echo "fetch $2" >> "$log"; ${fetch === "ok" ? "true" : "false"}; }
     install_sandbox_policies() { echo new > "$release_dir/chromium-oci.json"; echo new > "$release_dir/runner-oci.json"; }
     version_of() { sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$1/images.env"; }
-    # The new release's own gate (it runs as root), and the old release started again.
-    run_release() { echo "start $(version_of "$1")" >> "$log"; ${start === "ok" ? "true" : "false"}; }
+    # A release's own steps (they run as root): the new release's gate, and the release current
+    # after the switch (or after it was undone) owning the Home.
+    run_release() {
+      echo "\${*:2} $(version_of "$1")" >> "$log"
+      [[ $2 != release-gate ]] || ${start === "ok" ? "true" : "false"}
+    }
     pin_release() { echo "pin $(version_of "$release_dir")" >> "$log"; }
     plan_inventory() { :; }
     install_units() { echo units >> "$log"; }
@@ -504,7 +508,7 @@ await test("the installer run again on an unclaimed Home replaces it, or puts it
       "fetch true",
       "pin 1.0.1",
       "compose down",
-      "start 1.0.1",
+      "release-gate 1.0.1",
       "units",
       "1.0.1",
       "local-images",
@@ -519,7 +523,7 @@ await test("the installer run again on an unclaimed Home replaces it, or puts it
     rerun home.example.test "$staging/new.json" true true && report 0 || report $?`);
   assert.equal(
     restored.stdout,
-    "unchanged\nfetch true\npin 1.0.1\ncompose down\nstart 1.0.1\ncompose down --remove-orphans\nstart 1.0.0\nstatus 1\n",
+    "unchanged\nfetch true\npin 1.0.1\ncompose down\nrelease-gate 1.0.1\ncompose down --remove-orphans\nrelease-own active 1.0.0\nstatus 1\n",
     restored.stderr,
   );
   assert.match(

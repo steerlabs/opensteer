@@ -374,7 +374,11 @@ are removed, `update.pending` goes, and the units are compared with what the new
 and rewritten only where they differ. None of these undoes the commit, and one that fails is
 tried again at the next start. A failed check stops the new release's containers with the running
 release's files, under the Home's own Compose project (`--remove-orphans`, volumes kept), and
-starts the running release again. A release its own gate rejected is remembered (`update.failed`,
+starts the running release again. After a switch, or one undone (an update, `rollback`, the
+installer run again), what starts the Home, leaves it stopped or starts it through its main unit
+is the current release's own command (`opensteer-home release-own`), never the code that switched:
+each release starts its containers with the limits its own code computes, and a pod its gate
+already started as asked is left as Compose has it. A release its own gate rejected is remembered (`update.failed`,
 one line per release, written before the running release starts again) and is not tried again by
 itself: a later check offered it changes nothing, records it as `not-retried`, and keeps its
 directory with the dump taken before its first attempt until another release commits. Another

@@ -53,6 +53,13 @@ case "${1:-}" in
       fail "Usage: opensteer-home $1 (only from a switch to this release)"
     if [[ $1 == release-prepare ]]; then prepare_release; else gate_release; fi
     ;;
+  release-own)
+    # This release, current after a switch (or one undone), owns the Home as the main unit had it,
+    # under the lock of the update (or installer) that switched.
+    [[ $# == 2 && $2 =~ ^(active|inactive|failed)$ && ${OPENSTEER_HOME_SWITCHING:-} == "${release_dir##*/}" ]] ||
+      fail "Usage: opensteer-home release-own active|inactive|failed (only from a switch to this release)"
+    own_release "$2"
+    ;;
   status)
     [[ $# == 1 ]] || fail "Usage: opensteer-home status"
     # shellcheck source=/dev/null
