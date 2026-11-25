@@ -8,7 +8,7 @@ require (
 	github.com/danielpaulus/go-ios v0.0.0-20261116112947-e5833ad1c5b6
 	github.com/dchest/siphash v1.2.3
 	github.com/google/uuid v1.1.2
-	golang.org/x/image v0.39.0
+	golang.org/x/image v0.41.0
 	golang.org/x/net v0.55.0
 	golang.org/x/sys v0.45.0
 	gvisor.dev/gvisor v0.0.0-20240405191320-0878b34101b5
