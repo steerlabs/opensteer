@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   existsSync,
@@ -10,7 +11,8 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { createServer, type Server } from "node:http";
+import type { Server } from "node:http";
+import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -53,8 +55,9 @@ import { installSmokeGuard } from "./test-support/smoke-guard.js";
  * over Electron's network (`ElectronServiceNetwork`, as main wires `leaveFetch`), the app's own
  * stores on disk (device memberships, each Home's Runner folder and its identity key), and
  * `LocalRunnerService`, which the window's Leave reaches through `opensteer.desktop.device.leave`.
- * Stand-ins: each Home is a loopback server that answers the two requests this path makes of a
- * Home (its sign-in cookie, POST /v1/runner/leave) and the Home API main calls (session list and
+ * Stand-ins: each Home is a loopback HTTPS server at its signed private route (its test
+ * certificate trusted by exactly the partitions that reach it) that answers the two requests this
+ * path makes of a Home (its sign-in cookie, POST /v1/runner/leave) and the Home API main calls (session list and
  * bind) answers in memory; the Runner worker is a fake process that writes its identity the way the
  * real one does, because a real worker needs a real Home to enroll with.
  */
@@ -98,10 +101,39 @@ interface FixtureHome {
   readonly leaves: unknown[];
 }
 
-/** A Home's two answers on this path: its sign-in cookie, and a device's leave. */
-async function startHome(name: string): Promise<FixtureHome> {
+/** One test certificate for every fixture Home; only the partitions that reach them trust it. */
+function testCertificate(): { readonly key: Buffer; readonly cert: Buffer } {
+  const keyPath = path.join(root, "home-key.pem");
+  const certPath = path.join(root, "home-cert.pem");
+  execFileSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-days",
+      "1",
+      "-subj",
+      "/CN=127.0.0.1",
+      "-keyout",
+      keyPath,
+      "-out",
+      certPath,
+    ],
+    { stdio: "ignore" },
+  );
+  return { key: readFileSync(keyPath), cert: readFileSync(certPath) };
+}
+
+/** A Home's two answers on this path, at its HTTPS route: its sign-in cookie, and a device's leave. */
+async function startHome(
+  name: string,
+  certificate: { readonly key: Buffer; readonly cert: Buffer },
+): Promise<FixtureHome> {
   const leaves: unknown[] = [];
-  const server = createServer((request, response) => {
+  const server = createServer(certificate, (request, response) => {
     if (request.method === "GET" && request.url === "/v1/session") {
       response.setHeader(
         "set-cookie",
@@ -129,7 +161,7 @@ async function startHome(name: string): Promise<FixtureHome> {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   assert(address && typeof address === "object");
-  return { name, origin: `http://127.0.0.1:${address.port}`, leaves };
+  return { name, origin: `https://127.0.0.1:${address.port}`, leaves };
 }
 
 class WorkerStandIn extends EventEmitter implements UtilityProcessLike {
@@ -226,7 +258,8 @@ function targetFor(home: FixtureHome): DesktopLocalRunnerTarget {
     {
       deploymentId,
       hostInstanceId: createId("hostInstance"),
-      canonicalOrigin: home.origin,
+      // A Home on this Mac's network, reached by its signed private route.
+      canonicalOrigin: "http://127.0.0.1:4310",
       hostKey: { algorithm: "Ed25519" },
       deploymentShape: { kind: "personal" },
     },
@@ -376,8 +409,27 @@ function filesHolding(directory: string, text: string): string[] {
 async function run(): Promise<void> {
   await app.whenReady();
   const config = configuration(path.join(root, "data"));
-  const [homeA, homeB] = await Promise.all([startHome("a"), startHome("b")]);
+  const certificate = testCertificate();
+  const [homeA, homeB] = await Promise.all([
+    startHome("a", certificate),
+    startHome("b", certificate),
+  ]);
   const [targetA, targetB] = [targetFor(homeA), targetFor(homeB)];
+  // The Home's own partition (sign-in) and the service partition for its origin (the leave),
+  // as ElectronHostNetwork and ElectronServiceNetwork name them, trust only the test certificate.
+  const trusted = certificate.cert.toString("utf8").trim();
+  const trust = (partition: Electron.Session) =>
+    partition.setCertificateVerifyProc((request, callback) =>
+      callback(request.certificate.data.trim() === trusted ? 0 : -3),
+    );
+  for (const [target, home] of [
+    [targetA, homeA],
+    [targetB, homeB],
+  ] as const) {
+    trust(session.fromPartition(`persist:opensteer-host-${target.deploymentId}`, { cache: true }));
+    const fingerprint = createHash("sha256").update(home.origin).digest("hex").slice(0, 24);
+    trust(session.fromPartition(`opensteer-service-${fingerprint}`, { cache: false }));
+  }
   const hostNetwork = new ElectronHostNetwork();
   const serviceNetwork = new ElectronServiceNetwork();
   const children: WorkerStandIn[] = [];
