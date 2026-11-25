@@ -939,8 +939,8 @@ integration.sequential("Run stop fencing", () => {
     const held = await offer("offer-held", "run-concurrency-limit", true);
     expect(held.held).toBe("waiting-for-run");
     expect(held.statements.length).toBe(unheld.statements.length);
-    expect(held.statements.filter((text) => /^update "threads"/u.test(text))).toEqual(
-      unheld.statements.filter((text) => /^update "threads"/u.test(text)),
+    expect(held.statements.filter((text) => text.startsWith('update "threads"'))).toEqual(
+      unheld.statements.filter((text) => text.startsWith('update "threads"')),
     );
   });
 
