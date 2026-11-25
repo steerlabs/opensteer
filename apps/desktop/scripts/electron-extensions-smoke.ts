@@ -1345,23 +1345,47 @@ async function checkWebAccessibleResources(
       `ext -> web redirect -> dynamic non-web-accessible page loaded: ${JSON.stringify(ownViaRedirect)}`,
     );
     await load(page, `${web}/start`);
-    const tabbed = await popupsOf(() =>
-      contents(page).executeJavaScript(`(() => {
+    // A target=_blank link to it: the new tab never holds the page, and reads exactly as the
+    // same link to a guessed dynamic host.
+    const linkTabs = async (href: string) => {
+      await load(page, `${web}/start`);
+      const before = browser.context.pages().length;
+      await contents(page).executeJavaScript(`(() => {
         const a = document.createElement("a");
-        a.href = ${JSON.stringify(dynamicNonWar)};
+        a.href = ${JSON.stringify(href)};
         a.target = "_blank";
         document.body.append(a);
         a.click();
         return "clicked";
-      })()`),
-    );
+      })()`);
+      await settle();
+      const tabs = browser.context.pages().slice(before);
+      const seen = await Promise.all(
+        tabs.map(async (tab) => ({
+          url: tab.url(),
+          title: String(
+            await contents(tab)
+              .executeJavaScript("document.title")
+              .catch((error: unknown) => `unreadable: ${String(error)}`),
+          ),
+        })),
+      );
+      for (const tab of tabs) await tab.close().catch(() => undefined);
+      return seen;
+    };
+    const tabbed = await linkTabs(dynamicNonWar);
+    const guessedTabs = await linkTabs(`${guessedBase}nonwar.html`);
     assert.ok(
-      !tabbed.urls.includes(`${base}nonwar.html`) &&
-        !tabbed.urls.some((url) => url.startsWith(dynamicBase)),
+      !tabbed.some((tab) => tab.url === `${base}nonwar.html` || tab.title === "Smoke non-WAR"),
       `a new tab reached the non-web-accessible page through the dynamic address: ${JSON.stringify(tabbed)}`,
     );
+    assert.deepEqual(
+      tabbed.map((tab) => tab.title),
+      guessedTabs.map((tab) => tab.title),
+      `a new tab at the dynamic address read differently from a guessed host: ${JSON.stringify({ tabbed, guessedTabs })}`,
+    );
     console.log(
-      `[extensions-smoke] extension-web-accessible: dynamic redirect=${JSON.stringify(redirectedToNonWar)} guessed=${JSON.stringify(redirectedToGuessed)} own-via-redirect=${JSON.stringify(ownViaRedirect)} tab=${JSON.stringify(tabbed)}`,
+      `[extensions-smoke] extension-web-accessible: dynamic redirect=${JSON.stringify(redirectedToNonWar)} guessed=${JSON.stringify(redirectedToGuessed)} own-via-redirect=${JSON.stringify(ownViaRedirect)} tab=${JSON.stringify(tabbed)} guessed-tab=${JSON.stringify(guessedTabs)}`,
     );
     sectionChecks.push("an extension's dynamic address works, a guessed one reaches nothing");
 
