@@ -544,7 +544,8 @@ export class DeploymentAccessService {
       }
     }
     for (const deployment of this.#catalog.deployments) {
-      if (deployment.source !== "manual" || deployment.key === null) continue;
+      if (deployment.key === null) continue;
+      if (deployment.source !== "manual" && !reachedNatively(deployment)) continue;
       const running = this.#probing.get(deployment.id);
       if (running) {
         checks.push(running.done);
@@ -1031,7 +1032,19 @@ export class DeploymentAccessService {
     const only = shown.length === 1 ? shown[0] : undefined;
     if (!only || only.source !== "account" || only.onThisComputer) return;
     if (!only.accountOwner || !sameIdentity(only.accountOwner, who)) return;
-    if (this.#statusInfo(only, this.#personalSetup()).status !== "ready") return;
+    const status = this.#statusInfo(only, this.#personalSetup()).status;
+    // One reached at its own address is ready only once it answered: reach it
+    // once, then decide again on what it said.
+    if (status === "checking" && reachedNatively(only) && only.key !== null) {
+      const reaching = this.#probing.get(only.id)?.done ?? this.#probe(only.id);
+      void reaching.then(() => {
+        const probed = this.#probes.get(only.id);
+        if (probed && this.#now() - probed.at < checkedAnswerLifetimeMilliseconds)
+          this.#openOnlyHome(who);
+      });
+      return;
+    }
+    if (status !== "ready") return;
     void this.#select(only.id).catch(() => undefined);
   }
 
@@ -1298,6 +1311,10 @@ export class DeploymentAccessService {
         ({ deploymentId }) => deploymentId === deployment.id,
       );
       if (unavailable) return placeStatus.unavailable(unavailable.reason, name);
+      // Reached at its own address (a Cloud Computer, a Linux Home): it has no
+      // Connect route or Account lease to judge, so reaching it is the answer.
+      // Remote access and sleep are only a routed Mac's.
+      if (reachedNatively(deployment)) return this.#probeStatus(deployment.id, name);
       if (!deployment.hasAccountConnectRoute) return placeStatus.remoteAccessOff(name);
       const lease = deployment.hasVerifiedAccountRoute ? deployment.accountLivenessExpiresAt : null;
       return lease !== null && Date.parse(lease) > now
@@ -1309,7 +1326,12 @@ export class DeploymentAccessService {
       // this app is not: the repair lives over there, so the sentence says so.
       return placeStatus.remoteAccessOff(name);
     }
-    const probe = this.#probes.get(deployment.id);
+    return this.#probeStatus(deployment.id, name);
+  }
+
+  /** What the last check that reached for the place found, while it is fresh. */
+  #probeStatus(deploymentId: string, name: string): DeploymentStatusInfo {
+    const probe = this.#probes.get(deploymentId);
     if (!probe || this.#now() - probe.at >= checkedAnswerLifetimeMilliseconds) {
       return placeStatus.checking();
     }
@@ -1563,4 +1585,13 @@ function operationUnavailable(operation: string): Error {
 
 function sameIds(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
   return left.size === right.size && [...left].every((id) => right.has(id));
+}
+
+/**
+ * An Account place this app reaches at its own address, with no Connect route:
+ * a Cloud Computer or a Linux Home. A Mac's Home, listed by the Account, is
+ * reached only through its Connect route.
+ */
+function reachedNatively(deployment: DeploymentAccessCatalogDeployment): boolean {
+  return deployment.source === "account" && deployment.access === "native";
 }
