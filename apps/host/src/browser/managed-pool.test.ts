@@ -2,6 +2,7 @@ import { createServer as createHttpServer } from "node:http";
 import { createConnection } from "node:net";
 import { Duplex } from "node:stream";
 import { PoolRelayRefused } from "@opensteer/shared/poolRelay";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, it, vi } from "vitest";
 import { RelayBrowserPoolRuntimeChannel } from "./managed-pool.js";
 
@@ -110,6 +111,135 @@ it("reuses one keep-alive tunnel across a wake and never retries a failed contro
     }
     expect(sockets.every((s) => s.destroyed)).toBe(true);
   } finally {
+    server.close();
+  }
+});
+
+it("answers a recovery state read on a fresh tunnel while a control POST stalls, without crashing", async () => {
+  const stalledResponses: { destroy: () => void }[] = [];
+  let postSeen!: () => void;
+  const postArrived = new Promise<void>((resolve) => {
+    postSeen = resolve;
+  });
+  const server = createHttpServer((req, res) => {
+    if (req.method === "POST") {
+      stalledResponses.push(req.socket);
+      postSeen();
+      return;
+    }
+    const body = JSON.stringify({ state: { phase: "running" } });
+    res.writeHead(200, {
+      "content-type": "application/json",
+      "content-length": String(Buffer.byteLength(body)),
+      connection: "close",
+    });
+    res.end(body);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { port: number };
+  const sockets: ReturnType<typeof createConnection>[] = [];
+  let opens = 0;
+  const transport = {
+    open: async () => {
+      opens++;
+      const socket = createConnection({ host: "127.0.0.1", port });
+      await new Promise<void>((resolve, reject) => {
+        socket.once("connect", resolve);
+        socket.once("error", reject);
+      });
+      socket.pause();
+      sockets.push(socket);
+      return { socket, bridgeToken: "wake-token" };
+    },
+  } as unknown as Transport;
+  const uncaught: unknown[] = [];
+  const unhandled: unknown[] = [];
+  const onUncaught = (error: unknown) => uncaught.push(error);
+  const onUnhandled = (error: unknown) => unhandled.push(error);
+  process.on("uncaughtException", onUncaught);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const channel = new RelayBrowserPoolRuntimeChannel(transport, undefined, {
+      controlTimeoutMs: 250,
+    });
+    const endWake = channel.beginWake();
+    try {
+      const stalledPost = channel.controlPool({ kind: "adopt" } as never, new Uint8Array(64));
+      await withTimeout(postArrived, 2_000, {
+        timeoutError: () => new Error("stalled POST did not reach the test server"),
+      });
+      // Recovery state read arrives while the control POST is still open on the kept tunnel:
+      // it must answer on its own fresh tunnel within its own bound instead of queuing behind POST.
+      expect(await channel.poolState(AbortSignal.timeout(1_000))).toEqual({ phase: "running" });
+      expect(opens).toBe(2);
+      await expect(stalledPost).rejects.toThrow();
+    } finally {
+      endWake();
+    }
+    expect(uncaught).toEqual([]);
+    expect(unhandled).toEqual([]);
+    expect(sockets.every((s) => s.destroyed)).toBe(true);
+  } finally {
+    process.off("uncaughtException", onUncaught);
+    process.off("unhandledRejection", onUnhandled);
+    for (const socket of stalledResponses) socket.destroy();
+    server.close();
+  }
+});
+
+it("settles cleanly without uncaught errors when a wake ends while a control request is outstanding", async () => {
+  const stalledSockets: { destroy: () => void }[] = [];
+  let postSeen!: () => void;
+  const postArrived = new Promise<void>((resolve) => {
+    postSeen = resolve;
+  });
+  const server = createHttpServer((req, _res) => {
+    stalledSockets.push(req.socket);
+    if (req.method === "POST") postSeen();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { port: number };
+  const sockets: ReturnType<typeof createConnection>[] = [];
+  const transport = {
+    open: async () => {
+      const socket = createConnection({ host: "127.0.0.1", port });
+      await new Promise<void>((resolve, reject) => {
+        socket.once("connect", resolve);
+        socket.once("error", reject);
+      });
+      socket.pause();
+      sockets.push(socket);
+      return { socket, bridgeToken: "wake-token" };
+    },
+  } as unknown as Transport;
+  const uncaught: unknown[] = [];
+  const unhandled: unknown[] = [];
+  const onUncaught = (error: unknown) => uncaught.push(error);
+  const onUnhandled = (error: unknown) => unhandled.push(error);
+  process.on("uncaughtException", onUncaught);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const channel = new RelayBrowserPoolRuntimeChannel(transport, undefined, {
+      controlTimeoutMs: 5_000,
+    });
+    const endWake = channel.beginWake();
+    const stalledPost = channel.controlPool({ kind: "complete" } as never, new Uint8Array(64));
+    await withTimeout(postArrived, 2_000, {
+      timeoutError: () => new Error("stalled POST did not reach the test server"),
+    });
+    const stalledRead = channel.poolState(AbortSignal.timeout(500));
+    const started = Date.now();
+    endWake();
+    await expect(stalledPost).rejects.toThrow();
+    await expect(stalledRead).rejects.toThrow();
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(uncaught).toEqual([]);
+    expect(unhandled).toEqual([]);
+    expect(sockets.every((s) => s.destroyed)).toBe(true);
+  } finally {
+    process.off("uncaughtException", onUncaught);
+    process.off("unhandledRejection", onUnhandled);
+    for (const socket of stalledSockets) socket.destroy();
     server.close();
   }
 });
