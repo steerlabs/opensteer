@@ -15,6 +15,7 @@ import {
   requestOptionDeclines,
   intersectResourceAccess,
   isAllowedConnectionPageUrl,
+  isExtensionUrl,
   minThreadAccessMode,
   OpensteerError,
   type AgentGrant,
@@ -758,6 +759,19 @@ export function authorizeTarget(
       ? agentGrantAccess(execution.agentConnection.grant, target)
       : null;
   return execution.actor === "person" || execution.actor === "native" ? "read-write" : null;
+}
+
+/**
+ * May this admitted execution know of a browser page at this address? A page on an extension's
+ * address does not exist to a connection's work (its own sessions and the Runs of its tasks): it
+ * is neither listed nor reached, and reads exactly as an absent page. The person and their own
+ * agents, which no connection leads, see every page.
+ */
+export function authorizePageAddress(
+  execution: Pick<ExecutionAuthority, "agentConnection">,
+  url: unknown,
+): boolean {
+  return execution.agentConnection === null || !isExtensionUrl(url);
 }
 
 /**
