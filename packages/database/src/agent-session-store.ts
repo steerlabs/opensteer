@@ -352,12 +352,16 @@ export async function endAgentSessions(
       .where("sessionId", "in", ids)
       .where("state", "in", ["admitted", "pending", "approved"])
       .execute();
-    // Nothing an ended session asked for can be answered any more.
+    // Nothing an ended session asked for can be answered any more, but a command it proposed:
+    // that ask belongs to its connection, which still stands, so it waits for the person after
+    // a session that ended on its own (went quiet, expired, closed by the agent). The person's
+    // Stop of the session ends it; Disconnect and a narrowed grant close it where they happen.
     const open = await tx
       .selectFrom("requests")
       .select("id")
       .where("originatingAgentSessionId", "in", ids)
       .where("status", "=", "pending")
+      .$if(input.reason !== "stopped", (query) => query.where("command", "is", null))
       .orderBy("id")
       .execute();
     if (open.length)

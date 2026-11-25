@@ -116,7 +116,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "Send one command from opensteer_commands. One that asks the person returns pending with a Request; they may change it before approving. Leave secret fields out. withdraw: take back your own pending Request.",
+    "description": "Send one command from opensteer_commands. One that asks the person returns pending with a Request; they approve exactly what you sent, or decline it. Leave secret fields out. withdraw: take back your own pending Request.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,

@@ -157,4 +157,5 @@ export * from "./shared-chrome-attempts.js";
 export type { BrowserSessionCut, BrowserBindingRefusal } from "./browser-session-store.js";
 export * from "./browser-pool-store.js";
 export * from "./command-request-store.js";
+export * from "./command-proposal-reach.js";
 export * from "./home-problems.js";

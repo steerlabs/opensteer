@@ -127,7 +127,6 @@ describeStore("Track B: automation commands through the one door (brief section 
         {
           requestId,
           expectedRevision: String(row.revision),
-          command: req.command.command,
           idempotencyKey: `approve-${requestId}`,
         },
         async (approver, command) =>
