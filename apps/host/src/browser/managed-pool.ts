@@ -10,8 +10,6 @@ import type {
   BrowserPoolRuntimeState,
 } from "@opensteer/browser-runtime-core";
 import { createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
-import { Agent as HttpAgent, request as httpRequest } from "node:http";
-import type { Duplex } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   PoolRelayRefused,
@@ -31,46 +29,6 @@ type Transport = ReturnType<typeof poolRelayTransport>;
 /** What the agent's signed status says of the slot's guest, read now. */
 type GuestStatus = (signal?: AbortSignal) => Promise<BrowserPoolPhysicalStatus>;
 
-interface PooledControlTunnel {
-  readonly agent: HttpAgent;
-  readonly socket: Duplex;
-  readonly bridgeToken: string;
-  onIdleClose?: () => void;
-}
-
-function isReusableTunnelSocket(socket: Duplex): boolean {
-  return socket.readable && socket.writable && !socket.destroyed;
-}
-
-function destroyPooledTunnel(tunnel: PooledControlTunnel): void {
-  if (tunnel.onIdleClose) {
-    tunnel.socket.off("close", tunnel.onIdleClose);
-    delete tunnel.onIdleClose;
-  }
-  tunnel.agent.destroy();
-  tunnel.socket.destroy();
-}
-
-function createPooledTunnel(socket: Duplex, bridgeToken: string): PooledControlTunnel {
-  let handedOut = false;
-  const agent = new HttpAgent({ keepAlive: true, maxSockets: 1 });
-  // Node's `http.request({ agent: false })` destroys sockets on response end, so a single-socket
-  // `HttpAgent` carries keep-alive while this channel owns checkout (never queuing a second call).
-  // Defensively report any unexpected second socket ask via callback so `createConnection` never throws.
-  agent.createConnection = ((
-    _options: unknown,
-    callback?: (error: Error | null, socket?: Duplex) => void,
-  ) => {
-    if (handedOut) {
-      callback?.(new Error("The wake's control tunnel is closed."));
-      return undefined;
-    }
-    handedOut = true;
-    return socket;
-  }) as unknown as typeof agent.createConnection;
-  return { agent, socket, bridgeToken };
-}
-
 /**
  * The runtime's pool control in the guest, reached through the relay. Its state is read when
  * asked, never kept: the coordinator asks again on a later turn whenever it is not known.
@@ -79,10 +37,6 @@ export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel
   readonly #transport: Transport;
   readonly #guest: GuestStatus | undefined;
   readonly #controlTimeoutMs: number;
-  #wakeDepth = 0;
-  #openingPooled = false;
-  #activePooled: PooledControlTunnel | undefined;
-  #idlePooled: PooledControlTunnel | undefined;
 
   /**
    * `guest`: the agent's signed status, which says whether there is a runtime to ask.
@@ -97,56 +51,6 @@ export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel
     this.#transport = transport;
     this.#guest = guest;
     this.#controlTimeoutMs = options.controlTimeoutMs ?? 30_000;
-  }
-
-  /** Reuses one HTTP/1.1 keep-alive control tunnel across a wake; closes it when done. */
-  beginWake(): () => void {
-    this.#wakeDepth++;
-    let ended = false;
-    return () => {
-      if (ended) return;
-      ended = true;
-      this.#wakeDepth--;
-      if (this.#wakeDepth === 0) this.#dropPooled();
-    };
-  }
-
-  #takeIdlePooled(): PooledControlTunnel | undefined {
-    const current = this.#idlePooled;
-    if (!current) return undefined;
-    this.#idlePooled = undefined;
-    if (current.onIdleClose) {
-      current.socket.off("close", current.onIdleClose);
-      delete current.onIdleClose;
-    }
-    if (!isReusableTunnelSocket(current.socket)) {
-      destroyPooledTunnel(current);
-      return undefined;
-    }
-    return current;
-  }
-
-  #parkIdlePooled(tunnel: PooledControlTunnel): void {
-    if (this.#wakeDepth === 0 || this.#idlePooled || !isReusableTunnelSocket(tunnel.socket)) {
-      destroyPooledTunnel(tunnel);
-      return;
-    }
-    const onIdleClose = () => {
-      if (this.#idlePooled === tunnel) this.#idlePooled = undefined;
-      destroyPooledTunnel(tunnel);
-    };
-    tunnel.onIdleClose = onIdleClose;
-    tunnel.socket.once("close", onIdleClose);
-    this.#idlePooled = tunnel;
-  }
-
-  #dropPooled(): void {
-    const idle = this.#idlePooled;
-    const active = this.#activePooled;
-    this.#idlePooled = undefined;
-    this.#activePooled = undefined;
-    if (idle) destroyPooledTunnel(idle);
-    if (active && active !== idle) destroyPooledTunnel(active);
   }
 
   /**
@@ -228,7 +132,7 @@ export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel
     }
   }
 
-  async #sendOneShot(method: "GET" | "POST", path: string, body?: string, signal?: AbortSignal) {
+  async #send(method: "GET" | "POST", path: string, body?: string, signal?: AbortSignal) {
     const { socket, bridgeToken } = await this.#open(signal);
     if (signal?.aborted) {
       socket.destroy();
@@ -245,125 +149,6 @@ export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel
       ...(body === undefined ? {} : { body }),
       ...(signal ? { signal } : {}),
     });
-  }
-
-  async #send(method: "GET" | "POST", path: string, body?: string, signal?: AbortSignal) {
-    // The kept wake tunnel is an optimisation, never a constraint: if another call is opening or
-    // holding it, open an independent one-shot tunnel instead of queuing behind a stalled request.
-    if (this.#wakeDepth === 0 || this.#openingPooled || this.#activePooled) {
-      return this.#sendOneShot(method, path, body, signal);
-    }
-    let current = this.#takeIdlePooled();
-    if (!current) {
-      this.#openingPooled = true;
-      let opened: { readonly socket: Duplex; readonly bridgeToken: string };
-      try {
-        opened = await this.#open(signal);
-      } finally {
-        this.#openingPooled = false;
-      }
-      if (signal?.aborted) {
-        opened.socket.destroy();
-        throw signal.reason;
-      }
-      if (this.#wakeDepth === 0) {
-        return requestOverTunnel(opened.socket, {
-          method,
-          path,
-          maximumBytes: 1024 * 1024,
-          headers: {
-            "x-opensteer-browser-bridge-token": opened.bridgeToken,
-            ...(body ? { "content-type": "application/json" } : {}),
-          },
-          ...(body === undefined ? {} : { body }),
-          ...(signal ? { signal } : {}),
-        });
-      }
-      current = createPooledTunnel(opened.socket, opened.bridgeToken);
-    }
-    this.#activePooled = current;
-    let keep = false;
-    try {
-      // Never retry a request that failed after send (Rule 4): destroy the tunnel and rethrow so
-      // the coordinator reads state on the next turn.
-      const answer = await new Promise<{
-        readonly status: number;
-        readonly text: string;
-        readonly keepAlive: boolean;
-      }>((resolve, reject) => {
-        let settled = false;
-        let gotResponse = false;
-        const finish = (
-          error: unknown,
-          result?: { readonly status: number; readonly text: string; readonly keepAlive: boolean },
-        ) => {
-          if (settled) return;
-          settled = true;
-          if (error !== null) reject(error);
-          else resolve(result!);
-        };
-        const req = httpRequest(
-          {
-            agent: current.agent,
-            method,
-            path,
-            host: "pool-guest",
-            headers: {
-              "x-opensteer-browser-bridge-token": current.bridgeToken,
-              connection: "keep-alive",
-              ...(body === undefined
-                ? {}
-                : {
-                    "content-type": "application/json",
-                    "content-length": String(Buffer.byteLength(body)),
-                  }),
-            },
-            ...(signal ? { signal } : {}),
-          },
-          (response) => {
-            gotResponse = true;
-            const chunks: Buffer[] = [];
-            let size = 0;
-            response.on("data", (chunk: Buffer) => {
-              size += chunk.length;
-              if (size > 1024 * 1024) {
-                response.destroy(new Error("The bridge answer exceeds its limit."));
-                return;
-              }
-              chunks.push(chunk);
-            });
-            response.once("end", () =>
-              finish(null, {
-                status: response.statusCode ?? 0,
-                text: Buffer.concat(chunks).toString("utf8"),
-                keepAlive: response.headers.connection?.toLowerCase() !== "close",
-              }),
-            );
-            response.once("error", (error) => finish(error));
-            response.once("close", () => {
-              if (!response.complete) finish(new Error("The bridge answer ended early."));
-            });
-          },
-        );
-        req.once("error", (error) => finish(error));
-        req.once("close", () => {
-          if (!gotResponse) finish(new Error("The wake's control tunnel closed."));
-        });
-        req.end(body);
-        // `openPoolRelay` leaves the tunnel paused after reading its grant line; resume it for HTTP.
-        current.socket.resume();
-      });
-      keep =
-        this.#wakeDepth > 0 &&
-        this.#activePooled === current &&
-        answer.keepAlive &&
-        isReusableTunnelSocket(current.socket);
-      return { status: answer.status, text: answer.text };
-    } finally {
-      if (this.#activePooled === current) this.#activePooled = undefined;
-      if (keep) this.#parkIdlePooled(current);
-      else destroyPooledTunnel(current);
-    }
   }
 }
 

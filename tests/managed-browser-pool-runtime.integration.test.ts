@@ -4000,7 +4000,7 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
     }
   });
 
-  it("reuses one wake control tunnel, skips duplicate health checks, and reattaches 1, 4, and 8 retained sessions in bounded parallel", async () => {
+  it("skips duplicate health checks, emits wake timings, and reattaches 1, 4, and 8 retained sessions in bounded parallel", async () => {
     const database = await cloneTestDatabase("host");
     const directory = await mkdtemp(join(tmpdir(), "opensteer-pool-wake-speed-"));
     const port = await freePort();
@@ -4143,8 +4143,8 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
         expect(trace.lostSessions).toBe(0);
         expect(trace.steps.reattach).toBeGreaterThanOrEqual(0);
         expect(trace.steps.relay).toBeGreaterThanOrEqual(0);
-        // 1 keep-alive control tunnel (poolState + adopt + complete) + N session websockets.
-        expect(trace.relayHandshakes.length).toBe(1 + sessionCount);
+        // 3 control tunnels (poolState + adopt + complete) + N session websockets.
+        expect(trace.relayHandshakes.length).toBe(3 + sessionCount);
       }
     } finally {
       await host?.close();
