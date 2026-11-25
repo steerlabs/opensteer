@@ -10,7 +10,6 @@ import {
   type PluginServiceOptions,
 } from "../apps/host/src/plugins/plugin-service.js";
 import {
-  PluginServiceError,
   type PluginExecution,
   type PluginHostProvider,
   type PluginOperation,
@@ -256,18 +255,24 @@ test("supervises plugins, consent, mixed codemode, approvals and lost executions
   console.log("Plugin service one plugin RSS", pluginFixtureProcesses(health.pid));
   const waiting = once(events, "waiting");
   const pending = service.execute({ code: "return await tools.fixture.wait({});" }, caller);
-  const failure = expect(pending).rejects.toBeInstanceOf(PluginServiceError);
+  const failure = expect(pending).rejects.toMatchObject({
+    code: "interrupted",
+    tag: "engine-killed",
+    message: expect.stringContaining("The plugin engine was killed before it replied."),
+  });
   await deadline(waiting, "Plugin call never reached fixture server");
   const old = pluginFixtureProcesses(health.pid);
-  const restarted = once(events, "ready");
+  const unavailable = once(events, "unavailable");
+  const generation = service.state().generation;
   process.kill(health.pid, "SIGKILL");
   await failure;
-  await deadline(restarted, "Engine did not restart");
+  await deadline(unavailable, "Killed engine did not become unavailable");
+  await service.waitForCleanup();
   expect(interrupted.some((execution) => execution.state === "interrupted")).toBe(true);
   for (const row of old) expect(() => process.kill(row.pid, 0)).toThrow();
-  const final = pluginFixtureProcesses(service.state().pid!);
+  await expect(service.health({}, caller)).rejects.toThrow("The plugin engine was killed.");
+  expect(service.state()).toMatchObject({ status: "unavailable", generation });
   await service.close();
-  for (const row of final) expect(() => process.kill(row.pid, 0)).toThrow();
 });
 
 async function outputFixture(

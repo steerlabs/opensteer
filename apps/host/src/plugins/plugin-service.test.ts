@@ -21,6 +21,7 @@ const active = vi.hoisted(() => new Map<string, string>());
 vi.mock("./engine-storage.js", () => ({
   engineActiveVersions: async () => active,
   engineDemand: async () => ({ busy: false, dueInMs: null }),
+  engineInventoryEmpty: async () => false,
 }));
 
 it("makes the skill record follow the active version, and repairs a refresh that failed", async () => {
@@ -323,26 +324,43 @@ it("tells a waiting call the engine ran out of memory only on the kernel's recor
       const waiting = service.health({}, { caller: "owner", mode: "automatic" });
       await vi.waitFor(() => expect(service.state().status).toBe("ready"));
       child.emit("exit", null, signal);
-      return await waiting.then(
+      const message = await waiting.then(
         () => "answered",
         (error: Error) => error.message,
       );
+      return { message, state: service.state(), forks: vi.mocked(fork).mock.calls.length };
     } finally {
       await service.close();
       await rm(directory, { recursive: true, force: true });
     }
   };
-  // The kernel's count of memory kills in the Host's cgroup grew while this engine ran.
-  expect(await ended([4, 5], "SIGKILL")).toMatch(
-    /^Plugin engine ran out of memory and was stopped; earlier calls may have taken effect/u,
+  // The kernel's count of memory kills in the Host's cgroup grew while this engine ran: the
+  // caller hears a memory kill, and the engine is not started again by itself.
+  const memory = await ended([4, 5], "SIGKILL");
+  expect(memory.message).toMatch(
+    /^The plugin engine ran out of memory and was killed before it replied\. Earlier calls may have taken effect/u,
   );
-  // Killed, but not on the kernel's record; or the record cannot be read; or ended otherwise.
-  for (const [kills, signal] of [
-    [[5, 5], "SIGKILL"],
-    [[undefined, undefined], "SIGKILL"],
-    [[5, 6], "SIGTERM"],
-  ] as const)
-    expect(await ended(kills, signal), `${kills} ${signal}`).toMatch(
-      /^Plugin engine stopped; earlier calls may have taken effect/u,
+  expect(memory.state).toMatchObject({
+    status: "unavailable",
+    reason: "The plugin engine ran out of memory and was killed.",
+  });
+  expect(memory.forks).toBe(1);
+  // Killed, but not on the kernel's record, or the record cannot be read: a kill, said as one.
+  for (const kills of [
+    [5, 5],
+    [undefined, undefined],
+  ] as const) {
+    const kill = await ended(kills, "SIGKILL");
+    expect(kill.message, `${kills}`).toMatch(
+      /^The plugin engine was killed before it replied\. Earlier calls may have taken effect/u,
     );
+    expect(kill.state).toMatchObject({
+      status: "unavailable",
+      reason: "The plugin engine was killed.",
+    });
+  }
+  // Ended otherwise: the engine stopped, and it is started again after a delay.
+  const stopped = await ended([5, 6], "SIGTERM");
+  expect(stopped.message).toMatch(/^Plugin engine stopped; earlier calls may have taken effect/u);
+  expect(stopped.state.status).toBe("restarting");
 });

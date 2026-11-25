@@ -1403,3 +1403,70 @@ const doorRoutes = new Map<string, DoorRoute>([
     { kind: "not a Home command", why: "the bytes of a file a Run moves between computers" },
   ],
 ]);
+
+it("keeps the plugin engine idle when a connected agent discovers an empty inventory", async () => {
+  const database = await cloneTestDatabase("host");
+  const client = new Client({ name: "empty-plugin-discovery", version: "1" });
+  let host: Awaited<ReturnType<typeof startPrivateMachineHost>> | undefined;
+  try {
+    host = await startPrivateMachineHost(database.url, { logger: false });
+    await vi.waitFor(() => expect(host!.runtime.plugins.state().status).toBe("idle"));
+    const idle = host.runtime.plugins.state();
+    const url = new URL(mcpResourcePath, host.origin);
+    const connections = new AgentConnectionStore(host.store.database);
+    const record = await connections.create({
+      userId: host.ownerId,
+      label: "Discovery agent",
+      clientName: "Discovery agent",
+      accessMode: "full-access",
+      resource: url.href,
+      expiresAt: new Date(Date.now() + 60_000),
+      grant: { scope: "everything" },
+    });
+    const token = `${connectionCredentialPrefix}${randomBytes(32).toString("base64url")}`;
+    expect(await connections.activate(record.id, credentialHash(token))).toBe(true);
+    await client.connect(
+      new StreamableHTTPClientTransport(url, {
+        requestInit: { headers: { authorization: `Bearer ${token}` } },
+      }) as unknown as Transport,
+    );
+    const found = await client.callTool({ name: "discover", arguments: {} });
+    expect(found.isError).not.toBe(true);
+    expect(host.runtime.plugins.state()).toEqual(idle);
+    expect(
+      await testRpcData(host.origin, "plugins.installed.list", {}, { headers: host.ownerHeaders }),
+    ).toMatchObject({ plugins: [], engine: { status: "idle" } });
+    expect(
+      await testRpcData(host.origin, "plugins.accounts.list", {}, { headers: host.ownerHeaders }),
+    ).toMatchObject({ accounts: [] });
+    expect(host.runtime.plugins.state()).toEqual(idle);
+
+    // Kill only the child this disposable Host launched. SIGKILL alone does
+    // not identify the sender, and must not start another child.
+    const context = { caller: "personal", mode: "automatic" } as const;
+    const engine = await host.runtime.plugins.health({}, context);
+    process.kill(engine.pid, "SIGKILL");
+    await vi.waitFor(() =>
+      expect(host!.runtime.plugins.state()).toMatchObject({
+        status: "unavailable",
+        generation: idle.generation + 1,
+        reason: "The plugin engine was killed.",
+      }),
+    );
+    await host.runtime.plugins.waitForCleanup();
+    await expect(host.runtime.plugins.health({}, context)).rejects.toThrow(
+      "The plugin engine was killed.",
+    );
+    const partial = await client.callTool({ name: "discover", arguments: {} });
+    expect(partial.isError).not.toBe(true);
+    expect(partial.structuredContent).toMatchObject({
+      items: expect.any(Array),
+      next: "Installed plugins are currently unavailable.",
+    });
+    expect(host.runtime.plugins.state().generation).toBe(idle.generation + 1);
+  } finally {
+    await client.close();
+    await host?.close();
+    await database.drop();
+  }
+});

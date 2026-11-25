@@ -382,6 +382,20 @@ export class ComputerViewService {
       try {
         const result = await this.#send(view, "open");
         await this.#authorize(view, owner);
+        if (result.kind === "error" && result.code === "no-answer") {
+          // The open may yet land on the computer: ask it to close, and say what
+          // happened, so the page offers opening it again rather than a reason
+          // the computer never gave.
+          view.record = {
+            ...view.record,
+            state: "unavailable",
+            captureTargetId: null,
+            unavailableReason: "no-answer",
+          };
+          this.#publish(view);
+          void this.#send(view, "close").catch(() => undefined);
+          return this.#public(view);
+        }
         if (result.kind === "error")
           throw this.#refusal(
             result.code === "unsupported"

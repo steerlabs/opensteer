@@ -1020,6 +1020,136 @@ integration("IdentityService", () => {
     }
   });
 
+  it("ends a sign-in by another Opensteer account on the Home's page, saying whose Home it is", async () => {
+    let expectedCodeChallenge: string | null = null;
+    const issuer = createServer((request, response) => {
+      void (async () => {
+        const origin = `http://127.0.0.1:${(issuer.address() as AddressInfo).port}`;
+        response.setHeader("content-type", "application/json");
+        if (request.url === "/.well-known/openid-configuration") {
+          response.end(
+            JSON.stringify({
+              authorization_endpoint: `${origin}/authorize`,
+              issuer: origin,
+              jwks_uri: `${origin}/jwks`,
+              token_endpoint: `${origin}/token`,
+              userinfo_endpoint: `${origin}/userinfo`,
+            }),
+          );
+          return;
+        }
+        if (request.method === "POST" && request.url === "/token") {
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(Buffer.from(chunk));
+          const body = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+          const challenge = createHash("sha256")
+            .update(body.get("code_verifier") ?? "")
+            .digest("base64url");
+          if (challenge !== expectedCodeChallenge) {
+            response.statusCode = 400;
+            response.end(JSON.stringify({ error: "invalid_grant" }));
+            return;
+          }
+          response.end(
+            JSON.stringify({
+              access_token: "account-access",
+              expires_in: 600,
+              token_type: "Bearer",
+            }),
+          );
+          return;
+        }
+        if (request.url === "/userinfo") {
+          // The browser still holds another Opensteer account's session.
+          response.end(
+            JSON.stringify({
+              email: "someone-else@example.test",
+              email_verified: true,
+              name: "Someone Else",
+              sub: "acct_other_subject",
+            }),
+          );
+          return;
+        }
+        response.statusCode = 404;
+        response.end();
+      })().catch((error: unknown) =>
+        response.destroy(error instanceof Error ? error : new Error("Issuer failed")),
+      );
+    });
+    await new Promise<void>((resolve) => issuer.listen(0, "127.0.0.1", resolve));
+    try {
+      const issuerOrigin = `http://127.0.0.1:${(issuer.address() as AddressInfo).port}`;
+      const publicOrigin = "http://127.0.0.1:4310";
+      const setupCode = "managed-home-other-account-setup-code-with-entropy";
+      const identity = identityService({
+        initialOwnerEnrollment: {
+          expiresAt: new Date(Date.now() + 3_600_000),
+          tokenDigest: digestSecret(setupCode),
+        },
+        localPasswordEnabled: false,
+        managedOwner: { providerId: "opensteer-account" },
+        oidcProviders: [{ ...accountProvider(issuerOrigin), allowPrivateNetwork: true }],
+        signupPolicy: "closed",
+      });
+      await identity.initialize();
+      await identity.claimManagedOwner({
+        ...accountLinked("acct_bound_subject", issuerOrigin),
+        claimKey: "k",
+        owner: { displayName: "Pat Owner", email: "pat@example.test", emailVerified: true },
+        receipt: {},
+        setupCode,
+      });
+      const begun = await identity.beginOidcSignIn({
+        headers: new Headers({ origin: publicOrigin }),
+        providerId: "opensteer-account",
+        returnPath: "/",
+      });
+      const authorize = new URL(begun.data.redirectUrl);
+      expectedCodeChallenge = authorize.searchParams.get("code_challenge");
+      const refused = await identity.handleOidcCallback(
+        new Request(
+          `${publicOrigin}/v1/auth/oidc/callback?code=fixture-code&state=${encodeURIComponent(authorize.searchParams.get("state") ?? "")}`,
+          {
+            headers: {
+              accept: "text/html",
+              cookie: cookieHeader(begun.headers),
+              "sec-fetch-mode": "navigate",
+            },
+          },
+        ),
+      );
+      expect(refused.status).toBeGreaterThanOrEqual(300);
+      expect(refused.status).toBeLessThan(400);
+      const location = new URL(refused.headers.get("location") ?? "", publicOrigin);
+      expect(location.origin).toBe(publicOrigin);
+      expect(location.pathname).toBe("/auth/error");
+      expect(location.searchParams.get("error")).toBe("another_account");
+
+      // Signing in as its owner asks the Account who is signing in, whatever session it holds.
+      const asOwner = new URL(
+        (
+          await identity.beginOidcSignIn({
+            chooseAccount: true,
+            headers: new Headers({ origin: publicOrigin }),
+            providerId: "opensteer-account",
+            returnPath: "/",
+          })
+        ).data.redirectUrl,
+      );
+      expect(asOwner.searchParams.get("prompt")).toBe("login");
+      expect(asOwner.searchParams.get("max_age")).toBe("0");
+      expect(authorize.searchParams.has("prompt")).toBe(false);
+      expect(
+        refused.headers.getSetCookie().some((cookie) => /opensteer\.session=[^;]/u.test(cookie)),
+      ).toBe(false);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        issuer.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
   it("declares a machine owner only for a seeded owner nobody can sign in as", async () => {
     await expect(identityService().configuration()).resolves.toMatchObject({
       machineOwner: false,

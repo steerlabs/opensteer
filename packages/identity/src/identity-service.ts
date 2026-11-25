@@ -62,6 +62,10 @@ const internalAuthPath = "/internal/better-auth";
 const homeSignInErrorPath = "/auth/error";
 /** What Better Auth reports when the browser came back without this sign-in's state. */
 const lapsedStateErrors = new Set(["invalid_state", "state_mismatch", "state_not_found"]);
+/** The refusal of a sign-in by an identity this Home has no person for. */
+const signupAdmissionRequiredCode = "SIGNUP_ADMISSION_REQUIRED";
+/** The Home's page names a managed Home's refusal of another Opensteer account by this. */
+export const anotherAccountSignInError = "another_account";
 /** As long as a started sign-in's state can come back (Better Auth keeps it ten minutes). */
 const restartedSignInLifetimeMs = 10 * 60_000;
 const maximumRestartedSignIns = 1_000;
@@ -1944,6 +1948,8 @@ export class IdentityService {
   }
 
   async beginOidcSignIn(input: {
+    /** Ask the provider who is signing in, even when it holds a session. */
+    readonly chooseAccount?: boolean;
     readonly headers: Headers;
     readonly oauthQuery?: string;
     readonly providerId: string;
@@ -1978,6 +1984,7 @@ export class IdentityService {
         body: JSON.stringify({
           callbackURL: callbackUrl.toString(),
           ...(input.oauthQuery ? { oauth_query: input.oauthQuery } : {}),
+          ...(input.chooseAccount ? { additionalParams: { max_age: "0", prompt: "login" } } : {}),
           providerId: oidcIdentityProviderId(provider),
           requestSignUp: true,
         }),
@@ -2007,6 +2014,8 @@ export class IdentityService {
       new Request(url, { headers: forwardedAuthHeaders(request.headers), method: "GET" }),
     );
     if (response.status < 300 || response.status >= 400) return response;
+    const refused = this.#anotherAccount(response);
+    if (refused) return refused;
     const restart = await this.#restartLapsedSignIn(request, response);
     if (restart) return restart;
     const admission = await this.#admissionFromHeaders(request.headers);
@@ -2021,6 +2030,26 @@ export class IdentityService {
     for (const cookie of completionHeaders.getSetCookie()) headers.append("set-cookie", cookie);
     headers.set("location", this.#options.publicOrigin.origin);
     return new Response(response.body, { headers, status: response.status });
+  }
+
+  /**
+   * A managed Home's one owner is its Opensteer account. An account the Home has
+   * no person for is refused where Better Auth would create one, and Better Auth
+   * sends that refusal to the Home's page under its own code; this names it as
+   * the one error that page explains, with the response's cookies unchanged.
+   */
+  #anotherAccount(response: Response): Response | null {
+    if (!this.#options.managedOwner) return null;
+    const location = new URL(response.headers.get("location") ?? "/", this.#options.publicOrigin);
+    if (location.origin !== this.#options.publicOrigin.origin) return null;
+    if (location.pathname !== homeSignInErrorPath) return null;
+    if (location.searchParams.get("error") !== signupAdmissionRequiredCode) return null;
+    const named = new URL(homeSignInErrorPath, this.#options.publicOrigin);
+    named.searchParams.set("error", anotherAccountSignInError);
+    const headers = new Headers(response.headers);
+    headers.set("location", named.toString());
+    headers.set("cache-control", "no-store");
+    return new Response(null, { headers, status: response.status });
   }
 
   /**
@@ -2388,7 +2417,10 @@ export class IdentityService {
   async #requireSignupAdmission(_request: Request | undefined): Promise<void> {
     if (this.#options.signupPolicy === "open") return;
     // A Home's one owner is created by its setup claim, never by a sign-up.
-    throw new APIError("FORBIDDEN", { message: "Signup admission required" });
+    throw new APIError("FORBIDDEN", {
+      code: signupAdmissionRequiredCode,
+      message: "Signup admission required",
+    });
   }
 
   async #consumeAdmission(id: AuthAdmissionId, userId: UserId): Promise<void> {

@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { stopProcessGroup } from "@opensteer/shared/processGroup";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { engineActiveVersions, engineDemand } from "./engine-storage.js";
+import { engineActiveVersions, engineDemand, engineInventoryEmpty } from "./engine-storage.js";
 import {
   engineProcessGroupGone,
   engineProcessMachineId,
@@ -490,20 +490,25 @@ export class PluginService {
     });
     child.once("error", (error) => rejectReady(error));
     child.once("exit", (_code, signal) => {
-      // Said as a memory kill only on the kernel's own record of one, made while this engine ran.
+      // Any SIGKILL ends the automatic relaunch (below). It is said as a memory kill only on the
+      // kernel's own record of one, made while this engine ran; either way what earlier calls
+      // did stays unknown.
+      const killed = signal === "SIGKILL";
       const killsAfter =
-        signal === "SIGKILL" && !this.#closed && this.#idleStop?.child !== child
-          ? memoryKills()
-          : undefined;
+        killed && !this.#closed && this.#idleStop?.child !== child ? memoryKills() : undefined;
       const outOfMemory =
         killsBefore !== undefined && killsAfter !== undefined && killsAfter > killsBefore;
+      const killedReason = outOfMemory
+        ? "The plugin engine ran out of memory and was killed before it replied."
+        : "The plugin engine was killed before it replied.";
       const error = new PluginServiceError(
         "interrupted",
-        outOfMemory
-          ? "Plugin engine ran out of memory and was stopped; earlier calls may have taken effect. Check current state before repeating them."
+        killed
+          ? `${killedReason} Earlier calls may have taken effect. Check current state before repeating them.`
           : "Plugin engine stopped; earlier calls may have taken effect. Check current state before repeating them.",
+        killed ? "engine-killed" : undefined,
       );
-      rejectReady(error);
+      rejectReady(killed && !ready ? new PluginServiceError("unavailable", killedReason) : error);
       this.#child = undefined;
       this.#engine = null;
       for (const pending of this.#pending.values()) {
@@ -537,14 +542,24 @@ export class PluginService {
         this.#armWake(dueInMs);
         return;
       }
+      // A SIGKILL may be an OOM kill. With no proof of headroom, another fork
+      // can put the whole Home back under the same pressure.
+      if (killed) {
+        this.#set({
+          status: "unavailable",
+          generation,
+          reason: outOfMemory
+            ? "The plugin engine ran out of memory and was killed."
+            : "The plugin engine was killed.",
+        });
+        return;
+      }
       this.#failures = healthy ? 1 : this.#failures + 1;
       if (this.#failures >= 3) {
         this.#set({
           status: "unavailable",
           generation,
-          reason: outOfMemory
-            ? "Plugin engine repeatedly ran out of memory"
-            : "Plugin engine repeatedly stopped",
+          reason: "Plugin engine repeatedly stopped",
         });
         return;
       }
@@ -978,13 +993,29 @@ export class PluginService {
       this.#pulls.delete(id);
     }
   }
-  #method<K extends PluginOperation>(operation: K) {
-    return (
+  #inventoryEmpty(kind: "apps" | "accounts"): Promise<boolean> {
+    return engineInventoryEmpty(this.#options.databaseUrl, kind, this.#options.owner).catch(
+      () => false,
+    );
+  }
+  installedInventoryEmpty(): Promise<boolean> {
+    return this.#inventoryEmpty("apps");
+  }
+  #method<K extends PluginOperation>(operation: K, inventory?: "apps" | "accounts") {
+    return async (
       input: PluginInput<K>,
       context: PluginCaller,
       signal?: AbortSignal,
       beforeSend?: BeforeSend,
-    ): Promise<PluginOutput<K>> => this.request(operation, input, context, signal, beforeSend);
+    ): Promise<PluginOutput<K>> => {
+      signal?.throwIfAborted();
+      if (inventory && !beforeSend && this.#state.status !== "ready") {
+        const empty = await this.#inventoryEmpty(inventory);
+        signal?.throwIfAborted();
+        if (empty) return operations[operation].output.parse([]) as PluginOutput<K>;
+      }
+      return this.request(operation, input, context, signal, beforeSend);
+    };
   }
   executionWasSent(id: string): boolean {
     return this.#executionChildren.has(id);
@@ -993,15 +1024,15 @@ export class PluginService {
   readonly catalogList = this.#method("catalogList");
   readonly catalogDetail = this.#method("catalogDetail");
   readonly icons = this.#method("icons");
-  readonly list = this.#method("list");
-  readonly installed = this.#method("installed");
+  readonly list = this.#method("list", "apps");
+  readonly installed = this.#method("installed", "apps");
   readonly detail = this.#method("detail");
   readonly install = this.#method("install");
   readonly export = this.#method("export");
   readonly versions = this.#method("versions");
   readonly activate = this.#method("activate");
   readonly remove = this.#method("remove");
-  readonly accounts = this.#method("accounts");
+  readonly accounts = this.#method("accounts", "accounts");
   readonly pinOAuth = this.#method("pinOAuth");
   readonly prepareOAuth = this.#method("prepareOAuth");
   readonly oauthMethods = this.#method("oauthMethods");

@@ -216,7 +216,12 @@ async function waitFor(
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     try {
-      if (await predicate()) return;
+      // A predicate that never settles (a capture Viz never answers) is held to the same deadline.
+      const settled = await Promise.race([
+        Promise.resolve(predicate()),
+        delay(Math.max(0, deadline - Date.now())).then(() => false),
+      ]);
+      if (settled) return;
     } catch {
       /* A navigation can destroy the observed context. */
     }
@@ -698,12 +703,18 @@ async function harness(options: { profile?: string; personalLease?: boolean } = 
     let png: Buffer = Buffer.alloc(0);
     // Authentication can finish before Viz has a capturable surface. Keep the
     // evidence requirement, waiting for an actual picture rather than a sleep.
-    await waitFor(`nonempty ${name} screenshot`, async () => {
+    const captured = await waitFor(`nonempty ${name} screenshot`, async () => {
       const image = await contents.capturePage();
       if (image.isEmpty()) return false;
       png = image.toPNG();
       return png.length > 0;
-    });
+    }).then(
+      () => true,
+      () => false,
+    );
+    // Evidence that could not be taken is a failure of the evidence, said by name, never a
+    // journey held until the stall bound.
+    check(`${name} screenshot captured`, captured);
     await writeFile(path.join(artifactDirectory, `${currentCase}-${name}.png`), png);
   };
   const observe = async () => {

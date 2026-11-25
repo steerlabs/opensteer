@@ -224,6 +224,13 @@ export type ComputerUseOutcome =
  * unknown outcome.
  */
 export const computerUseAnswerGraceMs = 6_000;
+/**
+ * What a view request comes to: the computer's answer, or no answer before its
+ * time and grace ran out, which is the Home's own finding and never a frame.
+ */
+export type ComputerViewOutcome =
+  | RunnerIntegrationsComputerViewResult["result"]
+  | { readonly kind: "error"; readonly code: "no-answer"; readonly message: string };
 
 export type ComputerTargetId = DeviceId | RunnerId;
 
@@ -366,6 +373,8 @@ interface AttachedIntegrations {
   apps: readonly MachineAppStatus[];
   statusReceived: boolean;
   ownerViewVersion: number | undefined;
+  /** The Mac's helper had not answered when it reported: owner view is not known yet. */
+  ownerViewPending: boolean;
   displayAvailable: boolean;
   readonly displayResolutions: Map<
     RunnerAuxiliaryRequestId,
@@ -383,7 +392,7 @@ interface AttachedIntegrations {
     RunnerAuxiliaryRequestId,
     {
       readonly route?: DeviceDriverRoute | undefined;
-      settle(result: RunnerIntegrationsComputerViewResult["result"]): void;
+      settle(result: ComputerViewOutcome): void;
     }
   >;
   readonly mcpSessions: Map<string, McpSessionEntry>;
@@ -647,6 +656,7 @@ export class ComputerAppHub {
       passwordSignIn: false,
       pendingPasswords: new Map(),
       ownerViewVersion: undefined,
+      ownerViewPending: false,
       displayAvailable: false,
       pendingViews: new Map(),
       pendingOwnerWindows: new Map(),
@@ -785,7 +795,13 @@ export class ComputerAppHub {
         this.#emitPasswordSignIn(stream.identity.runnerId, { type: "authority-lost" });
       }
       entry.passwordSignIn = supported;
-      this.#applyStatus(entry, message.apps, message.ownerViewVersion, message.displayAvailable);
+      this.#applyStatus(
+        entry,
+        message.apps,
+        message.ownerViewVersion,
+        message.ownerViewPending === true,
+        message.displayAvailable,
+      );
       return;
     }
     if (message.type === "runner.integrations.computer-use-event") {
@@ -1133,11 +1149,13 @@ export class ComputerAppHub {
 
   /**
    * Whether this computer has said what it supports since it connected. Until a
-   * Mac's first status arrives its versions are unknown, which is not "unsupported".
+   * Mac's first status arrives, or while its status says its helper has not
+   * answered, its versions are unknown, which is not "unsupported".
    */
   ownerViewReported(runnerId: ComputerTargetId): boolean {
     if (this.#isScreen(runnerId)) return true;
-    return this.#targetEntry(runnerId)?.statusReceived === true;
+    const entry = this.#targetEntry(runnerId);
+    return entry?.statusReceived === true && !entry.ownerViewPending;
   }
 
   ownerViewSupported(runnerId: ComputerTargetId): boolean {
@@ -1344,7 +1362,7 @@ export class ComputerAppHub {
       "viewId" | "generation" | "leaseDurationMs" | "target" | "operation" | "timeoutMs"
     >;
     readonly signal?: AbortSignal;
-  }): Promise<RunnerIntegrationsComputerViewResult["result"]> {
+  }): Promise<ComputerViewOutcome> {
     const route = input.route ?? (await this.captureRoute(input.runnerId, undefined));
     const entry = this.#targetEntry(input.runnerId);
     if (
@@ -1367,13 +1385,13 @@ export class ComputerAppHub {
     const requestId = RunnerAuxiliaryRequestIdSchema.parse(`cai:${randomUUID()}`);
     return new Promise((resolve) => {
       let answered = false;
-      const answer = (result: RunnerIntegrationsComputerViewResult["result"]) => {
+      const answer = (result: ComputerViewOutcome) => {
         if (answered) return;
         answered = true;
         input.signal?.removeEventListener("abort", abort);
         resolve(result);
       };
-      const finish = (result: RunnerIntegrationsComputerViewResult["result"]) => {
+      const finish = (result: ComputerViewOutcome) => {
         clearTimeout(timer);
         entry.pendingViews.delete(requestId);
         answer(result);
@@ -1386,7 +1404,7 @@ export class ComputerAppHub {
         () =>
           finish({
             kind: "error",
-            code: "unavailable",
+            code: "no-answer",
             message: "That computer did not answer in time.",
           }),
         input.request.timeoutMs + computerUseAnswerGraceMs,
@@ -2021,9 +2039,12 @@ export class ComputerAppHub {
     entry: AttachedIntegrations,
     apps: readonly MachineAppStatus[],
     ownerViewVersion: number | undefined,
+    ownerViewPending: boolean,
     displayAvailable: boolean | undefined,
   ): void {
+    if (ownerViewPending) ownerViewVersion = undefined;
     if (entry.stream.identity.modules?.integrations?.platform === "ios") {
+      ownerViewPending = false;
       ownerViewVersion = undefined;
       displayAvailable = false;
     }
@@ -2046,12 +2067,14 @@ export class ComputerAppHub {
       entry.statusReceived &&
       sameAppStatus(entry.apps, next) &&
       entry.ownerViewVersion === ownerViewVersion &&
+      entry.ownerViewPending === ownerViewPending &&
       entry.displayAvailable === (displayAvailable === true)
     )
       return;
     entry.statusReceived = true;
     entry.apps = next;
     entry.ownerViewVersion = ownerViewVersion;
+    entry.ownerViewPending = ownerViewPending;
     entry.displayAvailable = displayAvailable === true;
     this.#reportPhoneDisplayCapability(entry, "reported");
     this.#options.onChanged(entry.stream.identity.runnerId);

@@ -81,6 +81,7 @@ export function createIdentityRpcHandlers(
       authSuccess(
         context,
         await identity.beginOidcSignIn({
+          ...(input.chooseAccount ? { chooseAccount: true } : {}),
           headers: contextHeaders(context),
           ...(input.oauthQuery
             ? {
