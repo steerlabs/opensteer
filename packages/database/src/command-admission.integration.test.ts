@@ -1569,4 +1569,48 @@ describeStore("one admission for Home commands", (it) => {
         .executeTakeFirstOrThrow(),
     ).toEqual({ name: "Checked" });
   });
+
+  it("refuses tab.open to chrome-extension: and URL-obfuscated extension addresses for a connected agent while admitting a native Run (2a, M4)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, connect } = await setup(storeFixture);
+    const { profile } = await browserFixtures(storeFixture, f);
+    const extId = "abcdefghijklmnopabcdefghijklmnop";
+    const extUrl = `chrome-extension://${extId}/popup.html`;
+    const everything = await connect({ scope: "everything" }, "full-access");
+    for (const candidate of [
+      extUrl,
+      `chrome-ex\ttension://${extId}/options.html`,
+      `\u0001chrome-extension://${extId}/options.html`,
+      `  ChRoMe-ExTeNsIoN://${extId}/options.html`,
+      `view-source:chrome-extension://${extId}/options.html`,
+    ]) {
+      const command = {
+        idempotencyKey: randomUUID(),
+        type: "tab.open",
+        target: { kind: "page", url: candidate, profileId: profile.id },
+      } as never;
+      await expect(
+        admitCommand(database, {
+          ownerUserId: f.userId,
+          subject: commandSubject(`connection:${everything.id}`),
+          command,
+        }),
+        JSON.stringify(candidate),
+      ).rejects.toMatchObject({
+        code: "forbidden",
+        message: "Use about:blank or an HTTP(S) URL without credentials.",
+      });
+    }
+    const ownRun = await admitCommand(database, {
+      ownerUserId: f.userId,
+      subject: commandSubject(`run:${f.run.id}`),
+      command: {
+        idempotencyKey: randomUUID(),
+        type: "tab.open",
+        target: { kind: "page", url: extUrl, profileId: profile.id },
+      } as never,
+    });
+    expect(ownRun.answer).toBe("now");
+  });
 });

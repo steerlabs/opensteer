@@ -20,8 +20,73 @@ import { readPersonalRuntimeRelease } from "../src/releases/personal-runtime-rel
 import { readPersonalProcessSupervisorRelease } from "../src/supervisor/personal-process-port.js";
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import { desktopShutdownTimeoutMs } from "../src/app/desktop-shutdown.js";
+import { installProcessSmokeGuard } from "./test-support/process-smoke-guard.js";
 
 const restoreOnly = process.argv.includes("--tab-restore");
+const trials = restoreOnly
+  ? ["restore-before", "restore-normal", "restore-crash", "restore-after-crash"]
+  : (process.env.OPENSTEER_QUIT_E2E_TRIALS?.split(",") ?? [
+      "appleevent",
+      "sigterm",
+      "logout",
+      "partial",
+      "restart",
+      "background",
+      "quit-completely",
+    ]);
+const activeChildPids = new Set<number>();
+const processInventory = () =>
+  execFileSync("ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" })
+    .trim()
+    .split("\n")
+    .flatMap((line) => {
+      const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/u.exec(line);
+      return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), command: match[3]! }] : [];
+    });
+const processTree = (pid: number) => {
+  const all = processInventory();
+  const owned = new Set([pid]);
+  for (let pass = 0; pass < all.length; pass += 1) {
+    let changed = false;
+    for (const entry of all)
+      if (owned.has(entry.ppid) && !owned.has(entry.pid)) {
+        owned.add(entry.pid);
+        changed = true;
+      }
+    if (!changed) break;
+  }
+  return all.filter((entry) => owned.has(entry.pid));
+};
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+// The watchdog path: stop only the process trees of the children this driver started and recorded.
+// It never matches a process by name or command line; the `finally` below keeps its own sweep.
+const cleanupOwnedChildren = () => {
+  for (const pid of activeChildPids) {
+    for (const entry of processTree(pid).toReversed()) {
+      if (alive(entry.pid)) {
+        try {
+          process.kill(entry.pid, "SIGKILL");
+        } catch {
+          /* The owned process exited meanwhile. */
+        }
+      }
+    }
+  }
+  activeChildPids.clear();
+};
+const perTrialBudgetMs =
+  120_000 + (desktopShutdownTimeoutMs + 1_000) + 3_000 + (restoreOnly ? 5_000 : 10_000);
+const aggregateTimeoutMs = 60_000 + trials.length * perTrialBudgetMs;
+
+installProcessSmokeGuard("quit", aggregateTimeoutMs, cleanupOwnedChildren);
+
 const fixtureStarted = performance.now();
 const progress = (phase: string) =>
   process.stdout.write(
@@ -108,36 +173,6 @@ const rows = (trial: string) => {
       .map((line) => JSON.parse(line)),
   );
 };
-const processInventory = () =>
-  execFileSync("ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" })
-    .trim()
-    .split("\n")
-    .flatMap((line) => {
-      const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/u.exec(line);
-      return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), command: match[3]! }] : [];
-    });
-const processTree = (pid: number) => {
-  const all = processInventory();
-  const owned = new Set([pid]);
-  for (let pass = 0; pass < all.length; pass += 1) {
-    let changed = false;
-    for (const entry of all)
-      if (owned.has(entry.ppid) && !owned.has(entry.pid)) {
-        owned.add(entry.pid);
-        changed = true;
-      }
-    if (!changed) break;
-  }
-  return all.filter((entry) => owned.has(entry.pid));
-};
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
 const appleQuit = () => {
   // A unique bundle ID and absolute bundle target cannot address installed Beta.
   try {
@@ -177,6 +212,9 @@ async function verifyEngineOwner(): Promise<void> {
     },
   );
   assert(parent.pid);
+  const parentPid = parent.pid;
+  activeChildPids.add(parentPid);
+  parent.once("exit", () => activeChildPids.delete(parentPid));
   let output = "";
   const ready = new Promise<void>((resolve, reject) => {
     parent.stdout.on("data", (chunk: Buffer) => {
@@ -252,17 +290,7 @@ const fixtureUrl =
 
 try {
   if (!restoreOnly) await verifyEngineOwner();
-  for (const trial of restoreOnly
-    ? ["restore-before", "restore-normal", "restore-crash", "restore-after-crash"]
-    : (process.env.OPENSTEER_QUIT_E2E_TRIALS?.split(",") ?? [
-        "appleevent",
-        "sigterm",
-        "logout",
-        "partial",
-        "restart",
-        "background",
-        "quit-completely",
-      ])) {
+  for (const trial of trials) {
     fixturePhase = trial;
     const environment: NodeJS.ProcessEnv = {
       ...process.env,
@@ -281,6 +309,9 @@ try {
       child.once("exit", (code, signal) => resolve({ code, signal })),
     );
     assert(child.pid);
+    const childPid = child.pid;
+    activeChildPids.add(childPid);
+    child.once("exit", () => activeChildPids.delete(childPid));
     const startupDeadline = Date.now() + 120_000;
     while (!rows(trial).some(({ event }) => event === "test.ready")) {
       assert(alive(child.pid), `${trial} exited before ready; see ${output}`);

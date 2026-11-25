@@ -36,6 +36,9 @@ import type { DesktopBridgeContext } from "../src/bridge/context.js";
 import { desktopBridgeChannels } from "../src/bridge/desktop-bridge-channels.js";
 import { handleCancelHostRequest } from "../src/bridge/methods/host.js";
 import { DesktopHostTransport } from "../src/connections/host-transport.js";
+import { installSmokeGuard } from "./test-support/smoke-guard.js";
+
+installSmokeGuard("host-transport", 180000);
 
 const root = mkdtempSync(
   path.join(

@@ -27,5 +27,8 @@
     "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
+  },
+  "dependencies": {
+    "@opensteer/shared": "workspace:*"
   }
 }

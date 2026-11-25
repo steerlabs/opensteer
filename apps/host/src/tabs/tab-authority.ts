@@ -1,6 +1,7 @@
 import {
   OpensteerError,
   agentGrantAllows,
+  isAllowedConnectionPageUrl,
   isPhoneDisplayDefinitionId,
   type ResourceAccessLevel,
   type DeviceId,
@@ -19,6 +20,7 @@ import {
   bindingAgentConnectionId,
   standingGrant,
   executionAccess,
+  authorizePageAddress,
   type AgentConnectionAuthority,
   requirePersonalOwner,
   lineageAllowsPersonalContext,
@@ -179,8 +181,6 @@ function tabTargetAuthority(
     const target =
       "ownerId" in targetInput ? targetInput : DeviceTabTargetSchema.parse(targetInput);
     if ("ownerId" in target && target.ownerId !== ownerId) return false;
-    if (actor.kind === "person" && "id" in target && required === "read") return true;
-    let computerId = "computerId" in target ? target.computerId : undefined;
     const profileId = target.kind === "page" && "profileId" in target ? target.profileId : null;
     if (
       selected &&
@@ -188,6 +188,15 @@ function tabTargetAuthority(
       !agentGrantAllows(selected.grant, { kind: "browser-profile", profileId }, required)
     )
       return false;
+    // Rule 1's page rule: to a connection's work a page on an extension's address does not exist.
+    if (
+      target.kind === "page" &&
+      "url" in target &&
+      !authorizePageAddress({ agentConnection: lineage }, target.url)
+    )
+      return false;
+    if (actor.kind === "person" && "id" in target && required === "read") return true;
+    let computerId = "computerId" in target ? target.computerId : undefined;
     if (target.kind === "app") {
       const app = (await (apps ??= appRows.execute())).find((app) => app.id === target.appId);
       if (!app || app.deleting) return false;
@@ -305,6 +314,17 @@ export async function authorizeTabTarget(
     return;
   }
   const lineage = await admitTabActor(actor, database, "read-write");
+  if (
+    lineage !== null &&
+    "kind" in target &&
+    target.kind === "page" &&
+    "url" in target &&
+    !isAllowedConnectionPageUrl(target.url)
+  )
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Use about:blank or an HTTP(S) URL without credentials.",
+    });
   if (!(await tabTargetAuthority(actor, database, lineage)(target, "read-write"))) deny();
 }
 export async function canReadTab(

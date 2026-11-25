@@ -71,6 +71,9 @@ import {
   DesktopBrowserGlassInputSchema,
   DesktopBrowserAutofillInputSchema,
   DesktopBrowserPresentationEventSchema,
+  DesktopBrowserExtensionsSchema,
+  DesktopBrowserExtensionActivationSchema,
+  DesktopBrowserExtensionRemovalSchema,
   type DesktopBrowserPresentationBridge,
 } from "@opensteer/protocol/desktop";
 import { z } from "zod";
@@ -298,6 +301,31 @@ const browserPresentation: DesktopBrowserPresentationBridge =
     focusPage: async (input) => {
       await invokePresentation(
         desktopBridgeChannels.browserFocusPage,
+        DesktopBrowserPresentationTargetSchema.parse(input),
+      );
+    },
+    extensions: async (input) =>
+      DesktopBrowserExtensionsSchema.nullable().parse(
+        await invokePresentation(
+          desktopBridgeChannels.browserExtensions,
+          DesktopBrowserPresentationTargetSchema.parse(input),
+        ),
+      ),
+    activateExtension: async (input) => {
+      await invokePresentation(
+        desktopBridgeChannels.browserActivateExtension,
+        DesktopBrowserExtensionActivationSchema.parse(input),
+      );
+    },
+    removeExtension: async (input) => {
+      await invokePresentation(
+        desktopBridgeChannels.browserRemoveExtension,
+        DesktopBrowserExtensionRemovalSchema.parse(input),
+      );
+    },
+    openExtensionStore: async (input) => {
+      await invokePresentation(
+        desktopBridgeChannels.browserOpenExtensionStore,
         DesktopBrowserPresentationTargetSchema.parse(input),
       );
     },

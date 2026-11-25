@@ -24,14 +24,69 @@ import { z } from "zod";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { desktopShutdownTimeoutMs } from "../src/app/desktop-shutdown.js";
 import { menuBarSmokeTrialPlan, type MenuBarTrialOutcome } from "./menu-bar-smoke-plan.js";
+import { installProcessSmokeGuard } from "./test-support/process-smoke-guard.js";
+
+const requested = process.argv.slice(2).filter((argument) => !argument.startsWith("--"));
+const plan = menuBarSmokeTrialPlan(requested);
+const activeChildPids = new Set<number>();
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+const descendants = (pid: number) => {
+  const all = execFileSync("ps", ["-axo", "pid=,ppid="], { encoding: "utf8" })
+    .trim()
+    .split("\n")
+    .flatMap((line) => {
+      const match = /^\s*(\d+)\s+(\d+)/u.exec(line);
+      return match ? [{ pid: Number(match[1]), ppid: Number(match[2]) }] : [];
+    });
+  const owned = new Set([pid]);
+  for (let pass = 0; pass < all.length; pass += 1) {
+    let changed = false;
+    for (const entry of all)
+      if (owned.has(entry.ppid) && !owned.has(entry.pid)) {
+        owned.add(entry.pid);
+        changed = true;
+      }
+    if (!changed) break;
+  }
+  return [...owned];
+};
+const cleanupOwnedChildren = () => {
+  for (const pid of activeChildPids) {
+    for (const owned of descendants(pid).reverse()) {
+      if (alive(owned)) {
+        try {
+          process.kill(owned, "SIGKILL");
+        } catch {
+          /* Process exited meanwhile. */
+        }
+      }
+    }
+  }
+  activeChildPids.clear();
+};
+const perTrialTimeoutMs = (drive: (typeof plan)[number]["drive"]): number =>
+  drive === "self"
+    ? 300_000
+    : drive === "quit-during-startup"
+      ? 120_000 + desktopShutdownTimeoutMs + 5_000
+      : 120_000 + 30_000 + 10_500 + desktopShutdownTimeoutMs + 5_000;
+const aggregateTimeoutMs =
+  60_000 + plan.reduce((sum, entry) => sum + perTrialTimeoutMs(entry.drive), 0);
+
+installProcessSmokeGuard("menu-bar", aggregateTimeoutMs, cleanupOwnedChildren);
 
 const directory = path.resolve(
   process.env.OPENSTEER_MENU_BAR_E2E_ARTIFACT_DIR ?? "/tmp/opensteer-menu-bar-smoke",
 );
 mkdirSync(directory, { recursive: true, mode: 0o700 });
 const root = realpathSync(mkdtempSync(path.join(directory, "menu-bar-")));
-const requested = process.argv.slice(2).filter((argument) => !argument.startsWith("--"));
-const plan = menuBarSmokeTrialPlan(requested);
 
 const sourceResources = process.env.OPENSTEER_PERSONAL_E2E_RESOURCES;
 const resources = path.join(root, "resources");
@@ -91,34 +146,6 @@ const rows = (data: string, trial: string) => {
       .map((line) => JSON.parse(line)),
   );
 };
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
-const descendants = (pid: number) => {
-  const all = execFileSync("ps", ["-axo", "pid=,ppid="], { encoding: "utf8" })
-    .trim()
-    .split("\n")
-    .flatMap((line) => {
-      const match = /^\s*(\d+)\s+(\d+)/u.exec(line);
-      return match ? [{ pid: Number(match[1]), ppid: Number(match[2]) }] : [];
-    });
-  const owned = new Set([pid]);
-  for (let pass = 0; pass < all.length; pass += 1) {
-    let changed = false;
-    for (const entry of all)
-      if (owned.has(entry.ppid) && !owned.has(entry.pid)) {
-        owned.add(entry.pid);
-        changed = true;
-      }
-    if (!changed) break;
-  }
-  return [...owned];
-};
 const capture = (file: string) => {
   try {
     execFileSync("screencapture", ["-x", file], { timeout: 10_000 });
@@ -157,6 +184,8 @@ for (const { trial, needsHome, drive } of plan) {
   );
   assert(child.pid);
   const pid = child.pid;
+  activeChildPids.add(pid);
+  child.once("exit", () => activeChildPids.delete(pid));
   const events = () => rows(data, trial);
   const waitForEvent = async (event: string, timeoutMs = 120_000) => {
     const deadline = Date.now() + timeoutMs;

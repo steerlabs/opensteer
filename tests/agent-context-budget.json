@@ -42,7 +42,7 @@
   "runPlan.no-personal-context.injectedTextBytes": 7410,
   "runPlan.no-personal-context.advertisedSchemaBytes": 50845,
   "bundledSkills.catalogBytes": 2426,
-  "bundledSkills.bodyBytes": 30603,
-  "bundledSkills.referenceBytes": 117637,
+  "bundledSkills.bodyBytes": 30689,
+  "bundledSkills.referenceBytes": 119872,
   "bundledSkills.openaiMetadataBytes": 2587
 }

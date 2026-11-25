@@ -98,6 +98,10 @@ const restoreUrl = z
       return false;
     }
   });
+/** Whether a page's address is one a tab row keeps (`about:blank`, or HTTP(S) without credentials). */
+export function storablePageUrl(value: string): boolean {
+  return restoreUrl.safeParse(value).success;
+}
 function failure(code: "not_found" | "conflict" | "bad_request", message: string): never {
   throw new OpensteerError({ code, message });
 }

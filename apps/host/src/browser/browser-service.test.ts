@@ -3370,6 +3370,38 @@ describe("BrowserService", () => {
     };
   }
 
+  it("records a Run's place on an extension's page as on any page, for the person and their own agents (P3)", async () => {
+    const f = await runPlaceFixture(new ManualClock(0));
+    f.record.mockResolvedValue(true);
+    f.runtime.publishTabs({
+      surfaces: [
+        {
+          id: "page-1",
+          active: true,
+          title: "My Extension Options",
+          url: `chrome-extension://${"a".repeat(32)}/options.html`,
+          geometryRevision: 1,
+        },
+        {
+          id: "page-2",
+          active: false,
+          title: "Web",
+          url: "https://example.com",
+          geometryRevision: 1,
+        },
+      ],
+    });
+    await f.activity("page-1");
+    await f.activity("page-2");
+    await f.drain();
+    // What a connection reads of it is decided where places are read (authorizePlaceSite).
+    expect(f.record.mock.calls.map(([input]) => input.data.tabId)).toEqual(["page-1", "page-2"]);
+    expect(f.record.mock.calls[0]?.[0].data).toMatchObject({
+      title: "My Extension Options",
+      site: null,
+    });
+  });
+
   it("bounds interleaved activity writes and converges usage on the final surface", async () => {
     const clock = new ManualClock(0);
     const f = await runPlaceFixture(clock);
@@ -6372,6 +6404,8 @@ async function startFakeRuntime(
     readonly clipboard?: boolean | undefined;
     /** The snapshot offers reply budgets and command cancellation, as the shipped runtime does. */
     readonly cdpReplyBudget?: boolean;
+    /** The snapshot offers scoped script attachments, as the shipped runtime does. */
+    readonly scriptAttachments?: boolean;
   } = {},
 ): Promise<{
   connectionCount(): number;
@@ -6579,6 +6613,9 @@ async function startFakeRuntime(
           ...(options.inputLanes ? { inputLanesVersion: 1 } : {}),
           ...(options.targetedStreaming !== false ? { targetedStreamingVersion: 1 } : {}),
           ...(options.cdpReplyBudget ? { cdpReplyBudget: 1, scriptCancellation: 1 } : {}),
+          ...(options.scriptAttachments
+            ? { cdpReplyBudget: 1, scriptAttachments: 1, scriptCancellation: 1 }
+            : {}),
           ...(options.editing && claims.editingVersion
             ? {
                 editingVersion: claims.editingVersion,
@@ -10507,6 +10544,1597 @@ describe("work under a connection's authority never uses the clipboard or change
       second.session.id,
     ]);
     cdpFirst.close();
+  });
+
+  it("gates Extensions.loadUnpacked and Extensions.uninstall on Rule 1 Full access standing (2b)", async () => {
+    const ownerId = createId("user");
+    const runId = createId("run");
+    const threadId = createId("thread");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Extensions Profile" });
+    const runBinding = { agentBindingId: `run:${runId}`, ownerId };
+
+    let standing: {
+      actor: "native" | "agent";
+      mode: "full-access" | "auto" | "approval-required";
+      agentConnection: {
+        agentConnectionId: string;
+        grant: { scope: "everything" };
+        grantRevision: number;
+        consentVersion: number;
+        accessMode: "full-access";
+        bridgeSenders: null;
+      } | null;
+    } = { actor: "native", mode: "full-access", agentConnection: null };
+
+    repository.resolveResourceAccess = async () => ({
+      access: "read-write",
+      runAccess: "read-write",
+      grantAccess: "read-write",
+      execution: {
+        ownerUserId: ownerId,
+        subject: { kind: "binding", bindingId: runBinding.agentBindingId },
+        actor: standing.actor,
+        threadId,
+        runId,
+        agentConnection: standing.agentConnection,
+        taskMode: standing.mode,
+        runMode: standing.mode,
+        mode: standing.mode,
+      },
+    });
+
+    const opened = await service.openAgentSession({ ...runBinding, profileId: profile.id });
+    const cdp = await service.attachCdpForAgent(
+      { ...runBinding, sessionId: opened.session.id },
+      () => undefined,
+    );
+
+    // Full access native Run on person's own lineage: carries manageExtensions: true for mutations.
+    const loadReq = cdp.request({
+      method: "Extensions.loadUnpacked",
+      parameters: { path: "/tmp/ext" },
+    });
+    const loadForward = await runtime.nextCommand();
+    expect(loadForward).toMatchObject({
+      type: "cdp.command",
+      manageExtensions: true,
+      command: { method: "Extensions.loadUnpacked", parameters: { path: "/tmp/ext" } },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: loadForward.requestId,
+      result: { id: "a".repeat(32) },
+    });
+    expect(await loadReq).toEqual({ id: "a".repeat(32) });
+
+    // Non-mutating Extensions.getExtensions does NOT set manageExtensions.
+    const listReq = cdp.request({ method: "Extensions.getExtensions" });
+    const listForward = await runtime.nextCommand();
+    expect(listForward).toMatchObject({
+      type: "cdp.command",
+      command: { method: "Extensions.getExtensions" },
+    });
+    expect("manageExtensions" in listForward && listForward.manageExtensions).toBeFalsy();
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: listForward.requestId,
+      result: { extensions: [] },
+    });
+    expect(await listReq).toEqual({ extensions: [] });
+
+    // Auto mode Run: refused at Host before reaching the runtime.
+    standing = { actor: "native", mode: "auto", agentConnection: null };
+    await expect(
+      cdp.request({ method: "Extensions.loadUnpacked", parameters: { path: "/tmp/ext" } }),
+    ).rejects.toThrow(/Full access/u);
+    await expect(
+      cdp.request({ method: "Extensions.uninstall", parameters: { id: "a".repeat(32) } }),
+    ).rejects.toThrow(/Full access/u);
+
+    // Run under a connected agent's lineage (even at full-access): refused with Rule 5 neutral message.
+    const connectedRunId = createId("run");
+    const connectedBinding = { agentBindingId: `run:${connectedRunId}`, ownerId };
+    standing = {
+      actor: "agent",
+      mode: "full-access",
+      agentConnection: {
+        agentConnectionId: `acn_${randomUUID()}`,
+        grant: { scope: "everything" },
+        grantRevision: 1,
+        consentVersion: 1,
+        accessMode: "full-access",
+        bridgeSenders: null,
+      },
+    };
+    const connectedOpened = await service.openAgentSession({
+      ...connectedBinding,
+      profileId: profile.id,
+    });
+    const connectedCdp = await service.attachCdpForAgent(
+      { ...connectedBinding, sessionId: connectedOpened.session.id },
+      () => undefined,
+    );
+    await expect(
+      connectedCdp.request({ method: "Extensions.loadUnpacked", parameters: { path: "/tmp/ext" } }),
+    ).rejects.toThrow(/Extensions\.loadUnpacked is not available to a connected agent/u);
+    await expect(connectedCdp.request({ method: "Extensions.getExtensions" })).rejects.toThrow(
+      /Extensions\.getExtensions is not available to a connected agent/u,
+    );
+
+    // S-c & S4: root-state Target.* events naming chrome-extension: targets AND subsequent no-URL
+    // Target.targetDestroyed / Target.detachedFromTarget events for those hidden IDs never reach a
+    // connectionWork subscriber.
+    const rootEvents: unknown[] = [];
+    const connectedRoot = await service.attachCdpForAgent(
+      { ...connectedBinding, sessionId: connectedOpened.session.id },
+      (event) => rootEvents.push(event),
+    );
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetCreated",
+        parameters: {
+          targetInfo: {
+            targetId: "ext-target",
+            type: "service_worker",
+            url: `chrome-extension://${"a".repeat(32)}/worker.js`,
+          },
+        },
+        sequence: 1,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.detachedFromTarget",
+        parameters: { sessionId: "ext-sess", targetId: "ext-target" },
+        sequence: 2,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetDestroyed",
+        parameters: { targetId: "ext-target" },
+        sequence: 3,
+      },
+    });
+    // S-c: an extension target created BEFORE this subscription started also has its no-URL
+    // destroy/detach events dropped because only targets shown with a non-extension URL pass.
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetDestroyed",
+        parameters: { targetId: "preexisting-ext-target" },
+        sequence: 4,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetCreated",
+        parameters: {
+          targetInfo: { targetId: "web-target", type: "page", url: "https://example.test/" },
+        },
+        sequence: 5,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetDestroyed",
+        parameters: { targetId: "web-target" },
+        sequence: 6,
+      },
+    });
+    await vi.waitFor(() => expect(rootEvents).toHaveLength(2));
+    expect(JSON.stringify(rootEvents)).not.toContain("chrome-extension:");
+    expect(JSON.stringify(rootEvents)).not.toContain("ext-target");
+    expect(JSON.stringify(rootEvents)).not.toContain("preexisting-ext-target");
+    expect(JSON.stringify(rootEvents)).toContain("web-target");
+
+    // F1: manual attach to an already-admitted web page without prior Target.targetCreated must
+    // still receive its Target.detachedFromTarget and Target.targetDestroyed terminal events.
+    const request = connectedRoot.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "already-admitted-web-page", flatten: true },
+    });
+    const forward = await runtime.nextCommand();
+    expect(forward).toMatchObject({
+      type: "cdp.command",
+      command: { method: "Target.attachToTarget" },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: forward.requestId,
+      result: { sessionId: "cdp_manual" },
+    });
+    await expect(request).resolves.toEqual({ sessionId: "cdp_manual" });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.detachedFromTarget",
+        parameters: { targetId: "already-admitted-web-page", sessionId: "cdp_manual" },
+        sequence: 7,
+      },
+    });
+    await vi.waitFor(() =>
+      expect(rootEvents).toContainEqual(
+        expect.objectContaining({
+          method: "Target.detachedFromTarget",
+          parameters: { targetId: "already-admitted-web-page", sessionId: "cdp_manual" },
+        }),
+      ),
+    );
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetDestroyed",
+        parameters: { targetId: "already-admitted-web-page" },
+        sequence: 8,
+      },
+    });
+    await vi.waitFor(() =>
+      expect(rootEvents).toContainEqual(
+        expect.objectContaining({
+          method: "Target.targetDestroyed",
+          parameters: { targetId: "already-admitted-web-page" },
+        }),
+      ),
+    );
+
+    // F1 race: Target.detachedFromTarget arriving BEFORE the Target.attachToTarget reply settles
+    // is still delivered once the attach succeeds, while an unseen extension detach during a
+    // failed attach is never leaked.
+    const earlyAttach = connectedRoot.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "early-detach-page", flatten: true },
+    });
+    const earlyForward = await runtime.nextCommand();
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.detachedFromTarget",
+        parameters: { targetId: "early-detach-page", sessionId: "cdp_early" },
+        sequence: 9,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.detachedFromTarget",
+        parameters: { targetId: "unseen-ext-during-race", sessionId: "ext_other_sess" },
+        sequence: 10,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: earlyForward.requestId,
+      result: { sessionId: "cdp_early" },
+    });
+    await expect(earlyAttach).resolves.toEqual({ sessionId: "cdp_early" });
+    await vi.waitFor(() =>
+      expect(rootEvents).toContainEqual(
+        expect.objectContaining({
+          method: "Target.detachedFromTarget",
+          parameters: { targetId: "early-detach-page", sessionId: "cdp_early" },
+        }),
+      ),
+    );
+    expect(JSON.stringify(rootEvents)).not.toContain("unseen-ext-during-race");
+    expect(JSON.stringify(rootEvents)).not.toContain("ext_other_sess");
+
+    // A rejected attach for an unseen extension target must not leak its terminal events either.
+    const rejectedAttach = connectedRoot.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "unseen-ext-refused", flatten: true },
+    });
+    const rejectedForward = await runtime.nextCommand();
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.targetDestroyed",
+        parameters: { targetId: "unseen-ext-refused" },
+        sequence: 11,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.error",
+      requestId: rejectedForward.requestId,
+      error: {
+        code: "not_found",
+        message: "CDP target is not available here.",
+        retryable: false,
+        unsent: true,
+      },
+    });
+    await expect(rejectedAttach).rejects.toThrow(/CDP target is not available here/u);
+    expect(JSON.stringify(rootEvents)).not.toContain("unseen-ext-refused");
+
+    connectedRoot.close();
+    connectedCdp.close();
+    cdp.close();
+  });
+
+  it("delivers scoped script-attachment terminal events without prior discovery (F1)", async () => {
+    const ownerId = createId("user");
+    const runId = createId("run");
+    const threadId = createId("thread");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      scriptAttachments: true,
+    });
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      connectionCommands: true,
+      surfaceState: true,
+    });
+    cleanups.push(async () => service.close());
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Script F1 Profile" });
+    const connectedBinding = { agentBindingId: `run:${runId}`, ownerId };
+    repository.resolveResourceAccess = async () => ({
+      access: "read-write",
+      runAccess: "read-write",
+      grantAccess: "read-write",
+      execution: {
+        ownerUserId: ownerId,
+        subject: { kind: "binding", bindingId: connectedBinding.agentBindingId },
+        actor: "agent",
+        threadId,
+        runId,
+        agentConnection: {
+          agentConnectionId: `acn_${randomUUID()}`,
+          grant: { scope: "everything" },
+          grantRevision: 1,
+          consentVersion: 1,
+          accessMode: "full-access",
+          bridgeSenders: null,
+        },
+        taskMode: "full-access",
+        runMode: "full-access",
+        mode: "full-access",
+      },
+    });
+    const opened = await service.openAgentSession({ ...connectedBinding, profileId: profile.id });
+    const scriptEvents: unknown[] = [];
+    const scriptTabId = BrowserSurfaceIdSchema.parse("tab_f1");
+    const connectedScript = await service.attachCdpForAgent(
+      {
+        ...connectedBinding,
+        sessionId: opened.session.id,
+        scriptTabId,
+      },
+      (event) => scriptEvents.push(event),
+    );
+    const nextCdpCommand = async () => {
+      for (;;) {
+        const command = await runtime.nextCommand();
+        if (command.type === "cdp.command") return command;
+      }
+    };
+    const scriptResumeDispatch = connectedScript.dispatch(
+      {
+        method: browserHostMethods.resumeTab,
+        parameters: { surfaceId: scriptTabId },
+      },
+      {
+        maxBytes: 65_536,
+        maxDepth: 16,
+        maxEntries: 64,
+        eventBudget: { maxBytes: 65_536, maxDepth: 16, maxEntries: 64 },
+      },
+    );
+    const scriptResumeForward = await nextCdpCommand();
+    const scriptAttachmentId = scriptResumeForward.scriptAttachmentId;
+    expect(scriptAttachmentId).toEqual(expect.any(String));
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: scriptResumeForward.requestId,
+      result: { targetId: "script-root-target" },
+    });
+    await expect((await scriptResumeDispatch).result).resolves.toEqual({
+      targetId: "script-root-target",
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        scriptAttachmentId,
+        method: "Target.targetDestroyed",
+        parameters: { targetId: "script-root-target" },
+        sequence: 1,
+      },
+    });
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        scriptAttachmentId,
+        method: "Target.detachedFromTarget",
+        parameters: { targetId: "script-root-target", sessionId: "cdp_script_session" },
+        sequence: 2,
+      },
+    });
+    await vi.waitFor(() => {
+      expect(scriptEvents).toContainEqual(
+        expect.objectContaining({
+          method: "Target.targetDestroyed",
+          parameters: { targetId: "script-root-target" },
+        }),
+      );
+      expect(scriptEvents).toContainEqual(
+        expect.objectContaining({
+          method: "Target.detachedFromTarget",
+          parameters: { targetId: "script-root-target", sessionId: "cdp_script_session" },
+        }),
+      );
+    });
+    connectedScript.close();
+  });
+
+  async function connectedRootAttachment(name: string, surfaceState = false) {
+    const ownerId = createId("user");
+    const runId = createId("run");
+    const threadId = createId("thread");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository, surfaceState });
+    cleanups.push(async () => service.close());
+    const profile = await repository.createBrowserProfile({ ownerId, name });
+    const binding = { agentBindingId: `run:${runId}`, ownerId };
+    // One of your own agents (no connection leads it) when false.
+    let asConnection = true;
+    repository.resolveResourceAccess = async () => ({
+      access: "read-write",
+      runAccess: "read-write",
+      grantAccess: "read-write",
+      execution: {
+        ownerUserId: ownerId,
+        subject: { kind: "binding", bindingId: binding.agentBindingId },
+        actor: asConnection ? "agent" : "native",
+        threadId,
+        runId,
+        agentConnection: asConnection
+          ? {
+              agentConnectionId: `acn_${randomUUID()}`,
+              grant: { scope: "everything" },
+              grantRevision: 1,
+              consentVersion: 1,
+              accessMode: "full-access",
+              bridgeSenders: null,
+            }
+          : null,
+        taskMode: "full-access",
+        runMode: "full-access",
+        mode: "full-access",
+      },
+    });
+    const opened = await service.openAgentSession({ ...binding, profileId: profile.id });
+    const attach = async (connection = true) => {
+      asConnection = connection;
+      const events: {
+        method: string;
+        parameters: Record<string, unknown>;
+        sessionId?: string;
+      }[] = [];
+      const attached = await service
+        .attachCdpForAgent({ ...binding, sessionId: opened.session.id }, (event) =>
+          events.push(event as (typeof events)[number]),
+        )
+        .finally(() => {
+          asConnection = true;
+        });
+      return { attached, events };
+    };
+    return { runtime, attach };
+  }
+
+  it("keeps a subscriber's own early detach however many other targets end during its attach (S1)", async () => {
+    const { runtime, attach } = await connectedRootAttachment("S1 Profile");
+    const { attached, events } = await attach();
+    const request = attached.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "own-tab", flatten: true },
+    });
+    const forward = await runtime.nextCommand();
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.detachedFromTarget",
+        parameters: { sessionId: "cdp_own", targetId: "own-tab" },
+        sequence: 1,
+      },
+    });
+    for (let index = 0; index < 64; index += 1) {
+      runtime.sendServer({
+        type: "cdp.event",
+        event: {
+          method: "Target.targetDestroyed",
+          parameters: { targetId: `other-${index}` },
+          sequence: 2 + index,
+        },
+      });
+      runtime.sendServer({
+        type: "cdp.event",
+        event: {
+          method: "Target.detachedFromTarget",
+          parameters: { sessionId: `cdp_other_${index}`, targetId: `other-${index}` },
+          sequence: 100 + index,
+        },
+      });
+    }
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: forward.requestId,
+      result: { sessionId: "cdp_own" },
+    });
+    await expect(request).resolves.toEqual({ sessionId: "cdp_own" });
+    await vi.waitFor(() =>
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          method: "Target.detachedFromTarget",
+          parameters: { sessionId: "cdp_own", targetId: "own-tab" },
+        }),
+      ),
+    );
+    expect(JSON.stringify(events)).not.toContain("other-");
+    attached.close();
+  });
+
+  it("replays a created or resumed tab's own early end, and churn never pushes out an attach's (G3)", async () => {
+    const { runtime, attach } = await connectedRootAttachment("G3 Profile", true);
+    const { attached, events } = await attach();
+    let sequence = 1;
+    const send = (method: string, parameters: Record<string, unknown>) =>
+      runtime.sendServer({
+        type: "cdp.event",
+        event: { method, parameters, sequence: sequence++ },
+      });
+    const nextCdp = async () => {
+      for (;;) {
+        const command = await runtime.nextCommand();
+        if (command.type === "cdp.command") return command;
+      }
+    };
+    // A create, a resume and a named attach all pending at once.
+    const create = attached.request({
+      method: "Target.createTarget",
+      parameters: { url: "https://new.test/" },
+    });
+    const createForward = await nextCdp();
+    const resume = attached.request({
+      method: browserHostMethods.resumeTab,
+      parameters: { surfaceId: BrowserSurfaceIdSchema.parse("tab_g3") },
+    });
+    const resumeForward = await nextCdp();
+    const attach_ = attached.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "named-tab", flatten: true },
+    });
+    const attachForward = await nextCdp();
+    send("Target.targetCrashed", { targetId: "created-tab", status: "crashed", errorCode: 1 });
+    send("Target.targetDestroyed", { targetId: "created-tab" });
+    send("Target.targetDestroyed", { targetId: "resumed-tab" });
+    send("Target.detachedFromTarget", { sessionId: "cdp_named", targetId: "named-tab" });
+    for (let index = 0; index < 200; index += 1) {
+      send("Target.targetDestroyed", { targetId: `other-${index}` });
+      send("Target.detachedFromTarget", {
+        sessionId: `cdp_other_${index}`,
+        targetId: `other-${index}`,
+      });
+    }
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: createForward.requestId,
+      result: { targetId: "created-tab" },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: resumeForward.requestId,
+      result: { targetId: "resumed-tab" },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: attachForward.requestId,
+      result: { sessionId: "cdp_named" },
+    });
+    await Promise.all([create, resume, attach_]);
+    await vi.waitFor(() => expect(events).toHaveLength(4));
+    expect(events.map(({ method, parameters }) => [method, parameters.targetId])).toEqual([
+      ["Target.targetCrashed", "created-tab"],
+      ["Target.targetDestroyed", "created-tab"],
+      ["Target.targetDestroyed", "resumed-tab"],
+      ["Target.detachedFromTarget", "named-tab"],
+    ]);
+    // Nothing pending: an unknown target's end is dropped, not kept.
+    send("Target.targetDestroyed", { targetId: "late-unknown" });
+    send("Target.targetDestroyed", { targetId: "created-tab" });
+    send("Page.marker", {});
+    await vi.waitFor(() => expect(events.at(-1)?.method).toBe("Page.marker"));
+    expect(events).toHaveLength(5);
+    attached.close();
+  });
+
+  /*
+   * Generated sequences on one shared root: two connected subscribers and one of your own agents
+   * on one Browser Session. Random attaches, creates and resumes answered or refused in any order;
+   * their own detaches, destroys and crashes before and after the reply; their own tabs going web
+   * -> extension -> web; auto-attached children; page events and nested replies on their
+   * sessions; web tabs announced at the root; a close in mid-flight; and foreign churn (extension
+   * pages, service workers and their sessions, other targets' ends, target-less detaches,
+   * browser-level events). After every step a connected subscriber may receive no id of the
+   * other's sessions or unannounced targets, of an extension's targets or sessions, and no
+   * extension address; at the end each of its own events arrived exactly as often as it happened
+   * (none while its tab was on an extension page: E1), none of a refused command's, none after
+   * its close. Your own agent's subscriber hears every event the runtime sent, as before. Bounds:
+   * churn stays below 4,096 terminal events inside any one create's or resume's wait (the bound
+   * test pins what happens above it).
+   */
+  it("keeps both invariants for generated sequences on a shared root", async () => {
+    const prng = (seed: number) => {
+      let a = seed >>> 0;
+      return () => {
+        a = (a + 0x6d2b79f5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+      };
+    };
+    const { runtime, attach } = await connectedRootAttachment("Generated Profile", true);
+    const nextCdp = async () => {
+      for (;;) {
+        const command = await runtime.nextCommand();
+        if (command.type === "cdp.command") return command;
+      }
+    };
+    const failures: string[] = [];
+    const extensionUrl = (id: number) => `chrome-extension://${"e".repeat(32)}/p-${id}.html`;
+    for (let seed = 1; seed <= 30 && failures.length === 0; seed += 1) {
+      const random = prng(seed);
+      const pick = <T>(values: readonly T[]): T | undefined =>
+        values[Math.floor(random() * values.length)];
+      const trace: string[] = [];
+      let serial = 0;
+      let sequence = 1;
+      let marker = 0;
+      let sent = 0;
+      const subscribers = await Promise.all(
+        ["s1", "s2"].map(async (name) => {
+          const attached = await attach();
+          return {
+            name,
+            ...attached,
+            open: true,
+            checked: 0,
+            own: new Set<string>(),
+            expected: new Map<string, number>(),
+            pending: [] as {
+              kind: "attach" | "create" | "resume";
+              requestId: string;
+              target: string;
+              session?: string;
+              result: Promise<unknown>;
+            }[],
+            sessions: [] as { id: string; target: string; ended: boolean }[],
+            targets: [] as { id: string; destroyed: boolean; hidden: boolean }[],
+          };
+        }),
+      );
+      const yours = await attach(false);
+      type Subscriber = (typeof subscribers)[number];
+      // Terminal events sent for a pending command's ids, delivered only if it succeeds.
+      const early = new Map<Subscriber["pending"][number], string[]>();
+      const send = (method: string, parameters: Record<string, unknown>, sessionId?: string) => {
+        sent += 1;
+        trace.push(`runtime ${method} ${sessionId ?? ""} ${JSON.stringify(parameters)}`);
+        runtime.sendServer({
+          type: "cdp.event",
+          event: { method, parameters, sequence: sequence++, ...(sessionId ? { sessionId } : {}) },
+        });
+      };
+      const bump = (sub: Subscriber, key: string) => {
+        if (sub.open) sub.expected.set(key, (sub.expected.get(key) ?? 0) + 1);
+      };
+      const hiddenTarget = (sub: Subscriber, id: string) =>
+        sub.targets.some((t) => t.id === id && t.hidden);
+      const terminal = (
+        sub: Subscriber,
+        key: string,
+        method: string,
+        parameters: Record<string, unknown>,
+        pending?: Subscriber["pending"][number],
+      ) => {
+        if (pending) early.set(pending, [...(early.get(pending) ?? []), key]);
+        else if (!hiddenTarget(sub, String(parameters.targetId))) bump(sub, key);
+        send(method, parameters);
+      };
+      let churn = 0;
+      const announced = new Set<string>();
+      const steps: ((sub: Subscriber) => Promise<void> | void)[] = [
+        async (sub) => {
+          if (!sub.open) return;
+          const kind = pick(["attach", "create", "resume"] as const)!;
+          const id = ++serial;
+          const target = `tgt-${sub.name}-${id}`;
+          const command =
+            kind === "attach"
+              ? { method: "Target.attachToTarget", parameters: { targetId: target, flatten: true } }
+              : kind === "create"
+                ? { method: "Target.createTarget", parameters: { url: `https://new-${id}.test/` } }
+                : {
+                    method: browserHostMethods.resumeTab,
+                    parameters: {
+                      surfaceId: BrowserSurfaceIdSchema.parse(`tab_${sub.name}_${id}`),
+                    },
+                  };
+          const result = sub.attached.request(command).then(
+            (value) => value,
+            (error: unknown) => ({ refused: String(error) }),
+          );
+          const forward = await nextCdp();
+          trace.push(`${sub.name} ${kind} ${target}`);
+          sub.pending.push({
+            kind,
+            requestId: String(forward.requestId),
+            target,
+            ...(kind === "attach" ? { session: `cdp_${sub.name}_${id}` } : {}),
+            result,
+          });
+        },
+        async (sub) => {
+          const pending = pick(sub.pending);
+          if (!pending) return;
+          sub.pending.splice(sub.pending.indexOf(pending), 1);
+          const refused = random() < 0.2;
+          trace.push(
+            `${sub.name} reply ${pending.kind} ${pending.target} ${refused ? "refused" : "ok"}`,
+          );
+          runtime.sendServer(
+            refused
+              ? {
+                  type: "cdp.error",
+                  requestId: pending.requestId,
+                  error: {
+                    code: "not_found",
+                    message: "Not here.",
+                    retryable: false,
+                    unsent: true,
+                  },
+                }
+              : {
+                  type: "cdp.result",
+                  requestId: pending.requestId,
+                  result:
+                    pending.kind === "attach"
+                      ? { sessionId: pending.session }
+                      : { targetId: pending.target },
+                },
+          );
+          await pending.result;
+          if (refused) return;
+          for (const key of early.get(pending) ?? []) bump(sub, key);
+          sub.own.add(pending.target);
+          if (!sub.targets.some((t) => t.id === pending.target))
+            sub.targets.push({
+              id: pending.target,
+              destroyed: (early.get(pending) ?? []).includes(`destroy:${pending.target}`),
+              hidden: false,
+            });
+          if (pending.session) {
+            sub.own.add(pending.session);
+            sub.sessions.push({
+              id: pending.session,
+              target: pending.target,
+              ended: (early.get(pending) ?? []).includes(`detach:${pending.session}`),
+            });
+          }
+        },
+        // Its own terminal event, before or after the reply.
+        (sub) => {
+          const before = random() < 0.5 && sub.pending.length > 0;
+          if (before) {
+            const pending = pick(sub.pending)!;
+            if ((early.get(pending) ?? []).length) return;
+            if (pending.session && random() < 0.5)
+              terminal(
+                sub,
+                `detach:${pending.session}`,
+                "Target.detachedFromTarget",
+                { sessionId: pending.session, targetId: pending.target },
+                pending,
+              );
+            else if (random() < 0.5)
+              terminal(
+                sub,
+                `crash:${pending.target}`,
+                "Target.targetCrashed",
+                { targetId: pending.target, status: "crashed", errorCode: 1 },
+                pending,
+              );
+            else
+              terminal(
+                sub,
+                `destroy:${pending.target}`,
+                "Target.targetDestroyed",
+                { targetId: pending.target },
+                pending,
+              );
+            return;
+          }
+          const session = pick(sub.sessions.filter((s) => !s.ended));
+          const target = pick(sub.targets.filter((t) => !t.destroyed));
+          if (session && random() < 0.5) {
+            session.ended = true;
+            terminal(sub, `detach:${session.id}`, "Target.detachedFromTarget", {
+              sessionId: session.id,
+              targetId: session.target,
+            });
+          } else if (target && random() < 0.4) {
+            terminal(sub, `crash:${target.id}`, "Target.targetCrashed", {
+              targetId: target.id,
+              status: "crashed",
+              errorCode: 1,
+            });
+          } else if (target) {
+            terminal(sub, `destroy:${target.id}`, "Target.targetDestroyed", {
+              targetId: target.id,
+            });
+            target.destroyed = true;
+          }
+        },
+        // Its own tab goes to an extension page, or back to the web.
+        (sub) => {
+          const target = pick(sub.targets.filter((t) => !t.destroyed));
+          if (!target) return;
+          target.hidden = !target.hidden;
+          // Announced at the root: on a shared root every subscriber may know a web tab.
+          if (!target.hidden) announced.add(target.id);
+          send("Target.targetInfoChanged", {
+            targetInfo: {
+              targetId: target.id,
+              type: "page",
+              url: target.hidden ? extensionUrl(++serial) : `https://back-${++serial}.test/`,
+            },
+          });
+        },
+        // An auto-attached child of one of its sessions, and later its end.
+        (sub) => {
+          const parent = pick(sub.sessions.filter((s) => !s.ended));
+          if (!parent || hiddenTarget(sub, parent.target)) return;
+          const id = ++serial;
+          const child = {
+            id: `cdp_${sub.name}_child_${id}`,
+            target: `tgt-${sub.name}-frame-${id}`,
+          };
+          send(
+            "Target.attachedToTarget",
+            {
+              sessionId: child.id,
+              targetInfo: {
+                targetId: child.target,
+                type: "iframe",
+                url: `https://frame-${id}.test/`,
+              },
+              waitingForDebugger: false,
+            },
+            parent.id,
+          );
+          sub.own.add(child.id);
+          sub.own.add(child.target);
+          sub.sessions.push({ ...child, ended: false });
+          if (random() < 0.5) {
+            sub.sessions.at(-1)!.ended = true;
+            bump(sub, `detach:${child.id}`);
+            send(
+              "Target.detachedFromTarget",
+              { sessionId: child.id, targetId: child.target },
+              parent.id,
+            );
+          }
+        },
+        // A page event on one of its sessions, and a nested reply to it: its own, the other's not.
+        (sub) => {
+          const session = pick(sub.sessions.filter((s) => !s.ended));
+          if (!session) return;
+          bump(sub, `page:${session.id}`);
+          send("Page.loadEventFired", { timestamp: ++serial }, session.id);
+          bump(sub, `nested:${session.id}`);
+          send("Target.receivedMessageFromTarget", {
+            sessionId: session.id,
+            message: JSON.stringify({ id: serial, result: {} }),
+          });
+        },
+        // A web tab of the session announced at the root: every subscriber may know it. Its
+        // opener, parent and their frames may be anything: a subscriber's own tab (on the web or
+        // on an extension page), another's, an extension's target, a tab announced before.
+        () => {
+          const id = ++serial;
+          const pool = [
+            ...subscribers.flatMap((sub) => sub.targets.map((t) => t.id)),
+            ...announced,
+            `tgt-ext-${serial - 1}`,
+          ];
+          const related = () => (random() < 0.7 ? pick(pool) : undefined);
+          const [openerId, openerFrameId, parentId, parentFrameId] = [
+            related(),
+            related(),
+            related(),
+            related(),
+          ];
+          send("Target.targetCreated", {
+            targetInfo: {
+              targetId: `tgt-web-${id}`,
+              type: "page",
+              url: `https://web-${id}.test/`,
+              ...(openerId ? { openerId, canAccessOpener: true } : {}),
+              ...(openerFrameId ? { openerFrameId } : {}),
+              ...(parentId ? { parentId } : {}),
+              ...(parentFrameId ? { parentFrameId } : {}),
+            },
+          });
+          if (random() < 0.5) send("Target.targetDestroyed", { targetId: `tgt-web-${id}` });
+        },
+        // Its own session detaches while its tab sits on an extension page: not told (E1).
+        (sub) => {
+          const session = pick(sub.sessions.filter((s) => !s.ended && hiddenTarget(sub, s.target)));
+          if (!session) return;
+          session.ended = true;
+          terminal(sub, `detach:${session.id}`, "Target.detachedFromTarget", {
+            sessionId: session.id,
+            targetId: session.target,
+          });
+        },
+        // A close in mid-flight: from now on it hears nothing.
+        (sub) => {
+          if (!sub.open || random() < 0.7) return;
+          trace.push(`${sub.name} close`);
+          sub.open = false;
+          sub.attached.close();
+        },
+        // Foreign churn: extension targets and pages, their sessions and ends, other ids' ends.
+        () => {
+          const count = Math.floor(random() * (churn > 2_000 ? 10 : 200));
+          churn += count;
+          for (let index = 0; index < count; index += 1) {
+            const id = ++serial;
+            const ext = extensionUrl(id);
+            switch (index % 7) {
+              case 0:
+                send("Target.targetCreated", {
+                  targetInfo: { targetId: `tgt-ext-${id}`, type: "page", url: ext },
+                });
+                break;
+              case 1:
+                send("Target.attachedToTarget", {
+                  sessionId: `cdp_ext_${id}`,
+                  targetInfo: { targetId: `tgt-ext-${id}`, type: "service_worker", url: ext },
+                  waitingForDebugger: false,
+                });
+                break;
+              case 2:
+                send("Target.detachedFromTarget", {
+                  sessionId: `cdp_churn_${id}`,
+                  targetId: `tgt-churn-${id}`,
+                });
+                break;
+              case 3:
+                send("Target.targetDestroyed", { targetId: `tgt-churn-${id}` });
+                break;
+              case 4:
+                send("Browser.downloadWillBegin", {
+                  frameId: `tgt-ext-${id}`,
+                  guid: `g-${id}`,
+                  url: ext,
+                  suggestedFilename: "f.txt",
+                });
+                break;
+              case 5:
+                send("Target.detachedFromTarget", { sessionId: `cdp_churn_${id}` });
+                break;
+              default:
+                send("Target.targetCrashed", {
+                  targetId: `tgt-churn-${id}`,
+                  status: "crashed",
+                  errorCode: 1,
+                });
+            }
+          }
+        },
+      ];
+      // Every message before a marker has been handled once every subscriber hears the marker.
+      const settle = async () => {
+        const n = ++marker;
+        send("Page.marker", { n });
+        await vi.waitFor(
+          () => {
+            for (const sub of [...subscribers.filter((x) => x.open), yours])
+              expect(
+                sub.events.some((e) => e.method === "Page.marker" && e.parameters.n === n),
+              ).toBe(true);
+          },
+          { interval: 2 },
+        );
+      };
+      const check = (step: string) => {
+        for (const sub of subscribers) {
+          const other = subscribers.find((x) => x !== sub)!;
+          const fresh = JSON.stringify(sub.events.slice(sub.checked));
+          sub.checked = sub.events.length;
+          const leaked =
+            (fresh.includes("chrome-extension:") && "an extension's address") ||
+            [/"tgt-ext-\d+"/u, /"cdp_ext_\d+"/u, /"tgt-churn-\d+"/u, /"cdp_churn_\d+"/u]
+              .map((pattern) => fresh.match(pattern)?.[0])
+              .find(Boolean) ||
+            [...other.own, ...other.pending.flatMap((p) => [p.target, p.session ?? ""])]
+              .filter((id) => id && !announced.has(id))
+              .find((id) => fresh.includes(`"${id}"`)) ||
+            sub.targets
+              .filter((t) => t.hidden)
+              .map((t) => t.id)
+              .find((id) => fresh.includes(`"${id}"`));
+          if (leaked)
+            failures.push(
+              `seed ${seed} at ${step}: ${sub.name} received ${leaked}\n${trace.join("\n")}`,
+            );
+          if (!sub.open && fresh !== "[]")
+            failures.push(
+              `seed ${seed} at ${step}: ${sub.name} heard after its close\n${trace.join("\n")}`,
+            );
+        }
+        // Your own agent's subscriber: every event the runtime sent, nothing taken.
+        if (yours.events.length !== sent)
+          failures.push(
+            `seed ${seed} at ${step}: your own agent heard ${yours.events.length} of ${sent}\n${trace.join("\n")}`,
+          );
+      };
+      try {
+        for (let step = 0; step < 30 && failures.length === 0; step += 1) {
+          await pick(steps)!(pick(subscribers)!);
+          await settle();
+          check(`step ${step}`);
+        }
+        // The end: every pending command is answered.
+        for (const sub of subscribers)
+          while (sub.pending.length) {
+            const pending = sub.pending.shift()!;
+            runtime.sendServer({
+              type: "cdp.result",
+              requestId: pending.requestId,
+              result:
+                pending.kind === "attach"
+                  ? { sessionId: pending.session }
+                  : { targetId: pending.target },
+            });
+            await pending.result;
+            for (const key of early.get(pending) ?? []) bump(sub, key);
+          }
+        await settle();
+        check("end");
+        for (const sub of subscribers) {
+          const counted = new Map<string, number>();
+          for (const event of sub.events) {
+            const p = event.parameters as { targetId?: unknown; sessionId?: unknown };
+            const key =
+              event.method === "Target.targetCrashed"
+                ? `crash:${String(p.targetId)}`
+                : event.method === "Target.targetDestroyed"
+                  ? `destroy:${String(p.targetId)}`
+                  : event.method === "Target.detachedFromTarget"
+                    ? `detach:${String(p.sessionId)}`
+                    : event.method === "Page.loadEventFired"
+                      ? `page:${String(event.sessionId)}`
+                      : event.method === "Target.receivedMessageFromTarget"
+                        ? `nested:${String(p.sessionId)}`
+                        : undefined;
+            // Announced tabs are every subscriber's to hear: only its own are counted.
+            const id = key?.slice(key.indexOf(":") + 1);
+            if (key && id && !key.includes("tgt-web-") && (sub.own.has(id) || !announced.has(id)))
+              counted.set(key, (counted.get(key) ?? 0) + 1);
+          }
+          for (const key of new Set([...counted.keys(), ...sub.expected.keys()]))
+            if ((counted.get(key) ?? 0) !== (sub.expected.get(key) ?? 0))
+              failures.push(
+                `seed ${seed}: ${sub.name} expected ${sub.expected.get(key) ?? 0} of ${key}, received ${counted.get(key) ?? 0}\n${trace.join("\n")}`,
+              );
+        }
+      } finally {
+        for (const sub of subscribers) if (sub.open) sub.attached.close();
+        yours.attached.close();
+      }
+    }
+    expect(failures.slice(0, 1)).toEqual([]);
+  });
+
+  it("keeps a created tab's own early end below 4,096 other ends in its wait, and only there (bound)", async () => {
+    const { runtime, attach } = await connectedRootAttachment("Bound Profile");
+    const nextCdp = async () => {
+      for (;;) {
+        const command = await runtime.nextCommand();
+        if (command.type === "cdp.command") return command;
+      }
+    };
+    let sequence = 1;
+    for (const [others, kept] of [
+      [4_095, true],
+      [4_096, false],
+    ] as const) {
+      const { attached, events } = await attach();
+      const create = attached.request({
+        method: "Target.createTarget",
+        parameters: { url: "https://bound.test/" },
+      });
+      const forward = await nextCdp();
+      const own = `bound-tab-${others}`;
+      const send = (targetId: string) =>
+        runtime.sendServer({
+          type: "cdp.event",
+          event: {
+            method: "Target.targetDestroyed",
+            parameters: { targetId },
+            sequence: sequence++,
+          },
+        });
+      send(own);
+      for (let index = 0; index < others; index += 1) send(`bound-other-${others}-${index}`);
+      runtime.sendServer({
+        type: "cdp.result",
+        requestId: forward.requestId,
+        result: { targetId: own },
+      });
+      await create;
+      runtime.sendServer({
+        type: "cdp.event",
+        event: { method: "Page.boundMarker", parameters: { others }, sequence: sequence++ },
+      });
+      await vi.waitFor(() =>
+        expect(events.some((e) => e.method === "Page.boundMarker")).toBe(true),
+      );
+      expect(
+        events
+          .filter((e) => e.method === "Target.targetDestroyed")
+          .map((e) => e.parameters.targetId),
+      ).toEqual(kept ? [own] : []);
+      attached.close();
+    }
+  });
+
+  it("delivers nothing to a connection's shared-root attachment after its Disconnect or its binding's end", async () => {
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Disconnect Profile" });
+    let agentConnectionId = `acn_${randomUUID()}`;
+    const connected = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const ownAgent = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const threadId = createId("thread");
+    let isConnected = true;
+    repository.resolveResourceAccess = async () => {
+      return {
+        access: "read-write",
+        runAccess: "read-write",
+        grantAccess: "read-write",
+        execution: {
+          ownerUserId: ownerId,
+          subject: {
+            kind: "binding",
+            bindingId: isConnected ? connected.agentBindingId : ownAgent.agentBindingId,
+          },
+          actor: isConnected ? "agent" : "native",
+          threadId,
+          runId: createId("run"),
+          agentConnection: isConnected
+            ? {
+                agentConnectionId,
+                grant: { scope: "everything" },
+                grantRevision: 1,
+                consentVersion: 1,
+                accessMode: "full-access",
+                bridgeSenders: null,
+              }
+            : null,
+          taskMode: "full-access",
+          runMode: "full-access",
+          mode: "full-access",
+        },
+      };
+    };
+    const opened = await service.openAgentSession({ ...connected, profileId: profile.id });
+    const attach = async (binding: typeof connected) => {
+      isConnected = binding === connected;
+      const events: { method: string }[] = [];
+      let closed = false;
+      const attached = await service.attachCdpForAgent(
+        { ...binding, sessionId: opened.session.id },
+        (event) => events.push(event),
+        () => {
+          closed = true;
+        },
+      );
+      return { attached, events, closed: () => closed };
+    };
+    let sequence = 1;
+    const send = (method: string) =>
+      runtime.sendServer({
+        type: "cdp.event",
+        event: { method, parameters: {}, sequence: sequence++ },
+      });
+    for (const end of ["disconnect", "binding-ended"] as const) {
+      // A disconnected connection admits nothing more: each case its own connection.
+      agentConnectionId = `acn_${randomUUID()}`;
+      const theirs = await attach(connected);
+      const mine = await attach(ownAgent);
+      send("Page.before");
+      await vi.waitFor(() => expect(theirs.events.at(-1)?.method).toBe("Page.before"));
+      if (end === "disconnect")
+        service.closeStandardCdpForConnection(
+          agentConnectionId,
+          "Agent connection authority ended.",
+        );
+      else await service.detachAgentSessionsForBinding(connected.agentBindingId);
+      send("Page.after");
+      // Your own agent's attachment, on the same shared root, still hears it: so it has arrived.
+      await vi.waitFor(() => expect(mine.events.at(-1)?.method).toBe("Page.after"));
+      expect(
+        theirs.events.map(({ method }) => method),
+        end,
+      ).not.toContain("Page.after");
+      if (end === "disconnect") expect(theirs.closed(), end).toBe(true);
+      theirs.attached.close();
+      mine.attached.close();
+      if (end === "binding-ended") break;
+    }
+  });
+
+  it("keeps target-less foreign detaches out of an attach's buffer, and hides a tab that went to an extension page (shared root)", async () => {
+    const { runtime, attach } = await connectedRootAttachment("Shared Root Profile");
+    const { attached, events } = await attach();
+    let sequence = 1;
+    const send = (method: string, parameters: Record<string, unknown>, sessionId?: string) =>
+      runtime.sendServer({
+        type: "cdp.event",
+        event: { method, parameters, sequence: sequence++, ...(sessionId ? { sessionId } : {}) },
+      });
+    const settle = async (n: number) => {
+      send("Page.marker", { n });
+      await vi.waitFor(() =>
+        expect(events.some((e) => e.method === "Page.marker" && e.parameters.n === n)).toBe(true),
+      );
+    };
+    // 1. An attach's own early detach survives any number of target-less foreign detaches.
+    const request = attached.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "own-tab", flatten: true },
+    });
+    const forward = await runtime.nextCommand();
+    send("Target.detachedFromTarget", { sessionId: "cdp_own", targetId: "own-tab" });
+    for (let index = 0; index < 100; index += 1)
+      send("Target.detachedFromTarget", { sessionId: `cdp_foreign_${index}` });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: forward.requestId,
+      result: { sessionId: "cdp_own" },
+    });
+    await request;
+    await settle(1);
+    expect(events.filter((e) => e.method === "Target.detachedFromTarget")).toEqual([
+      expect.objectContaining({ parameters: { sessionId: "cdp_own", targetId: "own-tab" } }),
+    ]);
+    // 2. Its own tab goes to an extension page: its id is named no more (its end included), and a
+    // page it opens is told without its opener; back on the web, it is told again.
+    const second = attached.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "own-tab-2", flatten: true },
+    });
+    const secondForward = await runtime.nextCommand();
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: secondForward.requestId,
+      result: { sessionId: "cdp_own_2" },
+    });
+    await second;
+    const before = events.length;
+    const extension = `chrome-extension://${"a".repeat(32)}/options.html`;
+    send("Target.targetInfoChanged", {
+      targetInfo: { targetId: "own-tab-2", type: "page", url: extension },
+    });
+    send("Target.targetCreated", {
+      targetInfo: {
+        targetId: "popup",
+        type: "page",
+        url: "https://popup.test/",
+        openerId: "own-tab-2",
+        openerFrameId: "own-tab-2",
+        canAccessOpener: true,
+      },
+    });
+    send("Target.targetCrashed", { targetId: "own-tab-2", status: "crashed", errorCode: 1 });
+    await settle(2);
+    const hidden = JSON.stringify(events.slice(before));
+    expect(hidden).not.toContain("own-tab-2");
+    expect(hidden).not.toContain("chrome-extension:");
+    expect(events.find((e) => e.parameters.targetInfo)?.parameters).toBeDefined();
+    expect(
+      events.slice(before).find((e) => e.method === "Target.targetCreated")?.parameters.targetInfo,
+    ).toEqual({
+      targetId: "popup",
+      type: "page",
+      url: "https://popup.test/",
+      canAccessOpener: false,
+    });
+    send("Target.targetInfoChanged", {
+      targetInfo: { targetId: "own-tab-2", type: "page", url: "https://back.test/" },
+    });
+    send("Target.targetDestroyed", { targetId: "own-tab-2" });
+    await settle(3);
+    expect(
+      events
+        .slice(before)
+        .filter((e) => JSON.stringify(e).includes("own-tab-2"))
+        .map((e) => e.method),
+    ).toEqual(["Target.targetInfoChanged", "Target.targetDestroyed"]);
+    attached.close();
+  });
+
+  it("delivers nothing to a connection's work after its connection or binding ends, on every path (P1)", async () => {
+    // Every delivery function of a connection's shared-root subscription, against both ends.
+    const paths = [
+      "live event",
+      "buffered early detach",
+      "attach registering after the end",
+    ] as const;
+    const ends = ["connection ended", "binding ended"] as const;
+    for (const path of paths)
+      for (const end of ends) {
+        const ownerId = createId("user");
+        const repository = new MemoryBrowserRepository(ownerId);
+        const keys = generateKeyPairSync("ed25519");
+        const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+        const service = freshService({ keys, runtime, repository });
+        cleanups.push(async () => service.close());
+        const profile = await repository.createBrowserProfile({ ownerId, name: `${path} ${end}` });
+        const agentConnectionId = `acn_${randomUUID()}`;
+        const binding = { agentBindingId: `run:${createId("run")}`, ownerId };
+        const yourOwn = { agentBindingId: `run:${createId("run")}`, ownerId };
+        let asConnection = true;
+        repository.resolveResourceAccess = async () => ({
+          access: "read-write",
+          runAccess: "read-write",
+          grantAccess: "read-write",
+          execution: {
+            ownerUserId: ownerId,
+            subject: {
+              kind: "binding",
+              bindingId: asConnection ? binding.agentBindingId : yourOwn.agentBindingId,
+            },
+            actor: asConnection ? "agent" : "native",
+            threadId: createId("thread"),
+            runId: createId("run"),
+            agentConnection: asConnection
+              ? {
+                  agentConnectionId,
+                  grant: { scope: "everything" },
+                  grantRevision: 1,
+                  consentVersion: 1,
+                  accessMode: "full-access",
+                  bridgeSenders: null,
+                }
+              : null,
+            taskMode: "full-access",
+            runMode: "full-access",
+            mode: "full-access",
+          },
+        });
+        const opened = await service.openAgentSession({ ...binding, profileId: profile.id });
+        // One of your own agents on the same session: it hears every event, so it says when one
+        // has arrived.
+        asConnection = false;
+        const heard: string[] = [];
+        const observer = await service.attachCdpForAgent(
+          { ...yourOwn, sessionId: opened.session.id },
+          (event) => heard.push(event.method),
+        );
+        asConnection = true;
+        const arrived = (method: string) => vi.waitFor(() => expect(heard).toContain(method));
+        const events: string[] = [];
+        let closed = false;
+        const endIt = async () => {
+          if (end === "connection ended")
+            service.closeStandardCdpForConnection(
+              agentConnectionId,
+              "Agent connection authority ended.",
+            );
+          else await service.detachAgentSessionsForBinding(binding.agentBindingId);
+        };
+        let sequence = 1;
+        const send = (method: string, parameters: Record<string, unknown> = {}) =>
+          runtime.sendServer({
+            type: "cdp.event",
+            event: { method, parameters, sequence: sequence++ },
+          });
+        const attach = () =>
+          service.attachCdpForAgent(
+            { ...binding, sessionId: opened.session.id },
+            (event) => events.push(event.method),
+            () => {
+              closed = true;
+            },
+          );
+        if (path === "attach registering after the end") {
+          // The attach is admitted, then held inside #holdForAgent while the end happens.
+          const gate = Promise.withResolvers<void>();
+          const hold = repository.attachBrowserSession.bind(repository);
+          const held = vi
+            .spyOn(repository, "attachBrowserSession")
+            .mockImplementation(async (...args) => {
+              await gate.promise;
+              return hold(...args);
+            });
+          const attaching = attach().then(
+            (attached) => ({ attached }),
+            (error: unknown) => ({ error }),
+          );
+          await vi.waitFor(() => expect(held).toHaveBeenCalled());
+          await endIt();
+          gate.resolve();
+          const outcome = await attaching;
+          held.mockRestore();
+          send("Page.afterTheEnd");
+          await arrived("Page.afterTheEnd");
+          // It registers after the end: it fails closed, and nothing reaches it.
+          expect("error" in outcome, `${path} / ${end}`).toBe(true);
+        } else {
+          const attached = await attach();
+          if (path === "live event") {
+            await endIt();
+            send("Page.afterTheEnd");
+            await arrived("Page.afterTheEnd");
+          } else {
+            const request = attached.request({
+              method: "Target.attachToTarget",
+              parameters: { targetId: "own-tab", flatten: true },
+            });
+            const forward = await runtime.nextCommand();
+            send("Target.detachedFromTarget", { sessionId: "cdp_own", targetId: "own-tab" });
+            // It has reached the Host (and the connection's buffer) before the end.
+            await arrived("Target.detachedFromTarget");
+            // A binding's end is recorded at once; its sessions detach after a store write, which
+            // is held here so the attach's reply lands in between (when the buffer is flushed).
+            const gate = Promise.withResolvers<void>();
+            const detach = repository.detachBrowserSessionAttachments.bind(repository);
+            const held = vi
+              .spyOn(repository, "detachBrowserSessionAttachments")
+              .mockImplementation(async (...args) => {
+                await gate.promise;
+                return detach(...args);
+              });
+            const ending = endIt();
+            runtime.sendServer({
+              type: "cdp.result",
+              requestId: forward.requestId,
+              result: { sessionId: "cdp_own" },
+            });
+            await request.catch(() => undefined);
+            gate.resolve();
+            await ending;
+            held.mockRestore();
+          }
+          attached.close();
+        }
+        observer.close();
+        // The same session, attached by one of your own agents' work, hears what was sent after.
+        expect(events, `${path} / ${end}`).not.toContain("Page.afterTheEnd");
+        expect(events, `${path} / ${end}`).not.toContain("Target.detachedFromTarget");
+        if (end === "connection ended" && path !== "attach registering after the end")
+          expect(closed, `${path} / ${end}`).toBe(true);
+      }
+  });
+
+  it("keeps a tab that went to an extension page untold past the hidden set's bound (P8)", async () => {
+    const { runtime, attach } = await connectedRootAttachment("Hidden Bound Profile");
+    const { attached, events } = await attach();
+    let sequence = 1;
+    const send = (method: string, parameters: Record<string, unknown>) =>
+      runtime.sendServer({
+        type: "cdp.event",
+        event: { method, parameters, sequence: sequence++ },
+      });
+    const request = attached.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "own-tab", flatten: true },
+    });
+    const forward = await runtime.nextCommand();
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: forward.requestId,
+      result: { sessionId: "cdp_own" },
+    });
+    await request;
+    const extension = (n: number) => `chrome-extension://${"a".repeat(32)}/p-${n}.html`;
+    send("Target.targetInfoChanged", {
+      targetInfo: { targetId: "own-tab", type: "page", url: extension(0) },
+    });
+    // 4,096 other targets go to extension pages too: the hidden set no longer holds own-tab.
+    for (let index = 1; index <= 4_096; index += 1)
+      send("Target.targetInfoChanged", {
+        targetInfo: { targetId: `other-${index}`, type: "page", url: extension(index) },
+      });
+    send("Target.targetDestroyed", { targetId: "own-tab" });
+    send("Page.marker", {});
+    await vi.waitFor(() => expect(events.at(-1)?.method).toBe("Page.marker"), { timeout: 10_000 });
+    expect(events.filter((e) => e.method === "Target.targetDestroyed")).toEqual([]);
+    attached.close();
+  });
+
+  it("keeps a subscriber's own child however many children a neighbour opens on the shared root (S2)", async () => {
+    const { runtime, attach } = await connectedRootAttachment("S2 Profile");
+    const own = await attach();
+    const neighbour = await attach();
+    const attachPage = async (
+      attached: Awaited<ReturnType<typeof attach>>["attached"],
+      targetId: string,
+      sessionId: string,
+    ) => {
+      const request = attached.request({
+        method: "Target.attachToTarget",
+        parameters: { targetId, flatten: true },
+      });
+      const forward = await runtime.nextCommand();
+      runtime.sendServer({
+        type: "cdp.result",
+        requestId: forward.requestId,
+        result: { sessionId },
+      });
+      await expect(request).resolves.toEqual({ sessionId });
+    };
+    await attachPage(own.attached, "own-tab", "cdp_own");
+    await attachPage(neighbour.attached, "neighbour-tab", "cdp_neighbour");
+    let sequence = 1;
+    const childAttached = (envelope: string, sessionId: string, targetId: string) =>
+      runtime.sendServer({
+        type: "cdp.event",
+        event: {
+          method: "Target.attachedToTarget",
+          sessionId: envelope,
+          parameters: {
+            sessionId,
+            targetInfo: { targetId, type: "iframe", url: "https://frame.test/" },
+            waitingForDebugger: false,
+          },
+          sequence: sequence++,
+        },
+      });
+    childAttached("cdp_own", "cdp_own_child", "own-frame");
+    for (let index = 0; index < 4_200; index += 1)
+      childAttached("cdp_neighbour", `cdp_neighbour_child_${index}`, `neighbour-frame-${index}`);
+    runtime.sendServer({
+      type: "cdp.event",
+      event: {
+        method: "Target.detachedFromTarget",
+        sessionId: "cdp_own",
+        parameters: { sessionId: "cdp_own_child", targetId: "own-frame" },
+        sequence: sequence++,
+      },
+    });
+    await vi.waitFor(() =>
+      expect(own.events).toContainEqual(
+        expect.objectContaining({
+          method: "Target.detachedFromTarget",
+          parameters: { sessionId: "cdp_own_child", targetId: "own-frame" },
+        }),
+      ),
+    );
+    own.attached.close();
+    neighbour.attached.close();
   });
 
   it("never deadlocks when attachCdpForAgent or agent start races #holdForAgent on the same profile (PH1)", async () => {

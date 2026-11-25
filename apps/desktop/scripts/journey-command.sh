@@ -41,8 +41,9 @@ journey() {
       export OPENSTEER_PASSKEY_POLICY_E2E_ARTIFACT_DIR="$out/passkeys"
       export OPENSTEER_USB_E2E_ARTIFACT_DIR="$out/usb"
       export OPENSTEER_SYSTEM_CA_E2E_ARTIFACT_DIR="$out/system-ca"
+      export OPENSTEER_EXTENSIONS_E2E_ARTIFACT_DIR="$out/extensions"
       # OPENSTEER_ELECTRON_SMOKES names the smokes to run, in order (one may repeat); all by default.
-      for smoke in ${OPENSTEER_ELECTRON_SMOKES:-cdp-boundary passwords attachments downloads focus host-transport browser idle quit menu-bar passkeys usb profile-restore cookies system-ca}; do
+      for smoke in ${OPENSTEER_ELECTRON_SMOKES:-cdp-boundary passwords attachments downloads focus host-transport browser idle quit menu-bar passkeys usb profile-restore cookies system-ca extensions}; do
         mkdir -p "$out/$smoke"
         smoke_start=$SECONDS
         smoke_code=0

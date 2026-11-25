@@ -12,7 +12,7 @@ import {
 } from "@opensteer/shared/atomicPrivateFile";
 import { z } from "zod";
 
-const DeviceMembershipSchema = z.strictObject({
+const DeviceMembershipFieldsSchema = z.strictObject({
   state: z.enum(["active", "leaving", "removed"]),
   generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   runnerId: RunnerIdSchema.nullable(),
@@ -61,6 +61,13 @@ const DeviceMembershipSchema = z.strictObject({
   erasePending: z.boolean(),
   leaveProof: RunnerLeaveRequestSchema.nullable(),
 });
+// Session state belongs to an active membership only. A row that is leaving
+// or removed has no session to confirm or resume, and a stale flag carried
+// into either state would refuse every later "Connect again". Normalizing here
+// also repairs preferences an earlier build wrote that way.
+const DeviceMembershipSchema = DeviceMembershipFieldsSchema.transform((row) =>
+  row.state === "active" ? row : { ...row, confirmingSession: false, needsSignIn: false },
+);
 export type DeviceMembership = z.infer<typeof DeviceMembershipSchema>;
 export const DeviceMembershipsSchema = z
   .strictObject({

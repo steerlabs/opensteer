@@ -1,6 +1,13 @@
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import type { Session } from "electron";
-import { browserIdentity } from "@opensteer/browser-core";
+import { browserIdentity, isExtensionUrl } from "@opensteer/browser-core";
+import {
+  isDynamicExtensionHop,
+  recordDynamicExtensionRequestHop,
+  recordExtensionRedirect,
+  takeDynamicExtensionRequestHop,
+} from "./extensions/extension-redirects.js";
+import { mayReachExtensionResource } from "./extensions/web-accessible.js";
 import { isLoopbackHostname } from "@opensteer/core";
 import { browserPagePermissionsPolicy } from "@opensteer/browser-runtime-core/page-policy";
 
@@ -13,6 +20,8 @@ export interface BrowserSessionPolicyOptions {
   readonly onUploadRequest?: (webContentsId: number, requestId: number) => void;
   readonly onRequestFinished?: (requestId: number) => void;
   readonly onMainFrameRequest?: (webContentsId: number, method: string) => void;
+  /** Whether a WebContents is currently controlled by a connected agent (cancels `chrome-extension:` requests). */
+  readonly isConnectionWebContents?: (webContentsId: number) => boolean;
   readonly acceptLanguages?: string;
   readonly downloads: Pick<DesktopDownloads, "accept">;
   /** Absolute path of the bundled `browser-page-preload.cjs`. */
@@ -73,11 +82,53 @@ export function applyBrowserSessionPolicy(
       options.onUploadRequest?.(details.webContentsId, details.id);
     if (details.resourceType === "mainFrame" && details.webContentsId !== undefined)
       options.onMainFrameRequest?.(details.webContentsId, details.method);
-    if (!isAllowedBrowserRequest(details.url)) callback({ cancel: true });
-    else if (requestGates.has(session))
+    const kind = classifyBrowserRequest(details.url);
+    if (kind === "denied") callback({ cancel: true });
+    // An extension's own files are part of the browser, not the web: they
+    // never wait for the profile's cookies, and its worker starts from them.
+    // Pages controlled by a connected agent cannot load or probe extension URLs (M1a, S1);
+    // any other page loads only what the extension lists as web-accessible for it.
+    else if (kind === "extension") {
+      const cancel =
+        (details.webContentsId !== undefined &&
+          options.isConnectionWebContents?.(details.webContentsId) === true) ||
+        !mayRequestExtensionResource(session, details);
+      callback({ cancel });
+    } else if (requestGates.has(session))
       requestGates.get(session)!.beforeRequest(details.webContentsId, callback);
     else callback({ cancel: false });
   });
+  // A navigation a server redirects into an extension is judged by the origin that redirects
+  // (W1): only this hook names it, before the page's `will-redirect` takes it. It also sees
+  // Chromium's own rewrite of an extension's dynamic address into its static one, for any request.
+  session.webRequest.onBeforeRedirect(
+    { urls: ["<all_urls>", "chrome-extension://*/*"] },
+    (details) => {
+      if (!details.redirectURL.includes("chrome-extension:")) return;
+      const navigation =
+        details.resourceType === "mainFrame" || details.resourceType === "subFrame";
+      if (!navigation) {
+        if (isDynamicExtensionHop(details.url, details.redirectURL))
+          recordDynamicExtensionRequestHop(session, details.id, details.redirectURL);
+        return;
+      }
+      if (details.webContentsId === undefined || !isExtensionUrl(details.redirectURL)) return;
+      let frameTreeNodeId: number | undefined;
+      try {
+        frameTreeNodeId = details.frame?.frameTreeNodeId;
+      } catch {
+        frameTreeNodeId = undefined;
+      }
+      if (frameTreeNodeId === undefined) return;
+      recordExtensionRedirect(
+        session,
+        details.webContentsId,
+        frameTreeNodeId,
+        details.url,
+        details.redirectURL,
+      );
+    },
+  );
   if (options.onRequestFinished) {
     session.webRequest.onCompleted((details) => options.onRequestFinished!(details.id));
     session.webRequest.onErrorOccurred((details) => options.onRequestFinished!(details.id));
@@ -114,13 +165,17 @@ export function applyBrowserSessionPolicy(
       });
     });
   }
-  for (const preload of session.getPreloadScripts()) {
-    session.unregisterPreloadScript(preload.id);
-  }
+  // Only this policy's own preload is replaced: the profile's extensions keep theirs.
+  for (const preload of session.getPreloadScripts())
+    if (preload.id === pagePolicyPreloadId) session.unregisterPreloadScript(preload.id);
   // The preload covers the first main-frame document, including documents
   // without response headers. Each page's debugger installs the negotiated
   // provider or absent policy in later documents and frames.
-  session.registerPreloadScript({ filePath: options.pagePolicyPreloadPath, type: "frame" });
+  session.registerPreloadScript({
+    filePath: options.pagePolicyPreloadPath,
+    id: pagePolicyPreloadId,
+    type: "frame",
+  });
   updateBrowserPasskeyPolicy(session, options.provider === true);
   options.downloads.accept(session);
 }
@@ -179,11 +234,61 @@ function isLoopbackOrigin(value: string): boolean {
   }
 }
 
-function isAllowedBrowserRequest(value: string): boolean {
+const pagePolicyPreloadId = "opensteer-page-policy";
+
+/**
+ * Whether a page's own request for an extension resource may load (Chrome's web-accessible
+ * rule, `mayReachExtensionResource`), judged by the requesting frame's origin, or by the
+ * request's initiator when it has no frame (a worker, a keepalive request after its page went).
+ * Navigations are decided by the page's navigation events instead: a load the browser itself
+ * starts (an extension's popup, its options page) arrives here carrying the frame's previous
+ * origin. A request with neither a frame nor an initiator is left to Chromium's own extension
+ * loader, which already refuses a web page's request for a file that is not web-accessible.
+ */
+function mayRequestExtensionResource(
+  session: Session,
+  details: Electron.OnBeforeRequestListenerDetails,
+): boolean {
+  if (details.resourceType === "mainFrame" || details.resourceType === "subFrame") return true;
+  // Chromium's own rewrite of an extension's dynamic address: it enforces the resource's access
+  // at this static address itself.
+  if (takeDynamicExtensionRequestHop(session, details.id, details.url)) return true;
+  let origin: string | undefined;
   try {
-    return ["blob:", "data:", "http:", "https:", "ws:", "wss:"].includes(new URL(value).protocol);
+    origin = details.frame ? details.frame.origin : details.initiatorOrigin;
   } catch {
-    return false;
+    // The frame is gone: its initiator, if Electron gives one, still says who asked.
+    if (details.initiatorOrigin === undefined) return false;
+    origin = details.initiatorOrigin;
+  }
+  if (origin === undefined) return true;
+  return mayReachExtensionResource(
+    details.url,
+    origin,
+    (extensionId) => session.extensions.getExtension(extensionId)?.manifest as unknown,
+  );
+}
+
+/**
+ * Classifies one request URL without adding a second `new URL()` parse on the hot web path:
+ * Chromium delivers canonical URLs here, so ordinary `https://`/`http://` requests skip extension
+ * recursion while `chrome-extension:` and `blob:`/`filesystem:` wrappers are still caught.
+ */
+function classifyBrowserRequest(value: string): "denied" | "extension" | "web" {
+  if (value.startsWith("chrome-extension:")) return "extension";
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === "chrome-extension:") return "extension";
+    if (
+      (parsed.protocol === "blob:" || parsed.protocol === "filesystem:") &&
+      isExtensionUrl(parsed.pathname)
+    )
+      return "extension";
+    return ["blob:", "data:", "http:", "https:", "ws:", "wss:"].includes(parsed.protocol)
+      ? "web"
+      : "denied";
+  } catch {
+    return "denied";
   }
 }
 

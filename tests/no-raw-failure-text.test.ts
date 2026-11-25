@@ -63,6 +63,20 @@ const allowed: Readonly<Record<string, { readonly count: number; readonly reason
     count: 1,
     reason: "A journey's evidence file, written for whoever reads the run, never drawn.",
   },
+  "apps/desktop/src/browser/extensions/chrome-extension-api-preload.ts": {
+    count: 1,
+    reason:
+      "Sets Chrome's chrome.runtime.lastError.message for an extension callback, never drawn on an Opensteer screen.",
+  },
+  "apps/desktop/src/browser/extensions/web-store.ts": {
+    count: 1,
+    reason:
+      "Returns chrome.webstorePrivate install error text to the Chrome Web Store page, never a Home call.",
+  },
+  "apps/desktop/src/browser/profile-extensions.ts": {
+    count: 1,
+    reason: "Structured stderr log when loading a profile's extensions fails, never drawn.",
+  },
   "apps/desktop/src/computer-app-setup-guide.ts": { count: 1, reason: reasons.desktop },
   "apps/desktop/src/computer-use/computer-use-bridge-server.ts": {
     count: 5,

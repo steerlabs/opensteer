@@ -559,3 +559,97 @@ it("answers a connection on a shared tab the one sentence for a command outside 
     await router.close();
   }
 });
+
+it("names no shared tab on an extension's page to a connection, however it was reported (P6)", async () => {
+  const ownerId = createId("user");
+  const authority = { ownerId, agentBindingId: "session:fixture" };
+  let connected = true;
+  const admitExecution: OpensteerStore["admitExecution"] = async ({ ownerUserId, subject }) => ({
+    ownerUserId,
+    subject,
+    actor: connected ? "agent" : "native",
+    agentConnection: connected
+      ? {
+          agentConnectionId: "connected-agent",
+          grant: AgentGrantSchema.parse({ scope: "everything" }),
+          grantRevision: 1,
+          consentVersion: 2,
+          accessMode: "full-access",
+        }
+      : null,
+    mode: "full-access",
+    runId: null,
+    threadId: createId("thread"),
+    runMode: null,
+    taskMode: "full-access",
+  });
+  const service = new ChromeSharedTabs(
+    { admitExecution },
+    {
+      attempts: {
+        open: async () => {},
+        finish: async () => {},
+        recordDetach: async () => {},
+        recover: async () => {},
+      },
+      device: async () => "Work Mac",
+    },
+  );
+  const peer = chromePeer((frame) => {
+    expect(source.receive(frame)).toBeUndefined();
+  });
+  const source = service.connectSource({
+    ownerId,
+    sourceId: createId("browserSource"),
+    deviceId: createId("device"),
+    detachReceipts: true,
+    fail: () => {},
+    name: "Chrome",
+    write: peer.write,
+  });
+  const web = shared();
+  // The Home takes the address the extension sends; a source that sends an extension's page.
+  const extension = {
+    ...shared(),
+    title: "My Extension Options",
+    url: `chrome-extension://${"a".repeat(32)}/options.html`,
+  };
+  const call = {
+    contextKey: "fixture",
+    signal: new AbortController().signal,
+    deadline: Date.now() + 5_000,
+    maxBytes: 4096,
+    maxDepth: 16,
+    maxEntries: 256,
+  };
+  try {
+    await source.receive(web);
+    await source.receive(extension);
+    const listed = await service.listForBinding(authority);
+    expect(listed.map(({ tabId }) => tabId)).toEqual([web.shareId]);
+    const places = await service.tabPlaces(ownerId, {
+      kind: "binding",
+      bindingId: authority.agentBindingId,
+    });
+    expect(places.map(({ tabId }) => tabId)).toEqual([web.shareId]);
+    const pages = await service.browserUsePort(async () => authority).listPages(call);
+    expect(JSON.stringify(pages)).not.toContain("chrome-extension:");
+    // Opening it answers as a share that does not exist.
+    const absent = await service
+      .browserUsePort(async () => authority, crypto.randomUUID())
+      .openPage(crypto.randomUUID(), call)
+      .catch((error: unknown) => error);
+    const hidden = await service
+      .browserUsePort(async () => authority, extension.shareId)
+      .openPage(extension.shareId, call)
+      .catch((error: unknown) => error);
+    expect(String(hidden)).toBe(String(absent));
+    // Your own agents, as before.
+    connected = false;
+    expect((await service.listForBinding(authority)).map(({ tabId }) => tabId).sort()).toEqual(
+      [web.shareId, extension.shareId].sort(),
+    );
+  } finally {
+    source.close();
+  }
+});
