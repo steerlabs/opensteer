@@ -9107,3 +9107,97 @@ it("keeps ordinary failures visible with NO_PROXY=* and suppresses short-secret 
     }
   }
 });
+
+it("caches per-Run redaction context and skips building it on non-diagnostic durable events (Z4)", async () => {
+  const runSecret = "z4-cached-secret-8P4V";
+  vi.stubEnv("TEST_Z4_API_KEY", runSecret);
+  const messages: RunnerOperationalReport[] = [];
+  const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+  const registry = new HarnessRegistry();
+  const session = new HeldHarnessSession();
+  registry.registerDriver(new FakeHarnessDriver("test-driver", () => session));
+  const environmentId = createId("environment");
+  const command = executeCommand(environmentId);
+  const runtime = configuredRuntime({ environmentId, registry });
+  try {
+    runtime.setHostRunRetryEvents(true);
+    await reconcile(registry, command);
+    await expect(runtime.handleCommand(command, sink)).resolves.toEqual({ status: "accepted" });
+    await waitUntil(() => hasEvent(messages, "run.started"));
+
+    let processEnvScans = 0;
+    const originalEntries = Object.entries;
+    const spy = vi.spyOn(Object, "entries").mockImplementation((value: object) => {
+      if (value === process.env) processEnvScans += 1;
+      return originalEntries(value);
+    });
+    try {
+      for (let i = 0; i < 5; i++) {
+        session.publish({
+          data: { content: [{ text: `chunk ${i}`, type: "text" }], messageId: createId("message") },
+          type: "assistant.message",
+        });
+      }
+      await waitUntil(
+        () =>
+          messages.filter(
+            (message) =>
+              message.type === "runner.event" && message.event.type === "assistant.message",
+          ).length === 5,
+      );
+      expect(processEnvScans).toBe(0);
+
+      session.publish({
+        data: {
+          attempt: 1,
+          maxAttempts: 5,
+          message: `retry 1 echoed ${runSecret}`,
+          status: "retrying",
+        },
+        type: "run.retry",
+      });
+      session.publish({
+        data: {
+          attempt: 2,
+          maxAttempts: 5,
+          message: `retry 2 echoed ${runSecret}`,
+          status: "retrying",
+        },
+        type: "run.retry",
+      });
+      session.publish({
+        data: {
+          code: "harness_error",
+          message: `final failure echoed ${runSecret}`,
+          retryable: false,
+          status: "failed",
+        },
+        type: "run.failed",
+      });
+      await waitUntil(() => hasEvent(messages, "run.failed"));
+
+      // One lazy context build (shortNamedSecrets + networkCredentialSecrets +
+      // engineDiagnosticSecrets on process.env = 3 scans), reused across all
+      // subsequent retry/failure events and the terminal failure log.
+      expect(processEnvScans).toBe(3);
+    } finally {
+      spy.mockRestore();
+    }
+
+    const diagnosticTexts = messages
+      .filter(
+        (message): message is Extract<RunnerOperationalReport, { readonly type: "runner.event" }> =>
+          message.type === "runner.event" &&
+          (message.event.type === "run.retry" || message.event.type === "run.failed"),
+      )
+      .map((message) => JSON.stringify(message.event.data));
+    expect(diagnosticTexts).toHaveLength(3);
+    for (const text of diagnosticTexts) {
+      expect(text).not.toContain(runSecret);
+      expect(text).toContain("[REDACTED]");
+    }
+  } finally {
+    await runtime.close();
+    vi.unstubAllEnvs();
+  }
+});

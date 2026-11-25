@@ -323,6 +323,12 @@ interface ActiveRun {
   readonly command: Extract<RunnerCommand, { readonly type: "run.execute" }>;
   environment?: Readonly<Record<string, string>>;
   proxiedSecret?: string;
+  redaction?: {
+    readonly agentToolsToken: string | undefined;
+    readonly environment: Readonly<Record<string, string>> | undefined;
+    readonly proxiedSecret: string | undefined;
+    readonly value: RunDiagnosticRedaction;
+  };
   readonly journal: RunJournal;
   /** Local time after which the Run stops unless the Host renews its lease. */
   leaseDeadline: number;
@@ -4320,7 +4326,11 @@ export class RunnerRuntime {
             data: { status: "interrupted", cause: active.interruptionCause },
           }
         : original;
-    const event = fittedDurableEvent(outcome, this.#runRedactionContext(active));
+    const redaction =
+      outcome.type === "run.failed" || outcome.type === "run.retry"
+        ? this.#runRedactionContext(active)
+        : undefined;
+    const event = fittedDurableEvent(outcome, redaction);
     const { context } = active.command;
     const pending = PendingAgentEventV2Schema.parse({
       bindingGeneration: context.bindingGeneration,
@@ -4529,10 +4539,21 @@ export class RunnerRuntime {
   }
 
   #runRedactionContext(active: ActiveRun): RunDiagnosticRedaction {
-    const environment = active.environment ?? process.env;
+    const rawEnvironment = active.environment;
+    const proxiedSecret = active.proxiedSecret;
+    const agentToolsToken = active.credentials?.agentTools;
+    if (
+      active.redaction &&
+      active.redaction.environment === rawEnvironment &&
+      active.redaction.proxiedSecret === proxiedSecret &&
+      active.redaction.agentToolsToken === agentToolsToken
+    ) {
+      return active.redaction.value;
+    }
+    const environment = rawEnvironment ?? process.env;
     const tokens = [
-      active.proxiedSecret ?? "",
-      active.credentials?.agentTools ?? "",
+      proxiedSecret ?? "",
+      agentToolsToken ?? "",
       active.command.context.agentTools.token,
     ].filter(Boolean);
     const shortSecrets = [
@@ -4550,7 +4571,14 @@ export class RunnerRuntime {
         ...tokens.filter((token) => token.length >= 4),
       ]),
     ].sort((left, right) => right.length - left.length);
-    return { secrets, shortSecrets };
+    const value: RunDiagnosticRedaction = { secrets, shortSecrets };
+    active.redaction = {
+      agentToolsToken,
+      environment: rawEnvironment,
+      proxiedSecret,
+      value,
+    };
+    return value;
   }
 
   #scrubRunText(
@@ -4952,7 +4980,7 @@ function sanitizeRunDiagnosticText(
 
 function fittedDurableEvent(
   event: HarnessDurableEvent,
-  redaction: RunDiagnosticRedaction,
+  redaction?: RunDiagnosticRedaction,
 ): HarnessDurableEvent {
   switch (event.type) {
     case "node.message": {
@@ -4991,11 +5019,9 @@ function fittedDurableEvent(
       };
     }
     case "run.retry": {
-      const redacted = sanitizeRunDiagnosticText(
-        event.data.message,
-        redaction,
-        suppressedRunRetryMessage,
-      );
+      const redacted = redaction
+        ? sanitizeRunDiagnosticText(event.data.message, redaction, suppressedRunRetryMessage)
+        : event.data.message;
       const message = utf8Prefix(redacted, runRetryMessageMaxLength);
       return message === event.data.message
         ? event
@@ -5008,17 +5034,25 @@ function fittedDurableEvent(
           ...event.data,
           // An engine's error can quote a proxy address or Run-scoped secret.
           message: fittedText(
-            sanitizeRunDiagnosticText(event.data.message, redaction, suppressedRunFailureMessage),
+            redaction
+              ? sanitizeRunDiagnosticText(
+                  event.data.message,
+                  redaction,
+                  suppressedRunFailureMessage,
+                )
+              : event.data.message,
             runFailureMessageMaxLength,
           ),
           ...(event.data.ownerMessage !== undefined
             ? {
                 ownerMessage: fittedText(
-                  sanitizeRunDiagnosticText(
-                    event.data.ownerMessage,
-                    redaction,
-                    suppressedRunFailureMessage,
-                  ),
+                  redaction
+                    ? sanitizeRunDiagnosticText(
+                        event.data.ownerMessage,
+                        redaction,
+                        suppressedRunFailureMessage,
+                      )
+                    : event.data.ownerMessage,
                   runFailureMessageMaxLength,
                 ),
               }

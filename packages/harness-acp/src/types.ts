@@ -133,6 +133,7 @@ export type AcpNormalizedUpdate = { readonly nodeKey?: string } & (
       readonly reasoningTokens?: number;
     }
   | { readonly kind: "compaction"; readonly compactionId?: string }
+  | { readonly kind: "plan" }
   | { readonly kind: "ignore" }
 );
 
