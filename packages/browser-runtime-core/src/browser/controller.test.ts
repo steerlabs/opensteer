@@ -1022,6 +1022,52 @@ describe("BrowserController", () => {
     }
   });
 
+  it("fills nothing into a page on an extension's page for a connection (N1)", async () => {
+    const controller = createController();
+    await controller.start();
+    const fill = vi.spyOn(HostSignIns.prototype, "fill").mockResolvedValue("filled");
+    try {
+      const attached = await cdpRouter.send(validClaims().sessionId, {
+        method: "Target.attachToTarget",
+        parameters: { targetId: await page.targetId(), flatten: true },
+      });
+      const sessionId = (attached as { sessionId: string }).sessionId;
+      const loginRef = `lgn_${"a".repeat(32)}`;
+      const fillLogin = async (session: string, connection: boolean) => {
+        const requestId = randomUUID();
+        await controller.handle({
+          type: "cdp.command",
+          requestId,
+          command: {
+            method: "Opensteer.fillLogin",
+            sessionId: session,
+            parameters: { loginRef, field: "password" },
+          },
+          ...(connection ? { connection: true } : {}),
+        } as BrowserClientMessage);
+        return sink.messages.findLast(
+          (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+        );
+      };
+      page.setMetadata("Options", `chrome-extension://${"a".repeat(32)}/options.html`);
+      const absent = await fillLogin("unknown", true);
+      const hidden = await fillLogin(sessionId, true);
+      expect(hidden).toMatchObject({ type: "cdp.error" });
+      expect((hidden as { error: unknown }).error).toEqual((absent as { error: unknown }).error);
+      expect(fill).not.toHaveBeenCalled();
+      // Your own agent, not bound to a connection, as before.
+      expect(await fillLogin(sessionId, false)).toMatchObject({
+        type: "cdp.result",
+        result: { status: "filled" },
+      });
+      expect(fill).toHaveBeenCalledOnce();
+    } finally {
+      fill.mockRestore();
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("lists suspended tabs within a byte budget, resumes explicitly, and closes by their old target", async () => {
     const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
     await controller.start();

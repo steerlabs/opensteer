@@ -5870,7 +5870,8 @@ export class BrowserService {
     for (const binding of bindings) this.closeStandardCdpForBinding(binding, reason);
     // Its Disconnect also closes every other CDP attachment of its work, a shared root's
     // included: no event of it reaches the connection after this (rule 3).
-    for (const attachment of [...this.#deviceAttachments.values()])
+    // (A Map's iteration is safe while close() deletes the entry it is on.)
+    for (const attachment of this.#deviceAttachments.values())
       if (attachment.agentConnectionId === connectionId) attachment.close();
   }
 

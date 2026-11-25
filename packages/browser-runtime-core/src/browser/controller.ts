@@ -607,6 +607,19 @@ export class BrowserController {
     return result;
   }
 
+  /**
+   * N1: to a connection a page on an extension's address is not an attached page session (a fill
+   * into it answers as one that is missing), whatever the router has yet learned of it.
+   */
+  #onExtensionPageForConnection(
+    message: { readonly connection?: true | undefined },
+    targetId: string,
+  ): boolean {
+    if (message.connection !== true) return false;
+    const surfaceId = this.ledger.surfaceIdForTarget(targetId);
+    return surfaceId !== undefined && isExtensionUrl(this.ledger.toRecord(surfaceId)?.url);
+  }
+
   async start(): Promise<void> {
     if (this.closed) throw new BrowserRuntimeError("conflict", "The browser controller is closed.");
     this.rootSurfaceId = this.claims.initialSurfaceId ?? this.ledger.snapshot()[0]?.id;
@@ -1806,7 +1819,7 @@ export class BrowserController {
               message.command.sessionId,
               message.scriptAttachmentId,
             );
-      if (!params.success || !targetId)
+      if (!params.success || !targetId || this.#onExtensionPageForConnection(message, targetId))
         throw new BrowserRuntimeError(
           "bad_message",
           "fillCard requires a card reference, field and attached page session.",
@@ -1836,7 +1849,7 @@ export class BrowserController {
               message.command.sessionId,
               message.scriptAttachmentId,
             );
-      if (!params.success || !targetId) {
+      if (!params.success || !targetId || this.#onExtensionPageForConnection(message, targetId)) {
         throw new BrowserRuntimeError(
           "bad_message",
           "fillLogin requires valid parameters and an attached page session.",
