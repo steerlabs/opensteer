@@ -146,6 +146,7 @@ import {
 import { useToast } from "./toast.js";
 import { presentFailure } from "./use-action.js";
 import { openAppLink } from "./apps/app-links.js";
+import { thisComputerRunnerId } from "./this-computer.js";
 
 interface TaskStartDraft {
   readonly draftKey: string | null;
@@ -427,7 +428,7 @@ export function AppShell({
       ? null
       : (snapshot.environments.find((environment) => environment.id === hostedEnvironmentId)
           ?.runnerId ?? null);
-  const thisMachineId = localRunnerId ?? hostingRunnerId;
+  const thisMachineId = thisComputerRunnerId({ hostingRunnerId, localRunnerId });
   webLinkHere.current = thisMachineId;
   const openWebLink = useCallback(
     (address: string) =>
@@ -621,7 +622,7 @@ export function AppShell({
         flow: startAccountSignIn({
           client: hostClient,
           errorMessage: signInFailureWords,
-          localRunnerId,
+          localRunnerId: thisMachineId,
           target: {
             environmentId: placement.environmentId,
             harnessInstanceId: placement.harnessInstanceId,
@@ -636,7 +637,7 @@ export function AppShell({
         whereLabel: placement.whereLabel,
       });
     },
-    [harnessAuthenticationEnvironmentIds, hostClient, localRunnerId, toast],
+    [harnessAuthenticationEnvironmentIds, hostClient, thisMachineId, toast],
   );
   // The flow outlives a dialog closing but not the shell: leaving this
   // Deployment must not keep signing in, or leave an account half added, unseen.
@@ -662,7 +663,7 @@ export function AppShell({
         flow: startAccountSignIn({
           client: hostClient,
           errorMessage: signInFailureWords,
-          localRunnerId,
+          localRunnerId: thisMachineId,
           target: { kind: "create", request },
           ...(selectMethod ? { selectMethod } : {}),
         }),
@@ -672,7 +673,7 @@ export function AppShell({
         whereLabel,
       });
     },
-    [hostClient, localRunnerId],
+    [hostClient, thisMachineId],
   );
   const refreshHarnessCatalog = useCallback(
     async (placement: ThreadPlacementOption) => {

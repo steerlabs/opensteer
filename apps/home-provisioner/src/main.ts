@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
+import { sendHeartbeat } from "@opensteer/shared/heartbeat";
 import {
   accountClient,
   accountRefused,
@@ -40,10 +41,17 @@ export async function runProvisionerTick(options: {
   readonly intervalMs: number;
   readonly signal: AbortSignal;
   readonly onError: (error: unknown) => void;
+  /** Called after a tick in which every pass finished without an error. */
+  readonly heartbeat?: () => void;
   readonly now?: () => number;
 }): Promise<number> {
   const now = options.now ?? Date.now;
   let waitMs = options.intervalMs;
+  let failed = false;
+  const onError = (error: unknown) => {
+    failed = true;
+    options.onError(error);
+  };
 
   try {
     await options.reconciler.pass(options.signal);
@@ -51,7 +59,7 @@ export async function runProvisionerTick(options: {
     if (error instanceof ProviderRateLimited) {
       waitMs = Math.max(waitMs, error.retryAt - now());
     }
-    if (!options.signal.aborted) options.onError(error);
+    if (!options.signal.aborted) onError(error);
     if (isFatalAccountError(error)) throw error;
   }
 
@@ -64,20 +72,21 @@ export async function runProvisionerTick(options: {
       if (error instanceof ProviderRateLimited) {
         waitMs = Math.max(waitMs, error.retryAt - now());
       }
-      if (!options.signal.aborted) options.onError(error);
+      if (!options.signal.aborted) onError(error);
       if (isFatalAccountError(error)) throw error;
     }
   } else if (options.poolProbe?.isPoolEnabled) {
     try {
       if (await options.poolProbe.isPoolEnabled(options.signal)) {
-        options.onError(new PoolConfigMismatchError());
+        onError(new PoolConfigMismatchError());
       }
     } catch (error) {
-      if (!options.signal.aborted) options.onError(error);
+      if (!options.signal.aborted) onError(error);
       if (isFatalAccountError(error)) throw error;
     }
   }
 
+  if (!failed && !options.signal.aborted) options.heartbeat?.();
   return waitMs;
 }
 
@@ -116,7 +125,12 @@ async function main(): Promise<void> {
     onError: logFailure,
     orphanGraceMs: config.orphanGraceMs,
     provider: googleProvider,
-    dns: new CloudflareDns({ ...http, token: config.cloudflareToken, zoneId: config.zoneId }),
+    dns: new CloudflareDns({
+      ...http,
+      token: config.cloudflareToken,
+      zoneId: config.zoneId,
+      domain: config.domain,
+    }),
     discover: discoverHome(http),
     accountOrigin: config.accountOrigin,
     image: config.image,
@@ -160,6 +174,11 @@ async function main(): Promise<void> {
         intervalMs: config.intervalMs,
         signal: shutdown.signal,
         onError: logFailure,
+        heartbeat: () =>
+          sendHeartbeat(config.heartbeatUrl, {
+            onError: (status) =>
+              console.error(JSON.stringify({ event: "home-provisioner.heartbeat.failed", status })),
+          }),
       });
       if (!shutdown.signal.aborted) {
         await delay(waitMs, undefined, { signal: shutdown.signal }).catch(() => {});

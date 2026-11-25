@@ -79,6 +79,9 @@ update_home() (
   cp "$active" "$current_dir/original.env"
   new_version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$candidate")
   if [[ $1 == scheduled-update && $(printf '%s\n%s\n' "$old_version" "$new_version" | sort -V | tail -1) != "$new_version" ]]; then
+    if declare -F record_update_result >/dev/null; then
+      record_update_result feed-older "$old_version" "$new_version"
+    fi
     fail "The update feed is older than the running Home."
   fi
 
@@ -115,9 +118,15 @@ update_home() (
     durable_marker "$journal/committed"
     retire_journal "$journal"
     echo "Updated Home to $new_version."
+    if declare -F record_update_result >/dev/null; then
+      record_update_result updated "$old_version" "$new_version"
+    fi
     return
   fi
   printf '%s\n' "Home $new_version did not become healthy. Restoring $old_version." >&2
   update_recovery
+  if declare -F record_update_result >/dev/null; then
+    record_update_result rolled-back "$old_version" "$new_version"
+  fi
   fail "The update was rolled back."
 )

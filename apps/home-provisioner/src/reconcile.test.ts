@@ -11,13 +11,15 @@ import {
   BootstrapScrubFailure,
   ProviderOutcomeUnknown,
   ProviderRateLimited,
+  ProviderWriteRejected,
   provisionerFailure,
   RemoteRequestError,
 } from "./http.js";
 import type { AccountApi } from "./account.js";
 import type { Addresses, CreateVm, DnsProvider, VmProvider, VmServer } from "./provider.js";
 import { Reconciler } from "./reconcile.js";
-import { ComputeFake, regionPath, zonePath } from "./google-compute.test-support.js";
+import { CloudflareDns } from "./cloudflare.js";
+import { ComputeFake, globalPath, regionPath, zonePath } from "./google-compute.test-support.js";
 
 const home = CloudComputerDesiredSchema.parse({
   id: "cc_00000000-0000-4000-8000-000000000001",
@@ -53,7 +55,8 @@ function harness({
   concurrency = 2,
   compute,
   adapter,
-}: { concurrency?: number; compute?: ComputeFake; adapter?: VmProvider } = {}) {
+  zone,
+}: { concurrency?: number; compute?: ComputeFake; adapter?: VmProvider; zone?: DnsProvider } = {}) {
   const reports: CloudComputerReport[] = [];
   const onError = vi.fn();
   const calls: string[] = [];
@@ -111,19 +114,21 @@ function harness({
     }),
   } satisfies VmProvider;
   const vmProvider = adapter ?? compute?.adapter() ?? provider;
-  const dns = {
-    listManaged: vi.fn(async () =>
-      [...records.keys()].map((hostname) => ({ id: home.id, hostname })),
-    ),
-    ensureRecords: vi.fn(async (hostname: string, addresses: Addresses) => {
-      calls.push("dns");
-      records.set(hostname, addresses);
-    }),
-    removeRecords: vi.fn(async (hostname: string) => {
-      calls.push("removeDns");
-      records.delete(hostname);
-    }),
-  } satisfies DnsProvider;
+  const dns =
+    zone ??
+    ({
+      listManaged: vi.fn(async () =>
+        [...records.keys()].map((hostname) => ({ id: home.id, hostname })),
+      ),
+      ensureRecords: vi.fn(async (hostname: string, addresses: Addresses) => {
+        calls.push("dns");
+        records.set(hostname, addresses);
+      }),
+      removeRecords: vi.fn(async (hostname: string) => {
+        calls.push("removeDns");
+        records.delete(hostname);
+      }),
+    } satisfies DnsProvider);
   const status = {
     desired: [home],
     identity: identity as typeof identity | undefined,
@@ -255,10 +260,10 @@ describe("Cloud Computer reconciliation", () => {
           throw new Error("Lost response with boot_token");
         });
         await h.pass();
-        expect(h.last()).toMatchObject({
-          phase: "failed",
-          lastError: "The Cloud Computer provider operation failed.",
-        });
+        // A lost answer says nothing of the computer: no failed report, the error is the
+        // operator's, and the next pass finds the VM (P2).
+        expect(h.reports.some(({ phase }) => phase === "failed")).toBe(false);
+        expect(h.onError).toHaveBeenCalledWith(new Error("Lost response with boot_token"));
         await h.restart();
         expect(h.provider.create).toHaveBeenCalledTimes(1);
         expect(h.last()?.phase).toBe("booting");
@@ -449,16 +454,12 @@ describe("Cloud Computer reconciliation", () => {
         h.status.desired = [home, second];
         h.provider.find.mockRejectedValueOnce(new Error("provider secret"));
         await h.pass();
-        expect(h.reports).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              id: home.id,
-              phase: "failed",
-              lastError: "The Cloud Computer provider operation failed.",
-            }),
-            expect.objectContaining({ id: second.id, phase: "booting" }),
-          ]),
+        // The failed read is unknown, not a failed computer: nothing is reported for it (P2).
+        expect(h.reports.filter(({ id }) => id === home.id)).toEqual([]);
+        expect(h.reports).toContainEqual(
+          expect.objectContaining({ id: second.id, phase: "booting" }),
         );
+        expect(h.onError).toHaveBeenCalledWith(new Error("provider secret"));
       },
     },
     {
@@ -1103,4 +1104,264 @@ describe("Cloud Computer reconciliation", () => {
       expect(h.provider.find).toHaveBeenCalledTimes(1);
     },
   );
+});
+
+/** A Cloudflare zone in memory: the dns_records list (by comment prefix or exact name) and delete. */
+function sharedZone(records: { id: string; name: string; comment: string }[]) {
+  const zone = records.map((record) => ({
+    ...record,
+    type: "A",
+    content: "192.0.2.9",
+    proxied: false,
+  }));
+  const deleted: string[] = [];
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString());
+    const id = /\/dns_records\/([a-f0-9]{32})$/u.exec(url.pathname)?.[1];
+    if ((init?.method ?? "GET") === "DELETE" && id) {
+      deleted.push(id);
+      zone.splice(
+        zone.findIndex((record) => record.id === id),
+        1,
+      );
+      return Response.json({ success: true, result: { id } });
+    }
+    const prefix = url.searchParams.get("comment.startswith");
+    const exact = url.searchParams.get("name.exact");
+    const result = zone.filter(
+      (record) =>
+        (prefix === null || record.comment.startsWith(prefix)) &&
+        (exact === null || record.name === exact),
+    );
+    return Response.json({ success: true, result, result_info: { total_pages: 1 } });
+  };
+  return { deleted, names: () => zone.map(({ name }) => name), fetch };
+}
+
+describe("a DNS zone another environment shares", () => {
+  it("sweeps only records under its own Cloud Computer domain", async () => {
+    const production = {
+      id: "a".repeat(32),
+      name: `cc-${"1".repeat(8)}-1111-4111-8111-${"1".repeat(12)}.computers.example.com`,
+      comment: "Opensteer Cloud Computer",
+    };
+    const lookalike = {
+      id: "b".repeat(32),
+      name: `cc-${"2".repeat(8)}-2222-4222-8222-${"2".repeat(12)}.not-home-trial.example.com`,
+      comment: "Opensteer Cloud Computer",
+    };
+    const test = {
+      id: "c".repeat(32),
+      name: `cc-${"3".repeat(8)}-3333-4333-8333-${"3".repeat(12)}.home-trial.example.com`,
+      comment: "Opensteer Cloud Computer",
+    };
+    const zone = sharedZone([production, lookalike, test]);
+    const dns = new CloudflareDns({
+      token: "cloudflare-test-token",
+      zoneId: "0".repeat(32),
+      domain: "home-trial.example.com",
+      timeoutMs: 2000,
+      baseUrl: new URL("https://cloudflare.test/client/v4/"),
+      fetch: zone.fetch,
+    });
+    const listed = await dns.listManaged(new AbortController().signal);
+    expect(listed.map(({ hostname }) => hostname)).toEqual([test.name]);
+
+    const h = harness({ zone: dns });
+    h.status.desired = [];
+    await h.pass();
+    h.status.now += 120_000;
+    await h.pass();
+    expect(zone.deleted).toEqual([test.id]);
+    expect(zone.names()).toEqual([production.name, lookalike.name]);
+  });
+});
+
+describe("an observation that failed (Q2)", () => {
+  /** A Cloudflare zone that keeps the records written to it, and can refuse every read. */
+  function zone() {
+    const records: { id: string; name: string; type: string; content: string; comment: string }[] =
+      [];
+    const state = { refuseReads: false };
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      const method = init?.method ?? "GET";
+      if (method === "GET") {
+        // A token being rotated: Cloudflare answers 403 to the read of existing records.
+        if (state.refuseReads) return Response.json({ success: false }, { status: 403 });
+        const exact = url.searchParams.get("name.exact");
+        return Response.json({
+          success: true,
+          result: records.filter((record) => exact === null || record.name === exact),
+          result_info: { total_pages: 1 },
+        });
+      }
+      const body = JSON.parse(String(init?.body)) as Omit<(typeof records)[number], "id">;
+      const record = { ...body, id: String(records.length + 1).padStart(32, "a") };
+      records.push(record);
+      return Response.json({ success: true, result: { ...record, proxied: false } });
+    };
+    return { records, state, fetch };
+  }
+
+  it("reports nothing when the DNS record read is refused and the Home answers as itself", async () => {
+    const cloudflare = zone();
+    const h = harness({
+      zone: new CloudflareDns({
+        token: "cloudflare-test-token",
+        zoneId: "0".repeat(32),
+        domain: "example.com",
+        timeoutMs: 2000,
+        baseUrl: new URL("https://cloudflare.test/client/v4/"),
+        fetch: cloudflare.fetch,
+      }),
+    });
+    await h.pass();
+    expect(cloudflare.records.map(({ name, type }) => `${type} ${name}`)).toEqual([
+      `A ${home.hostname}`,
+    ]);
+    h.pin();
+    await h.pass();
+    expect(h.last()).toMatchObject({ id: home.id, phase: "ready" });
+    const reported = h.reports.length;
+    cloudflare.state.refuseReads = true;
+    await h.pass();
+    // Discovery answered with the pinned identity; the 403 on the read said nothing of the Home.
+    expect(h.reports.slice(reported)).toEqual([]);
+    expect(h.onError.mock.calls.map(([error]) => provisionerFailure(error))).toContainEqual(
+      expect.objectContaining({
+        event: "home-provisioner.pass.failed",
+        service: "Cloudflare",
+        status: 403,
+      }),
+    );
+  });
+
+  it("still fails a computer whose create the provider refused", async () => {
+    const h = harness();
+    h.provider.create.mockRejectedValueOnce(
+      new ProviderWriteRejected(new RemoteRequestError("Google Compute Engine", 400)),
+    );
+    await h.pass();
+    expect(h.last()).toMatchObject({
+      phase: "failed",
+      lastError: "The Cloud Computer provider operation failed.",
+    });
+  });
+});
+
+describe("a read inside a write, and a step shared by every computer (Q3)", () => {
+  const failures = (h: Harness) => h.onError.mock.calls.map(([error]) => provisionerFailure(error));
+  const refusedByCompute = expect.objectContaining({
+    event: "home-provisioner.pass.failed",
+    service: "Google Compute Engine",
+    status: 403,
+  });
+  /** Two Google computers, both ready. */
+  async function twoReady() {
+    const compute = new ComputeFake();
+    const h = harness({ compute });
+    h.status.desired = [{ ...home }, { ...second }];
+    await h.pass();
+    h.pin();
+    await h.pass();
+    expect(h.reports.slice(-2).map(({ phase }) => phase)).toEqual(["ready", "ready"]);
+    return { compute, h, reported: h.reports.length };
+  }
+
+  const refusedOnce = (h: Harness) =>
+    expect(failures(h).filter((failure) => "status" in failure && failure.status === 403)).toEqual([
+      refusedByCompute,
+    ]);
+  const refuseFirewallReads = (compute: ComputeFake) => {
+    compute.refuseMatch = (method, path) =>
+      method === "GET" && path.startsWith(`${globalPath}/firewalls`);
+  };
+
+  it("keeps two ready computers ready when the firewall's GET is refused (an IAM change)", async () => {
+    const { compute, h, reported } = await twoReady();
+    refuseFirewallReads(compute);
+    await h.pass();
+    // Both ready, as they were: nothing new to send. The refusal is logged once a pass (Q4).
+    expect(h.reports.slice(reported)).toEqual([]);
+    refusedOnce(h);
+  });
+
+  it("still reports a stopped machine while the firewall's GET is refused, so its outage begins (Q4)", async () => {
+    const compute = new ComputeFake();
+    const h = harness({ compute });
+    h.status.desired = [{ ...home }];
+    await h.pass();
+    h.pin();
+    await h.pass();
+    expect(h.last()).toMatchObject({ phase: "ready" });
+    const reported = h.reports.length;
+    for (const instance of compute.instances.values()) instance.status = "TERMINATED";
+    h.status.identity = undefined;
+    refuseFirewallReads(compute);
+    await h.pass();
+    expect(h.reports.slice(reported)).toEqual([
+      expect.objectContaining({ id: home.id, phase: "booting" }),
+    ]);
+    refusedOnce(h);
+  });
+
+  it("reports a purchase it cannot create provisioning, and fails it at its deadline (Q4)", async () => {
+    const compute = new ComputeFake();
+    const h = harness({ compute });
+    h.status.desired = [{ ...home }];
+    refuseFirewallReads(compute);
+    await h.pass();
+    expect(h.reports).toEqual([expect.objectContaining({ phase: "provisioning" })]);
+    // Its own address may be reserved; no machine is inserted without the firewall.
+    expect(
+      compute.requests.some(
+        ({ method, path }) => method === "POST" && path === `${zonePath}/instances`,
+      ),
+    ).toBe(false);
+    h.status.now += 1000;
+    await h.pass();
+    expect(h.last()).toMatchObject({
+      phase: "failed",
+      lastError: "The Cloud Computer did not become ready before its deadline.",
+      judgedReadinessStartedAt: home.readinessStartedAt,
+    });
+  });
+
+  it("reports neither when the shared firewall's insert is refused", async () => {
+    const { compute, h, reported } = await twoReady();
+    compute.firewalls.clear();
+    compute.refuseMatch = (method, path) =>
+      method === "POST" && path.startsWith(`${globalPath}/firewalls`);
+    await h.pass();
+    expect(
+      compute.requests.some(
+        ({ method, path }) => method === "POST" && path === `${globalPath}/firewalls`,
+      ),
+    ).toBe(true);
+    expect(h.reports.slice(reported)).toEqual([]);
+    refusedOnce(h);
+  });
+
+  it("reports nothing for a computer whose own instance GET is refused inside a write", async () => {
+    const compute = new ComputeFake();
+    const h = harness({ compute });
+    h.status.desired = [{ ...home }];
+    await h.pass();
+    expect(h.last()?.phase).toBe("booting");
+    const requested = compute.requests.length;
+    // Its instance, read by name inside a write: attaching the firewall it lost reads it fresh.
+    for (const instance of compute.instances.values()) instance.tags.items = [];
+    compute.refuseMatch = (method, path) =>
+      method === "GET" && path.startsWith(`${zonePath}/instances/`);
+    h.status.now += 1;
+    await h.pass();
+    expect(
+      compute.requests
+        .slice(requested)
+        .some(({ method, path }) => method === "GET" && path.startsWith(`${zonePath}/instances/`)),
+    ).toBe(true);
+    expect(h.reports.filter(({ phase }) => phase === "failed")).toEqual([]);
+    expect(failures(h)).toContainEqual(refusedByCompute);
+  });
 });

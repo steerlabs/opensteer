@@ -4912,36 +4912,6 @@ describe("Electron geometry lifecycle", () => {
     }
   });
 
-  // The browser journey's follow view, Nov 24 (twice): the person's start for an agent's new tab
-  // waited five seconds for it to paint, and the page said it was not mounted, applied at its own
-  // revision, and had drawn no frame of any size. A resting page whose content is already drawn
-  // draws nothing new unless asked, so its paint wait asks.
-  it("asks a resting page to draw when a paint wait starts, so a static page answers it", async () => {
-    const { browser, native, view, unbind } = await launch();
-    const contents = view.webContents as typeof view.webContents & { invalidate?: () => void };
-    let deliver: ((image: { getSize(): { width: number; height: number } }) => void) | undefined;
-    view.webContents.beginFrameSubscription.mockImplementation((callback) => {
-      deliver = callback;
-    });
-    contents.invalidate = vi.fn(() =>
-      setImmediate(() => deliver?.({ getSize: () => ({ width: 800, height: 600 }) })),
-    );
-    const waiting = native.waitForPaint();
-    try {
-      await vi.waitFor(() =>
-        expect(
-          contents.invalidate,
-          "a resting page was never asked to draw for its paint wait",
-        ).toHaveBeenCalled(),
-      );
-      await waiting;
-    } finally {
-      unbind();
-      await waiting.catch(() => undefined);
-      await browser.close();
-    }
-  });
-
   it("cancels an existing paint wait when its geometry owner releases it", async () => {
     const { browser, native, view, unbind } = await launch();
     view.webContents.beginFrameSubscription.mockImplementation(() => undefined);

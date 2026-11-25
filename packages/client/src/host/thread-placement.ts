@@ -331,12 +331,14 @@ function placementOption(
   if (!catalog || catalog.status !== "ready") {
     return {
       ...base,
+      // Only an engine the Runner has not answered for yet is still being
+      // checked: an inspection that failed is an answer, and its detail says why.
       availability:
         catalog?.status === "authentication-required"
           ? "authentication-required"
           : catalog?.status === "preparing"
             ? "preparing"
-            : catalog?.status === "unavailable"
+            : catalog?.status === "unavailable" || catalog?.status === "error"
               ? "unavailable"
               : "runtime-check",
       available: false,

@@ -173,6 +173,15 @@ export class EngineInstallationResolver {
     return value;
   }
 
+  /** The version one copy of an engine reports, or `undefined` when it cannot be read. */
+  async readVersion(
+    executable: string,
+    facts: InstalledEngineUpdateFacts,
+  ): Promise<string | undefined> {
+    const target = await realpath(executable).catch(() => executable);
+    return this.#readVersion(target, facts).catch(() => undefined);
+  }
+
   async #readVersion(executable: string, facts: InstalledEngineUpdateFacts): Promise<string> {
     const result = await this.#runInspection(
       executable,

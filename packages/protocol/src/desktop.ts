@@ -366,6 +366,16 @@ export const DesktopUseComputerViewResultSchema = z.discriminatedUnion("activate
   }),
 ]);
 export type DesktopUseComputerViewResult = z.infer<typeof DesktopUseComputerViewResultSchema>;
+/**
+ * The desktop's own sentences for computer use that is off here, which its
+ * permission calls refuse with. A page shows them in place of a control that
+ * could do nothing.
+ */
+export const desktopComputerUseUnsupported =
+  "Computer use runs on macOS only, on the Mac the person is using.";
+export const desktopComputerUseOffInTrial =
+  "Apps are off in a trial of Opensteer, so there is nothing to allow in macOS for them.";
+
 export const DesktopComputerUsePermissionsResultSchema = ComputerUsePermissionsViewSchema;
 export type DesktopComputerUsePermissionsResult = z.infer<
   typeof DesktopComputerUsePermissionsResultSchema

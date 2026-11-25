@@ -183,6 +183,17 @@ const AccountEnvironmentSchema = z
       .pipe(z.email().max(320))
       .optional(),
     OPENSTEER_APP_REVIEW_PASSWORD: z.string().min(24).max(4_096).optional(),
+    /**
+     * The synthetic purchase's own Account (scripts/synthetic-cloud-computer.mjs), signed in the
+     * same way as App Review but never the same account. Set it only on a stack that sells in
+     * Stripe test mode.
+     */
+    OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL: z
+      .string()
+      .transform((value) => value.normalize("NFKC").trim().toLowerCase())
+      .pipe(z.email().max(320))
+      .optional(),
+    OPENSTEER_SYNTHETIC_SIGN_IN_PASSWORD: z.string().min(24).max(4_096).optional(),
     OPENSTEER_APPLE_SIGN_IN_CLIENT_ID: z.string().min(1).optional(),
     OPENSTEER_APPLE_SIGN_IN_KEY_ID: z
       .string()
@@ -238,6 +249,8 @@ export interface ControlPlaneConfig {
   readonly googleClientId: string;
   readonly googleClientSecret: string;
   readonly appReview?: AppReviewSignInConfig;
+  /** The synthetic purchase's own Account; see `OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL`. */
+  readonly syntheticSignIn?: AppReviewSignInConfig;
   readonly appleSignIn?: AppleSignInConfig;
   readonly hostedOAuth?: {
     readonly encryptionPrivateKey: string;
@@ -321,6 +334,15 @@ export function loadControlPlaneConfig(
   }
   const managedHomeEnvironment = withManagedHomeConfigFiles(environment);
   const cloudComputers = loadCloudComputerConfig(managedHomeEnvironment);
+  // The synthetic purchase's door opens only on a stack that says it is a test stack: one whose
+  // Stripe secret key is present and in test mode, whether or not anything else is configured.
+  if (
+    (parsed.OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL || parsed.OPENSTEER_SYNTHETIC_SIGN_IN_PASSWORD) &&
+    !(cloudComputers?.stripeKey ?? "").startsWith("sk_test_")
+  )
+    throw new Error(
+      "The synthetic purchase's sign-in needs a test-mode Stripe secret key (sk_test_) beside it",
+    );
   if (cloudComputers && parsed.OPENSTEER_CONTROL_PLANE_PUBLIC_URL.protocol !== "https:") {
     throw new Error("Cloud Computers require an HTTPS Account origin");
   }
@@ -342,6 +364,7 @@ export function loadControlPlaneConfig(
           },
         }
       : {}),
+    ...(syntheticSignInConfig(parsed) ? { syntheticSignIn: syntheticSignInConfig(parsed)! } : {}),
     ...(appleSignInConfig(parsed) ? { appleSignIn: appleSignInConfig(parsed)! } : {}),
     ...(hostedOAuthConfig(parsed) ? { hostedOAuth: hostedOAuthConfig(parsed)! } : {}),
     portalOrigin: parsed.OPENSTEER_PORTAL_ORIGIN,
@@ -368,6 +391,19 @@ export function loadControlPlaneConfig(
   } satisfies ControlPlaneConfig;
   assertNativeOAuthConfig(config);
   return config;
+}
+
+function syntheticSignInConfig(
+  parsed: z.infer<typeof AccountEnvironmentSchema>,
+): AppReviewSignInConfig | undefined {
+  const email = parsed.OPENSTEER_SYNTHETIC_SIGN_IN_EMAIL;
+  const password = parsed.OPENSTEER_SYNTHETIC_SIGN_IN_PASSWORD;
+  if (!email && !password) return undefined;
+  if (!email || !password)
+    throw new Error("The synthetic purchase's sign-in needs its email and password together");
+  if (email === parsed.OPENSTEER_APP_REVIEW_EMAIL)
+    throw new Error("The synthetic purchase's account must not be the App Review account");
+  return { email, password };
 }
 
 function appleSignInConfig(

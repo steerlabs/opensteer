@@ -1,0 +1,26 @@
+# A ready Home could not be claimed for the person who bought it; it is retried for an hour, then shown as needing attention.
+# Runbook: docs/cloud-computer-operations.md, "DNS or identity mismatch".
+displayName: "Opensteer: Claiming a Cloud Computer for its buyer failed"
+severity: WARNING
+userLabels:
+  opensteer_alert: digest
+documentation:
+  mimeType: text/markdown
+  subject: "Opensteer: Claiming a Cloud Computer for its buyer failed"
+  content: |-
+    A ready Home could not be claimed for the person who bought it; it is retried for an hour, then shown as needing attention.
+
+    Open the runbook, docs/cloud-computer-operations.md, section "DNS or identity mismatch".
+combiner: OR
+conditions:
+  - displayName: "Claiming a Cloud Computer for its buyer failed"
+    conditionMatchedLog:
+      filter: >-
+        resource.type="k8s_container" AND resource.labels.namespace_name="opensteer-system" AND jsonPayload.event="account.cloud_computer.claim_failed"
+      labelExtractors:
+        computer_id: EXTRACT(jsonPayload.computerId)
+        event: EXTRACT(jsonPayload.event)
+alertStrategy:
+  notificationRateLimit:
+    period: 86400s
+  autoClose: 604800s

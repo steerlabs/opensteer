@@ -215,6 +215,7 @@ describe("Google Compute pool host provider", () => {
     const baseEnv = {
       OPENSTEER_ACCOUNT_URL: "https://account.example.test",
       OPENSTEER_HOME_CLOUDFLARE_ZONE_ID: "a".repeat(32),
+      OPENSTEER_HOME_CLOUD_COMPUTER_DOMAIN: "computers.example.test",
       OPENSTEER_HOME_CLOUDFLARE_TOKEN: "c".repeat(32),
       OPENSTEER_HOME_GCP_PROJECT: "test-project",
       OPENSTEER_HOME_GCP_ZONE: "us-central1-a",

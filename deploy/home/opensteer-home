@@ -24,6 +24,8 @@ source "$home_dir/common.sh"
 source "$home_dir/backup.sh"
 # shellcheck source=deploy/home/update.sh
 source "$home_dir/update.sh"
+# shellcheck source=deploy/home/machine-status.sh
+if [[ -f "$home_dir/machine-status.sh" ]]; then source "$home_dir/machine-status.sh"; fi
 
 recover_home() {
   restore_rollback
@@ -78,6 +80,7 @@ case "${1:-}" in
       source "$home_dir/managed-egress.sh"
       maintain_managed_egress
     fi
+    if declare -F publish_machine_status >/dev/null; then publish_machine_status; fi
     ;;
   stop)
     lock_home
@@ -87,7 +90,14 @@ case "${1:-}" in
     if [[ -f "$home_dir/managed" && $# != 1 ]]; then fail 'Managed Homes update only from the Account feed.'; fi
     lock_home
     recover_home
-    update_home "$@"
+    rm -f -- "$home_dir/update.recorded"
+    update_status=0
+    update_home "$@" || update_status=$?
+    if ((update_status != 0)) && [[ ! -f "$home_dir/update.recorded" ]] &&
+      declare -F record_update_result >/dev/null; then
+      record_update_result failed
+    fi
+    exit "$update_status"
     ;;
   snapshots)
     backup_command "$@"

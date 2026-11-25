@@ -1,0 +1,26 @@
+# A ready Cloud Computer's health report names a problem that needs someone, or no report arrived for an hour.
+# Runbook: docs/cloud-computer-operations.md, "A Cloud Computer reports a problem".
+displayName: "Opensteer: A Cloud Computer reports a problem or stopped reporting"
+severity: WARNING
+userLabels:
+  opensteer_alert: digest
+documentation:
+  mimeType: text/markdown
+  subject: "Opensteer: A Cloud Computer reports a problem or stopped reporting"
+  content: |-
+    A ready Cloud Computer's health report names a problem that needs someone, or no report arrived for an hour.
+
+    Open the runbook, docs/cloud-computer-operations.md, section "A Cloud Computer reports a problem".
+combiner: OR
+conditions:
+  - displayName: "A Cloud Computer reports a problem or stopped reporting"
+    conditionMatchedLog:
+      filter: >-
+        resource.type="k8s_container" AND resource.labels.namespace_name="opensteer-system" AND (jsonPayload.event="account.cloud_computer.unhealthy" OR jsonPayload.event="account.cloud_computer.report_missing")
+      labelExtractors:
+        computer_id: EXTRACT(jsonPayload.computerId)
+        event: EXTRACT(jsonPayload.event)
+alertStrategy:
+  notificationRateLimit:
+    period: 86400s
+  autoClose: 604800s

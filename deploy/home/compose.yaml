@@ -64,6 +64,13 @@ services:
       OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN: ${OPENSTEER_HOME_ACCOUNT_ORIGIN:-}
       OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID: ${OPENSTEER_HOME_OIDC_CLIENT_ID:-}
       OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET_FILE: ${OPENSTEER_HOME_OIDC_CLIENT_SECRET_PATH:-}
+      # The operator's own collector for this Home's health report; setting it is the consent.
+      # Empty: nothing leaves the machine.
+      OPENSTEER_PROBLEM_REPORTS_URL: ${OPENSTEER_HOME_PROBLEM_REPORTS_URL:-}
+      # Sent as a bearer token with each report; the collector should require it.
+      OPENSTEER_PROBLEM_REPORTS_TOKEN: ${OPENSTEER_HOME_PROBLEM_REPORTS_TOKEN:-}
+      # Root's maintenance writes machine-status.json into host-data, which no Runner mounts.
+      OPENSTEER_MACHINE_STATUS: root-maintenance
       OPENSTEER_DATABASE_URL_FILE: /run/secrets/database_url
       OPENSTEER_AUTH_SECRET_FILE: /run/secrets/auth_secret
       OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST_FILE: /run/secrets/setup_digest

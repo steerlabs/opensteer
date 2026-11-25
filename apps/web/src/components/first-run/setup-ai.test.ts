@@ -123,6 +123,22 @@ describe("setup AI rows", () => {
     expect(more).toEqual([]);
   });
 
+  it("says why an account of a plan cannot run here, and never waits on it", () => {
+    const detail =
+      "Claude Code 2.1.200 is older than Opensteer supports; update it to 2.1.294 or newer";
+    const { rows } = setupAiRows(
+      [placement({ available: false, availability: "unavailable", detail })],
+      [environment([available("claude", "anthropic")])],
+    );
+    expect(
+      rows.map((row) =>
+        row.kind === "plan"
+          ? `${row.plan.id}:${row.action.kind}:${row.action.kind === "attention" ? row.action.detail : ""}`
+          : row.kind,
+      ),
+    ).toEqual([`claude:attention:${detail}`]);
+  });
+
   it("keeps the other plans for More AI", () => {
     const { more } = setupAiRows(
       [],
