@@ -29,6 +29,7 @@ import {
   type WorkflowDuration,
 } from "apps/contracts";
 import {
+  loadWorker,
   makeFacetSupervisor,
   FacetInvocation,
   type FacetBundle,
@@ -253,7 +254,7 @@ const runner = (env: Environment, context: Pick<ExecutionContext, "waitUntil" | 
 const ignore = () => undefined;
 /** Only a build opens these release files. The app runtime has no build imports. */
 const compiler = (env: Environment) => {
-  const worker = env.LOADER.get("pluginEngine:compiler", async () => {
+  const { worker } = loadWorker(env.LOADER, "pluginEngine:compiler", async () => {
     const files = await Promise.all(
       env.COMPILER_FILES.map(async ({ name, type }): Promise<[string, WorkerLoaderModule]> => {
         const file = await env.COMPILER_ASSETS.fetch(new Request(`http://compiler/${name}`));

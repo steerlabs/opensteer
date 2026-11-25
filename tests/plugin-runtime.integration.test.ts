@@ -137,8 +137,16 @@ test.skipIf(process.platform === "win32")(
       plugins.health({}, caller),
       "Packaged Host needed the compiler at startup",
     );
-    await cp(heldCompiler, compiler, { recursive: true });
-    const installed = await deadline(
+    const startedWorkerd = pluginFixtureProcesses(started.pid).find(
+      (child) => basename(child.command) === "workerd",
+    );
+    if (!startedWorkerd) throw new Error("Packaged workerd process was missing at startup");
+    const compilerEntry = join(heldCompiler, "main.js");
+    await cp(heldCompiler, compiler, {
+      recursive: true,
+      filter: (source) => source !== compilerEntry,
+    });
+    const install = () =>
       plugins.install(
         {
           kind: "files",
@@ -157,9 +165,15 @@ test.skipIf(process.platform === "win32")(
           ],
         },
         caller,
-      ),
-      "Packaged Host did not install the fixture",
-    );
+      );
+    expect(
+      await deadline(install(), "Build with a missing compiler file did not settle"),
+    ).toMatchObject({
+      status: "build-error",
+      error: { message: expect.stringContaining("The packaged compiler module is unavailable.") },
+    });
+    await copyFile(compilerEntry, join(compiler, "main.js"));
+    const installed = await deadline(install(), "Packaged Host did not install the fixture");
     expect(installed.status, JSON.stringify(installed)).toBe("installed");
     expect(
       (await plugins.call({ calls: { path: "tools.fixture.read", input: { amount: 2 } } }, caller))
@@ -174,6 +188,7 @@ test.skipIf(process.platform === "win32")(
     const children = pluginFixtureProcesses(health.pid);
     const workerd = children.find((child) => basename(child.command) === "workerd");
     if (!workerd) throw new Error("Packaged workerd process was missing");
+    expect(workerd.pid).toBe(startedWorkerd.pid);
     const binary = join(
       staged,
       layout.serviceModules,
