@@ -1286,3 +1286,22 @@ it("tells a feed line it cannot read, or a config.env it cannot read, from no fe
   expect(unreadable.status).not.toBe(0);
   expect(unreadable.stdout).not.toContain("No update feed is set");
 });
+
+it("gives a Home installed without units (--prepare) none from a start", () => {
+  const started = spawnSync(
+    "bash",
+    ["-c", 'source "$1/common.sh"; refresh_units', "start", join(home, "current")],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        OPENSTEER_HOME_DIR: home,
+        OPENSTEER_HOME_UNIT_DIR: join(work, "units"),
+        PATH: `${work}:${process.env.PATH}`,
+      },
+    },
+  );
+  expect(started.status, started.stderr).toBe(0);
+  expect(readdirSync(join(work, "units"))).toEqual([]);
+  expect(said()).not.toContain("systemctl");
+});

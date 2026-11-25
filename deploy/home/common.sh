@@ -1065,17 +1065,24 @@ forget_release() {
   rm -rf -- "$1"
 }
 
-# refresh_units: the installed units follow what the current release writes, where they differ.
-refresh_units() {
+# install_units: the units the current release writes, written where they differ (an install).
+install_units() {
   [[ -d /run/systemd/system || -n ${OPENSTEER_HOME_UNIT_DIR:-} ]] || return 0
   "$(current_release)/install-scheduler.sh" "$home_dir" "$(installed_unit_prefix)"
+}
+
+# refresh_units: the installed units follow what the current release writes, where they differ. A
+# Home installed without units (--prepare) gets none from a start or an update.
+refresh_units() {
+  [[ -f "${OPENSTEER_HOME_UNIT_DIR:-/etc/systemd/system}/$(installed_unit_prefix).service" ]] || return 0
+  install_units
 }
 
 # The installer run again by hand on an installed Home: it changes nothing unless the whole release
 # is prepared beside the running one, and refuses a managed or claimed Home, another name, another
 # TLS choice, or --local-images without a manifest. Then the Home switches to it (cutover).
 rerun_installed_home() {
-  local hostname=$1 manifest=$2 local_images=$3 local_tls=$4 source=$5
+  local hostname=$1 manifest=$2 local_images=$3 local_tls=$4 source=$5 prepare=${6:-false}
   local configured state local_mode fetch_mode tls installed_tls from to='' running=false status=0 release_dir
   local unchanged='Nothing was changed.'
   release_dir=$(current_release) || fail "This Home has no current release. $unchanged"
@@ -1128,8 +1135,10 @@ rerun_installed_home() {
   fi
   release_dir=$to
   if [[ $local_mode == true ]]; then touch "$home_dir/local-images"; else rm -f -- "$home_dir/local-images"; fi
-  # Its units, by the same comparison every start makes: no success without them.
-  refresh_units || fail "The Home runs the new release, but its units could not be written; run: sudo opensteer-home start"
+  # Its units (a first install cut short before it wrote them gets them here): no success without
+  # them, unless it is prepared without units.
+  $prepare || install_units ||
+    fail "The Home runs the new release, but its units could not be written; run this installer again."
   echo "This Home was never claimed. It now runs release $(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$to/images.env")."
   if [[ -f "$home_dir/setup-link.pending" ]]; then
     print_setup_link "$(cat "$home_dir/setup-link.pending")"

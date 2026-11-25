@@ -133,7 +133,7 @@ fi
 if [[ -z $managed && -f "$home_dir/config.env" ]]; then
   # An installed Home run again by hand: decided and checked in full before anything changes.
   lock_home
-  rerun_installed_home "$hostname" "$manifest" "$local_images" "$local_tls" "$source_dir"
+  rerun_installed_home "$hostname" "$manifest" "$local_images" "$local_tls" "$source_dir" "$prepare"
   exit 0
 fi
 

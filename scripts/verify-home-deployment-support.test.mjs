@@ -415,7 +415,7 @@ const installedHome = ({ state = "required", fetch = "ok", start = "ok", running
     run_release() { echo "start $(version_of "$1")" >> "$log"; ${start === "ok" ? "true" : "false"}; }
     pin_release() { echo "pin $(version_of "$release_dir")" >> "$log"; }
     plan_inventory() { :; }
-    refresh_units() { echo units >> "$log"; }
+    install_units() { echo units >> "$log"; }
     start_pod() { echo "start $(version_of "$release_dir")" >> "$log"; }
     rerun() { (rerun_installed_home "$@" "$(pwd)/deploy/home"); }
     report() { status=$1; checksums > "$staging/after"; if cmp -s "$staging/before" "$staging/after"; then echo unchanged; else echo changed; fi; cat "$log"; echo "status $status"; }
@@ -528,10 +528,10 @@ await test("the installer run again on an unclaimed Home replaces it, or puts it
   );
   // No success without the units every start compares.
   const unitless = runHome(`${installedHome()}
-    refresh_units() { return 1; }
+    install_units() { return 1; }
     rerun home.example.test "$staging/new.json" true true && echo "status 0" || echo "status $?"`);
   assert.match(unitless.stdout, /status 1/u);
-  assert.match(unitless.stderr, /its units could not be written; run: sudo opensteer-home start/u);
+  assert.match(unitless.stderr, /its units could not be written; run this installer again/u);
 });
 
 await test("the installer decides about an installed Home before it writes anything", () => {
