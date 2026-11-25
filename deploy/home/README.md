@@ -159,21 +159,22 @@ An Opensteer Cloud Computer's Home is different in two ways, both set by
   least one, and the Host holds the next one back until one ends. The 1 GiB
   is a placeholder until a Run is measured on a real Cloud Computer. The
   `OPENSTEER_HOME_*` limit settings above do not apply to it.
-- **Its Host, and only its Host, reaches its pool host.** The boot answer's
+- **It reaches its pool host on two ports only.** The boot answer's
   `browserPoolNetwork` (the private subnet the pool hosts live in, and the
   agent and relay ports) is kept in `pool-network`, and `firewall.sh` allows
-  TCP to that subnet on those two ports, from the Host's own uid (10002 on a
-  Cloud Computer), before it rejects every private range. The Runner, gateway
-  and Channel Runtime share the Host's network namespace but not its uid, so
-  a shell of your own agents' Runs cannot use the allow. The Opensteer account
+  TCP to that subnet on those two ports, before it rejects every private
+  range. The rule is for the pod: the Runner, gateway and Channel Runtime
+  share the Host's network namespace, so a shell of your own agents' Runs can
+  open those ports too. The pool agent answers only requests signed with the
+  key the Host registered for its slot, and the relay only a TLS client
+  holding its relay key; both keys are in the Host's data volume, which no
+  other service mounts. The Opensteer account
   refuses to boot a Cloud Computer until it knows the pool network (the
   installer retries), and the installer refuses a boot answer without a valid
   one, and fetches again a saved one that lacks it. Maintenance asks the
   Opensteer account for it again on every pass and re-applies the firewall when it
   changed. The file is read only with the `browser-pool` marker and removed at
-  uninstall. The Host's data volume is moved to its uid before every start
-  (from a backup taken under the shared uid too); a self-hosted Home keeps the
-  shared uid and is left as it is.
+  uninstall.
 
 On Compute Engine's default `e2-medium` (2 vCPUs, 4 GiB) that gives PostgreSQL
 512 MiB, the Host 768 MiB, Caddy and Channel Runtime 256 MiB each, and the

@@ -2,15 +2,15 @@
 set -euo pipefail
 # A Cloud Computer's pool network: <private IPv4 CIDR> <agent port>,<relay port>, from its boot
 # answer (or its Opensteer account later, checked the same way). The only private destination the pod may
-# reach, only on those two TCP ports, and only from the Host's own uid: the Runner, gateway and
-# Channel Runtime share the Host's network namespace but not that uid, so a shell of your own agents
-# cannot use it. Why that is narrow enough: Google's rule opensteer-pool-hosts-home lets machines
+# reach, and only on those two TCP ports. Every service in the pod shares its network namespace,
+# so a shell of your own agents' Runs can open these ports too; what it reaches answers only the
+# keys below, which only the Host holds (in host-data, which no other service mounts). Why the
+# allow is narrow enough: Google's rule opensteer-pool-hosts-home lets machines
 # tagged as Cloud Computers reach machines tagged as pool hosts on exactly these ports, and no
 # Home listens on either, so the allow reaches pool hosts only (as long as nothing else in the
 # subnet listens there: the account's and the provisioner's machines must not sit in it). The
 # agent port answers only requests signed with the key the Home registered for its slot, and the
 # relay only a TLS client holding the relay key registered for it.
-pool_owner=10002 # The Host's uid on a Cloud Computer (compose.browser-pool.yaml).
 valid_pool_network() {
   local cidr=$1 ports=$2 a b c d prefix address
   [[ $cidr =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})/([1-9]|[12][0-9]|3[0-2])$ ]] ||
@@ -39,7 +39,7 @@ fi
 pool_rule=''
 if (($# == 5)); then
   valid_pool_network "$4" "$5" || { echo 'Home firewall refused an invalid pool network.' >&2; exit 1; }
-  pool_rule="-A OPENSTEER-HOME -d $4 -p tcp -m owner --uid-owner $pool_owner -m multiport --dports $5 -j RETURN"
+  pool_rule="-A OPENSTEER-HOME -d $4 -p tcp -m multiport --dports $5 -j RETURN"
 fi
 
 policy() {

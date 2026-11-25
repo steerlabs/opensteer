@@ -507,26 +507,9 @@ refresh_pool_network() {
   echo "This Home now reaches the pool network its Opensteer account gives: $network" >&2
 }
 
-# The Host's own uid on a Cloud Computer (compose.browser-pool.yaml, firewall.sh's pool_owner),
-# so that only it may reach the pool. Its data volume, made under the image's shared uid or
-# restored from a backup taken under it, moves to that uid before it starts: moved, never wiped.
-# A self-hosted Home is left exactly as it is.
-host_uid=10002
-own_host_data() {
-  local config volume image
-  [[ -f "$home_dir/browser-pool" ]] || return 0
-  config=$(compose config --format json) || return
-  volume=$(jq -er '.volumes["host-data"].name' <<< "$config") || return
-  image=$(jq -er '.services.host.image' <<< "$config") || return
-  docker run --rm --network none --user 0:0 --entrypoint find \
-    --mount "type=volume,src=$volume,dst=/data" "$image" \
-    /data '(' '!' -uid "$host_uid" -o '!' -gid "$host_uid" ')' -exec chown -h "$host_uid:$host_uid" '{}' +
-}
-
 start_pod() {
   local pid namespace
   prepare_runner_apparmor || return
-  own_host_data || return
   if compose up -d --wait --wait-timeout 240 --pull never postgres host &&
     pid=$(host_pid) && namespace=$(readlink "/proc/$pid/ns/net") &&
     apply_firewall "$pid" && check_firewall "$pid" &&

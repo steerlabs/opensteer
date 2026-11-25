@@ -398,8 +398,8 @@ FROM node-runtime AS host
 WORKDIR /app
 ENV OPENSTEER_WEB_DISTRIBUTION_DIRECTORY=/usr/local/share/opensteer/web \
     OPENSTEER_WEB_DISTRIBUTION_MANIFEST=/usr/local/share/opensteer/web/opensteer-web.json
-# The code tree is root's and readable by any uid: it does not depend on who runs it (the Host
-# runs as 10001, or 10002 on a Cloud Computer), and the user it runs as cannot change it.
+# The code tree is root's and readable by any uid: it does not depend on who runs it, and the
+# user it runs as (10001) cannot change it.
 COPY --from=host-build /output/host ./
 COPY --from=package-stamps /output/host/package.json ./package.json
 COPY --from=runner-native-fs-build --chmod=0555 /output/opensteer-native-fs ./native-fs-helper/opensteer-native-fs

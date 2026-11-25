@@ -84,8 +84,7 @@ it("runs the guard in every Home image after its copies, before its release reco
     expect(lastUser, name).toBeGreaterThan(guarded);
     expect(lines[lastUser], name).not.toBe("USER root");
   }
-  // The Host's code is root's: it runs as 10001, or 10002 on a Cloud Computer, and neither may
-  // change it.
+  // The Host's code is root's: the user it runs as may not change it.
   const host = stage("host");
   expect(host).toContain(
     "sh /tmp/assert-readable-tree.sh --root-owned /app /usr/local/share/opensteer",

@@ -56,9 +56,8 @@ function apply(...pool: string[]) {
   };
 }
 
-// Only the Host (its own uid on a Cloud Computer) reaches the pool; the Runner's shells do not.
-const allow =
-  "-A OPENSTEER-HOME -d 10.128.0.0/20 -p tcp -m owner --uid-owner 10002 -m multiport --dports 7310,7312 -j RETURN";
+// The pod reaches the pool network on its two ports and nowhere else private.
+const allow = "-A OPENSTEER-HOME -d 10.128.0.0/20 -p tcp -m multiport --dports 7310,7312 -j RETURN";
 
 it("allows exactly the pool network on the agent and relay ports, before the private rejects", () => {
   const { status, rules } = apply("10.128.0.0/20", "7310,7312");
@@ -259,49 +258,6 @@ ${value === null ? "exit 7" : `printf '%s' '${JSON.stringify(value)}' > "$out"; 
   expect(readFileSync(join(home, "opensteer-home"), "utf8")).toMatch(
     /refresh_pool_network[^\n]*\n?[^\n]*apply_firewall/u,
   );
-});
-
-it("gives the Host its own uid on a Cloud Computer, which alone the pool rule lets out", () => {
-  const overlay = readFileSync(join(home, "compose.browser-pool.yaml"), "utf8");
-  expect(overlay).toMatch(/^ {2}host:\n(?: {4}.*\n)*? {4}user: "10002:10002"$/mu);
-  expect(readFileSync(join(home, "firewall.sh"), "utf8")).toContain("pool_owner=10002");
-  // The Host's data moves to its uid before it starts (rule 6: moved, never wiped).
-  const directory = mkdtempSync(join(work, "home-"));
-  writeFileSync(join(directory, "browser-pool"), "");
-  writeFileSync(
-    join(work, "docker"),
-    `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${work}/docker.log"\n`,
-    {
-      mode: 0o755,
-    },
-  );
-  const result = spawnSync(
-    "bash",
-    [
-      "-c",
-      'source "$1"; compose() { printf \'{"volumes":{"host-data":{"name":"set_host-data"}},"services":{"host":{"image":"example.test/host@sha256:aa"}}}\'; }; own_host_data',
-      "own",
-      join(home, "common.sh"),
-    ],
-    {
-      encoding: "utf8",
-      env: { ...process.env, OPENSTEER_HOME_DIR: directory, PATH: `${work}:${process.env.PATH}` },
-    },
-  );
-  expect(result.status, result.stderr).toBe(0);
-  const log = readFileSync(join(work, "docker.log"), "utf8");
-  expect(log).toContain("run --rm --network none --user 0:0");
-  expect(log).toContain("set_host-data");
-  expect(log).toContain("10002:10002");
-  // A self-hosted Home is left exactly as it is.
-  rmSync(join(work, "docker.log"));
-  rmSync(join(directory, "browser-pool"));
-  expect(
-    spawnSync("bash", ["-c", 'source "$1"; own_host_data', "own", join(home, "common.sh")], {
-      env: { ...process.env, OPENSTEER_HOME_DIR: directory, PATH: `${work}:${process.env.PATH}` },
-    }).status,
-  ).toBe(0);
-  expect(existsSync(join(work, "docker.log"))).toBe(false);
 });
 
 it("reuses a saved boot answer only when it still holds what a pooled Home needs", () => {
