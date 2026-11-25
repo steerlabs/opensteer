@@ -86,7 +86,15 @@ describe("Add a device in its sheet", () => {
         document.body.append(container);
         const root = createRoot(container);
         roots.push(root);
-        const sections = addDeviceGuideSections({ onConnectSomethingElse: () => undefined });
+        const sections = addDeviceGuideSections({
+          onConnectSomethingElse: () => undefined,
+          // The longest the sheet says: an Opensteer account's link, and every step.
+          mac: {
+            homeName: "Mac mini",
+            portalOrigin: "https://opensteer.example",
+            onShareLink: () => undefined,
+          },
+        });
         const host = new MockHostClient({ latencyMs: 0 });
         hosts.push(host);
         await act(async () =>
