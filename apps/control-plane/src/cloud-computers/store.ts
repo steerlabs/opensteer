@@ -2081,13 +2081,13 @@ export class CloudComputerStore {
     });
   }
 
-  /** The feed this account gives now, to a booted Home that proves its credentials. */
   /** The account's portal for a Home's answers, when it has an HTTPS one. */
   #portal(): { portalOrigin?: string } {
     const portal = this.#options.portalOrigin;
     return portal?.protocol === "https:" ? { portalOrigin: portal.origin } : {};
   }
 
+  /** The feed this account gives now, to a booted Home that proves its credentials. */
   async releaseFeedForHome(id: CloudComputerId, authorization: string | undefined) {
     return this.#db.transaction().execute(async (tx) => {
       await this.#requireBootedHome(tx, id, authorization, "share");
