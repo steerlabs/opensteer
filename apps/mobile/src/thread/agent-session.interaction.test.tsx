@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
+import { MockHostClient, mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -44,6 +44,7 @@ vi.mock(
 );
 vi.mock("../ui/primitives.js", () => ({
   AppText: (props: { children?: ReactNode }) => <span>{props.children}</span>,
+  SectionLabel: (props: { children?: ReactNode }) => <h2>{props.children}</h2>,
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("../screens/external-agent-mark.js", () => ({
@@ -92,17 +93,23 @@ vi.mock("./waiting-questions.js", () => ({
   ),
 }));
 
+const { ConnectedAgentsSection } = await import("../sidebar/connected-agents-section.js");
+const web =
+  await import("../../../web/src/components/workspace/workspace.interaction.test-support.js");
 const { AgentSessionPane, useSessionTask } = await import("./agent-session.js");
 const { sessionTaskOf } = await import("./agent-session-model.js");
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined;
+let mobileContainer: HTMLElement | undefined;
 let host: MockHostClient | undefined;
 afterEach(() => {
   act(() => root?.unmount());
   host?.dispose();
   vi.restoreAllMocks();
-  document.body.replaceChildren();
+  mobileContainer?.remove();
+  mobileContainer = undefined;
+  root = undefined;
 });
 
 function seeded(options: { readonly question?: boolean } = {}) {
@@ -129,10 +136,14 @@ function Pane(props: { readonly client: MockHostClient; readonly threadId: strin
   );
 }
 
+function mountMobile() {
+  mobileContainer = document.body.appendChild(document.createElement("div"));
+  root = createRoot(mobileContainer);
+  return mobileContainer;
+}
+
 async function render(client: MockHostClient, threadId: string) {
-  const container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
+  const container = mountMobile();
   await act(async () => root!.render(<Pane client={client} threadId={threadId} />));
   return container;
 }
@@ -258,3 +269,79 @@ describe("a connected agent's own task on the phone", () => {
     expect(page.textContent).not.toContain("Using now");
   });
 });
+
+const stopTargets = ["web line", "web panel", "web task", "phone drawer", "phone task"] as const;
+const stopUnavailable = [
+  { reason: "offline", connection: { network: "offline" }, words: "Not stopped. You're offline." },
+  {
+    reason: "recovering",
+    connection: { phase: "recovering" },
+    words: "Not stopped. Can't reach Studio Mac.",
+  },
+  {
+    reason: "no session scope",
+    connection: { scope: null },
+    words: "Not stopped. Can't reach Studio Mac.",
+  },
+] as const;
+
+it.each(
+  stopTargets.flatMap((surface) =>
+    stopUnavailable.map((unavailable) => ({ surface, ...unavailable })),
+  ),
+)(
+  "$surface explains a Stop that could not be sent ($reason)",
+  async ({ surface, connection, words }) => {
+    const threadId = mockAgentWorkThreads.shopping;
+    let client: MockHostClient;
+    let shown: HTMLElement;
+    let stop: HTMLButtonElement | undefined;
+    if (surface === "phone task" || surface === "phone drawer") {
+      client = seeded();
+      client.mockAgentWork({ livePanel: "one" });
+      if (surface === "phone drawer") {
+        shown = mountMobile();
+        await act(async () =>
+          root!.render(<ConnectedAgentsSection host={client} onOpen={vi.fn()} />),
+        );
+      } else {
+        shown = await render(client, threadId);
+      }
+      stop = button(shown, "Stop ChatGPT") ?? button(shown, "Stop “\u2068ChatGPT\u2069”");
+    } else {
+      await web.mount(surface === "web task" ? `/tasks/${threadId}` : "/", {
+        mock: mockConnectedAgents("seeded"),
+        hostClient(source) {
+          source.mockAgentWork({ livePanel: "one" });
+          return source;
+        },
+      });
+      client = web.client;
+      if (surface === "web panel") {
+        const opener = document.querySelector<HTMLButtonElement>(".agents-now__trigger")!;
+        vi.spyOn(opener, "getClientRects").mockReturnValue([
+          new DOMRect(),
+        ] as unknown as DOMRectList);
+        await act(async () => opener.click());
+        shown = document.querySelector<HTMLElement>(".agents-now-panel")!;
+      } else {
+        shown = document.querySelector<HTMLElement>(
+          surface === "web line" ? ".agents-now" : ".session-bar",
+        )!;
+      }
+      stop = button(shown, "Stop ChatGPT") ?? button(shown, "Stop “ChatGPT”");
+    }
+    expect(stop).toBeDefined();
+    const dispatch = vi.spyOn(client, "dispatch");
+    vi.spyOn(client.connection, "getSnapshot").mockReturnValue({
+      ...client.connection.getSnapshot(),
+      name: "Studio Mac",
+      ...connection,
+    });
+    await act(async () => stop!.click());
+    expect(
+      dispatch.mock.calls.filter(([command]) => command.type === "agent.session.stop"),
+    ).toHaveLength(0);
+    expect(shown.textContent).toContain(words);
+  },
+);

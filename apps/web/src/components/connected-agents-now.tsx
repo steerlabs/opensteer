@@ -3,6 +3,7 @@ import {
   connectedAgentNamePart,
   connectedAgentNowRow,
   isolatedPlainSentence,
+  joinSentenceParts,
   type ConnectedAgentNow,
   type HostClient,
   type HostSnapshot,
@@ -35,9 +36,10 @@ const selectHomeName = (snapshot: HostSnapshot) =>
   snapshot.machines.find(hostsDeployment)?.name ?? null;
 
 type SessionStop = ReturnType<typeof useStopSession>;
-type StopState = Pick<SessionStop, "running" | "unconfirmed">;
-type StopStatus = { readonly running: boolean; readonly unconfirmed: boolean };
-type ReportStop = (sessionId: string, state: StopState | null) => void;
+type StopStatus = Pick<SessionStop, "running" | "unconfirmed"> & {
+  readonly notSent: string | null;
+};
+type ReportStop = (sessionId: string, state: StopStatus | null) => void;
 type AgentsView = ReturnType<typeof useConnectedAgentWork>["view"];
 
 const ConnectedAgentsContext = createContext<{
@@ -65,10 +67,15 @@ export function ConnectedAgentsProvider({
       const before = previous.get(id);
       const running = state?.running ?? false;
       const unconfirmed = state?.unconfirmed ?? false;
-      if (running === (before?.running ?? false) && unconfirmed === (before?.unconfirmed ?? false))
+      const notSent = state?.notSent ?? null;
+      if (
+        running === (before?.running ?? false) &&
+        unconfirmed === (before?.unconfirmed ?? false) &&
+        notSent === (before?.notSent ?? null)
+      )
         return previous;
       const next = new Map(previous);
-      if (running || unconfirmed) next.set(id, { running, unconfirmed });
+      if (running || unconfirmed || notSent) next.set(id, { running, unconfirmed, notSent });
       else next.delete(id);
       return next;
     });
@@ -99,7 +106,8 @@ function ObserveSessionStop({
   readonly entry: ConnectedAgentNow;
   readonly report: ReportStop;
 }) {
-  const { run, running, unconfirmed } = useStopSession(threadId, sessionId);
+  const { run, running, unconfirmed, outcome, line } = useStopSession(threadId, sessionId);
+  const notSent = outcome?.kind === "not-sent" ? (line?.text ?? null) : null;
   useEffect(() => {
     actions.set(sessionId, run);
     return () => {
@@ -108,8 +116,8 @@ function ObserveSessionStop({
     };
   }, [actions, sessionId, run, report]);
   useEffect(
-    () => report(sessionId, { running, unconfirmed }),
-    [sessionId, running, unconfirmed, report],
+    () => report(sessionId, { running, unconfirmed, notSent }),
+    [sessionId, running, unconfirmed, notSent, report],
   );
   return null;
 }
@@ -173,7 +181,16 @@ function ActiveAgents({
   );
   const stopping = agents.some(({ sessionId }) => stops.get(sessionId)?.running);
   const remaining = agents.filter(({ sessionId }) => stops.get(sessionId)?.unconfirmed);
-  const warning = remaining.length ? stopWarning(remaining) : null;
+  const notSent = new Set(
+    agents.flatMap(({ sessionId }) => {
+      const message = stops.get(sessionId)?.notSent;
+      return message ? [message] : [];
+    }),
+  );
+  const warning = joinSentenceParts(
+    [remaining.length ? stopWarning(remaining) : [], ...[...notSent].map((message) => [message])],
+    " ",
+  );
   const close = () => setAnchor(null);
   const leave = () => {
     close();
@@ -252,7 +269,7 @@ function ActiveAgents({
           {workWords("tab.stop")}
         </button>
       ) : null}
-      {!anchor && warning ? (
+      {!anchor && warning.length ? (
         <span className="agents-now__inline-error" role="status">
           <SentenceText parts={warning} />
         </span>
@@ -330,7 +347,7 @@ function ActiveAgents({
               );
             })}
           </ul>
-          {warning ? (
+          {warning.length ? (
             <p className="agents-now-panel__error" role="status">
               <SentenceText parts={warning} />
             </p>
