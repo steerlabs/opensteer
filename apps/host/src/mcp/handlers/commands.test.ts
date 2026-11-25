@@ -22,4 +22,18 @@ describe("a command's input schema (AD8)", () => {
     expect(underConnection).not.toContain('"directory"');
     expect(underConnection).toContain('"catalog"');
   });
+
+  it("shows trigger.secrets.set's set map only when allowedSecretPaths includes it (S1/S2)", () => {
+    const asking = JSON.stringify(commandInputSchemas("trigger.secrets.set", false, []));
+    const runnable = JSON.stringify(commandInputSchemas("trigger.secrets.set", false, ["set"]));
+    const nonAgentSet = JSON.stringify(
+      commandInputSchemas("integration.server.secrets.set", false, ["secrets"]),
+    );
+    expect(asking).not.toContain('"set"');
+    expect(asking).toContain('"names"');
+    expect(asking).toContain('"remove"');
+    expect(runnable).toContain('"set"');
+    expect(runnable).toContain('"remove"');
+    expect(nonAgentSet).not.toContain('"secrets"');
+  });
 });

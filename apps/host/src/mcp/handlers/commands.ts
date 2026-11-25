@@ -71,6 +71,7 @@ export class CommandTools {
   readonly #requests: () => CommandRequestService | undefined;
   readonly #administration: AdministrationToolHandlers;
   readonly #reads: () => Readonly<Record<string, unknown>> | undefined;
+  readonly #secretDigestKey: Buffer;
   constructor(options: {
     /** The person's read handlers, as the Host registered them. */
     readonly reads?: () => Readonly<Record<string, unknown>> | undefined;
@@ -79,12 +80,14 @@ export class CommandTools {
     readonly requests: () => CommandRequestService | undefined;
     readonly sessions?: unknown;
     readonly administration: AdministrationToolHandlers;
+    readonly secretDigestKey: Buffer;
   }) {
     this.#database = options.database;
     this.#registry = options.registry;
     this.#requests = options.requests;
     this.#administration = options.administration;
     this.#reads = options.reads ?? (() => undefined);
+    this.#secretDigestKey = options.secretDigestKey;
   }
 
   /** What this caller holds, and how the Home answers each: from the rule, cut to the caller. */
@@ -98,7 +101,7 @@ export class CommandTools {
       const row = commandRow(type) as CommandRow;
       if (!commandHolds(type, holder)) return [];
       const { answer } = commandMark(type, { scope, mode }, this.#registry);
-      return [{ type, family: row.family, title: commandTitles[type], answer }];
+      return [{ type, family: row.family, title: commandTitles[type], answer, mode, scope }];
     });
   }
 
@@ -107,7 +110,29 @@ export class CommandTools {
     if (input.type) {
       const found = held.find((entry) => entry.type === input.type);
       if (!found) throw notFound();
-      const schemas = commandInputSchemas(found.type, callerLineage(caller) !== null);
+      const row = commandRow(found.type) as CommandRow;
+      let allowedSecretPaths: readonly string[] = [];
+      // S2: only commands declaring `agentMaySet` can expose a secret field, and only when the
+      // caller's live admission can run that face directly.
+      if (row.agentMaySet?.length) {
+        const connection = found.scope ? { grant: found.scope } : null;
+        const setFaceIndex = found.type === "trigger.secrets.set" ? 1 : 0;
+        const canRunInOwnLineage =
+          commandRule(row, setFaceIndex, {
+            connection,
+            mode: found.mode,
+            reach: true,
+            ownWork: true,
+            ownLineage: true,
+          }).answer === "now" &&
+          agentRunsNow(row, setFaceIndex, this.#registry[found.type], found.scope);
+        if (canRunInOwnLineage) allowedSecretPaths = row.agentMaySet;
+      }
+      const schemas = commandInputSchemas(
+        found.type,
+        callerLineage(caller) !== null,
+        allowedSecretPaths,
+      );
       return {
         type: found.type,
         title: found.title,
@@ -279,6 +304,7 @@ export class CommandTools {
     return agentCommandDoor({
       database: this.#database,
       registry,
+      secretDigestKey: this.#secretDigestKey,
       ...(taskId ? { taskId } : {}),
       ...(requests
         ? {
@@ -545,6 +571,7 @@ export class CommandTools {
     return agentCommandDoor({
       database: this.#database,
       registry,
+      secretDigestKey: this.#secretDigestKey,
       ...(requests
         ? {
             propose: async (agent, command, ask, face) =>
@@ -554,6 +581,7 @@ export class CommandTools {
                 ask,
                 face,
                 proposer: await this.#proposer(caller, originatingThreadId),
+                proposerCallerKey: agent.key,
                 origin,
                 originatingThreadId,
                 callKey: (command as { idempotencyKey: string }).idempotencyKey,
@@ -633,20 +661,33 @@ export class CommandTools {
 }
 
 /**
- * One command's input as JSON Schemas, one per variant: without its key, and without any value
- * only the person types, at whatever depth the table's paths name it.
+ * One command's input as JSON Schemas, one per variant: without its key, and without any secret
+ * path unless that path is explicitly in `allowedSecretPaths` (S1/S2).
  */
 export function commandInputSchemas(
   type: CommandType,
   underConnection = false,
+  allowedSecretPaths: readonly string[] = [],
 ): Record<string, unknown>[] {
   const row = commandRow(type) as CommandRow;
+  const allowed = new Set(allowedSecretPaths);
   return commandVariants(type, underConnection).map((variant) => {
-    const schema = z.toJSONSchema(
-      "idempotencyKey" in variant.shape ? variant.omit({ idempotencyKey: true } as never) : variant,
-      { io: "input", unrepresentable: "any" },
-    ) as Record<string, unknown>;
-    for (const path of row.secretFields ?? []) dropPath(schema, path.split("."));
+    const schema = z.toJSONSchema(variant, {
+      io: "input",
+      unrepresentable: "any",
+    }) as Record<string, unknown>;
+    dropPath(schema, ["idempotencyKey"]);
+    for (const path of row.secretFields ?? []) {
+      if (allowed.has(path) && row.agentMaySet?.includes(path)) {
+        const properties = schema.properties as Record<string, Record<string, unknown>> | undefined;
+        if (type === "trigger.secrets.set" && path === "set" && properties?.set) {
+          properties.set.description =
+            "Values to set (accepted directly only at Full access on automations in your own lineage; otherwise omit set and pass names to ask the person).";
+        }
+        continue;
+      }
+      dropPath(schema, path.split("."));
+    }
     return schema;
   });
 }

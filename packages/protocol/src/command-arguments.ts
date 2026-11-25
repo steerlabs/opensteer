@@ -30,12 +30,19 @@ export function commandSchemaVariants(type: string): readonly z.ZodObject[] {
 function without(schema: z.ZodObject, path: readonly string[]): z.ZodObject {
   const [key, ...rest] = path;
   if (!key || !Object.hasOwn(schema.shape, key)) return schema;
-  if (!rest.length) return schema.omit({ [key]: true } as never);
-  let inner = schema.shape[key] as z.ZodType;
+  const field = schema.shape[key] as z.ZodType;
+  if (!rest.length) {
+    // Only omit a required field: optional fields (such as `trigger.secrets.set`'s `set`, whose
+    // object carries `.superRefine(...)`) already accept `undefined`, and `.omit()` in Zod v4
+    // throws on refined objects.
+    return field.safeParse(undefined).success ? schema : schema.omit({ [key]: true } as never);
+  }
+  let inner = field;
   const optional = inner instanceof z.ZodOptional;
   if (optional) inner = (inner as z.ZodOptional<z.ZodType>).unwrap() as z.ZodType;
   if (!(inner instanceof z.ZodObject)) return schema;
   const narrowed = without(inner, rest);
+  if (narrowed === inner) return schema;
   return schema.extend({ [key]: optional ? narrowed.optional() : narrowed });
 }
 

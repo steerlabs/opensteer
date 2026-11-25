@@ -443,6 +443,7 @@ export interface HostServerDependencies {
   readonly browser: BrowserService;
   readonly tabs: TabService;
   readonly toolActivity: AgentToolActivityStore;
+  readonly secretDigestKey: Buffer;
   readonly browserSources: BrowserSourceService;
   readonly passwordSignIns: Pick<PasswordSignInService, "get" | "respond">;
   readonly signBrowserSourceInvitation: (bytes: Uint8Array) => string;
@@ -548,6 +549,9 @@ export async function createHostServer(
   dependencies: HostServerDependencies,
   options: { readonly logger?: boolean | Record<string, unknown> } = {},
 ): Promise<FastifyInstance> {
+  if (dependencies.secretDigestKey.byteLength === 0) {
+    throw new Error("createHostServer requires a non-empty secretDigestKey.");
+  }
   const threadService = new ThreadService(dependencies);
   const app = Fastify({
     routerOptions: { maxParamLength: 8192 },
@@ -744,6 +748,7 @@ export async function createHostServer(
     service: dependencies.agentTools,
     activity: dependencies.toolActivity,
     realtime: dependencies.realtime,
+    secretDigestKey: dependencies.secretDigestKey,
   });
   registerAgentPageBindingRoute(
     app,
@@ -2705,6 +2710,7 @@ export async function createHostServer(
       dependencies.plugins,
       dependencies.pluginOAuth,
       dependencies.commandRequests,
+      dependencies.secretDigestKey,
     ),
     ...(dependencies.connections
       ? createConnectionRpcHandlers(

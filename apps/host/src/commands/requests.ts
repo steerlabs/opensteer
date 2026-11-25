@@ -17,8 +17,10 @@ import {
 } from "@opensteer/core";
 import { commandAttempts, runCommandEffect } from "./command-effect.js";
 import {
+  admitCommand,
   AgentConnectionStore,
   automationLineageStands,
+  commandSubject,
   proposalSubject,
   standingSubject,
   stillReaches,
@@ -42,6 +44,7 @@ import {
   commandEditor,
   commandGives,
   commandSentence,
+  type CommandAutomationContext,
   type CommandScriptPlace,
 } from "@opensteer/protocol/command-words";
 import {
@@ -239,6 +242,7 @@ export class CommandRequestService {
     readonly ask: CommandAsk;
     readonly face: number | undefined;
     readonly proposer: CommandProposer;
+    readonly proposerCallerKey?: string | undefined;
     readonly origin: CommandRequestOrigin;
     readonly originatingThreadId: ThreadId;
     /** The agent's own key for this call: the same call is the same Request. */
@@ -246,6 +250,36 @@ export class CommandRequestService {
     readonly reason?: string | undefined;
   }): Promise<CommandProposed> {
     const row = commandRow(input.command.type) as CommandRow;
+    if (input.command.type === "trigger.secrets.set") {
+      const hasNames = Array.isArray(input.command.names) && input.command.names.length > 0;
+      const hasRemove = Array.isArray(input.command.remove) && input.command.remove.length > 0;
+      const isClearAll = input.command.clearAll === true;
+      if (!hasNames && !hasRemove && !isClearAll) {
+        throw new OpensteerError({
+          code: "bad_request",
+          message:
+            "Provide `names` for the secrets you want the person to enter, or `remove` to remove existing secrets.",
+        });
+      }
+      if (hasNames) {
+        const seen = new Map<string, string>();
+        for (const name of input.command.names!) {
+          const lower = name.toLowerCase();
+          const existing = seen.get(lower);
+          if (existing !== undefined) {
+            throw new OpensteerError({
+              code: "bad_request",
+              ...(existing !== name ? { reason: "automation-secret-case-conflict" } : {}),
+              message:
+                existing === name
+                  ? `Secret "${name}" is listed more than once.`
+                  : `Secret "${name}" conflicts with "${existing}" (secret names are case-insensitive).`,
+            });
+          }
+          seen.set(lower, name);
+        }
+      }
+    }
     const face = commandAskedFace(input.command.type, input.face);
     // A close of a group's members names the members the person will be shown, and closes only
     // those: one that joins later is untouched (D4).
@@ -275,12 +309,26 @@ export class CommandRequestService {
       if (early.status !== "pending") return early;
       return { status: "pending", requestId: early.request.id, existing: early.replayed };
     }
-    const words = await this.#words(command, face, input.proposer, input.ownerUserId);
+    const words = await this.#words(
+      command,
+      face,
+      input.proposer,
+      input.ownerUserId,
+      this.#database,
+      { origin: input.origin, proposerCallerKey: input.proposerCallerKey },
+    );
     const reason = input.reason?.trim().slice(0, 500) || null;
+    const faceClass = row.faces[face]!.class;
+    // A remove-only `trigger.secrets.set` (`destroy`) carries no secret values; all other
+    // faces of a command with `secretFields` carry secret paths and are never approved on the card.
+    const secretPaths =
+      command.type === "trigger.secrets.set" && faceClass === "destroy"
+        ? []
+        : [...(row.secretFields ?? [])];
     const part: CommandRequestPart = {
       type: command.type,
       family: row.family,
-      face: row.faces[face]!.class,
+      face: faceClass,
       summary: words.summary,
       sentence: words.sentence,
       gives: words.gives,
@@ -288,7 +336,7 @@ export class CommandRequestService {
       ...(command !== input.command && command.type === "tab.group.close"
         ? { homeAdded: ["tabIds"] }
         : {}),
-      secretPaths: [...(row.secretFields ?? [])],
+      secretPaths,
       governs: JSON.parse(JSON.stringify(governs)) as CommandRequestPart["governs"],
       askKey,
       argumentsDigest,
@@ -654,6 +702,10 @@ export class CommandRequestService {
     proposer: CommandProposer,
     owner: UserId,
     database: Kysely<DatabaseSchema> = this.#database,
+    automation?: {
+      readonly origin?: CommandRequestOrigin | undefined;
+      readonly proposerCallerKey?: string | undefined;
+    },
   ) {
     const row = commandRow(command.type) as CommandRow;
     const governs = (row.governs as (c: HostApiCommand) => CommandResource)(command);
@@ -664,7 +716,21 @@ export class CommandRequestService {
       sentence,
       asker,
       summary: titleFirst(sentence, ` · ${asker}`),
-      gives: commandGives(command, face, await this.#scriptPlace(command, owner, database)),
+      gives: commandGives(
+        command,
+        face,
+        await this.#scriptPlace(command, owner, database),
+        await this.#automationContext(
+          {
+            ownerUserId: owner,
+            command,
+            proposer,
+            proposerCallerKey: automation?.proposerCallerKey,
+            origin: automation?.origin,
+          },
+          database,
+        ),
+      ),
       notes: await this.#notes(command, proposedCommand(row, command), owner, database),
     };
   }
@@ -785,6 +851,83 @@ export class CommandRequestService {
     return device.platform === "macos"
       ? { where: "on your Mac", name: quotedName(device.name), as: "you" }
       : { where: "on the computer", name: quotedName(device.name), as: "its user" };
+  }
+
+  /**
+   * Facts the Home reads about an automation for approval risk words (O2): whether the proposing
+   * agent can change the script that reads the secret, or how many secrets a script edit receives.
+   */
+  async #automationContext(
+    input: {
+      readonly ownerUserId: UserId;
+      readonly command: HostApiCommand;
+      readonly proposer: CommandProposer;
+      readonly proposerCallerKey?: string | undefined;
+      readonly origin?: CommandRequestOrigin | undefined;
+    },
+    database: Kysely<DatabaseSchema> = this.#database,
+  ): Promise<CommandAutomationContext | null> {
+    if (input.command.type === "trigger.update") {
+      if (input.command.input.script === undefined) return null;
+      const row = await database
+        .selectFrom("triggers")
+        .select(["secretNames", "encryptedSecrets"])
+        .where("id", "=", input.command.triggerId)
+        .where("createdBy", "=", input.ownerUserId)
+        .executeTakeFirst();
+      if (!row) return null;
+      if (Array.isArray(row.secretNames)) return { secretCount: row.secretNames.length };
+      if (row.encryptedSecrets !== null) return { secretCount: "unknown" };
+      return { secretCount: 0 };
+    }
+    if (input.command.type === "trigger.secrets.set") {
+      const triggerRow = await database
+        .selectFrom("triggers")
+        .select("secretNames")
+        .where("id", "=", input.command.triggerId)
+        .where("createdBy", "=", input.ownerUserId)
+        .executeTakeFirst();
+      const existingSecretNames = Array.isArray(triggerRow?.secretNames)
+        ? triggerRow.secretNames
+        : [];
+      const subject = input.proposerCallerKey
+        ? commandSubject(input.proposerCallerKey)
+        : input.origin && "agentSessionId" in input.origin && input.origin.agentSessionId
+          ? ({ kind: "binding", bindingId: `session:${input.origin.agentSessionId}` } as const)
+          : input.origin && "runId" in input.origin && input.origin.runId
+            ? ({ kind: "binding", bindingId: `run:${input.origin.runId}` } as const)
+            : input.proposer.connectionId
+              ? ({ kind: "connection", agentConnectionId: input.proposer.connectionId } as const)
+              : null;
+      if (!subject) {
+        return existingSecretNames.length > 0 ? { existingSecretNames } : null;
+      }
+      try {
+        const admission = await admitCommand(database, {
+          ownerUserId: input.ownerUserId,
+          subject,
+          command: {
+            type: "trigger.update",
+            idempotencyKey: "risk-check",
+            triggerId: input.command.triggerId,
+            input: {
+              expectedRevisionId: "trv_00000000-0000-4000-8000-000000000001",
+              script: { interpreter: null, text: "" },
+            },
+          } as unknown as HostApiCommand,
+        });
+        return {
+          ...(existingSecretNames.length > 0 ? { existingSecretNames } : {}),
+          proposerCanChangeScript: admission.answer === "now",
+        };
+      } catch {
+        return {
+          ...(existingSecretNames.length > 0 ? { existingSecretNames } : {}),
+          proposerCanChangeScript: false,
+        };
+      }
+    }
+    return null;
   }
 
   /** The governed thing as the person's apps name it, where the Home can tell cheaply. */

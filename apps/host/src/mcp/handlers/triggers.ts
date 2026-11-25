@@ -55,6 +55,17 @@ export interface AgentTriggerManager {
       readonly agentConnectionId?: string;
     },
   ): Promise<unknown>;
+  setSecrets?(
+    ownerId: UserId,
+    input: {
+      readonly remove?: readonly string[] | undefined;
+      readonly set?: Readonly<Record<string, string>> | undefined;
+      readonly triggerId: TriggerId;
+    },
+    actorThreadId: ThreadId | null,
+    commandIdentity?: CommandIdentity | Pick<CommandIdentity, "admit">,
+    actorConnectionId?: string,
+  ): Promise<{ readonly secretNames: readonly string[] }>;
 }
 
 export interface TriggerLineage {
@@ -68,6 +79,7 @@ export interface TriggerLineage {
 export interface TriggerToolHandlerOptions {
   readonly database?: Kysely<DatabaseSchema>;
   readonly requests?: () => CommandRequestService | undefined;
+  readonly secretDigestKey?: Buffer;
   /** Unit-test seam when no PostgreSQL database is wired. */
   readonly door?: (caller: AgentCaller, registry: CommandRegistry) => AgentCommandDoor;
 }
@@ -87,6 +99,7 @@ export class TriggerToolHandlers implements AgentAutomationExecutor {
   readonly lineage: TriggerLineage;
   readonly #database: Kysely<DatabaseSchema> | undefined;
   readonly #requests: () => CommandRequestService | undefined;
+  readonly #secretDigestKey: Buffer | undefined;
   readonly #customDoor: TriggerToolHandlerOptions["door"];
 
   constructor(
@@ -98,6 +111,7 @@ export class TriggerToolHandlers implements AgentAutomationExecutor {
     this.lineage = lineage;
     this.#database = options?.database ?? lineage.database;
     this.#requests = options?.requests ?? (() => undefined);
+    this.#secretDigestKey = options?.secretDigestKey;
     this.#customDoor = options?.door;
   }
 
@@ -113,6 +127,7 @@ export class TriggerToolHandlers implements AgentAutomationExecutor {
     return agentCommandDoor({
       database,
       registry,
+      secretDigestKey: this.#secretDigestKey ?? Buffer.alloc(0),
       ...(requests
         ? {
             propose: async (agent, command, ask, face) => {
@@ -213,11 +228,36 @@ export class TriggerToolHandlers implements AgentAutomationExecutor {
           ...(command.occurrenceId === undefined ? {} : { occurrenceId: command.occurrenceId }),
         };
         break;
+      case "trigger.secrets.set": {
+        if (!this.triggers.setSecrets) {
+          throw new OpensteerError({
+            code: "internal",
+            message: "Automation secrets are unavailable.",
+          });
+        }
+        const updated = await this.triggers.setSecrets(
+          actor.userId,
+          {
+            triggerId: command.triggerId,
+            ...(command.clearAll === true ? { clearAll: true as const } : {}),
+            ...(command.remove === undefined ? {} : { remove: command.remove }),
+            ...(command.set === undefined ? {} : { set: command.set }),
+          },
+          actorThreadId,
+          context.commandIdentity,
+          context.agentConnectionId,
+        );
+        return {
+          secretNames: [...updated.secretNames],
+          type: command.type,
+        };
+      }
       default:
         throw new OpensteerError({ code: "internal", message: "Unexpected automation command" });
     }
     const result = await this.triggers.manage(actor.userId, control, actorThreadId, context);
-    return command.type === "trigger.status.set" ? { trigger: result } : result;
+    if (command.type === "trigger.status.set") return { trigger: result };
+    return result;
   }
 
   #registry(writeKey: string, ownTask?: true): CommandRegistry {

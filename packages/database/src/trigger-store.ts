@@ -87,7 +87,7 @@ import { personTaskReader, readerSees, type TaskReader } from "./task-reader.js"
 import { connectionState } from "./connection-liveness.js";
 import { assertDelegationDepth } from "./thread-lineage.js";
 import type { Thread } from "@opensteer/core";
-import type { CommandIdentity } from "./administration-command.js";
+import { administrationCommand, type CommandIdentity } from "./administration-command.js";
 type TriggerRow = Selectable<DatabaseSchema["triggers"]>;
 type TriggerRevisionRow = Selectable<DatabaseSchema["triggerRevisions"]>;
 type TriggerOccurrenceRow = Selectable<TriggerOccurrenceTable>;
@@ -1618,6 +1618,49 @@ export class TriggerStore {
       triggerId: input.triggerId,
     };
   }
+  async getSecretNames(
+    ownerId: UserId,
+    triggerId: TriggerId,
+  ): Promise<{ readonly hasEncryptedSecrets: boolean; readonly names: readonly string[] | null }> {
+    await requirePersonalOwner(this.#database, ownerId);
+    const row = await this.#database
+      .selectFrom("triggers")
+      .select([
+        "secretNames",
+        sql<boolean>`encrypted_secrets is not null`.as("hasEncryptedSecrets"),
+      ])
+      .where("id", "=", triggerId)
+      .where("createdBy", "=", ownerId)
+      .executeTakeFirst();
+    if (!row) throw notFound("Automation not found");
+    return {
+      hasEncryptedSecrets: Boolean(row.hasEncryptedSecrets),
+      names: Array.isArray(row.secretNames)
+        ? row.secretNames.filter((item): item is string => typeof item === "string")
+        : null,
+    };
+  }
+  /**
+   * One-time backfill of `triggers.secret_names` for rows written before `0119_automation_secret_names`
+   * (where SQL cannot decrypt `encrypted_secrets` without the Host's `credentialKey`). Conditionally
+   * updates only while `encrypted_secrets is not null` and `secret_names is null`, so it never
+   * overwrites a concurrent secret update and never bumps revisions or restarts watches.
+   */
+  async backfillSecretNames(
+    ownerId: UserId,
+    triggerId: TriggerId,
+    names: readonly string[],
+  ): Promise<void> {
+    await requirePersonalOwner(this.#database, ownerId);
+    await this.#database
+      .updateTable("triggers")
+      .set({ secretNames: jsonValue([...names]) })
+      .where("id", "=", triggerId)
+      .where("createdBy", "=", ownerId)
+      .where("encryptedSecrets", "is not", null)
+      .where("secretNames", "is", null)
+      .execute();
+  }
   async getEncryptedSecrets(ownerId: UserId, triggerId: TriggerId): Promise<Buffer | null> {
     await requirePersonalOwner(this.#database, ownerId);
     const row = await this.#database
@@ -1630,49 +1673,163 @@ export class TriggerStore {
     return row.encryptedSecrets ?? null;
   }
   async updateEncryptedSecrets<Result>(input: {
-    readonly commandIdentity?: Pick<CommandIdentity, "admit">;
+    readonly allowStopWithoutRestart?: boolean;
+    readonly commandIdentity?: CommandIdentity | Pick<CommandIdentity, "admit">;
     readonly actorConnectionId?: string;
     readonly actorThreadId: ThreadId | null;
     readonly ownerId: UserId;
     readonly transform: (current: Buffer | null) => Promise<{
+      readonly changed: boolean;
+      readonly names: readonly string[];
       readonly result: Result;
       readonly sealed: { readonly envelope: Buffer; readonly keyVersion: number } | null;
     }>;
     readonly triggerId: TriggerId;
-  }): Promise<{ readonly result: Result; readonly trigger: Trigger }> {
+  }): Promise<{
+    readonly changed: boolean;
+    readonly replayed: boolean;
+    readonly result: Result;
+    readonly trigger: Trigger;
+  }> {
     return commitPersonalMutation(this.#database, async (transaction) => {
-      const admitted = await admitTriggerActor(transaction, input.ownerId, input);
-      const trigger = await lockTriggerForMutation(transaction, admitted.input);
-      if (
-        admitted.connection?.grant.scope === "selected" &&
-        trigger.originConnectionId !== admitted.input.actorConnectionId
-      ) {
-        throw notFound();
-      }
-      if (
-        admitted.input.actorConnectionId &&
-        trigger.originConnectionId !== admitted.input.actorConnectionId
-      ) {
-        throw new OpensteerError({
-          code: "forbidden",
-          message:
-            "A connected agent cannot change the secrets of an automation it did not create.",
+      const fullIdentity =
+        input.commandIdentity && "idempotencyKey" in input.commandIdentity
+          ? input.commandIdentity
+          : undefined;
+      let outcomeChanged = false;
+      let outcomeTrigger: Trigger | null = null;
+      const runMutation = async (): Promise<Result> => {
+        // B2: authority is decided solely by `admitCommand` (`commandIdentity.admit`), never by
+        // store-level connection gates. When `administrationCommand` already ran `admit`, only
+        // live connection verification (if any) runs here.
+        const actorInput = fullIdentity
+          ? input.actorConnectionId !== undefined
+            ? { actorConnectionId: input.actorConnectionId }
+            : {}
+          : input;
+        const admitted = await admitTriggerActor(transaction, input.ownerId, actorInput);
+        await lockWatchAnchorPlacementForTrigger(transaction, input.triggerId);
+        const trigger = await lockTriggerForMutation(transaction, {
+          actorThreadId: input.actorThreadId,
+          ownerId: input.ownerId,
+          triggerId: input.triggerId,
+          ...(admitted.input.actorConnectionId !== undefined
+            ? { actorConnectionId: admitted.input.actorConnectionId }
+            : {}),
         });
+        if (trigger.systemRole) throw conflict(MANAGED_MEMORY_REFUSAL);
+        if (trigger.status === "archived" && !input.allowStopWithoutRestart) {
+          throw conflict("Archived automations cannot be changed");
+        }
+        const { changed, names, result, sealed } = await input.transform(
+          trigger.encryptedSecrets ?? null,
+        );
+        if (!changed) {
+          outcomeChanged = false;
+          outcomeTrigger = triggerFromRow(trigger);
+          return result;
+        }
+        const now = new Date();
+        let nextRevisionId = trigger.currentRevisionId;
+        let pauseWatchWithoutRestart = false;
+        if (trigger.kind === "watch" && trigger.status !== "archived") {
+          // S4/R6: a watch restart checks the exact same execution authority and personal-context
+          // lineage rules as `update` and `setStatus`. If a watch cannot restart, adding/replacing
+          // secrets is refused; removing or clearing secrets still succeeds by stopping the watch
+          // without starting a replacement activation.
+          if (trigger.status === "active") {
+            try {
+              if (
+                trigger.originConnectionId !== null &&
+                !(await lineagePersonalContext(transaction, trigger.originConnectionId))
+              ) {
+                throw noProgramWithoutPersonalContext();
+              }
+              await requireTriggerExecutionAuthority(transaction, trigger);
+            } catch (error) {
+              if (!input.allowStopWithoutRestart) throw error;
+              pauseWatchWithoutRestart = true;
+            }
+          }
+          const current = await transaction
+            .selectFrom("triggerRevisions")
+            .selectAll()
+            .where("id", "=", trigger.currentRevisionId)
+            .executeTakeFirstOrThrow();
+          nextRevisionId = createId("triggerRevision");
+          await transaction
+            .insertInto("triggerRevisions")
+            .values({
+              createdAt: now,
+              createdBy: input.ownerId,
+              createdByThreadId: input.actorThreadId,
+              id: nextRevisionId,
+              ordinal: current.ordinal + 1,
+              script: current.script === null ? null : jsonValue(current.script),
+              source: jsonValue(current.source),
+              triggerId: trigger.id,
+            })
+            .execute();
+        }
+        const updated = await transaction
+          .updateTable("triggers")
+          .set({
+            currentRevisionId: nextRevisionId,
+            encryptedSecrets: sealed?.envelope ?? null,
+            secretNames: jsonValue([...names]),
+            secretsKeyVersion: sealed?.keyVersion ?? null,
+            ...(pauseWatchWithoutRestart
+              ? {
+                  pauseReason:
+                    "Stopped because this watch could not restart after its secrets were removed.",
+                  pausedAt: now,
+                  pausedBy: "system",
+                  pausedByConnectionId: null,
+                  pausedByThreadId: null,
+                  status: "paused",
+                }
+              : {}),
+            updatedAt: now,
+          })
+          .where("id", "=", trigger.id)
+          .returningAll()
+          .executeTakeFirstOrThrow();
+        if (trigger.kind === "watch" && trigger.status !== "archived") {
+          await stopActiveWatchActivation(transaction, trigger.id, now);
+          if (updated.status === "active" && !pauseWatchWithoutRestart) {
+            const anchor = await transaction
+              .selectFrom("threads")
+              .select("environmentId")
+              .where("id", "=", trigger.anchorThreadId)
+              .executeTakeFirstOrThrow();
+            await createWatchActivation(transaction, {
+              anchorThreadId: trigger.anchorThreadId,
+              createdBy: trigger.createdBy,
+              environmentId: anchor.environmentId,
+              revisionId: nextRevisionId,
+              triggerId: trigger.id,
+            });
+          }
+        }
+        outcomeChanged = true;
+        outcomeTrigger = triggerFromRow(updated);
+        return result;
+      };
+      const result = fullIdentity
+        ? await administrationCommand(transaction, fullIdentity, runMutation)
+        : await runMutation();
+      const replayed = !outcomeTrigger;
+      if (!outcomeTrigger) {
+        // Replayed idempotently via `administrationCommand` without running `runMutation`.
+        const row = await transaction
+          .selectFrom("triggers")
+          .selectAll()
+          .where("id", "=", input.triggerId)
+          .where("createdBy", "=", input.ownerId)
+          .executeTakeFirstOrThrow();
+        outcomeTrigger = triggerFromRow(row);
       }
-      if (trigger.systemRole) throw conflict(MANAGED_MEMORY_REFUSAL);
-      if (trigger.status === "archived") throw conflict("Archived automations cannot be changed");
-      const { result, sealed } = await input.transform(trigger.encryptedSecrets ?? null);
-      const updated = await transaction
-        .updateTable("triggers")
-        .set({
-          encryptedSecrets: sealed?.envelope ?? null,
-          secretsKeyVersion: sealed?.keyVersion ?? null,
-          updatedAt: new Date(),
-        })
-        .where("id", "=", trigger.id)
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      return { result, trigger: triggerFromRow(updated) };
+      return { changed: outcomeChanged, replayed, result, trigger: outcomeTrigger };
     });
   }
   async applyWatchStatus(input: {
@@ -2020,54 +2177,6 @@ export class TriggerStore {
         },
         rawBody,
       );
-    });
-  }
-  async rotateWebhookKey(input: {
-    readonly commandIdentity?: Pick<CommandIdentity, "admit">;
-    readonly actorConnectionId?: string;
-    readonly actorThreadId: ThreadId | null;
-    readonly ownerId: UserId;
-    readonly triggerId: TriggerId;
-    readonly webhookRouteKey: string;
-  }): Promise<Trigger> {
-    return commitPersonalMutation(this.#database, async (transaction) => {
-      const admitted = await admitTriggerActor(transaction, input.ownerId, input);
-      const trigger = await lockTriggerForMutation(transaction, admitted.input);
-      if (
-        admitted.connection?.grant.scope === "selected" &&
-        trigger.originConnectionId !== admitted.input.actorConnectionId
-      ) {
-        throw notFound();
-      }
-      if (
-        admitted.input.actorConnectionId &&
-        trigger.originConnectionId !== admitted.input.actorConnectionId
-      ) {
-        throw new OpensteerError({
-          code: "forbidden",
-          message:
-            "A connected agent cannot rotate the webhook address of an automation it did not create.",
-        });
-      }
-      if (trigger.kind !== "webhook") {
-        throw new OpensteerError({
-          code: "bad_request",
-          message: "Only webhook automations have a webhook address",
-        });
-      }
-      if (trigger.status === "archived") {
-        throw conflict("Archived automation cannot rotate its webhook address");
-      }
-      const updated = await transaction
-        .updateTable("triggers")
-        .set({
-          updatedAt: new Date(),
-          webhookRouteKey: input.webhookRouteKey,
-        })
-        .where("id", "=", trigger.id)
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      return triggerFromRow(updated);
     });
   }
   enqueueManual(input: {

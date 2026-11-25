@@ -196,6 +196,8 @@ const withoutTool: Readonly<Record<string, string>> = {
     "no tool revokes a device grant: computer_apps lists, app_access_request asks for more",
   "integration.disconnect":
     "no tool disconnects a device app: computer_apps lists, app_access_request asks for more",
+  "trigger.secrets.set":
+    "no legacy tool sets automation secrets; added directly through opensteer_command",
 };
 /**
  * Step-A commands a tool performs that the recording does not cover yet, each with its tool;
@@ -1457,6 +1459,7 @@ export default defineApp({}, { tools: router({ tick }),
       registry: standIn,
       admit: agentCommandAdmission(host.store.database),
       scope: agentCommandScope(host.store.database),
+      secretDigestKey: Buffer.alloc(32, 0x33),
     };
     const run = (threadId: ThreadId, runId: string, mode: ThreadAccessMode, key: string) =>
       ({

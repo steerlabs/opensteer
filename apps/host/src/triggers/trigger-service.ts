@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { isUnreadableSecretEnvelopeError } from "@opensteer/access/host";
 import type { ThreadId, TriggerId, TriggerOccurrenceId, UserId } from "@opensteer/core";
 import { isLoopbackHostname, OpensteerError, ThreadIdSchema } from "@opensteer/core";
 import type {
@@ -20,6 +21,7 @@ import {
   automationScriptCompatibilityReason,
   type AutomationScriptRunnerStore,
 } from "./automation-script-compatibility.js";
+import type { AutomationSecrets } from "./automation-secrets.js";
 import type { Clock } from "@opensteer/shared/clock";
 import { DeadlineDrain, retryWithBackoff } from "../runtime/deadline-drain.js";
 interface TriggerServiceOptions {
@@ -30,6 +32,7 @@ interface TriggerServiceOptions {
   readonly publicUrl: URL;
   /** Live public tunnel/remote origin when Personal Remote Access is active (Y3). */
   readonly remoteOrigin?: () => Promise<string | null>;
+  readonly secrets?: Pick<AutomationSecrets, "applyWithMeta" | "names"> | undefined;
   readonly store: TriggerStore;
   readonly runnerStore: AutomationScriptRunnerStore;
   readonly threads: Pick<OpensteerStore, "readTask">;
@@ -41,6 +44,7 @@ export class TriggerService {
   readonly #onWatchChanged: TriggerServiceOptions["onWatchChanged"];
   readonly #publicUrl: URL;
   readonly #remoteOrigin: (() => Promise<string | null>) | undefined;
+  readonly #secrets: TriggerServiceOptions["secrets"];
   readonly #store: TriggerStore;
   readonly #runnerStore: AutomationScriptRunnerStore;
   readonly #threads: TriggerServiceOptions["threads"];
@@ -51,6 +55,7 @@ export class TriggerService {
     this.#onWatchChanged = options.onWatchChanged;
     this.#publicUrl = options.publicUrl;
     this.#remoteOrigin = options.remoteOrigin;
+    this.#secrets = options.secrets;
     this.#store = options.store;
     this.#runnerStore = options.runnerStore;
     this.#threads = options.threads;
@@ -197,7 +202,40 @@ export class TriggerService {
           ? await this.resolveWebhookAddress(detail.trigger.webhookRouteKey)
           : { scope: (await this.#resolveWebhookOrigin()).scope, url: null }
         : null;
-    return { ...detail, webhook };
+    let secretNames: string[] = [];
+    let secretsUnreadable = false;
+    if (this.#secrets) {
+      const stored = this.#store.getSecretNames
+        ? await this.#store.getSecretNames(ownerId, detail.trigger.id)
+        : null;
+      if (stored && stored.names !== null) {
+        secretNames = [...stored.names];
+      } else if ((!stored || stored.hasEncryptedSecrets) && this.#store.getEncryptedSecrets) {
+        const envelope = await this.#store.getEncryptedSecrets(ownerId, detail.trigger.id);
+        if (envelope) {
+          try {
+            secretNames = [...(await this.#secrets.names(detail.trigger.id, envelope))];
+            if (this.#store.backfillSecretNames) {
+              await this.#store.backfillSecretNames(ownerId, detail.trigger.id, secretNames);
+            }
+          } catch (error) {
+            if (isUnreadableSecretEnvelopeError(error)) {
+              secretNames = [];
+              secretsUnreadable = true;
+            } else {
+              throw new OpensteerError({
+                cause: error,
+                code: "internal",
+                reason: "automation-secrets-unavailable",
+                retryable: true,
+                message: "Couldn't read this automation's secrets right now. Try again.",
+              });
+            }
+          }
+        }
+      }
+    }
+    return { ...detail, secretNames, secretsUnreadable, webhook };
   }
   async update(
     ownerId: UserId,
@@ -222,6 +260,71 @@ export class TriggerService {
     this.#onChanged?.();
     if (updated.trigger.kind === "watch") this.#onWatchChanged?.(updated.trigger.id);
     return updated;
+  }
+  async setSecrets(
+    ownerId: UserId,
+    input: {
+      readonly clearAll?: true | undefined;
+      readonly remove?: readonly string[] | undefined;
+      readonly set?: Readonly<Record<string, string>> | undefined;
+      readonly triggerId: TriggerId;
+    },
+    actorThreadId: ThreadId | null,
+    commandIdentity?: CommandIdentity | Pick<CommandIdentity, "admit">,
+    actorConnectionId?: string,
+  ): Promise<{ readonly secretNames: readonly string[] }> {
+    const secrets = this.#secrets;
+    if (!secrets) {
+      throw new OpensteerError({
+        code: "internal",
+        message: "Automation secrets are unavailable.",
+      });
+    }
+    const isClearAll = input.clearAll === true;
+    const hasSet = input.set !== undefined && Object.keys(input.set).length > 0;
+    const hasRemove = input.remove !== undefined && input.remove.length > 0;
+    if (!isClearAll && !hasSet && !hasRemove) {
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Provide at least one secret to set or remove.",
+      });
+    }
+    const allowStopWithoutRestart = isClearAll || (!hasSet && hasRemove);
+    const {
+      changed,
+      replayed,
+      result: secretNames,
+      trigger,
+    } = await this.#store.updateEncryptedSecrets({
+      allowStopWithoutRestart,
+      actorThreadId,
+      ownerId,
+      triggerId: input.triggerId,
+      ...(commandIdentity ? { commandIdentity } : {}),
+      ...(actorConnectionId ? { actorConnectionId } : {}),
+      transform: async (current) => {
+        const applied = await secrets.applyWithMeta(input.triggerId, current, {
+          ...(isClearAll ? { clearAll: true as const } : {}),
+          ...(input.remove ? { remove: input.remove } : {}),
+          ...(input.set ? { set: input.set } : {}),
+        });
+        return {
+          changed: applied.changed,
+          names: applied.names,
+          result: applied.names,
+          sealed: applied.sealed,
+        };
+      },
+    });
+    if (changed) {
+      this.#onChanged?.();
+      if (trigger.kind === "watch") this.#onWatchChanged?.(trigger.id);
+    } else if (replayed && trigger.kind === "watch") {
+      // Recover a watch whose restart committed before a missed post-commit wake,
+      // without re-applying the secret mutation.
+      this.#onWatchChanged?.(trigger.id);
+    }
+    return { secretNames };
   }
   async setStatus(
     ownerId: UserId,

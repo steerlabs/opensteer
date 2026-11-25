@@ -3670,6 +3670,50 @@
         "why": "trigger-service.ts:267: one store write",
         "ongoing": false
       }
+    },
+    {
+      "type": "trigger.secrets.set",
+      "family": "automations",
+      "governs": "an automation's secrets ← `triggerId`",
+      "faces": [
+        {
+          "when": "`remove` only",
+          "class": "destroy",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "ask"
+          }
+        },
+        {
+          "when": "`set` given",
+          "class": "widen-self",
+          "answers": {
+            "a": "now",
+            "b": "ask",
+            "c": "now",
+            "d": "now"
+          }
+        },
+        {
+          "when": "`names` given without `set`, or omitted",
+          "class": "secret",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "A",
+      "note": "removing or clearing secrets destroys person-entered data (`destroy`, like `app.delete`); setting values (`set`, in `agentMaySet`) needs Full access in the automation's own lineage (same admission as changing its script, trigger.update face 1); when the same name appears in both `remove` and `set`, `remove` runs first so `set` wins; proposing `names` without values always asks (`secret`) and the person enters values on the automation's Secrets screen (`editor: automation-secrets`), never on the Request card",
+      "effect": {
+        "where": "database",
+        "why": "trigger-service.ts:238: one store write; the notices after it are in memory",
+        "ongoing": true
+      }
     }
   ],
   "inputs": {
@@ -3858,6 +3902,10 @@
     "trigger.status.set status": "face: paused narrow, archived narrow with Full access, active widen-self",
     "trigger.run payload": "same class; omitted: no payload",
     "trigger.cancel occurrenceId": "same class; omitted: every pending occurrence (agent-tools triggers.ts:86)",
+    "trigger.secrets.set clearAll": "face 0 (`destroy`): explicit full wipe of stored secrets (including an unreadable envelope); asks below Full access and on selected grants",
+    "trigger.secrets.set names": "face 2 (`secret`): names-only proposal asking the person to enter values on the automation's Secrets screen; omitted: remove/clearAll (face 0) or direct set (face 1)",
+    "trigger.secrets.set remove": "face 0 (`destroy`): remove only (without non-empty set or names) asks below Full access and on selected grants; omitted: clearAll (face 0), set (face 1) or secret ask (face 2)",
+    "trigger.secrets.set set": "face 1 (`widen-self`, Full access, own lineage, `agentMaySet`): widens in the automation's lineage (same admission as changing the script, trigger.update face 1); stripped from stored Requests and refused when the call asks",
     "personal.accountLink.unlink step": "same class: identity whatever the step, the Mac app's two unlink steps (lead's AD10 ruling)",
     "plugins.install source.name": "same class; omitted: the folder's own plugin name",
     "plugins.install source.pluginId": "same class (widen-self): a new version of that plugin from your own agent's folder, as today's tool deploys one"

@@ -196,7 +196,7 @@ edit. Callers: (a) your own agent at Full access, (b) your own agent below Full 
 | `app.stop` | same | narrow | now | ask | now | nf | A | ; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
 | `app.delete` | an app ← `appId` | destroy | now | ask | now | nf | A | ; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
 
-## Automations (5)
+## Automations (6)
 
 | Command | Governs ← input | Class | (a) | (b) | (c) | (d) | Step | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -205,3 +205,4 @@ edit. Callers: (a) your own agent at Full access, (b) your own agent below Full 
 | `trigger.status.set` | an automation ← `triggerId`,`status`; pause/archive narrow / resume widen-self | narrow / narrow / widen-self | now | now | now | now | A | T2: pause, stopping a running firing and remove (archive) narrow: now below Full access for anyone with authority over the task; X11: resuming starts the automation again in its own lineage, so a connection asks unless that lineage is its own |
 | `trigger.run` | run now ← `triggerId` | widen-self | now | ask | now | now | A | full access today; X11: the occurrence is the automation's lineage's (`trigger-store.ts:1879`), so a connection outside that lineage asks |
 | `trigger.cancel` | pending occurrences ← `triggerId` | narrow | now | now | now | now | A |  |
+| `trigger.secrets.set` | an automation's secrets ← `triggerId` | destroy / widen-self / secret | now/ask | ask | now/ask | now/ask | A | removing or clearing secrets destroys person-entered data (`destroy`, like `app.delete`); setting values (`set`, in `agentMaySet`) needs Full access in the automation's own lineage (same admission as changing its script, trigger.update face 1); when the same name appears in both `remove` and `set`, `remove` runs first so `set` wins; proposing `names` without values always asks (`secret`) and the person enters values on the automation's Secrets screen (`editor: automation-secrets`), never on the Request card |

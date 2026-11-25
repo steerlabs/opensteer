@@ -92,6 +92,7 @@ describe("the command registry", () => {
           return { type: command.type };
         },
       } as never,
+      secretDigestKey: Buffer.alloc(32, 0x33),
     });
     for (const type of Object.keys(commandTable) as CommandType[]) {
       routed.family.length = 0;

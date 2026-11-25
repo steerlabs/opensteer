@@ -2,6 +2,7 @@ import { OpensteerError } from "@opensteer/core";
 import { z } from "zod";
 import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import { runCommandEffect, type CommandAttempts } from "./command-effect.js";
+import { sanitizeCommandRequestWithSecretDigests } from "./secret-digest.js";
 import {
   admitCommand,
   assertCommandAdmitted,
@@ -84,6 +85,8 @@ export interface CommandDoor {
 }
 /** The door as an agent meets it: the same registry, and the one admission. */
 export interface AgentCommandDoor extends CommandDoor {
+  /** Private Host HMAC key (derived from credentialKey) for secret-field idempotency digests. */
+  readonly secretDigestKey: Buffer;
   readonly admit: (
     caller: AgentCaller,
     command: HostApiCommand,
@@ -217,25 +220,35 @@ export async function dispatchCommand(
   // person types is left out by the agent, so a schema that requires it reads the rest without it.
   // Under a connection's grant (the scope just read says so) the own-agents-only kinds are absent.
   const parsed = parseHeld(row, command, holder.scope !== null);
-  if (!parsed.success)
+  if (!parsed.success) {
+    const customReason = parsed.error.issues.find(
+      (issue) =>
+        issue.code === "custom" &&
+        "params" in issue &&
+        typeof issue.params === "object" &&
+        issue.params !== null &&
+        typeof (issue.params as { readonly reason?: unknown }).reason === "string",
+    ) as { readonly params?: { readonly reason?: string } } | undefined;
     throw new OpensteerError({
       code: "bad_request",
+      ...(customReason?.params?.reason ? { reason: customReason.params.reason } : {}),
       message: `That ${command.type} command is not valid: ${parsed.error.issues
         .slice(0, 3)
         .map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`)
         .join("; ")}`.slice(0, 1_000),
     });
+  }
   command = parsed.data as HostApiCommand;
   const admission = await door.admit(actor, command, holder);
   if (admission.answer === "not_found") throw notFound();
-  assertNoSecretPaths(row, command);
   const handler = door.registry[command.type] as CommandHandler<HostApiCommand["type"]>;
-  if (
+  const runsNow =
     admission.answer === "now" &&
     handler.accepts === "any" &&
-    agentRunsNow(row, admission.face, handler, holder?.scope ?? null)
-  ) {
-    const authority = commandAuthority(actor, command);
+    agentRunsNow(row, admission.face, handler, holder?.scope ?? null);
+  assertNoSecretPaths(row, command, runsNow);
+  if (runsNow) {
+    const authority = commandAuthority(actor, command, row, door.secretDigestKey);
     const readmit = door.readmit;
     const effect = await runCommandEffect({
       row,
@@ -302,19 +315,32 @@ export interface CommandAuthority {
 }
 const authorities = new WeakSet<object>();
 
-function commandAuthority(caller: AgentCaller, command: HostApiCommand): CommandAuthority {
+function commandAuthority(
+  caller: AgentCaller,
+  command: HostApiCommand,
+  row: CommandRow,
+  secretDigestKey: Buffer,
+): CommandAuthority {
   const { type, idempotencyKey, ...request } = command as HostApiCommand & {
     readonly idempotencyKey?: string;
   };
   if (!idempotencyKey)
     throw new OpensteerError({ code: "bad_request", message: "A command needs its key" });
+  const sanitized = sanitizeCommandRequestWithSecretDigests({
+    commandType: type,
+    idempotencyKey,
+    key: secretDigestKey,
+    request: request as Record<string, unknown>,
+    secretFields: row.secretFields ?? [],
+    userId: caller.userId,
+  });
   const authority = Object.freeze({
     caller,
     identity: {
       requestedBy: caller.userId,
       idempotencyKey,
       type,
-      request: JSON.parse(JSON.stringify(request)) as Record<string, unknown>,
+      request: sanitized,
       authoritySource: { kind: "mcp", callerKind: caller.kind, callerKey: caller.key },
       ...commandAdmission({ ownerUserId: caller.userId, callerKey: caller.key, command }),
     },
@@ -365,9 +391,16 @@ function parseHeld(_row: CommandRow, command: HostApiCommand, underConnection: b
   });
 }
 
-/** A value only the person types never passes through an agent: found by the table's paths. */
-function assertNoSecretPaths(row: CommandRow, command: HostApiCommand): void {
-  for (const path of row.secretFields ?? []) {
+/**
+ * A value only the person types never passes through an agent: found by the table's `secretFields`.
+ * Only paths explicitly listed in `row.agentMaySet` are allowed when the call runs now (S1).
+ */
+function assertNoSecretPaths(row: CommandRow, command: HostApiCommand, runsNow: boolean): void {
+  const secretFields = row.secretFields;
+  if (!secretFields || secretFields.length === 0) return;
+  const allowed = runsNow && row.agentMaySet?.length ? new Set(row.agentMaySet) : null;
+  for (const path of secretFields) {
+    if (allowed?.has(path)) continue;
     let at: unknown = command;
     for (const key of path.split(".")) {
       at = typeof at === "object" && at !== null ? (at as Record<string, unknown>)[key] : undefined;

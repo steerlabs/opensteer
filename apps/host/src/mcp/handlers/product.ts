@@ -167,6 +167,7 @@ export class ProductToolHandlers {
       registry: {} as never,
       requests: () => undefined,
       administration: {} as never,
+      secretDigestKey: Buffer.alloc(0),
     });
     return this.#door.through(caller, command as unknown as HostApiCommand, act);
   }

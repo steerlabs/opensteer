@@ -124,6 +124,17 @@ const rejectionReasons: Readonly<Record<string, string>> = {
   "bridge-needs-tasks": "A chat can only ask your own agents to work, so it always needs tasks.",
   "bridge-anyone-grant":
     "When anyone in the conversation can message it, it can use only tasks and the plugins you choose.",
+  "automation-secret-invalid-name":
+    "Use 1 to 64 letters, digits, or underscores starting with a letter or underscore.",
+  "automation-secret-invalid-value":
+    "Secret values can't be empty, contain NUL bytes, or exceed 64 KiB.",
+  "automation-secret-case-conflict":
+    "A secret with that name already exists with different capitalization.",
+  "automation-secret-limit": "An automation can hold at most 64 secrets.",
+  "automation-secret-size-limit": "All secrets on an automation together can't exceed 64 KiB.",
+  "automation-secrets-unreadable":
+    "These secrets can no longer be read. Clear all secrets before saving new ones.",
+  "automation-secrets-unavailable": "Couldn't read this automation's secrets right now. Try again.",
 };
 
 /** A read the Host answered, saying a source beyond it can't be reached now. */

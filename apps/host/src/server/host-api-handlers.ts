@@ -106,10 +106,11 @@ export function createHostApiHandlers(
     context: HostApiServerContext,
     readmit?: CommandProposal["readmit"],
   ) => Promise<HostApiCommandOutput>,
-  computerViews?: ComputerViewService,
-  plugins?: PluginOwnerApi,
-  pluginOAuth?: PluginOAuthService,
-  commandRequests?: CommandRequestService,
+  computerViews: ComputerViewService | undefined,
+  plugins: PluginOwnerApi | undefined,
+  pluginOAuth: PluginOAuthService | undefined,
+  commandRequests: CommandRequestService | undefined,
+  secretDigestKey: Buffer,
 ): Omit<
   HostApiHandlers,
   | "personal.remoteAccess.get"
@@ -148,6 +149,7 @@ export function createHostApiHandlers(
       computerViews,
       plugins,
       pluginOAuth,
+      secretDigestKey,
     }),
     ...(commandRequests
       ? {
