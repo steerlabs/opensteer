@@ -19,7 +19,7 @@ import type { AccountApi } from "./account.js";
 import type { Addresses, CreateVm, DnsProvider, VmProvider, VmServer } from "./provider.js";
 import { Reconciler } from "./reconcile.js";
 import { CloudflareDns } from "./cloudflare.js";
-import { ComputeFake, regionPath, zonePath } from "./google-compute.test-support.js";
+import { ComputeFake, globalPath, regionPath, zonePath } from "./google-compute.test-support.js";
 
 const home = CloudComputerDesiredSchema.parse({
   id: "cc_00000000-0000-4000-8000-000000000001",
@@ -459,9 +459,7 @@ describe("Cloud Computer reconciliation", () => {
         expect(h.reports).toContainEqual(
           expect.objectContaining({ id: second.id, phase: "booting" }),
         );
-        expect(h.onError).toHaveBeenCalledWith(
-          expect.objectContaining({ cause: new Error("provider secret") }),
-        );
+        expect(h.onError).toHaveBeenCalledWith(new Error("provider secret"));
       },
     },
     {
@@ -1249,5 +1247,71 @@ describe("an observation that failed (Q2)", () => {
       phase: "failed",
       lastError: "The Cloud Computer provider operation failed.",
     });
+  });
+});
+
+describe("a read inside a write, and a step shared by every computer (Q3)", () => {
+  const failures = (h: Harness) => h.onError.mock.calls.map(([error]) => provisionerFailure(error));
+  const refusedByCompute = expect.objectContaining({
+    event: "home-provisioner.pass.failed",
+    service: "Google Compute Engine",
+    status: 403,
+  });
+  /** Two Google computers, both ready. */
+  async function twoReady() {
+    const compute = new ComputeFake();
+    const h = harness({ compute });
+    h.status.desired = [{ ...home }, { ...second }];
+    await h.pass();
+    h.pin();
+    await h.pass();
+    expect(h.reports.slice(-2).map(({ phase }) => phase)).toEqual(["ready", "ready"]);
+    return { compute, h, reported: h.reports.length };
+  }
+
+  it("reports neither of two ready computers when the firewall's GET is refused (an IAM change)", async () => {
+    const { compute, h, reported } = await twoReady();
+    compute.refuseMatch = (method, path) =>
+      method === "GET" && path.startsWith(`${globalPath}/firewalls`);
+    await h.pass();
+    expect(h.reports.slice(reported)).toEqual([]);
+    expect(failures(h)).toContainEqual(refusedByCompute);
+  });
+
+  it("reports neither when the shared firewall's insert is refused", async () => {
+    const { compute, h, reported } = await twoReady();
+    compute.firewalls.clear();
+    compute.refuseMatch = (method, path) =>
+      method === "POST" && path.startsWith(`${globalPath}/firewalls`);
+    await h.pass();
+    expect(
+      compute.requests.some(
+        ({ method, path }) => method === "POST" && path === `${globalPath}/firewalls`,
+      ),
+    ).toBe(true);
+    expect(h.reports.slice(reported)).toEqual([]);
+    expect(failures(h)).toContainEqual(refusedByCompute);
+  });
+
+  it("reports nothing for a computer whose own instance GET is refused inside a write", async () => {
+    const compute = new ComputeFake();
+    const h = harness({ compute });
+    h.status.desired = [{ ...home }];
+    await h.pass();
+    expect(h.last()?.phase).toBe("booting");
+    const requested = compute.requests.length;
+    // Its instance, read by name inside a write: attaching the firewall it lost reads it fresh.
+    for (const instance of compute.instances.values()) instance.tags.items = [];
+    compute.refuseMatch = (method, path) =>
+      method === "GET" && path.startsWith(`${zonePath}/instances/`);
+    h.status.now += 1;
+    await h.pass();
+    expect(
+      compute.requests
+        .slice(requested)
+        .some(({ method, path }) => method === "GET" && path.startsWith(`${zonePath}/instances/`)),
+    ).toBe(true);
+    expect(h.reports.filter(({ phase }) => phase === "failed")).toEqual([]);
+    expect(failures(h)).toContainEqual(refusedByCompute);
   });
 });

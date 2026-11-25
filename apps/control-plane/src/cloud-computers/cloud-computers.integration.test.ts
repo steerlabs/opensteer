@@ -832,10 +832,17 @@ integration("Cloud Computer Account service", () => {
     // Every report the provisioner sent, and the provider's answer to the next create.
     const sent: CloudComputerReport[] = [];
     let createRefusal: Error | undefined;
+    // The shared firewall step's next answer: refused for the whole stack (an IAM change).
+    let firewallRefusal: Error | undefined;
     let bootCount = 0;
     let booted: CloudComputerBootResponse | undefined;
     const provider = {
-      ensureFirewall: async () => 1,
+      ensureFirewall: async () => {
+        const refusal = firewallRefusal;
+        firewallRefusal = undefined;
+        if (refusal) throw refusal;
+        return 1;
+      },
       ensureFirewallAttached: async () => true,
       listManaged: async () => [],
       find: async () => {
@@ -1084,6 +1091,13 @@ integration("Cloud Computer Account service", () => {
     expect(await clocks()).toMatchObject({ phase: "ready", lastError: null });
     expect(await notReady()).toEqual([]);
     expect((await read()).json()).toMatchObject({ status: "ready" });
+    // The firewall step every computer shares, refused (403) for the whole stack: the stack's
+    // problem, not this computer's, so nothing is reported and nothing pages (Q3).
+    firewallRefusal = new RemoteRequestError("Google Compute Engine", 403);
+    await pass();
+    expect(firewallRefusal).toBeUndefined();
+    expect(await clocks()).toMatchObject({ phase: "ready", lastError: null });
+    expect(await notReady()).toEqual([]);
     // Evidence of a terminal state still fails it, and pages at once.
     newerGeneration = true;
     await pass();
