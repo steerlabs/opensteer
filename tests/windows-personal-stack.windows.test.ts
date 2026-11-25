@@ -183,7 +183,11 @@ function alive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    const code = (error as NodeJS.ErrnoException).code;
+    // Every process this test starts runs with the test's own token, so the test can always
+    // open its own. A pid that refuses to be opened is one Windows has since given to a process
+    // of another account (a system service): the process this test started is gone.
+    if (code === "ESRCH" || code === "EPERM") return false;
     throw error;
   }
 }
