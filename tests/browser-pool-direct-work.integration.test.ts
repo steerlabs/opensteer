@@ -1700,3 +1700,40 @@ it("still reads a connection's tabs as non-existent to another connection, after
     site.close();
   }
 });
+
+it("closes the tab with its page when the agent's own script closes it and the browser confirms", async () => {
+  const site = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end("<!doctype html><title>Done</title><p>done</p>");
+  });
+  site.listen(0, "127.0.0.1");
+  await once(site, "listening");
+  const origin = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
+  const j = await journey("direct-page-close-row", { profile: true });
+  try {
+    const home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const [own] = await home.service.savedPages(j.task.userId, session.id);
+    if (!own?.pageBinding) throw new Error("The saved profile has no durable tab.");
+    const work = await directWork(j, () => home);
+    // The agent's own page, and the person's tab the agent bound: each closed by the script.
+    const done = await work.use(
+      `const page = await newPage(${JSON.stringify(`${origin}/done`)}); const id = page.tabId; await page.close(); const theirs = await openPage(${JSON.stringify(own.id)}); await theirs.close(); return id;`,
+    );
+    expect(done.isError, text(done)).not.toBe(true);
+    const tabId = /(?:tab|surface)_[A-Za-z0-9-]+/u.exec(text(done))?.[0];
+    if (!tabId) throw new Error(`The script returned no tab: ${text(done)}`);
+    // Closed in the same command: no tab the person sees is left with no page behind it.
+    for (const closed of [tabId, own.id])
+      expect(
+        (await j.tabs.get(j.task.userId, closed as TabRecord["id"], true))?.closedAt,
+        closed,
+      ).not.toBeNull();
+  } finally {
+    await j.close();
+    site.close();
+  }
+});

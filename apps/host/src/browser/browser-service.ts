@@ -6768,6 +6768,8 @@ export class BrowserService {
       });
     const scriptAttachmentId = input.scriptTabId ? randomUUID() : undefined;
     let scriptOpening: Promise<BrowserCdpResponse> | undefined;
+    /** The page target of this script's own tab, as its bind (resumeTab) answered. */
+    let scriptTargetId: string | undefined;
     const nativeAttachment =
       this.#resolveTarget(placementOf(record))?.localProfileStorage?.engine === "android-webview"
         ? {
@@ -7482,6 +7484,52 @@ export class BrowserService {
                       await this.#restoreHoldings(record.id);
                     })
                     .catch(this.#onError);
+                }
+              }
+              if (
+                command.method === browserHostMethods.resumeTab &&
+                input.scriptTabId !== undefined
+              ) {
+                const bound = z
+                  .object({ surfaceId: z.literal(input.scriptTabId), targetId: z.string() })
+                  .safeParse(response.result);
+                if (bound.success) scriptTargetId = bound.data.targetId;
+              }
+              // The Home's own command closed this script's own page and the browser confirmed
+              // it: the tab the person sees closes in the same command, never left with no page
+              // behind it. (A page that goes away by itself is not this Home's evidence.)
+              if (
+                command.method === "Target.closeTarget" &&
+                input.scriptTabId !== undefined &&
+                scriptTargetId !== undefined &&
+                command.parameters?.targetId === scriptTargetId &&
+                (response.result as { success?: unknown } | null)?.success !== false &&
+                this.#workspaceTabs
+              ) {
+                const tabId = input.scriptTabId;
+                const tabs = this.#workspaceTabs;
+                // As the open of an agent's page is recorded: admitted with the command's own
+                // authority; recording it never fails the confirmed close.
+                try {
+                  await tabs.close(
+                    input.ownerId,
+                    [tabId],
+                    `cdp-close:${record.id}:${tabId}:${globalThis.crypto.randomUUID()}`,
+                    async (tx) => {
+                      await this.admitAgentBrowser(
+                        input,
+                        "read-write",
+                        [record],
+                        new OpensteerStore(tx),
+                      );
+                    },
+                    (row) =>
+                      row.pageBinding?.sessionId === record.id &&
+                      row.pageBinding.surfaceId === tabId,
+                  );
+                  this.#onTabsChanged(input.ownerId, [tabId]);
+                } catch (error) {
+                  this.#onError(error);
                 }
               }
               if (pool && input.scriptTabId && !attachmentClosed) {
