@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
+import { MockHostClient, mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
 import { taskList, type PlaceAgents, type TaskRow } from "@opensteer/client/host";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -65,6 +65,7 @@ vi.mock(
 vi.mock("../ui/primitives.js", () => ({
   AppText: (props: { children?: ReactNode }) => <span>{props.children}</span>,
   StatusDot: () => null,
+  SectionLabel: ({ children }: { children?: ReactNode }) => <h2>{children}</h2>,
 }));
 vi.mock("../ui/screen.js", () => ({
   Screen: (props: { children?: ReactNode }) => <main>{props.children}</main>,
@@ -93,6 +94,7 @@ vi.mock("../thread/answer-pill.js", () => ({
 vi.mock("../browser/agent-marks.js", () => ({ AgentMarks: () => null }));
 vi.mock("../thread/task-status.js", () => ({ taskHeading: () => null }));
 
+const { ConnectedAgentsSection } = await import("../sidebar/connected-agents-section.js");
 const { NeedsYouScreen } = await import("./needs-you.js");
 const { usePlaceStatusRow } = await import("../browser/place-status.js");
 const { TaskRowView } = await import("../threads/task-row.js");
@@ -106,7 +108,7 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-function seeded(options: { readonly question?: boolean } = {}) {
+function seeded(options: Parameters<MockHostClient["mockAgentWork"]>[0] = {}) {
   host = new MockHostClient({
     latencyMs: 0,
     connections: mockConnectedAgents("seeded").connections,
@@ -140,6 +142,36 @@ describe("Needs you on the phone", () => {
       expect(page.textContent).toContain("“\u2068Grok\u2069”: Run a script in Shopping?"),
     );
     expect(page.querySelector('[data-mark="G"]')).not.toBeNull();
+    const threadId = mockAgentWorkThreads.waiting;
+    const sessionId = client.getSnapshot().threads.find(({ id }) => id === threadId)!.externalWork!
+      .sessionId;
+    const request = client
+      .getSnapshot()
+      .waitingRequests.find(
+        ({ request }) => request.originatingAgentSessionId === sessionId,
+      )!.request;
+    const open = [...page.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Run a script in Shopping?"),
+    )!;
+    await act(async () => open.click());
+    expect(state.navigate).toHaveBeenCalledWith("Thread", {
+      deploymentId: "dep",
+      requestId: request.id,
+      threadId,
+    });
+    const dispatch = vi.spyOn(client, "dispatch");
+    await act(async () =>
+      page
+        .querySelector<HTMLButtonElement>('button[aria-label="Stop “\u2068Grok\u2069”"]')!
+        .click(),
+    );
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "agent.session.stop",
+        threadId,
+        agentSessionId: sessionId,
+      }),
+    );
     // Every other Request keeps its own title.
     expect(page.textContent).toContain("Book a table for Friday");
   });
@@ -166,6 +198,35 @@ describe("Needs you on the phone", () => {
       expect(page.textContent).toContain(`“\u2068${rtlAgent}\u2069”: Run a script in Shopping?`),
     );
   });
+});
+
+it("shows direct work above Tasks while active, and takes Stop off the drawer when it ends", async () => {
+  const client = seeded({ livePanel: "one" });
+  const threadId = mockAgentWorkThreads.shopping;
+  const sessionId = client.getSnapshot().activeTasks.find(({ thread }) => thread.id === threadId)!
+    .thread.externalWork!.sessionId;
+  const open = vi.fn();
+  const page = await render(<ConnectedAgentsSection host={client} onOpen={open} />);
+  expect(page.textContent).toContain("Connected agents");
+  expect(page.textContent).toContain("Working");
+  await act(async () =>
+    [...page.querySelectorAll("button")]
+      .find((button) => button.textContent?.includes("ChatGPT"))!
+      .click(),
+  );
+  expect(open).toHaveBeenCalledWith(threadId);
+  const dispatch = vi.spyOn(client, "dispatch");
+  await act(async () =>
+    page.querySelector<HTMLButtonElement>('button[aria-label="Stop ChatGPT"]')!.click(),
+  );
+  expect(dispatch).toHaveBeenCalledWith(
+    expect.objectContaining({
+      type: "agent.session.stop",
+      threadId,
+      agentSessionId: sessionId,
+    }),
+  );
+  expect(page.textContent).toBe("");
 });
 
 describe("a tab a connected agent uses, on the phone", () => {

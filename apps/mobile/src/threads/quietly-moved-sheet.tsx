@@ -1,5 +1,5 @@
 import {
-  doneTaskList,
+  personDoneTaskList,
   quietlyMoved,
   quietSeenScope,
   sameTaskListSource,
@@ -66,7 +66,7 @@ function QuietlyMoved(props: {
   );
   const [moving, setMoving] = useState<ReadonlySet<string>>(new Set());
   const [movingAll, setMovingAll] = useState(false);
-  const rows = quietlyMoved(doneTaskList(snapshot), since, Date.now());
+  const rows = quietlyMoved(personDoneTaskList(snapshot), since, Date.now());
   const days = snapshot.quietTaskDays;
 
   const shownThrough = seenThroughOf(rows, null);

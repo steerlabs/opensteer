@@ -9,7 +9,11 @@ import {
   type SentencePart,
   workWords,
 } from "@opensteer/client/host";
-import { useConnectedAgents, useHostSelector } from "@opensteer/client/react";
+import {
+  useConnectedAgentWork,
+  useConnectedAgents,
+  useHostSelector,
+} from "@opensteer/client/react";
 import {
   createContext,
   useCallback,
@@ -26,7 +30,6 @@ import { sessionActionLabel, useOpenSessionTask, useStopSession } from "./agent-
 import { Icon } from "./icon.js";
 import { Popover } from "./popover.js";
 import { AgentMark } from "./settings/agent-mark.js";
-import { useConnectedAgentWork } from "./use-connected-agent-sessions.js";
 
 const selectHomeName = (snapshot: HostSnapshot) =>
   snapshot.machines.find(hostsDeployment)?.name ?? null;

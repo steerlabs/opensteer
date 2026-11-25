@@ -633,6 +633,15 @@ export function doneTaskList(snapshot: TaskListSource, deploymentId?: string): D
   return { rows, total: list.window.totalItems, hasMore: list.window.hasMore };
 }
 
+/** The Home counts the person's Done window. Hide any session row still held from a frame. */
+export function personDoneTaskList(
+  snapshot: TaskListSource,
+  deploymentId?: string,
+): DoneTaskList | null {
+  const list = doneTaskList(snapshot, deploymentId);
+  return list && { ...list, rows: list.rows.filter((row) => !row.connectedAgentTask) };
+}
+
 export interface DoneDay {
   readonly id: "today" | "week" | "earlier";
   readonly title: string;

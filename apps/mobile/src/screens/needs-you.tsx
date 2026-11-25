@@ -3,8 +3,8 @@ import { useHostSelector } from "@opensteer/client/react";
 import {
   needsYouEntryKey,
   phoneSentence,
+  threadInDirectory,
   type HostClient,
-  type HostSnapshot,
 } from "@opensteer/client/host";
 import type { NeedsYouEntry } from "@opensteer/protocol";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -16,10 +16,8 @@ import { AppText } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 import { space } from "../theme.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
-import { ExternalAgentMark } from "./external-agent-mark.js";
+import { ConnectedAgentLine } from "../thread/connected-agent-line.js";
 import { needsYouOperation } from "../thread/agent-session-model.js";
-
-const selectThreads = (snapshot: HostSnapshot) => snapshot.threads;
 
 export function NeedsYouScreen(props: StaticScreenProps<{ readonly deploymentId: string }>) {
   const { deploymentId } = props.route.params;
@@ -104,36 +102,43 @@ function NeedsYouRow(props: {
 }): ReactNode {
   const { client, deploymentId, entry } = props;
   const navigation = useNavigation();
-  // A connected agent's direct operation: named by its agent and the Home's question.
-  const threads = useHostSelector(client, selectThreads);
+  const threadId = entry.request.originatingThreadId;
+  const thread = useHostSelector(client, (snapshot) => threadInDirectory(threadId, snapshot));
   const operation = needsYouOperation(
-    { threads },
-    { request: entry.request, threadId: entry.navigationThreadId },
+    { threads: thread ? [thread] : [] },
+    { request: entry.request, threadId },
   );
+  const open = () =>
+    navigation.navigate("Thread", {
+      deploymentId,
+      requestId: entry.request.id,
+      threadId: entry.navigationThreadId,
+    });
+  if (operation) {
+    const work = thread?.externalWork;
+    const sessionId =
+      work?.status === "active" && work.sessionId === entry.request.originatingAgentSessionId
+        ? work.sessionId
+        : null;
+    return (
+      <ConnectedAgentLine
+        host={client}
+        threadId={threadId}
+        sessionId={sessionId}
+        agent={operation.agent}
+        title={phoneSentence(operation.listTitleParts)}
+        onOpen={open}
+        needsYou
+      />
+    );
+  }
   return (
     <Pressable
       accessibilityRole="button"
-      onPress={() =>
-        navigation.navigate("Thread", {
-          deploymentId,
-          requestId: entry.request.id,
-          threadId: entry.navigationThreadId,
-        })
-      }
+      onPress={open}
       style={{ gap: space[8], padding: space[16] }}
     >
-      {operation === null ? (
-        <AppText>{entry.title}</AppText>
-      ) : (
-        <View style={{ alignItems: "center", flexDirection: "row", gap: space[8] }}>
-          <ExternalAgentMark
-            initial={operation.agent.initial}
-            providerId={operation.agent.providerId}
-            size={20}
-          />
-          <AppText style={{ flex: 1 }}>{phoneSentence(operation.listTitleParts)}</AppText>
-        </View>
-      )}
+      <AppText>{entry.title}</AppText>
     </Pressable>
   );
 }

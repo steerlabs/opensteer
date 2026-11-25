@@ -1,7 +1,9 @@
 import {
+  accessModeOptions,
   deriveSurface,
   mutationIdempotencyKey,
   phoneSentence,
+  formatClockTime,
   requestDecision,
   canRespondToRequests,
   sessionQuestions,
@@ -10,6 +12,7 @@ import {
   type HostSnapshot,
   type OperationRow,
   type OperationRequestView,
+  type RequestView,
   type SessionTaskView,
 } from "@opensteer/client/host";
 import { useStackedLayout } from "../ui/stacked-layout.js";
@@ -90,11 +93,8 @@ export function AgentSessionPane(props: {
     [thread, threadId, transcript.requests],
   );
   const questions = useMemo(() => sessionQuestions(transcript.requests), [transcript.requests]);
-  const user = useHostValue(hostClient, selectUser, null);
-  const canRespond = useHostValue(hostClient, canRespondToRequests, false);
   // Where the agent works now, and the page its questions are about: the task's own tabs.
   const place = useThreadAgentPlace(hostClient, threadId);
-  const drafts = useMobileClient().drafts;
   const showTab = useShowTab(props.deploymentId, threadId);
   const stop = useAgentSessionStop(hostClient, threadId);
   const activity = view.activity;
@@ -115,28 +115,14 @@ export function AgentSessionPane(props: {
             title={workWords("work.usingNow")}
           />
         )}
-        {user === null
-          ? null
-          : questions.map((request) => {
-              const surface = deriveSurface([request], user);
-              return surface === null ? null : (
-                <View
-                  key={request.id}
-                  style={styles.question}
-                  testID={`session-question:${request.id}`}
-                >
-                  <RequestPageLink hostClient={hostClient} onOpen={showTab} request={request} />
-                  <QuestionCard
-                    canRespond={canRespond}
-                    deploymentId={props.deploymentId}
-                    drafts={drafts}
-                    hostClient={hostClient}
-                    surface={surface}
-                    userId={user.id}
-                  />
-                </View>
-              );
-            })}
+        {questions.map((request) => (
+          <SessionQuestionCard
+            key={request.id}
+            hostClient={hostClient}
+            deploymentId={props.deploymentId}
+            request={request}
+          />
+        ))}
         <AppText role="secondaryMedium" tone="muted">
           {workWords("work.activity")}
         </AppText>
@@ -193,6 +179,38 @@ export function AgentSessionPane(props: {
   );
 }
 
+/** The connected agent's own question, on its task and in Now. */
+export function SessionQuestionCard({
+  hostClient,
+  deploymentId,
+  request,
+}: {
+  readonly hostClient: HostClient;
+  readonly deploymentId: string;
+  readonly request: RequestView;
+}): ReactNode {
+  const user = useHostValue(hostClient, selectUser, null);
+  const canRespond = useHostValue(hostClient, canRespondToRequests, false);
+  const { drafts } = useMobileClient();
+  const showTab = useShowTab(deploymentId, request.originatingThreadId);
+  if (user === null) return null;
+  const surface = deriveSurface([request], user);
+  if (surface === null) return null;
+  return (
+    <View style={styles.question} testID={`session-question:${request.id}`}>
+      <RequestPageLink hostClient={hostClient} onOpen={showTab} request={request} />
+      <QuestionCard
+        canRespond={canRespond}
+        deploymentId={deploymentId}
+        drafts={drafts}
+        hostClient={hostClient}
+        surface={surface}
+        userId={user.id}
+      />
+    </View>
+  );
+}
+
 const glyphs: Readonly<Record<OperationRow["glyph"], SFSymbolName>> = {
   globe: "globe",
   app: "square.grid.2x2",
@@ -208,15 +226,31 @@ const tones: Readonly<Record<OperationRow["outcome"]["tone"], string>> = {
 };
 
 /** One operation: what it did, who allowed it, and how it ended, stated plainly. */
-export function OperationRowView({ row }: { readonly row: OperationRow }): ReactNode {
+export function OperationRowView({
+  row,
+  showModeAndTime,
+}: {
+  readonly row: OperationRow;
+  readonly showModeAndTime?: boolean;
+}): ReactNode {
   const stacked = useStackedLayout();
   const glyph = <Symbol name={glyphs[row.glyph]} size={15} tint={color.textSoft} />;
+  const mode = showModeAndTime
+    ? accessModeOptions.find((option) => option.mode === row.mode)?.label
+    : null;
   const words = (
     <View style={stacked ? undefined : styles.grow}>
       <AppText role="secondary">{row.action}</AppText>
       <AppText role="caption" tone="muted">
-        {row.allowedBy === null ? row.outcome.label : `${row.allowedBy} · ${row.outcome.label}`}
+        {[mode, row.allowedBy !== mode ? row.allowedBy : null, row.outcome.label]
+          .filter(Boolean)
+          .join(" · ")}
       </AppText>
+      {showModeAndTime ? (
+        <AppText role="caption" tone="muted">
+          {formatClockTime(row.at)}
+        </AppText>
+      ) : null}
       {row.detail === null ? null : (
         <AppText role="caption" tone="muted">
           {row.detail}

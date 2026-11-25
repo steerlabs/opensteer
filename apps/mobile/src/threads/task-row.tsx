@@ -2,6 +2,8 @@ import { runTerminationUnprovenCode } from "@opensteer/core";
 import { MenuView, type MenuComponentRef } from "@expo/ui/community/menu";
 import {
   heldThread,
+  phoneSentence,
+  type SentencePart,
   reviewHostAction,
   type ActionReview,
   sameTaskRow,
@@ -74,6 +76,7 @@ export interface TaskRowProps {
   readonly onOpen: (threadId: string) => void;
   readonly onSetDone: (row: TaskRow, done: boolean) => void;
   readonly row: TaskRow;
+  readonly origin?: readonly SentencePart[] | undefined;
   readonly selected: boolean;
   readonly shelf: TaskShelf;
   /** When it stopped, from `taskTime`, read by the list as it draws. */
@@ -96,6 +99,7 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
   const ask = props.ask ?? null;
   const said = ask ?? session?.line ?? null;
   const subtitle = line === null ? said : line;
+  const origin = props.origin ? phoneSentence(props.origin) : null;
 
   const content = (
     <Pressable
@@ -103,7 +107,7 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
       accessibilityHint="Opens this task"
       accessibilityLabel={`${taskRowLabel(row)}${row.unread && needsYou ? ", unread" : ""}${
         props.drafted === true ? `, ${draftPenLabel}` : ""
-      }`}
+      }${origin ? ` — ${origin}` : ""}`}
       accessibilityRole="button"
       accessibilityState={{ selected: props.selected }}
       onAccessibilityAction={(event: AccessibilityActionEvent) => {
@@ -140,7 +144,7 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
           size={markColumn}
         />
       )}
-      {subtitle === null ? (
+      {subtitle === null && origin === null ? (
         <AppText
           maxFontSizeMultiplier={controlFontScaleLimit}
           numberOfLines={1}
@@ -159,7 +163,12 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
           >
             {row.title}
           </AppText>
-          {line === null ? (
+          {origin ? (
+            <AppText numberOfLines={1} role="caption" tone="muted">
+              {origin}
+            </AppText>
+          ) : null}
+          {subtitle === null ? null : line === null ? (
             <AppText
               maxFontSizeMultiplier={controlFontScaleLimit}
               numberOfLines={1}
@@ -305,6 +314,8 @@ function Time(props: { readonly text: string }): ReactNode {
 function sameTaskRowProps(left: TaskRowProps, right: TaskRowProps): boolean {
   return (
     left.drafted === right.drafted &&
+    left.ask === right.ask &&
+    left.origin === right.origin &&
     left.onOpen === right.onOpen &&
     left.onSetDone === right.onSetDone &&
     left.selected === right.selected &&
@@ -390,7 +401,9 @@ export function setTaskDone(
   const review = reviewHostAction(hostClient, { kind: "task-done", threadId, done });
   const thread = heldThread(hostClient.getSnapshot(), threadId);
   const confirm = () => {
-    const next = advance ? taskAfter(taskList(hostClient.getSnapshot()), threadId) : null;
+    const next = advance
+      ? taskAfter(taskList(hostClient.getSnapshot(), { personTasksOnly: true }), threadId)
+      : null;
     void runTaskDone(hostClient, threadId, done, review).then((outcome) => {
       if (outcome.kind !== "confirmed" || !outcome.value) return;
       AccessibilityInfo.announceForAccessibility(done ? "Marked Done" : "Reopened");

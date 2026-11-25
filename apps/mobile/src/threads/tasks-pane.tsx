@@ -3,7 +3,7 @@ import Animated from "react-native-reanimated";
 import { move } from "../ui/motion.js";
 import {
   doneDays,
-  doneTaskList,
+  personDoneTaskList,
   doneTime,
   filterThreads,
   mainDoneTasks,
@@ -29,6 +29,7 @@ import { refreshNow } from "../ui/connection-live.js";
 import { PlaceholderRows } from "../ui/placeholder.js";
 import { AppText, SectionLabel } from "../ui/primitives.js";
 import { useListContentInsets } from "../ui/screen.js";
+import { useTaskOrigins } from "./use-task-origins.js";
 import { Symbol } from "../ui/symbol.js";
 import { setTaskDone, TaskRowView, taskTextInset, type TaskShelf } from "./task-row.js";
 
@@ -83,7 +84,7 @@ export function TasksPane(props: {
   // A Host that keeps Done newest Done first lists it apart; an older one
   // leaves it in the asked-ordered list.
   const keepsDone = snapshot.quietTasksAvailable === true && doneOnly;
-  const doneLoaded = keepsDone && doneTaskList(snapshot) !== null;
+  const doneLoaded = keepsDone && personDoneTaskList(snapshot) !== null;
 
   // Asked again each time the connection is ready, until the list has come.
   useEffect(() => {
@@ -93,14 +94,14 @@ export function TasksPane(props: {
 
   const now = Date.now();
   const read = snapshot.tasks;
-  const list = taskList(snapshot);
-  const doneList = keepsDone ? doneTaskList(snapshot) : null;
+  const searching = query.trim() !== "";
+  const list = taskList(snapshot, { personTasksOnly: !searching });
+  const doneList = keepsDone ? personDoneTaskList(snapshot) : null;
   const doneAlone = doneOnly && keepsDone;
   const loaded = doneAlone ? doneList !== null : read !== null;
   const doneRows = keepsDone ? (doneList?.rows ?? []) : list.done;
   const moreAsked = !doneAlone && list.hasMore;
   const moreDone = doneList?.hasMore === true;
-  const searching = query.trim() !== "";
   // The shared matcher decides what a query finds; the list decides the order.
   const matches = searching
     ? new Set(
@@ -207,6 +208,10 @@ export function TasksPane(props: {
     (row: TaskRow, toDone: boolean) => setTaskDone(hostClient, row.threadId, toDone),
     [hostClient],
   );
+  const origins = useTaskOrigins(
+    hostClient,
+    groups.some((group) => group.rows.some((row) => row.originConnectionId !== undefined)),
+  );
   const { onOpenTask } = props;
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<TasksRow>): ReactElement => {
@@ -245,6 +250,7 @@ export function TasksPane(props: {
           return (
             <TaskRowView
               onOpen={onOpenTask}
+              origin={origins.get(item.row.originConnectionId ?? "")}
               onSetDone={moveTask}
               row={item.row}
               selected={false}
@@ -254,7 +260,7 @@ export function TasksPane(props: {
           );
       }
     },
-    [moveTask, onOpenTask],
+    [moveTask, onOpenTask, origins],
   );
 
   return (

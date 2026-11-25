@@ -88,13 +88,16 @@ export function emptySavedViewReadiness(): SavedViewReadiness {
 
 /** Reuse the shared list's membership/order, but retain no state, attention or action. */
 export function projectSavedTasks(snapshot: HostSnapshot): SavedTask[] {
-  const list = taskList({
-    ...snapshot,
-    waitingRequests: [],
-    needsYou: null,
-    runQueue: [],
-    machines: [],
-  });
+  const list = taskList(
+    {
+      ...snapshot,
+      waitingRequests: [],
+      needsYou: null,
+      runQueue: [],
+      machines: [],
+    },
+    { personTasksOnly: true },
+  );
   const groups = ["working", "ready", "done"] as const;
   const recent = new Set(
     groups

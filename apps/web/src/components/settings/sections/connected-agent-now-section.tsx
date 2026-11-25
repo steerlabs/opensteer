@@ -21,7 +21,7 @@ import {
 import { Icon } from "../../icon.js";
 import { RequestStack } from "../../input-surface.js";
 import { useReadFailed } from "../../read-gate.js";
-import type { useConnectedAgentWork } from "../../use-connected-agent-sessions.js";
+import type { useConnectedAgentWork } from "@opensteer/client/react";
 import { SettingsGroup } from "../primitives.js";
 
 export function ConnectedAgentNowSection({

@@ -1,3 +1,4 @@
+import { useActiveConnectedAgentSessions } from "@opensteer/client/react";
 import { useEffect, useRef, useState } from "react";
 import { Link, Route, Routes, useParams } from "react-router";
 import {
@@ -37,7 +38,6 @@ import {
 import { SentenceText } from "../../../ui/address-text.js";
 import { AgentMark } from "../agent-mark.js";
 import { ConnectedAgentPage } from "./connected-agent-page.js";
-import { useActiveConnectedAgentSessions } from "../../use-connected-agent-sessions.js";
 
 const remoteAccessPath = "/settings/account";
 const notReading = { status: null, error: null } as const;
