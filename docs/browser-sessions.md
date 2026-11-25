@@ -345,9 +345,12 @@ opened before it binds it) reaches an extension's pages and files as a website c
 extension's own pages move among its own pages, and any other page navigates, follows a redirect,
 opens a window or an iframe, or requests a file at a `chrome-extension:` address only when that
 extension lists it as web-accessible for the page. Anything else is refused the same way as an
-address of an extension that is not installed, and the page stays where it was. Where Chrome's
-rule is not written down, Opensteer refuses: for `window.open`, about which Electron does not say
-which frame opened the window, every frame of the opener must be allowed. Opensteer's own opening
+address of an extension that is not installed, and the page stays where it was. A server
+redirect into an extension is judged by the site whose response redirects, whoever started the
+navigation, so a sign-in provider listed by the extension can send the person back to it while a
+site that only bounces cannot, and a redirect Opensteer did not see (a service worker's) is
+refused. A window is judged by the frame that opens it: by the origin the browser reports for the
+opener, or, when it reports none, by the window's own first navigation. Opensteer's own opening
 of an extension's pages (its popup, its options page) is not a page's navigation and stays
 allowed. Two residuals remain: main-world DOM mutations written directly into a page by an
 extension's content script remain readable from the page's default world, and a tab opened via

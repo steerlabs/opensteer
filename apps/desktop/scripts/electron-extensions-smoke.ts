@@ -67,7 +67,11 @@ const manifest = {
   content_scripts: [{ matches: ["<all_urls>"], js: ["content.js"], run_at: "document_start" }],
   action: { default_title: "Smoke", default_popup: "popup.html" },
   options_page: "options.html",
-  web_accessible_resources: [{ resources: ["war.html", "war.txt"], matches: ["<all_urls>"] }],
+  web_accessible_resources: [
+    { resources: ["war.html", "war.txt"], matches: ["<all_urls>"] },
+    { resources: ["trusted-only.html"], matches: ["http://127.0.0.1/*"] },
+    { resources: ["callback.html"], matches: ["http://localhost/*"] },
+  ],
 };
 const KNOWN_MAIN_WINDOWS_STEP = "chrome.windows.create and remove";
 const KNOWN_MAIN_WINDOWS_REFUSAL =
@@ -119,6 +123,8 @@ if (location.pathname === "/window")
   "war.html": `<!doctype html><title>Smoke WAR</title><p>war</p>`,
   "war.txt": "extension-war-secret",
   "nonwar.html": `<!doctype html><title>Smoke non-WAR</title><p>nonwar</p>`,
+  "trusted-only.html": `<!doctype html><title>Smoke trusted-only</title><p>trusted-only</p>`,
+  "callback.html": `<!doctype html><title>Smoke callback</title><p>callback</p>`,
 };
 
 function writeFixtureExtension(extensionFolder: string): void {
@@ -994,12 +1000,22 @@ async function checkWebAccessibleResources(
       return;
     }
     response.setHeader("Content-Type", "text/html");
+    if (url.pathname === "/widgets") {
+      // A page with the frames most sites have: a sandboxed widget and a cross-origin one.
+      response.end(`<!doctype html><title>/widgets</title><body>
+        <iframe sandbox="allow-scripts allow-popups" srcdoc="<p>ad</p>"></iframe>
+        <iframe src="${url.searchParams.get("cross") ?? ""}/start"></iframe></body>`);
+      return;
+    }
     response.end(`<!doctype html><title>${url.pathname}</title><p>page</p>`);
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Fixture server did not bind.");
   const web = `http://127.0.0.1:${address.port}`;
+  // A second web origin on the same server: the sign-in provider, or the site that bounces.
+  const other = `http://localhost:${address.port}`;
+  const bounce = (origin: string, to: string) => `${origin}/redirect?to=${encodeURIComponent(to)}`;
   const page = await browser.context.createPage();
   try {
     const settle = () => new Promise((resolve) => setTimeout(resolve, 500));
@@ -1087,6 +1103,7 @@ async function checkWebAccessibleResources(
       "ok 200 extension-war-secret",
       "the web-accessible file did not load",
     );
+    assert.equal(reached.script, "load", "the web-accessible file did not load as a script");
     assert.ok(
       reached.frames.includes(`${base}war.html`),
       `the web-accessible page did not load in an iframe: ${JSON.stringify(reached.frames)}`,
@@ -1114,6 +1131,105 @@ async function checkWebAccessibleResources(
       "a refused extension address read differently from an absent extension's",
     );
     sectionChecks.push("window.open, iframe, fetch and script refused alike");
+
+    // A server redirect into the extension is judged by the origin that redirects (W1).
+    const redirected = async (via: string, target: string) => {
+      await load(page, `${web}/start`);
+      await contents(page).executeJavaScript(
+        `location.href = ${JSON.stringify(bounce(via, target))}; "started"`,
+      );
+      await settle();
+      return {
+        url: page.url(),
+        title: await contents(page)
+          .executeJavaScript("document.title")
+          .catch((error: unknown) => `unreadable: ${String(error)}`),
+      };
+    };
+    const trustedOnly = `${base}trusted-only.html`;
+    assert.equal(
+      (await redirected(web, trustedOnly)).url,
+      trustedOnly,
+      "trusted -> trusted -> trusted-only was not reached",
+    );
+    const bounced = await redirected(other, trustedOnly);
+    assert.deepEqual(
+      bounced,
+      { url: `${web}/start`, title: "/start" },
+      "trusted -> evil -> trusted-only reached the page listed only for trusted",
+    );
+    assert.deepEqual(
+      await redirected(other, `${absentBase}trusted-only.html`),
+      bounced,
+      "trusted -> evil -> refusal told an absent extension apart",
+    );
+    const callback = `${base}callback.html`;
+    await load(page, `${base}war.html`);
+    await contents(page).executeJavaScript(
+      `location.href = ${JSON.stringify(bounce(other, callback))}; "started"`,
+    );
+    await waitFor(() => page.url() === callback);
+    assert.equal(await contents(page).executeJavaScript("document.title"), "Smoke callback");
+    await load(page, `${web}/start`);
+    await load(page, bounce(other, callback));
+    assert.equal(page.url(), callback, "a load the browser started was not let back from idp");
+    sectionChecks.push("redirects judged by the origin that redirects");
+
+    // window.open is judged by the frame that opens (W2): a page with widgets opens the
+    // web-accessible page; the extension's own page with a web iframe opens its own page, and
+    // that web iframe does not.
+    const popupsOf = async (open: () => Promise<unknown>) => {
+      const before = browser.context.pages().length;
+      const result = await open();
+      await settle();
+      const popups = browser.context.pages().slice(before);
+      const urls = popups.map((popup) => popup.url());
+      for (const popup of popups) await popup.close().catch(() => undefined);
+      return { result, urls };
+    };
+    await load(page, `${web}/widgets?cross=${encodeURIComponent(other)}`);
+    await waitFor(() => contents(page).mainFrame.frames.length === 2);
+    const widgets = await popupsOf(() =>
+      contents(page).executeJavaScript(
+        `window.open(${JSON.stringify(`${base}war.html`)}) === null ? "null" : "handle"`,
+      ),
+    );
+    assert.deepEqual(
+      widgets,
+      { result: "handle", urls: [`${base}war.html`] },
+      "a page with widgets could not open the web-accessible page",
+    );
+    await load(page, `${base}war.html`);
+    await contents(page).executeJavaScript(`new Promise((done) => {
+      const f = document.createElement("iframe");
+      f.onload = () => done("load");
+      f.src = ${JSON.stringify(`${web}/start`)};
+      document.body.append(f);
+      setTimeout(() => done("no event"), 3000);
+    })`);
+    const ownOpens = await popupsOf(() =>
+      contents(page).executeJavaScript(
+        `window.open(${JSON.stringify(`${base}nonwar.html`)}) === null ? "null" : "handle"`,
+      ),
+    );
+    assert.deepEqual(
+      ownOpens.urls,
+      [`${base}nonwar.html`],
+      `the extension's own page could not open its own page: ${JSON.stringify(ownOpens)}`,
+    );
+    const webFrame = contents(page).mainFrame.frames[0];
+    assert.ok(webFrame, "the web iframe inside the extension page is missing");
+    const iframeOpens = await popupsOf(() =>
+      webFrame.executeJavaScript(`window.open(${JSON.stringify(`${base}nonwar.html`)}); "opened"`),
+    );
+    assert.ok(
+      !iframeOpens.urls.includes(`${base}nonwar.html`),
+      `a web iframe opened its extension page's non-web-accessible page: ${JSON.stringify(iframeOpens)}`,
+    );
+    console.log(
+      `[extensions-smoke] extension-web-accessible: widgets=${JSON.stringify(widgets)} ownOpens=${JSON.stringify(ownOpens)} iframeOpens=${JSON.stringify(iframeOpens)}`,
+    );
+    sectionChecks.push("window.open judged by the frame that opens");
 
     // The extension's own page moves to its own page that is not web-accessible, and the
     // product itself still opens any of the extension's pages.

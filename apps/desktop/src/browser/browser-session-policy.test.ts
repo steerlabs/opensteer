@@ -32,7 +32,7 @@ it("denies device permissions and external protocols for every browser session (
     setPermissionRequestHandler: vi.fn(),
     getPreloadScripts: () => [],
     registerPreloadScript: vi.fn(),
-    webRequest: { onHeadersReceived: vi.fn(), onBeforeRequest: vi.fn() },
+    webRequest: { onHeadersReceived: vi.fn(), onBeforeRequest: vi.fn(), onBeforeRedirect: vi.fn() },
     setUserAgent: vi.fn(),
     getUserAgent: () => "Chrome/150",
   };
@@ -100,7 +100,7 @@ it("keeps site policy readable for provider frames and denies foreign ancestors"
     setPermissionRequestHandler: vi.fn(),
     getPreloadScripts: () => [],
     registerPreloadScript: vi.fn(),
-    webRequest: { onHeadersReceived: vi.fn(), onBeforeRequest: vi.fn() },
+    webRequest: { onHeadersReceived: vi.fn(), onBeforeRequest: vi.fn(), onBeforeRedirect: vi.fn() },
     setUserAgent: vi.fn(),
     getUserAgent: () => "Chrome/151",
   };
@@ -176,6 +176,7 @@ it("presents one reduced identity and supplies the navigation client hints Elect
     webRequest: {
       onHeadersReceived: vi.fn(),
       onBeforeRequest: vi.fn(),
+      onBeforeRedirect: vi.fn(),
       onBeforeSendHeaders: vi.fn(),
     },
     setUserAgent: vi.fn(),
@@ -239,7 +240,7 @@ it("immediately cancels every request at a closed restoration gate, including se
     setPermissionRequestHandler: vi.fn(),
     getPreloadScripts: () => [],
     registerPreloadScript: vi.fn(),
-    webRequest: { onHeadersReceived: vi.fn(), onBeforeRequest: vi.fn() },
+    webRequest: { onHeadersReceived: vi.fn(), onBeforeRequest: vi.fn(), onBeforeRedirect: vi.fn() },
     setUserAgent: vi.fn(),
     getUserAgent: () => "Chrome/151",
   };
@@ -315,7 +316,7 @@ it("loads extension files ahead of the profile gate and keeps extension preloads
     getPreloadScripts: () => preloads,
     registerPreloadScript: vi.fn(),
     unregisterPreloadScript: vi.fn(),
-    webRequest: { onHeadersReceived: vi.fn(), onBeforeRequest: vi.fn() },
+    webRequest: { onHeadersReceived: vi.fn(), onBeforeRequest: vi.fn(), onBeforeRedirect: vi.fn() },
     setUserAgent: vi.fn(),
     getUserAgent: () => "Chrome/150",
   };
@@ -350,7 +351,7 @@ it("cancels chrome-extension: requests for connection-controlled webContents whi
     setPermissionRequestHandler: vi.fn(),
     getPreloadScripts: () => [],
     registerPreloadScript: vi.fn(),
-    webRequest: { onHeadersReceived: vi.fn(), onBeforeRequest: vi.fn() },
+    webRequest: { onHeadersReceived: vi.fn(), onBeforeRequest: vi.fn(), onBeforeRedirect: vi.fn() },
     setUserAgent: vi.fn(),
     getUserAgent: () => "Chrome/150",
   };
@@ -398,7 +399,7 @@ it("loads a page's own request for an extension resource only when the extension
     setPermissionRequestHandler: vi.fn(),
     getPreloadScripts: () => [],
     registerPreloadScript: vi.fn(),
-    webRequest: { onHeadersReceived: vi.fn(), onBeforeRequest: vi.fn() },
+    webRequest: { onHeadersReceived: vi.fn(), onBeforeRequest: vi.fn(), onBeforeRedirect: vi.fn() },
     setUserAgent: vi.fn(),
     getUserAgent: () => "Chrome/150",
     extensions: { getExtension },
@@ -417,9 +418,24 @@ it("loads a page's own request for an extension resource only when the extension
       throw new Error("Render frame was disposed before WebFrameMain could be accessed");
     },
   };
-  const cancelled = (url: string, frame: object | null, resourceType = "xhr") => {
+  const cancelled = (
+    url: string,
+    frame: object | null,
+    resourceType = "xhr",
+    initiatorOrigin?: string,
+  ) => {
     const answer = vi.fn();
-    before({ url, webContentsId: 7, resourceType, frame, method: "GET" }, answer);
+    before(
+      {
+        url,
+        webContentsId: 7,
+        resourceType,
+        frame,
+        method: "GET",
+        ...(initiatorOrigin === undefined ? {} : { initiatorOrigin }),
+      },
+      answer,
+    );
     return answer.mock.calls[0]![0].cancel as boolean;
   };
   // A web page: the web-accessible resource loads; one not listed and one of an absent
@@ -438,7 +454,16 @@ it("loads a page's own request for an extension resource only when the extension
   // the frame's previous origin here.
   expect(cancelled(`chrome-extension://${extId}/nonwar.html`, web, "mainFrame")).toBe(false);
   expect(cancelled(`chrome-extension://${extId}/nonwar.html`, web, "subFrame")).toBe(false);
-  // No frame (an extension's worker) is left to Chromium's extension loader.
+  // No frame: the request's initiator says who asked (a page's worker, a keepalive request);
+  // with neither, it is left to Chromium's extension loader (S3).
+  expect(cancelled(`chrome-extension://${extId}/nonwar.html`, null, "xhr", web.origin)).toBe(true);
+  expect(cancelled(`chrome-extension://${absentId}/nonwar.html`, null, "xhr", web.origin)).toBe(
+    true,
+  );
+  expect(cancelled(`chrome-extension://${extId}/war.txt`, null, "xhr", web.origin)).toBe(false);
+  expect(cancelled(`chrome-extension://${extId}/nonwar.html`, null, "xhr", own.origin)).toBe(false);
+  expect(cancelled(`chrome-extension://${extId}/war.txt`, gone, "xhr", web.origin)).toBe(false);
+  expect(cancelled(`chrome-extension://${extId}/nonwar.html`, gone, "xhr", web.origin)).toBe(true);
   expect(cancelled(`chrome-extension://${extId}/worker.js`, null, "script")).toBe(false);
   // Rule 7: an ordinary web request never reads a manifest.
   getExtension.mockClear();

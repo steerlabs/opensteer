@@ -1,6 +1,7 @@
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import type { Session } from "electron";
 import { browserIdentity, isExtensionUrl } from "@opensteer/browser-core";
+import { recordExtensionRedirect } from "./extensions/extension-redirects.js";
 import { mayReachExtensionResource } from "./extensions/web-accessible.js";
 import { isLoopbackHostname } from "@opensteer/core";
 import { browserPagePermissionsPolicy } from "@opensteer/browser-runtime-core/page-policy";
@@ -92,6 +93,32 @@ export function applyBrowserSessionPolicy(
       requestGates.get(session)!.beforeRequest(details.webContentsId, callback);
     else callback({ cancel: false });
   });
+  // A navigation a server redirects into an extension is judged by the origin that redirects
+  // (W1): only this hook names it, before the page's `will-redirect` takes it.
+  session.webRequest.onBeforeRedirect(
+    { types: ["mainFrame", "subFrame"], urls: ["<all_urls>"] },
+    (details) => {
+      if (
+        details.webContentsId === undefined ||
+        !details.redirectURL.includes("chrome-extension:") ||
+        !isExtensionUrl(details.redirectURL)
+      )
+        return;
+      let frameTreeNodeId: number | undefined;
+      try {
+        frameTreeNodeId = details.frame?.frameTreeNodeId;
+      } catch {
+        frameTreeNodeId = undefined;
+      }
+      if (frameTreeNodeId === undefined) return;
+      recordExtensionRedirect(
+        details.webContentsId,
+        frameTreeNodeId,
+        details.url,
+        details.redirectURL,
+      );
+    },
+  );
   if (options.onRequestFinished) {
     session.webRequest.onCompleted((details) => options.onRequestFinished!(details.id));
     session.webRequest.onErrorOccurred((details) => options.onRequestFinished!(details.id));
@@ -201,24 +228,27 @@ const pagePolicyPreloadId = "opensteer-page-policy";
 
 /**
  * Whether a page's own request for an extension resource may load (Chrome's web-accessible
- * rule, `mayReachExtensionResource`). Navigations are decided by the page's navigation events
- * instead: a load the browser itself starts (the address bar, an extension's popup) arrives here
- * carrying the frame's previous origin. A request with no frame (an extension's worker, a page's
- * worker, a frame already gone) is left to Chromium's own extension loader, which already refuses a web page's
- * request for a resource that is not web-accessible.
+ * rule, `mayReachExtensionResource`), judged by the requesting frame's origin, or by the
+ * request's initiator when it has no frame (a worker, a keepalive request after its page went).
+ * Navigations are decided by the page's navigation events instead: a load the browser itself
+ * starts (an extension's popup, its options page) arrives here carrying the frame's previous
+ * origin. A request with neither a frame nor an initiator is left to Chromium's own extension
+ * loader, which already refuses a web page's request for a file that is not web-accessible.
  */
 function mayRequestExtensionResource(
   session: Session,
   details: Electron.OnBeforeRequestListenerDetails,
 ): boolean {
   if (details.resourceType === "mainFrame" || details.resourceType === "subFrame") return true;
-  let origin: string;
+  let origin: string | undefined;
   try {
-    if (!details.frame) return true;
-    origin = details.frame.origin;
+    origin = details.frame ? details.frame.origin : details.initiatorOrigin;
   } catch {
-    return false;
+    // The frame is gone: its initiator, if Electron gives one, still says who asked.
+    if (details.initiatorOrigin === undefined) return false;
+    origin = details.initiatorOrigin;
   }
+  if (origin === undefined) return true;
   return mayReachExtensionResource(
     details.url,
     origin,

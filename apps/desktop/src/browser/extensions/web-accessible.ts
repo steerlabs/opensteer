@@ -1,4 +1,10 @@
-import { globMatch, isExtensionId, isRecord, parseMatchPattern } from "./permissions.js";
+import {
+  globMatch,
+  isExtensionId,
+  isRecord,
+  parseMatchPattern,
+  parsePatternHost,
+} from "./permissions.js";
 
 /** The manifest of an extension loaded in the page's profile, or undefined when none is. */
 export type ExtensionManifestLookup = (extensionId: string) => unknown;
@@ -9,24 +15,28 @@ const extensionScheme = "chrome-extension:";
  * Whether a page whose frame has `initiatorOrigin` may reach the extension address `target` by
  * its own navigation or request, as Chrome allows it: always from the extension's own pages, and
  * otherwise only when the extension lists the resource as web-accessible for that origin. An
- * address that is not an extension address is not this rule's to decide and is let through. A refused address reads the same whether the extension is absent, not loaded in this
- * profile, or present with the resource not listed.
+ * address that is not an extension address is not this rule's to decide and is let through. A
+ * refused address reads the same whether the extension is absent, not loaded in this profile,
+ * or present with the resource not listed.
  *
  * Stricter than Chrome where Chrome's behavior is not documented: the path is compared after
  * decoding, case-sensitively; a path with `.`/`..` segments, a backslash or a NUL is refused;
  * MV3 `matches` match only web (http/https) initiators and only with the path `/*`; an entry
- * with `use_dynamic_url` grants nothing (Electron has no dynamic extension URLs); an unknown
- * or opaque initiator matches no MV3 entry.
+ * with `use_dynamic_url` grants nothing at the extension's own address (Electron 44 serves such
+ * an entry only at a dynamic host it does not otherwise route); an unknown or opaque initiator
+ * matches no MV3 entry.
  *
- * `options.sameExtension: false` drops the own-pages allowance (a server redirect into an
- * extension comes from the web, whoever started the navigation).
+ * `options.redirect: true` judges a server redirect into an extension: `initiatorOrigin` is then
+ * the origin of the response that redirects, which must be a web (http/https) origin; neither the
+ * own-pages allowance nor `extension_ids` applies, whoever started the navigation.
  */
 export function mayReachExtensionResource(
   target: string,
   initiatorOrigin: string | undefined,
   manifestOf: ExtensionManifestLookup,
-  options: { readonly sameExtension?: boolean } = {},
+  options: { readonly redirect?: boolean } = {},
 ): boolean {
+  const redirect = options.redirect === true;
   let url: URL;
   try {
     url = new URL(target);
@@ -41,14 +51,15 @@ export function mayReachExtensionResource(
     // A wrapped extension address (`blob:chrome-extension://…`) is never web-accessible: only
     // the extension's own pages reach it.
     const inner = extensionOrigin(url.pathname);
-    return inner === null || (options.sameExtension !== false && inner === initiatorOrigin);
+    return inner === null || (!redirect && inner === initiatorOrigin);
   }
   if (url.protocol !== extensionScheme) return true;
   // Chromium treats chrome-extension as a standard scheme: its host is case-insensitive.
   const extensionId = url.hostname.toLowerCase();
   if (!isExtensionId(extensionId) || url.port || url.username || url.password) return false;
-  if (options.sameExtension !== false && initiatorOrigin === `${extensionScheme}//${extensionId}`)
-    return true;
+  if (redirect) {
+    if (!isWebOrigin(initiatorOrigin)) return false;
+  } else if (initiatorOrigin === `${extensionScheme}//${extensionId}`) return true;
   const resource = resourcePath(url.pathname);
   if (resource === undefined) return false;
   const manifest = manifestOf(extensionId);
@@ -102,6 +113,16 @@ function initiatorAdmitted(entry: Record<string, unknown>, initiatorOrigin: stri
   );
 }
 
+function isWebOrigin(origin: string | undefined): boolean {
+  if (!origin) return false;
+  try {
+    const protocol = new URL(origin).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function originMatches(pattern: string, origin: URL): boolean {
   const parsed = parseMatchPattern(pattern);
   if (!parsed || parsed.pathPattern !== "/*") return false;
@@ -109,15 +130,19 @@ function originMatches(pattern: string, origin: URL): boolean {
   const scheme = origin.protocol.slice(0, -1);
   if (parsed.scheme !== "*" && parsed.scheme !== scheme) return false;
   if (parsed.scheme === "chrome-extension") return false;
+  const host = parsePatternHost(parsed.host);
+  if (!host) return false;
+  // No port in the pattern, or `*`: any port. Otherwise the origin's port, its scheme's default
+  // when the origin names none.
+  const port = origin.port || (scheme === "https" ? "443" : "80");
+  if (host.port !== undefined && host.port !== "*" && host.port !== port) return false;
   const hostname = origin.hostname.toLowerCase();
-  if (parsed.host === "*") return true;
-  if (parsed.host.startsWith("*.")) {
-    const suffix = parsed.host.slice(2);
+  if (host.hostname === "*") return true;
+  if (host.hostname.startsWith("*.")) {
+    const suffix = host.hostname.slice(2);
     return hostname === suffix || hostname.endsWith(`.${suffix}`);
   }
-  // A match pattern's host may carry a port; Chrome matches any port when none is given.
-  const [host, port] = parsed.host.split(":");
-  return hostname === host && (port === undefined || port === "*" || port === origin.port);
+  return hostname === host.hostname;
 }
 
 function resourceMatches(pattern: string, resource: string): boolean {

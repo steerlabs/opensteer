@@ -278,6 +278,7 @@ vi.mock("electron", () => {
     unregisterPreloadScript: vi.fn(),
     webRequest: {
       onBeforeRequest: vi.fn(),
+      onBeforeRedirect: vi.fn(),
       onBeforeSendHeaders: vi.fn(),
       onHeadersReceived: vi.fn(),
       onCompleted: vi.fn(),
@@ -5380,7 +5381,18 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
           `uncontrolled will-frame-navigate ${subframeUrl}`,
         ).not.toHaveBeenCalled();
         const preventRedir = vi.fn();
-        willRedirect({ preventDefault: preventRedir, initiator }, subframeUrl);
+        if (subframeUrl === extUrls[0])
+          sessionBeforeRedirect()({
+            webContentsId: webContentsIdOf(view.webContents),
+            frame: { frameTreeNodeId: 1 },
+            url: "https://site.test/bounce",
+            redirectURL: subframeUrl,
+            resourceType: "mainFrame",
+          });
+        willRedirect(
+          { preventDefault: preventRedir, initiator, frame: { frameTreeNodeId: 1 } },
+          subframeUrl,
+        );
         expect(preventRedir, `uncontrolled will-redirect ${subframeUrl}`).not.toHaveBeenCalled();
       }
 
@@ -5480,13 +5492,13 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
         view.webContents.on.mock.calls.find(([event]) => event === name)![1];
       const willNavigate = handler("will-navigate");
       const willFrameNavigate = handler("will-frame-navigate");
-      const willRedirect = handler("will-redirect");
       const popupHandler = view.webContents.setWindowOpenHandler.mock.calls[0]![0];
       const extId = "abcdefghijklmnopabcdefghijklmnop";
       const absentId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
       withExtensions(view.webContents, { [extId]: warManifest });
       const war = `chrome-extension://${extId}/war.html`;
       const nonWar = `chrome-extension://${extId}/nonwar.html`;
+      const siteOnly = `chrome-extension://${extId}/site-only.html`;
       const absent = `chrome-extension://${absentId}/war.html`;
       const web = { origin: "https://site.test" };
       const own = { origin: `chrome-extension://${extId}` };
@@ -5501,11 +5513,6 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
           willFrameNavigate({ url, preventDefault, initiator, isMainFrame: false });
           return preventDefault.mock.calls.length > 0;
         },
-        redirect: (url: string, initiator: object | null) => {
-          const preventDefault = vi.fn();
-          willRedirect({ preventDefault, initiator }, url);
-          return preventDefault.mock.calls.length > 0;
-        },
       };
       for (const [gate, refuses] of Object.entries(refused)) {
         // A web page reaches the web-accessible page; not the non-web-accessible one, and not
@@ -5518,11 +5525,9 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
         // Ordinary addresses are not this rule's.
         expect(refuses("https://example.test/", null), `${gate} web`).toBe(false);
       }
-      // The extension's own pages move among their own pages; a server redirect into the
-      // extension comes from the web even when its own page started the navigation.
+      // The extension's own pages move among their own pages.
       expect(refused.navigate(nonWar, own)).toBe(false);
       expect(refused.frame(nonWar, own)).toBe(false);
-      expect(refused.redirect(nonWar, own)).toBe(true);
       // data:, blob: and about:srcdoc subframes still load without an initiator (N4).
       for (const url of [
         "data:text/html,<p>inline</p>",
@@ -5531,21 +5536,170 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       ])
         expect(refused.frame(url, null), url).toBe(false);
 
-      // window.open: Electron does not say which frame opened it, so every frame must be allowed.
-      const opens = (url: string, origins: readonly string[]) => {
+      // window.open (W2): the referrer the browser reports names the opener's origin, which must
+      // be a live frame's. Without one, every frame must be allowed, or else the window's own
+      // first navigation decides: Electron 44 gives the handler no opener frame (probe
+      // 20261125T005627Z-14fc5203), so "allow" there leaves the refusal to the popup.
+      const opens = (url: string, origins: readonly string[], referrer = "") => {
         withFrames(view.webContents, origins);
-        return popupHandler({ url, disposition: "new-window" }) as { action: string };
+        return popupHandler({
+          url,
+          disposition: "new-window",
+          referrer: { url: referrer, policy: "strict-origin-when-cross-origin" },
+        }) as { action: string; createWindow?: (options: object) => unknown };
       };
-      expect(opens(war, ["https://site.test"]).action).toBe("allow");
-      expect(opens(nonWar, ["https://site.test"])).toEqual({ action: "deny" });
-      expect(opens(absent, ["https://site.test"])).toEqual({ action: "deny" });
-      expect(opens(nonWar, [`chrome-extension://${extId}`]).action).toBe("allow");
-      expect(opens(nonWar, [`chrome-extension://${extId}`, "https://site.test"])).toEqual({
+      const mainWithWidgets = ["https://site.test", "null", "https://cross.test"];
+      expect(opens(war, mainWithWidgets, "https://site.test/").action).toBe("allow");
+      expect(opens(siteOnly, mainWithWidgets, "https://site.test/").action).toBe("allow");
+      expect(opens(siteOnly, mainWithWidgets, "https://cross.test/")).toEqual({ action: "deny" });
+      expect(opens(nonWar, mainWithWidgets, "https://site.test/")).toEqual({ action: "deny" });
+      expect(opens(absent, mainWithWidgets, "https://site.test/")).toEqual({ action: "deny" });
+      // A referrer that names no frame of the page is refused.
+      expect(opens(war, ["https://site.test"], "https://elsewhere.test/")).toEqual({
         action: "deny",
       });
-      expect(opens(war, ["https://site.test", "null"])).toEqual({ action: "deny" });
-      expect(opens(war, [])).toEqual({ action: "deny" });
+      // No referrer (no-referrer, a sandboxed or an extension opener): every frame allowed opens.
+      expect(opens(war, ["https://site.test"]).action).toBe("allow");
+      expect(opens(nonWar, [`chrome-extension://${extId}`]).action).toBe("allow");
       expect(opens("https://example.test/", []).action).toBe("allow");
+      // Otherwise the window opens and its own first navigation decides. A window Opensteer would
+      // load itself (no pre-created contents) starts blank instead of at the address.
+      for (const [url, origins] of [
+        [nonWar, [`chrome-extension://${extId}`, "https://site.test"]],
+        [war, ["https://site.test", "null"]],
+        [nonWar, ["https://site.test"]],
+        [absent, ["https://site.test"]],
+        [war, []],
+      ] as const) {
+        const answer = opens(url, origins);
+        expect(answer.action, `${url} from ${origins.join(",")}`).toBe("allow");
+        const before = electron.views.length;
+        answer.createWindow!({});
+        const loaded = electron.views
+          .slice(before)
+          .flatMap((child) => child.webContents.loadURL.mock.calls.map(([target]) => target));
+        expect(loaded, `${url} loaded by Opensteer`).not.toContain(url);
+      }
+      // A window Electron navigates itself: its first navigation names the frame that opened it.
+      const { WebContentsView } = await import("electron");
+      const precreated = new WebContentsView({}).webContents;
+      const before = electron.views.length;
+      opens(nonWar, [`chrome-extension://${extId}`, "https://site.test"]).createWindow!({
+        webContents: precreated,
+      });
+      const popup = electron.views[before]!;
+      withExtensions(popup.webContents, { [extId]: warManifest });
+      const popupFrameNavigate = popup.webContents.on.mock.calls.find(
+        ([event]) => event === "will-frame-navigate",
+      )![1];
+      const popupRefuses = (opener: object) => {
+        const preventDefault = vi.fn();
+        popupFrameNavigate({ url: nonWar, preventDefault, initiator: opener, isMainFrame: true });
+        return preventDefault.mock.calls.length > 0;
+      };
+      expect(popupRefuses(own), "the extension's own page opens its page").toBe(false);
+      expect(popupRefuses(web), "its web iframe does not").toBe(true);
+    } finally {
+      await browser.close();
+    }
+  });
+  it("judges a server redirect into an extension by the origin that redirects (W1)", async () => {
+    const launcher = new ElectronBrowserLauncher({
+      downloads: { accept: () => undefined },
+      pagePolicyPreloadPath: "/policy.cjs",
+    });
+    const browser = await launcher.launch({
+      initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+      partitionKey: "session:extension-redirects",
+      sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000097"),
+      storage: { kind: "guest" },
+    });
+    try {
+      const view = electron.views.at(-1)!;
+      const willRedirect = view.webContents.on.mock.calls.find(
+        ([event]) => event === "will-redirect",
+      )![1];
+      const beforeRedirect = sessionBeforeRedirect();
+      const extId = "abcdefghijklmnopabcdefghijklmnop";
+      const peerId = "ponmlkjihgfedcbaponmlkjihgfedcba";
+      const absentId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      withExtensions(view.webContents, {
+        [extId]: {
+          manifest_version: 3,
+          web_accessible_resources: [
+            { resources: ["war.html"], matches: ["<all_urls>"] },
+            { resources: ["trusted-only.html"], matches: ["https://trusted.test/*"] },
+            { resources: ["callback.html"], matches: ["https://idp.test/*"] },
+            { resources: ["ext-only.html"], extension_ids: ["*"] },
+          ],
+        },
+      });
+      const page = (name: string, id = extId) => `chrome-extension://${id}/${name}`;
+      const trusted = { origin: "https://trusted.test" };
+      const own = { origin: `chrome-extension://${extId}` };
+      const peer = { origin: `chrome-extension://${peerId}` };
+      /** Whether the page refuses a redirect to `to` that the response at `from` sent. */
+      const refuses = (
+        to: string,
+        from: string | null,
+        initiator: object | null,
+        frameTreeNodeId = 1,
+        recordedFrame = frameTreeNodeId,
+      ) => {
+        if (from)
+          beforeRedirect({
+            webContentsId: webContentsIdOf(view.webContents),
+            frame: { frameTreeNodeId: recordedFrame },
+            url: from,
+            redirectURL: to,
+            resourceType: frameTreeNodeId === 1 ? "mainFrame" : "subFrame",
+          });
+        const preventDefault = vi.fn();
+        willRedirect({ preventDefault, initiator, frame: { frameTreeNodeId } }, to);
+        return preventDefault.mock.calls.length > 0;
+      };
+      // The reviewer's five cases.
+      expect(
+        refuses(page("trusted-only.html"), "https://evil.test/bounce", trusted),
+        "trustedToEvilBypass",
+      ).toBe(true);
+      expect(
+        refuses(page("ext-only.html"), "https://evil.test/", own),
+        "extToEvilExtIdsBypass",
+      ).toBe(true);
+      expect(
+        refuses(page("ext-only.html"), "https://evil.test/", peer),
+        "peerToEvilExtIdsBypass",
+      ).toBe(true);
+      expect(refuses(page("callback.html"), "https://idp.test/auth", own), "ownExtOAuth").toBe(
+        false,
+      );
+      expect(
+        refuses(page("callback.html"), "https://idp.test/auth", null),
+        "browserStartedOAuth",
+      ).toBe(false);
+      // Whoever started it, the redirecting origin is what is judged.
+      expect(refuses(page("trusted-only.html"), "https://trusted.test/bounce", null)).toBe(false);
+      expect(refuses(page("war.html"), "https://evil.test/bounce", null)).toBe(false);
+      expect(refuses(page("nonwar.html"), "https://trusted.test/bounce", own)).toBe(true);
+      expect(refuses(page("nonwar.html", absentId), "https://trusted.test/bounce", own)).toBe(true);
+      // A subframe's redirect is its own frame's.
+      expect(refuses(page("callback.html"), "https://idp.test/auth", trusted, 5)).toBe(false);
+      expect(refuses(page("callback.html"), "https://idp.test/auth", trusted, 5, 6)).toBe(true);
+      // A redirect the session did not see (a service worker's) is refused; a record is used once.
+      expect(refuses(page("war.html"), null, trusted)).toBe(true);
+      beforeRedirect({
+        webContentsId: webContentsIdOf(view.webContents),
+        frame: { frameTreeNodeId: 1 },
+        url: "https://idp.test/auth",
+        redirectURL: page("callback.html"),
+        resourceType: "mainFrame",
+      });
+      expect(refuses(page("callback.html"), null, null)).toBe(false);
+      expect(refuses(page("callback.html"), null, null)).toBe(true);
+      // Ordinary redirects are not this rule's, and a redirect from a non-web origin is refused.
+      expect(refuses("https://example.test/next", null, null)).toBe(false);
+      expect(refuses(page("war.html"), page("war.html", peerId), null)).toBe(true);
     } finally {
       await browser.close();
     }
@@ -7266,7 +7420,10 @@ it("does not block channel release or other channels' domain work behind a held 
 
 const warManifest = {
   manifest_version: 3,
-  web_accessible_resources: [{ resources: ["war.html"], matches: ["<all_urls>"] }],
+  web_accessible_resources: [
+    { resources: ["war.html"], matches: ["<all_urls>"] },
+    { resources: ["site-only.html"], matches: ["https://site.test/*"] },
+  ],
 };
 
 /** Gives a mock page the profile's loaded extensions, as Electron's `session.extensions` holds them. */
@@ -7291,4 +7448,28 @@ function withFrames(contents: object, origins: readonly string[]): void {
       })),
     },
   });
+}
+
+/**
+ * The session's `onBeforeRedirect` listener, as the browser session policy registered it (a no-op
+ * when none is, so a page's `will-redirect` is then judged without any recorded redirect).
+ */
+function sessionBeforeRedirect(): (details: object) => void {
+  const registered = vi
+    .mocked(session.fromPartition)
+    .mock.results.map(
+      (result) =>
+        (result.value as { webRequest: { onBeforeRedirect?: ReturnType<typeof vi.fn> } }).webRequest
+          .onBeforeRedirect,
+    )
+    .filter((listener) => (listener?.mock.calls.length ?? 0) > 0)
+    .at(-1);
+  return (
+    (registered?.mock.calls.at(-1)?.at(-1) as ((details: object) => void) | undefined) ??
+    (() => undefined)
+  );
+}
+
+function webContentsIdOf(contents: object): number {
+  return (contents as { readonly id: number }).id;
 }

@@ -32,7 +32,7 @@ const reach = (
   target: string,
   initiator: string | undefined,
   manifest: unknown = mv3,
-  options?: { sameExtension?: boolean },
+  options?: { redirect?: boolean },
 ) => mayReachExtensionResource(target, initiator, lookup({ [id]: manifest }), options);
 
 describe("mayReachExtensionResource", () => {
@@ -104,10 +104,10 @@ describe("mayReachExtensionResource", () => {
     expect(reach(ext("nonwar.html"), `chrome-extension://${id}`)).toBe(true);
     expect(reach(ext("nonwar.html"), `chrome-extension://${id}`, null)).toBe(true);
     // A server redirect into an extension comes from the web.
-    expect(
-      reach(ext("nonwar.html"), `chrome-extension://${id}`, mv3, { sameExtension: false }),
-    ).toBe(false);
-    expect(reach(ext("war.html"), web, mv3, { sameExtension: false })).toBe(true);
+    expect(reach(ext("nonwar.html"), `chrome-extension://${id}`, mv3, { redirect: true })).toBe(
+      false,
+    );
+    expect(reach(ext("war.html"), web, mv3, { redirect: true })).toBe(true);
   });
 
   it("decides on the path alone: query and fragment do not change the answer", () => {
@@ -164,15 +164,74 @@ describe("mayReachExtensionResource on wrapped and unusual spellings", () => {
       expect(reach(wrapped, web), wrapped).toBe(false);
       expect(reach(wrapped, `chrome-extension://${other}`), wrapped).toBe(false);
       expect(reach(wrapped, `chrome-extension://${id}`), wrapped).toBe(true);
-      expect(
-        reach(wrapped, `chrome-extension://${id}`, mv3, { sameExtension: false }),
-        wrapped,
-      ).toBe(false);
+      expect(reach(wrapped, `chrome-extension://${id}`, mv3, { redirect: true }), wrapped).toBe(
+        false,
+      );
     }
     expect(reach("blob:chrome-extension://not-an-id/0b1c", "chrome-extension://not-an-id")).toBe(
       false,
     );
     expect(reach("blob:https://site.test/0b1c", web)).toBe(true);
     expect(reach("blob:null/0b1c", "null")).toBe(true);
+  });
+});
+
+describe("MV3 `matches` host and port parsing (S1)", () => {
+  const only = (pattern: string) => ({
+    manifest_version: 3,
+    web_accessible_resources: [{ resources: ["page.html"], matches: [pattern] }],
+  });
+  const admits = (pattern: string, origin: string) =>
+    reach(ext("page.html"), origin, only(pattern));
+
+  it("matches a default port, a port on a subdomain pattern, IPv6 and any port", () => {
+    expect(admits("https://site.test:443/*", "https://site.test")).toBe(true);
+    expect(admits("https://site.test:443/*", "https://site.test:8443")).toBe(false);
+    expect(admits("http://site.test:80/*", "http://site.test")).toBe(true);
+    expect(admits("https://*.site.test:8080/*", "https://a.site.test:8080")).toBe(true);
+    expect(admits("https://*.site.test:8080/*", "https://a.site.test:9090")).toBe(false);
+    expect(admits("http://[::1]:8080/*", "http://[::1]:8080")).toBe(true);
+    expect(admits("http://[::1]:8080/*", "http://[::2]:8080")).toBe(false);
+    expect(admits("http://[0:0::1]/*", "http://[::1]:9")).toBe(true);
+    expect(admits("https://site.test:*/*", "https://site.test:1234")).toBe(true);
+    expect(admits("https://site.test/*", "https://site.test:1234")).toBe(true);
+    expect(admits("*://*:8080/*", "https://any.test:8080")).toBe(true);
+    expect(admits("*://*:8080/*", "https://any.test")).toBe(false);
+    expect(admits("HTTPS://SITE.TEST/*", "https://site.test")).toBe(true);
+  });
+
+  it("refuses malformed patterns instead of reading them loosely", () => {
+    expect(admits("https://site.test:/*", "https://site.test")).toBe(false);
+    expect(admits("https://site.test:8080:9999/*", "https://site.test:8080")).toBe(false);
+    expect(admits("https://*./*", "https://evil.test.")).toBe(false);
+    expect(admits("https://*./*", "https://evil.test")).toBe(false);
+    expect(admits("https://site.test:99999/*", "https://site.test:99999")).toBe(false);
+    expect(admits("https://site.test:8x/*", "https://site.test")).toBe(false);
+    expect(admits("https://[::1/*", "https://[::1]")).toBe(false);
+    expect(admits("https://*.[::1]/*", "https://[::1]")).toBe(false);
+    expect(admits("https://si*te.test/*", "https://site.test")).toBe(false);
+  });
+});
+
+describe("a server redirect into an extension (W1)", () => {
+  const redirect = (target: string, from: string | undefined, manifest: unknown = mv3) =>
+    reach(target, from, manifest, { redirect: true });
+
+  it("judges the origin of the response that redirects against `matches`", () => {
+    expect(redirect(ext("war.html"), "https://idp.test")).toBe(true);
+    expect(redirect(ext("site-only.html"), "https://a.site.test")).toBe(true);
+    expect(redirect(ext("site-only.html"), "https://evil.test")).toBe(false);
+    expect(redirect(ext("nonwar.html"), "https://site.test")).toBe(false);
+  });
+
+  it("never lets an extension origin, `extension_ids` or an unknown origin admit it", () => {
+    expect(redirect(ext("nonwar.html"), `chrome-extension://${id}`)).toBe(false);
+    expect(redirect(ext("war.html"), `chrome-extension://${id}`)).toBe(false);
+    expect(redirect(ext("peer.html"), `chrome-extension://${other}`)).toBe(false);
+    expect(redirect(ext("any-extension.html"), "https://evil.test")).toBe(false);
+    expect(redirect(ext("war.html"), undefined)).toBe(false);
+    expect(redirect(ext("war.html"), "null")).toBe(false);
+    expect(redirect(ext("war.html"), undefined, mv2)).toBe(false);
+    expect(redirect(ext("war.html"), "https://evil.test", mv2)).toBe(true);
   });
 });

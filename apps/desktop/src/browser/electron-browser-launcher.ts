@@ -70,6 +70,7 @@ import path from "node:path";
 import { z } from "zod";
 import { desktopBrowserAppShortcut } from "../app/application-menu.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
+import { takeExtensionRedirectOrigin } from "./extensions/extension-redirects.js";
 import { mayReachExtensionResource } from "./extensions/web-accessible.js";
 import { boundPageRestore, ElectronPageRestoreSchema, WakeSeeds } from "./page-restore.js";
 import {
@@ -1582,10 +1583,25 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     });
     view.webContents.on("will-redirect", (event, url) => {
       if (!isExtensionUrl(url)) return;
-      // A server redirect into an extension comes from the web, whoever started the navigation.
+      if (this.#connectionControlled) {
+        event.preventDefault();
+        return;
+      }
+      // A server redirect into an extension is judged by the origin of the response that
+      // redirects, whoever started the navigation (W1); one the session did not see (a service
+      // worker's own redirect) is refused.
+      let frameTreeNodeId: number | undefined;
+      try {
+        frameTreeNodeId = event.frame?.frameTreeNodeId;
+      } catch {
+        frameTreeNodeId = undefined;
+      }
+      const from = pageContents.isDestroyed()
+        ? undefined
+        : takeExtensionRedirectOrigin(pageContents.id, frameTreeNodeId, url);
       if (
-        this.#connectionControlled ||
-        !mayPageReachExtension(pageContents, url, [event.initiator], { sameExtension: false })
+        from === undefined ||
+        !mayReachExtensionResource(url, from, profileManifests(pageContents), { redirect: true })
       )
         event.preventDefault();
     });
@@ -2792,16 +2808,20 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     this.#webContents.setWindowOpenHandler((details) => {
       if (!isAllowedBrowserNavigation(details.url, true, !this.#connectionControlled))
         return { action: "deny" };
-      // Electron does not say which frame opened the window: an extension address opens only
-      // when every frame of the opener could reach it.
-      if (
-        isExtensionUrl(details.url) &&
-        !mayPageReachExtension(contents, details.url, openerFrames(contents))
-      )
-        return { action: "deny" };
+      const opener = isExtensionUrl(details.url) ? windowOpenerVerdict(contents, details) : "allow";
+      if (opener === "deny") return { action: "deny" };
       return {
         action: "allow",
-        createWindow: (options) => create(options as ElectronPopupWindowOptions, details),
+        // A window Electron navigates itself (window.open, a target=_blank link) is judged again
+        // by its own first navigation, which names the frame that opened it. One Opensteer would
+        // load itself (OpenURLFromTab) starts blank instead when that frame is unknown.
+        createWindow: (options) =>
+          create(
+            options as ElectronPopupWindowOptions,
+            opener === "popup-judges" && !(options as ElectronPopupWindowOptions).webContents
+              ? { ...details, url: "about:blank" }
+              : details,
+          ),
         outlivesOpener: true,
         overrideBrowserWindowOptions: {
           show: false,
@@ -4838,19 +4858,21 @@ function mayPageReachExtension(
   contents: WebContents,
   url: string,
   initiators: readonly (WebFrameMain | null | undefined)[],
-  options?: { readonly sameExtension?: boolean },
 ): boolean {
   if (!isExtensionUrl(url)) return true;
-  const manifestOf = (extensionId: string): unknown =>
+  const manifestOf = profileManifests(contents);
+  return (
+    initiators.length > 0 &&
+    initiators.every((frame) => mayReachExtensionResource(url, frameOrigin(frame), manifestOf))
+  );
+}
+
+/** The manifests of the extensions loaded in the page's own profile. */
+function profileManifests(contents: WebContents): (extensionId: string) => unknown {
+  return (extensionId) =>
     contents.isDestroyed()
       ? undefined
       : contents.session.extensions.getExtension(extensionId)?.manifest;
-  return (
-    initiators.length > 0 &&
-    initiators.every((frame) =>
-      mayReachExtensionResource(url, frameOrigin(frame), manifestOf, options),
-    )
-  );
 }
 
 /** A frame's origin, or undefined when there is no frame or it is gone. */
@@ -4860,6 +4882,34 @@ function frameOrigin(frame: WebFrameMain | null | undefined): string | undefined
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Whether a window the page opens at the extension address `details.url` may open (Electron does
+ * not say which frame opened it). The referrer the browser reports names the opener's origin
+ * when present; it must be the origin of a live frame of the page, and is judged as that frame.
+ * Without one (no-referrer, a sandboxed or extension opener), every frame of the page must be
+ * allowed; when one is not, the window's own first navigation decides ("popup-judges").
+ */
+function windowOpenerVerdict(
+  contents: WebContents,
+  details: { readonly url: string; readonly referrer?: Electron.Referrer },
+): "allow" | "deny" | "popup-judges" {
+  const frames = openerFrames(contents);
+  const referrer = details.referrer?.url;
+  if (referrer) {
+    let origin: string;
+    try {
+      origin = new URL(referrer).origin;
+    } catch {
+      return "deny";
+    }
+    if (!frames.some((frame) => frameOrigin(frame) === origin)) return "deny";
+    return mayReachExtensionResource(details.url, origin, profileManifests(contents))
+      ? "allow"
+      : "deny";
+  }
+  return mayPageReachExtension(contents, details.url, frames) ? "allow" : "popup-judges";
 }
 
 /** Every frame of the page that may have opened a window. */

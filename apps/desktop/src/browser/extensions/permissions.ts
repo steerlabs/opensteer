@@ -98,19 +98,67 @@ export function parseMatchPattern(pattern: string): ParsedMatchPattern | null {
   const host = rest.slice(0, slashIndex).toLowerCase();
   const pathPattern = rest.slice(slashIndex);
   if (!host || !pathPattern.startsWith("/")) return null;
-  if (
-    host !== "*" &&
-    host.includes("*") &&
-    (!host.startsWith("*.") || host.slice(2).includes("*"))
-  ) {
-    return null;
-  }
+  // A wildcard only as the whole name or a leading `*.`, and a well-formed port (parsePatternHost).
+  if (!parsePatternHost(host)) return null;
   return {
     raw: pattern,
     allUrls: false,
     scheme,
     host,
     pathPattern,
+  };
+}
+
+export interface PatternHost {
+  /** `*`, `*.` + a canonical suffix, or a canonical host name (IPv6 in brackets). */
+  readonly hostname: string;
+  /** Absent: any port. `*`: any port. Otherwise the decimal port. */
+  readonly port?: string;
+}
+
+/**
+ * Splits a match pattern's host into its name and optional port, as Chromium's URLPattern reads
+ * it: `host`, `host:port`, `host:*`, `*.suffix[:port]`, `*[:port]` and `[ipv6][:port]`. A
+ * malformed one (an empty port, two ports, a port that is not a number up to 65535, an empty
+ * `*.` suffix, a name that does not parse as a host) is refused (null).
+ */
+export function parsePatternHost(host: string): PatternHost | null {
+  let name = host;
+  let port: string | undefined;
+  if (host.startsWith("[")) {
+    const close = host.indexOf("]");
+    if (close < 0) return null;
+    name = host.slice(0, close + 1);
+    const rest = host.slice(close + 1);
+    if (rest) {
+      if (!rest.startsWith(":")) return null;
+      port = rest.slice(1);
+    }
+  } else {
+    const colon = host.indexOf(":");
+    if (colon >= 0) {
+      name = host.slice(0, colon);
+      port = host.slice(colon + 1);
+    }
+  }
+  if (port !== undefined && port !== "*") {
+    if (!/^\d{1,5}$/u.test(port) || Number(port) > 65_535) return null;
+    port = String(Number(port));
+  }
+  if (name === "*") return { hostname: "*", ...(port !== undefined ? { port } : {}) };
+  const wildcard = name.startsWith("*.");
+  const bare = wildcard ? name.slice(2) : name;
+  if (!bare || bare.includes("*") || bare.endsWith(".")) return null;
+  let canonical: string;
+  try {
+    canonical = new URL(`http://${bare}/`).hostname;
+  } catch {
+    return null;
+  }
+  if (!canonical || (wildcard && canonical.startsWith("["))) return null;
+  return {
+    hostname: wildcard ? `*.${canonical}` : canonical,
+    ...(port !== undefined ? { port } : {}),
   };
 }
 
