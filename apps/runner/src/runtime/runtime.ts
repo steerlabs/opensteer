@@ -131,7 +131,13 @@ import {
   type TerminationProof,
   type RunnerShutdownProof,
 } from "./execution-containment.js";
-import { warmEngineKey, WarmEnginePool, type WarmEngine } from "./warm-engine-pool.js";
+import {
+  runnerMemoryBytes,
+  warmEngineIdleCap,
+  warmEngineKey,
+  WarmEnginePool,
+  type WarmEngine,
+} from "./warm-engine-pool.js";
 import { type MemoryKills } from "./memory-kills.js";
 import { startProgramEndpoints, type ProgramEndpointSet } from "../agent/program-endpoints.js";
 import { AutomationScriptExecutor, type AutomationScriptEvent } from "../agent/script-executor.js";
@@ -768,6 +774,7 @@ export class RunnerRuntime {
       terminate: (id, stopEngine) => this.#containment.terminate(id, stopEngine),
     });
     this.#warm = new WarmEnginePool({
+      maxIdle: warmEngineIdleCap(runnerMemoryBytes(), this.#maxConcurrentRuns),
       retire: async (engine) => {
         await this.#retireWarmEngine(engine);
       },
