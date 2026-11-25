@@ -4286,9 +4286,9 @@ describe("BrowserController", () => {
     const heldSize = gate({ label: "agent-tab held size", deadlineMs: 2_000 });
     const heldPersonSize = gate({ label: "person-tab held size", deadlineMs: 2_000 });
     const heldDragCancel = gate({ label: "person-tab held drag cancel", deadlineMs: 2_000 });
-    let pendingAgentFollow1: Promise<void> | undefined;
-    let pendingAgentFollow2: Promise<void> | undefined;
-    let pendingPersonFollow: Promise<void> | undefined;
+    let pendingAgentViewport1: Promise<void> | undefined;
+    let pendingAgentViewport2: Promise<void> | undefined;
+    let pendingPersonViewport: Promise<void> | undefined;
     try {
       await controller.start();
 
@@ -4318,14 +4318,14 @@ describe("BrowserController", () => {
       agentPage.cdpSession.responses.set("Emulation.setDeviceMetricsOverride", () =>
         heldSize.enter(),
       );
-      pendingAgentFollow1 = controller.handle({
+      pendingAgentViewport1 = controller.handle({
         type: "viewport.follow",
         surfaceId: agentSurfaceId,
         width: 900,
         height: 650,
       });
       await heldSize.entered;
-      pendingAgentFollow2 = controller.handle({
+      pendingAgentViewport2 = controller.handle({
         type: "viewport.follow",
         surfaceId: agentSurfaceId,
         width: 880,
@@ -4374,7 +4374,7 @@ describe("BrowserController", () => {
       personPage.cdpSession.responses.set("Emulation.setDeviceMetricsOverride", () =>
         heldPersonSize.enter(),
       );
-      pendingPersonFollow = controller.handle({
+      pendingPersonViewport = controller.handle({
         type: "viewport.follow",
         surfaceId: personSurfaceId,
         width: 840,
@@ -4392,13 +4392,13 @@ describe("BrowserController", () => {
       heldSize.release();
       heldDragCancel.release();
       heldPersonSize.release();
-      await Promise.all([pendingAgentFollow1, pendingAgentFollow2, pendingPersonFollow]);
+      await Promise.all([pendingAgentViewport1, pendingAgentViewport2, pendingPersonViewport]);
       expect(sink.messages.filter((message) => message.type === "browser.error")).toEqual([]);
     } finally {
       heldSize.release();
       heldDragCancel.release();
       heldPersonSize.release();
-      await Promise.allSettled([pendingAgentFollow1, pendingAgentFollow2, pendingPersonFollow]);
+      await Promise.allSettled([pendingAgentViewport1, pendingAgentViewport2, pendingPersonViewport]);
       await controller.close();
       await ledger.close();
     }
