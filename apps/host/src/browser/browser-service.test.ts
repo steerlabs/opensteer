@@ -9884,6 +9884,18 @@ describe("work under a connection's authority never uses the clipboard or change
       { ...authority, sessionId: opened.session.id },
       () => undefined,
     );
+    // The page session these commands go to is one this relay opened (M5).
+    const attach = cdp.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "page-1", flatten: true },
+    });
+    const attachCommand = await runtime.nextCommand();
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: attachCommand.requestId,
+      result: { sessionId: "cdp-page-1" },
+    });
+    await attach;
     /** Sends one command and answers it as the browser, returning what reached the runtime. */
     const forwarded = async (method: string, parameters: Record<string, unknown>) => {
       const request = cdp.request({ method, parameters, sessionId: "cdp-page-1" });
@@ -11310,10 +11322,19 @@ describe("work under a connection's authority never uses the clipboard or change
       };
     };
     const { runtime, attach } = await connectedRootAttachment("Generated Profile", true);
+    // A closed subscriber's relay detaches the page sessions it opened (M1, M5): those cleanups are
+    // kept apart from the commands a step waits for.
+    const cleanups: string[] = [];
     const nextCdp = async () => {
       for (;;) {
         const command = await runtime.nextCommand();
-        if (command.type === "cdp.command") return command;
+        if (command.type !== "cdp.command") continue;
+        const sent = command.command as { method?: unknown; parameters?: { sessionId?: unknown } };
+        if (sent.method === "Target.detachFromTarget") {
+          cleanups.push(String(sent.parameters?.sessionId));
+          continue;
+        }
+        return command;
       }
     };
     const failures: string[] = [];
@@ -11890,18 +11911,53 @@ describe("work under a connection's authority never uses the clipboard or change
       }
     };
     const first = await attach();
-    const attachCommand = await forwarded("Target.attachToTarget", first);
+    const attaching = first.attached.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "page-1", flatten: true },
+    });
+    let attachCommand: Record<string, unknown>;
+    for (;;) {
+      attachCommand = await runtime.nextCommand();
+      if (attachCommand.type === "cdp.command") break;
+    }
     expect(attachCommand.homeAddresses).toEqual(home.toJSON());
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: attachCommand.requestId,
+      result: { sessionId: "cdp-old" },
+    });
+    await attaching;
     const other = await forwarded("Runtime.evaluate", first);
     expect(other.homeAddresses).toBeUndefined();
-    // The person turns Remote access on: the set changes, and the agent's attachment ends.
+    // The person turns Remote access on: the set changes, and the agent's attachment ends, its
+    // page sessions ended in the browser too (M5).
     home = new ThisHomeAddressSet({
       origins: ["http://127.0.0.1:4310", "https://route.opensteer.test"],
       loopbackPorts: [4310],
     });
-    service.endAgentAttachments("This Home's addresses changed. Attach again.");
+    service.endAgentAttachments("This browser attachment has ended.");
     await vi.waitFor(() => expect(first.closed()).toBe(true));
+    let detach: Record<string, unknown>;
+    for (;;) {
+      detach = await runtime.nextCommand();
+      if (detach.type === "cdp.command") break;
+    }
+    runtime.sendServer({ type: "cdp.result", requestId: detach.requestId, result: {} });
+    expect(detach.command).toEqual({
+      method: "Target.detachFromTarget",
+      parameters: { sessionId: "cdp-old" },
+    });
     const again = await attach();
+    // The old page session is no page session of the new attachment: refused before the browser.
+    const before = runtime.receivedCommands().length;
+    await expect(
+      again.attached.request({
+        method: "Page.navigate",
+        parameters: { url: "https://route.opensteer.test/" },
+        sessionId: "cdp-old",
+      }),
+    ).rejects.toMatchObject({ code: "not_found", message: "CDP session is not attached here." });
+    expect(runtime.receivedCommands()).toHaveLength(before);
     expect((await forwarded("Target.attachToTarget", again)).homeAddresses).toEqual(home.toJSON());
   });
 

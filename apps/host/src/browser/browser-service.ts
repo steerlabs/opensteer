@@ -297,6 +297,13 @@ function mentionsHiddenUrl(value: unknown, depth: number, home: ThisHomeAddressS
   return false;
 }
 
+/** A command named a page session that is not this attachment's: answered as a session that is gone. */
+export class BrowserCdpSessionMissing extends OpensteerError {
+  constructor() {
+    super({ code: "not_found", message: "CDP session is not attached here." });
+  }
+}
+
 export class BrowserCdpConnectionEnded extends Error {
   override readonly name = "BrowserCdpConnectionEnded";
 }
@@ -1051,6 +1058,10 @@ export class BrowserService {
       runnerId: RunnerId;
       close: () => void;
       binding?: string;
+      /** The agent binding whose work this is, whatever kind of relay. */
+      holder?: string;
+      /** Ends the page sessions this relay opened in the browser (M1, M5). */
+      endPageSessions?: () => void;
       /** The connection whose work this is, so its Disconnect closes it. */
       agentConnectionId?: string;
     }
@@ -6275,6 +6286,18 @@ export class BrowserService {
     const visibleRootTargets = new Set<string>();
     const attachedTargets = new Set<string>();
     const attachedSessions = new Set<string>();
+    // The page sessions this relay opened on the session's root (not a script's): they end when
+    // the relay does, and every hold they have on a page with them (M1).
+    const relaySessions = new Set<string>();
+    let rootAutoAttach = false;
+    const endRelaySession = (sessionId: string) =>
+      void broker
+        .sendScriptCleanup({
+          type: "cdp.command",
+          requestId: randomUUID(),
+          command: { method: "Target.detachFromTarget", parameters: { sessionId } },
+        })
+        .catch(() => undefined);
     type TerminalEvent = Extract<BrowserServerMessage, { type: "cdp.event" }>["event"];
     // Terminal events that arrive before the reply that makes their target this subscriber's.
     // Two buffers, so that other targets' ends never push out an attach's own (S1, G3):
@@ -6403,6 +6426,8 @@ export class BrowserService {
       namedTerminalEvents.length = 0;
       unknownTerminalEvents.length = 0;
       pendingTargetIds.clear();
+      for (const sessionId of relaySessions) endRelaySession(sessionId);
+      relaySessions.clear();
       if (scriptAttachmentId && scriptOpening) {
         void broker
           .sendScriptCleanup({
@@ -6428,6 +6453,19 @@ export class BrowserService {
     };
     const unsubscribe = broker.subscribeCdp((event) => {
       if (event.scriptAttachmentId !== scriptAttachmentId) return;
+      // The page sessions this relay may name: a child of one of its own, or one the root's
+      // auto-attach announced after it asked for that (M5).
+      if (!scriptAttachmentId && event.method.startsWith("Target.")) {
+        const announced = (event.parameters as { sessionId?: unknown } | undefined)?.sessionId;
+        if (typeof announced === "string") {
+          if (event.method === "Target.detachedFromTarget") relaySessions.delete(announced);
+          else if (
+            event.method === "Target.attachedToTarget" &&
+            (event.sessionId === undefined ? rootAutoAttach : relaySessions.has(event.sessionId))
+          )
+            rememberBounded(relaySessions, announced);
+        }
+      }
       // A connection's work hears nothing once its binding has ended (Stop, Disconnect), even
       // before the attachment itself is closed.
       if (connectionWork && !this.#workStands(input.agentBindingId, agentConnectionId)) return;
@@ -6568,6 +6606,12 @@ export class BrowserService {
         runnerId: record.runnerId,
         close,
         ...(scriptAttachmentId || pooledRelay ? { binding: input.agentBindingId } : {}),
+        // The Run's end or Stop ends the page sessions this relay opened, and their holds (M1).
+        holder: input.agentBindingId,
+        endPageSessions: () => {
+          for (const sessionId of relaySessions) endRelaySession(sessionId);
+          relaySessions.clear();
+        },
         ...(agentConnectionId ? { agentConnectionId } : {}),
       });
       if (nativeAttachment) {
@@ -6748,6 +6792,14 @@ export class BrowserService {
             code: "forbidden",
             message: "This operation is reserved for the Host.",
           });
+        // A relay names only the page sessions it opened or was announced (M5): an old session id,
+        // its attachment ended, is no page session of this one; it reads as absent.
+        if (!scriptAttachmentId) {
+          if (command.sessionId !== undefined && !relaySessions.has(command.sessionId))
+            throw new BrowserCdpSessionMissing();
+          if (command.method === "Target.setAutoAttach" && command.sessionId === undefined)
+            rootAutoAttach = command.parameters?.autoAttach === true;
+        }
         // Session admission awaits storage; authority can end during that read.
         if (lease && !(await fillAllowed())) return expired;
         assertAttached(bindingWasEnded);
@@ -6851,6 +6903,25 @@ export class BrowserService {
           throw error;
         }
         pooledRelay?.track(command.method, command.parameters, answered);
+        if (
+          !scriptAttachmentId &&
+          command.method === "Target.attachToTarget" &&
+          command.sessionId === undefined
+        )
+          void answered.then(
+            (response) => {
+              const sessionId =
+                response.type === "cdp.result" &&
+                response.result &&
+                typeof response.result === "object"
+                  ? (response.result as { sessionId?: unknown }).sessionId
+                  : undefined;
+              if (typeof sessionId !== "string") return;
+              if (attachmentClosed) endRelaySession(sessionId);
+              else rememberBounded(relaySessions, sessionId);
+            },
+            () => undefined,
+          );
         if (scriptAttachmentId && command.method === browserHostMethods.resumeTab)
           scriptOpening = answered;
         return {
@@ -8949,8 +9020,10 @@ export class BrowserService {
     for (const waiter of this.#poolAgentWaiters.get(agentBindingId) ?? [])
       waiter.controller.abort(new BrowserCdpConnectionEnded("The browser task ended."));
     this.closeStandardCdpForBinding(agentBindingId, "The browser task ended.");
-    for (const attachment of this.#deviceAttachments.values())
+    for (const attachment of this.#deviceAttachments.values()) {
+      if (attachment.holder === agentBindingId) attachment.endPageSessions?.();
       if (attachment.binding === agentBindingId) attachment.close();
+    }
     for (const attachment of this.#actionAttachments.values())
       if (attachment.binding === agentBindingId) attachment.close();
     for (const actor of this.#actors.values())

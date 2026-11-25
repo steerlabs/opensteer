@@ -5575,11 +5575,33 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       expect(cancelled(popupId, homeUrls[0]!)).toBe(true);
       browser.cdp.setAgentControlled?.("target-agent-popup", false);
       await vi.waitFor(() => expect(cancelled(popupId, homeUrls[0]!)).toBe(false));
-      // A page an agent creates is marked before its first navigation request leaves (A1).
-      await browser.cdp.send("Target.createTarget", { url: "https://site.test/redirects-home" });
-      const createdId = webContentsIdOf(electron.views.at(-1)!.webContents);
-      expect(cancelled(createdId, homeUrls[0]!)).toBe(true);
-      expect(sentCookie(createdId, homeUrls[0]!)).toBe(false);
+      // A page made by the browser without an agent's hold is the person's: nothing marks it.
+      await browser.cdp.send("Target.createTarget", { url: "https://site.test/person" });
+      const unheldId = webContentsIdOf(electron.views.at(-1)!.webContents);
+      expect(cancelled(unheldId, homeUrls[0]!)).toBe(false);
+      // A page an agent creates is held, and so marked, in the one call that creates it, before
+      // its first load starts; the hold ends when that load settles (A1, M2).
+      const cdp = browser.cdp as unknown as {
+        createAgentTarget(
+          parameters: Record<string, unknown>,
+          hold: (targetId: string) => () => void,
+        ): Promise<{ targetId: string }>;
+      };
+      const loads: string[] = [];
+      let createdId = -1;
+      const created = await cdp.createAgentTarget(
+        { url: "https://site.test/redirects-home" },
+        (heldId) => {
+          browser.cdp.setAgentControlled?.(heldId, true);
+          createdId = webContentsIdOf(electron.views.at(-1)!.webContents);
+          loads.push(cancelled(createdId, homeUrls[0]!) ? "marked" : "unmarked");
+          return () => browser.cdp.setAgentControlled?.(heldId, false);
+        },
+      );
+      expect(created.targetId).toBeTruthy();
+      expect(loads).toEqual(["marked"]);
+      // Its first load has settled (at once, in this fake): that hold has ended with it.
+      await vi.waitFor(() => expect(cancelled(createdId, homeUrls[0]!)).toBe(false));
     } finally {
       await browser.close();
     }

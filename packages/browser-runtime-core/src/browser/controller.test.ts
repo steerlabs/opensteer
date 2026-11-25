@@ -1141,6 +1141,52 @@ describe("BrowserController", () => {
     }
   });
 
+  it("marks no page an agent opens blank, nor one whose open ends before its load (M2)", async () => {
+    const claims = validClaims();
+    const create = vi.spyOn(context, "createPage");
+    const holds: string[] = [];
+    vi.spyOn(cdpRouter, "holdAgentPage").mockImplementation((targetId) => {
+      holds.push(`hold ${targetId}`);
+      return () => holds.push(`release ${targetId}`);
+    });
+    const controller = new BrowserController({
+      cdpRouter,
+      claims,
+      files,
+      ledger,
+      replaceSiteCookies,
+      platform: "darwin",
+      signIns: noSignIns(),
+      sink,
+      verifyOpenAuthority: async () => ({
+        ...claims,
+        creationOrigin: "agent",
+        initialNavigation: { operationKey: "blank", url: undefined },
+      }),
+    });
+    try {
+      await controller.start();
+      await controller.handle({
+        type: "cdp.command",
+        requestId: randomUUID(),
+        command: {
+          method: browserHostMethods.openTab,
+          parameters: { idempotencyKey: "blank", operationAuthority: "s" },
+        },
+      });
+      // Opened, and never marked: nothing to hold, so nothing that could outlive the agent.
+      expect(create).toHaveBeenCalled();
+      expect(
+        (create.mock.calls.at(-1)?.[0] as { agent?: boolean } | undefined)?.agent,
+      ).toBeUndefined();
+      expect(holds).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("takes this Home's addresses from an agent's attach command, as from its ticket (B1)", async () => {
     const controller = createController();
     await controller.start();
@@ -1698,9 +1744,10 @@ describe("BrowserController", () => {
             creationOrigin === "agent" ? ["hold", "navigate", "release"] : ["navigate"],
           ),
         );
-        expect((create.mock.calls.at(-1)?.[0] as { agent?: boolean } | undefined)?.agent).toBe(
-          creationOrigin === "agent" ? true : undefined,
-        );
+        // Nothing marks the page but the hold: the browser is never asked to.
+        expect(
+          (create.mock.calls.at(-1)?.[0] as { agent?: boolean } | undefined)?.agent,
+        ).toBeUndefined();
         expect(hold).toHaveBeenCalledTimes(creationOrigin === "agent" ? 1 : 0);
       } finally {
         vi.restoreAllMocks();

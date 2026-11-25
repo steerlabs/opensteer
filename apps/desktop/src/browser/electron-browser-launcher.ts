@@ -905,7 +905,6 @@ class ElectronBrowserContext implements BrowserContext {
   async createPage(options?: {
     readonly restore?: unknown;
     readonly own?: (page: BrowserPage) => void;
-    readonly agent?: boolean;
   }): Promise<BrowserPage> {
     await this.#localProfile?.ready();
     this.#assertOpen();
@@ -923,9 +922,6 @@ class ElectronBrowserContext implements BrowserContext {
       timing,
       restore === null && this.#localProfile !== undefined,
     );
-    // An agent's page is agent-controlled from construction, before its first request (D3);
-    // the router's holds of it release it.
-    if (options?.agent) page.setAgentControlled(true);
     options?.own?.(page);
     try {
       // Electron needs a renderer to answer Page.enable. Start it while target
@@ -1068,7 +1064,10 @@ class ElectronBrowserContext implements BrowserContext {
   setTargetAgentControlled(targetId: string, controlled: boolean): void {
     if (controlled) this.#agentControlledTargets.add(targetId);
     else this.#agentControlledTargets.delete(targetId);
-    const known = this.#pagesByTargetId.get(targetId);
+    // A page whose target is already known is marked now, before anything it loads next.
+    const known =
+      this.#pagesByTargetId.get(targetId) ??
+      [...this.#pages].find((page) => page.knownTargetId() === targetId);
     if (known) {
       known.setAgentControlled(controlled);
       return;
@@ -1491,6 +1490,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   #controlDown = false;
   #connectionControlled = false;
   #agentControlled = false;
+  #knownTargetId: string | undefined;
   readonly #onConnectionWebContents:
     ((webContentsId: number, controlled: boolean) => void) | undefined;
   readonly #agent: ElectronAgentHooks | undefined;
@@ -2907,6 +2907,11 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     return Promise.resolve(this.#opener);
   }
 
+  /** The target id, once `targetId()` has resolved it. */
+  knownTargetId(): string | undefined {
+    return this.#knownTargetId;
+  }
+
   targetId(): Promise<string> {
     this.#targetIdPromise ??= this.#hub.open("platform").then(async (channel) => {
       try {
@@ -2915,6 +2920,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
         if (typeof targetId !== "string" || targetId.length < 1 || targetId.length > 512) {
           throw new Error("Electron WebContents did not expose a valid CDP target ID.");
         }
+        this.#knownTargetId = targetId;
         return targetId;
       } finally {
         await channel.close();
@@ -4863,6 +4869,31 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
     this.#context.setTargetAgentControlled(targetId, controlled);
   }
 
+  /**
+   * An agent's new page: the router's hold marks it, in this one call, before its first load
+   * starts; the hold's release runs when that load settles (M1, M2).
+   */
+  async createAgentTarget(
+    parameters: CdpParameters,
+    hold: (targetId: string) => () => void,
+  ): Promise<{ readonly targetId: string }> {
+    this.#assertOpen();
+    const requestedContext = parameters.browserContextId;
+    if (requestedContext !== undefined && requestedContext !== "opensteer-electron-profile")
+      throw new Error("CDP target requested another browser context.");
+    const url = typeof parameters.url === "string" ? parameters.url : "about:blank";
+    if (!isAllowedBrowserNavigation(url))
+      throw new Error("Electron browser navigation scheme is not allowed.");
+    const page = (await this.#context.createPage()) as ElectronBrowserPage;
+    const targetId = await page.targetId();
+    const release = hold(targetId);
+    if (url === "about:blank") release();
+    // As CDP's own createTarget does, the tab loads in the background; a failed load stays
+    // visible in the tab.
+    else void page.loadInitialUrl(url).then(release, release);
+    return { targetId };
+  }
+
   setHomeAddresses(home: ThisHomeAddressSet): void {
     this.#context.setHomeAddresses(home);
   }
@@ -4920,8 +4951,7 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
       if (!isAllowedBrowserNavigation(url)) {
         throw new Error("Electron browser navigation scheme is not allowed.");
       }
-      // Every page made here is an agent's (only an agent's CDP reaches this backend).
-      const page = (await this.#context.createPage({ agent: true })) as ElectronBrowserPage;
+      const page = (await this.#context.createPage()) as ElectronBrowserPage;
       const targetId = await page.targetId();
       // As CDP's own createTarget does, the tab loads in the background; a
       // failed load stays visible in the tab.

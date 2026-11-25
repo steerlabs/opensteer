@@ -212,11 +212,6 @@ export interface BrowserContext {
     readonly own?: (page: BrowserPage) => void;
     /** Aborted when the creation that asked is abandoned: a wake for it stops where it checks. */
     readonly signal?: AbortSignal;
-    /**
-     * An agent opens this page (D3): it is agent-controlled from construction, before any
-     * navigation can leave it, and stays so until the router's holds of it end.
-     */
-    readonly agent?: boolean;
   }): Promise<BrowserPage>;
   /**
    * Releases engine-held resources for a sleeping tab that will not be woken.

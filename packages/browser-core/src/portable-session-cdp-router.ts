@@ -111,9 +111,19 @@ export interface BrowserCdpBackend {
   /**
    * Notifies the backend when a target enters or leaves any agent's control: a connected agent's
    * or one of the person's own agents' channel or binding holds it. A tab an agent drives may not
-   * be on an address of this Home; the backend refuses its navigations there.
+   * be on an address of this Home; the backend refuses its navigations there. The router's holds
+   * are the only source of this mark (M1, M2): a backend never marks a page on its own.
    */
   setAgentControlled?(targetId: string, controlled: boolean): void;
+  /**
+   * Creates an agent's page and, before it starts its first load, calls `hold` with its target:
+   * holding is what marks it, in the same call. The release `hold` returns runs when that first
+   * load settles.
+   */
+  createAgentTarget?(
+    parameters: CdpParameters,
+    hold: (targetId: string) => () => void,
+  ): Promise<{ readonly targetId: string }>;
   /** The addresses of this Home, as the Home last told this browser (`setHomeAddresses`). */
   setHomeAddresses?(home: ThisHomeAddressSet): void;
   assertScope?(method: string, parameters: CdpParameters): void;
@@ -177,6 +187,11 @@ export class SessionCdpRouterError extends Error {
 
 interface AttachedChannel {
   readonly channel: CdpChannel;
+  /**
+   * Popups of pages this channel holds, on a session root (which outlives every agent): held by
+   * this channel, so they end with it (M1).
+   */
+  heldPages?: Set<string>;
   /** Rejects once the router ends the session, answering every command still waiting on it. */
   readonly pending: Set<(reason: unknown) => void>;
   readonly ended: AbortController;
@@ -599,22 +614,42 @@ export class SessionCdpRouter {
     if (held === 1) this.#backend.setConnectionControlled?.(targetId, true);
   }
 
+  /**
+   * A session's root state lives as long as the profile does, past every agent that sends through
+   * it: it holds a page only through its channels, which end when the agent detaches or its relay
+   * ends (M1).
+   */
+  #isSessionRoot(state: ConnectionState): boolean {
+    return this.#sessions.get(state.session.sessionId) === state;
+  }
+
   /** Does this agent's state hold the target now: lineage, script root, a held page or a channel? */
   #holds(state: ConnectionState, targetId: string): boolean {
     if (state.closed.signal.aborted) return false;
     if (state.lineagePages?.has(targetId) || state.script?.root === targetId) return true;
     if (state.heldPages.has(targetId)) return true;
     for (const attached of state.channels.values())
-      if (attached.physicalTargetId === targetId) return true;
+      if (attached.physicalTargetId === targetId || attached.heldPages?.has(targetId)) return true;
     return false;
   }
 
-  /** A page this state created, or a popup of a page it holds: held until it closes. */
+  /**
+   * A page a state that ends with its agent created, or a popup of a page it holds: held until the
+   * state closes or the page ends. A session root holds nothing this way.
+   */
   #holdPage(state: ConnectionState, targetId: string): void {
-    if (state.closed.signal.aborted) return;
+    if (state.closed.signal.aborted || this.#isSessionRoot(state)) return;
     if (state.lineagePages?.has(targetId) || state.heldPages.has(targetId)) return;
     state.heldPages.add(targetId);
     this.#holdTarget(targetId, state.connection);
+  }
+
+  /** A popup of a page an agent's channel on a session root holds: held until that channel ends. */
+  #holdForChannel(attached: AttachedChannel, targetId: string): void {
+    attached.heldPages ??= new Set();
+    if (attached.heldPages.has(targetId)) return;
+    attached.heldPages.add(targetId);
+    this.#holdTarget(targetId, attached.connection);
   }
 
   /**
@@ -1322,7 +1357,19 @@ export class SessionCdpRouter {
       }
       case "Target.createTarget": {
         assertSafeNavigationUrl(parameters.url, true, true, !connection, this.#home);
-        const response = asRecord(await this.#backend.send(command.method, parameters));
+        // Holding is what marks the agent's new page, before its first load can leave it: a state
+        // that ends with its agent holds it from here; a session root holds it through that load
+        // only, and then by the channel its agent opens (M1, M2).
+        const onSessionRoot = this.#isSessionRoot(state);
+        const response = asRecord(
+          this.#backend.createAgentTarget
+            ? await this.#backend.createAgentTarget(parameters, (created) => {
+                if (onSessionRoot) return this.holdAgentPage(created);
+                this.#holdPage(state, created);
+                return () => undefined;
+              })
+            : await this.#backend.send(command.method, parameters),
+        );
         const targetId = readString(response, "targetId");
         if (!targetId) {
           throw new SessionCdpRouterError("bad_command", "Browser did not return a target ID.");
@@ -1335,7 +1382,7 @@ export class SessionCdpRouter {
           throw new SessionCdpRouterError("not_found", "Browser Session is not registered.");
         }
         const claim = this.#claimTarget(state, targetId, state.script?.root, !state.standard);
-        // The agent's own new page: the backend marked it at creation; this state holds it now.
+        // The agent's own new page, where the backend did not take the hold at its creation.
         this.#holdPage(state, targetId);
         if (state.standard) {
           state.session.adopting.add(targetId);
@@ -2698,10 +2745,18 @@ export class SessionCdpRouter {
         }
         claim.creatorAttachmentId ??= lineage.attachmentId;
       }
-      // A popup of a page any agent's state holds is that state's from creation (A2): a script's,
-      // a Run's outside a lineage, as much as a lineage's.
-      for (const connection of state.session.connections)
-        if (this.#holds(connection, openerId)) this.#holdPage(connection, targetId);
+      // A popup of a page any agent holds is held from creation (A2) by what holds its opener and
+      // ends with that agent: its state (a script, a client, a lineage), or on a session root the
+      // channel on the opener (M1).
+      for (const connection of state.session.connections) {
+        if (!this.#isSessionRoot(connection)) {
+          if (this.#holds(connection, openerId)) this.#holdPage(connection, targetId);
+          continue;
+        }
+        for (const attached of connection.channels.values())
+          if (attached.physicalTargetId === openerId || attached.heldPages?.has(openerId))
+            this.#holdForChannel(attached, targetId);
+      }
     }
     // A place kept under this id is stale unless this claim wakes from it: ids are not trusted
     // to be unique for ever.
@@ -2772,6 +2827,8 @@ export class SessionCdpRouter {
       if (connection.lineagePages?.delete(targetId))
         this.#letGoTarget(targetId, connection.connection);
       if (connection.heldPages.delete(targetId)) this.#letGoTarget(targetId, connection.connection);
+      for (const attached of connection.channels.values())
+        if (attached.heldPages?.delete(targetId)) this.#letGoTarget(targetId, attached.connection);
       if (connection.script?.root === targetId) this.#closeConnection(connection);
     }
     for (const childId of state.session.ownedTargetIds)
@@ -2791,6 +2848,9 @@ export class SessionCdpRouter {
     if (state.channels.get(attached.virtualSessionId) !== attached) return;
     state.channels.delete(attached.virtualSessionId);
     this.#letGoTarget(attached.physicalTargetId, attached.connection);
+    for (const targetId of attached.heldPages ?? [])
+      this.#letGoTarget(targetId, attached.connection);
+    attached.heldPages?.clear();
     if (attached.rootAttached || state.script || forceDetachEvent) {
       (attached.rootAlias ?? state).autoAttached?.delete(attached.physicalTargetId);
       if (attached.announced) {

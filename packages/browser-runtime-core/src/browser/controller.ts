@@ -4279,13 +4279,21 @@ export class BrowserController {
           const binding = this.ledger.binding(tabId);
           if (!binding) throw new BrowserRuntimeError("not_found", "The new tab closed.");
           if (origin === "person") this.ledger.recordHumanActivity(tabId, { kind: "navigation" });
-          // An agent's page was marked when it was made (`createPage({ agent })`); the runtime holds
-          // it through its first load, redirects included, until the agent's own hold takes over.
+          // An agent's page is held, and so marked, before its first navigation and through its
+          // load, redirects included; the hold ends when that load settles, however it ends, and
+          // the agent's own hold (its channel, its script) takes over from there (A1, M2). A page
+          // opened blank is not navigated here and is not held.
           const release =
             origin === "agent"
               ? this.cdpRouter.holdAgentPage(await binding.page.targetId())
               : undefined;
-          const navigation = this.ledger.navigate(tabId, url, message.navigationId);
+          let navigation: Promise<unknown>;
+          try {
+            navigation = this.ledger.navigate(tabId, url, message.navigationId);
+          } catch (error) {
+            release?.();
+            throw error;
+          }
           if (release) void navigation.then(release, release);
           if (message.replyBudget) {
             // Stop during the first load stops the load.
