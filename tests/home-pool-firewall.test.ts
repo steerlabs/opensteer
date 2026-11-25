@@ -262,8 +262,11 @@ ${value === null ? "exit 7" : `printf '%s' '${JSON.stringify(value)}' > "$out"; 
 
 it("reuses a saved boot answer only when it still holds what a pooled Home needs", () => {
   const directory = mkdtempSync(join(work, "home-"));
-  const usable = (answer: object) => {
-    writeFileSync(join(directory, "result.json"), JSON.stringify(answer));
+  const usable = (answer: object | string) => {
+    writeFileSync(
+      join(directory, "result.json"),
+      typeof answer === "string" ? answer : JSON.stringify(answer),
+    );
     return spawnSync(
       "bash",
       [
@@ -277,14 +280,40 @@ it("reuses a saved boot answer only when it still holds what a pooled Home needs
     ).status;
   };
   const network = { cidr: "10.128.0.0/20", agentPort: 7310, relayPort: 7312 };
-  expect(usable({ browserPool: true, browserPoolNetwork: network })).toBe(0);
+  // What the installer reads from the answer after this check: the release and the credentials.
+  const complete = {
+    release: { version: "0.1.0" },
+    setupCodeDigest: "digest",
+    backup: { repository: "s3:r", password: "p", accessKeyId: "a", secretAccessKey: "s" },
+    accountOrigin: "https://account.example.test",
+    managedHome: {
+      cloudComputerId: "cc_00000000-0000-4000-8000-000000000000",
+      generation: 1,
+      oidc: { clientId: "occ_x", clientSecret: "secret" },
+    },
+  };
+  expect(usable({ ...complete, browserPool: true, browserPoolNetwork: network })).toBe(0);
+  expect(usable(complete)).toBe(0);
   // Saved by an install before this release: fetched again rather than installed without a path
   // to its browser.
-  expect(usable({ browserPool: true })).not.toBe(0);
+  expect(usable({ ...complete, browserPool: true })).not.toBe(0);
   expect(
-    usable({ browserPool: true, browserPoolNetwork: { ...network, cidr: "0.0.0.0/0" } }),
+    usable({
+      ...complete,
+      browserPool: true,
+      browserPoolNetwork: { ...network, cidr: "0.0.0.0/0" },
+    }),
   ).not.toBe(0);
-  expect(usable({})).toBe(0);
+  // A file cut short, or an answer without what the installer reads next, is asked for again.
+  expect(usable(JSON.stringify(complete).slice(0, 40))).not.toBe(0);
+  expect(usable("[]")).not.toBe(0);
+  const { release: _release, ...withoutRelease } = complete;
+  expect(usable(withoutRelease)).not.toBe(0);
+  expect(usable({ ...complete, backup: { ...complete.backup, password: null } })).not.toBe(0);
+  expect(
+    usable({ ...complete, managedHome: { ...complete.managedHome, oidc: { clientId: "occ_x" } } }),
+  ).not.toBe(0);
+  expect(usable({})).not.toBe(0);
   expect(readFileSync(join(home, "install.sh"), "utf8")).toMatch(
     /usable_boot_answer "\$result" \|\| rm -f -- "\$result"/u,
   );

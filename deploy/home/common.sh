@@ -463,11 +463,19 @@ pool_network_from() {
   printf '%s\n' "$network"
 }
 
-# Whether a saved boot answer may be used again: one for a pooled Home must hold a valid pool
-# network (one saved by an install before this release may not).
+# Whether a saved boot answer may be used again: a JSON object holding what install.sh reads
+# from it next (the release and the credentials), and for a pooled Home a valid pool network (one
+# saved by an install before this release may not). A file that does not parse is not usable.
 usable_boot_answer() {
-  jq -e '.browserPool == true' "$1" >/dev/null 2>&1 || return 0
-  pool_network_from "$1" >/dev/null
+  local pooled
+  pooled=$(jq -r 'def text: type == "string" and length > 0;
+    select(type == "object" and (.release | type) == "object" and (.setupCodeDigest | text) and
+      all(.backup.repository, .backup.password, .backup.accessKeyId, .backup.secretAccessKey; text) and
+      (.managedHome == null or ((.accountOrigin | text) and (.managedHome.cloudComputerId | text) and
+        (.managedHome.generation | type) == "number" and
+        (.managedHome.oidc.clientId | text) and (.managedHome.oidc.clientSecret | text)))) |
+    .browserPool == true' "$1" 2>/dev/null) || return 1
+  case $pooled in false) ;; true) pool_network_from "$1" >/dev/null ;; *) return 1 ;; esac
 }
 
 # Keeps a pooled Cloud Computer's pool network from its boot answer for its firewall. A pooled
