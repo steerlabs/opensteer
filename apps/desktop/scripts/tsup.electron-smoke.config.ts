@@ -38,6 +38,8 @@ export const smokeConfig = {
   },
   format: ["esm"],
   noExternal: [/^@opensteer\//],
+  // Prefix-only builtins (node:sqlite) stop resolving if tsup removes node:.
+  removeNodeProtocol: false,
   // Browser pages load the page policy preload in a sandboxed renderer, which
   // runs CommonJS only; built after the clean so it sits beside the smokes.
   onSuccess: async () => {
