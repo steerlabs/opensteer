@@ -1031,7 +1031,13 @@ export class BrowserService {
   readonly #standardCdpProfiles = new StandardCdpProfileLeases();
   readonly #deviceAttachments = new Map<
     string,
-    { runnerId: RunnerId; close: () => void; binding?: string }
+    {
+      runnerId: RunnerId;
+      close: () => void;
+      binding?: string;
+      /** The connection whose work this is, so its Disconnect closes it. */
+      agentConnectionId?: string;
+    }
   >();
   readonly #inRunnerAdmission = new AsyncLocalStorage<boolean>();
   withRunnerAdmission<T>(runnerId: RunnerId, action: () => Promise<T>): Promise<T> {
@@ -5862,6 +5868,10 @@ export class BrowserService {
       if (claims.facts.agentConnectionId === connectionId)
         bindings.add(claims.authority.agentBindingId);
     for (const binding of bindings) this.closeStandardCdpForBinding(binding, reason);
+    // Its Disconnect also closes every other CDP attachment of its work, a shared root's
+    // included: no event of it reaches the connection after this (rule 3).
+    for (const attachment of [...this.#deviceAttachments.values()])
+      if (attachment.agentConnectionId === connectionId) attachment.close();
   }
 
   listStandardCdpAttachmentsForBinding(agentBindingId: string) {
@@ -6098,6 +6108,7 @@ export class BrowserService {
     // Work under a connection's authority, as the one authority rule resolved this attachment's
     // binding: settled here, once, and never read again per command.
     let connectionWork = connectedAgentBinding(input.agentBindingId);
+    let agentConnectionId: string | undefined;
     const globalAccessGeneration = this.#accessGeneration;
     const { record, broker } = await this.#admitAgentBackend(
       input,
@@ -6105,7 +6116,10 @@ export class BrowserService {
       !input.browserSend,
       undefined,
       (facts) => {
-        if (facts.agentConnectionId !== null) connectionWork = true;
+        if (facts.agentConnectionId !== null) {
+          connectionWork = true;
+          agentConnectionId = facts.agentConnectionId;
+        }
       },
       lane,
     );
@@ -6281,6 +6295,9 @@ export class BrowserService {
     };
     const unsubscribe = broker.subscribeCdp((event) => {
       if (event.scriptAttachmentId !== scriptAttachmentId) return;
+      // A connection's work hears nothing once its binding has ended (Stop, Disconnect), even
+      // before the attachment itself is closed.
+      if (connectionWork && (this.#closed || this.#endedBindings.has(input.agentBindingId))) return;
       // On a shared root every attachment hears every other's events. A connection's subscriber
       // hears only its own sessions' (H1), and a browser-level event only of a target or frame it
       // may know, never with an extension's address (H2).
@@ -6393,6 +6410,7 @@ export class BrowserService {
         runnerId: record.runnerId,
         close,
         ...(scriptAttachmentId || pooledRelay ? { binding: input.agentBindingId } : {}),
+        ...(agentConnectionId ? { agentConnectionId } : {}),
       });
       if (nativeAttachment) {
         this.#actionAttachments.set(nativeAttachment.attachmentId, {

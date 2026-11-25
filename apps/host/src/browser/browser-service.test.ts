@@ -11573,6 +11573,91 @@ describe("work under a connection's authority never uses the clipboard or change
     }
   });
 
+  it("delivers nothing to a connection's shared-root attachment after its Disconnect or its binding's end", async () => {
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Disconnect Profile" });
+    const agentConnectionId = `acn_${randomUUID()}`;
+    const connected = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const ownAgent = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const threadId = createId("thread");
+    repository.resolveResourceAccess = async (input) => {
+      const isConnected =
+        "agentBindingId" in input && input.agentBindingId === connected.agentBindingId;
+      return {
+        access: "read-write",
+        runAccess: "read-write",
+        grantAccess: "read-write",
+        execution: {
+          ownerUserId: ownerId,
+          subject: { kind: "binding", bindingId: String(input.agentBindingId) },
+          actor: isConnected ? "agent" : "native",
+          threadId,
+          runId: createId("run"),
+          agentConnection: isConnected
+            ? {
+                agentConnectionId,
+                grant: { scope: "everything" },
+                grantRevision: 1,
+                consentVersion: 1,
+                accessMode: "full-access",
+                bridgeSenders: null,
+              }
+            : null,
+          taskMode: "full-access",
+          runMode: "full-access",
+          mode: "full-access",
+        },
+      };
+    };
+    const opened = await service.openAgentSession({ ...connected, profileId: profile.id });
+    const attach = async (binding: typeof connected) => {
+      const events: { method: string }[] = [];
+      let closed = false;
+      const attached = await service.attachCdpForAgent(
+        { ...binding, sessionId: opened.session.id },
+        (event) => events.push(event),
+        () => {
+          closed = true;
+        },
+      );
+      return { attached, events, closed: () => closed };
+    };
+    let sequence = 1;
+    const send = (method: string) =>
+      runtime.sendServer({
+        type: "cdp.event",
+        event: { method, parameters: {}, sequence: sequence++ },
+      });
+    for (const end of ["disconnect", "binding-ended"] as const) {
+      const theirs = await attach(connected);
+      const mine = await attach(ownAgent);
+      send("Page.before");
+      await vi.waitFor(() => expect(theirs.events.at(-1)?.method).toBe("Page.before"));
+      if (end === "disconnect")
+        service.closeStandardCdpForConnection(
+          agentConnectionId,
+          "Agent connection authority ended.",
+        );
+      else await service.detachAgentSessionsForBinding(connected.agentBindingId);
+      send("Page.after");
+      // Your own agent's attachment, on the same shared root, still hears it: so it has arrived.
+      await vi.waitFor(() => expect(mine.events.at(-1)?.method).toBe("Page.after"));
+      expect(
+        theirs.events.map(({ method }) => method),
+        end,
+      ).not.toContain("Page.after");
+      if (end === "disconnect") expect(theirs.closed(), end).toBe(true);
+      theirs.attached.close();
+      mine.attached.close();
+      if (end === "binding-ended") break;
+    }
+  });
+
   it("keeps a subscriber's own child however many children a neighbour opens on the shared root (S2)", async () => {
     const { runtime, attach } = await connectedRootAttachment("S2 Profile");
     const own = await attach();
