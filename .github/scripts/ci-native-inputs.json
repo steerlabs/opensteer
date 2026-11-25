@@ -417,6 +417,7 @@
     "apps/host/src/plugins/keyset-page.ts",
     "apps/host/src/plugins/local-providers.ts",
     "apps/host/src/plugins/local-tool-results.ts",
+    "apps/host/src/plugins/memory-pressure.ts",
     "apps/host/src/plugins/oauth-review.ts",
     "apps/host/src/plugins/plugin-authority.ts",
     "apps/host/src/plugins/plugin-executions.ts",
