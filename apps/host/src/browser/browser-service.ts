@@ -6197,17 +6197,40 @@ export class BrowserService {
       targetId: string | undefined,
       sessionId: string | undefined,
     ) => {
-      if (
-        targetId !== undefined
-          ? pendingTargetIds.has(targetId)
-          : pendingNamedAttaches > 0 && sessionId !== undefined
-      ) {
+      // A detach naming no target is never a pending attach's own (the router names the target
+      // of every channel it ends), so it cannot displace one (S2).
+      if (targetId !== undefined && pendingTargetIds.has(targetId)) {
         if (namedTerminalEvents.length >= 64) namedTerminalEvents.shift();
         namedTerminalEvents.push(event);
-      } else if (pendingUnknownTargets > 0) {
+      } else if (pendingUnknownTargets > 0 && (targetId !== undefined || sessionId !== undefined)) {
         if (unknownTerminalEvents.length >= 4_096) unknownTerminalEvents.shift();
         unknownTerminalEvents.push(event);
       }
+    };
+    // Targets this subscriber was shown on an extension's page: their ids are named to it no more.
+    const hiddenTargets = new Set<string>();
+    const knownTarget = (id: string) =>
+      !hiddenTargets.has(id) && (attachedTargets.has(id) || visibleRootTargets.has(id));
+    /** A related target or frame is named only where this subscriber knows that target. */
+    const confineRelated = (info: Record<string, unknown>): Record<string, unknown> => {
+      let next: Record<string, unknown> | undefined;
+      const drop = (key: string) => {
+        next ??= { ...info };
+        delete next[key];
+      };
+      if (typeof info.openerId === "string" && !knownTarget(info.openerId)) {
+        drop("openerId");
+        drop("openerFrameId");
+        next!.canAccessOpener = false;
+      }
+      if (typeof info.parentId === "string" && !knownTarget(info.parentId)) {
+        drop("parentId");
+        drop("parentFrameId");
+      }
+      for (const key of ["openerFrameId", "parentFrameId"])
+        if (typeof (next ?? info)[key] === "string" && !knownTarget(String((next ?? info)[key])))
+          drop(key);
+      return next ?? info;
     };
     const releasePendingAttach = (named: boolean, targetId: string | undefined) => {
       if (named) {
@@ -6267,6 +6290,7 @@ export class BrowserService {
       visibleRootTargets.clear();
       attachedTargets.clear();
       attachedSessions.clear();
+      hiddenTargets.clear();
       namedTerminalEvents.length = 0;
       unknownTerminalEvents.length = 0;
       pendingTargetIds.clear();
@@ -6344,9 +6368,14 @@ export class BrowserService {
         const eventSessionId = typeof params?.sessionId === "string" ? params.sessionId : undefined;
         if (params?.targetInfo !== undefined) {
           if (isExtensionUrl(params.targetInfo.url)) {
-            if (targetId) visibleRootTargets.delete(targetId);
+            if (targetId) {
+              visibleRootTargets.delete(targetId);
+              attachedTargets.delete(targetId);
+              rememberBounded(hiddenTargets, targetId);
+            }
             return;
           }
+          if (targetId) hiddenTargets.delete(targetId);
           // S2: learn only from this subscriber's own root discovery (no envelope) or from a
           // session it already holds, so another attachment's children on a shared root cannot
           // evict its own. Its own page sessions come from its attach replies.
@@ -6360,6 +6389,16 @@ export class BrowserService {
           if (event.method === "Target.attachedToTarget" && eventSessionId && envelope) {
             rememberBounded(attachedSessions, eventSessionId);
           }
+          const info = confineRelated(params.targetInfo as Record<string, unknown>);
+          if (info !== params.targetInfo)
+            event = { ...event, parameters: { ...event.parameters, targetInfo: info } };
+        } else if (targetId && hiddenTargets.has(targetId)) {
+          // A target on an extension's page: its end is not named to this subscriber either (as
+          // the router hides it from a connection's state).
+          if (event.method === "Target.targetDestroyed") hiddenTargets.delete(targetId);
+          if (event.method === "Target.detachedFromTarget" && eventSessionId)
+            attachedSessions.delete(eventSessionId);
+          return;
         } else if (event.method === "Target.detachedFromTarget") {
           // A detach names its session: only this subscriber's own is told to it (H3).
           if (eventSessionId && attachedSessions.has(eventSessionId)) {
