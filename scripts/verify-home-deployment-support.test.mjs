@@ -525,7 +525,7 @@ await test("the installer decides about an installed Home before it writes anyth
   );
   assert.match(
     readFileSync("deploy/home/install-scheduler.sh", "utf8"),
-    /if \[\[ \$unit == opensteer-home && \$home_dir == \/etc\/opensteer-home \]\]; then/u,
+    /if \[\[ -z \$check && \$unit == opensteer-home && \$home_dir == \/etc\/opensteer-home \]\]; then/u,
   );
 });
 
