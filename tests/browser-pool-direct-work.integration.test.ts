@@ -8,6 +8,7 @@ import { AgentSessionService } from "../apps/host/src/agent-sessions/agent-sessi
 import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
 import { BrowserScriptService } from "../apps/host/src/browser-use/browser-script-service.js";
 import { TabService } from "../apps/host/src/tabs/tab-service.js";
+import { tabReadAuthority } from "../apps/host/src/tabs/tab-authority.js";
 import {
   BrowserScriptConfinement,
   BrowserToolHandlers,
@@ -30,7 +31,14 @@ type Home = Awaited<ReturnType<Journey["startHome"]>>;
  * A connected agent's direct browser work on the pooled browser, through the one door and the
  * real script service. The tab list is the Home's own rows; authority stays in the database.
  */
-async function directWork(j: Journey, home: () => Home) {
+async function directWork(
+  j: Journey,
+  home: () => Home,
+  options: {
+    /** Read tabs as the Home's tab service does, through the tab authority (rule 1). */
+    readonly realAuthority?: boolean;
+  } = {},
+) {
   let tabChange: ((tab: TabRecord) => TabRecord | Promise<TabRecord>) | undefined;
   const ownerId = j.task.userId;
   const row = async (tabId: string) => {
@@ -46,13 +54,19 @@ async function directWork(j: Journey, home: () => Home) {
     await home().service.pageTabs.admitted?.(write);
     return { tab: { tabId: write.id } };
   };
+  const readable = async (actor: never, tab: TabRecord) =>
+    !options.realAuthority || (await (await tabReadAuthority(actor, j.database))(tab));
   const scriptTabs = {
-    browserScriptPages: async function* () {
+    browserScriptPages: async function* (actor: never) {
       const { rows } = await j.tabs.snapshot(ownerId);
-      for (const tab of rows) if (tab.kind === "page") yield tab;
+      for (const tab of rows) if (tab.kind === "page" && (await readable(actor, tab))) yield tab;
     },
-    bindBrowserScript: async (actor: never, tabId: string) =>
-      home().service.pageTabs.bindBrowserScript!(actor, await row(tabId)),
+    bindBrowserScript: async (actor: never, tabId: string) => {
+      const tab = await row(tabId);
+      if (!(await readable(actor, tab)))
+        throw new OpensteerError({ code: "not_found", message: "Tab not found." });
+      return home().service.pageTabs.bindBrowserScript!(actor, tab);
+    },
     open,
     get: async (_owner: unknown, tabId: string) => {
       const tab = await row(tabId);
@@ -134,7 +148,35 @@ async function directWork(j: Journey, home: () => Home) {
   const changeTabs = (change: ((tab: TabRecord) => TabRecord | Promise<TabRecord>) | undefined) => {
     tabChange = change;
   };
-  return { sessions, scripts, agent, use, resume, connect, useTab, connectTab, changeTabs };
+  /** Another connection of the same person, with the same grant: another agent. */
+  const anotherAgent = async () => {
+    const other = await connection(j.store, url, {
+      userId: ownerId,
+      accessMode: "full-access",
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: j.profile!.id }],
+      },
+    });
+    return (code: string) =>
+      other.client.callTool({
+        name: "browser_use",
+        arguments: { profileId: j.profile!.id, code, reason: "Read the draft" },
+      });
+  };
+  return {
+    sessions,
+    scripts,
+    agent,
+    use,
+    resume,
+    connect,
+    useTab,
+    connectTab,
+    changeTabs,
+    anotherAgent,
+  };
 }
 
 const text = (result: Awaited<ReturnType<Awaited<ReturnType<typeof directWork>>["use"]>>) =>
@@ -1567,6 +1609,92 @@ it("lets the person close any tab a connected agent's handle still holds, page a
     expect(text(after)).not.toContain(own.id);
     // Each ends as an ended page attachment, which the script caught like any other error.
     expect(text(after)).toContain(String.raw`\"ended\":[\"conflict\",\"conflict\"]`);
+  } finally {
+    await j.close();
+    site.close();
+  }
+});
+
+/** The direct-work task the connection's live agent session runs now. */
+async function liveTask(j: Journey) {
+  return (
+    await j.database
+      .selectFrom("agentSessions")
+      .select("threadId")
+      .where("status", "=", "active")
+      .executeTakeFirstOrThrow()
+  ).threadId;
+}
+
+it("lists, opens and closes, in a later direct-work task of the same connection, a tab its earlier task left before its session ended idle", async () => {
+  const site = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end("<!doctype html><title>Kept</title><p>kept</p>");
+  });
+  site.listen(0, "127.0.0.1");
+  await once(site, "listening");
+  const origin = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
+  const j = await journey("direct-pages-across-tasks", { profile: true });
+  try {
+    const home = await j.startHome();
+    await home.service.start({ ownerId: j.task.userId, profileId: j.profile!.id });
+    const work = await directWork(j, () => home, { realAuthority: true });
+    // The earlier task opens a page and keeps it open.
+    const kept = await work.use(
+      `globalThis.kept = await newPage(${JSON.stringify(`${origin}/kept`)}); return kept.tabId;`,
+    );
+    expect(kept.isError, text(kept)).not.toBe(true);
+    const tabId = /(?:tab|surface)_[A-Za-z0-9-]+/u.exec(text(kept))?.[0];
+    if (!tabId) throw new Error(`The script returned no tab: ${text(kept)}`);
+    const earlier = await liveTask(j);
+    // The agent goes quiet: its agent session ends idle; its next call runs in a new task.
+    await work.sessions.endIdle(Date.now() + 60 * 60_000);
+    const listed = await work.use("return (await pages()).map((page) => page.tabId);");
+    expect(listed.isError, text(listed)).not.toBe(true);
+    expect(await liveTask(j)).not.toBe(earlier);
+    expect(text(listed)).toContain(tabId);
+    const closed = await work.use(
+      `const page = await openPage(${JSON.stringify(tabId)}); print(await page.title()); await page.close(); await sleep(500); return (await pages()).map((page) => page.tabId);`,
+    );
+    expect(closed.isError, text(closed)).not.toBe(true);
+    expect(text(closed)).toContain("Kept");
+    expect(text(closed)).not.toContain(tabId);
+  } finally {
+    await j.close();
+    site.close();
+  }
+});
+
+it("still reads a connection's tabs as non-existent to another connection, after its session ends", async () => {
+  const site = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end("<!doctype html><title>Mine</title><p>mine</p>");
+  });
+  site.listen(0, "127.0.0.1");
+  await once(site, "listening");
+  const origin = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
+  const j = await journey("direct-pages-other-connection", { profile: true });
+  try {
+    const home = await j.startHome();
+    await home.service.start({ ownerId: j.task.userId, profileId: j.profile!.id });
+    const work = await directWork(j, () => home, { realAuthority: true });
+    const mine = await work.use(
+      `globalThis.mine = await newPage(${JSON.stringify(`${origin}/mine`)}); return mine.tabId;`,
+    );
+    const tabId = /(?:tab|surface)_[A-Za-z0-9-]+/u.exec(text(mine))?.[0];
+    if (!tabId) throw new Error(`The script returned no tab: ${text(mine)}`);
+    // This connection's session ends idle: its tabs become no one else's. Another connection, its
+    // grant selected on the same profile, still reads them as tabs that do not exist.
+    await work.sessions.endIdle(Date.now() + 60 * 60_000);
+    const other = await work.anotherAgent();
+    const listed = await other("return (await pages()).map((page) => page.tabId);");
+    expect(listed.isError, text(listed)).not.toBe(true);
+    expect(text(listed)).not.toContain(tabId);
+    const bound = await other(
+      `try { await openPage(${JSON.stringify(tabId)}); return "bound"; } catch (error) { return error.message; }`,
+    );
+    expect(text(bound)).not.toContain('"bound"');
+    expect(text(bound)).toContain("Tab not found.");
   } finally {
     await j.close();
     site.close();
