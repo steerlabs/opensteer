@@ -84,9 +84,12 @@ function logAttachmentEnded(detail: {
 }
 
 /** A7: the answer arrived over its limit, so the command ran: a failure naming its size. */
-function checkReply(value: unknown, budget: BrowserUseBudget): void {
+function checkReply(value: unknown, budget: BrowserUseBudget, method?: string): void {
   if (boundedJsonSize(value, budget) === undefined)
-    throw refused("resource_exhausted", answerTooLargeMessage(value, budget.maxBytes, budget));
+    throw refused(
+      "resource_exhausted",
+      answerTooLargeMessage(value, budget.maxBytes, budget, method),
+    );
 }
 
 function translate(
@@ -378,7 +381,7 @@ export function createBrowserUsePort({
         if (budget.maxImageBytes !== undefined && budget.maxImageBytes < 1) throw tooLarge();
         const { result } = await target.relay.dispatch(parsed.data, budget);
         const value = await result;
-        checkReply(value, call);
+        checkReply(value, call, method);
         return JSON.stringify(value);
       } catch (error) {
         if (method === "Page.captureScreenshot" && error instanceof OpensteerError) {
@@ -387,7 +390,7 @@ export function createBrowserUsePort({
           if (error.reason === "browser-reply-limit")
             throw refused(
               "resource_exhausted",
-              `Screenshot exceeded the ${call.maxBytes / 1024} KiB reply limit. Use a smaller viewport clip or JPEG via CDP.`,
+              `Screenshot exceeded the ${Math.floor(call.maxBytes / 1024)} KiB reply limit. Use a smaller viewport clip or JPEG via CDP.`,
             );
         }
         translate(error, {

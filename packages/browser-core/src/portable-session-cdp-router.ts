@@ -3,12 +3,13 @@ import {
   standardCdpRootTargetMethods as standardRootTargets,
 } from "./standard-cdp-page-methods.js";
 import {
-  standardCdpAnswerMaxBytes,
+  agentCdpMessageMaxBytes,
+  standardCdpMessageMaxBytes,
   standardCdpBufferedMaxBytes,
   standardCdpMaxPending,
 } from "./standard-cdp-limits.js";
 export {
-  standardCdpAnswerMaxBytes,
+  agentCdpMessageMaxBytes,
   standardCdpMessageMaxBytes,
   standardCdpBufferedMaxBytes,
   standardCdpMaxPending,
@@ -306,13 +307,13 @@ function mentionsExtensionUrl(value: unknown, depth: number): boolean {
 }
 
 const defaultLimits: SessionCdpRouterLimits = {
-  maxCommandBytes: 432 * 1_024,
-  maxEventBytes: 432 * 1_024,
-  maxResultBytes: 432 * 1_024,
+  maxCommandBytes: agentCdpMessageMaxBytes,
+  maxEventBytes: agentCdpMessageMaxBytes,
+  maxResultBytes: agentCdpMessageMaxBytes,
   internalRuntimeEnableTimeoutMs: 5_000,
 };
 
-const browserRootLimit = standardCdpAnswerMaxBytes;
+const browserRootLimit = standardCdpMessageMaxBytes - 4_096;
 const maxRetiredTargets = 256;
 
 function readTargetFilter(value: unknown): ConnectionState["discoveryFilter"] {
@@ -807,7 +808,12 @@ export class SessionCdpRouter {
     this.#assertResultSize(result, this.#limits.maxResultBytes, budget);
   }
 
-  #assertResultSize(result: unknown, maxResultBytes: number, budget?: JsonSizeBudget): void {
+  #assertResultSize(
+    result: unknown,
+    maxResultBytes: number,
+    budget?: JsonSizeBudget,
+    method?: string,
+  ): void {
     const tooLarge = budget
       ? boundedJsonSize(result, {
           ...budget,
@@ -821,6 +827,7 @@ export class SessionCdpRouter {
           result,
           Math.min(maxResultBytes, budget?.maxBytes ?? Infinity),
           budget ?? standardJsonBudget,
+          method,
         ),
         { answerTooLarge: true },
       );
@@ -1029,6 +1036,7 @@ export class SessionCdpRouter {
           result,
           this.#sessionLimits(state).maxResultBytes,
           command.replyBudget ?? standardJsonBudget,
+          command.method,
         );
         return result;
       }
@@ -1091,6 +1099,7 @@ export class SessionCdpRouter {
       result,
       this.#sessionLimits(state).maxResultBytes,
       command.replyBudget ?? (state.standard ? standardJsonBudget : undefined),
+      command.method,
     );
     return result;
   }

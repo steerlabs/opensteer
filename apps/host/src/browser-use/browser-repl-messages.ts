@@ -1,4 +1,5 @@
 import { browserScriptScreenshotMaxBytes } from "@opensteer/protocol/browser";
+import { agentCdpMessageMaxBytes } from "@opensteer/protocol/standard-cdp";
 import { z } from "zod";
 
 export const browserReplLimits = {
@@ -10,7 +11,12 @@ export const browserReplLimits = {
   requestBytes: 4 * 1024 * 1024,
   replyBytes: 32 * 1024 * 1024,
   screenshotBytes: browserScriptScreenshotMaxBytes,
-  screenshotReplyBytes: 432 * 1024,
+  /**
+   * A screenshot's answer: the limit the browser's router holds every answer of an agent's script
+   * to (agentCdpMessageMaxBytes, 432 KiB), which is the limit an ordinary answer meets too (the
+   * REPL's 1 MiB bridge and the Host's 1020 KiB budget are larger and never the one that applies).
+   */
+  screenshotReplyBytes: agentCdpMessageMaxBytes,
   pendingCaptures: 2,
   depth: 32,
   jsonEntries: 16_384,

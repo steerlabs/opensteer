@@ -119,7 +119,7 @@ describe("SessionCdpRouter", () => {
       // The command ran: a failure of it, never an unknown outcome.
       answerTooLarge: true,
       message:
-        "The page ran the command, but its answer is 601 KiB, over the 432 KiB limit for one answer, so it exceeds the bounded agent transport and was dropped. Ask the page for less: a slice of the text, an element by selector, or innerText instead of the HTML. If the command changed the page, do not run it again.",
+        "The command ran, but its answer is 601 KiB, over the 432 KiB limit for one answer, so it exceeds the bounded agent transport and was dropped. Ask for less. If the command changed something, do not run it again.",
     });
     // An answer too deep to measure says so instead of a size.
     let deep: unknown = "end";
@@ -127,7 +127,7 @@ describe("SessionCdpRouter", () => {
     expect(() =>
       router.admitPageResult(deep, { maxBytes: Infinity, maxDepth: 32, maxEntries: 16_384 }),
     ).toThrow(
-      "The page ran the command, but its answer is too deeply nested or has too many entries, so it exceeds the bounded agent transport and was dropped.",
+      "The command ran, but its answer is too deeply nested or has too many entries, so it exceeds the bounded agent transport and was dropped.",
     );
     expect(() => router.admitPageResult({ value: "x".repeat(1_024) })).not.toThrow();
   });

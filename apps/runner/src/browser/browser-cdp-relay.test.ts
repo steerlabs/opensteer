@@ -611,59 +611,6 @@ describe("BrowserCdpRelay", () => {
     await expect(runBrowserHarnessVersion(script)).resolves.toBe("0.5.0-opensteer\n");
   });
 
-  it("carries a page's HTML of over a mebibyte from the Host to the Browser Harness, and the next command", async () => {
-    // A connected Cloud Computer's page answered with 1,164,588 characters of HTML.
-    const html = "x".repeat(1_164_588);
-    const upstream = await fakeCdpServer((request) => {
-      if (request.method === "Target.getTargets")
-        return {
-          rootTargetId: "target-1",
-          targetInfos: [
-            { targetId: "target-1", title: "Example", type: "page", url: "https://example.test/" },
-          ],
-        };
-      if (request.method === "Target.attachToTarget") return { sessionId: "cdp-session-1" };
-      if (request.method === "Target.getTargetInfo")
-        return {
-          targetInfo: {
-            surfaceId: "surface-example",
-            targetId: "target-1",
-            title: "Example",
-            type: "page",
-            url: "https://example.test/",
-          },
-        };
-      if (request.method === "Runtime.evaluate")
-        return {
-          result:
-            request.params?.expression === "document.documentElement.outerHTML"
-              ? { type: "string", value: html }
-              : { type: "string", value: "Example" },
-        };
-      return {};
-    });
-    const relay = new BrowserCdpRelay({
-      token: () => "run-capability-secret",
-      url: upstream.url,
-      transport: developmentTransport,
-    });
-    const url = await relay.start();
-    try {
-      const script = fileURLToPath(
-        new URL("../../browser-harness/browser-harness.mjs", import.meta.url),
-      );
-      const output = await runBrowserHarness(
-        script,
-        'console.log((await js("document.documentElement.outerHTML")).length);\nconsole.log(await js("document.title"));\n',
-        url,
-        createBrowserSessionId(),
-      );
-      expect(output).toBe("1164588\nExample\n");
-    } finally {
-      await relay.close();
-    }
-  });
-
   it("keeps every Browser Harness key helper on the page without native OS key codes", async () => {
     const requests: FakeCdpRequest[] = [];
     const upstream = await fakeCdpServer((request) => {
@@ -1258,8 +1205,7 @@ async function fakeCdpServer(
       return;
     }
     const sessionId = request.url?.split("/").at(-1);
-    // The Harness's own agent routes, directly or as the Runner's relay forwards them to the Host.
-    if (request.url?.includes("/agent/") || request.url?.includes("/browser-agent/")) {
+    if (request.url?.includes("/agent/")) {
       const tabs =
         (
           resultFor({ id: 0, method: "Target.getTargets" }) as {

@@ -604,6 +604,7 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
                 ? Buffer.byteLength(encoded)
                 : undefined,
               call.maxBytes,
+              method,
             ),
           );
         const result: unknown = JSON.parse(encoded);

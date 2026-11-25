@@ -27,6 +27,7 @@ import {
   type BrowserSourceTabUnshared,
 } from "@opensteer/browser-source-wire/frames";
 import {
+  answerTooLargeMessage,
   boundedJsonSize,
   SessionCdpRouter,
   SessionCdpRouterError,
@@ -479,8 +480,18 @@ export class ChromeSharedTabs {
             },
           });
           call.signal.throwIfAborted();
-          return this.#serialize(result ?? null, call);
+          // A7: the answer arrived over the REPL's budget, so the command ran: it fails with the
+          // answer's size, as on any other page.
+          if (boundedJsonSize(result ?? null, call) === undefined)
+            throw answerTooLarge(
+              answerTooLargeMessage(result ?? null, call.maxBytes, call, method),
+            );
+          return JSON.stringify(result ?? null);
         } catch (error) {
+          if (error instanceof OpensteerError && error.reason === "browser-reply-limit")
+            throw error;
+          if (error instanceof SessionCdpRouterError && error.answerTooLarge)
+            throw answerTooLarge(error.message);
           if (error instanceof ChromeTabReplyLost || target.client.signal.aborted)
             throw new OpensteerError({
               code: "conflict",
@@ -909,4 +920,9 @@ export class ChromeSharedTabs {
       throw new BrowserUseCdpError(-32000, "Chrome CDP exceeded the REPL message budget.");
     return JSON.stringify(value);
   }
+}
+
+/** An answer that arrived over its limit: the command ran, and it fails with the answer's size. */
+function answerTooLarge(message: string): OpensteerError {
+  return new OpensteerError({ code: "resource_exhausted", reason: "browser-reply-limit", message });
 }

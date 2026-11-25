@@ -12109,8 +12109,7 @@ export class HostedBrowserBroker {
               code: cause.code,
               message: words[message.error.code],
               retryable: cause.retryable,
-              ...(cause.reason === "browser-reply-limit" ||
-              cause.reason === "browser-command-cancelled" ||
+              ...(cause.reason === "browser-command-cancelled" ||
               cause.reason === "browser-input-canceled" ||
               cause.reason === "browser-tab-open-closed" ||
               cause.reason === "browser-cdp-protocol-error"

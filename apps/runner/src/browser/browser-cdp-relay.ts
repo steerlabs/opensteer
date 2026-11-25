@@ -26,23 +26,9 @@ import {
   AgentToolRelayRequestSchema,
 } from "@opensteer/protocol/agent-tool-relay";
 import { BrowserAgentBackendSchema } from "@opensteer/protocol/browser-actions";
-import {
-  standardCdpBufferedMaxBytes,
-  standardCdpMessageMaxBytes,
-} from "@opensteer/protocol/standard-cdp";
 
-/**
- * A CDP frame here can only be refused by closing both sockets (ws ends a connection over its
- * maxPayload), so this hop carries every frame the Host's CDP route may send it: the one limit
- * on an agent's browser path (standardCdpMessageMaxBytes), with room to queue one more. A larger
- * answer was already refused as a failure of its own command by the router beside the browser.
- */
-export const relayCdpFrameMaxBytes = standardCdpMessageMaxBytes;
-const maximumFrameBytes = relayCdpFrameMaxBytes;
-const maximumBufferedBytes = standardCdpBufferedMaxBytes;
-/** An agent tool call relayed to the Host: its request and its answer, unchanged by the CDP limit. */
-const toolRequestMaxBytes = 1_024 * 1_024;
-const toolResponseMaxBytes = 8 * 1_024 * 1_024;
+const maximumFrameBytes = 1_024 * 1_024;
+const maximumBufferedBytes = 8 * 1_024 * 1_024;
 const maximumConnections = 16;
 
 /**
@@ -281,7 +267,7 @@ export class BrowserCdpRelay {
         };
         const data = (chunk: Buffer) => {
           size += chunk.byteLength;
-          if (size > (tools ? toolRequestMaxBytes : browserAgentRequestMaxBytes)) {
+          if (size > (tools ? maximumFrameBytes : browserAgentRequestMaxBytes)) {
             response.writeHead(413).end();
             fail(new Error("Browser request exceeds its size limit"));
           } else chunks.push(chunk);
@@ -311,7 +297,7 @@ export class BrowserCdpRelay {
         signal,
       });
       const result = await readBoundedJson(upstream, {
-        maximumBytes: tools ? toolResponseMaxBytes : browserAgentResponseMaxBytes,
+        maximumBytes: tools ? maximumBufferedBytes : browserAgentResponseMaxBytes,
         signal,
       }).catch((error: unknown) => {
         if (upstream.ok) throw error;
@@ -608,7 +594,7 @@ function postTool(url: URL, options: RequestInit): Promise<Response> {
         let bytes = 0;
         response.on("data", (chunk: Buffer) => {
           bytes += chunk.byteLength;
-          if (bytes > toolResponseMaxBytes) {
+          if (bytes > maximumBufferedBytes) {
             const error = new Error("Tool result exceeds the bounded tool transport");
             request.destroy(error);
             response.destroy(error);

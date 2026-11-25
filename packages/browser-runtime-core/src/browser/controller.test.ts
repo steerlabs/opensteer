@@ -192,6 +192,81 @@ describe("BrowserController", () => {
     }
   });
 
+  it("holds an agent's script answer to 432 KiB: at the limit it arrives, one byte over it fails naming 432 KiB", async () => {
+    const controller = createController();
+    const scriptAttachmentId = randomUUID();
+    // The budget the Host sends with a connected agent's browser command (1020 KiB): larger than
+    // the router's limit for a script's answer, which is the one that applies.
+    const replyBudget = { maxBytes: 1_020 * 1_024, maxDepth: 31, maxEntries: 16_384 };
+    const reply = (requestId: string) =>
+      sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    const send = async (
+      method: string,
+      parameters: Record<string, unknown>,
+      sessionId?: string,
+    ) => {
+      const requestId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId,
+        scriptAttachmentId,
+        replyBudget,
+        command: { method, parameters, ...(sessionId ? { sessionId } : {}) },
+      });
+      return reply(requestId);
+    };
+    try {
+      await controller.start();
+      const targetId = await page.targetId();
+      cdpRouter.openScriptAttachment(
+        validClaims().sessionId,
+        scriptAttachmentId,
+        targetId,
+        replyBudget,
+        () => undefined,
+      );
+      const attached = await send("Target.attachToTarget", { targetId });
+      if (attached?.type !== "cdp.result" || typeof attached.result.sessionId !== "string")
+        throw new Error("Script attachment did not return a session ID.");
+      const sessionId = attached.result.sessionId;
+      const limit = 432 * 1_024;
+      const answer = (bytes: number) => ({
+        result: {
+          type: "string",
+          value: "x".repeat(
+            bytes - JSON.stringify({ result: { type: "string", value: "" } }).length,
+          ),
+        },
+      });
+      page.cdpSession.responses.set("Runtime.evaluate", () => answer(limit));
+      expect(await send("Runtime.evaluate", { expression: "html()" }, sessionId)).toMatchObject({
+        type: "cdp.result",
+      });
+      page.cdpSession.responses.set("Runtime.evaluate", () => answer(limit + 1));
+      const over = await send("Runtime.evaluate", { expression: "html()" }, sessionId);
+      expect(over).toMatchObject({
+        type: "cdp.error",
+        error: {
+          reason: "browser-reply-limit",
+          message:
+            "The command ran, but its answer is 433 KiB, over the 432 KiB limit for one answer, so it exceeds the bounded agent transport and was dropped. Ask the page for less: a slice of the text, an element by selector, or innerText instead of the HTML. If the command changed something, do not run it again.",
+        },
+      });
+      expect(over?.type === "cdp.error" && over.error.unsent).toBeUndefined();
+      // The same attachment answers the next command.
+      page.cdpSession.responses.set("Runtime.evaluate", () => answer(64));
+      expect(await send("Runtime.evaluate", { expression: "title()" }, sessionId)).toMatchObject({
+        type: "cdp.result",
+      });
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
   /*
    * A7: a browser command's error says, as data, whether the command was refused before it was
    * sent to the page (`unsent`: nothing happened) or came after it may have run (no `unsent`: its
@@ -1016,6 +1091,59 @@ describe("BrowserController", () => {
         vi.restoreAllMocks();
       }
     } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  it("says nothing of a hidden tab's answer, its size included: it reads as a closed tab (rule 5)", async () => {
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+    await controller.start();
+    const surfaceId = ledger.snapshot()[0]!.id;
+    // A budget smaller than any resume answer: over it, a page the connection may see fails
+    // with the answer's size.
+    const budget = { maxBytes: 64, maxDepth: 16, maxEntries: 256 };
+    const resume = async (target: string) => {
+      const requestId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId,
+        connection: true,
+        scriptAttachmentId: randomUUID(),
+        replyBudget: budget,
+        scriptEventBudget: budget,
+        command: { method: browserHostMethods.resumeTab, parameters: { surfaceId: target } },
+      } as BrowserClientMessage);
+      return sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    };
+    try {
+      const absent = await resume(BrowserSurfaceIdSchema.parse(`tab_${"0".repeat(8)}`));
+      expect(absent).toMatchObject({ type: "cdp.error", error: { code: "not_found" } });
+      page.setMetadata("A page", "https://example.test/");
+      expect(await resume(surfaceId)).toMatchObject({
+        type: "cdp.error",
+        error: {
+          reason: "browser-reply-limit",
+          message: expect.stringMatching(/^The command ran/u),
+        },
+      });
+      // The tab becomes an extension's page while it wakes: the same answer as no tab at all.
+      const wake = ledger.wake.bind(ledger);
+      vi.spyOn(ledger, "wake").mockImplementation(async (id) => {
+        const binding = await wake(id);
+        page.setMetadata(
+          "My Extension Options",
+          `chrome-extension://${"a".repeat(32)}/options.html`,
+        );
+        return binding;
+      });
+      const hidden = await resume(surfaceId);
+      expect((hidden as { error: unknown }).error).toEqual((absent as { error: unknown }).error);
+    } finally {
+      vi.restoreAllMocks();
       await controller.close();
       await ledger.closeOwnedPages();
       await ledger.close();

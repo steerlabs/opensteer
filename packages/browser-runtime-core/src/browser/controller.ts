@@ -3764,7 +3764,12 @@ export class BrowserController {
     if (message.replyBudget && boundedJsonSize(reply, message.replyBudget) === undefined)
       throw new BrowserRuntimeError(
         "bad_message",
-        answerTooLargeMessage(reply, message.replyBudget.maxBytes, message.replyBudget),
+        answerTooLargeMessage(
+          reply,
+          message.replyBudget.maxBytes,
+          message.replyBudget,
+          command.method,
+        ),
         { reason: "browser-reply-limit" },
       );
     await this.send({
@@ -4118,13 +4123,20 @@ export class BrowserController {
             ? { reopened: true }
             : {}),
         };
+        // Rule 5: a page outside the connection reads exactly like a closed tab, decided before
+        // anything (its answer's size included) is said of it.
+        if (hiddenFromConnection(binding.page)) throw absent();
         if (message.replyBudget && boundedJsonSize(result, message.replyBudget) === undefined)
           throw new BrowserRuntimeError(
             "bad_message",
-            answerTooLargeMessage(result, message.replyBudget.maxBytes, message.replyBudget),
+            answerTooLargeMessage(
+              result,
+              message.replyBudget.maxBytes,
+              message.replyBudget,
+              browserHostMethods.resumeTab,
+            ),
             { reason: "browser-reply-limit" },
           );
-        if (hiddenFromConnection(binding.page)) throw absent();
         if (message.scriptAttachmentId && message.scriptEventBudget) {
           const scriptRequest = this.scriptCommands.get(message.requestId);
           if (scriptRequest?.closing)
@@ -4156,6 +4168,8 @@ export class BrowserController {
     )
       throw new BrowserRuntimeError("bad_message", "Unsupported Opensteer method.");
     if (message.command.method === browserHostMethods.openTab) {
+      // An open must never check its replyBudget: the Host makes any `browser-reply-limit` a
+      // failure of the command (browser-service.ts), and an open that ran has made a tab.
       const fields = BrowserSessionTabOpenCommandSchema.omit({
         type: true,
         sessionId: true,
