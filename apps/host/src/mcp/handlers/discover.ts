@@ -454,7 +454,8 @@ export function discoverHandler(
       };
     };
     const pluginPage = async (after?: string) => {
-      if (!lookups.opensteer_plugin_list) return { items: [], cursor: null };
+      if (!lookups.opensteer_plugin_list)
+        return { items: [], cursor: null, pluginsUnavailable: false };
       const result = await lookup(
         lookups.opensteer_plugin_list,
         { cursor: after },
@@ -474,6 +475,7 @@ export function discoverHandler(
           };
         }),
         cursor: result.cursor ?? null,
+        pluginsUnavailable: result.pluginsUnavailable === true,
       };
     };
     const findPlugin = async (pluginId: string) => {
@@ -548,6 +550,9 @@ export function discoverHandler(
           ...(tasks?.items ?? []),
         ],
         nextCursor: Object.keys(following).length ? next(following) : null,
+        ...(plugins?.pluginsUnavailable
+          ? { next: "Installed plugins are currently unavailable." }
+          : {}),
       };
     }
 

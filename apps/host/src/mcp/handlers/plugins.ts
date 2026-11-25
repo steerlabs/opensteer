@@ -31,7 +31,12 @@ import type { PluginService } from "../../plugins/plugin-service.js";
 import type { PluginAuthority } from "../../plugins/plugin-authority.js";
 import { pluginInputNext, type PluginExecutions } from "../../plugins/plugin-executions.js";
 import type { LocalProviders } from "../../plugins/local-providers.js";
-import { operations, type PluginConsent, type PluginInput } from "../../plugins/engine-protocol.js";
+import {
+  operations,
+  PluginServiceError,
+  type PluginConsent,
+  type PluginInput,
+} from "../../plugins/engine-protocol.js";
 import { keysetPage } from "../../plugins/keyset-page.js";
 import { engineInstallReceipt } from "../../plugins/engine-storage.js";
 import { localNamespace, localToolPath, pluginNamespace } from "../../plugins/provider-names.js";
@@ -87,8 +92,23 @@ export class PluginToolHandlers {
   async list(c: ToolCall<"opensteer_plugin_list">) {
     const context = this.options.authority.admit(c.caller);
     const settings = await this.options.settings.settings(c.caller.userId);
+    const broadDiscovery = c.discoveryInput !== undefined && c.discoveryInput.id === undefined;
+    let pluginsUnavailable =
+      broadDiscovery && this.options.service.state().status === "unavailable";
+    const onEngineUnavailable = (error: unknown) => {
+      if (
+        !broadDiscovery ||
+        !(error instanceof PluginServiceError) ||
+        (error.code !== "unavailable" && error.code !== "interrupted")
+      )
+        throw error;
+      pluginsUnavailable = true;
+      return [];
+    };
     const [plugins, local] = await Promise.all([
-      this.options.service.list({}, context, c.signal),
+      pluginsUnavailable
+        ? []
+        : this.options.service.list({}, context, c.signal).catch(onEngineUnavailable),
       c.input.pluginId ? [] : (this.options.localProviders?.providers(context) ?? []),
     ]);
     const caller = c.caller;
@@ -119,11 +139,9 @@ export class PluginToolHandlers {
         });
     const pagePlugins = page.items.filter(({ kind }) => kind === "plugin");
     const installed = pagePlugins.length
-      ? await this.options.service.installed(
-          { plugins: pagePlugins.map(({ id }) => id), versions: true },
-          owner,
-          c.signal,
-        )
+      ? await this.options.service
+          .installed({ plugins: pagePlugins.map(({ id }) => id), versions: true }, owner, c.signal)
+          .catch(onEngineUnavailable)
       : [];
     let versionCursor: string | null = null;
     return {
@@ -212,6 +230,7 @@ export class PluginToolHandlers {
           }),
       ),
       cursor: c.input.pluginId ? versionCursor : page.cursor,
+      ...(pluginsUnavailable ? { pluginsUnavailable: true as const } : {}),
     };
   }
   async discoveryResult<

@@ -56,6 +56,32 @@ export async function engineDemand(databaseUrl: string): Promise<EngineDemand> {
   });
 }
 
+const inventoryTables = {
+  apps: "plugin_engine.plugin_engine_apps",
+  accounts: "plugin_engine.plugin_engine_accounts",
+} as const;
+
+/** A missing table on a fresh Home, or an empty owner inventory, needs no runtime. */
+export function engineInventoryEmpty(
+  databaseUrl: string,
+  kind: keyof typeof inventoryTables,
+  owner: string,
+): Promise<boolean> {
+  const table = inventoryTables[kind];
+  return readEngineState(databaseUrl, async (client) => {
+    const relation = await client.query<{ present: boolean }>(
+      "SELECT to_regclass($1) IS NOT NULL AS present",
+      [table],
+    );
+    if (relation.rows[0]?.present === false) return true;
+    const result = await client.query<{ empty: boolean }>(
+      `SELECT NOT EXISTS (SELECT 1 FROM ${table} WHERE owner = $1) AS empty`,
+      [owner],
+    );
+    return result.rows[0]?.empty === true;
+  });
+}
+
 export async function hasUnfinishedPluginWorkflows(
   database: Kysely<DatabaseSchema>,
 ): Promise<boolean> {

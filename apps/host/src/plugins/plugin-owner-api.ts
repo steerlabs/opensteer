@@ -58,6 +58,7 @@ type LocalTool = Omit<PluginLocalToolView, "access" | "toolCount" | "readOnlyToo
 type Service = Pick<
   PluginService,
   | "state"
+  | "installedInventoryEmpty"
   | "installed"
   | "detail"
   | "detailSection"
@@ -388,11 +389,13 @@ export class PluginOwnerApi {
     const service = this.#options.service;
     const ready = service.state().status === "ready";
     const [plugins, settings, local] = await Promise.all([
-      ready ? this.#summaries(userId, signal) : null,
+      ready
+        ? this.#summaries(userId, signal)
+        : service.installedInventoryEmpty().then((empty) => (empty ? [] : null)),
       this.#settings(userId),
       this.#options.localTools?.(userId) ?? [],
     ]);
-    if (!ready || plugins === null) this.#warm(userId);
+    if (plugins === null) this.#warm(userId);
     const engine = pluginEngineStateView(service.state());
     const access = (id: string) => settings.find((row) => row.pluginId === id)?.access ?? "all";
     const page = plugins

@@ -169,6 +169,7 @@ export const opensteer_plugin_list = defineAgentTool({
       }),
     ),
     cursor: z.string().nullable(),
+    pluginsUnavailable: z.literal(true).optional(),
   }),
 });
 export const opensteer_plugin_install = defineAgentTool({

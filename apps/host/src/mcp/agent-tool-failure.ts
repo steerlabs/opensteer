@@ -61,7 +61,9 @@ export function agentToolFailure(
         error.code === "forbidden"
           ? "Plugin operation is unavailable to this caller."
           : error.code === "interrupted"
-            ? "Plugin engine stopped; the program was interrupted."
+            ? error.tag === "engine-killed"
+              ? "The plugin engine was killed before it replied."
+              : "Plugin engine stopped; the program was interrupted."
             : ["invalid", "consent-changed", "unavailable"].includes(error.code)
               ? error.message
               : "Plugin operation could not complete.",

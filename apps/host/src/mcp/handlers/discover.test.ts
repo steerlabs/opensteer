@@ -76,6 +76,7 @@ function fixture(
   chromeHasTabs = true,
   windows = 1,
   project?: () => Promise<{ tabs: Tab[]; layout: { revision: number; items: [] } }>,
+  pluginsUnavailable = false,
 ) {
   const computer = { computerId: macId, name: "Studio" };
   const common = {
@@ -209,8 +210,9 @@ function fixture(
       computer_apps: computerApps,
       opensteer_plugin_list: async () => ({
         local: [],
-        plugins: visible ? [plugin] : [],
+        plugins: visible && !pluginsUnavailable ? [plugin] : [],
         cursor: null,
+        ...(pluginsUnavailable ? { pluginsUnavailable: true as const } : {}),
       }),
       plugin_search: async () => ({
         items: visible ? [pluginTool] : [],
@@ -261,6 +263,31 @@ function fixture(
 }
 
 describe("discover before registration", () => {
+  it("keeps the rest of discovery available when installed plugins cannot be listed", async () => {
+    const { read } = fixture(true, true, 1, undefined, true);
+    const result = await read();
+    expect(result.items?.map(({ kind }) => kind)).toEqual([
+      "browser-profile",
+      "chrome-tabs",
+      "app",
+      "phone",
+      "task",
+    ]);
+    expect(result.next).toBe("Installed plugins are currently unavailable.");
+    const browserOnly = await read(
+      {},
+      {
+        ...connection,
+        grant: {
+          scope: "selected",
+          tasks: false,
+          resources: [{ kind: "browser-profile", profileId: browserId }],
+        },
+      },
+    );
+    expect(browserOnly).not.toHaveProperty("next");
+  });
+
   it("lists authorized choices with reusable IDs, smallest hints and no cached receipt", async () => {
     const { read, tabList } = fixture();
     const result = await read();

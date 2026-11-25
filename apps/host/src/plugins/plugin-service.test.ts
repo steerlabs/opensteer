@@ -16,6 +16,7 @@ const active = vi.hoisted(() => new Map<string, string>());
 vi.mock("./engine-storage.js", () => ({
   engineActiveVersions: async () => active,
   engineDemand: async () => ({ busy: false, dueInMs: null }),
+  engineInventoryEmpty: async () => false,
 }));
 
 it("makes the skill record follow the active version, and repairs a refresh that failed", async () => {
