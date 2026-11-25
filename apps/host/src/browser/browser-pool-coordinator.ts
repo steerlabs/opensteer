@@ -1104,6 +1104,11 @@ export class BrowserPoolCoordinator {
         run: () => this.#recoverStep(),
         ...(slot ? { discards: true } : {}),
       };
+    // Read withoutChannel first so sessions stopped during a reconnect are pruned from `#lost`
+    // and open the gate at once, while still prioritizing Stop endings ahead of reconnect attempts.
+    const withoutChannel = slot.phase === "running" ? await this.#withoutChannel() : [];
+    // A removal or a restart asked during that read is chosen first: selection runs again.
+    if (this.#released || this.#restartWanted) return this.#next();
     // Stop endings use the control API directly and never wait on the relay or session reconnects.
     const ending =
       slot.phase === "running" ? ((await this.#adopter?.ending?.(this.#own)) ?? []) : [];
@@ -1113,9 +1118,6 @@ export class BrowserPoolCoordinator {
       if (this.#parkWanted) this.#settlePark("vetoed");
       return { name: "end", run: (signal) => this.#endStep(fenceOf(slot), ending, signal) };
     }
-    const withoutChannel = slot.phase === "running" ? await this.#withoutChannel() : [];
-    // A removal or a restart asked during that read is chosen first: selection runs again.
-    if (this.#released || this.#restartWanted) return this.#next();
     if (withoutChannel.length) {
       const now = Date.now();
       const anyPastDeadline = withoutChannel.some(
