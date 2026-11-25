@@ -353,8 +353,6 @@ export const CloudComputerReleaseFeedResponseSchema = z.strictObject({
     .strictObject({
       url: CloudComputerInstallerUrlSchema,
       sha256: CloudComputerInstallerSha256Schema,
-      /** The release it belongs to: the Home updates only when the feed's images name it too. */
-      version: CloudComputerReleaseSchema.shape.version.optional(),
     })
     .optional(),
 });

@@ -699,7 +699,7 @@ compose_down_home() {
 remove_home_files() {
   rm -rf -- "${home_dir:?}/"{secrets,boot,identity,restore.pending,update.pending,restore.pending.retired,update.pending.retired}
   rm -rf -- "$home_dir/"{install,backup,update,egress,images.placeholder,feed,config.env,pool-network}.??????
-  rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,compose.browser-pool.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,browser-pool,pool-network,pool-network-asked,restore-recipe.sh,recipe.sha256,machine-status.sh,update-database.dump,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
+  rm -f -- "$home_dir/"{config.env,images.env,volumes.env,tls.caddy,chromium-oci.json,runner-oci.json,setup-link.pending,operation.lock,compose.yaml,compose.egress.yaml,compose.egress-pending.yaml,managed-egress.sh,egress.pending,compose.apparmor.yaml,compose.ipv6.yaml,compose.browser-pool.yaml,common.sh,firewall.sh,backup.sh,update.sh,opensteer-home,install-scheduler.sh,host.pid,managed,ipv6.enabled,browser-pool,pool-network,pool-network-asked,restore-recipe.sh,recipe.sha256,recipe.files,units.stale,machine-status.sh,update-database.dump,backup-ca.pem,local-images,backup.resume,runner-apparmor.name,unit-prefix}
 }
 
 # Whether this Home was installed with --local-images.
@@ -723,7 +723,7 @@ owns_operator_command() {
 # its standalone installer, checked against its SHA-256 and unpacked into DIRECTORY without running
 # anything of it. PINNED (a managed Home) fetches only from public addresses, as the feed does.
 fetch_recipe() {
-  local url=$1 sha=$2 directory=$3 pinned=$4 bundle archive name resolution listing args=()
+  local url=$1 sha=$2 directory=$3 pinned=$4 bundle archive name resolution listing list args=()
   [[ ${#url} -le 2048 && $url =~ ^https://[^@/?#[:space:]]+(/[^?#[:space:]]*)?$ && $sha =~ ^[0-9a-f]{64}$ ]] ||
     { echo 'The release names an invalid recipe.' >&2; return 1; }
   if $pinned; then
@@ -746,24 +746,50 @@ fetch_recipe() {
     [[ -z $name || $name =~ ^[a-z0-9][a-z0-9._-]*$ ]] || { echo 'The recipe holds an unexpected path.' >&2; return 1; }
   done <<< "$listing"
   mkdir -- "$directory" && tar -xzf "$archive" -C "$directory" || return 1
-  for name in "${recipe_files[@]}"; do
-    [[ -f "$directory/$name" && ! -L "$directory/$name" ]] ||
+  # The candidate is installed by its own list of recipe files (a release may add or drop one),
+  # and the installer holds exactly that list and the installer's own files.
+  list=$(sed -n 's/^recipe_files=(\(.*\))$/\1/p' "$directory/common.sh" 2>/dev/null)
+  [[ -n $list ]] || { echo 'The recipe names no recipe files.' >&2; return 1; }
+  : > "$directory/recipe.files" || return 1
+  for name in $list; do
+    [[ $name =~ ^[a-z0-9][a-z0-9._-]*$ && -f "$directory/$name" && ! -L "$directory/$name" ]] ||
       { echo "The recipe lacks $name." >&2; return 1; }
+    printf '%s\n' "$name" >> "$directory/recipe.files" || return 1
+  done
+  for name in "$directory"/*; do
+    name=${name##*/}
+    grep -qxF -- "$name" "$directory/recipe.files" && continue
+    case $name in install.sh | managed-boot.sh | install-managed-unit.sh | version | recipe.files) ;;
+      *) echo "The recipe holds $name, which it does not list." >&2; return 1 ;;
+    esac
   done
 }
 
 # put_recipe DIRECTORY: the recipe files from DIRECTORY replace the Home's, each by a rename.
 put_recipe() {
-  local name
-  for name in "${recipe_files[@]}"; do
-    [[ -f "$1/$name" ]] || continue
+  # put_recipe DIRECTORY [OTHER_LIST]: DIRECTORY's recipe, by its own list (recipe.files), then
+  # removes the files only the other side listed, and records this side's list and identity.
+  local name list="$1/recipe.files" other=${2:-}
+  [[ -f $list ]] || { echo 'The recipe names no recipe files.' >&2; return 1; }
+  while IFS= read -r name; do
+    [[ $name =~ ^[a-z0-9][a-z0-9._-]*$ && -f "$1/$name" ]] || return 1
     install -m 0600 "$1/$name" "$home_dir/.$name.new" && mv -f -- "$home_dir/.$name.new" "$home_dir/$name" || return
-  done
-  if [[ -f "$1/recipe.sha256" ]]; then
-    install -m 0600 "$1/recipe.sha256" "$home_dir/.recipe.sha256.new" &&
-      mv -f -- "$home_dir/.recipe.sha256.new" "$home_dir/recipe.sha256" || return
+  done < "$list"
+  if [[ -n $other && -f $other ]]; then
+    while IFS= read -r name; do
+      [[ $name =~ ^[a-z0-9][a-z0-9._-]*$ ]] || continue
+      grep -qxF -- "$name" "$list" || rm -f -- "${home_dir:?}/$name" || return
+    done < "$other"
   fi
-  chmod 0700 "$home_dir/"{firewall.sh,opensteer-home,install-scheduler.sh} && sync "$home_dir"
+  for name in recipe.files recipe.sha256; do
+    if [[ -f "$1/$name" ]]; then
+      install -m 0600 "$1/$name" "$home_dir/.$name.new" && mv -f -- "$home_dir/.$name.new" "$home_dir/$name" || return
+    fi
+  done
+  for name in firewall.sh opensteer-home install-scheduler.sh; do
+    if [[ -f "$home_dir/$name" ]]; then chmod 0700 "$home_dir/$name" || return; fi
+  done
+  sync "$home_dir"
 }
 
 # The units, timers and the command on the path, from the recipe the Home now runs (after a commit).

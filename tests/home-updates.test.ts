@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
+import { asOpensteerHomeCallsUpdate } from "./home-update.test-support.js";
 
 const recipe = join(import.meta.dirname, "../deploy/home");
 const id = "cc_00000000-0000-4000-8000-000000000001";
@@ -224,7 +225,7 @@ it("runs a scheduled update from the account's feed and decides by the release's
     ].join("\n");
   const update = (running: string, feedRelease: { version: string; digit: string }) => {
     // The account's pin names the release the feed offers: the two halves agree.
-    account({ releaseManifestUrl: moved, recipe: { ...pin, version: feedRelease.version } });
+    account({ releaseManifestUrl: moved, recipe: pin });
     writeFileSync(join(home, "images.env"), running);
     writeFileSync(
       join(work, "release.json"),
@@ -235,7 +236,7 @@ it("runs a scheduled update from the account's feed and decides by the release's
       `source "${join(recipe, "update.sh")}"
        fetch_manifest() { printf '%s\\n' "$1" > "${work}/fetched"; cp "${work}/release.json" "$2"; }
        compose_project() { echo "went on to update" >&2; exit 42; }
-       update_home scheduled-update`,
+       ${asOpensteerHomeCallsUpdate("scheduled-update")}`,
     );
   };
   const same = update(selection("1.2.3", "a"), { version: "1.2.3", digit: "a" });

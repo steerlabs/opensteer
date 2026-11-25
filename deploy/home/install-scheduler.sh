@@ -3,8 +3,13 @@ set -euo pipefail
 home_dir=$1
 unit_dir=${OPENSTEER_HOME_UNIT_DIR:-/etc/systemd/system} # Set only by tests.
 unit=${2:-opensteer-home}
+# An update's gate writes the candidate's units into a staging directory only, to check them
+# before it commits: nothing installed, enabled or reloaded.
+check=${OPENSTEER_HOME_UNITS_CHECK:-}
+helper_dir=$home_dir
+if [[ -n $check ]]; then unit_dir=$check helper_dir=$check; fi
 # Only the Home in the default directory owns the command on the path.
-if [[ $unit == opensteer-home && $home_dir == /etc/opensteer-home ]]; then
+if [[ -z $check && $unit == opensteer-home && $home_dir == /etc/opensteer-home ]]; then
   install -m 0755 "$home_dir/opensteer-home" /usr/local/bin/opensteer-home
 fi
 # Each unit (and the restore step) is written beside itself and renamed into place: an interruption leaves the old unit
@@ -16,7 +21,7 @@ if [[ -f "$home_dir/boot/options.env" ]]; then unit_env="EnvironmentFile=$home_d
 # Home's code runs, an update interrupted before its commit gets its previous recipe back, under
 # the Home's lock (never while an update still runs). That recipe's own update recovery then
 # rolls the images back. It reads only the journal, and nothing of the recipe being installed.
-cat > "$home_dir/restore-recipe.sh.new" <<'RESTORE'
+cat > "$helper_dir/restore-recipe.sh.new" <<'RESTORE'
 #!/bin/sh
 home=$1
 journal="$home/update.pending"
@@ -30,8 +35,8 @@ exec /usr/bin/flock "$home/operation.lock" /bin/sh -c '
   done
   sync' restore "$home"
 RESTORE
-chmod 0700 "$home_dir/restore-recipe.sh.new"
-put_unit "$home_dir/restore-recipe.sh"
+chmod 0700 "$helper_dir/restore-recipe.sh.new"
+put_unit "$helper_dir/restore-recipe.sh"
 restore="ExecStartPre=$home_dir/restore-recipe.sh $home_dir"
 cat > "$unit_dir/$unit.service.new" <<UNIT
 [Unit]
@@ -105,6 +110,7 @@ UNIT
   put_unit "$unit_dir/$unit-$task.timer"
 done
 sync "$unit_dir"
+[[ -z $check ]] || exit 0
 systemctl daemon-reload
 systemctl enable "$unit.service"
 systemctl enable --now "${timers[@]}"

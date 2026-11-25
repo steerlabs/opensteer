@@ -14,6 +14,11 @@ valid_image_selector() {
 
 update_recovery() {
   local journal="$home_dir/update.pending" active="$home_dir/images.env"
+  # Units a committed update could not write yet: tried again, never blocking the start.
+  if [[ -f "$home_dir/units.stale" && ! -e $journal ]]; then
+    refresh_installed_units && rm -f -- "$home_dir/units.stale" ||
+      echo "This Home's units are not refreshed yet; the next start tries again." >&2
+  fi
   clean_retired_journal "$journal" || return
   [[ -e $journal || -L $journal ]] || return 0
   if [[ ! -d $journal || -L $journal || -L "$journal/committed" || -L $active ]] ||
@@ -29,7 +34,8 @@ update_recovery() {
   if [[ -f "$journal/committed" ]]; then
     cmp -s "$journal/candidate.env" "$active" || { recovery_needs_operator "$journal"; return 1; }
     sync "$active" "$home_dir" "$journal/committed" "$journal" || return
-    refresh_installed_units || return
+    # Committed: a unit refresh that fails never keeps the Home from starting.
+    refresh_installed_units || touch "$home_dir/units.stale"
     retire_journal "$journal"
     return
   fi
@@ -41,7 +47,9 @@ update_recovery() {
   # The previous recipe comes back first (a unit's restore step may already have put it back);
   # the candidate is then stopped with the previous recipe's Compose files under the Home's own
   # project, never with the candidate's, which need not even parse.
-  if [[ -d "$journal/recipe.previous" ]]; then put_recipe "$journal/recipe.previous" || return; fi
+  if [[ -d "$journal/recipe.previous" ]]; then
+    put_recipe "$journal/recipe.previous" "$journal/recipe.new/recipe.files" || return
+  fi
   release_env="$journal/candidate.env" compose down --remove-orphans || return
   cp "$journal/previous.env" "$active.new" || return
   publish_file "$active.new" "$active" || return
@@ -112,12 +120,6 @@ update_home() (
   # pin (the account did not answer, or named none) it does not update, and the next check tries.
   if $pinned && [[ ! -s "$current_dir/recipe.json" ]]; then
     fail 'The Opensteer account gave no recipe for this release: not updating now; the next check tries again.'
-  fi
-  # The account's pin and the feed's images are published apart: they are one release only when
-  # both name it. Between the two publications nothing changes; the next check tries again.
-  if $pinned && [[ $(jq -r '.version // empty' "$current_dir/recipe.json") != "$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$candidate")" ]]; then
-    echo 'The release is still being published (its recipe and its images name different releases): not updating now; the next check tries again.'
-    return 0
   fi
   old_version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$active")
   new_version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$candidate")
@@ -192,13 +194,27 @@ update_home() (
     fetch_recipe "$(jq -r .url "$current_dir/recipe.json")" "$(jq -r .sha256 "$current_dir/recipe.json")" \
       "$current_dir/recipe.new" "$pinned" || fail "The release's recipe could not be used. Nothing was changed."
     rm -f -- "$current_dir/recipe.new.bundle" "$current_dir/recipe.new.tgz"
+    # The recipe and the images are published apart; they are one release only when both name it
+    # (the installer's version file and the images' stamps come from the same build). Between the
+    # two publications nothing changes; the next check tries again.
+    if [[ $(cat "$current_dir/recipe.new/version" 2>/dev/null) != "$new_version" ]]; then
+      echo 'The release is still being published (its recipe and its images name different releases): not updating now; the next check tries again.'
+      return 0
+    fi
     # Which recipe each side is, so a later check knows the release is whole.
     jq -r .sha256 "$current_dir/recipe.json" > "$current_dir/recipe.new/recipe.sha256" &&
       mkdir -- "$current_dir/recipe.previous" ||
       fail 'The update could not stage the recipe. Nothing was changed.'
-    for service in "${recipe_files[@]}"; do
+    # The running recipe, by its own list: what a rollback puts back and what it removes.
+    : > "$current_dir/recipe.previous/recipe.files" ||
+      fail 'The update could not keep the running recipe. Nothing was changed.'
+    # Its list as the Home recorded it when it installed it (or this code's, for a Home installed
+    # before the list was recorded).
+    for service in $(cat "$home_dir/recipe.files" 2>/dev/null || printf '%s\n' "${recipe_files[@]}"); do
+      [[ $service =~ ^[a-z0-9][a-z0-9._-]*$ ]] || continue
       if [[ -f "$home_dir/$service" ]]; then
-        cp -p -- "$home_dir/$service" "$current_dir/recipe.previous/$service" ||
+        cp -p -- "$home_dir/$service" "$current_dir/recipe.previous/$service" &&
+          printf '%s\n' "$service" >> "$current_dir/recipe.previous/recipe.files" ||
           fail 'The update could not keep the running recipe. Nothing was changed.'
       fi
     done
@@ -219,14 +235,16 @@ update_home() (
     fail 'The update journal could not be written. Nothing was changed.'
   # The Home stops; the new recipe replaces its own (each file by a rename); that recipe's code
   # starts the release and runs one maintenance check; the selector and the commit marker follow.
-  if compose down && { [[ ! -d "$journal/recipe.new" ]] || put_recipe "$journal/recipe.new"; } &&
+  if compose down && { [[ ! -d "$journal/recipe.new" ]] || put_recipe "$journal/recipe.new" "$journal/recipe.previous/recipe.files"; } &&
     OPENSTEER_HOME_UPDATE_JOURNAL="$journal" "$home_dir/opensteer-home" update-gate &&
     cp "$journal/candidate.env" "$active.new" && publish_file "$active.new" "$active" &&
     mark_committed "$journal"; then
     # Committed. Units, timers and the command on the path follow the committed recipe only; what
     # fails from here is finished from the committed journal at the next start.
-    refresh_installed_units ||
-      fail "Updated to $new_version; its units could not be written yet: the next start writes them."
+    if ! refresh_installed_units; then
+      touch "$home_dir/units.stale"
+      echo "Updated to $new_version, but its units could not be written yet: the next start writes them." >&2
+    fi
     retire_journal "$journal" ||
       fail "Updated to $new_version; its journal could not be retired yet: the next start does it."
     echo "Updated Home to $new_version."

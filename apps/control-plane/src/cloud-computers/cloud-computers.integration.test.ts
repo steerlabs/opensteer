@@ -1673,7 +1673,7 @@ integration("Cloud Computer Account service", () => {
     // recipe of its release: the installer and SHA-256 pinned in the account's own config.
     expect(CloudComputerReleaseFeedResponseSchema.parse(answer.json())).toEqual({
       releaseManifestUrl,
-      recipe: { url: "https://releases.example.test/install.sh", sha256: digest, version: "1.2.3" },
+      recipe: { url: "https://releases.example.test/install.sh", sha256: digest },
     });
     expect((await read()).statusCode).toBe(401);
     expect((await read(credentials("ocs_" + "A".repeat(43)))).statusCode).toBe(401);

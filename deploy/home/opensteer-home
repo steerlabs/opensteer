@@ -49,6 +49,16 @@ case "${1:-}" in
     pid=$(host_pid) || fail 'The new release has no running Host.'
     check_firewall "$pid" || fail "The new release's firewall check failed."
     pod_healthy "$(pod_snapshot)" || fail "The new release's services are not all healthy."
+    # The units this recipe writes once committed, written and read here first.
+    units="$journal/units.check"
+    rm -rf -- "$units" && mkdir -- "$units" &&
+      OPENSTEER_HOME_UNITS_CHECK="$units" "$home_dir/install-scheduler.sh" "$home_dir" "$(installed_unit_prefix)" ||
+      fail "The new release's units could not be written."
+    [[ -s "$units/restore-recipe.sh" ]] || fail "The new release writes no restore step."
+    for unit in "$units"/*.service; do
+      grep -q '^ExecStart=' "$unit" && grep -q '^ExecStartPre=.*restore-recipe\.sh' "$unit" ||
+        fail "The new release's unit ${unit##*/} is incomplete."
+    done
     ;;
   status)
     [[ $# == 1 ]] || fail "Usage: opensteer-home status"

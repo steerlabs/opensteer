@@ -18,6 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
+import { asOpensteerHomeCallsUpdate } from "./home-update.test-support.js";
 
 const source = join(import.meta.dirname, "../deploy/home");
 const recipeFiles = (() => {
@@ -31,13 +32,18 @@ let work: string;
 let home: string;
 let log: string;
 
-/** A recipe whose files say which it is; its gate passes or fails as asked. */
+/**
+ * A recipe whose files say which it is; its gate passes or fails as asked; its common.sh names
+ * its own list of recipe files (`list`, the running one's unless a test adds or drops one).
+ */
 function recipe(
   name: string,
   gate: { readonly exit: number; readonly says?: string } = { exit: 0 },
+  list: readonly string[] = recipeFiles,
 ) {
   const files: Record<string, string> = {};
-  for (const file of recipeFiles) files[file] = `# recipe ${name}: ${file}\n`;
+  for (const file of list) files[file] = `# recipe ${name}: ${file}\n`;
+  files["common.sh"] = `recipe_files=(${list.join(" ")})\n# recipe ${name}: common.sh\n`;
   files["opensteer-home"] = `#!/usr/bin/env bash
 printf 'gate %s %s\\n' "${name}" "$1" >> "${log}"
 ${gate.says ? `echo "${gate.says}" >&2` : ""}
@@ -51,9 +57,16 @@ printf 'units from recipe %s\\n' "${name}" >> "${log}"
 }
 
 /** A standalone installer carrying these files, as package-installer.sh writes one. */
-function installer(files: Record<string, string>): { path: string; sha256: string } {
+function installer(
+  files: Record<string, string>,
+  version = "1.2.4",
+): { path: string; sha256: string } {
   const staged = mkdtempSync(join(work, "package-"));
   for (const [file, content] of Object.entries(files)) writeFileSync(join(staged, file), content);
+  // The installer's own files beside the recipe: its version comes from the same build as the
+  // images' stamps.
+  writeFileSync(join(staged, "version"), `${version}\n`);
+  writeFileSync(join(staged, "install.sh"), "# the installer\n");
   const archive = execFileSync("tar", ["-C", staged, "-czf", "-", "."]);
   const body = archive.toString("base64").replaceAll(/.{76}/gu, "$&\n").replace(/\n?$/u, "\n");
   const path = join(work, `installer-${Math.random().toString(16).slice(2)}.sh`);
@@ -95,12 +108,7 @@ function installed(files: Record<string, string>) {
 }
 
 /** Stands in for curl: the account's release-feed answer, and the installer at its address. */
-function network(given: object | null, bundle?: string) {
-  // The account's pin names its release: the feed's (1.2.4) unless a test says otherwise.
-  const answer =
-    given && "recipe" in given && given.recipe && !("version" in (given.recipe as object))
-      ? { ...given, recipe: { ...(given.recipe as object), version: "1.2.4" } }
-      : given;
+function network(answer: object | null, bundle?: string) {
   writeFileSync(
     join(work, "curl"),
     `#!/usr/bin/env bash
@@ -144,7 +152,7 @@ function update(
        docker() { case $1 in inspect) c=\${*: -1}; echo "example.test/\${c#container-}@sha256:${"a".repeat(64)}" ;; esac; }
        start_pod() { printf 'start_pod from the updater (the previous recipe)\\n' >> "${log}"; }
        ${fault}
-       update_home ${args}${manifestPath ? ` "${manifestPath}"` : ""}`,
+       ${asOpensteerHomeCallsUpdate(`${args}${manifestPath ? ` "${manifestPath}"` : ""}`)}`,
       "update",
       join(source, "common.sh"),
       join(source, "update.sh"),
@@ -319,6 +327,7 @@ function interrupted(step: "recipe-swapped" | "committed") {
   mkdirSync(join(journal, "recipe.previous"), { recursive: true });
   for (const [file, content] of Object.entries(recipe("A")))
     writeFileSync(join(journal, "recipe.previous", file), content);
+  writeFileSync(join(journal, "recipe.previous", "recipe.files"), `${recipeFiles.join("\n")}\n`);
   writeFileSync(join(journal, "candidate.env"), selection("1.2.4", "b"));
   writeFileSync(join(journal, "previous.env"), selection("1.2.3", "a"));
   writeFileSync(join(journal, "original.env"), selection("1.2.3", "a"));
@@ -473,28 +482,31 @@ it("never reports an update whose image selector could not be written, and rolls
   expect(existsSync(join(home, "update.pending"))).toBe(false);
 });
 
-it("rolls back past a candidate whose Compose files do not parse, and says so only once A started", () => {
-  const unparsable = { exit: 1, says: "compose: the candidate's files do not parse" };
-  pinned(unparsable);
-  // B's Compose files do not parse: anything that reads them fails, the gate first.
-  const invalid = `compose() {
+/** B's Compose files do not parse: anything that reads them fails, the gate first. */
+const invalid = () => `compose() {
        printf 'compose %s\\n' "$*" >> "${log}"
        grep -q 'recipe B' "$OPENSTEER_HOME_DIR/compose.yaml" && return 1
        case "$1 \${2:-}" in "ps -q") echo "container-$3" ;; esac
      }`;
-  const result = update(newer, "scheduled-update", undefined, invalid);
+
+it("rolls back past a candidate whose Compose files do not parse, and says so only once A started", () => {
+  const unparsable = { exit: 1, says: "compose: the candidate's files do not parse" };
+  pinned(unparsable);
+  const result = update(newer, "scheduled-update", undefined, invalid());
   expect(result.status).not.toBe(0);
   expect(result.stderr).toContain("The update was rolled back.");
   expect(onDisk()).toBe("# recipe A: compose.yaml\n");
   expect(said()).toContain("start_pod from the updater (the previous recipe)");
-  // A that does not start again is not called rolled back.
-  installed(recipe("A"));
+});
+
+it("does not call a rollback rolled back when A does not start again", () => {
+  const unparsable = { exit: 1, says: "compose: the candidate's files do not parse" };
   pinned(unparsable);
   const stuck = update(
     newer,
     "scheduled-update",
     undefined,
-    `${invalid}
+    `${invalid()}
      start_pod() { return 1; }`,
   );
   expect(stuck.status).not.toBe(0);
@@ -617,13 +629,13 @@ it("says the update committed when its marker is on disk, even if the marker's s
   expect(existsSync(join(home, "update.pending"))).toBe(false);
 });
 
-it("changes nothing while the account's pin and the feed's images name different releases", () => {
-  const b = installer(recipe("B"));
-  // Account published the next release's installer; the feed still serves 1.2.4's images.
+it("changes nothing while the recipe's installer and the feed's images name different releases", () => {
+  // The installer for the next release is published; the feed still serves 1.2.4's images.
+  const b = installer(recipe("B"), "9.9.9");
   network(
     {
       releaseManifestUrl: "https://releases.example.test/stable.json",
-      recipe: { url: recipeUrl, sha256: b.sha256, version: "1.2.5" },
+      recipe: { url: recipeUrl, sha256: b.sha256 },
     },
     b.path,
   );
@@ -649,4 +661,112 @@ it("writes the previous recipe's units back when a boot ran the candidate's duri
   expect(finish).toMatch(
     /if \[\[ ! -e "\$home_dir\/update\.pending" \]\]; then\n\s+"\$home_dir\/install-scheduler\.sh"/u,
   );
+});
+
+const pinnedWith = (files: Record<string, string>) => {
+  const b = installer(files);
+  network(
+    {
+      releaseManifestUrl: "https://releases.example.test/stable.json",
+      recipe: { url: recipeUrl, sha256: b.sha256 },
+    },
+    b.path,
+  );
+};
+
+it("installs a candidate by its own list of recipe files: one it adds", () => {
+  pinnedWith(recipe("B", { exit: 0 }, [...recipeFiles, "newpart.sh"]));
+  const result = update(newer);
+  expect(result.status, result.stderr).toBe(0);
+  expect(readFileSync(join(home, "newpart.sh"), "utf8")).toBe("# recipe B: newpart.sh\n");
+  expect(readFileSync(join(home, "recipe.files"), "utf8")).toContain("newpart.sh\n");
+});
+
+it("installs a candidate by its own list of recipe files: the ones it drops leave the Home", () => {
+  // Installed: a recipe that listed newpart.sh too, as the Home recorded it.
+  const listed = [...recipeFiles, "newpart.sh"];
+  installed(recipe("A", { exit: 0 }, listed));
+  writeFileSync(join(home, "recipe.files"), `${listed.join("\n")}\n`);
+  const dropped = recipeFiles.filter((file) => file !== "compose.ipv6.yaml");
+  pinnedWith(recipe("C", { exit: 0 }, dropped));
+  const result = update(newer);
+  expect(result.status, result.stderr).toBe(0);
+  expect(existsSync(join(home, "newpart.sh"))).toBe(false);
+  expect(existsSync(join(home, "compose.ipv6.yaml"))).toBe(false);
+  expect(onDisk()).toBe("# recipe C: compose.yaml\n");
+});
+
+it("removes what only the candidate had when it rolls back, by the lists of both", () => {
+  pinnedWith(recipe("B", { exit: 1, says: "B fails its gate" }, [...recipeFiles, "newpart.sh"]));
+  const result = update(newer);
+  expect(result.stderr).toContain("The update was rolled back.");
+  expect(existsSync(join(home, "newpart.sh"))).toBe(false);
+  expect(onDisk()).toBe("# recipe A: compose.yaml\n");
+});
+
+it("refuses an installer holding a file its recipe does not list, before anything stops", () => {
+  pinnedWith({ ...recipe("B"), "stray.sh": "# not listed\n" });
+  const result = update(newer);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain("which it does not list");
+  untouched();
+});
+
+it("checks the candidate's units in staging only: nothing installed, enabled or reloaded", () => {
+  writeFileSync(join(work, "systemctl"), "#!/usr/bin/env bash\necho systemctl ran >&2\nexit 1\n");
+  chmodSync(join(work, "systemctl"), 0o755);
+  const staging = mkdtempSync(join(work, "units-check-"));
+  const checked = spawnSync("bash", [join(source, "install-scheduler.sh"), home, "recipe-test"], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      OPENSTEER_HOME_UNIT_DIR: join(work, "units"),
+      OPENSTEER_HOME_UNITS_CHECK: staging,
+      PATH: `${work}:${process.env.PATH}`,
+    },
+  });
+  expect(checked.status, checked.stderr).toBe(0);
+  expect(readdirSync(join(work, "units"))).toEqual([]);
+  expect(existsSync(join(home, "restore-recipe.sh"))).toBe(false);
+  expect(readFileSync(join(staging, "recipe-test.service"), "utf8")).toMatch(/^ExecStart=/mu);
+  expect(existsSync(join(staging, "restore-recipe.sh"))).toBe(true);
+  // The gate writes and reads them before it lets the update commit.
+  expect(readFileSync(join(source, "opensteer-home"), "utf8")).toContain(
+    'OPENSTEER_HOME_UNITS_CHECK="$units" "$home_dir/install-scheduler.sh"',
+  );
+});
+
+it("keeps a committed update and every later start when the new units cannot be written", () => {
+  const b = recipe("B");
+  b["install-scheduler.sh"] =
+    `#!/usr/bin/env bash\nprintf 'units from recipe B failed\\n' >> "${log}"\nexit 1\n`;
+  pinnedWith(b);
+  const result = update(newer);
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain("Updated Home to 1.2.4.");
+  expect(result.stderr).toContain("its units could not be written yet");
+  expect(existsSync(join(home, "units.stale"))).toBe(true);
+  expect(existsSync(join(home, "update.pending"))).toBe(false);
+  // The next start tries again and is never stopped by it.
+  const next = spawnSync(
+    "bash",
+    [
+      "-c",
+      'source "$1"; source "$2"; update_recovery',
+      "start",
+      join(source, "common.sh"),
+      join(source, "update.sh"),
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        OPENSTEER_HOME_DIR: home,
+        OPENSTEER_HOME_UNIT_DIR: join(work, "units"),
+        PATH: `${work}:${process.env.PATH}`,
+      },
+    },
+  );
+  expect(next.status, next.stderr).toBe(0);
+  expect(next.stderr).toContain("units are not refreshed yet");
 });

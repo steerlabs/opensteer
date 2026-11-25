@@ -334,9 +334,11 @@ previous recipe and images back and starts them. An update interrupted before it
 undone at the next start by `restore-recipe.sh`, which the units run first (`ExecStartPre`,
 under the Home's lock); it is written with the units, so an update never replaces it before it
 commits. The previous recipe's own recovery then rolls the images back. Volumes, `config.env`
-and secrets are never touched. A Home installed before this updater needs one replace (or a new
-install) to get it. Do not run services of your own under the Home's Compose project name: a
-rollback stops the candidate with `--remove-orphans`, which removes them (their volumes are kept).
+and secrets are never touched. A Cloud Computer installed before this updater gets it by one
+replace. A bring-your-own Home installed before it cannot take it in place: the installer refuses
+a claimed Home, and `uninstall --purge` deletes its data; it keeps updating its images only. Do
+not run services of your own under the Home's Compose project name: a rollback stops the
+candidate with `--remove-orphans`, which removes them (their volumes are kept).
 
 ## Problems and reports
 
