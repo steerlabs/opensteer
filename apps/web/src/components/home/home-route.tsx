@@ -5,6 +5,7 @@ import {
   accessModeConflict,
   accountGettingReady,
   composerExecutionSelection,
+  isConnectedAgentTask,
   lastExecutionSelection,
   placementForSelection,
   type ExecutionSelection,
@@ -38,7 +39,9 @@ export function HomeRoute() {
     readonly key: number;
     readonly text: string;
   } | null>(null);
-  const firstRun = (snapshot.tasks?.entries.length ?? 0) === 0 && snapshot.activeTasks.length === 0;
+  const firstRun =
+    !(snapshot.tasks?.entries.some(({ thread }) => !isConnectedAgentTask(thread)) ?? false) &&
+    !snapshot.activeTasks.some(({ thread }) => !isConnectedAgentTask(thread));
   return (
     <TasksHome
       agentHome={snapshot.personalSettings?.agentHome.path ?? null}

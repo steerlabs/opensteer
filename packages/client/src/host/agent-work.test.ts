@@ -5,6 +5,7 @@ import { mockAgentWork, mockAgentWorkThreads } from "../mock/mock-agent-work.js"
 import { agentWho, agentWhoOriginParts, agentWithdrawnLine } from "./agent-identity.js";
 import {
   activityRows,
+  isConnectedAgentTask,
   operationDecisionField,
   sessionQuestions,
   sessionSlotFromHome,
@@ -162,6 +163,23 @@ describe("who a connected agent is", () => {
         }),
       ),
     ).toBeNull();
+  });
+});
+
+describe("which tasks a connected agent works itself", () => {
+  const ordinary = { agentSessionId: null, externalWork: null };
+  const delegated = { ...ordinary, startedByOther: true };
+  const seeded = (id: string) => seed.threads.find((thread) => thread.id === id)!;
+
+  it("recognises a session while it works and after it ends", () => {
+    expect(isConnectedAgentTask(seeded(mockAgentWorkThreads.working))).toBe(true);
+    expect(isConnectedAgentTask(seeded(mockAgentWorkThreads.ended))).toBe(true);
+    expect(isConnectedAgentTask({ agentSessionId: slot("working").sessionId })).toBe(true);
+  });
+
+  it("keeps ordinary tasks and tasks a connected agent started for your own agents", () => {
+    expect(isConnectedAgentTask(ordinary)).toBe(false);
+    expect(isConnectedAgentTask(delegated)).toBe(false);
   });
 });
 

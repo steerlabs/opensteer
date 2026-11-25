@@ -6,6 +6,7 @@ import type {
   AgentSessionEndReason,
   Request,
   ThreadStatus,
+  ThreadAccessMode,
 } from "@opensteer/core";
 import type { AgentConnection } from "@opensteer/protocol";
 import type { PersonalTaskExternalWork } from "@opensteer/protocol/personal-sync";
@@ -73,7 +74,7 @@ export function agentSessionSlot(
 
 /** A connected agent's task's operations, newest first, as `threads.activity` lists them. */
 export async function readTaskActivity(
-  client: Pick<HostClient, "rpc">,
+  client: { readonly rpc: Pick<HostClient["rpc"], "threads.activity"> },
   threadId: string,
   signal?: AbortSignal,
 ): Promise<readonly AgentOperationView[]> {
@@ -144,8 +145,13 @@ export function sessionAgent(
   };
 }
 
-export function sessionAgentPart(agent: SessionAgent): SentencePart {
+export function sessionAgentPart(agent: Pick<SessionAgent, "name" | "who">): SentencePart {
   return agent.who !== null && agent.name !== unknownAgent.name ? { name: agent.name } : agent.name;
+}
+
+/** Verified names can stand in the product's words. Self-declared names keep their boundary. */
+export function connectedAgentNamePart(agent: Pick<SessionAgent, "name" | "who">): SentencePart {
+  return agent.who?.verified ? agent.name : sessionAgentPart(agent);
 }
 
 export function tabNeedsYouParts(
@@ -167,6 +173,7 @@ export type OperationGlyph = "globe" | "app" | "plugin" | "list";
 export interface OperationRow {
   readonly id: string;
   readonly glyph: OperationGlyph;
+  readonly mode?: ThreadAccessMode;
   /** What it did, in plain words: "Opened a tab in Personal on Studio Mac". */
   readonly action: string;
   /** Who allowed it: you, Auto, full access, or reading only; null before anyone did. */
@@ -195,12 +202,16 @@ const knownTools = new Set([
   "plugin_call",
 ]);
 
-export function operationRow(operation: AgentOperationView): OperationRow {
+export function operationAction(operation: AgentOperationView): string {
   const target = operation.target.name;
   const tool = knownTools.has(operation.tool) ? operation.tool : "other";
   // Past tense only for what ran; a waiting, running, refused or uncertain one may not have.
   const ran = operation.outcome === "completed" || operation.outcome === "failed";
-  const base = workWords(`op.${ran ? "" : "base."}${tool}` as "op.tab_open", { target });
+  return workWords(`op.${ran ? "" : "base."}${tool}` as "op.tab_open", { target });
+}
+
+export function operationRow(operation: AgentOperationView): OperationRow {
+  const base = operationAction(operation);
   const device = operation.target.device;
   const action = device ? workWords("op.onDevice", { action: base, device: device.name }) : base;
   const decision = operation.decision;
@@ -216,12 +227,17 @@ export function operationRow(operation: AgentOperationView): OperationRow {
   return {
     id: operation.id,
     glyph: glyphs[operation.target.grant.kind],
+    mode: operation.mode,
     action,
     allowedBy,
     outcome,
     detail: operation.outcome === "unknown" ? workWords("op.outcome.unknownDetail") : null,
-    at: operation.completedAt ?? operation.handedOffAt ?? operation.createdAt,
+    at: operationTime(operation),
   };
+}
+
+export function operationTime(operation: AgentOperationView): string {
+  return operation.completedAt ?? operation.handedOffAt ?? operation.createdAt;
 }
 
 function operationOutcome(operation: AgentOperationView): OperationRow["outcome"] {
@@ -346,6 +362,20 @@ export interface SessionTaskView {
     | { readonly kind: "ready"; readonly rows: readonly OperationRow[] };
 }
 
+type SessionTaskIdentity = {
+  readonly agentSessionId?: string | null | undefined;
+  readonly externalWork?: Pick<AgentSessionSlot, "sessionId"> | null | undefined;
+};
+
+function sessionTaskId(thread: SessionTaskIdentity): string | null {
+  return thread.externalWork?.sessionId ?? thread.agentSessionId ?? null;
+}
+
+/** This task belongs to the connected agent's own session, even after it has ended. */
+export function isConnectedAgentTask(thread: SessionTaskIdentity): boolean {
+  return sessionTaskId(thread) !== null;
+}
+
 /**
  * The task view for a connected agent's own task, or null for any other task. A task is
  * the agent's while the Home names its session (`agentSessionId`), or while the preview's
@@ -360,7 +390,7 @@ export function sessionTaskView(input: {
   readonly withdrawnAt?: string | null | undefined;
 }): SessionTaskView | null {
   const { thread, slot } = input;
-  const sessionId = slot?.sessionId ?? thread.agentSessionId ?? null;
+  const sessionId = sessionTaskId({ ...thread, externalWork: slot });
   if (sessionId === null) return null;
   const agent = sessionAgent(slot?.connection, input.withdrawnAt);
   const agentName = sessionAgentPart(agent);

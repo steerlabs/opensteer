@@ -12,8 +12,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ShellContext } from "./app-shell.js";
 import type { SettingsView } from "./settings/primitives.js";
 import { ExternalAgentsSection } from "./settings/sections/external-agents.js";
-import { placeList } from "@opensteer/client/host";
-import { client, goTo, mount, tabSearch } from "./workspace/workspace.interaction.test-support.js";
+import { mainDoneTasks, placeList, taskList } from "@opensteer/client/host";
+import {
+  client,
+  goTo,
+  history,
+  mount,
+  tabSearch,
+  typeInto,
+} from "./workspace/workspace.interaction.test-support.js";
 
 const withAgentWork = (source: MockHostClient) => {
   source.mockAgentWork();
@@ -80,16 +87,63 @@ describe("a task a connected agent works itself", () => {
     );
   });
 
-  it("wears the agent's mark and says what it is using in Tasks", async () => {
+  it("keeps connected agents' tasks out of Tasks and the Done total", async () => {
+    await mount("/", { mock: mockConnectedAgents("seeded") });
+    const ids = () =>
+      [
+        ...document.querySelectorAll<HTMLElement>(
+          ".side-section--tasks .side-task[data-thread-id]",
+        ),
+      ].map((row) => row.dataset.threadId);
+    const ordinaryRows = ids();
+    expect(ordinaryRows.length).toBeGreaterThan(0);
+    const ordinary = taskList(client.getSnapshot()).ready[0]!;
+    const done = () => document.querySelector<HTMLButtonElement>(".side-done__main");
+    const doneTotal = client.getSnapshot().doneTasks[mainDoneTasks]?.window.totalItems ?? 0;
+    await act(async () => client.mockAgentWork({ livePanel: "three" }));
+    expect(ids()).toEqual(ordinaryRows);
+    await act(async () => client.setTaskDone(ordinary.threadId, true));
+    await act(async () => client.setTaskDone(mockAgentWorkThreads.ended, true));
+    await vi.waitFor(() => {
+      const doneTasks = client.getSnapshot().doneTasks[mainDoneTasks]!;
+      const doneIds = doneTasks.entries.map(({ thread }) => thread.id);
+      expect(doneIds).toContain(ordinary.threadId);
+      expect(doneIds).not.toContain(mockAgentWorkThreads.ended);
+      expect(doneTasks.window.totalItems).toBe(doneTotal + 1);
+      expect(done()?.getAttribute("aria-label")).toBe(
+        `Done, ${doneTotal + 1} ${doneTotal === 0 ? "task" : "tasks"}`,
+      );
+    });
+    await act(async () => done()!.click());
+    expect(ids()).not.toContain(mockAgentWorkThreads.ended);
+  });
+
+  it("opens its own task directly, with no selected Tasks row", async () => {
+    const id = mockAgentWorkThreads.working;
+    await mount(task(id), options);
+    await vi.waitFor(() => expect(document.querySelector(".session-activity")).not.toBeNull());
+    expect(
+      document.querySelector(".side-section--tasks .is-open, .side-section--tasks .is-filled"),
+    ).toBeNull();
+    expect(document.querySelector(".agents-now")).not.toBeNull();
+  });
+
+  it("still finds a connected agent's own task by title through sidebar search", async () => {
     await mount("/", options);
-    await vi.waitFor(() =>
-      expect(
-        document.querySelector(`[data-thread-id="${mockAgentWorkThreads.working}"]`),
-      ).not.toBeNull(),
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>('button[aria-label="Search"]')!.click(),
     );
-    const row = document.querySelector(`[data-thread-id="${mockAgentWorkThreads.working}"]`)!;
-    expect(row.querySelector(".agent-mark")).not.toBeNull();
-    expect(row.textContent).toContain("“Claude” is working");
+    await typeInto(
+      document.querySelector<HTMLInputElement>("#sidebar-search")!,
+      "Find flights to Lisbon",
+    );
+    const result = [
+      ...document.querySelectorAll<HTMLElement>('.side-results [role="option"]'),
+    ].find((option) => option.textContent?.includes("Find flights to Lisbon"));
+    expect(result).toBeDefined();
+    await act(async () => result!.click());
+    expect(history.at(-1)?.path).toBe(task(mockAgentWorkThreads.working));
+    expect(document.querySelector(".side-section--tasks [aria-current=page]")).toBeNull();
   });
 });
 
@@ -199,29 +253,51 @@ describe("a direct operation that needs the person", () => {
     );
   });
 
-  it("is named by its agent and the Home's question in Tasks and in Needs you", async () => {
-    await mount("/", options);
+  it("keeps a verified agent's Request in the badge and opens it by name from Needs you", async () => {
+    await mount("/", { mock: mockConnectedAgents("seeded") });
+    const badge = () => document.querySelector<HTMLButtonElement>('[title="Open Needs you"]')!;
+    const originalCount = client.getSnapshot().needsYou!.count;
+    await act(async () => client.mockAgentWork({ livePanel: "needs-you" }));
+    const id = mockAgentWorkThreads.waiting;
+    expect(document.querySelector(`.side-section--tasks [data-thread-id="${id}"]`)).toBeNull();
+    expect(badge().getAttribute("aria-label")).toBe(
+      `${originalCount + 1} need you. Open Needs you`,
+    );
+    await act(async () => badge().click());
+    const review = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Claude · Run a script in Travel?"]',
+    );
+    expect(review?.querySelector(".agent-mark")).toBeTruthy();
+    await act(async () => review!.click());
+    expect(history.at(-1)?.path).toBe(task(id));
     await vi.waitFor(() =>
       expect(
-        document.querySelector(`[data-thread-id="${mockAgentWorkThreads.waiting}"]`),
+        document.querySelector(
+          `.operation-request[data-request-id="${mockAgentOperationRequestId}"]`,
+        ),
       ).not.toBeNull(),
     );
-    const taskRow = document.querySelector(`[data-thread-id="${mockAgentWorkThreads.waiting}"]`)!;
-    expect(taskRow.querySelector(".agent-mark")).not.toBeNull();
-    expect(taskRow.textContent).toContain("Run a script in Shopping?");
-    await act(async () =>
-      (document.querySelector('[title="Open Needs you"]') as HTMLButtonElement).click(),
-    );
-    await vi.waitFor(() =>
-      expect(document.body.textContent).toContain("“Grok”: Run a script in Shopping?"),
-    );
-    const row = [...document.querySelectorAll(".side-task--needs-you")].find((entry) =>
-      entry.textContent?.includes("“Grok”: Run a script"),
-    )!;
-    expect(row.querySelector(".agent-mark")).not.toBeNull();
   });
 
-  it("quotes and isolates an unverified agent named Opensteer on the approval card, Needs you row, and tab status", async () => {
+  it("also names an ordinary question asked by the connected agent itself", async () => {
+    await mount("/", {
+      mock: mockConnectedAgents("seeded"),
+      hostClient: (source) => {
+        source.mockAgentWork({ question: true });
+        return source;
+      },
+    });
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>('[title="Open Needs you"]')!.click(),
+    );
+    expect(
+      document.querySelector(
+        'button[aria-label="Claude · Sign in to TAP Air Portugal in the Travel tab, then tap Done."]',
+      ),
+    ).not.toBeNull();
+  });
+
+  it("quotes and isolates an unverified agent named Opensteer on the approval card and Needs you row", async () => {
     const spoofed = {
       mock: mockConnectedAgents("seeded"),
       hostClient: (source: MockHostClient) => {
@@ -243,6 +319,9 @@ describe("a direct operation that needs the person", () => {
     await mount(task(mockAgentWorkThreads.waiting), spoofed);
     await vi.waitFor(() => expect(document.querySelector(".operation-request")).not.toBeNull());
     const card = document.querySelector(".operation-request")!;
+    const by = card.querySelector(".operation-request__by strong")!;
+    expect(by.textContent).toBe("“Opensteer”");
+    expect(by.querySelector("bdi.outside-name")?.textContent).toBe("Opensteer");
     const saysLabel = card.querySelector(".operation-request__says-label")!;
     expect(saysLabel.textContent).toBe("“Opensteer” says:");
     expect(saysLabel.querySelector("bdi.outside-name")?.textContent).toBe("Opensteer");
