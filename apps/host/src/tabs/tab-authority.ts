@@ -27,7 +27,6 @@ import {
   type TabRecord,
   type TabWrite,
 } from "@opensteer/database";
-import type { ThisHomeAddressSet } from "@opensteer/shared/homeAddress";
 import { computerAppIdentitiesEqual } from "@opensteer/integration-core/computer-app";
 import { requireDeviceAccess } from "../administration/device-access.js";
 import type { TabActor } from "./ports.js";
@@ -126,20 +125,15 @@ async function admitTabActor(
 }
 
 /** One authority view for a projection; mutations build it again under the personal commit fence. */
-export async function tabReadAuthority(
-  actor: TabActor,
-  database: TabDatabase,
-  home: ThisHomeAddressSet,
-) {
+export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
   const lineage = await admitTabActor(actor, database, "read");
-  return tabTargetAuthority(actor, database, lineage, home);
+  return tabTargetAuthority(actor, database, lineage);
 }
 
 function tabTargetAuthority(
   actor: TabActor,
   database: TabDatabase,
   lineage: AgentConnectionAuthority | null,
-  home: ThisHomeAddressSet,
 ) {
   const selected = lineage?.grant.scope === "selected" ? lineage : null;
   const lineageTasks = new Map<string, Promise<boolean>>();
@@ -186,12 +180,11 @@ function tabTargetAuthority(
     const target =
       "ownerId" in targetInput ? targetInput : DeviceTabTargetSchema.parse(targetInput);
     if ("ownerId" in target && target.ownerId !== ownerId) return false;
-    // Rule 1's page rule: to a connection's work a page on an extension's address does not exist,
-    // and to any agent's work a page on an address of this Home does not.
+    // Rule 1's page rule: to a connection's work a page on an extension's address does not exist.
     if (
       target.kind === "page" &&
       "url" in target &&
-      !authorizePageAddress(pageExecution(actor, lineage), target.url, home)
+      !authorizePageAddress({ agentConnection: lineage }, target.url)
     )
       return false;
     if (actor.kind === "person" && "id" in target && required === "read") return true;
@@ -307,43 +300,34 @@ export async function authorizeTabTarget(
   actor: TabActor,
   target: TabTarget | TabWrite,
   database: TabDatabase,
-  home: ThisHomeAddressSet,
 ): Promise<void> {
   if (actor.kind === "person") {
     await authorizeTabActor(actor, database, "read-write");
-    if (!(await (await tabReadAuthority(actor, database, home))(target, "read-write"))) deny();
+    if (!(await (await tabReadAuthority(actor, database))(target, "read-write"))) deny();
     return;
   }
   const lineage = await admitTabActor(actor, database, "read-write");
-  // A tab an agent opens may not be on an address of this Home (rule 1): it is refused exactly as
-  // an address a connection may not open, naming nothing of the Home.
   if (
+    lineage !== null &&
     "kind" in target &&
     target.kind === "page" &&
     "url" in target &&
-    ((lineage !== null && !isAllowedConnectionPageUrl(target.url)) ||
-      !authorizePageAddress(pageExecution(actor, lineage), target.url, home))
+    !isAllowedConnectionPageUrl(target.url)
   )
     throw new OpensteerError({
       code: "forbidden",
       message: "Use about:blank or an HTTP(S) URL without credentials.",
     });
-  if (!(await tabTargetAuthority(actor, database, lineage, home)(target, "read-write"))) deny();
-}
-
-/** Whose work a tab check is for, as rule 1's page rule reads it. */
-function pageExecution(actor: TabActor, lineage: AgentConnectionAuthority | null) {
-  return { agentConnection: lineage, actor: actor.kind === "person" ? "person" : "agent" } as const;
+  if (!(await tabTargetAuthority(actor, database, lineage)(target, "read-write"))) deny();
 }
 export async function canReadTab(
   actor: TabActor,
   row: TabRecord,
   database: TabDatabase,
-  home: ThisHomeAddressSet,
 ): Promise<boolean> {
   try {
     return await (
-      await tabReadAuthority(actor, database, home)
+      await tabReadAuthority(actor, database)
     )(row);
   } catch (error) {
     if (
@@ -363,7 +347,6 @@ export async function deniedTabRows(
   actor: TabActor,
   rows: readonly TabRecord[],
   database: TabDatabase,
-  home: ThisHomeAddressSet,
 ): Promise<ReadonlySet<TabRecord["id"]>> {
   if (actor.kind === "person" || !rows.length) return new Set();
   const agentConnectionId =
@@ -373,7 +356,7 @@ export async function deniedTabRows(
   if (!agentConnectionId) return new Set();
   const connection = await admitTabActor(actor, database, "read-write");
   if (connection?.grant.scope !== "selected") return new Set();
-  const check = tabTargetAuthority(actor, database, connection, home);
+  const check = tabTargetAuthority(actor, database, connection);
   const denied = new Set<TabRecord["id"]>();
   for (const row of rows) if (!(await check(row, "read-write"))) denied.add(row.id);
   return denied;

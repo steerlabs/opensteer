@@ -182,16 +182,6 @@ interface ScriptRun {
 /** Agent commands whose point is where a person's pointer would be. */
 /** TS11: how long an agent's wake waits for the woken page to load. */
 const resumeLoadedMs = 15_000;
-/** The longest an agent's open holds its page waiting for the first load to settle (I). */
-const firstLoadHoldMs = 30_000;
-
-function asNavigationResult(result: unknown): { readonly errorText?: string } {
-  const errorText =
-    result !== null && typeof result === "object"
-      ? (result as { errorText?: unknown }).errorText
-      : undefined;
-  return typeof errorText === "string" && errorText ? { errorText } : {};
-}
 /** Z2: the one answer of a command a cancel ended. */
 const commandCancelled = () =>
   new BrowserRuntimeError("conflict", "The browser command was cancelled.", {
@@ -383,6 +373,8 @@ export class BrowserController {
   /** Pages the person is closing, until the ledger has let them go. */
   private readonly closingSurfaces = new Set<BrowserSurfaceId>();
   private readonly cdpRouter: SessionCdpRouter;
+  /** The browser refuses this Home's addresses from the ticket (G1). */
+  private readonly homeAddressesApplied: Promise<void>;
   private readonly agentCommands: CommandQueue = {
     pending: 0,
     overflowReported: false,
@@ -449,8 +441,6 @@ export class BrowserController {
   >();
   private readonly keyOwners = new Map<BrowserSurfaceId, string>();
   private readonly lanes = new Map<BrowserSurfaceId, BrowserInputLane>();
-  /** The relays the Home opened through this connection that have not ended (II). */
-  private readonly relays = new Set<string>();
   private readonly scriptCommands = new Map<
     string,
     {
@@ -515,6 +505,12 @@ export class BrowserController {
     });
     this.cdpRouter = options.cdpRouter;
     this.claims = options.claims;
+    // This Home's addresses, from its ticket, before any page of this attachment loads (G1):
+    // `start` waits for the browser to refuse them, and the first navigation waits for `start`.
+    this.homeAddressesApplied = options.claims.homeAddresses
+      ? this.cdpRouter.setHomeAddresses(options.claims.homeAddresses)
+      : Promise.resolve();
+    this.homeAddressesApplied.catch(() => undefined);
     this.editing =
       options.claims.editingVersion === 2 ||
       (options.claims.editingVersion === 1 && options.clipboard !== undefined);
@@ -621,35 +617,24 @@ export class BrowserController {
 
   /**
    * N1: to a connection a page on an extension's address is not an attached page session (a fill
-   * into it answers as one that is missing), whatever the router has yet learned of it; and to any
-   * agent a page on an address of this Home is not.
+   * into it answers as one that is missing), whatever the router has yet learned of it.
    */
-  #onPageHiddenFromAgent(
+  #onExtensionPageForConnection(
     message: { readonly connection?: true | undefined },
     targetId: string,
   ): boolean {
+    if (message.connection !== true) return false;
     const surfaceId = this.ledger.surfaceIdForTarget(targetId);
-    if (surfaceId === undefined) return false;
     // Its live address as well as the ledger's record, as resumeTab checks (P7).
-    return this.#hiddenFromAgent(
-      message.connection === true,
-      this.ledger.toRecord(surfaceId)?.url,
-      this.ledger.binding(surfaceId)?.page.url(),
-    );
-  }
-
-  /**
-   * Is a page at these addresses (a tab's record, its live page) absent to this agent's command?
-   * An extension's page to a connection; a page on an address of this Home to every agent. The
-   * person's own agents pay a string scan, and parse an address only when it could be the Home's.
-   */
-  #hiddenFromAgent(connection: boolean, ...urls: readonly unknown[]): boolean {
-    return urls.some(
-      (url) => (connection && isExtensionUrl(url)) || this.cdpRouter.isHomeAddress(url),
+    return (
+      surfaceId !== undefined &&
+      (isExtensionUrl(this.ledger.toRecord(surfaceId)?.url) ||
+        isExtensionUrl(this.ledger.binding(surfaceId)?.page.url()))
     );
   }
 
   async start(): Promise<void> {
+    await this.homeAddressesApplied;
     if (this.closed) throw new BrowserRuntimeError("conflict", "The browser controller is closed.");
     this.rootSurfaceId = this.claims.initialSurfaceId ?? this.ledger.snapshot()[0]?.id;
     this.unsubscribeCdp = this.cdpRouter.onEvent(this.claims.sessionId, (event) => {
@@ -958,9 +943,6 @@ export class BrowserController {
     );
     this.observers.clear();
     this.closed = true;
-    // The relays this Home opened end with its connection, and every page session they own (II).
-    for (const relayId of this.relays) this.cdpRouter.endRelay(this.claims.sessionId, relayId);
-    this.relays.clear();
     for (const timer of this.laneIdleTimers.values()) clearTimeout(timer);
     this.laneIdleTimers.clear();
     this.unsubscribeCdp?.();
@@ -995,63 +977,13 @@ export class BrowserController {
     }).catch(() => undefined);
   }
 
-  /**
-   * An agent's open holds its page through its real first load (I): the hold ends once that load
-   * has settled (the document loaded, the navigation failed or was refused, the tab closed), and in
-   * any case past `firstLoadHoldMs`. The agent's own hold, a channel or a script, takes over from
-   * there; a page no agent took over is no agent's.
-   */
-  private releaseAfterFirstLoad(
-    surfaceId: BrowserSurfaceId,
-    navigation: Promise<unknown>,
-    release: () => void,
-  ): void {
-    void navigation
-      .then((result) =>
-        asNavigationResult(result).errorText === undefined
-          ? this.ledger.documentLoaded(surfaceId, firstLoadHoldMs)
-          : undefined,
-      )
-      .catch(() => undefined)
-      .finally(release);
-  }
-
   private enqueue(message: BrowserClientMessage): Promise<void> {
-    // The Home's addresses are this runtime's state, applied as they arrive, ahead of any command
-    // still queued; the Home serves no agent here until it hears this revision applied (item 1).
-    if (message.type === "home.addresses") {
-      this.cdpRouter.setHomeAddresses(message.homeAddresses);
-      return this.send({ type: "home.addresses.applied", revision: message.revision });
-    }
+    // A route change: the browser holds the new set from now on, ahead of any queued command (G1).
+    if (message.type === "home.addresses")
+      return this.cdpRouter.setHomeAddresses(message.homeAddresses);
     if (!isCdpRequest(message)) return this.enqueueCommand(message);
     if (message.command.method === browserHostMethods.cancelScriptCommand)
       return this.cancelScriptCommand(message);
-    // A relay's life on the session's root is the runtime's (II): it opens before its commands and
-    // ends in one act, ahead of any command of it still queued.
-    if (
-      message.command.method === browserHostMethods.openRelay ||
-      message.command.method === browserHostMethods.closeRelay
-    ) {
-      if (!message.relayId || message.scriptAttachmentId)
-        return this.send({
-          type: "cdp.error",
-          requestId: message.requestId,
-          error: new BrowserRuntimeError(
-            "bad_message",
-            "A relay is named by its relayId.",
-          ).toProtocolError(),
-        });
-      if (message.command.method === browserHostMethods.openRelay) {
-        if (!this.closed) {
-          this.relays.add(message.relayId);
-          this.cdpRouter.openRelay(this.claims.sessionId, message.relayId);
-        }
-      } else {
-        this.relays.delete(message.relayId);
-        this.cdpRouter.endRelay(this.claims.sessionId, message.relayId);
-      }
-      return this.send({ type: "cdp.result", requestId: message.requestId, result: {} });
-    }
     // An open, and a wake that waits for its page (V3), are cancellable without an attachment.
     if (
       !message.replyBudget ||
@@ -1672,7 +1604,6 @@ export class BrowserController {
                 this.claims.sessionId,
                 sessionId,
                 message.scriptAttachmentId,
-                message.relayId,
               );
         return targetId ? (this.ledger.surfaceIdForTarget(targetId) ?? null) : null;
       }
@@ -1904,9 +1835,8 @@ export class BrowserController {
               this.claims.sessionId,
               message.command.sessionId,
               message.scriptAttachmentId,
-              message.relayId,
             );
-      if (!params.success || !targetId || this.#onPageHiddenFromAgent(message, targetId))
+      if (!params.success || !targetId || this.#onExtensionPageForConnection(message, targetId))
         throw new BrowserRuntimeError(
           "bad_message",
           "fillCard requires a card reference, field and attached page session.",
@@ -1935,9 +1865,8 @@ export class BrowserController {
               this.claims.sessionId,
               message.command.sessionId,
               message.scriptAttachmentId,
-              message.relayId,
             );
-      if (!params.success || !targetId || this.#onPageHiddenFromAgent(message, targetId)) {
+      if (!params.success || !targetId || this.#onExtensionPageForConnection(message, targetId)) {
         throw new BrowserRuntimeError(
           "bad_message",
           "fillLogin requires valid parameters and an attached page session.",
@@ -3668,7 +3597,6 @@ export class BrowserController {
       ...(message.scriptAttachmentId ? { scriptAttachmentId: message.scriptAttachmentId } : {}),
       ...(message.connection ? { connection: true as const } : {}),
       ...(message.manageExtensions ? { manageExtensions: true as const } : {}),
-      ...(message.relayId ? { relayId: message.relayId } : {}),
       ...(requested.parameters === undefined ? {} : { parameters: requested.parameters }),
       ...(requested.sessionId === undefined ? {} : { sessionId: requested.sessionId }),
     };
@@ -3679,7 +3607,6 @@ export class BrowserController {
             this.claims.sessionId,
             command.sessionId,
             command.scriptAttachmentId,
-            command.relayId,
           );
     const pageSurfaceId = pageTargetId ? this.ledger.surfaceIdForTarget(pageTargetId) : undefined;
     const navigation = async <T>(send: () => Promise<T>): Promise<T> => {
@@ -3744,12 +3671,7 @@ export class BrowserController {
       this.cdpRouter.send(
         this.claims.sessionId,
         tabUrl
-          ? {
-              ...command,
-              parameters: { ...command.parameters, url: "about:blank" },
-              // One hold from this create call through the real first load below (I, item 2).
-              openThenLoad: true as const,
-            }
+          ? { ...command, parameters: { ...command.parameters, url: "about:blank" } }
           : command,
         agentActivity,
       );
@@ -3796,24 +3718,15 @@ export class BrowserController {
     }
     if (command.method === "Target.createTarget") {
       const targetId = targetIdFromResult(result);
-      // The hold the router kept from the create call, on the session's root (item 2).
-      let release = targetId && tabUrl ? this.cdpRouter.takeOpenHold(targetId) : undefined;
-      try {
-        if (targetId && (await this.ledger.adoptTarget(targetId))) {
-          this.ledger.recordAgentCommand(targetId);
-          const surfaceId = this.ledger.surfaceIdForTarget(targetId);
-          const binding = surfaceId ? this.ledger.binding(surfaceId) : null;
-          // As CDP's own createTarget does, the tab loads in the background; a
-          // failed load stays visible in the tab.
-          if (tabUrl && binding && surfaceId) {
-            const navigation = this.ledger.navigate(surfaceId, tabUrl);
-            void navigation.catch(() => undefined);
-            if (release) this.releaseAfterFirstLoad(surfaceId, navigation, release);
-            release = undefined;
-          }
+      if (targetId && (await this.ledger.adoptTarget(targetId))) {
+        this.ledger.recordAgentCommand(targetId);
+        const surfaceId = this.ledger.surfaceIdForTarget(targetId);
+        const binding = surfaceId ? this.ledger.binding(surfaceId) : null;
+        // As CDP's own createTarget does, the tab loads in the background; a
+        // failed load stays visible in the tab.
+        if (tabUrl && binding) {
+          void binding.cdp.send("Page.navigate", { url: tabUrl }).catch(() => undefined);
         }
-      } finally {
-        release?.();
       }
     }
     const createdTargetId =
@@ -3952,16 +3865,12 @@ export class BrowserController {
       );
     const request = parsedCapture.data;
     const page = this.ledger.binding(surfaceId)?.page;
-    // A connection's picture of a page on an extension's address, and any agent's of a page on an
-    // address of this Home (its live address, or the ledger's): the same answer as a closed page
-    // (N1, P7).
+    // A connection's picture of a page on an extension's address (its live address, or the
+    // ledger's): the same answer as a closed page (N1, P7).
     if (
       !page ||
-      this.#hiddenFromAgent(
-        command.connection === true,
-        page.url(),
-        this.ledger.toRecord(surfaceId)?.url,
-      )
+      (command.connection === true &&
+        (isExtensionUrl(page.url()) || isExtensionUrl(this.ledger.toRecord(surfaceId)?.url)))
     )
       throw new BrowserRuntimeError("not_found", "The browser page closed.");
     const stop = new AbortController();
@@ -4083,11 +3992,10 @@ export class BrowserController {
       const parsed = BrowserListTabsParametersSchema.safeParse(parameters ?? {});
       if (!parsed.success) throw new BrowserRuntimeError("bad_message", "Invalid tab-list cursor.");
       const ledger = this.ledger;
-      // N1: a connection is never told of a tab on an extension's page, nor that one opened a tab;
-      // no agent (only agents list tabs here) is told of a tab on an address of this Home.
+      // N1: a connection is never told of a tab on an extension's page, nor that one opened a tab.
       const connection = message.connection === true;
       const hidden = (surfaceId: BrowserSurfaceId) =>
-        this.#hiddenFromAgent(connection, ledger.toRecord(surfaceId)?.url);
+        connection && isExtensionUrl(ledger.toRecord(surfaceId)?.url);
       const records = function* () {
         for (const record of ledger.policyRecords()) {
           if (!record.announced || hidden(record.id)) continue;
@@ -4151,15 +4059,9 @@ export class BrowserController {
         // attachment opens or any target is named.
         const absent = () =>
           new BrowserRuntimeError("not_found", "The browser tab closed.", { unsent: true });
-        // An agent's wake is the one answered once its page has loaded (TS11, `loaded`); the Home's
-        // own wake of a person's tab never asks that, and a tab on this Home's address is not
-        // hidden from it.
         const hiddenFromConnection = (page?: { url(): string }) =>
-          (message.connection === true &&
-            (isExtensionUrl(this.ledger.toRecord(surfaceId)?.url) ||
-              isExtensionUrl(page?.url()))) ||
-          (parsed.data.loaded === true &&
-            this.#hiddenFromAgent(false, this.ledger.toRecord(surfaceId)?.url, page?.url()));
+          message.connection === true &&
+          (isExtensionUrl(this.ledger.toRecord(surfaceId)?.url) || isExtensionUrl(page?.url()));
         if (state === undefined || hiddenFromConnection()) throw absent();
         const reloaded = state === "suspended";
         this.forwarded.add(message);
@@ -4361,22 +4263,7 @@ export class BrowserController {
           const binding = this.ledger.binding(tabId);
           if (!binding) throw new BrowserRuntimeError("not_found", "The new tab closed.");
           if (origin === "person") this.ledger.recordHumanActivity(tabId, { kind: "navigation" });
-          // An agent's page is held, and so marked, before its first navigation and through its
-          // load, redirects included; the hold ends when that load settles, however it ends, and
-          // the agent's own hold (its channel, its script) takes over from there (A1, M2). A page
-          // opened blank is not navigated here and is not held.
-          const release =
-            origin === "agent"
-              ? this.cdpRouter.holdAgentPage(await binding.page.targetId())
-              : undefined;
-          let navigation: Promise<unknown>;
-          try {
-            navigation = this.ledger.navigate(tabId, url, message.navigationId);
-          } catch (error) {
-            release?.();
-            throw error;
-          }
-          if (release) this.releaseAfterFirstLoad(tabId, navigation, release);
+          const navigation = this.ledger.navigate(tabId, url, message.navigationId);
           if (message.replyBudget) {
             // Stop during the first load stops the load.
             const stop = () => void binding.cdp.send("Page.stopLoading").catch(() => undefined);

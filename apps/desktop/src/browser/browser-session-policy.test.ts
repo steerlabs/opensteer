@@ -496,111 +496,100 @@ it("loads a page's own request for an extension resource only when the extension
   expect(getExtension).not.toHaveBeenCalled();
 });
 
-it("keeps a page an agent drives off this Home's addresses and sends the Home no cookie from it, while the person's pages and other loopback ports are untouched", async () => {
-  const { applyBrowserSessionPolicy } = await import("./browser-session-policy.js");
-  const { ThisHomeAddressSet } = await import("@opensteer/shared/homeAddress");
-  const { vi } = await import("vitest");
-  const session = {
-    setPermissionCheckHandler: vi.fn(),
-    setPermissionRequestHandler: vi.fn(),
-    getPreloadScripts: () => [],
-    registerPreloadScript: vi.fn(),
-    webRequest: {
-      onHeadersReceived: vi.fn(),
-      onBeforeRequest: vi.fn(),
-      onBeforeRedirect: vi.fn(),
-      onBeforeSendHeaders: vi.fn(),
-    },
-    setUserAgent: vi.fn(),
-    getUserAgent: () => "Chrome/150",
-  };
-  const home = new ThisHomeAddressSet({
-    origins: ["https://home.example.com"],
-    loopbackPorts: [4310],
-  });
-  const agentPage = 42;
-  const personPage = 7;
-  applyBrowserSessionPolicy(session as unknown as import("electron").Session, {
-    downloads: { accept: vi.fn() },
-    pagePolicyPreloadPath: "/policy.cjs",
-    isAgentWebContents: (id: number) => id === agentPage,
-    homeAddresses: () => home,
-  });
-  const before = session.webRequest.onBeforeRequest.mock.calls[0]![0];
-  const sendHeaders = session.webRequest.onBeforeSendHeaders.mock.calls[0]![0];
-  const homeUrls = [
-    "http://127.0.0.1:4310/",
-    "http://localhost:4310/tasks",
-    "http://[::1]:4310/",
-    "https://home.example.com/settings",
-  ];
-  // Each route of a navigation reaches this hook as its own request: the page's own navigation, a
-  // link, a form, a redirect hop, a frame, a window it opened (held from its opener).
-  for (const resourceType of ["mainFrame", "subFrame"])
-    for (const url of homeUrls) {
-      const agent = vi.fn();
-      before({ url, webContentsId: agentPage, resourceType, method: "GET" }, agent);
-      expect(agent, `${resourceType} ${url}`).toHaveBeenCalledWith({ cancel: true });
-      const person = vi.fn();
-      before({ url, webContentsId: personPage, resourceType, method: "GET" }, person);
-      expect(person, `${resourceType} ${url}`).toHaveBeenCalledWith({ cancel: false });
-    }
-  for (const url of ["http://localhost:5173/", "http://127.0.0.1:3000/", "https://site.test/"]) {
-    const devServer = vi.fn();
-    before({ url, webContentsId: agentPage, resourceType: "mainFrame", method: "GET" }, devServer);
-    expect(devServer, url).toHaveBeenCalledWith({ cancel: false });
-  }
-  const withCookie = { Cookie: "opensteer.session=secret", Accept: "*/*" };
-  for (const url of homeUrls) {
-    const agent = vi.fn();
-    sendHeaders({ url, webContentsId: agentPage, requestHeaders: withCookie }, agent);
-    expect(agent, url).toHaveBeenCalledWith({ requestHeaders: { Accept: "*/*" } });
-    const lower = vi.fn();
-    sendHeaders(
-      { url, webContentsId: agentPage, requestHeaders: { cookie: "a=b", Accept: "*/*" } },
-      lower,
-    );
-    expect(lower, url).toHaveBeenCalledWith({ requestHeaders: { Accept: "*/*" } });
-    const person = vi.fn();
-    sendHeaders({ url, webContentsId: personPage, requestHeaders: withCookie }, person);
-    expect(person, url).toHaveBeenCalledWith({});
-  }
-  // M4: the Home's cookies are kept by host, not by port: an agent's page sends them to no
-  // loopback destination (a server a Run started on another port), and keeps the page's own.
-  const homeAndTheirs = {
-    Cookie: "opensteer.session=secret; theirs=1; __Host-opensteer.session=remote",
-    Accept: "*/*",
-  };
-  for (const url of [
-    "http://localhost:5173/api",
-    "http://127.0.0.1:3000/",
-    "ws://[::1]:8080/socket",
-    "http://sub.localhost:9000/",
-  ]) {
-    const devServer = vi.fn();
-    sendHeaders({ url, webContentsId: agentPage, requestHeaders: homeAndTheirs }, devServer);
-    expect(devServer, url).toHaveBeenCalledWith({
-      requestHeaders: { Cookie: "theirs=1", Accept: "*/*" },
+describe("no page of a browser the Home owns loads one of the Home's addresses, for anyone (G1)", () => {
+  const policy = async () => {
+    const { applyBrowserSessionPolicy, takeHomeRefusal } =
+      await import("./browser-session-policy.js");
+    const { ThisHomeAddressSet } = await import("@opensteer/shared/homeAddress");
+    const { vi } = await import("vitest");
+    const session = {
+      setPermissionCheckHandler: vi.fn(),
+      setPermissionRequestHandler: vi.fn(),
+      getPreloadScripts: () => [],
+      registerPreloadScript: vi.fn(),
+      webRequest: {
+        onHeadersReceived: vi.fn(),
+        onBeforeRequest: vi.fn(),
+        onBeforeRedirect: vi.fn(),
+        onBeforeSendHeaders: vi.fn(),
+      },
+      setUserAgent: vi.fn(),
+      getUserAgent: () => "Chrome/150",
+    };
+    const home = new ThisHomeAddressSet({
+      origins: ["http://127.0.0.1:4310", "https://route.example.com"],
+      loopbackPorts: [4310],
     });
-    const person = vi.fn();
-    sendHeaders({ url, webContentsId: personPage, requestHeaders: homeAndTheirs }, person);
-    expect(person, url).toHaveBeenCalledWith({});
-  }
-  const onlyHome = vi.fn();
-  sendHeaders(
-    {
-      url: "http://localhost:5173/",
-      webContentsId: agentPage,
-      requestHeaders: { Cookie: "opensteer.session=secret" },
-    },
-    onlyHome,
-  );
-  expect(onlyHome).toHaveBeenCalledWith({ requestHeaders: {} });
-  // A web site is no loopback destination: the cookie rule is the browser's own.
-  const web = vi.fn();
-  sendHeaders(
-    { url: "https://site.test/", webContentsId: agentPage, requestHeaders: homeAndTheirs },
-    web,
-  );
-  expect(web).toHaveBeenCalledWith({});
+    applyBrowserSessionPolicy(session as unknown as import("electron").Session, {
+      homeAddresses: () => home,
+      downloads: { accept: vi.fn() },
+      pagePolicyPreloadPath: "/policy.cjs",
+    });
+    const before = session.webRequest.onBeforeRequest.mock.calls[0]![0] as (
+      details: Record<string, unknown>,
+      callback: (response: { cancel?: boolean }) => void,
+    ) => void;
+    const ask = (details: Record<string, unknown>) => {
+      let answer: { cancel?: boolean } | undefined;
+      before({ method: "GET", ...details }, (response) => (answer = response));
+      return answer;
+    };
+    return { ask, takeHomeRefusal };
+  };
+
+  it("refuses every request to it: a page, a popup, a frame, a redirect hop, a worker and a service worker, the person's and an agent's alike", async () => {
+    const { ask, takeHomeRefusal } = await policy();
+    const cases = [
+      // The person's own tab, or an agent's: the browser cannot tell, and need not.
+      { url: "http://127.0.0.1:4310/", webContentsId: 7, resourceType: "mainFrame" },
+      { url: "http://localhost:4310/tasks", webContentsId: 8, resourceType: "mainFrame" },
+      { url: "https://route.example.com/settings", webContentsId: 9, resourceType: "mainFrame" },
+      { url: "http://[::1]:4310/", webContentsId: 7, resourceType: "subFrame" },
+      // A redirect hop is asked here again, with its new address.
+      { url: "http://127.0.0.1:4310/v1/rpc/tasks.page", webContentsId: 7, resourceType: "xhr" },
+      // A worker's and a service worker's own requests have no WebContents.
+      { url: "http://127.0.0.1:4310/v1/realtime", resourceType: "webSocket" },
+      { url: "https://route.example.com/v1/auth/session", resourceType: "other" },
+      // Network.loadNetworkResource, a navigation preload and a prerender are requests too.
+      { url: "http://sub.localhost:4310/", webContentsId: 7, resourceType: "other" },
+    ];
+    for (const details of cases) expect(ask(details), details.url).toEqual({ cancel: true });
+    // A refused page says where the Home opens; a refused subresource does not.
+    expect(takeHomeRefusal(7)).toBe(true);
+    expect(takeHomeRefusal(7)).toBe(false);
+    expect(takeHomeRefusal(8)).toBe(true);
+  });
+
+  it("keeps every other site, a dev server on another loopback port included", async () => {
+    const { ask } = await policy();
+    for (const url of ["http://localhost:5173/", "http://127.0.0.1:3000/x", "https://web.test/"])
+      expect(ask({ url, webContentsId: 7, resourceType: "mainFrame" }), url).toEqual({
+        cancel: false,
+      });
+  });
+
+  it("removes a session cookie of the Home's from a profile once, and nothing else", async () => {
+    const { forgetHomeSessionCookies } = await import("./browser-session-policy.js");
+    const jar = [
+      { name: "opensteer.session", domain: "127.0.0.1", path: "/", secure: false },
+      { name: "__Host-opensteer.session", domain: "route.example.com", path: "/", secure: true },
+      { name: "opensteer.admission", domain: "localhost", path: "/", secure: false },
+      { name: "better-auth.session_token", domain: "localhost", path: "/", secure: false },
+      { name: "theirs", domain: "127.0.0.1", path: "/", secure: false },
+    ];
+    const removed: string[] = [];
+    await forgetHomeSessionCookies({
+      cookies: {
+        get: async () => jar,
+        remove: async (url: string, name: string) => {
+          removed.push(`${name}@${url}`);
+        },
+      },
+    } as never);
+    expect(removed).toEqual([
+      "opensteer.session@http://127.0.0.1/",
+      "__Host-opensteer.session@https://route.example.com/",
+      "opensteer.admission@http://localhost/",
+    ]);
+  });
 });

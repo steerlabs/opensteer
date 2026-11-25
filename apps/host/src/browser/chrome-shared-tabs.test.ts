@@ -19,7 +19,7 @@ import {
 } from "@opensteer/protocol/standard-cdp";
 import type { OpensteerStore } from "@opensteer/database";
 import { SessionCdpRouter } from "@opensteer/browser-runtime-core";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ChromeSharedTabs } from "./chrome-shared-tabs.js";
 import { ChromeTabBackend } from "./chrome-tab-backend.js";
 
@@ -749,4 +749,79 @@ it("names no shared tab on an address of this Home to any agent, a connected age
   } finally {
     source.close();
   }
+});
+
+describe("a shared Chrome tab's agent never touches the Home's own cookies in the person's Chrome (G3)", () => {
+  const home = { origins: ["https://home.example.com"], loopbackPorts: [4310] };
+  const setup = async () => {
+    const tab = shared();
+    const peer = chromePeer((frame) => backend.read(frame));
+    const backend = new ChromeTabBackend(
+      peer.write,
+      () => {},
+      () => home,
+    );
+    backend.update(tab);
+    const page = await backend.attach(tab.targetId);
+    return { peer, page };
+  };
+
+  it("reads the page's cookies without the Home's, chosen by the Home's addresses", async () => {
+    const { peer, page } = await setup();
+    peer.onCommand.mockImplementation(() => ({
+      cookies: [
+        { name: "__Host-opensteer.session", domain: "home.example.com", value: "s" },
+        { name: "anything", domain: ".home.example.com", value: "s" },
+        { name: "opensteer.session", domain: "127.0.0.1", value: "s" },
+        // A local site of the person's own on the loopback host, and another site's own cookie
+        // that happens to share a name prefix: both stay (finding 9).
+        { name: "theirs", domain: "127.0.0.1", value: "kept" },
+        { name: "better-auth.session_token", domain: "web.test", value: "kept" },
+        { name: "opensteer.session", domain: "web.test", value: "kept" },
+      ],
+    }));
+    for (const method of ["Network.getCookies", "Network.getAllCookies", "Storage.getCookies"]) {
+      const read = (await page.send(method, {})) as { cookies: { name: string; domain: string }[] };
+      expect(
+        read.cookies.map(({ name, domain }) => `${name}@${domain}`),
+        method,
+      ).toEqual([
+        "theirs@127.0.0.1",
+        "better-auth.session_token@web.test",
+        "opensteer.session@web.test",
+      ]);
+    }
+  });
+
+  it("refuses to write, overwrite, delete or clear the Home's cookies, or load the Home with them", async () => {
+    const { peer, page } = await setup();
+    const refusals: [string, Record<string, unknown>][] = [
+      [
+        "Network.setCookie",
+        { name: "__Host-opensteer.session", value: "x", url: "https://home.example.com/" },
+      ],
+      ["Network.setCookie", { name: "opensteer.session", value: "x", domain: "127.0.0.1" }],
+      ["Network.deleteCookies", { name: "__Host-opensteer.session", domain: "home.example.com" }],
+      ["Network.deleteCookies", { name: "opensteer.session", url: "http://localhost:4310/" }],
+      ["Network.setCookies", { cookies: [{ name: "a", value: "b", domain: "home.example.com" }] }],
+      [
+        "Storage.setCookies",
+        { cookies: [{ name: "opensteer.session", value: "b", domain: "localhost" }] },
+      ],
+      ["Page.deleteCookie", { cookieName: "x", url: "https://home.example.com/" }],
+      ["Network.clearBrowserCookies", {}],
+      ["Storage.clearCookies", {}],
+      ["Network.loadNetworkResource", { url: "https://home.example.com/v1/me", options: {} }],
+      ["Network.loadNetworkResource", { url: "http://127.0.0.1:4310/v1/me", options: {} }],
+    ];
+    for (const [method, params] of refusals)
+      await expect(page.send(method, params), method).rejects.toMatchObject({ code: "forbidden" });
+    expect(peer.commands).toEqual([]);
+    // Another site's cookies are the page's to change, as before.
+    await page.send("Network.setCookie", { name: "theirs", value: "x", url: "https://web.test/" });
+    await page.send("Network.deleteCookies", { name: "theirs", url: "http://127.0.0.1:5173/" });
+    expect(
+      peer.commands.map((command) => ("method" in command ? command.method : command.action)),
+    ).toEqual(["Network.setCookie", "Network.deleteCookies"]);
+  });
 });

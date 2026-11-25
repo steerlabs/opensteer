@@ -471,38 +471,37 @@ The connection is confined (`packages/browser-core/src/portable-session-cdp-rout
   (update Opensteer on that device; `browser_use` still works).
 - It closes on Stop, Disconnect, expiry, a lowered mode or any grant change.
 
-**No tab an agent drives is on this Home.** A page on an address of this Home (its canonical
-origin, its current remote route, loopback on the ports the Host listens on; `ThisHomeAddressSet`
-in `@opensteer/shared/homeAddress`) does not exist to any agent's work, a connected agent's or a Run
-of the person's own agents. Rule 1 decides it (`authorizePageAddress`); the Host holds the set in
-memory (`apps/host/src/browser/home-addresses.ts`). The set is each browser runtime's own state:
-the Home sends it (`home.addresses`) when the runtime is ready and again before a route change can
-take effect (the set holds the old and the new route until the change commits or is given up), and
-no command reaches a runtime until it has answered that revision applied; a new shared Chrome tab
-attachment carries it, and a route change ends those attachments. An agent's navigation, new tab
-and history step there are refused as any refused address; such a page is not listed, attached,
-woken, filled or pictured; a page that commits one by any route ends the agent's channels to it, an
-attach that answers after it committed one is refused, and no command runs on it. A page is
-agent-controlled only while a live owner holds it, asked at the moment of each effect: a channel, a
-script, a client or a lineage, or an agent's open from its create call until its first load has
-settled (a popup inherits the holders of its opener at that instant, that open included; never a
-session's root). A relay's page sessions on a session's root are the relay's own in the runtime
-(`Opensteer.openRelay`, `relayId` on each command, `Opensteer.closeRelay`): no other relay names
-one in any position of a command, and its end ends them all there in one act, attaches still
-pending included; the Home keeps no list of them. Every CDP reply and event an agent gets passes
-one filter that drops the Home's cookies from cookie reads, request and response headers and
-cookie issues (`homeCookieCarriers` in `portable-session-cdp-router.ts`). The Home asks the same of
-a popup it records: it is an agent's only while an agent binding holds its opener now. In the Mac's browser a page any agent holds also cannot navigate, frame, redirect
-or open a window there and sends the Home no cookie, nor the Home's cookies to any loopback
-port (a Mac keeps them by host); a shared Chrome tab an agent drives has session
-rules, from the same address list, that block its pages, requests and web sockets to the Home. No
-response of the Home renders inside a frame (`frame-ancestors 'none'`, `X-Frame-Options: DENY`), except
-an app the Home frames itself. A dev server on another loopback port is not this Home. Accepted as
-they are: a service worker's own request has no page, so neither browser line sees it (the Home's
-frame headers and its Origin check on changes cover it); a window a shared Chrome tab opens to the
-Home is the person's own tab, which no agent can drive.
-What this costs, by decision: a Run of the person's own agent that opens this Home's own web pages
-is refused (the owner may overturn it).
+**The Home's authority is out of an agent's reach.** The Home's addresses (its canonical origin,
+its current remote route, loopback on the ports the Host listens on; `ThisHomeAddressSet` in
+`@opensteer/shared/homeAddress`) are held by the Host in memory
+(`apps/host/src/browser/home-addresses.ts`) and reach each browser as plain state: in the attach
+ticket, before its first page loads, and as `home.addresses` when the route changes.
+
+- **A browser the Home owns** (the Mac's Electron profiles, a Runner's browser, the pool's) loads
+  none of them, for anyone: every request to one, from a page, popup, frame, redirect hop, worker
+  or service worker, the person's or an agent's, is refused at the lowest layer each has (Electron's
+  session `onBeforeRequest`; one browser-level `Fetch` rule over the Home's own hosts and ports in
+  the Chromium runtime), and a refused page says where the Home opens instead. Nobody signs in to
+  the Home there, so its session cookie never exists in those profiles (a profile from before
+  loses it once at start). There is nothing to mark, hold or filter.
+- **A Chrome tab the person shares** is the one place the Home's real cookie lives: from attach to
+  detach the extension blocks the tab's requests to the Home's addresses, does not attach a tab
+  or popup on one, and lets the tab go when the person takes it there; the Host refuses that tab's
+  cookie writes, deletes and clears that reach the Home's cookies, and drops them from its cookie
+  reads, by the Home's addresses (`chrome-tab-backend.ts`). For a Home on this computer's loopback,
+  where every local site shares the host, the Home's session cookie leaves that Chrome profile
+  while any attachment lives and cannot come back (its Set-Cookie is dropped); for an HTTPS Home it
+  is `__Host-` and `SameSite=Lax`, which no other site's request carries.
+- **The Home itself** answers a request authenticated by its cookie only from its own page: an
+  Origin, when sent, is the Home's own, and Sec-Fetch-Site, when sent, is `same-origin` or `none`,
+  for a read as for a change and on every cookie socket (`HostAuthenticator`). No response of the
+  Home renders inside a frame (`frame-ancestors 'none'`, `X-Frame-Options: DENY`), except an app the
+  Home frames itself.
+  A command a Run's relay sends to a session's root that needs a page names a page session: nothing
+  falls back to whatever page a browser would pick. A dev server on another loopback port is not this
+  Home. What this costs, by decision: nobody, the person included, opens the Home's own web pages in a
+  browser the Home owns (they open in the Opensteer app or the person's own browser), and a loopback
+  Home's page in Chrome is signed out while an agent is attached to a tab of that profile.
 
 Through the browser, in `browser_use`, `browser_connect` or a Run in its lineage, a connected agent
 sends only the CDP methods a standard client may, reads a shared Chrome tab's own cookies only, and

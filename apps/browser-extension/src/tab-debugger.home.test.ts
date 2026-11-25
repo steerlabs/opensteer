@@ -50,6 +50,24 @@ async function fixture(
       rules.remove.push(...(options.removeRuleIds ?? []));
     },
   );
+  // The person's Chrome: signed in to the Home on loopback and on its route, and to a local site.
+  const jar = [
+    { name: "opensteer.session", domain: "127.0.0.1", path: "/", secure: false },
+    { name: "opensteer.admission", domain: "localhost", path: "/", secure: false },
+    { name: "__Host-opensteer.session", domain: "home.example.com", path: "/", secure: true },
+    { name: "theirs", domain: "127.0.0.1", path: "/", secure: false },
+  ] as ChromeCookie[];
+  const removed: string[] = [];
+  const cookies = {
+    getAll: vi.fn(async () => {
+      order.push("cookies");
+      return jar;
+    }),
+    remove: vi.fn(async (details: { url: string; name: string }) => {
+      removed.push(`${details.name}@${details.url}`);
+      return details;
+    }),
+  };
   const relay = new ChromeTabDebugger(
     {
       attach,
@@ -76,6 +94,7 @@ async function fixture(
     },
     { onCreatedNavigationTarget: onCreated },
     { updateSessionRules, getSessionRules: async () => leftBehind.map((id) => ({ id })) },
+    cookies,
   );
   const assembly = new BrowserSourceTabAssembly();
   const replies = new Map<
@@ -127,6 +146,7 @@ async function fixture(
     attach,
     detach,
     order,
+    removed,
     rules,
     onCreated,
     onUpdated,
@@ -171,10 +191,10 @@ describe("ChromeTabDebugger: a shared tab an agent drives may not be on an addre
       });
     });
 
-  it("blocks the Home's addresses for the tab before the debugger attaches, and lifts it at detach", async () => {
+  it("blocks the Home's addresses for the tab and signs the Home out of this Chrome before the debugger attaches, and lifts it at detach", async () => {
     const f = await fixture();
     expect((await f.evaluate()).ok).toBe(true);
-    expect(f.order.slice(0, 2)).toEqual(["rules", "attach"]);
+    expect(f.order.slice(0, 3)).toEqual(["rules", "cookies", "attach"]);
     expect(f.rules.remove).toEqual([]);
     const of = (type: string) =>
       f.rules.add
@@ -182,19 +202,35 @@ describe("ChromeTabDebugger: a shared tab an agent drives may not be on an addre
         .map((rule) => new RegExp(rule.condition.regexFilter, "u"));
     const patterns = of("block");
     const blocked = (url: string) => patterns.some((pattern) => pattern.test(url));
-    // M4: the tab sends no cookie to any loopback destination (a whole-header removal).
-    const cookieless = of("modifyHeaders");
-    for (const url of ["http://localhost:5173/", "http://127.0.0.1:3000/x", "ws://[::1]:8080/"])
+    // G3: for a Home on loopback, its session cookie leaves the whole profile, under every loopback
+    // name, and its loopback answers set none again while an agent is attached. Nothing else goes.
+    expect(f.removed).toEqual([
+      "opensteer.session@http://127.0.0.1/",
+      "opensteer.admission@http://localhost/",
+    ]);
+    const signOut = of("modifyHeaders");
+    for (const url of [
+      "http://127.0.0.1:4310/",
+      "http://localhost:4310/sign-in",
+      "http://[::1]:4310/",
+    ])
       expect(
-        cookieless.some((pattern) => pattern.test(url)),
+        signOut.some((pattern) => pattern.test(url)),
         url,
       ).toBe(true);
-    expect(cookieless.some((pattern) => pattern.test("https://web.test/"))).toBe(false);
-    for (const rule of f.rules.add.filter((entry) => entry.action.type === "modifyHeaders"))
+    for (const url of ["http://localhost:5173/", "https://web.test/", "https://home.example.com/"])
+      expect(
+        signOut.some((pattern) => pattern.test(url)),
+        url,
+      ).toBe(false);
+    for (const rule of f.rules.add.filter((entry) => entry.action.type === "modifyHeaders")) {
       expect(rule.action).toEqual({
         type: "modifyHeaders",
-        requestHeaders: [{ header: "cookie", operation: "remove" }],
+        responseHeaders: [{ header: "set-cookie", operation: "remove" }],
       });
+      // The whole profile: a popup or a service worker of the tab is no other tab's rule.
+      expect(rule.condition.tabIds).toBeUndefined();
+    }
     for (const url of [
       "https://home.example.com/",
       "wss://home.example.com/v1/realtime",
@@ -210,12 +246,12 @@ describe("ChromeTabDebugger: a shared tab an agent drives may not be on an addre
       expect(blocked(url), url).toBe(true);
     for (const url of ["http://localhost:5173/", "https://web.test/", "http://127.0.0.1:43100/"])
       expect(blocked(url), url).toBe(false);
-    for (const rule of f.rules.add) {
+    for (const rule of f.rules.add.filter((entry) => entry.action.type === "block")) {
       expect(rule.condition.tabIds).toEqual([5]);
       expect(rule.condition.resourceTypes).toContain("main_frame");
       expect(rule.condition.resourceTypes).toContain("sub_frame");
       expect(rule.condition.resourceTypes).toContain("xmlhttprequest");
-      expect(["block", "modifyHeaders"]).toContain(rule.action.type);
+      expect(rule.action.type).toBe("block");
     }
     await f.send({
       action: "detach",
@@ -309,7 +345,7 @@ describe("ChromeTabDebugger: a shared tab an agent drives may not be on an addre
   it("removes the rules a previous service worker left before it adds its own", async () => {
     const f = await fixture("https://fixture.test/", [1, 2, 7]);
     expect((await f.evaluate()).ok).toBe(true);
-    expect(f.order.slice(0, 3)).toEqual(["unrules", "rules", "attach"]);
+    expect(f.order.slice(0, 4)).toEqual(["unrules", "rules", "cookies", "attach"]);
     expect(f.rules.remove).toEqual([1, 2, 7]);
   });
 

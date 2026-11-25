@@ -777,8 +777,9 @@ export function authorizeTarget(
  *   (`agent`) or a Run of the person's own agents (`native`): a tab an agent drives may not be on
  *   it, so it is neither listed, opened nor reached there, and reads exactly as an absent page or
  *   a refused address.
- *   `home` is the set the Host holds now; it is null only where the caller judges a recorded
- *   place, which keeps a site and never a page of this Home.
+ *   `home` is the set the Host holds now, where an agent works in the person's own browser (a
+ *   shared Chrome tab, G3); none where no page of the Home loads at all (a browser the Home owns,
+ *   G1) or for a recorded place, which keeps a site and never a page of this Home.
  * The person sees every page.
  */
 export function authorizePageAddress(
@@ -786,10 +787,10 @@ export function authorizePageAddress(
   // and whose work it is.
   execution: {
     readonly agentConnection: object | null;
-    readonly actor: ExecutionAuthority["actor"];
+    readonly actor?: ExecutionAuthority["actor"];
   },
   url: unknown,
-  home: ThisHomeAddressSet | null,
+  home: ThisHomeAddressSet | null = null,
 ): boolean {
   if (execution.agentConnection !== null && isExtensionUrl(url)) return false;
   return execution.actor === "person" || home === null || !home.includes(url);

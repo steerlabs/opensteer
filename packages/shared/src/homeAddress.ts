@@ -150,6 +150,17 @@ export class ThisHomeAddressSet {
       const port = url.port ? `:${url.port}` : `(?::${secure ? 443 : 80})?`;
       patterns.push(`^${schemes}://${userinfo}${escapeRegex(url.hostname)}\\.?${port}${end}`);
     }
+    return [...patterns, ...this.loopbackRequestPatterns()];
+  }
+
+  /**
+   * The patterns for every loopback spelling on each of the Home's own ports: where a Home on this
+   * computer answers, and where its session cookie comes from.
+   */
+  loopbackRequestPatterns(): string[] {
+    const userinfo = "(?:[^/?#@]*@)?";
+    const end = "(?:[/?#]|$)";
+    const patterns: string[] = [];
     // One pattern per spelling: a browser compiles each rule's pattern within a small budget.
     for (const port of this.#ports)
       for (const spelling of loopbackSpellings) {
@@ -195,31 +206,21 @@ export function isLoopbackUrl(value: string): boolean {
   }
 }
 
-/** Request patterns (RE2) for every loopback spelling on any port, from the same list. */
-export function loopbackRequestPatterns(): string[] {
-  return loopbackSpellings.map(
-    (spelling) => `^(?:https?|wss?)://(?:[^/?#@]*@)?${spelling}\\.?(?::[0-9]+)?(?:[/?#]|$)`,
-  );
-}
-
 /**
- * The Home's own cookies, by name: its session (`opensteer.session`, `__Host-opensteer.session`),
- * its sign-in admission, its app gateway's, an integration authorization's binding, and the
- * identity library's own.
+ * This Home's own sign-in cookies, by name: its session (`opensteer.session`, and
+ * `__Host-opensteer.session` on HTTPS), its sign-in admission, and an integration authorization's
+ * binding. What lets a browser act as the person at the Home; no other site's cookie is named so.
  */
-export function isHomeCookieName(name: string): boolean {
-  return /^(?:__Host-|__Secure-)?(?:opensteer|better-auth)[._-]/u.test(name.trim());
+export const homeSessionCookieNamePattern =
+  /^(?:__Host-|__Secure-)?opensteer(?:\.session|\.admission|_integration_authorization_[0-9a-f_]+)$/u;
+
+export function isHomeSessionCookieName(name: string): boolean {
+  return homeSessionCookieNamePattern.test(name.trim());
 }
 
-/** A Cookie header without the Home's own cookies; the page's other cookies stay. */
-export function withoutHomeCookies(header: string): string {
-  return header
-    .split(";")
-    .filter((pair) => !isHomeCookieName(pair.split("=", 1)[0] ?? ""))
-    .map((pair) => pair.trim())
-    .filter(Boolean)
-    .join("; ");
-}
+/** What a browser the Home owns shows in place of one of the Home's pages (G1; AGENTS.md rule 8). */
+export const homeElsewhereText =
+  "This is your Opensteer Home. Open it in the Opensteer app or in your own browser.";
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");

@@ -6,12 +6,10 @@ import { ThisHomeAddressSet } from "@opensteer/shared/homeAddress";
  * remote route's origin, and loopback on the ports this Host listens on itself (a loopback
  * address on any other port is a dev server, not this Home). Rule 1 (`authorizePageAddress`)
  * keeps a tab an agent drives off them; sign-in admission (`sign-in-admission.ts`) refuses their
- * sites; every browser runtime holds them as its own state, sent before a route takes effect
- * (`BrowserService.pushHomeAddresses`).
+ * sites; every attach ticket carries them to the browser (`browser-ticket.ts`).
  *
- * `current()` reads nothing: the route is held from the last `refresh()`, which runs at startup,
- * and from `prepare`/`publish` around every change of the route
- * (`PersonalRemoteAccessService.configure`), so the hot paths
+ * `current()` reads nothing: the route is held from the last `refresh()`, which runs at startup
+ * and after every change of the route (`PersonalRemoteAccessService.configure`), so the hot paths
  * of the person's own agents issue no statement for it.
  */
 export class HomeAddressBook {
@@ -19,7 +17,6 @@ export class HomeAddressBook {
   readonly #loopbackPorts: readonly number[];
   readonly #readRoute: () => Promise<string | null>;
   #route: string | null = null;
-  #incoming: string | null = null;
   #set: ThisHomeAddressSet;
 
   constructor(options: {
@@ -51,49 +48,20 @@ export class HomeAddressBook {
   }
 
   /**
-   * A route about to be committed: until it is, or the change is given up, the set holds both the
-   * current route and that one, so the browsers can be told before the new route takes effect.
-   * Returns whether the set changed.
-   */
-  prepare(routeOrigin: string | null): boolean {
-    return this.#change(() => {
-      this.#incoming = routeOrigin;
-    });
-  }
-
-  /** The change that `prepare` announced was not committed. Returns whether the set changed. */
-  abandon(): boolean {
-    return this.#change(() => {
-      this.#incoming = null;
-    });
-  }
-
-  /**
    * The route a committed change left (null: Remote access off). Returns whether the set changed,
-   * so the browsers can be told.
+   * so the agents attached under the old one can be made to attach again.
    */
   publish(routeOrigin: string | null): boolean {
-    return this.#change(() => {
-      this.#route = routeOrigin;
-      this.#incoming = null;
-    });
-  }
-
-  #change(apply: () => void): boolean {
     const before = JSON.stringify(this.#set);
-    apply();
-    const next = this.#build();
-    if (JSON.stringify(next) === before) return false;
-    this.#set = next;
-    return true;
+    this.#route = routeOrigin;
+    this.#set = this.#build();
+    return JSON.stringify(this.#set) !== before;
   }
 
   #build(): ThisHomeAddressSet {
-    return new ThisHomeAddressSet({
-      origins: [
-        this.#canonicalOrigin,
-        ...[this.#route, this.#incoming].filter((origin): origin is string => !!origin),
-      ],
+    return thisHomeAddresses({
+      canonicalOrigin: this.#canonicalOrigin,
+      routeOrigin: this.#route,
       loopbackPorts: this.#loopbackPorts,
     });
   }

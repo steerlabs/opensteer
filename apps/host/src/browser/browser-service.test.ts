@@ -1,4 +1,3 @@
-import { ThisHomeAddressSet } from "@opensteer/shared/homeAddress";
 import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import { RunnerIdSchema, type DeviceId } from "@opensteer/core";
 import { DeviceIdSchema } from "@opensteer/core";
@@ -123,7 +122,6 @@ function runnerTarget(options: {
   readonly editing?: boolean | 1 | 2 | undefined;
   readonly clipboard?: boolean | undefined;
   readonly connectionCommands?: boolean;
-  readonly actorClaim?: boolean;
   readonly tabRestoreVersion?: boolean;
   readonly environmentIds?: readonly EnvironmentId[];
   readonly label?: string;
@@ -176,7 +174,6 @@ function runnerTarget(options: {
             localProfileStorage: fixtureStorage,
             main: true,
             ...(options.connectionCommands ? { connectionCommands: true } : {}),
-            ...(options.actorClaim ? { actorClaim: true } : {}),
             navigationVersion: options.navigationVersion ?? false,
             navigationAttributionVersion: options.navigationAttributionVersion ?? false,
             passkeys: options.passkeys === true,
@@ -5611,11 +5608,8 @@ function freshService(options: {
   readonly repository: MemoryBrowserRepository;
   readonly runtime: { readonly url: URL };
   readonly tabs?: TabStore;
-  readonly homeAddresses?: () => ThisHomeAddressSet;
-  readonly actorClaim?: boolean;
 }): BrowserService {
   const service = new BrowserService({
-    ...(options.homeAddresses ? { homeAddresses: options.homeAddresses } : {}),
     ...(options.requireAgentAccess ? { requireAgentAccess: options.requireAgentAccess } : {}),
     ...(options.tabs
       ? {
@@ -5655,7 +5649,6 @@ function freshService(options: {
       editing: options.editing,
       clipboard: options.clipboard,
       connectionCommands: options.connectionCommands === true,
-      actorClaim: options.actorClaim === true,
     }),
   });
   cleanups.push(async () => service.close());
@@ -6401,8 +6394,6 @@ async function startFakeRuntime(
     readonly core?: { runtime: BrowserRuntime; verifier: FakeTicketVerifier; sink: FakeSink };
     readonly beforeInitialSnapshot?: readonly Record<string, unknown>[];
     readonly deferInitialSnapshot?: boolean;
-    /** The test answers `home.addresses` itself, when it chooses (item 1). */
-    readonly manualAddresses?: boolean;
     readonly initialTabCount?: number;
     readonly initialDialog?: Record<string, unknown> | null;
     readonly inputLanes?: boolean;
@@ -6650,23 +6641,6 @@ async function startFakeRuntime(
       if (isBinary) return;
       const command = JSON.parse(raw.toString()) as Record<string, unknown>;
       receivedCommands.push(command);
-      // A runtime answers the Home's own state messages at once, as the real one does: its
-      // addresses (item 1) and a relay's opening and end (II).
-      if (command.type === "home.addresses" && !options.manualAddresses) {
-        socket.send(JSON.stringify({ type: "home.addresses.applied", revision: command.revision }));
-        return;
-      }
-      const relayMethod = (command.command as { method?: unknown } | undefined)?.method;
-      if (
-        command.type === "cdp.command" &&
-        (relayMethod === browserHostMethods.openRelay ||
-          relayMethod === browserHostMethods.closeRelay)
-      ) {
-        socket.send(
-          JSON.stringify({ type: "cdp.result", requestId: command.requestId, result: {} }),
-        );
-        return;
-      }
       const waiter = waiters.shift();
       if (waiter) waiter(command);
       else commands.push(command);
@@ -9215,238 +9189,6 @@ it.each([
   },
 );
 
-it("records no popup of a tab a Run holds on an address of this Home for the task, and closes it; once the Run ends, closes none (B3, item 6)", async () => {
-  const keys = generateKeyPairSync("ed25519");
-  const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-  const ownerId = createId("user");
-  const repository = new MemoryBrowserRepository(ownerId);
-  const memory = memoryTabs();
-  vi.spyOn(repository, "listBrowserSessionViewers").mockResolvedValue({ userIds: [ownerId] });
-  const service = new BrowserService({
-    ...nativeProfileOptions(),
-    ...profileStateOptions,
-    repository,
-    signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
-    targetResolver: runnerTarget({ url: runtime.url, tabRestoreVersion: true }),
-    tabs: memory.store,
-    tabPlaces: { write: async () => false, notice: () => {} },
-    homeAddresses: () =>
-      new ThisHomeAddressSet({ origins: ["https://home.example.com"], loopbackPorts: [4310] }),
-  });
-  cleanups.push(() => service.close());
-  const taskId = createId("thread");
-  const descriptor = await service.pageTabs.open(
-    { kind: "person", ownerId },
-    { kind: "page", guest: true, url: "about:blank" },
-    "opener",
-  );
-  await memory.add({ ...descriptor, openedBy: { taskId } });
-  const opener = descriptor.id;
-  const row = (id: string, url: string, order: number) =>
-    BrowserTabRecordSchema.parse({
-      id,
-      state: "live",
-      title: id,
-      url,
-      icon: null,
-      order,
-      openerId: opener,
-      documentId: `document-${id}`,
-      geometryRevision: 0,
-      loading: false,
-      navigationFailed: false,
-      canGoBack: false,
-      canGoForward: false,
-      sizedByAgent: false,
-    });
-  const closes: string[] = [];
-  void (async () => {
-    for (;;) {
-      const command = (await runtime.nextCommand()) as {
-        type?: unknown;
-        requestId?: unknown;
-        command?: { method?: unknown; parameters?: Record<string, unknown> };
-      };
-      if (command.type !== "cdp.command") continue;
-      const closing = command.command?.method === browserHostMethods.closeTab;
-      if (closing) closes.push(String(command.command?.parameters?.surfaceId));
-      runtime.sendServer({
-        type: "cdp.result",
-        requestId: command.requestId,
-        result: closing ? { outcome: "tab-closed" } : {},
-      });
-    }
-  })().catch(() => undefined);
-  runtime.sendServer({ type: "browser.tabs", stream: { op: "begin", generation: "popups" } });
-  runtime.sendServer({
-    type: "browser.tabs",
-    stream: { op: "end", revision: 1, count: 0, meta: { activeId: null, inventoryRevision: 1 } },
-  });
-  runtime.sendServer({ type: "browser.tabs", stream: { op: "begin", generation: "popups" } });
-  runtime.sendServer({
-    type: "browser.tabs",
-    stream: { op: "end", revision: 1, count: 0, meta: { activeId: null, inventoryRevision: 1 } },
-  });
-  // A Run of the task holds the tab now: its popups are the Run's (item 6 asks this, not who
-  // opened the tab once).
-  const runId = createId("run");
-  repository.resolveResourceAccess = async () => ({
-    access: "read-write",
-    runAccess: "read-write",
-    grantAccess: "read-write",
-    execution: {
-      ownerUserId: ownerId,
-      subject: { kind: "binding", bindingId: `run:${runId}` },
-      actor: "native",
-      threadId: taskId,
-      runId,
-      agentConnection: null,
-      taskMode: "full-access",
-      runMode: "full-access",
-      mode: "full-access",
-    },
-  });
-  await service.bindPage(
-    {
-      requestedBy: ownerId,
-      runId,
-      threadId: taskId,
-    } as unknown as import("../agents/run-tool-tokens.js").RunToolScope,
-    memory.rows.get(opener)!,
-  );
-  runtime.sendServer({
-    type: "browser.tabs",
-    stream: {
-      op: "change",
-      generation: "popups",
-      base: 1,
-      revision: 2,
-      add: [
-        row("page-home", "http://127.0.0.1:4310/settings", 10),
-        row("page-web", "https://popup.test/", 11),
-      ],
-    },
-  });
-  // The rows reach the session's inventory first; a flush then writes their descriptors.
-  await vi.waitFor(() =>
-    expect(service.pageInventory(descriptor.pageBinding!.sessionId)?.records.size).toBe(2),
-  );
-  await service.flushPendingTabDescriptors();
-  await vi.waitFor(() => expect(memory.rows.has("page-web")).toBe(true), { timeout: 3000 });
-  // While the Run holds the tab, its popup on the Home is neither the task's tab nor kept open.
-  expect(memory.rows.has("page-home")).toBe(false);
-  expect(memory.rows.get("page-web")?.openedBy).toEqual({ taskId });
-  await vi.waitFor(() => expect(closes).toContain("page-home"), { timeout: 3000 });
-  // The Run ends: the tab is no agent's now, whoever opened it, and its popup on the Home is the
-  // person's, and stays (item 6).
-  await service.detachAgentSessionsForBinding(`run:${runId}`);
-  runtime.sendServer({
-    type: "browser.tabs",
-    stream: {
-      op: "change",
-      generation: "popups",
-      base: 2,
-      revision: 3,
-      add: [row("page-person-home", "https://home.example.com/", 12)],
-    },
-  });
-  await vi.waitFor(() =>
-    expect(service.pageInventory(descriptor.pageBinding!.sessionId)?.records.size).toBe(3),
-  );
-  await service.flushPendingTabDescriptors();
-  await vi.waitFor(() => expect(memory.rows.has("page-person-home")).toBe(true), {
-    timeout: 6000,
-  });
-  expect(closes).not.toContain("page-person-home");
-});
-
-it("closes no popup the person opens from a tab a task opened once, after that task let it go (item 6)", async () => {
-  const keys = generateKeyPairSync("ed25519");
-  const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-  const ownerId = createId("user");
-  const repository = new MemoryBrowserRepository(ownerId);
-  const memory = memoryTabs();
-  vi.spyOn(repository, "listBrowserSessionViewers").mockResolvedValue({ userIds: [ownerId] });
-  const service = new BrowserService({
-    ...nativeProfileOptions(),
-    ...profileStateOptions,
-    repository,
-    signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
-    targetResolver: runnerTarget({ url: runtime.url, tabRestoreVersion: true }),
-    tabs: memory.store,
-    tabPlaces: { write: async () => false, notice: () => {} },
-    homeAddresses: () =>
-      new ThisHomeAddressSet({ origins: ["https://home.example.com"], loopbackPorts: [4310] }),
-  });
-  cleanups.push(() => service.close());
-  const taskId = createId("thread");
-  const descriptor = await service.pageTabs.open(
-    { kind: "person", ownerId },
-    { kind: "page", guest: true, url: "about:blank" },
-    "opener",
-  );
-  await memory.add({ ...descriptor, openedBy: { taskId } });
-  const opener = descriptor.id;
-  const row = (id: string, url: string, order: number) =>
-    BrowserTabRecordSchema.parse({
-      id,
-      state: "live",
-      title: id,
-      url,
-      icon: null,
-      order,
-      openerId: opener,
-      documentId: `document-${id}`,
-      geometryRevision: 0,
-      loading: false,
-      navigationFailed: false,
-      canGoBack: false,
-      canGoForward: false,
-      sizedByAgent: false,
-    });
-  const closes: string[] = [];
-  void (async () => {
-    for (;;) {
-      const command = (await runtime.nextCommand()) as {
-        type?: unknown;
-        requestId?: unknown;
-        command?: { method?: unknown; parameters?: Record<string, unknown> };
-      };
-      if (command.type !== "cdp.command") continue;
-      const closing = command.command?.method === browserHostMethods.closeTab;
-      if (closing) closes.push(String(command.command?.parameters?.surfaceId));
-      runtime.sendServer({
-        type: "cdp.result",
-        requestId: command.requestId,
-        result: closing ? { outcome: "tab-closed" } : {},
-      });
-    }
-  })().catch(() => undefined);
-  runtime.sendServer({ type: "browser.tabs", stream: { op: "begin", generation: "popups" } });
-  runtime.sendServer({
-    type: "browser.tabs",
-    stream: { op: "end", revision: 1, count: 0, meta: { activeId: null, inventoryRevision: 1 } },
-  });
-  runtime.sendServer({
-    type: "browser.tabs",
-    stream: {
-      op: "change",
-      generation: "popups",
-      base: 1,
-      revision: 2,
-      add: [row("page-home", "http://127.0.0.1:4310/settings", 10)],
-    },
-  });
-  // No Run holds the task's tab any more (its binding ended): the page's popup is the person's.
-  await vi.waitFor(() =>
-    expect(service.pageInventory(descriptor.pageBinding!.sessionId)?.records.size).toBe(1),
-  );
-  await service.flushPendingTabDescriptors();
-  // Recorded, not closed: the close would have come before any record of it.
-  await vi.waitFor(() => expect(memory.rows.has("page-home")).toBe(true), { timeout: 3000 });
-  expect(closes).not.toContain("page-home");
-});
-
 function memoryTabs() {
   const rows = new Map<string, TabRecord>();
   const add = async (write: TabWrite) => {
@@ -10023,18 +9765,6 @@ describe("work under a connection's authority never uses the clipboard or change
       { ...authority, sessionId: opened.session.id },
       () => undefined,
     );
-    // The page session these commands go to is one this relay opened (M5).
-    const attach = cdp.request({
-      method: "Target.attachToTarget",
-      parameters: { targetId: "page-1", flatten: true },
-    });
-    const attachCommand = await runtime.nextCommand();
-    runtime.sendServer({
-      type: "cdp.result",
-      requestId: attachCommand.requestId,
-      result: { sessionId: "cdp-page-1" },
-    });
-    await attach;
     /** Sends one command and answers it as the browser, returning what reached the runtime. */
     const forwarded = async (method: string, parameters: Record<string, unknown>) => {
       const request = cdp.request({ method, parameters, sessionId: "cdp-page-1" });
@@ -11251,14 +10981,7 @@ describe("work under a connection's authority never uses the clipboard or change
     const repository = new MemoryBrowserRepository(ownerId);
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-    const home = new ThisHomeAddressSet({ origins: [], loopbackPorts: [4310] });
-    const service = freshService({
-      keys,
-      runtime,
-      repository,
-      surfaceState,
-      homeAddresses: () => home,
-    });
+    const service = freshService({ keys, runtime, repository, surfaceState });
     cleanups.push(async () => service.close());
     const profile = await repository.createBrowserProfile({ ownerId, name });
     const binding = { agentBindingId: `run:${runId}`, ownerId };
@@ -11439,12 +11162,12 @@ describe("work under a connection's authority never uses the clipboard or change
    * Generated sequences on one shared root: two connected subscribers and one of your own agents
    * on one Browser Session. Random attaches, creates and resumes answered or refused in any order;
    * their own detaches, destroys and crashes before and after the reply; their own tabs going web
-   * -> extension or this Home -> web; auto-attached children; page events and nested replies on their
+   * -> extension -> web; auto-attached children; page events and nested replies on their
    * sessions; web tabs announced at the root; a close in mid-flight; and foreign churn (extension
    * pages, service workers and their sessions, other targets' ends, target-less detaches,
    * browser-level events). After every step a connected subscriber may receive no id of the
    * other's sessions or unannounced targets, of an extension's targets or sessions, and no
-   * extension address nor this Home's; at the end each of its own events arrived exactly as often as it happened
+   * extension address; at the end each of its own events arrived exactly as often as it happened
    * (none while its tab was on an extension page: E1), none of a refused command's, none after
    * its close. Your own agent's subscriber hears every event the runtime sent, as before. Bounds:
    * churn stays below 4,096 terminal events inside any one create's or resume's wait (the bound
@@ -11461,24 +11184,14 @@ describe("work under a connection's authority never uses the clipboard or change
       };
     };
     const { runtime, attach } = await connectedRootAttachment("Generated Profile", true);
-    // A closed subscriber's relay detaches the page sessions it opened (M1, M5): those cleanups are
-    // kept apart from the commands a step waits for.
-    const cleanups: string[] = [];
     const nextCdp = async () => {
       for (;;) {
         const command = await runtime.nextCommand();
-        if (command.type !== "cdp.command") continue;
-        const sent = command.command as { method?: unknown; parameters?: { sessionId?: unknown } };
-        if (sent.method === "Target.detachFromTarget") {
-          cleanups.push(String(sent.parameters?.sessionId));
-          continue;
-        }
-        return command;
+        if (command.type === "cdp.command") return command;
       }
     };
     const failures: string[] = [];
     const extensionUrl = (id: number) => `chrome-extension://${"e".repeat(32)}/p-${id}.html`;
-    const homeUrl = (id: number) => `http://127.0.0.1:4310/p-${id}`;
     for (let seed = 1; seed <= 30 && failures.length === 0; seed += 1) {
       const random = prng(seed);
       const pick = <T>(values: readonly T[]): T | undefined =>
@@ -11672,7 +11385,7 @@ describe("work under a connection's authority never uses the clipboard or change
             target.destroyed = true;
           }
         },
-        // Its own tab goes to an extension page or to this Home, or back to the web.
+        // Its own tab goes to an extension page, or back to the web.
         (sub) => {
           const target = pick(sub.targets.filter((t) => !t.destroyed));
           if (!target) return;
@@ -11683,11 +11396,7 @@ describe("work under a connection's authority never uses the clipboard or change
             targetInfo: {
               targetId: target.id,
               type: "page",
-              url: target.hidden
-                ? random() < 0.5
-                  ? extensionUrl(++serial)
-                  : homeUrl(++serial)
-                : `https://back-${++serial}.test/`,
+              url: target.hidden ? extensionUrl(++serial) : `https://back-${++serial}.test/`,
             },
           });
         },
@@ -11856,7 +11565,6 @@ describe("work under a connection's authority never uses the clipboard or change
           sub.checked = sub.events.length;
           const leaked =
             (fresh.includes("chrome-extension:") && "an extension's address") ||
-            (fresh.includes("127.0.0.1:4310") && "this Home's address") ||
             [/"tgt-ext-\d+"/u, /"cdp_ext_\d+"/u, /"tgt-churn-\d+"/u, /"cdp_churn_\d+"/u]
               .map((pattern) => fresh.match(pattern)?.[0])
               .find(Boolean) ||
@@ -11991,142 +11699,6 @@ describe("work under a connection's authority never uses the clipboard or change
       ).toEqual(kept ? [own] : []);
       attached.close();
     }
-  });
-
-  describe("a browser runtime holds this Home's addresses and owns a relay's page sessions (items 1, 5)", () => {
-    const setup = async (manualAddresses = false) => {
-      const ownerId = createId("user");
-      const repository = new MemoryBrowserRepository(ownerId);
-      const keys = generateKeyPairSync("ed25519");
-      const runtime = await startFakeRuntime(keys.publicKey, "host-primary", { manualAddresses });
-      const book = {
-        set: new ThisHomeAddressSet({ origins: ["http://127.0.0.1:4310"], loopbackPorts: [4310] }),
-      };
-      const service = freshService({
-        keys,
-        runtime,
-        repository,
-        actorClaim: true,
-        homeAddresses: () => book.set,
-      });
-      cleanups.push(async () => service.close());
-      const profile = await repository.createBrowserProfile({ ownerId, name: "Route Profile" });
-      const agent = { agentBindingId: `run:${createId("run")}`, ownerId };
-      repository.resolveResourceAccess = async () => ({
-        access: "read-write",
-        runAccess: "read-write",
-        grantAccess: "read-write",
-        execution: {
-          ownerUserId: ownerId,
-          subject: { kind: "binding", bindingId: agent.agentBindingId },
-          actor: "native",
-          threadId: createId("thread"),
-          runId: createId("run"),
-          agentConnection: null,
-          taskMode: "full-access",
-          runMode: "full-access",
-          mode: "full-access",
-        },
-      });
-      const opened = await service.openAgentSession({ ...agent, profileId: profile.id });
-      const attach = () =>
-        service.attachCdpForAgent(
-          { ...agent, sessionId: opened.session.id },
-          () => undefined,
-          () => undefined,
-        );
-      const next = async (type: string) => {
-        for (;;) {
-          const command = await runtime.nextCommand();
-          if (command.type === type) return command;
-        }
-      };
-      return { runtime, service, book, attach, next, agent };
-    };
-
-    it("relays no agent's command until the runtime has applied the Home's current addresses (item 1)", async () => {
-      const { runtime, service, book, attach, next } = await setup(true);
-      const applied = (command: Record<string, unknown>) =>
-        runtime.sendServer({ type: "home.addresses.applied", revision: command.revision });
-      // The runtime is told the set as it becomes ready.
-      const ready = await next("home.addresses");
-      expect(ready.homeAddresses).toEqual(book.set.toJSON());
-      applied(ready);
-      const relay = await attach();
-      // The person turns Remote access on, on a warm browser: the runtime is told before the
-      // route takes effect, and an agent's wake waits for its answer.
-      book.set = new ThisHomeAddressSet({
-        origins: ["http://127.0.0.1:4310", "https://route.opensteer.test"],
-        loopbackPorts: [4310],
-      });
-      const pushed = service.pushHomeAddresses();
-      const told = await next("home.addresses");
-      expect(told.homeAddresses).toEqual(book.set.toJSON());
-      const waking = relay.request({
-        method: "Target.attachToTarget",
-        parameters: { targetId: "page-1", flatten: true },
-      });
-      void waking.catch(() => undefined);
-      for (let turn = 0; turn < 10; turn += 1) await new Promise((done) => setImmediate(done));
-      expect(
-        runtime
-          .receivedCommands()
-          .filter(
-            (command) =>
-              command.type === "cdp.command" &&
-              (command.command as { method: string }).method === "Target.attachToTarget",
-          ),
-      ).toEqual([]);
-      applied(told);
-      await pushed;
-      const attachCommand = await next("cdp.command");
-      expect((attachCommand.command as { method: string }).method).toBe("Target.attachToTarget");
-      // No command carries the set any more: it is the runtime's own.
-      expect(attachCommand).not.toHaveProperty("homeAddresses");
-      runtime.sendServer({ type: "cdp.result", requestId: attachCommand.requestId, result: {} });
-      await waking;
-    });
-
-    it("opens a relay in its runtime, names it on every command, and ends it there with the Run (item 5)", async () => {
-      const { runtime, service, attach, next, agent } = await setup();
-      const relay = await attach();
-      const relayCommands = (method: string) =>
-        runtime
-          .receivedCommands()
-          .filter(
-            (command) =>
-              command.type === "cdp.command" &&
-              (command.command as { method: string }).method === method,
-          );
-      await vi.waitFor(() => expect(relayCommands(browserHostMethods.openRelay)).toHaveLength(1));
-      const relayId = relayCommands(browserHostMethods.openRelay)[0]!.relayId;
-      expect(typeof relayId).toBe("string");
-      // A session the relay names is checked against it in the runtime, which answers for it: the
-      // Home keeps no list of them.
-      const sending = relay.request({
-        method: "Runtime.evaluate",
-        parameters: { expression: "1" },
-        sessionId: "another-relays-session",
-      });
-      void sending.catch(() => undefined);
-      const forwarded = await next("cdp.command");
-      expect(forwarded.relayId).toBe(relayId);
-      runtime.sendServer({
-        type: "cdp.error",
-        requestId: forwarded.requestId,
-        error: {
-          code: "not_found",
-          message: "CDP session is not attached here.",
-          retryable: false,
-          unsent: true,
-        },
-      });
-      await expect(sending).rejects.toMatchObject({ code: "not_found" });
-      // The Run ends: its relay ends in its runtime in one act, pending attaches included.
-      await service.detachAgentSessionsForBinding(agent.agentBindingId);
-      await vi.waitFor(() => expect(relayCommands(browserHostMethods.closeRelay)).toHaveLength(1));
-      expect(relayCommands(browserHostMethods.closeRelay)[0]!.relayId).toBe(relayId);
-    });
   });
 
   it("delivers nothing to a connection's shared-root attachment after its Disconnect or its binding's end", async () => {

@@ -128,8 +128,6 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
   readonly #disconnectRunners: () => Promise<void>;
   readonly #accountLinkChanged: () => void;
   readonly #routeChanged: (routeOrigin: string | null) => void;
-  readonly #routeChanging: (routeOrigin: string | null) => Promise<void>;
-  readonly #routeKept: () => void;
 
   constructor(options: {
     readonly authority: PersonalHostAccountAuthority;
@@ -153,13 +151,6 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
      * Remote access is off): this Home's addresses are published from it, never read again.
      */
     readonly onRouteChanged?: (routeOrigin: string | null) => void;
-    /**
-     * Called before a change of the route is committed, with the route asked for (null: Remote
-     * access off), and awaited: this Home's addresses take it in before it can take effect.
-     * `committed` says how it ended: `onRouteChanged` follows a commit, `onRouteKept` any other end.
-     */
-    readonly onRouteChanging?: (routeOrigin: string | null) => Promise<void>;
-    readonly onRouteKept?: () => void;
   }) {
     this.desktopUpdates = new PersonalDesktopUpdate(
       new PersonalDesktopUpdateStore(options.database),
@@ -181,8 +172,6 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     this.#disconnectRunners = options.disconnectRunners ?? (async () => undefined);
     this.#accountLinkChanged = options.onAccountLinkChanged ?? (() => undefined);
     this.#routeChanged = options.onRouteChanged ?? (() => undefined);
-    this.#routeChanging = options.onRouteChanging ?? (async () => undefined);
-    this.#routeKept = options.onRouteKept ?? (() => undefined);
   }
 
   status(): Promise<PersonalRemoteAccessStatus> {
@@ -248,81 +237,75 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     let reconfigured = false;
     let committedRoute: string | null = null;
     let ended: readonly AuthSessionId[] = [];
-    // The browsers hold the route asked for before it can be committed (item 1).
-    await this.#routeChanging(request.mode === "off" ? null : (request.routeOrigin ?? null));
-    try {
-      await this.#database.transaction().execute(async (transaction) => {
-        await lockRemoteAccess(transaction);
-        const current = await transaction
-          .selectFrom("personalRemoteAccess")
-          .selectAll()
-          .where("singletonKey", "=", "personal")
-          .forNoKeyUpdate()
-          .executeTakeFirstOrThrow();
-        const account = await transaction
-          .selectFrom("personalRemoteAccountLink")
-          .select(["singletonKey", "state", "accountOperation"])
-          .where("singletonKey", "=", "opensteer-account")
-          .forShare()
-          .executeTakeFirst();
-        if (
-          request.mode === "connect" &&
-          (account?.state !== "active" || account.accountOperation?.kind === "unlink")
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Link an Opensteer Account before enabling Connect",
-          });
-        }
-        const unchanged =
-          current.mode === request.mode && current.routeOrigin === request.routeOrigin;
-        if (unchanged) {
-          await requestSettlementActor(transaction, caller.session.user.id, caller.session.id);
-          return;
-        }
-        // An executor's step (AD10): the Mac app carries out a `personal.remoteAccess.request` the
-        // door admitted, so the change stands only while that operation is unfinished and asks for
-        // this mode. Turning it on is the person's to approve, there, never here.
-        await requireRemoteAccessOperation(transaction, request.mode);
-        const generation = Number(current.generation) + 1;
-        if (!Number.isSafeInteger(generation)) {
-          throw new OpensteerError({ code: "conflict", message: "Route generation is exhausted" });
-        }
-        // Revocation and the generation change commit together. A stale cookie
-        // cannot outlive this transaction even if connector shutdown is delayed.
-        ended = await revokeRemoteSessions(transaction, caller.session);
-        await transaction
-          .selectFrom("personalRemotePairingCodes")
-          .select("id")
-          .orderBy("id", "asc")
-          // FOR UPDATE: the following statements delete these rows.
-          .forUpdate()
-          .execute();
-        await transaction.deleteFrom("personalRemotePairingCodes").execute();
-        await transaction
-          .selectFrom("personalRemoteSessionGrantUses")
-          .select("grantId")
-          .orderBy("grantId", "asc")
-          // FOR UPDATE: the following statement deletes these rows.
-          .forUpdate()
-          .execute();
-        await transaction.deleteFrom("personalRemoteSessionGrantUses").execute();
-        await transaction
-          .updateTable("personalRemoteAccess")
-          .set({
-            generation,
-            mode: request.mode,
-            routeOrigin: request.routeOrigin,
-            updatedAt: this.#now(),
-          })
-          .where("singletonKey", "=", "personal")
-          .executeTakeFirstOrThrow();
-        reconfigured = true;
-        committedRoute = request.mode === "off" ? null : (request.routeOrigin ?? null);
-      });
-    } finally {
-      if (!reconfigured) this.#routeKept();
-    }
+    await this.#database.transaction().execute(async (transaction) => {
+      await lockRemoteAccess(transaction);
+      const current = await transaction
+        .selectFrom("personalRemoteAccess")
+        .selectAll()
+        .where("singletonKey", "=", "personal")
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      const account = await transaction
+        .selectFrom("personalRemoteAccountLink")
+        .select(["singletonKey", "state", "accountOperation"])
+        .where("singletonKey", "=", "opensteer-account")
+        .forShare()
+        .executeTakeFirst();
+      if (
+        request.mode === "connect" &&
+        (account?.state !== "active" || account.accountOperation?.kind === "unlink")
+      ) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Link an Opensteer Account before enabling Connect",
+        });
+      }
+      const unchanged =
+        current.mode === request.mode && current.routeOrigin === request.routeOrigin;
+      if (unchanged) {
+        await requestSettlementActor(transaction, caller.session.user.id, caller.session.id);
+        return;
+      }
+      // An executor's step (AD10): the Mac app carries out a `personal.remoteAccess.request` the
+      // door admitted, so the change stands only while that operation is unfinished and asks for
+      // this mode. Turning it on is the person's to approve, there, never here.
+      await requireRemoteAccessOperation(transaction, request.mode);
+      const generation = Number(current.generation) + 1;
+      if (!Number.isSafeInteger(generation)) {
+        throw new OpensteerError({ code: "conflict", message: "Route generation is exhausted" });
+      }
+      // Revocation and the generation change commit together. A stale cookie
+      // cannot outlive this transaction even if connector shutdown is delayed.
+      ended = await revokeRemoteSessions(transaction, caller.session);
+      await transaction
+        .selectFrom("personalRemotePairingCodes")
+        .select("id")
+        .orderBy("id", "asc")
+        // FOR UPDATE: the following statements delete these rows.
+        .forUpdate()
+        .execute();
+      await transaction.deleteFrom("personalRemotePairingCodes").execute();
+      await transaction
+        .selectFrom("personalRemoteSessionGrantUses")
+        .select("grantId")
+        .orderBy("grantId", "asc")
+        // FOR UPDATE: the following statement deletes these rows.
+        .forUpdate()
+        .execute();
+      await transaction.deleteFrom("personalRemoteSessionGrantUses").execute();
+      await transaction
+        .updateTable("personalRemoteAccess")
+        .set({
+          generation,
+          mode: request.mode,
+          routeOrigin: request.routeOrigin,
+          updatedAt: this.#now(),
+        })
+        .where("singletonKey", "=", "personal")
+        .executeTakeFirstOrThrow();
+      reconfigured = true;
+      committedRoute = request.mode === "off" ? null : (request.routeOrigin ?? null);
+    });
     // Their browser and realtime connections end with the logins, after commit.
     const announce = () => this.#identity.announceSessionsEnded(ended);
     if (afterResponse) afterResponse(announce);

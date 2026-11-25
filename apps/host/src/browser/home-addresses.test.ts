@@ -43,32 +43,6 @@ describe("HomeAddressBook", () => {
     expect(readRoute).not.toHaveBeenCalled();
   });
 
-  it("holds a route asked for before it is committed, until committed or given up (item 1)", () => {
-    const book = new HomeAddressBook({
-      canonicalOrigin: new URL("http://127.0.0.1:4310"),
-      listenPort: 4310,
-      readRoute: async () => null,
-    });
-    book.publish("https://old.opensteer.test");
-    const before = book.current();
-    // Asked for: both routes are this Home's until the change ends.
-    expect(book.prepare("https://new.opensteer.test")).toBe(true);
-    expect(book.current().includes("https://old.opensteer.test/")).toBe(true);
-    expect(book.current().includes("https://new.opensteer.test/")).toBe(true);
-    // Given up: the set is the old one again.
-    expect(book.abandon()).toBe(true);
-    expect(book.current().toJSON()).toEqual(before.toJSON());
-    // Committed: only the new route.
-    book.prepare("https://new.opensteer.test");
-    expect(book.publish("https://new.opensteer.test")).toBe(true);
-    expect(book.current().includes("https://old.opensteer.test/")).toBe(false);
-    // A change that changes nothing keeps the same set: one set per change, told once.
-    const same = book.current();
-    expect(book.publish("https://new.opensteer.test")).toBe(false);
-    expect(book.prepare(null)).toBe(false);
-    expect(book.current()).toBe(same);
-  });
-
   it("counts the listen port and a loopback canonical origin's own port", () => {
     const book = new HomeAddressBook({
       canonicalOrigin: new URL("http://localhost:8080"),

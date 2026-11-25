@@ -10,7 +10,6 @@ import {
   type CdpChannel,
   type CdpParameters,
 } from "@opensteer/browser-core";
-import { ThisHomeAddressSet, noHomeAddresses } from "@opensteer/shared/homeAddress";
 import { type BrowserCookie } from "@opensteer/browser-profile";
 import {
   BrowserPaintTimeoutError,
@@ -48,6 +47,7 @@ import {
   browserPagePolicyScriptFor,
 } from "@opensteer/browser-runtime-core/page-policy";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { ThisHomeAddressSet, noHomeAddresses } from "@opensteer/shared/homeAddress";
 import {
   app,
   ipcMain,
@@ -84,6 +84,9 @@ import { mayReachExtensionResource } from "./extensions/web-accessible.js";
 import { boundPageRestore, ElectronPageRestoreSchema, WakeSeeds } from "./page-restore.js";
 import {
   applyBrowserSessionPolicy,
+  forgetHomeSessionCookies,
+  homeElsewhereText,
+  takeHomeRefusal,
   bindBrowserSessionRequestGate,
   browserAcceptLanguages,
   browserIdentity,
@@ -168,13 +171,6 @@ export function electronBrowserPartition(partitionKey: BrowserPartitionKey): str
   return `opensteer-browser-${createHash("sha256").update(partitionKey).digest("hex").slice(0, 32)}`;
 }
 
-/** How a page reports agent control to its launcher, and reads this Home's addresses. */
-interface ElectronAgentHooks {
-  onWebContents(webContentsId: number, controlled: boolean): void;
-  home(): ThisHomeAddressSet;
-  setHome(home: ThisHomeAddressSet): void;
-}
-
 /** Electron-native BrowserEngine used only by the connected desktop composition root. */
 export class ElectronBrowserLauncher implements BrowserLauncher {
   readonly hostCost = "partition";
@@ -182,14 +178,12 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   readonly #methods = new Map<number, string>();
   readonly #uploads = new Map<number, number>();
   readonly #connectionWebContents = new Set<number>();
-  /** Pages any agent's channel or binding holds now, by WebContents (D3). */
-  readonly #agentWebContents = new Set<number>();
-  /** This Home's addresses, as its last attach ticket carried them; none before one has. */
-  #home = new ThisHomeAddressSet(noHomeAddresses);
   readonly #authenticator: PasskeyAuthenticator | undefined;
   readonly #clipboard: EngineClipboard | undefined;
   readonly #downloads: ElectronBrowserLauncherOptions["downloads"];
   readonly #configuredSessions = new WeakSet<Session>();
+  /** This Home's addresses: no page of any browser profile here loads one (G1). */
+  #home = new ThisHomeAddressSet(noHomeAddresses);
   readonly #pagePolicyPreloadPath: string;
   readonly #views: ElectronBrowserViewPool;
   readonly #localProfileRoot: string | undefined;
@@ -386,7 +380,9 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
         if (controlled) this.#connectionWebContents.add(id);
         else this.#connectionWebContents.delete(id);
       },
-      agent: this.#agentHooks(),
+      setHomeAddresses: (home) => {
+        this.#home = home;
+      },
       profileSession,
       ...(authenticator ? { authenticator } : {}),
     });
@@ -421,26 +417,11 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
         if (controlled) this.#connectionWebContents.add(id);
         else this.#connectionWebContents.delete(id);
       },
-      agent: this.#agentHooks(),
       profileSession,
       ...(authenticator ? { authenticator } : {}),
       ...(localProfile ? { localProfile } : {}),
       ...(onPageTiming ? { onPageTiming } : {}),
     });
-  }
-
-  /** How a page tells this launcher an agent holds it, and asks this Home's addresses. */
-  #agentHooks(): ElectronAgentHooks {
-    return {
-      onWebContents: (id, controlled) => {
-        if (controlled) this.#agentWebContents.add(id);
-        else this.#agentWebContents.delete(id);
-      },
-      home: () => this.#home,
-      setHome: (home) => {
-        this.#home = home;
-      },
-    };
   }
 
   #configureSession(
@@ -456,7 +437,6 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     applyBrowserSessionPolicy(profileSession, {
       acceptLanguages: browserAcceptLanguages(app.getPreferredSystemLanguages()),
       isConnectionWebContents: (id) => this.#connectionWebContents.has(id),
-      isAgentWebContents: (id) => this.#agentWebContents.has(id),
       homeAddresses: () => this.#home,
       onMainFrameRequest: (id, method) => {
         if (this.#methods.has(id)) this.#methods.set(id, method);
@@ -471,6 +451,8 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       ...(requestGate ? { requestGate } : {}),
     });
     this.#configuredSessions.add(profileSession);
+    // A profile from before G1 may hold this Home's session cookie: it goes, once (G1).
+    void forgetHomeSessionCookies(profileSession).catch(() => undefined);
   }
 
   #protection(contents: WebContents) {
@@ -844,7 +826,8 @@ interface ElectronBrowserContextOptions {
   ) => ElectronBrowserView;
   readonly createHelper: (options: ElectronBrowserViewOptions) => WebContentsView;
   readonly onConnectionWebContents?: (webContentsId: number, controlled: boolean) => void;
-  readonly agent?: ElectronAgentHooks;
+  /** This Home's addresses, as the Home last told this browser: kept by the launcher (G1). */
+  readonly setHomeAddresses?: (home: ThisHomeAddressSet) => void;
   readonly profileSession: Session;
   readonly localProfile?: ElectronLocalProfile;
   readonly onPageTiming?: PageOpenTiming;
@@ -865,7 +848,6 @@ class ElectronBrowserContext implements BrowserContext {
   readonly #pages = new Set<ElectronBrowserPage>();
   readonly #pagesByTargetId = new Map<string, ElectronBrowserPage>();
   readonly #connectionControlledTargets = new Set<string>();
-  readonly #agentControlledTargets = new Set<string>();
   readonly #handOffs = new Set<(page: BrowserPage, opener: BrowserPage | null) => void>();
   readonly #profileSession: Session;
   readonly #localProfile: ElectronLocalProfile | undefined;
@@ -891,6 +873,10 @@ class ElectronBrowserContext implements BrowserContext {
     screen.on("display-metrics-changed", this.#displayChanged);
     screen.on("display-added", this.#displayChanged);
     screen.on("display-removed", this.#displayChanged);
+  }
+  /** This Home's addresses, from its ticket or a route change (G1). */
+  setHomeAddresses(home: ThisHomeAddressSet): void {
+    this.#options.setHomeAddresses?.(home);
   }
 
   pages(): BrowserPage[] {
@@ -1057,35 +1043,6 @@ class ElectronBrowserContext implements BrowserContext {
       .catch(() => undefined);
   }
 
-  /**
-   * Target-level agent control (D3), driven by the router's hold counts as connection control
-   * is: a page any agent's channel or binding holds may not go to an address of this Home.
-   */
-  setTargetAgentControlled(targetId: string, controlled: boolean): void {
-    if (controlled) this.#agentControlledTargets.add(targetId);
-    else this.#agentControlledTargets.delete(targetId);
-    // A page whose target is already known is marked now, before anything it loads next.
-    const known =
-      this.#pagesByTargetId.get(targetId) ??
-      [...this.#pages].find((page) => page.knownTargetId() === targetId);
-    if (known) {
-      known.setAgentControlled(controlled);
-      return;
-    }
-    void this.pageByTargetId(targetId)
-      .then((page) => {
-        if (!page) return;
-        this.#pagesByTargetId.set(targetId, page);
-        page.setAgentControlled(this.#agentControlledTargets.has(targetId));
-      })
-      .catch(() => undefined);
-  }
-
-  /** The addresses of this Home, from the attach ticket the Home signed. */
-  setHomeAddresses(home: ThisHomeAddressSet): void {
-    this.#options.agent?.setHome(home);
-  }
-
   async targetInfos(): Promise<Record<string, unknown>[]> {
     return Promise.all(
       [...this.#pages].filter((page) => !page.isClosed()).map((page) => page.targetInfo()),
@@ -1128,7 +1085,6 @@ class ElectronBrowserContext implements BrowserContext {
         }
       },
       this.#options.onConnectionWebContents,
-      this.#options.agent,
     );
     this.#pages.add(page);
     for (const listener of this.#handOffs) listener(page, handOffOpener);
@@ -1152,7 +1108,6 @@ class ElectronBrowserContext implements BrowserContext {
         if (entry === page) {
           this.#pagesByTargetId.delete(id);
           this.#connectionControlledTargets.delete(id);
-          this.#agentControlledTargets.delete(id);
         }
       }
       void page
@@ -1160,7 +1115,6 @@ class ElectronBrowserContext implements BrowserContext {
         .then((targetId) => {
           this.#pagesByTargetId.delete(targetId);
           this.#connectionControlledTargets.delete(targetId);
-          this.#agentControlledTargets.delete(targetId);
           this.#events.emit("target", "Target.targetDestroyed", { targetId });
         })
         .catch(() => undefined);
@@ -1255,7 +1209,6 @@ class ElectronBrowserContext implements BrowserContext {
     if (targetId) {
       this.#pagesByTargetId.set(targetId, page);
       if (this.#connectionControlledTargets.has(targetId)) page.setConnectionControlled(true);
-      if (this.#agentControlledTargets.has(targetId)) page.setAgentControlled(true);
     }
     this.#events.emit("target", "Target.targetCreated", { targetInfo });
     this.#events.emit("page", page);
@@ -1268,8 +1221,6 @@ class ElectronBrowserContext implements BrowserContext {
     ) {
       page.setConnectionControlled(false);
     }
-    // Agent control is not released here: the router decides it from its holds when it hears
-    // this target's creation (no timer clears a mark, A2).
   }
 
   #securePreferences(wake = false): WebPreferences {
@@ -1489,11 +1440,8 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   #stalledSurfaceCopies = 0;
   #controlDown = false;
   #connectionControlled = false;
-  #agentControlled = false;
-  #knownTargetId: string | undefined;
   readonly #onConnectionWebContents:
     ((webContentsId: number, controlled: boolean) => void) | undefined;
-  readonly #agent: ElectronAgentHooks | undefined;
   #contextMenuTrigger: "person" | "agent" | null = null;
   #contextMenuCandidate: "person" | "agent" | null = null;
   #fullscreen = false;
@@ -1539,7 +1487,6 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       readonly referrer?: string;
     }) => void,
     onConnectionWebContents?: (webContentsId: number, controlled: boolean) => void,
-    agent?: ElectronAgentHooks,
   ) {
     this.view = view;
     this.initialLoad = initialLoad;
@@ -1548,15 +1495,11 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     this.#onPageCleanupFailure = onPageCleanupFailure;
     this.#openChild = openChild;
     this.#onConnectionWebContents = onConnectionWebContents;
-    this.#agent = agent;
     this.#protection = protection(view.webContents);
     if (opener?.isConnectionControlled()) this.setConnectionControlled(true);
-    // A window an agent's page opens is the agent's from its first request (D3).
-    if (opener?.isAgentControlled()) this.setAgentControlled(true);
     const webContentsId = view.webContents.id;
     view.webContents.once("destroyed", () => {
       this.#onConnectionWebContents?.(webContentsId, false);
-      this.#agent?.onWebContents(webContentsId, false);
     });
     // Electron installs a native message-box listener even with Page enabled.
     // The debugger and ledger own these dialogs for the page's entire lifetime.
@@ -1670,18 +1613,11 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     view.webContents.on("will-navigate", (event, url) => {
       if (
         !isAllowedBrowserNavigation(url, false, !this.#connectionControlled) ||
-        !mayPageReachExtension(pageContents, url, [event.initiator]) ||
-        // A page an agent holds goes to no address of this Home, a navigation that makes no
-        // request (a back-forward-cache history step) included (C5).
-        this.#agentOnHome(url)
+        !mayPageReachExtension(pageContents, url, [event.initiator])
       )
         event.preventDefault();
     });
     view.webContents.on("will-frame-navigate", (details) => {
-      if (this.#agentOnHome(details.url)) {
-        details.preventDefault();
-        return;
-      }
       if (!isExtensionUrl(details.url)) return;
       if (
         this.#connectionControlled ||
@@ -1734,10 +1670,6 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       if (pageSession) forgetExtensionNavigations(pageSession, pageId);
     });
     view.webContents.on("will-redirect", (event, url) => {
-      if (this.#agentOnHome(url)) {
-        event.preventDefault();
-        return;
-      }
       if (!isExtensionUrl(url)) return;
       const session = navigationSession();
       const frameTreeNodeId = frameTreeNodeIdOf(event.frame);
@@ -1839,6 +1771,16 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       });
     });
     view.webContents.on("did-fail-load", (_event, code, _text, _url, mainFrame) => {
+      // A page refused this Home's address says where the Home opens instead (G1).
+      if (mainFrame && takeHomeRefusal(view.webContents.id))
+        void view.webContents
+          .loadURL("about:blank")
+          .then(() =>
+            view.webContents.executeJavaScript(
+              `document.title = "Opensteer Home"; document.body.textContent = ${JSON.stringify(homeElsewhereText)};`,
+            ),
+          )
+          .catch(() => undefined);
       // An aborted navigation (ERR_ABORTED) gave way to another, whose own end follows, or to a
       // stop, which did-stop-loading ends. Any other failure committed an error page.
       if (mainFrame && code !== -3)
@@ -2907,11 +2849,6 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     return Promise.resolve(this.#opener);
   }
 
-  /** The target id, once `targetId()` has resolved it. */
-  knownTargetId(): string | undefined {
-    return this.#knownTargetId;
-  }
-
   targetId(): Promise<string> {
     this.#targetIdPromise ??= this.#hub.open("platform").then(async (channel) => {
       try {
@@ -2920,7 +2857,6 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
         if (typeof targetId !== "string" || targetId.length < 1 || targetId.length > 512) {
           throw new Error("Electron WebContents did not expose a valid CDP target ID.");
         }
-        this.#knownTargetId = targetId;
         return targetId;
       } finally {
         await channel.close();
@@ -2961,26 +2897,6 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       this.#onConnectionWebContents?.(this.#webContents.id, controlled);
   }
 
-  isAgentControlled(): boolean {
-    return this.#agentControlled;
-  }
-
-  /** This page is one an agent holds, and the address is one of this Home's. */
-  #agentOnHome(url: string): boolean {
-    return this.#agentControlled && this.#agent?.home().includes(url) === true;
-  }
-
-  /**
-   * Any agent holds this page (D3): its navigations, frame navigations, redirects and windows to
-   * an address of this Home are refused (`browser-session-policy.ts` by WebContents, and the
-   * window-open handler here), and it sends the Home no cookie.
-   */
-  setAgentControlled(controlled: boolean): void {
-    this.#agentControlled = controlled;
-    if (!this.#webContents.isDestroyed())
-      this.#agent?.onWebContents(this.#webContents.id, controlled);
-  }
-
   installPopupHandler(
     securePreferences: WebPreferences,
     create: (options: ElectronPopupWindowOptions, details: ElectronPopupDetails) => WebContents,
@@ -2988,9 +2904,6 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     const contents = this.#webContents;
     this.#webContents.setWindowOpenHandler((details) => {
       if (!isAllowedBrowserNavigation(details.url, true, !this.#connectionControlled))
-        return { action: "deny" };
-      // An agent's page opens no window on an address of this Home.
-      if (this.#agentControlled && this.#agent?.home().includes(details.url))
         return { action: "deny" };
       const opener = isExtensionUrl(details.url) ? windowOpenerVerdict(contents, details) : "allow";
       if (opener === "deny") return { action: "deny" };
@@ -4852,6 +4765,10 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
     });
   }
 
+  setHomeAddresses(home: ThisHomeAddressSet): void {
+    this.#context.setHomeAddresses(home);
+  }
+
   async attach(targetId: string): Promise<CdpChannel> {
     this.#assertOpen();
     const page = await this.#context.pageByTargetId(targetId);
@@ -4862,40 +4779,6 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
   setConnectionControlled(targetId: string, controlled: boolean): void {
     if (this.#closed) return;
     this.#context.setTargetConnectionControlled(targetId, controlled);
-  }
-
-  setAgentControlled(targetId: string, controlled: boolean): void {
-    if (this.#closed) return;
-    this.#context.setTargetAgentControlled(targetId, controlled);
-  }
-
-  /**
-   * An agent's new page: the router's hold marks it, in this one call, before its first load
-   * starts; the hold's release runs when that load settles (M1, M2).
-   */
-  async createAgentTarget(
-    parameters: CdpParameters,
-    hold: (targetId: string) => () => void,
-  ): Promise<{ readonly targetId: string }> {
-    this.#assertOpen();
-    const requestedContext = parameters.browserContextId;
-    if (requestedContext !== undefined && requestedContext !== "opensteer-electron-profile")
-      throw new Error("CDP target requested another browser context.");
-    const url = typeof parameters.url === "string" ? parameters.url : "about:blank";
-    if (!isAllowedBrowserNavigation(url))
-      throw new Error("Electron browser navigation scheme is not allowed.");
-    const page = (await this.#context.createPage()) as ElectronBrowserPage;
-    const targetId = await page.targetId();
-    const release = hold(targetId);
-    if (url === "about:blank") release();
-    // As CDP's own createTarget does, the tab loads in the background; a failed load stays
-    // visible in the tab.
-    else void page.loadInitialUrl(url).then(release, release);
-    return { targetId };
-  }
-
-  setHomeAddresses(home: ThisHomeAddressSet): void {
-    this.#context.setHomeAddresses(home);
   }
 
   assertScope(method: string, parameters: CdpParameters): void {

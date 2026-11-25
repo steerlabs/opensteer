@@ -12,17 +12,10 @@ export {
   standardCdpBufferedMaxBytes,
   standardCdpMaxPending,
 } from "./standard-cdp-limits.js";
+import { ThisHomeAddressSet, type ThisHomeAddresses } from "@opensteer/shared/homeAddress";
 import { contextScopedCdpMethods } from "./cdp-context.js";
 import { CdpProductIsolation } from "./cdp-product-isolation.js";
 import { ConnectionExtensionIsolation, isExtensionUrl } from "./connection-extension-isolation.js";
-import {
-  ThisHomeAddressSet,
-  isHomeCookieName,
-  withoutHomeCookies,
-  isLoopbackUrl,
-  noHomeAddresses,
-  type ThisHomeAddresses,
-} from "@opensteer/shared/homeAddress";
 import { boundedJsonSize, type JsonSizeBudget } from "./bounded-json.js";
 import { utf8Size } from "./bytes.js";
 import {
@@ -79,18 +72,6 @@ export interface CdpCommand {
    * extensions (`Extensions.loadUnpacked`, `Extensions.uninstall`). Never defaulted on.
    */
   readonly manageExtensions?: true;
-  /**
-   * The relay (a Run's or a connection's CDP over the Home) whose command this is, on a session's
-   * root. The page sessions it opens are its own: no other relay's command names them, and ending
-   * the relay ends them all here, attaches still pending included (II).
-   */
-  readonly relayId?: string;
-  /**
-   * The caller creates this page blank and loads its URL next itself: the router keeps the
-   * agent's open hold past the blank load, for the caller to take (`takeOpenHold`) and release
-   * when the real first load has settled (I).
-   */
-  readonly openThenLoad?: true;
 }
 
 export interface CdpEvent {
@@ -110,6 +91,11 @@ export interface CdpChannel {
 }
 
 export interface BrowserCdpBackend {
+  /**
+   * This Home's addresses, as the Home last told this browser: no page, frame, worker or service
+   * worker of any of its profiles loads one, the person's or an agent's (G1).
+   */
+  setHomeAddresses?(home: ThisHomeAddressSet): void | Promise<void>;
   readonly protectProductWorlds?: boolean;
   readonly allowsProfileCookieReads?: boolean;
   /** The browser keeps the profile's Chrome extensions and answers CDP's `Extensions` domain. */
@@ -123,24 +109,6 @@ export interface BrowserCdpBackend {
   attach(targetId: string, waitForPage?: boolean, signal?: AbortSignal): Promise<CdpChannel>;
   /** Notifies the backend when a target enters or leaves connected-agent control (M1a, S1). */
   setConnectionControlled?(targetId: string, controlled: boolean): void;
-  /**
-   * Notifies the backend when a target enters or leaves any agent's control: a connected agent's
-   * or one of the person's own agents' channel or binding holds it. A tab an agent drives may not
-   * be on an address of this Home; the backend refuses its navigations there. The router's holds
-   * are the only source of this mark (M1, M2): a backend never marks a page on its own.
-   */
-  setAgentControlled?(targetId: string, controlled: boolean): void;
-  /**
-   * Creates an agent's page and, before it starts its first load, calls `hold` with its target:
-   * holding is what marks it, in the same call. The release `hold` returns runs when that first
-   * load settles.
-   */
-  createAgentTarget?(
-    parameters: CdpParameters,
-    hold: (targetId: string) => () => void,
-  ): Promise<{ readonly targetId: string }>;
-  /** The addresses of this Home, as the Home last told this browser (`setHomeAddresses`). */
-  setHomeAddresses?(home: ThisHomeAddressSet): void;
   assertScope?(method: string, parameters: CdpParameters): void;
   scopeParameters?(method: string, parameters: CdpParameters): Promise<CdpParameters>;
   onEvent(listener: (method: string, parameters: CdpParameters) => void): () => void;
@@ -202,13 +170,6 @@ export class SessionCdpRouterError extends Error {
 
 interface AttachedChannel {
   readonly channel: CdpChannel;
-  /** On a session's root: the relay whose page session this is (II). */
-  owner?: string;
-  /**
-   * Popups of pages this channel holds, on a session root (which outlives every agent): held by
-   * this channel, so they end with it (M1).
-   */
-  heldPages?: Set<string>;
   /** Rejects once the router ends the session, answering every command still waiting on it. */
   readonly pending: Set<(reason: unknown) => void>;
   readonly ended: AbortController;
@@ -250,11 +211,6 @@ interface DiscoveryReplay {
 
 interface BrowserSessionState {
   readonly connections: Set<ConnectionState>;
-  /**
-   * The relays open on this session's root (II), from `openRelay` to `endRelay`: a page session
-   * there is opened and named only by the live relay that owns it. Nothing is kept once one ends.
-   */
-  readonly liveRelays: Set<string>;
   readonly scripts: Map<string, ConnectionState>;
   readonly adopting: Set<string>;
   readonly exclusiveWorkers: Set<string>;
@@ -321,12 +277,6 @@ interface ConnectionState extends TargetRoot {
    * one of these, its script's root, or a target one of its own channels is on (M1).
    */
   readonly shownTargets: Set<string>;
-  /**
-   * Pages this agent's state holds besides its lineage, its script's root and its channels: a page
-   * it created, and a popup of a page it holds (D3). Each is agent-controlled from its first
-   * instant until this state closes or the page ends; no timer releases one.
-   */
-  readonly heldPages: Set<string>;
   readonly aliases: Map<string, TargetRoot>;
   readonly eventListeners: Set<(event: CdpEvent) => void>;
   nextSequence: number;
@@ -334,181 +284,12 @@ interface ConnectionState extends TargetRoot {
 
 const standardJsonBudget = { maxBytes: Infinity, maxDepth: 32, maxEntries: 16_384 };
 
-/**
- * Every CDP reply and event that can carry a cookie's value (M4, item 7): the cookie reads, a
- * request's or response's headers (raw text included), a WebSocket handshake's, an intercepted
- * request's, and a cookie issue's raw line. `homeCookieCarriers.test.ts` walks this list. Nothing
- * else carries one: the Home's session cookie is HttpOnly, so no script reads it.
- */
-export const homeCookieCarriers: ReadonlySet<string> = new Set([
-  "Network.getCookies",
-  "Network.getAllCookies",
-  "Storage.getCookies",
-  "Page.getCookies",
-  "Network.loadNetworkResource",
-  "Network.requestWillBeSent",
-  "Network.requestWillBeSentExtraInfo",
-  "Network.responseReceived",
-  "Network.responseReceivedExtraInfo",
-  "Network.responseReceivedEarlyHints",
-  "Network.webSocketWillSendHandshakeRequest",
-  "Network.webSocketHandshakeResponseReceived",
-  "Network.requestIntercepted",
-  "Fetch.requestPaused",
-  "Fetch.authRequired",
-  "Audits.issueAdded",
-]);
-/** What a relay opens or names a page session with. */
-const relayOpeners = new Set([
-  "Target.attachToTarget",
-  "Target.createTarget",
-  "Target.sendMessageToTarget",
-  "Target.setAutoAttach",
-]);
-
-/**
- * The one place an agent's CDP reply or event loses the Home's own cookies, whoever the agent is
- * (a Run's script or relay, a connected agent's standard CDP, a shared Chrome tab), with or
- * without a page session: on a Mac they are kept for the loopback host, so a page on any loopback
- * port would read them as its own; on the Home's own addresses they are the person's sign-in.
- * A cookie object goes when it is named as one and kept for loopback or a Home host; a header or
- * cookie line (which names no host) loses every cookie named as the Home's. Other cookies stay.
- */
-export function withoutHomeCookieValues(
-  method: string,
-  value: unknown,
-  home: ThisHomeAddressSet,
-): unknown {
-  if (!homeCookieCarriers.has(method)) return value;
-  return scrubCookies(value, home, 0);
-}
-
-function scrubCookies(value: unknown, home: ThisHomeAddressSet, depth: number): unknown {
-  if (depth > 12 || value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) {
-    let changed = false;
-    const kept: unknown[] = [];
-    for (const entry of value) {
-      if (isHomeCookieEntry(entry, home)) {
-        changed = true;
-        continue;
-      }
-      const next = scrubHeaderEntry(entry) ?? scrubCookies(entry, home, depth + 1);
-      if (next !== entry) changed = true;
-      kept.push(next);
-    }
-    return changed ? kept : value;
-  }
-  let copy: Record<string, unknown> | undefined;
-  for (const [key, entry] of Object.entries(value)) {
-    const lower = key.toLowerCase();
-    let next = entry;
-    if (typeof entry === "string") {
-      if (lower === "cookie") next = withoutHomeCookies(entry);
-      else if (lower === "set-cookie") next = withoutHomeSetCookieLines(entry);
-      else if (lower === "headerstext" || lower === "requestheaderstext")
-        next = withoutHomeHeaderLines(entry);
-      else if (lower === "rawcookieline" || lower === "cookieline")
-        next =
-          cookieLineName(entry) !== undefined && isHomeCookieName(cookieLineName(entry)!)
-            ? ""
-            : entry;
-    } else next = scrubCookies(entry, home, depth + 1);
-    if (next !== entry) (copy ??= { ...(value as Record<string, unknown>) })[key] = next;
-  }
-  return copy ?? value;
-}
-
-/** A cookie object, or an entry holding one (`{cookie}`, `{cookieLine}`), that is the Home's. */
-function isHomeCookieEntry(entry: unknown, home: ThisHomeAddressSet): boolean {
-  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return false;
-  const record = entry as Record<string, unknown>;
-  if (typeof record.name === "string" && typeof record.domain === "string")
-    return isHomeCookie(record.name, record.domain, home);
-  const cookie = asRecord(record.cookie);
-  if (typeof cookie.name === "string")
-    return typeof cookie.domain === "string"
-      ? isHomeCookie(cookie.name, cookie.domain, home)
-      : isHomeCookieName(cookie.name);
-  const line =
-    typeof record.cookieLine === "string" ? cookieLineName(record.cookieLine) : undefined;
-  return line !== undefined && isHomeCookieName(line);
-}
-
-function isHomeCookie(name: string, domain: string, home: ThisHomeAddressSet): boolean {
-  if (!isHomeCookieName(name)) return false;
-  // A cookie names a host, never a port.
-  const host = domain.replace(/^\./u, "").replace(/\.$/u, "").toLowerCase();
-  return (
-    isLoopbackUrl(`http://${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}/`) ||
-    home.origins.some((origin) => new URL(origin).hostname === host)
-  );
-}
-
-/** A `{name, value}` header entry (`Fetch`'s) without the Home's cookies; undefined if not one. */
-function scrubHeaderEntry(entry: unknown): unknown {
-  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return undefined;
-  const { name, value } = entry as Record<string, unknown>;
-  if (typeof name !== "string" || typeof value !== "string") return undefined;
-  const lower = name.toLowerCase();
-  const next =
-    lower === "cookie"
-      ? withoutHomeCookies(value)
-      : lower === "set-cookie"
-        ? withoutHomeSetCookieLines(value)
-        : value;
-  return next === value ? entry : { ...(entry as Record<string, unknown>), value: next };
-}
-
-function cookieLineName(line: string): string | undefined {
-  const name = line.split("=", 1)[0]?.trim();
-  return name ? name : undefined;
-}
-
-/** `Set-Cookie` values, one per line as CDP joins them, without the Home's. */
-function withoutHomeSetCookieLines(value: string): string {
-  const lines = value.split("\n");
-  const kept = lines.filter((line) => !isHomeCookieName(cookieLineName(line) ?? ""));
-  return kept.length === lines.length ? value : kept.join("\n");
-}
-
-/** Raw header text without the Home's cookies in its `Cookie` and `Set-Cookie` lines. */
-function withoutHomeHeaderLines(text: string): string {
-  const lines = text.split(/\r?\n/u);
-  let changed = false;
-  const kept: string[] = [];
-  for (const line of lines) {
-    const colon = line.indexOf(":");
-    const name = colon < 0 ? "" : line.slice(0, colon).trim().toLowerCase();
-    if (name === "cookie") {
-      const cookies = withoutHomeCookies(line.slice(colon + 1));
-      if (cookies !== line.slice(colon + 1).trim()) changed = true;
-      kept.push(`${line.slice(0, colon)}: ${cookies}`);
-    } else if (
-      name === "set-cookie" &&
-      isHomeCookieName(cookieLineName(line.slice(colon + 1)) ?? "")
-    ) {
-      changed = true;
-    } else kept.push(line);
-  }
-  return changed ? kept.join("\r\n") : text;
-}
-
-/**
- * Whether any string in a (bounded) CDP value is an extension's address (when `extensions`) or an
- * address of this Home.
- */
-function mentionsHiddenUrl(
-  value: unknown,
-  depth: number,
-  home: ThisHomeAddressSet,
-  extensions = true,
-): boolean {
-  if (typeof value === "string")
-    return (extensions && isExtensionUrl(value)) || home.includesReported(value);
+/** Whether any string in a (bounded) CDP value is an extension's address. */
+function mentionsExtensionUrl(value: unknown, depth: number): boolean {
+  if (typeof value === "string") return isExtensionUrl(value);
   if (depth > 16 || value === null || typeof value !== "object") return false;
   for (const entry of Array.isArray(value) ? value : Object.values(value))
-    if (mentionsHiddenUrl(entry, depth + 1, home, extensions)) return true;
+    if (mentionsExtensionUrl(entry, depth + 1)) return true;
   return false;
 }
 
@@ -600,23 +381,6 @@ export class SessionCdpRouter {
   readonly #browserRootLimits: SessionCdpRouterLimits;
   readonly #ownerByTargetId = new Map<string, TargetClaim>();
   readonly #connectionTargetCounts = new Map<string, number>();
-  readonly #agentTargetCounts = new Map<string, number>();
-  /** Agents' opens, each holding its page and its popups until its first load settles (I). */
-  readonly #openOwners = new Set<{ readonly held: Set<string> }>();
-  /** Opens a caller loads itself, kept for it past the blank load (`takeOpenHold`). */
-  readonly #openHolds = new Map<string, () => void>();
-  /** This Home's addresses, as the Home last told this browser; none until it has. */
-  #home = new ThisHomeAddressSet(noHomeAddresses);
-  /** Targets whose page the browser last reported on an address of this Home. */
-  readonly #homeTargets = new Set<string>();
-  /**
-   * Pages one of whose frames committed an address of this Home, with the page's address then
-   * (C3): refused like a page on one until its frame tree holds no such frame or the page goes
-   * elsewhere.
-   */
-  readonly #homeFramePages = new Map<string, unknown>();
-  /** The address each target last reported, while this Home's addresses are known. */
-  readonly #targetUrls = new Map<string, unknown>();
   readonly #workByTarget = new Map<string, Set<Promise<unknown>>>();
   #exclusive: ConnectionState | undefined;
   readonly #removeBackendListener: () => void;
@@ -686,7 +450,6 @@ export class SessionCdpRouter {
       ledgerDialogEvents: false,
       filesRoot,
       ownedTargetIds: new Set([rootTargetId]),
-      liveRelays: new Set(),
       rootTargetId,
       sessionId,
     };
@@ -773,202 +536,35 @@ export class SessionCdpRouter {
       retiredTargets: new Map(),
       hiddenTargets: new Set(),
       shownTargets: new Set(),
-      heldPages: new Set(),
       aliases: new Map(),
       ...targetRoot(standard === undefined),
       eventListeners: new Set(),
       nextSequence: 1,
     };
     session.connections.add(state);
-    if (state.lineagePages)
-      for (const targetId of state.lineagePages) this.#holdTarget(targetId, connection);
-    if (state.script) this.#holdTarget(state.script.root, connection);
+    if (connection) {
+      if (state.lineagePages)
+        for (const targetId of state.lineagePages) this.#retainConnectionTarget(targetId);
+      if (state.script) this.#retainConnectionTarget(state.script.root);
+    }
     return state;
   }
 
-  /**
-   * An agent's channel or binding holds this target: every one is counted as agent-controlled,
-   * a connection's also as connection-controlled. A count is a map entry, not a URL check, so the
-   * person's own agents pay nothing more on their command paths.
-   */
-  #holdTarget(targetId: string, connection: boolean): void {
-    const next = (this.#agentTargetCounts.get(targetId) ?? 0) + 1;
-    this.#agentTargetCounts.set(targetId, next);
-    if (next === 1) this.#backend.setAgentControlled?.(targetId, true);
-    if (!connection) return;
-    const held = (this.#connectionTargetCounts.get(targetId) ?? 0) + 1;
-    this.#connectionTargetCounts.set(targetId, held);
-    if (held === 1) this.#backend.setConnectionControlled?.(targetId, true);
+  #retainConnectionTarget(targetId: string): void {
+    const next = (this.#connectionTargetCounts.get(targetId) ?? 0) + 1;
+    this.#connectionTargetCounts.set(targetId, next);
+    if (next === 1) this.#backend.setConnectionControlled?.(targetId, true);
   }
 
-  /**
-   * A session's root state lives as long as the profile does, past every agent that sends through
-   * it: it holds a page only through its channels, which end when the agent detaches or its relay
-   * ends (M1).
-   */
-  #isSessionRoot(state: ConnectionState): boolean {
-    return this.#sessions.get(state.session.sessionId) === state;
-  }
-
-  /** Does this agent's state hold the target now: lineage, script root, a held page or a channel? */
-  #holds(state: ConnectionState, targetId: string): boolean {
-    if (state.closed.signal.aborted) return false;
-    if (state.lineagePages?.has(targetId) || state.script?.root === targetId) return true;
-    if (state.heldPages.has(targetId)) return true;
-    for (const attached of state.channels.values())
-      if (attached.physicalTargetId === targetId || attached.heldPages?.has(targetId)) return true;
-    return false;
-  }
-
-  /**
-   * A page a state that ends with its agent created, or a popup of a page it holds: held until the
-   * state closes or the page ends. A session root holds nothing this way.
-   */
-  #holdPage(state: ConnectionState, targetId: string): void {
-    if (state.closed.signal.aborted || this.#isSessionRoot(state)) return;
-    if (state.lineagePages?.has(targetId) || state.heldPages.has(targetId)) return;
-    state.heldPages.add(targetId);
-    this.#holdTarget(targetId, state.connection);
-  }
-
-  /** A popup of a page an agent's channel on a session root holds: held until that channel ends. */
-  #holdForChannel(attached: AttachedChannel, targetId: string): void {
-    attached.heldPages ??= new Set();
-    if (attached.heldPages.has(targetId)) return;
-    attached.heldPages.add(targetId);
-    this.#holdTarget(targetId, attached.connection);
-  }
-
-  /**
-   * The runtime's own hold on a page an agent opens (`Opensteer.openTab` for an agent): from
-   * before its first navigation until that open settles. The returned release is idempotent.
-   */
-  holdAgentPage(targetId: string): () => void {
-    // An open is an owner of its own: a popup its page opens during that first load is held by it
-    // too, and goes with it (I).
-    const owner = { held: new Set([targetId]) };
-    this.#openOwners.add(owner);
-    this.#holdTarget(targetId, false);
-    let held = true;
-    return () => {
-      if (!held) return;
-      held = false;
-      this.#openOwners.delete(owner);
-      for (const target of owner.held) this.#letGoTarget(target, false);
-      owner.held.clear();
-    };
-  }
-
-  /**
-   * The open hold a session root's `Target.createTarget` with `openThenLoad` kept for its caller,
-   * who releases it once the page's real first load has settled; undefined when there is none.
-   */
-  takeOpenHold(targetId: string): (() => void) | undefined {
-    const release = this.#openHolds.get(targetId);
-    this.#openHolds.delete(targetId);
-    return release;
-  }
-
-  /** A relay opens on a session's root (II): from now its page sessions are its own. */
-  openRelay(sessionId: string, relayId: string): void {
-    this.#sessions.get(sessionId)?.session.liveRelays.add(relayId);
-  }
-
-  /**
-   * A relay on a session's root ended (II): every page session it opened ends here in one act,
-   * with the holds they had; an attach of it still pending is refused when it answers; and a later
-   * command of it names nothing and opens nothing.
-   */
-  endRelay(sessionId: string, relayId: string): void {
-    const root = this.#sessions.get(sessionId);
-    if (!root) return;
-    root.session.liveRelays.delete(relayId);
-    for (const attached of root.channels.values())
-      if (attached.owner === relayId) void this.#endChannel(root, attached, true);
-  }
-
-  /** That hold ends; the mark is released when the last one lets the target go. */
-  #letGoTarget(targetId: string, connection: boolean): void {
-    const count = this.#agentTargetCounts.get(targetId);
+  #releaseConnectionTarget(targetId: string): void {
+    const count = this.#connectionTargetCounts.get(targetId);
+    if (!count) return;
     if (count === 1) {
-      this.#agentTargetCounts.delete(targetId);
-      this.#backend.setAgentControlled?.(targetId, false);
-    } else if (count) this.#agentTargetCounts.set(targetId, count - 1);
-    if (!connection) return;
-    const held = this.#connectionTargetCounts.get(targetId);
-    if (held === 1) {
       this.#connectionTargetCounts.delete(targetId);
       this.#backend.setConnectionControlled?.(targetId, false);
-    } else if (held) this.#connectionTargetCounts.set(targetId, held - 1);
-  }
-
-  /**
-   * The addresses of this Home, from the attach ticket the Home signed (or, for a shared Chrome
-   * tab, the Home itself). Kept until the next attach brings the set as it is then: a route that
-   * changes while a channel is open is covered at the next attach, since no channel pushes it.
-   */
-  setHomeAddresses(home: ThisHomeAddresses): void {
-    const next = new ThisHomeAddressSet(home);
-    if (JSON.stringify(next) === JSON.stringify(this.#home)) return;
-    this.#home = next;
-    this.#backend.setHomeAddresses?.(next);
-    // The new set applies at once to every page whose address the router knows: a page on a new
-    // address of the Home is refused from here, one that is no longer is released (I).
-    for (const [targetId, url] of this.#targetUrls) {
-      if (next.includesReported(url)) {
-        this.#homeTargets.add(targetId);
-        this.#endHomeChannels(targetId);
-      } else this.#homeTargets.delete(targetId);
+    } else {
+      this.#connectionTargetCounts.set(targetId, count - 1);
     }
-    if (next.empty) return;
-    // Pages the router has not heard of yet learn their place from the browser's list; the list
-    // may be older than an event that came since, so it only adds.
-    void Promise.resolve()
-      .then(() => this.#backend.send("Target.getTargets"))
-      .then((reply) => {
-        if (this.#home !== next) return;
-        const infos = asRecord(reply).targetInfos;
-        if (!Array.isArray(infos)) return;
-        for (const info of infos)
-          if (next.includesReported(asRecord(info).url)) this.#noteTargetAddress(asRecord(info));
-      })
-      .catch(() => undefined);
-  }
-
-  /** Is this address one of this Home's? Asked of a page the browser reports. */
-  isHomeAddress(url: unknown): boolean {
-    return this.#home.includesReported(url);
-  }
-
-  /** A target's reported page: on this Home's address, no agent's channel stays on it. */
-  #noteTargetAddress(info: CdpParameters): void {
-    if (this.#home.empty) return;
-    const targetId = readString(info, "targetId");
-    if (!targetId) return;
-    if (this.#targetUrls.size >= 4_096 && !this.#targetUrls.has(targetId))
-      this.#targetUrls.delete(this.#targetUrls.keys().next().value!);
-    this.#targetUrls.set(targetId, info.url);
-    // The page went elsewhere: the frames it held are gone with its document.
-    if (this.#homeFramePages.has(targetId) && this.#homeFramePages.get(targetId) !== info.url)
-      this.#homeFramePages.delete(targetId);
-    if (!this.#home.includesReported(info.url)) {
-      this.#homeTargets.delete(targetId);
-      return;
-    }
-    this.#homeTargets.add(targetId);
-    this.#endHomeChannels(targetId);
-  }
-
-  /**
-   * A page an agent drives committed an address of this Home, by whatever route: every agent's
-   * channel to it ends, as a page session that went away.
-   */
-  #endHomeChannels(targetId: string): void {
-    for (const session of this.#sessions.values())
-      for (const connection of session.session.connections)
-        for (const attached of connection.channels.values())
-          if (attached.physicalTargetId === targetId)
-            void this.#endChannel(connection, attached, true);
   }
 
   #closeConnection(state: ConnectionState): void {
@@ -979,12 +575,10 @@ export class SessionCdpRouter {
     state.session.connections.delete(state);
     if (state.script) {
       state.session.scripts.delete(state.script.id);
-      this.#letGoTarget(state.script.root, state.connection);
+      if (state.connection) this.#releaseConnectionTarget(state.script.root);
     }
-    for (const targetId of state.heldPages) this.#letGoTarget(targetId, state.connection);
-    state.heldPages.clear();
-    if (state.lineagePages) {
-      for (const targetId of state.lineagePages) this.#letGoTarget(targetId, state.connection);
+    if (state.connection && state.lineagePages) {
+      for (const targetId of state.lineagePages) this.#releaseConnectionTarget(targetId);
       state.lineagePages.clear();
     }
     state.autoAttached = undefined;
@@ -1010,6 +604,14 @@ export class SessionCdpRouter {
 
   #trackPhysicalWork<T>(state: ConnectionState, start: () => Promise<T>): Promise<T> {
     return trackPromise(state.physicalWork, start);
+  }
+
+  /**
+   * This Home's addresses, from the attach ticket or a route change: the browser's state (G1).
+   * Settles once the browser refuses them.
+   */
+  async setHomeAddresses(home: ThisHomeAddresses): Promise<void> {
+    await this.#backend.setHomeAddresses?.(new ThisHomeAddressSet(home));
   }
 
   async close(): Promise<void> {
@@ -1148,15 +750,8 @@ export class SessionCdpRouter {
   }
 
   /** The page an agent's attached CDP session drives, or null when it is not attached here. */
-  /** The page a session names, for `relayId`'s commands only: another relay's reads as none (II). */
-  attachedTargetId(
-    sessionId: string,
-    cdpSessionId: string,
-    attachmentId?: string,
-    relayId?: string,
-  ): string | null {
+  attachedTargetId(sessionId: string, cdpSessionId: string, attachmentId?: string): string | null {
     const state = this.#sessions.get(sessionId);
-    if (!attachmentId && state?.channels.get(cdpSessionId)?.owner !== relayId) return null;
     return this.#attachedTargetId(
       attachmentId ? state?.session.scripts.get(attachmentId) : state,
       cdpSessionId,
@@ -1229,7 +824,6 @@ export class SessionCdpRouter {
       true,
       true,
       !state.connection && command.connection !== true,
-      this.#home,
     );
   }
 
@@ -1255,35 +849,13 @@ export class SessionCdpRouter {
     );
   }
 
-  /** Every reply to an agent leaves here, without the Home's cookies (item 7). */
   async #send(
-    state: ConnectionState,
-    command: CdpCommand,
-    beforeActivity?: (targetId: string) => void,
-  ): Promise<unknown> {
-    const result = await this.#sendCommand(state, command, beforeActivity);
-    return homeCookieCarriers.has(command.method)
-      ? withoutHomeCookieValues(command.method, result, this.#home)
-      : result;
-  }
-
-  async #sendCommand(
     state: ConnectionState,
     command: CdpCommand,
     beforeActivity?: (targetId: string) => void,
   ): Promise<unknown> {
     this.#assertOpen();
     state.closed.signal.throwIfAborted();
-    // A relay that is not open (it ended, or never opened) names nothing and opens nothing (II); a
-    // command that names no page is still answered, as for any ended work.
-    if (
-      command.relayId !== undefined &&
-      !state.session.liveRelays.has(command.relayId) &&
-      (command.sessionId !== undefined || relayOpeners.has(command.method))
-    )
-      throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
-        unsent: true,
-      });
     const bytes = validateCommand(command, this.#sessionLimits(state).maxCommandBytes);
     if (state.script) {
       const operation = this.#dispatch(state, command, beforeActivity);
@@ -1575,12 +1147,7 @@ export class SessionCdpRouter {
       case "Target.sendMessageToTarget": {
         const virtualSessionId = requiredString(parameters, "sessionId");
         const attached = state.channels.get(virtualSessionId);
-        if (
-          !attached ||
-          (root.aliasId && attached.rootAlias !== root) ||
-          // A session named inside a command is its relay's as much as one named outside (II).
-          attached.owner !== command.relayId
-        )
+        if (!attached || (root.aliasId && attached.rootAlias !== root))
           throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
             unsent: true,
           });
@@ -1592,7 +1159,6 @@ export class SessionCdpRouter {
           ...(command.replyBudget ? { replyBudget: command.replyBudget } : {}),
           ...(command.connection ? { connection: true as const } : {}),
           ...(command.manageExtensions ? { manageExtensions: true as const } : {}),
-          ...(command.relayId !== undefined ? { relayId: command.relayId } : {}),
           sessionId: virtualSessionId,
         });
         if (!root.aliasId || state.aliases.has(root.aliasId))
@@ -1621,25 +1187,8 @@ export class SessionCdpRouter {
         return this.#readTargetInfo(state, targetId, claim, parameters, connection);
       }
       case "Target.createTarget": {
-        assertSafeNavigationUrl(parameters.url, true, true, !connection, this.#home);
-        // Holding is what marks the agent's new page, before its first load can leave it: a state
-        // that ends with its agent holds it from here; a session root holds it through that load
-        // only, and then by the channel its agent opens (M1, M2).
-        const onSessionRoot = this.#isSessionRoot(state);
-        const response = asRecord(
-          this.#backend.createAgentTarget
-            ? await this.#backend.createAgentTarget(parameters, (created) => {
-                if (onSessionRoot && command.openThenLoad) {
-                  // Its caller loads it next: the open outlives the blank load, until it lets go.
-                  this.#openHolds.set(created, this.holdAgentPage(created));
-                  return () => undefined;
-                }
-                if (onSessionRoot) return this.holdAgentPage(created);
-                this.#holdPage(state, created);
-                return () => undefined;
-              })
-            : await this.#backend.send(command.method, parameters),
-        );
+        assertSafeNavigationUrl(parameters.url, true, true, !connection);
+        const response = asRecord(await this.#backend.send(command.method, parameters));
         const targetId = readString(response, "targetId");
         if (!targetId) {
           throw new SessionCdpRouterError("bad_command", "Browser did not return a target ID.");
@@ -1652,8 +1201,6 @@ export class SessionCdpRouter {
           throw new SessionCdpRouterError("not_found", "Browser Session is not registered.");
         }
         const claim = this.#claimTarget(state, targetId, state.script?.root, !state.standard);
-        // The agent's own new page, where the backend did not take the hold at its creation.
-        this.#holdPage(state, targetId);
         if (state.standard) {
           state.session.adopting.add(targetId);
           let adopted = false;
@@ -1726,32 +1273,14 @@ export class SessionCdpRouter {
               "forbidden",
               "Use its parent page to attach a child target.",
             );
-          return this.#attachTarget(
-            state,
-            targetId,
-            targetInfo,
-            undefined,
-            root,
-            connection,
-            command.relayId,
-          );
+          return this.#attachTarget(state, targetId, targetInfo, undefined, root, connection);
         }
-        // A connection's attach, and any agent's once this Home's addresses are known, reads the
-        // target as it is now: a page on this Home is not there to attach (C4).
-        if (connection || !this.#home.empty) {
+        if (connection) {
           const claim = this.#assertOwnedTarget(state, targetId);
-          await this.#readTargetInfo(state, targetId, claim, undefined, connection);
+          await this.#readTargetInfo(state, targetId, claim, undefined, true);
           this.#assertCurrentClaim(state, targetId, claim);
         }
-        return this.#attachTarget(
-          state,
-          targetId,
-          undefined,
-          undefined,
-          root,
-          connection,
-          command.relayId,
-        );
+        return this.#attachTarget(state, targetId, undefined, undefined, root, connection);
       }
       case "Target.detachFromTarget": {
         const virtualSessionId = requiredString(parameters, "sessionId");
@@ -1765,9 +1294,7 @@ export class SessionCdpRouter {
           this.#detachRootAlias(state, virtualSessionId);
           return {};
         }
-        const named = state.channels.get(virtualSessionId);
-        // Another relay's page session is no session of this one's (II).
-        const attached = named?.owner === command.relayId ? named : undefined;
+        const attached = state.channels.get(virtualSessionId);
         if (root.aliasId && attached && attached.rootAlias !== root)
           throw new SessionCdpRouterError(
             "forbidden",
@@ -1921,9 +1448,6 @@ export class SessionCdpRouter {
       await this.#backend.send("Target.getTargetInfo", { ...parameters, targetId }),
     );
     this.#assertCurrentClaim(state, targetId, claim);
-    // A read only adds what it shows: the browser's events say when a page left the Home.
-    if (this.#home.includesReported(asRecord(response.targetInfo).url))
-      this.#noteTargetAddress(asRecord(response.targetInfo));
     if (response.targetInfo === undefined && !state.standard) {
       return { ...response, targetInfo: asRecord(response.targetInfo) };
     }
@@ -1943,15 +1467,10 @@ export class SessionCdpRouter {
   ): CdpParameters | undefined {
     const targetId = readString(info, "targetId");
     if (!targetId || !this.#canReach(state, targetId)) return;
-    // A page that holds a frame on this Home's address is listed (its own address is the web's)
-    // and refused at attach until its frame tree holds none (C3).
-    const onHome = this.#homeTargets.has(targetId) || this.#home.includesReported(info.url);
-    if ((connection && isExtensionUrl(info.url)) || onHome) {
+    if (connection && isExtensionUrl(info.url)) {
       // An event's or a reply's projection is where a connection learns a target is an
-      // extension's: from here its id is named to this state nowhere (G2). A page on an address
-      // of this Home is no agent's to be told of, a connection's or the person's own agent's:
-      // its id is named to no state from here, its end included (C2).
-      if (state.connection || onHome) this.#setTargetVisibility(state, targetId, false);
+      // extension's: from here its id is named to this state nowhere (G2).
+      if (state.connection) this.#setTargetVisibility(state, targetId, false);
       return;
     }
     const projected: Record<string, unknown> = {
@@ -1984,8 +1503,6 @@ export class SessionCdpRouter {
     }
     if (state.connection) this.#confineFrameIds(state, projected);
     if (state.connection) this.#setTargetVisibility(state, targetId, true);
-    // A page told again once it left this Home's address is named again (C2).
-    else state.hiddenTargets.delete(targetId);
     return projected;
   }
 
@@ -2119,7 +1636,6 @@ export class SessionCdpRouter {
     current?: () => boolean,
     root: TargetRoot = state,
     connection = state.connection,
-    owner?: string,
   ): Promise<{ sessionId: string }> {
     const assertRoot = () => {
       if (root.aliasId && !state.aliases.has(root.aliasId))
@@ -2127,38 +1643,17 @@ export class SessionCdpRouter {
     };
     assertRoot();
     const claim = this.#assertOwnedTarget(state, targetId);
-    // A page on an address of this Home is no agent's to attach: it reads as a target gone.
-    if (this.#homeTargets.has(targetId))
-      throw new SessionCdpRouterError("not_found", "The target is no longer available.");
     const channel = await this.#backend.attach(
       targetId,
       Boolean(state.standard),
       state.standard ? state.closed.signal : undefined,
     );
-    // A page that held a frame on this Home's address is refused like a page on one until its
-    // frame tree holds none (C3).
-    if (this.#homeFramePages.has(targetId)) {
-      const tree = await channel.send("Page.getFrameTree").catch(() => undefined);
-      if (tree === undefined || mentionsHiddenUrl(tree, 0, this.#home, false)) {
-        await channel.close().catch(() => undefined);
-        throw new SessionCdpRouterError("not_found", "The target is no longer available.");
-      }
-      this.#homeFramePages.delete(targetId);
-    }
     try {
       this.#assertCurrentClaim(state, targetId, claim);
       if (current && !current())
         throw new SessionCdpRouterError("not_found", "Browser auto-attach ended.");
       assertRoot();
       if (state.standard) this.#assertChannelCapacity(state);
-      // Asked again after every await, as the channel is installed (I, II): the page may have
-      // committed this Home's address, or its agent's state or relay ended, while it attached.
-      if (
-        this.#homeTargets.has(targetId) ||
-        state.closed.signal.aborted ||
-        (owner !== undefined && !state.session.liveRelays.has(owner))
-      )
-        throw new SessionCdpRouterError("not_found", "The target is no longer available.");
     } catch (error) {
       const closing = channel.close().catch(() => undefined);
       if (root.aliasId) await closing;
@@ -2167,7 +1662,6 @@ export class SessionCdpRouter {
     const virtualSessionId = `cdp_${this.#ports.uuid()}`;
     const attached: AttachedChannel = {
       channel,
-      ...(owner !== undefined ? { owner } : {}),
       pending: new Set(),
       ended: new AbortController(),
       physicalTargetId: targetId,
@@ -2193,7 +1687,7 @@ export class SessionCdpRouter {
       this.#handlePageEvent(state, attached, method, parameters);
     });
     state.channels.set(attached.virtualSessionId, attached);
-    this.#holdTarget(targetId, connection);
+    if (connection) this.#retainConnectionTarget(targetId);
     // N2 + S9: start Runtime inventory at attach WITHOUT blocking attach so dialog-blocked pages
     // still accept Page.handleJavaScriptDialog; script and ID-bearing commands wait behind it.
     if (connection && !this.#backend.allowsProfileCookieReads) {
@@ -2238,22 +1732,6 @@ export class SessionCdpRouter {
     )
       return;
     if (!state.channels.has(attached.virtualSessionId)) return;
-    // A frame of a page an agent drives committed an address of this Home, by any route: the
-    // agent's channels to that page end, before the event is told to anyone.
-    if (
-      (method === "Page.frameNavigated" || method === "Page.documentOpened") &&
-      this.#home.includesReported(asRecord(parameters.frame).url)
-    ) {
-      if (asRecord(parameters.frame).parentId === undefined)
-        this.#homeTargets.add(attached.physicalTargetId);
-      else
-        this.#homeFramePages.set(
-          attached.physicalTargetId,
-          this.#targetUrls.get(attached.physicalTargetId),
-        );
-      this.#endHomeChannels(attached.physicalTargetId);
-      return;
-    }
     // A shared Chrome tab is one tab: a connection sees no cookie of any site in its events.
     if (
       attached.connection &&
@@ -2279,8 +1757,7 @@ export class SessionCdpRouter {
         (!owner && this.#workByTarget.has(targetId)) ||
         (state.standard && state.channels.size + state.aliases.size >= standardCdpMaxPending) ||
         (isWorkerShared(info.type) && (this.#exclusive !== state || attached.connection)) ||
-        (attached.connection && isExtensionUrl(info.url)) ||
-        this.#home.includesReported(info.url)
+        (attached.connection && isExtensionUrl(info.url))
       ) {
         void attached.channel
           .send("Target.detachFromTarget", { sessionId: physicalSessionId })
@@ -2327,8 +1804,8 @@ export class SessionCdpRouter {
         this.#handlePageEvent(state, child, method, params),
       );
       state.channels.set(child.virtualSessionId, child);
-      this.#holdTarget(targetId, attached.connection);
       if (attached.connection) {
+        this.#retainConnectionTarget(targetId);
         if (!this.#backend.allowsProfileCookieReads) {
           void this.#ensureRuntimeInventory(state, child).catch(() => undefined);
         }
@@ -2400,7 +1877,6 @@ export class SessionCdpRouter {
       false,
       Boolean(state.standard || state.script),
       !attached.connection,
-      this.#home,
     );
   }
 
@@ -2451,15 +1927,7 @@ export class SessionCdpRouter {
 
   #admitAttachedCommand(state: ConnectionState, command: CdpCommand): AttachedChannel {
     const attached = state.channels.get(command.sessionId ?? "");
-    // A page session is its relay's alone (II); and none runs a command on a page that is on this
-    // Home's address, whatever reached it first (I).
-    if (!attached || attached.owner !== command.relayId) {
-      throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
-        unsent: true,
-      });
-    }
-    if (this.#homeTargets.has(attached.physicalTargetId)) {
-      void this.#endChannel(state, attached, true);
+    if (!attached) {
       throw new SessionCdpRouterError("not_found", "CDP session is not attached here.", {
         unsent: true,
       });
@@ -2484,7 +1952,6 @@ export class SessionCdpRouter {
         false,
         Boolean(state.standard || state.script),
         !attached.connection && command.connection !== true,
-        this.#home,
       );
     }
     if (
@@ -2803,10 +2270,6 @@ export class SessionCdpRouter {
     if (this.#closed) return;
     if (!method.startsWith("Target.")) {
       const targetId = readString(parameters, "targetId") ?? readString(parameters, "frameId");
-      // A page on an address of this Home is no agent's: no agent hears of it, nor of the address
-      // (a download from it, say) on any other page (C1).
-      if (targetId && this.#homeTargets.has(targetId)) return;
-      if (!this.#home.empty && mentionsHiddenUrl(parameters, 0, this.#home, false)) return;
       const owner = targetId
         ? this.#sessions.get(this.#ownerByTargetId.get(targetId)?.sessionId ?? "")
         : undefined;
@@ -2830,13 +2293,6 @@ export class SessionCdpRouter {
     const info = asRecord(parameters.targetInfo);
     const targetId = readString(info, "targetId") ?? readString(parameters, "targetId");
     if (!targetId) return;
-    if (method === "Target.targetCreated" || method === "Target.targetInfoChanged")
-      this.#noteTargetAddress(info);
-    else if (method === "Target.targetDestroyed") {
-      this.#homeTargets.delete(targetId);
-      this.#homeFramePages.delete(targetId);
-      this.#targetUrls.delete(targetId);
-    }
 
     if (method === "Target.targetCreated") {
       const parentId = readString(info, "openerId") ?? readString(info, "parentId");
@@ -2862,14 +2318,6 @@ export class SessionCdpRouter {
       }
     }
 
-    // A popup inherits its opener's agent mark in the browser at creation; one that no agent's
-    // state holds now is released here, by the router that decides it, never by a timer.
-    if (
-      method === "Target.targetCreated" &&
-      readString(info, "openerId") !== null &&
-      !this.#agentTargetCounts.has(targetId)
-    )
-      this.#backend.setAgentControlled?.(targetId, false);
     const owner = this.#sessions.get(this.#ownerByTargetId.get(targetId)?.sessionId ?? "");
     if (owner) {
       for (const state of owner.session.connections)
@@ -2929,50 +2377,33 @@ export class SessionCdpRouter {
           seen.has(targetId) ||
           !this.#canReach(state, targetId) ||
           !targetMatchesFilter(asRecord(parameters.targetInfo), root.discoveryFilter) ||
-          (state.connection && isExtensionUrl(asRecord(parameters.targetInfo).url)) ||
-          this.#home.includesReported(asRecord(parameters.targetInfo).url)
+          (state.connection && isExtensionUrl(asRecord(parameters.targetInfo).url))
         ) {
-          // Hidden, not seen: told as created when it first shows on the web (C2).
           if (
+            state.connection &&
             this.#canReach(state, targetId) &&
-            ((state.connection && isExtensionUrl(asRecord(parameters.targetInfo).url)) ||
-              this.#home.includesReported(asRecord(parameters.targetInfo).url))
+            isExtensionUrl(asRecord(parameters.targetInfo).url)
           ) {
             this.#setTargetVisibility(state, targetId, false);
           }
           return;
         }
         seen.add(targetId);
-      } else if (
-        method === "Target.targetInfoChanged" &&
-        !state.connection &&
-        this.#home.includesReported(asRecord(parameters.targetInfo).url)
-      ) {
-        // A page the person's own agent discovered went to an address of this Home: to that
-        // agent it is gone, as a page that closed, and hidden until it shows on the web again.
-        if (seen.delete(targetId))
-          this.#appendEvent(state, "Target.targetDestroyed", { targetId }, root.aliasId);
-        this.#setTargetVisibility(state, targetId, false);
-        return;
       } else if (!seen.has(targetId)) {
         // A connection's target that was hidden when it was created (an extension page) is
         // announced when it is first shown, so it hears that target's later end.
         const info = asRecord(parameters.targetInfo);
         // A connection learns a target went to an extension's page even if it never discovered
         // it (one of its own channels may be on it), so that target is hidden from it alike.
-        if (
-          state.connection &&
-          (isExtensionUrl(info.url) || this.#home.includesReported(info.url)) &&
-          this.#canReach(state, targetId)
-        ) {
+        if (state.connection && isExtensionUrl(info.url) && this.#canReach(state, targetId)) {
           this.#setTargetVisibility(state, targetId, false);
           return;
         }
         if (
+          !state.connection ||
           method !== "Target.targetInfoChanged" ||
           !state.hiddenTargets.has(targetId) ||
           isExtensionUrl(info.url) ||
-          this.#home.includesReported(info.url) ||
           !this.#canReach(state, targetId) ||
           !targetMatchesFilter(info, root.discoveryFilter)
         )
@@ -3037,7 +2468,7 @@ export class SessionCdpRouter {
     if (!parentId && state.lineagePages && state.standard?.lineage) {
       if (!state.lineagePages.has(targetId)) {
         state.lineagePages.add(targetId);
-        this.#holdTarget(targetId, state.connection);
+        if (state.connection) this.#retainConnectionTarget(targetId);
       }
       claim.creatorAttachmentId ??= state.standard.lineage.attachmentId;
     }
@@ -3047,28 +2478,10 @@ export class SessionCdpRouter {
         if (!lineage || !connection.lineagePages || !this.#canReach(connection, openerId)) continue;
         if (!connection.lineagePages.has(targetId)) {
           connection.lineagePages.add(targetId);
-          this.#holdTarget(targetId, connection.connection);
+          if (connection.connection) this.#retainConnectionTarget(targetId);
         }
         claim.creatorAttachmentId ??= lineage.attachmentId;
       }
-      // A popup of a page any agent holds is held from creation (A2) by what holds its opener and
-      // ends with that agent: its state (a script, a client, a lineage), or on a session root the
-      // channel on the opener (M1).
-      for (const connection of state.session.connections) {
-        if (!this.#isSessionRoot(connection)) {
-          if (this.#holds(connection, openerId)) this.#holdPage(connection, targetId);
-          continue;
-        }
-        for (const attached of connection.channels.values())
-          if (attached.physicalTargetId === openerId || attached.heldPages?.has(openerId))
-            this.#holdForChannel(attached, targetId);
-      }
-      // An agent's open holds what its page opens during its first load (I).
-      for (const owner of this.#openOwners)
-        if (owner.held.has(openerId) && !owner.held.has(targetId)) {
-          owner.held.add(targetId);
-          this.#holdTarget(targetId, false);
-        }
     }
     // A place kept under this id is stale unless this claim wakes from it: ids are not trusted
     // to be unique for ever.
@@ -3080,7 +2493,7 @@ export class SessionCdpRouter {
         if (!connection.asleepLineage?.delete(woke.from) || !woke.itself) continue;
         if (connection.lineagePages && !connection.lineagePages.has(targetId)) {
           connection.lineagePages.add(targetId);
-          this.#holdTarget(targetId, connection.connection);
+          if (connection.connection) this.#retainConnectionTarget(targetId);
         }
       }
     }
@@ -3136,18 +2549,11 @@ export class SessionCdpRouter {
           );
         }
       }
-      if (connection.lineagePages?.delete(targetId))
-        this.#letGoTarget(targetId, connection.connection);
-      if (connection.heldPages.delete(targetId)) this.#letGoTarget(targetId, connection.connection);
-      for (const attached of connection.channels.values())
-        if (attached.heldPages?.delete(targetId)) this.#letGoTarget(targetId, attached.connection);
+      if (connection.lineagePages?.delete(targetId) && connection.connection) {
+        this.#releaseConnectionTarget(targetId);
+      }
       if (connection.script?.root === targetId) this.#closeConnection(connection);
     }
-    for (const owner of this.#openOwners)
-      if (owner.held.delete(targetId)) this.#letGoTarget(targetId, false);
-    // An open hold no caller took for a page that ended is released here, not kept.
-    this.#openHolds.get(targetId)?.();
-    this.#openHolds.delete(targetId);
     for (const childId of state.session.ownedTargetIds)
       if (this.#ownerByTargetId.get(childId)?.parentId === targetId) this.#releaseTarget(childId);
   }
@@ -3164,10 +2570,7 @@ export class SessionCdpRouter {
   ): Promise<void> | undefined {
     if (state.channels.get(attached.virtualSessionId) !== attached) return;
     state.channels.delete(attached.virtualSessionId);
-    this.#letGoTarget(attached.physicalTargetId, attached.connection);
-    for (const targetId of attached.heldPages ?? [])
-      this.#letGoTarget(targetId, attached.connection);
-    attached.heldPages?.clear();
+    if (attached.connection) this.#releaseConnectionTarget(attached.physicalTargetId);
     if (attached.rootAttached || state.script || forceDetachEvent) {
       (attached.rootAlias ?? state).autoAttached?.delete(attached.physicalTargetId);
       if (attached.announced) {
@@ -3224,9 +2627,6 @@ export class SessionCdpRouter {
     sessionId?: string,
   ): void {
     if (state.script?.closing) return;
-    // Every event to an agent passes here, without the Home's cookies (item 7).
-    if (homeCookieCarriers.has(method))
-      parameters = withoutHomeCookieValues(method, parameters, this.#home) as CdpParameters;
     if (
       state.script &&
       !sessionId &&
@@ -3328,7 +2728,7 @@ export class SessionCdpRouter {
   #connectionMayHearBrowserEvent(state: ConnectionState, parameters: CdpParameters): boolean {
     const subject = readString(parameters, "targetId") ?? readString(parameters, "frameId");
     if (subject !== null && !this.#mayName(state, subject)) return false;
-    return !mentionsHiddenUrl(parameters, 0, this.#home);
+    return !mentionsExtensionUrl(parameters, 0);
   }
 
   #nestedMethod(state: ConnectionState, method: string): string {
@@ -3515,9 +2915,8 @@ function requiredString(parameters: CdpParameters, key: string): string {
 function assertSafeNavigationUrl(
   value: unknown,
   allowOmitted: boolean,
-  allowAboutBlank: boolean,
-  allowExtensions: boolean,
-  home: ThisHomeAddressSet,
+  allowAboutBlank = allowOmitted,
+  allowExtensions = true,
 ): void {
   if (value === undefined && allowOmitted) return;
   if (typeof value !== "string" || value.length < 1 || value.length > 16_384) {
@@ -3533,10 +2932,8 @@ function assertSafeNavigationUrl(
     });
   }
   const allowed = allowExtensions ? ["http:", "https:", "chrome-extension:"] : ["http:", "https:"];
-  // Extension pages are the browser's own; connected agents stay limited to HTTP(S). No agent's
-  // tab goes to an address of this Home (rule 1's page rule), refused as any address it may not
-  // open, naming nothing of the Home.
-  if (!allowed.includes(url.protocol) || url.username || url.password || home.includes(value)) {
+  // Extension pages are the browser's own; connected agents stay limited to HTTP(S).
+  if (!allowed.includes(url.protocol) || url.username || url.password) {
     throw new SessionCdpRouterError(
       "forbidden",
       allowExtensions

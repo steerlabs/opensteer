@@ -898,21 +898,12 @@ export async function createHostRuntime(
           onAccountLinkChanged: () => {
             void ownerProfile.refresh().catch(reportOwnerProfileError);
           },
-          // This Home's addresses are each browser runtime's own state (item 1): before a route can
-          // take effect every runtime holds it, and after the change only the committed one. A
-          // shared Chrome tab is given them at its attachment, so its agents attach again.
-          onRouteChanging: async (routeOrigin) => {
-            if (!homeAddresses.prepare(routeOrigin)) return;
-            chromeTabs.endAgentAttachments();
-            await browser.pushHomeAddresses();
-          },
-          onRouteKept: () => {
-            if (homeAddresses.abandon()) void browser.pushHomeAddresses();
-          },
+          // A changed route reaches every browser the Home owns as its new state (G1), and a shared
+          // Chrome tab's agents attach again with it (G3).
           onRouteChanged: (routeOrigin) => {
             if (!homeAddresses.publish(routeOrigin)) return;
+            browser.sendHomeAddresses(homeAddresses.current().toJSON());
             chromeTabs.endAgentAttachments();
-            void browser.pushHomeAddresses();
           },
         })
       : undefined;
@@ -1335,8 +1326,8 @@ export async function createHostRuntime(
       signer: new BrowserAttachTicketSigner({
         keyId: browserAttachKeyId,
         privateKey: keys.privateKey,
+        homeAddresses: () => homeAddresses.current().toJSON(),
       }),
-      homeAddresses: () => homeAddresses.current(),
       targetResolver: runnerBrowsers,
     });
     closeBrowserSession = (sessionId) => browser.closeAuthSession(sessionId);
@@ -1672,11 +1663,11 @@ export async function createHostRuntime(
             : computerApps.attached(id),
         };
       },
-      canRead: (actor, row, db) => canReadTab(actor, row, db, homeAddresses.current()),
+      canRead: canReadTab,
       canReadTask: async (actor, id, db) => (await readableTabTasks(actor, [id], db)).has(id),
       readableTasks: (actor, ids, db) => readableTabTasks(actor, ids, db),
       readAuthority: async (actor, db) => {
-        const check = await tabReadAuthority(actor, db, homeAddresses.current());
+        const check = await tabReadAuthority(actor, db);
         return async (row) => {
           try {
             return await check(row);
@@ -1701,10 +1692,9 @@ export async function createHostRuntime(
             ] as const;
           }),
         ),
-      authorize: (actor, target, db) =>
-        authorizeTabTarget(actor, target, db, homeAddresses.current()),
+      authorize: authorizeTabTarget,
       authorizeMembership: authorizeTabActor,
-      deniedRows: (actor, rows, db) => deniedTabRows(actor, rows, db, homeAddresses.current()),
+      deniedRows: deniedTabRows,
       onError: (error) => reportBrowserUsageError(error),
     });
     // A connection gaining authority settles Requests targeting the hosting

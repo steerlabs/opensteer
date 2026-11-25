@@ -137,8 +137,18 @@ export class HostAuthenticator<Identity extends HostAuthenticatingIdentity = Ide
       };
     }
     if (options.mutation) requireSingletonOrigin(headers.origin);
+    // From here the credential is a cookie, which a browser attaches to whatever request a page
+    // makes (q1): in every scope, a read as much as a change and on every cookie socket, the
+    // request must come from the Home's own page. An Origin, when one is sent, is the Home's own
+    // (the route's, for a remote cookie), and Sec-Fetch-Site, when sent, is `same-origin` or
+    // `none` (an address typed or a bookmark): a page on another loopback port is same-site with a
+    // Mac Home, so `same-site` is refused. What this does NOT do: a program outside a browser that
+    // holds the cookie's value sets whatever headers it likes; keeping the value out of other
+    // hands is the browsers' part (the Home's own browsers never store it, M4).
+    requireOwnPageRequest(headers);
+    const originSent = headers.origin !== undefined;
     const remote = await this.#personalRemote?.authenticateRemoteSession(headers, {
-      mutation: options.mutation ?? false,
+      mutation: (options.mutation ?? false) || originSent,
     });
     if (remote) {
       return {
@@ -147,7 +157,7 @@ export class HostAuthenticator<Identity extends HostAuthenticatingIdentity = Ide
         surface: "personal-remote",
       };
     }
-    if (options.mutation && requestOrigin(headers.origin) !== this.#publicOrigin) {
+    if ((options.mutation || originSent) && requestOrigin(headers.origin) !== this.#publicOrigin) {
       throw new OpensteerError({ code: "forbidden", message: "Request origin is not allowed" });
     }
     return {
@@ -230,6 +240,14 @@ function firstHeader(value: string | readonly string[] | undefined): string | un
 
 function requestOrigin(value: RequestHeaders["origin"]): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+/** A cookie's request comes from the Home's own page or the person's own address bar (q1). */
+function requireOwnPageRequest(headers: RequestHeaders): void {
+  const site = headers["sec-fetch-site"];
+  if (site === undefined) return;
+  if (site !== "same-origin" && site !== "none")
+    throw new OpensteerError({ code: "forbidden", message: "Request origin is not allowed" });
 }
 
 function requireSingletonOrigin(value: RequestHeaders["origin"]): void {

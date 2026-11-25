@@ -12,7 +12,8 @@ import {
 } from "@opensteer/browser-source-wire/frames";
 import {
   ThisHomeAddressSet,
-  loopbackRequestPatterns,
+  isHomeSessionCookieName,
+  isLoopbackUrl,
   noHomeAddresses,
   type ThisHomeAddresses,
 } from "@opensteer/shared/homeAddress";
@@ -40,6 +41,7 @@ type TabView = { readonly shareId: string; readonly title: string; readonly url:
 /** What one paired Home is: the destinations it paired with, and the addresses it last sent. */
 type HomeOf = { paired: readonly string[]; sent: ThisHomeAddresses; set: ThisHomeAddressSet };
 type SessionRules = NonNullable<ChromeApi["declarativeNetRequest"]>;
+type Cookies = Pick<ChromeApi["cookies"], "getAll" | "remove">;
 
 const maxShares = 64;
 const encoder = new TextEncoder();
@@ -162,6 +164,7 @@ export class ChromeTabDebugger {
   readonly #popups = new Map<number, { parent: Share; attachment: Attachment }>();
   readonly #homes = new WeakMap<ChromeTabLink, HomeOf>();
   readonly #rules: SessionRules | undefined;
+  readonly #cookies: Cookies | undefined;
   /** The session rules blocking the Home's addresses for each attached shared tab. */
   readonly #ruleIds = new Map<number, Promise<readonly number[]>>();
   #nextRuleId = 1;
@@ -177,9 +180,11 @@ export class ChromeTabDebugger {
     tabs: ChromeApi["tabs"],
     navigation?: ChromeApi["webNavigation"],
     rules?: SessionRules,
+    cookies?: Cookies,
   ) {
     this.#debugger = api;
     this.#rules = rules;
+    this.#cookies = cookies;
     this.#rulesCleared = rules
       ? rules
           .getSessionRules()
@@ -567,9 +572,17 @@ export class ChromeTabDebugger {
   }
 
   /**
-   * The second line (D5): while an agent drives a shared tab, a session rule blocks its every
-   * request to this Home's addresses, a navigation as much as a fetch, so no cookie of the Home is
-   * sent from it. Installed before the debugger attaches; an attachment is refused without it.
+   * While an agent drives a shared tab (G3):
+   * - a session rule blocks its every request to this Home's addresses, a navigation as much as a
+   *   fetch, so the tab never loads the Home and sends it nothing;
+   * - for a Home on this computer's loopback, whose session cookie Chrome keeps for the loopback
+   *   host on every port, that cookie does not exist in this profile while any attachment lives:
+   *   a rule over the whole profile drops the Home's loopback responses' Set-Cookie, then the
+   *   cookie is removed under every loopback name. Nothing in the profile can then send it to any
+   *   port: not the tab, its popups or its workers. The person's other sites keep every cookie;
+   *   the Home's own page in this Chrome is signed out until the last attachment ends.
+   * Installed, and the cookie gone, before the debugger attaches; an attachment is refused
+   * without them.
    */
   async #blockHome(tabId: number, home: ThisHomeAddressSet): Promise<void> {
     if (!this.#rules || home.empty || this.#ruleIds.has(tabId)) return;
@@ -577,12 +590,7 @@ export class ChromeTabDebugger {
     if (this.#ruleIds.has(tabId)) return;
     // The same patterns the shared predicate refuses, over pages, frames, requests and sockets.
     const patterns = home.requestPatterns();
-    // On a Mac the Home's session cookie is kept for the loopback host, not its port: an attached
-    // tab sends no cookie to any loopback destination (M4). A session rule can remove only the
-    // whole Cookie header, not one cookie, so a person's own local site sees that tab signed out
-    // while an agent is attached to it. A Linux Home's cookie is __Host- on its HTTPS origin and
-    // reaches no other host.
-    const loopback = loopbackRequestPatterns();
+    const loopback = home.loopbackRequestPatterns();
     const ids = [...patterns, ...loopback].map(() => this.#nextRuleId++);
     const rules: ChromeSessionRule[] = [
       ...patterns.map((regexFilter, index) => ({
@@ -596,18 +604,32 @@ export class ChromeTabDebugger {
         priority: 1,
         action: {
           type: "modifyHeaders" as const,
-          requestHeaders: [{ header: "cookie", operation: "remove" as const }],
+          responseHeaders: [{ header: "set-cookie", operation: "remove" as const }],
         },
-        condition: { tabIds: [tabId], regexFilter, resourceTypes: allResourceTypes },
+        condition: { regexFilter, resourceTypes: allResourceTypes },
       })),
     ];
     const installed = this.#rules.updateSessionRules({ addRules: rules }).then(() => ids);
     this.#ruleIds.set(tabId, installed);
     try {
       await installed;
+      if (loopback.length) await this.#forgetHomeSession();
     } catch (error) {
-      this.#ruleIds.delete(tabId);
+      await this.#releaseHome(tabId).catch(() => undefined);
       throw error;
+    }
+  }
+
+  /** The Home's session cookies leave this profile, under every loopback name (G3). */
+  async #forgetHomeSession(): Promise<void> {
+    if (!this.#cookies) throw new Error("Chrome did not let Opensteer sign your Home out here.");
+    for (const cookie of await this.#cookies.getAll({})) {
+      const host = cookie.domain.replace(/^\./u, "");
+      if (!isHomeSessionCookieName(cookie.name) || !isLoopbackUrl(`http://${host}/`)) continue;
+      await this.#cookies.remove({
+        url: `${cookie.secure ? "https" : "http"}://${host}${cookie.path}`,
+        name: cookie.name,
+      });
     }
   }
 

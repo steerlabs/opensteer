@@ -18,14 +18,10 @@ import {
 import { TabService } from "./tab-service.js";
 import type { NativeTargetAcquiredHandler, TabActor } from "./ports.js";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
-import { ThisHomeAddressSet, noHomeAddresses } from "@opensteer/shared/homeAddress";
-
-/** No address of this Home: these tests judge the tab rules apart from it. */
-const noHome = new ThisHomeAddressSet(noHomeAddresses);
 
 const integration = describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL);
 integration("production tab authority", () => {
-  async function fixture(home = noHome) {
+  async function fixture() {
     const f = await createStoreFixture(),
       run = await f.startRunFixture("tab-authority");
     const claims: RunToolScope = {
@@ -75,20 +71,16 @@ integration("production tab authority", () => {
         ...(await tabComputer(owner, id, db)),
         connected: false,
       }),
-      canRead: (actor, row, db) => canReadTab(actor, row, db, home),
-      readAuthority: (actor, db) => tabReadAuthority(actor, db, home),
+      canRead: canReadTab,
+      readAuthority: tabReadAuthority,
       canReadTask: async () => true,
-      authorize: (actor, target, db) => authorizeTabTarget(actor, target, db, home),
+      authorize: authorizeTabTarget,
       authorizeMembership: authorizeTabActor,
       onError: (error) => {
         throw error;
       },
     });
-    const page = async (
-      computerId: typeof run.runnerId,
-      label: string,
-      url = `https://${label}.test/private`,
-    ) => {
+    const page = async (computerId: typeof run.runnerId, label: string) => {
       const sessionId = `bsn_${randomUUID()}` as import("@opensteer/core").BrowserSessionId;
       await f.store.createBrowserSession({
         id: sessionId,
@@ -108,7 +100,7 @@ integration("production tab authority", () => {
           computerId: DeviceIdSchema.parse(computerId),
           kind: "page",
           title: label,
-          url,
+          url: `https://${label}.test/private`,
           openedBy: "person",
           pageBinding: { lineageId: sessionId, sessionId, surfaceId: id },
         },
@@ -195,50 +187,6 @@ integration("production tab authority", () => {
       await t.f.close();
     }
   });
-  it("keeps a tab on an address of this Home from the person's own Run, and refuses its open there as any refused address (rule 1)", async () => {
-    const home = new ThisHomeAddressSet({
-      origins: ["https://home.example.com"],
-      loopbackPorts: [4310],
-    });
-    const t = await fixture(home);
-    try {
-      await t.f.database
-        .updateTable("devices")
-        .set({ accessPolicy: sql`'{"browser":true,"apps":true,"files":true}'::jsonb` })
-        .where("id", "=", DeviceIdSchema.parse(t.run.runnerId))
-        .execute();
-      const web = await t.page(t.run.runnerId, "web");
-      const onHome = await t.page(t.run.runnerId, "home", "http://localhost:4310/tasks");
-      const devServer = await t.page(t.run.runnerId, "dev", "http://localhost:5173/");
-      const listed = (await t.service.list(t.actor, {})).tabs.map((tab) => tab.tabId);
-      expect(listed.sort()).toEqual([web, devServer].sort());
-      // The person's own list keeps the Home's tab.
-      const person = { kind: "person", ownerId: t.run.userId } as TabActor;
-      expect((await t.service.list(person, {})).tabs.map((tab) => tab.tabId)).toContain(onHome);
-      // To the Run its row reads as a tab that does not exist; to the person it is theirs.
-      const row = (await t.store.get(t.run.userId, onHome))!;
-      expect(await canReadTab(t.actor, row, t.f.database, home)).toBe(false);
-      expect(await canReadTab(person, row, t.f.database, home)).toBe(true);
-      const webRow = (await t.store.get(t.run.userId, web))!;
-      expect(await canReadTab(t.actor, webRow, t.f.database, home)).toBe(true);
-      // Opening a tab there is refused as an address a connection may not open, naming nothing.
-      for (const url of [
-        "http://127.0.0.1:4310/",
-        "https://home.example.com/settings",
-        "http://[::1]:4310/",
-      ])
-        await expect(
-          t.service.open(t.actor, { kind: "page", guest: true, url }, `open-${url}`),
-        ).rejects.toMatchObject({
-          code: "forbidden",
-          message: "Use about:blank or an HTTP(S) URL without credentials.",
-        });
-    } finally {
-      t.service.dispose();
-      await t.f.close();
-    }
-  });
-
   it("allows limited Runs to read but rechecks write authority within the membership transaction", async () => {
     const t = await fixture();
     try {
@@ -591,11 +539,11 @@ integration("tab projection database cost", () => {
             { ...value, connected: true },
           ]),
         ),
-      canRead: (actor, row, db) => canReadTab(actor, row, db, noHome),
-      readAuthority: (actor, db) => tabReadAuthority(actor, db, noHome),
+      canRead: canReadTab,
+      readAuthority: tabReadAuthority,
       readableTasks: async () => new Set(),
       canReadTask: async () => true,
-      authorize: (actor, target, db) => authorizeTabTarget(actor, target, db, noHome),
+      authorize: authorizeTabTarget,
       authorizeMembership: authorizeTabActor,
       onError: (error) => {
         throw error;

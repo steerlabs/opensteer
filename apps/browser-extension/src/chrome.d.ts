@@ -71,9 +71,9 @@ interface ChromeSessionRule {
     | { type: "block" }
     | {
         type: "modifyHeaders";
-        requestHeaders: { header: string; operation: "remove" }[];
+        responseHeaders: { header: string; operation: "remove" }[];
       };
-  condition: { tabIds: number[]; regexFilter: string; resourceTypes: readonly string[] };
+  condition: { tabIds?: number[]; regexFilter: string; resourceTypes: readonly string[] };
 }
 
 interface ChromeApi {
@@ -99,6 +99,7 @@ interface ChromeApi {
       domain?: string;
       partitionKey?: { hasCrossSiteAncestor?: boolean; topLevelSite: string };
     }): Promise<ChromeCookie[]>;
+    remove(details: { url: string; name: string }): Promise<unknown>;
   };
   notifications: {
     clear(id: string): Promise<boolean>;

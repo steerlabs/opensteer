@@ -84,6 +84,7 @@ const liveTabs =
         chrome.tabs,
         chrome.webNavigation,
         chrome.declarativeNetRequest,
+        chrome.cookies,
       )
     : undefined;
 let pairingInProgress = false;

@@ -36,7 +36,6 @@ import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import {
   TabStore,
   storablePageUrl,
-  authorizePageAddress,
   acquireBrowserStandardCdpLease,
   admitExecution,
   listBrowserStandardCdpLeases,
@@ -110,6 +109,7 @@ import {
   type BrowserAgentBackend,
 } from "@opensteer/protocol/browser-actions";
 import type { BrowserEngine } from "@opensteer/protocol";
+import type { ThisHomeAddresses } from "@opensteer/shared/homeAddress";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
@@ -209,7 +209,6 @@ import WebSocket from "ws";
 import { z } from "zod";
 import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import type { BrowserAttachTicketSigner } from "./browser-ticket.js";
-import { ThisHomeAddressSet, noHomeAddresses } from "@opensteer/shared/homeAddress";
 import type { BrowserPoolGate, BrowserPoolReservation } from "./browser-pool-gate.js";
 import type { BrowserPoolAdopter, BrowserPoolCoordinator } from "./browser-pool-coordinator.js";
 import { PooledBrowserRelay } from "./browser-pool-relay.js";
@@ -250,8 +249,6 @@ const maxBrowserTextBytes = 1 * 1_024 * 1_024;
 const phoneEngines = new Set(["wkwebview", "android-webview"]);
 const maxPendingAgentRequests = 32;
 const agentRequestTimeoutMs = 15_000;
-/** How long a command waits for its runtime to apply this Home's current addresses (item 1). */
-const homeAddressesAppliedMs = 10_000;
 /** V3: a tab's wake (up to 18 s) and its page's load (up to 15 s), for an agent's bind. */
 const bindWakeMs = 40_000;
 /** An open's work budget; it also bounds waiting for this computer's browser to arrive. */
@@ -281,12 +278,12 @@ function connectedAgentBinding(agentBindingId: string | undefined): boolean {
   return agentBindingId?.startsWith("session:") === true;
 }
 
-/** Whether any string in a (bounded) CDP value is an extension's address or this Home's. */
-function mentionsHiddenUrl(value: unknown, depth: number, home: ThisHomeAddressSet): boolean {
-  if (typeof value === "string") return isExtensionUrl(value) || home.includesReported(value);
+/** Whether any string in a (bounded) CDP value is an extension's address. */
+function mentionsChromeExtensionUrl(value: unknown, depth: number): boolean {
+  if (typeof value === "string") return isExtensionUrl(value);
   if (depth > 16 || value === null || typeof value !== "object") return false;
   for (const entry of Array.isArray(value) ? value : Object.values(value))
-    if (mentionsHiddenUrl(entry, depth + 1, home)) return true;
+    if (mentionsChromeExtensionUrl(entry, depth + 1)) return true;
   return false;
 }
 
@@ -857,8 +854,6 @@ interface BrowserServiceOptions {
   readonly eraseLocalProfiles?: (runnerId: RunnerId) => Promise<void>;
   readonly repository: BrowserSessionRepository;
   readonly signer: BrowserAttachTicketSigner;
-  /** This Home's addresses (`home-addresses.ts`); none in a test that does not give them. */
-  readonly homeAddresses?: () => ThisHomeAddressSet;
   readonly targetResolver?: BrowserRuntimeTargetResolver;
   /** Each pooled Cloud Computer's coordinator, by its Runner; empty for an ordinary Home. */
   readonly pools?: ReadonlyMap<RunnerId, BrowserPoolCoordinator>;
@@ -1044,10 +1039,6 @@ export class BrowserService {
       runnerId: RunnerId;
       close: () => void;
       binding?: string;
-      /** The agent binding whose work this is, whatever kind of relay. */
-      holder?: string;
-      /** Ends this relay in its runtime, with every page session it owns there (II). */
-      endRelay?: () => void;
       /** The connection whose work this is, so its Disconnect closes it. */
       agentConnectionId?: string;
     }
@@ -1104,8 +1095,6 @@ export class BrowserService {
   readonly #lastHeldBindingBySession = new Map<BrowserSessionId, string>();
   readonly #lastHeldSessionByBinding = new Map<string, BrowserSessionId>();
   readonly #signer: BrowserAttachTicketSigner;
-  /** This Home's addresses as the Host holds them now (`home-addresses.ts`). */
-  readonly #homeAddresses: () => ThisHomeAddressSet;
   readonly #targetResolver: BrowserRuntimeTargetResolver | undefined;
   /** Held here by Runner, so a Runner that is away or removed still has its coordinator. */
   readonly #pools: Map<RunnerId, BrowserPoolCoordinator>;
@@ -1197,8 +1186,6 @@ export class BrowserService {
     });
     this.#repository = options.repository;
     this.#signer = options.signer;
-    const noHome = new ThisHomeAddressSet(noHomeAddresses);
-    this.#homeAddresses = options.homeAddresses ?? (() => noHome);
     this.#targetResolver = options.targetResolver;
   }
 
@@ -1549,8 +1536,7 @@ export class BrowserService {
         profileId: record.profileId,
       };
       const broker = new HostedBrowserBroker({
-        // A pooled runtime reads the actor claim, and holds this Home's addresses itself (item 1).
-        homeAddresses: this.#homeAddresses,
+        holdsHomeAddresses: true,
         poolAdmission: this.#poolAdmission(pool, adopting),
         onChannelLost: (documents) => pool.channelLost(sessionId, documents),
         adoptedFromPool: true,
@@ -4694,7 +4680,7 @@ export class BrowserService {
           ...(descriptor.favicon !== undefined ? { favicon: descriptor.favicon } : {}),
         };
         await tabs.open(write, `person-page:${record.id}:${descriptor.id}`, async (tx) =>
-          authorizeTabTarget({ kind: "person", ownerId }, write, tx, this.#homeAddresses()),
+          authorizeTabTarget({ kind: "person", ownerId }, write, tx),
         );
         if (opens) {
           opens.openers.delete(descriptor.id);
@@ -4707,24 +4693,6 @@ export class BrowserService {
           continue;
         }
         if (opener.pageBinding?.sessionId !== record.id) continue;
-        // A popup of a tab an agent holds now is that agent's: rule 1 is asked of it as of any
-        // agent's page, and one on an address of this Home is not recorded and is closed (B3).
-        // Who opened the tab once decides nothing: a tab no Run holds any more is the person's,
-        // and so are its popups (item 6).
-        const heldByAgent =
-          (this.#boundTabs.get(record.id)?.get(descriptor.openerId as BrowserSurfaceId)?.size ??
-            0) > 0;
-        if (
-          heldByAgent &&
-          !authorizePageAddress(
-            { agentConnection: null, actor: "native" },
-            descriptor.url,
-            this.#homeAddresses(),
-          )
-        ) {
-          await this.#queuePhysicalPageClose(record.id, descriptor.id);
-          continue;
-        }
         await tabs.open(
           {
             id: descriptor.id,
@@ -4856,8 +4824,7 @@ export class BrowserService {
         (claims.authority.expiresAt ?? Infinity) <= Date.now()
       )
         throw new BrowserCdpConnectionEnded("This page's browser authority has ended.");
-      // An agent's new page on an address of this Home is refused (rule 1): it is not adopted.
-      await authorizeTabTarget(actor, write, tx, this.#homeAddresses());
+      await authorizeTabTarget(actor, write, tx);
     });
     const row = await tabs.get(ownerId, descriptor.id);
     if (!row) throw new BrowserCdpConnectionEnded("This page is no longer an open task tab.");
@@ -5893,19 +5860,18 @@ export class BrowserService {
   }
 
   /**
-   * This Home's addresses changed, or are about to (the person turns Remote access on or off, or
-   * changes its route): every browser runtime that holds them as its own state is told, and this
-   * resolves once each has applied them. A runtime that has not answered serves no command until
-   * it does (item 1); its pages that are now on the Home lose their agents' channels there.
+   * This Home's addresses changed: every browser it owns that is connected holds the new set from
+   * now on (G1). One that is not connected gets it in its next attach ticket.
    */
-  async pushHomeAddresses(): Promise<void> {
-    await Promise.allSettled(
-      [...this.#brokers.values()].map((broker) =>
-        withTimeout(broker.pushHomeAddresses(), homeAddressesAppliedMs, {
-          timeoutError: () => new Error("Browser Runtime did not apply this Home's addresses."),
-        }),
-      ),
-    );
+  sendHomeAddresses(home: ThisHomeAddresses): void {
+    for (const broker of this.#brokers.values())
+      if (broker.holdsHomeAddresses && broker.live)
+        void broker
+          .sendHostCommand({
+            type: "home.addresses",
+            homeAddresses: { origins: [...home.origins], loopbackPorts: [...home.loopbackPorts] },
+          })
+          .catch(() => undefined);
   }
 
   closeStandardCdpForBinding(agentBindingId: string, reason: string): void {
@@ -6238,9 +6204,6 @@ export class BrowserService {
     // command it unpacks is checked where it is unpacked; the Home's gate stays for any other.
     const runtimeHoldsConnection =
       connectionWork && this.#resolveTarget(placementOf(record))?.connectionCommands === true;
-    // A runtime that reads the actor claim owns a relay's page sessions itself (II): the relay is
-    // opened there, each of its commands names it, and its end ends them all there.
-    const ownsRelays = this.#resolveTarget(placementOf(record))?.actorClaim === true;
     const pool = input.browserSend && this.#pool(record.runnerId);
     const pageWitness = (tabId: TabId) =>
       this.pooledScriptPageWitness(input.ownerId, record.id, tabId);
@@ -6283,21 +6246,6 @@ export class BrowserService {
     const visibleRootTargets = new Set<string>();
     const attachedTargets = new Set<string>();
     const attachedSessions = new Set<string>();
-    const relayId =
-      ownsRelays && !scriptAttachmentId && !nativeAttachment ? randomUUID() : undefined;
-    let relayEnded = false;
-    const endRelay = () => {
-      if (!relayId || relayEnded) return;
-      relayEnded = true;
-      void broker
-        .sendHostCommand({
-          type: "cdp.command",
-          requestId: randomUUID(),
-          relayId,
-          command: { method: browserHostMethods.closeRelay },
-        })
-        .catch(() => undefined);
-    };
     type TerminalEvent = Extract<BrowserServerMessage, { type: "cdp.event" }>["event"];
     // Terminal events that arrive before the reply that makes their target this subscriber's.
     // Two buffers, so that other targets' ends never push out an attach's own (S1, G3):
@@ -6426,7 +6374,6 @@ export class BrowserService {
       namedTerminalEvents.length = 0;
       unknownTerminalEvents.length = 0;
       pendingTargetIds.clear();
-      endRelay();
       if (scriptAttachmentId && scriptOpening) {
         void broker
           .sendScriptCleanup({
@@ -6482,7 +6429,7 @@ export class BrowserService {
           !visibleRootTargets.has(subject)
         )
           return;
-        if (mentionsHiddenUrl(event.parameters, 0, this.#homeAddresses())) return;
+        if (mentionsChromeExtensionUrl(event.parameters, 0)) return;
       }
       if (filterTargetEvents && event.method.startsWith("Target.")) {
         const params = event.parameters as
@@ -6500,11 +6447,7 @@ export class BrowserService {
               : undefined;
         const eventSessionId = typeof params?.sessionId === "string" ? params.sessionId : undefined;
         if (params?.targetInfo !== undefined) {
-          // A tab on an extension's page, or on an address of this Home, is no connection's.
-          if (
-            isExtensionUrl(params.targetInfo.url) ||
-            this.#homeAddresses().includesReported(params.targetInfo.url)
-          ) {
+          if (isExtensionUrl(params.targetInfo.url)) {
             if (targetId) {
               visibleRootTargets.delete(targetId);
               attachedTargets.delete(targetId);
@@ -6592,21 +6535,8 @@ export class BrowserService {
         runnerId: record.runnerId,
         close,
         ...(scriptAttachmentId || pooledRelay ? { binding: input.agentBindingId } : {}),
-        // The Run's end or Stop ends this relay in its runtime, with its page sessions (II).
-        holder: input.agentBindingId,
-        endRelay,
         ...(agentConnectionId ? { agentConnectionId } : {}),
       });
-      // The relay opens in its runtime before any command of it, in the same ordered channel (II).
-      if (relayId)
-        void broker
-          .sendHostCommand({
-            type: "cdp.command",
-            requestId: randomUUID(),
-            relayId,
-            command: { method: browserHostMethods.openRelay },
-          })
-          .catch(() => undefined);
       if (nativeAttachment) {
         this.#actionAttachments.set(nativeAttachment.attachmentId, {
           binding: input.agentBindingId,
@@ -6839,7 +6769,6 @@ export class BrowserService {
               ...(actorToken ? { actorToken } : {}),
               ...(nativeAttachment ? { attachmentId: nativeAttachment.attachmentId } : {}),
               ...(runtimeHoldsConnection ? { connection: true as const } : {}),
-              ...(relayId ? { relayId } : {}),
               ...(canManageExtensions &&
               isExtensionMutationCommand(command.method, command.parameters)
                 ? { manageExtensions: true as const }
@@ -8165,8 +8094,7 @@ export class BrowserService {
       const broker = withoutDatabaseOperationSignal(
         () =>
           new HostedBrowserBroker({
-            // A runtime that reads the actor claim holds this Home's addresses itself (item 1).
-            ...(target.actorClaim || pooled ? { homeAddresses: this.#homeAddresses } : {}),
+            holdsHomeAddresses: target.actorClaim === true || pooled !== undefined,
             ...(pooled
               ? {
                   poolAdmission: this.#poolAdmission(pooled),
@@ -8981,10 +8909,8 @@ export class BrowserService {
     for (const waiter of this.#poolAgentWaiters.get(agentBindingId) ?? [])
       waiter.controller.abort(new BrowserCdpConnectionEnded("The browser task ended."));
     this.closeStandardCdpForBinding(agentBindingId, "The browser task ended.");
-    for (const attachment of this.#deviceAttachments.values()) {
-      if (attachment.holder === agentBindingId) attachment.endRelay?.();
+    for (const attachment of this.#deviceAttachments.values())
       if (attachment.binding === agentBindingId) attachment.close();
-    }
     for (const attachment of this.#actionAttachments.values())
       if (attachment.binding === agentBindingId) attachment.close();
     for (const actor of this.#actors.values())
@@ -9344,13 +9270,9 @@ interface PoolBrokerAdmission {
 }
 
 interface HostedBrowserBrokerOptions {
+  /** Its runtime reads the actor claim, and holds this Home's addresses as its own state (G1). */
+  readonly holdsHomeAddresses?: boolean;
   readonly poolAdmission?: PoolBrokerAdmission;
-  /**
-   * This Home's addresses, for a runtime that holds them as its own state (one that reads the
-   * actor claim): sent when it is ready and whenever they change, and no CDP command is sent to it
-   * until it has applied the current set (item 1).
-   */
-  readonly homeAddresses?: () => ThisHomeAddressSet;
   /**
    * A pooled broker's channel was lost without the Home closing it; `documents` is each tab's
    * document when it was lost, which stands for the live one until the session is back.
@@ -9678,20 +9600,10 @@ export class HostedBrowserBroker {
   #sessionStateSending: Promise<void> | undefined;
   #rejectReady: ((error: Error) => void) | null = null;
   readonly #passkeys: PasskeyService | undefined;
-  readonly #homeAddresses: (() => ThisHomeAddressSet) | undefined;
-  /** The set the runtime last said it applied; compared by identity, one per change. */
-  #addressesApplied: ThisHomeAddressSet | undefined;
-  #addressesSent:
-    | {
-        readonly revision: number;
-        readonly set: ThisHomeAddressSet;
-        readonly applied: PromiseWithResolvers<void>;
-      }
-    | undefined;
-  #addressRevision = 0;
+  readonly holdsHomeAddresses: boolean;
 
   constructor(options: HostedBrowserBrokerOptions) {
-    this.#homeAddresses = options.homeAddresses;
+    this.holdsHomeAddresses = options.holdsHomeAddresses === true;
     this.#poolAdmission = options.poolAdmission;
     this.#poolEnded = options.poolAdmission ? new AbortController() : undefined;
     this.#onChannelLost = options.onChannelLost;
@@ -10167,50 +10079,6 @@ export class HostedBrowserBroker {
     );
   }
 
-  /**
-   * Tells the runtime this Home's current addresses, as its own state; resolves once it has
-   * applied them. A newer set sent meanwhile answers for this one too.
-   */
-  pushHomeAddresses(): Promise<void> {
-    const set = this.#homeAddresses?.();
-    if (!set || this.#addressesApplied === set) return Promise.resolve();
-    if (this.#addressesSent?.set === set) return this.#addressesSent.applied.promise;
-    if (this.#settled || !this.#runtimeReady)
-      return Promise.reject(
-        new OpensteerError({ code: "conflict", message: "Browser Runtime is not ready." }),
-      );
-    const previous = this.#addressesSent;
-    const sent = {
-      revision: ++this.#addressRevision,
-      set,
-      applied: Promise.withResolvers<void>(),
-    };
-    this.#addressesSent = sent;
-    if (previous) sent.applied.promise.then(previous.applied.resolve, previous.applied.reject);
-    sent.applied.promise.catch(() => undefined);
-    void this.#sendCommand({
-      type: "home.addresses",
-      revision: sent.revision,
-      homeAddresses: set.toJSON() as { origins: string[]; loopbackPorts: number[] },
-    }).catch((error: unknown) => {
-      if (this.#addressesSent === sent) this.#addressesSent = undefined;
-      sent.applied.reject(error);
-    });
-    return sent.applied.promise;
-  }
-
-  /** No command reaches a runtime that has not applied this Home's current addresses (item 1). */
-  async #homeAddressesApplied(): Promise<void> {
-    await withTimeout(this.pushHomeAddresses(), homeAddressesAppliedMs, {
-      timeoutError: () =>
-        new OpensteerError({
-          code: "conflict",
-          message: "Browser Runtime is not ready.",
-          retryable: true,
-        }),
-    });
-  }
-
   async sendHostCommand(input: BrowserClientMessage): Promise<void> {
     const message = BrowserClientMessageSchema.parse(input);
     return this.#sendCommand(message);
@@ -10348,18 +10216,6 @@ export class HostedBrowserBroker {
   }
 
   requestCdp(
-    message: BrowserCdpRequest,
-    signal?: AbortSignal,
-    admission?: { recheck(): Promise<void>; submitted(): void; acknowledged?(): void },
-  ): Promise<BrowserCdpResponse> {
-    signal?.throwIfAborted();
-    const home = this.#homeAddresses?.();
-    if (home && this.#addressesApplied !== home)
-      return this.#homeAddressesApplied().then(() => this.#requestCdp(message, signal, admission));
-    return this.#requestCdp(message, signal, admission);
-  }
-
-  #requestCdp(
     message: BrowserCdpRequest,
     signal?: AbortSignal,
     admission?: { recheck(): Promise<void>; submitted(): void; acknowledged?(): void },
@@ -10910,15 +10766,6 @@ export class HostedBrowserBroker {
       message.type === "login.result"
     )
       return false;
-    if (message.type === "home.addresses.applied") {
-      const sent = this.#addressesSent;
-      if (sent?.revision === message.revision) {
-        this.#addressesApplied = sent.set;
-        this.#addressesSent = undefined;
-        sent.applied.resolve();
-      }
-      return false;
-    }
     if (message.type === "state.import.result") {
       const pending = this.#pendingStateImports.get(message.operationId);
       if (!pending) return false;
@@ -11078,14 +10925,6 @@ export class HostedBrowserBroker {
           becameReady = true;
           this.#reconnecting = false;
           this.#runtimeReady = true;
-          // A runtime that became ready holds no set of this Home's until told (item 1); a set sent
-          // to it before is answered by this one.
-          const stale = this.#addressesSent;
-          this.#addressesApplied = undefined;
-          this.#addressesSent = undefined;
-          const told = this.pushHomeAddresses();
-          told.catch(() => undefined);
-          if (stale) told.then(stale.applied.resolve, stale.applied.reject);
           // Hold the pool gate unconditionally across the initial session.state send
           // (including on re-attach after a Runner restart) and flush any deferred
           // refreshSessionState() timer scheduled by #onState("ready").

@@ -8,6 +8,7 @@
   "incognito": "not_allowed",
   "permissions": [
     "alarms",
+    "cookies",
     "debugger",
     "declarativeNetRequestWithHostAccess",
     "storage",
