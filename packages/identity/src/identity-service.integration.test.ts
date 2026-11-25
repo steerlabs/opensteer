@@ -1051,7 +1051,11 @@ integration("IdentityService", () => {
             return;
           }
           response.end(
-            JSON.stringify({ access_token: "account-access", expires_in: 600, token_type: "Bearer" }),
+            JSON.stringify({
+              access_token: "account-access",
+              expires_in: 600,
+              token_type: "Bearer",
+            }),
           );
           return;
         }
@@ -1121,7 +1125,24 @@ integration("IdentityService", () => {
       expect(location.origin).toBe(publicOrigin);
       expect(location.pathname).toBe("/auth/error");
       expect(location.searchParams.get("error")).toBe("another_account");
-      expect(refused.headers.getSetCookie().some((cookie) => /opensteer\.session=[^;]/u.test(cookie))).toBe(false);
+
+      // Signing in as its owner asks the Account who is signing in, whatever session it holds.
+      const asOwner = new URL(
+        (
+          await identity.beginOidcSignIn({
+            chooseAccount: true,
+            headers: new Headers({ origin: publicOrigin }),
+            providerId: "opensteer-account",
+            returnPath: "/",
+          })
+        ).data.redirectUrl,
+      );
+      expect(asOwner.searchParams.get("prompt")).toBe("login");
+      expect(asOwner.searchParams.get("max_age")).toBe("0");
+      expect(authorize.searchParams.has("prompt")).toBe(false);
+      expect(
+        refused.headers.getSetCookie().some((cookie) => /opensteer\.session=[^;]/u.test(cookie)),
+      ).toBe(false);
     } finally {
       await new Promise<void>((resolve, reject) =>
         issuer.close((error) => (error ? reject(error) : resolve())),

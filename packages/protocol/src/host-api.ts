@@ -1690,6 +1690,8 @@ const hostApiGroup2 = defineRpc({
   "auth.oidc.begin": declaration(
     "POST",
     z.strictObject({
+      /** Ask the provider who is signing in, even when it holds a session. */
+      chooseAccount: z.literal(true).optional(),
       oauthQuery: oauthQuerySchema.optional(),
       providerId: oidcProviderIdSchema,
       returnPath: oidcReturnPathSchema,

@@ -39,7 +39,7 @@ import {
 } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";
 import { useConnectionGate, useConnectionInterrupted } from "./components/connection-shell.js";
-import { consumeOAuthErrorQuery } from "./account/auth-error-query.js";
+import { authorizationErrorScreen, consumeOAuthErrorQuery } from "./account/auth-error-query.js";
 import { NativeOAuthConsent, useNativeOAuthQuery } from "./account/native-oauth-consent.js";
 import { startHostOidcSignIn } from "./account/host-oidc.js";
 export { startHostOidcSignIn } from "./account/host-oidc.js";
@@ -302,7 +302,7 @@ export function App({
     setSetupAdmission("admitted");
   }
 
-  async function startOidc(providerId: string, automatic = false) {
+  async function startOidc(providerId: string, automatic = false, chooseAccount = false) {
     setOnboardingError(null);
     setOnboardingPending(true);
     const outcome = await runAction(null, {
@@ -311,6 +311,7 @@ export function App({
       happened: "you were signed in",
       execute: () =>
         startHostOidcSignIn({
+          ...(chooseAccount ? { chooseAccount: true } : {}),
           desktopBridge,
           deploymentId: desktopDeployment?.id ?? null,
           hostClient,
@@ -335,28 +336,43 @@ export function App({
   // itself ahead of every other screen, including the ones that wait on the
   // Host, because the reason only exists in the URL this render just consumed.
   if (authorizationError) {
+    const screen = authorizationErrorScreen(authorizationError);
+    const ownerProvider = snapshot.identityConfig?.oidcProviders[0];
     return (
       <OnboardingCard
-        description="Go back to the Opensteer app you were signing in from and start again."
+        description={
+          screen.action === "sign-in-as-owner"
+            ? "The Opensteer account signed in to this browser doesn’t own this Home."
+            : "Go back to the Opensteer app you were signing in from and start again."
+        }
         eyebrow="Authorization"
         footnote={`Error code: ${authorizationError.error}`}
-        title="Sign-in couldn’t be completed"
+        title={screen.title}
         titleId="authorization-error-heading"
       >
-        <ErrorNotice
-          message={
-            authorizationError.description ??
-            "This deployment turned down the authorization request."
-          }
-        />
+        <ErrorNotice message={onboardingError ?? screen.message} />
         <div className="onboarding__actions">
-          <button
-            className="btn btn--primary onboarding__primary"
-            onClick={() => setAuthorizationError(null)}
-            type="button"
-          >
-            Continue
-          </button>
+          {screen.action === "sign-in-as-owner" ? (
+            // The same Account session would be refused again: ask the Account who signs in.
+            <button
+              className="btn btn--primary onboarding__primary"
+              disabled={!ownerProvider || onboardingPending}
+              onClick={() => {
+                if (ownerProvider) void startOidc(ownerProvider.id, false, true);
+              }}
+              type="button"
+            >
+              Sign in as its owner
+            </button>
+          ) : (
+            <button
+              className="btn btn--primary onboarding__primary"
+              onClick={() => setAuthorizationError(null)}
+              type="button"
+            >
+              Continue
+            </button>
+          )}
         </div>
       </OnboardingCard>
     );

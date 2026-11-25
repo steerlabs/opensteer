@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { consumeOAuthErrorQuery } from "./auth-error-query.js";
+import { authorizationErrorScreen, consumeOAuthErrorQuery } from "./auth-error-query.js";
 
 describe("consumeOAuthErrorQuery", () => {
   it("reads the failure and removes it from browser history", () => {
@@ -57,5 +57,26 @@ describe("consumeOAuthErrorQuery", () => {
       expect(consumeOAuthErrorQuery(location, replace)).toBeNull();
       expect(replace).not.toHaveBeenCalled();
     }
+  });
+});
+
+describe("authorizationErrorScreen", () => {
+  it("says a Home belongs to another Opensteer account and offers signing in as its owner", () => {
+    expect(authorizationErrorScreen({ error: "another_account", description: null })).toEqual({
+      action: "sign-in-as-owner",
+      message: "Sign in with the Opensteer account that owns it.",
+      title: "This Home belongs to another Opensteer account",
+    });
+  });
+
+  it("keeps every other failure on the general sentence and its Continue", () => {
+    expect(authorizationErrorScreen({ error: "access_denied", description: null })).toEqual({
+      action: "continue",
+      message: "This deployment turned down the authorization request.",
+      title: "Sign-in couldn’t be completed",
+    });
+    expect(
+      authorizationErrorScreen({ error: "invalid_request", description: "Bad client." }),
+    ).toMatchObject({ message: "Bad client." });
   });
 });

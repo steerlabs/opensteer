@@ -1948,6 +1948,8 @@ export class IdentityService {
   }
 
   async beginOidcSignIn(input: {
+    /** Ask the provider who is signing in, even when it holds a session. */
+    readonly chooseAccount?: boolean;
     readonly headers: Headers;
     readonly oauthQuery?: string;
     readonly providerId: string;
@@ -1982,6 +1984,7 @@ export class IdentityService {
         body: JSON.stringify({
           callbackURL: callbackUrl.toString(),
           ...(input.oauthQuery ? { oauth_query: input.oauthQuery } : {}),
+          ...(input.chooseAccount ? { additionalParams: { max_age: "0", prompt: "login" } } : {}),
           providerId: oidcIdentityProviderId(provider),
           requestSignUp: true,
         }),
@@ -2010,9 +2013,9 @@ export class IdentityService {
     const response = await this.#auth.handler(
       new Request(url, { headers: forwardedAuthHeaders(request.headers), method: "GET" }),
     );
-    const refused = await this.#anotherAccount(response);
-    if (refused) return refused;
     if (response.status < 300 || response.status >= 400) return response;
+    const refused = this.#anotherAccount(response);
+    if (refused) return refused;
     const restart = await this.#restartLapsedSignIn(request, response);
     if (restart) return restart;
     const admission = await this.#admissionFromHeaders(request.headers);
@@ -2031,28 +2034,22 @@ export class IdentityService {
 
   /**
    * A managed Home's one owner is its Opensteer account. An account the Home has
-   * no person for is refused where Better Auth would create one, which answers
-   * the browser with bare JSON; this ends it on the Home's own page instead,
-   * under the one error that page names. The refusal's cookies (the cleared
-   * sign-in state) go with it.
+   * no person for is refused where Better Auth would create one, and Better Auth
+   * sends that refusal to the Home's page under its own code; this names it as
+   * the one error that page explains, with the response's cookies unchanged.
    */
-  async #anotherAccount(response: Response): Promise<Response | null> {
-    if (!this.#options.managedOwner || response.status !== 403) return null;
-    const body: unknown = await response
-      .clone()
-      .json()
-      .catch(() => null);
-    if (
-      typeof body !== "object" ||
-      body === null ||
-      (body as { code?: unknown }).code !== signupAdmissionRequiredCode
-    )
-      return null;
-    const location = new URL(homeSignInErrorPath, this.#options.publicOrigin);
-    location.searchParams.set("error", anotherAccountSignInError);
-    const headers = new Headers({ "cache-control": "no-store", location: location.toString() });
-    for (const cookie of response.headers.getSetCookie()) headers.append("set-cookie", cookie);
-    return new Response(null, { headers, status: 302 });
+  #anotherAccount(response: Response): Response | null {
+    if (!this.#options.managedOwner) return null;
+    const location = new URL(response.headers.get("location") ?? "/", this.#options.publicOrigin);
+    if (location.origin !== this.#options.publicOrigin.origin) return null;
+    if (location.pathname !== homeSignInErrorPath) return null;
+    if (location.searchParams.get("error") !== signupAdmissionRequiredCode) return null;
+    const named = new URL(homeSignInErrorPath, this.#options.publicOrigin);
+    named.searchParams.set("error", anotherAccountSignInError);
+    const headers = new Headers(response.headers);
+    headers.set("location", named.toString());
+    headers.set("cache-control", "no-store");
+    return new Response(null, { headers, status: response.status });
   }
 
   /**
