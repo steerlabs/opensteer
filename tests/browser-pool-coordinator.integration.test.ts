@@ -861,6 +861,57 @@ it("counts no failed start for a fresh start into a target that is over, and end
   }
 });
 
+it.skipIf(poolControllerKind() === "fake")(
+  "keeps a refused wake parked with the same saved state, then wakes it without starting a new guest",
+  async () => {
+    const key = "resume-kept";
+    const f = await poolFixture(key);
+    const wanting = new AbortController();
+    try {
+      const slotId = `slot-${key}`;
+      const calls = vi.spyOn(f.controller, "apply");
+      const kinds = () =>
+        calls.mock.calls.map(([call]) => call.kind).filter((kind) => kind !== "sign");
+      const home = f.home(undefined, f.controller, { refusedRetryMs: 60_000 });
+      await home.recover();
+      expect(await home.tryPark()).toBe("parked");
+      const parked = await f.controller.status(slotId, 1);
+      expect(parked.savedState?.id).toBeDefined();
+
+      // The real agent refuses this one wake before consuming the saved state.
+      (f.controller as AgentPoolController).failNext(
+        "closeNetwork",
+        new Error("gate close failed"),
+      );
+      void home.gate.reserve(wanting.signal).catch(() => undefined);
+      await vi.waitFor(() => expect(home.report()).toMatchObject({ refused: "resume-failed" }));
+      wanting.abort();
+      expect(await f.slot()).toMatchObject({
+        phase: "parked",
+        instanceId: parked.instance,
+        savedState: { id: parked.savedState?.id },
+        failedStarts: 0,
+      });
+      expect(await f.controller.status(slotId, 1)).toEqual(parked);
+      expect(kinds()).toEqual(["start", "pause", "resume"]);
+      expect(f.controller.effects).toEqual(["start", "pause"]);
+
+      (await home.gate.reserve(AbortSignal.timeout(20_000))).release();
+      expect(await f.slot()).toMatchObject({
+        phase: "running",
+        instanceId: parked.instance,
+        savedState: null,
+        failedStarts: 0,
+      });
+      expect(kinds()).toEqual(["start", "pause", "resume", "resume"]);
+      expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
+    } finally {
+      wanting.abort();
+      await f.close();
+    }
+  },
+);
+
 // Against the real agent only: the host's own resume, after it consumed the right to resume.
 it.skipIf(poolControllerKind() === "fake")(
   "wakes a parked browser whose saved state the host lost after consuming its resume as a cold start, paced, said as expired",
