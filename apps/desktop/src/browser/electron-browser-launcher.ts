@@ -48,6 +48,7 @@ import {
   browserPagePolicyScriptFor,
 } from "@opensteer/browser-runtime-core/page-policy";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { ThisHomeAddressSet, noHomeAddresses } from "@opensteer/shared/homeAddress";
 import {
   app,
   ipcMain,
@@ -84,6 +85,9 @@ import { mayReachExtensionResource } from "./extensions/web-accessible.js";
 import { boundPageRestore, ElectronPageRestoreSchema, WakeSeeds } from "./page-restore.js";
 import {
   applyBrowserSessionPolicy,
+  forgetHomeSessionCookies,
+  homeElsewhereText,
+  takeHomeRefusal,
   bindBrowserSessionRequestGate,
   browserAcceptLanguages,
   browserIdentity,
@@ -179,6 +183,8 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   readonly #clipboard: EngineClipboard | undefined;
   readonly #downloads: ElectronBrowserLauncherOptions["downloads"];
   readonly #configuredSessions = new WeakSet<Session>();
+  /** This Home's addresses: no page of any browser profile here loads one (G1). */
+  #home = new ThisHomeAddressSet(noHomeAddresses);
   readonly #pagePolicyPreloadPath: string;
   readonly #views: ElectronBrowserViewPool;
   readonly #localProfileRoot: string | undefined;
@@ -375,6 +381,9 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
         if (controlled) this.#connectionWebContents.add(id);
         else this.#connectionWebContents.delete(id);
       },
+      setHomeAddresses: (home) => {
+        this.#home = home;
+      },
       profileSession,
       ...(authenticator ? { authenticator } : {}),
     });
@@ -409,6 +418,9 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
         if (controlled) this.#connectionWebContents.add(id);
         else this.#connectionWebContents.delete(id);
       },
+      setHomeAddresses: (home) => {
+        this.#home = home;
+      },
       profileSession,
       ...(authenticator ? { authenticator } : {}),
       ...(localProfile ? { localProfile } : {}),
@@ -429,6 +441,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     applyBrowserSessionPolicy(profileSession, {
       acceptLanguages: browserAcceptLanguages(app.getPreferredSystemLanguages()),
       isConnectionWebContents: (id) => this.#connectionWebContents.has(id),
+      homeAddresses: () => this.#home,
       onMainFrameRequest: (id, method) => {
         if (this.#methods.has(id)) this.#methods.set(id, method);
       },
@@ -442,6 +455,8 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       ...(requestGate ? { requestGate } : {}),
     });
     this.#configuredSessions.add(profileSession);
+    // A profile from before G1 may hold this Home's session cookie: it goes, once (G1).
+    void forgetHomeSessionCookies(profileSession).catch(() => undefined);
   }
 
   #protection(contents: WebContents) {
@@ -815,6 +830,12 @@ interface ElectronBrowserContextOptions {
   ) => ElectronBrowserView;
   readonly createHelper: (options: ElectronBrowserViewOptions) => WebContentsView;
   readonly onConnectionWebContents?: (webContentsId: number, controlled: boolean) => void;
+  /**
+   * This Home's addresses, as the Home last told this browser: kept by the launcher for every
+   * profile session it configures (G1). Required: no context of a browser the Home owns exists
+   * without it, a Guest's or a saved profile's.
+   */
+  readonly setHomeAddresses: (home: ThisHomeAddressSet) => void;
   readonly profileSession: Session;
   readonly localProfile?: ElectronLocalProfile;
   readonly onPageTiming?: PageOpenTiming;
@@ -860,6 +881,10 @@ class ElectronBrowserContext implements BrowserContext {
     screen.on("display-metrics-changed", this.#displayChanged);
     screen.on("display-added", this.#displayChanged);
     screen.on("display-removed", this.#displayChanged);
+  }
+  /** This Home's addresses, from its ticket or a route change (G1). */
+  setHomeAddresses(home: ThisHomeAddressSet): void {
+    this.#options.setHomeAddresses(home);
   }
 
   pages(): BrowserPage[] {
@@ -1754,6 +1779,16 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       });
     });
     view.webContents.on("did-fail-load", (_event, code, _text, _url, mainFrame) => {
+      // A page refused this Home's address says where the Home opens instead (G1).
+      if (mainFrame && takeHomeRefusal(view.webContents.id))
+        void view.webContents
+          .loadURL("about:blank")
+          .then(() =>
+            view.webContents.executeJavaScript(
+              `document.title = "Opensteer Home"; document.body.textContent = ${JSON.stringify(homeElsewhereText)};`,
+            ),
+          )
+          .catch(() => undefined);
       // An aborted navigation (ERR_ABORTED) gave way to another, whose own end follows, or to a
       // stop, which did-stop-loading ends. Any other failure committed an error page.
       if (mainFrame && code !== -3)
@@ -4732,6 +4767,10 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
     this.#removeTargetListener = context.onTargetEvent((method, parameters) => {
       for (const listener of this.#listeners) listener(method, parameters);
     });
+  }
+
+  setHomeAddresses(home: ThisHomeAddressSet): void {
+    this.#context.setHomeAddresses(home);
   }
 
   async attach(targetId: string): Promise<CdpChannel> {

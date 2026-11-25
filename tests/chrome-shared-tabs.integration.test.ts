@@ -266,7 +266,8 @@ async function proveChromeShares(
   expect(manifest.permissions).toEqual(companionManifest.permissions);
   expect(manifest.permissions).toContain("debugger");
   expect(manifest.permissions).toContain("webNavigation");
-  expect(manifest.permissions).not.toContain("cookies");
+  // The Home's session cookie leaves this profile while an agent is attached (G3).
+  expect(manifest.permissions).toContain("cookies");
   const fixture = await createStoreFixture();
   const run = await fixture.startRunFixture("shared-real-chrome");
   const authority = { agentBindingId: `run:${run.runId}`, ownerId: run.userId };
@@ -375,12 +376,15 @@ async function proveChromeShares(
   const scratch = await mkdtemp(join(tmpdir(), "opensteer-live-tabs-e2e-"));
   let chrome: BrowserContext | undefined;
   const clients: Browser[] = [];
+  let pages: ReturnType<typeof createHttpServer> | undefined;
+  const cookieEchoes: string[] = [];
   await ownTestDatabaseProducer(fixture.databaseUrl, async () => ({
     close: async () => {
       for (const client of clients) await client.close().catch(() => undefined);
       await chrome?.close();
       sources.close();
       await home.close();
+      if (pages) await new Promise<void>((done) => pages!.close(() => done()));
       await rm(scratch, { recursive: true, force: true });
     },
   }));
@@ -408,13 +412,61 @@ async function proveChromeShares(
         `<a target="_blank" href="${extension}/connect.html#${invitation}">Pair the companion</a>`,
       ),
   );
-  home.get("/test-tab/:name", async (request, reply) => {
-    const { name } = request.params as { name: string };
-    return reply.type("text/html").send(`<!doctype html><title>${name}</title>
-        <button id="change" onclick="this.textContent='Clicked'">Click</button>
-        <button id="popup" onclick="window.open('/test-tab/Popup')">Popup</button>`);
+  // Every request that reaches the Home's own server from a probe (D1): what an attached shared
+  // tab's session rules must keep from leaving Chrome.
+  const probeHits: string[] = [];
+  home.get("/home-probe/:kind", async (request, reply) => {
+    probeHits.push(`${(request.params as { kind: string }).kind} ${request.headers.cookie ?? ""}`);
+    return reply.type("text/html").send("<!doctype html><title>probe</title>");
+  });
+  // The Home's sign-in, as its response sets the person's session cookie.
+  home.get("/test-sign-in", async (_request, reply) =>
+    reply
+      .header("set-cookie", "opensteer.session=signed-in-again; Path=/; HttpOnly")
+      .type("text/html")
+      .send("<!doctype html><title>Signed in</title>"),
+  );
+  home.server.on("upgrade", (request: { url?: string; headers: { cookie?: string } }) => {
+    if (request.url?.startsWith("/home-probe/"))
+      probeHits.push(`${request.url.slice("/home-probe/".length)} ${request.headers.cookie ?? ""}`);
   });
   await home.listen({ host: "127.0.0.1", port });
+  // The pages shared from Chrome are a web site's, never this Home's: a tab on the Home's own
+  // address is not one an agent may be given (rule 1's page rule).
+  pages = createHttpServer((request, response) => {
+    // A local server on another loopback port, such as one a Run starts (M4): what cookies reach it.
+    const echo = /^\/cookie-echo-([a-z]+)$/u.exec(request.url ?? "")?.[1];
+    if (echo) {
+      cookieEchoes.push(`${echo} ${request.headers.cookie ?? ""}`);
+      response.writeHead(200, { "content-type": "text/plain" }).end("echo");
+      return;
+    }
+    // A service worker a page of this site registers, which asks the echo for itself (G3).
+    if (request.url === "/sw.js") {
+      response
+        .writeHead(200, { "content-type": "text/javascript" })
+        .end(
+          `self.addEventListener("activate", (event) => event.waitUntil(fetch("/cookie-echo-worker", { credentials: "include" })));`,
+        );
+      return;
+    }
+    const redirect = /^\/test-redirect-([a-z]+)$/u.exec(request.url ?? "")?.[1];
+    if (redirect) {
+      response.writeHead(302, { location: `${origin}/home-probe/redirect-${redirect}` }).end();
+      return;
+    }
+    const name = decodeURIComponent(/^\/test-tab\/([^/?#]+)/u.exec(request.url ?? "")?.[1] ?? "");
+    if (!name) {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html" })
+      .end(`<!doctype html><title>${name}</title>
+        <button id="change" onclick="this.textContent='Clicked'">Click</button>
+        <button id="popup" onclick="window.open('/test-tab/Popup')">Popup</button>`);
+  }).listen(0, "127.0.0.1");
+  await once(pages, "listening");
+  const site = `http://127.0.0.1:${(pages.address() as AddressInfo).port}`;
   const launch = () =>
     chromium.launchPersistentContext(scratch, {
       channel: "chromium",
@@ -462,7 +514,12 @@ async function proveChromeShares(
   ).toEqual([]);
   const popup = await chrome.newPage();
   await popup.goto(`${extension}/${manifest.action.default_popup}`);
-  const share = async (chromeContext: BrowserContext, extensionPopup: Page, page: Page) => {
+  const share = async (
+    chromeContext: BrowserContext,
+    extensionPopup: Page,
+    page: Page,
+    refused = false,
+  ) => {
     const companion =
       chromeContext.serviceWorkers()[0] ?? (await chromeContext.waitForEvent("serviceworker"));
     type Api = { tabs: { query(options: object): Promise<{ id: number; url: string }[]> } };
@@ -485,6 +542,10 @@ async function proveChromeShares(
       },
       { type: "ui.tab.share", sourceId, tabId },
     );
+    if (refused) {
+      expect(result).toMatchObject({ ok: false, tabShareReason: "unsupported-page" });
+      return "";
+    }
     if (result.ok !== true) {
       const target = await companion.evaluate(async (id) => {
         const api = (
@@ -518,10 +579,18 @@ async function proveChromeShares(
   };
   const first = await chrome.newPage();
   const other = await chrome.newPage();
-  await first.goto(`${origin}/test-tab/First`);
-  await other.goto(`${origin}/test-tab/Other`);
+  await first.goto(`${site}/test-tab/First`);
+  await other.goto(`${site}/test-tab/Other`);
   const firstId = await share(chrome, popup, first);
   const otherId = await share(chrome, popup, other);
+  // A tab on the Home it paired with is not one the extension shares for an agent (rule 1).
+  const onHome = await chrome.newPage();
+  await onHome.goto(`${origin}/test-pair`);
+  await share(chrome, popup, onHome, true);
+  expect((await liveTabs.listForBinding(authority)).map((tab) => tab.url)).not.toContain(
+    onHome.url(),
+  );
+  await onHome.close();
   if (scenario === "connected agents" || scenario === "mode downgrade") {
     const ownerId = run.userId;
     const connections = new AgentConnectionStore(fixture.database);
@@ -1226,8 +1295,32 @@ async function proveChromeShares(
     expect(other.isClosed()).toBe(false);
     return;
   }
+  // The person is signed in to their Home in this Chrome, and to a local site of their own.
+  await chrome.addCookies([
+    { name: "opensteer.session", value: "home-secret", url: origin },
+    { name: "theirs", value: "kept", url: site },
+  ]);
   const client = await attach(firstId);
   await chrome.addCookies([{ name: "fixture", value: "fixture-session", url: origin }]);
+  // From a web page, a fetch, a WebSocket, an iframe and a redirect to the Home (D1).
+  const probe = (who: string) => `(async () => {
+    const home = ${JSON.stringify(origin)};
+    const who = ${JSON.stringify(who)};
+    const settle = (start) => new Promise((done) => { start(done); setTimeout(done, 1500); });
+    await fetch(home + "/home-probe/fetch-" + who, { credentials: "include", mode: "no-cors" }).catch(() => {});
+    await settle((done) => {
+      const socket = new WebSocket(home.replace("http", "ws") + "/home-probe/ws-" + who);
+      socket.onopen = socket.onerror = socket.onclose = () => done();
+    });
+    for (const src of [home + "/home-probe/frame-" + who, location.origin + "/test-redirect-" + who])
+      await settle((done) => {
+        const frame = document.createElement("iframe");
+        frame.onload = frame.onerror = () => done();
+        frame.src = src;
+        document.body.append(frame);
+      });
+    return "probed";
+  })()`;
   const repl = liveTabs.browserUsePort(async () => authority);
   const replCall = {
     contextKey: "chrome-repl",
@@ -1259,6 +1352,73 @@ async function proveChromeShares(
         ),
       ),
     ).toMatchObject({ result: { value: "First" } });
+    // An agent drives First: nothing of the probe reaches the Home, with its cookie or without.
+    expect(
+      JSON.parse(
+        await repl.command(
+          selected,
+          "Runtime.evaluate",
+          { expression: probe("agent"), awaitPromise: true, returnByValue: true },
+          undefined,
+          { ...replCall, signal: AbortSignal.timeout(15_000), deadline: Date.now() + 15_000 },
+        ),
+      ),
+    ).toMatchObject({ result: { value: "probed" } });
+    // The person's own tab, which no agent drives, then reaches the Home with its cookie: the
+    // probe is real, and whatever of the agent's tab reached the Home arrived before it.
+    const control = await chrome.newPage();
+    await control.goto(`${site}/test-tab/Control`);
+    await control.evaluate(probe("person"));
+    await vi.waitFor(() =>
+      expect(probeHits.map((hit) => hit.split(" ")[0]).sort()).toEqual(
+        expect.arrayContaining(["fetch-person", "frame-person", "redirect-person", "ws-person"]),
+      ),
+    );
+    expect(probeHits.filter((hit) => hit.includes("-agent"))).toEqual([]);
+    // G3: while an agent is attached, the Home's session cookie does not exist in this profile:
+    // nothing sends it to any port, from the tab, its popup, a service worker or the person's own
+    // tab, and the person's own local site keeps its cookie.
+    const jar = async () => (await chrome!.cookies()).map(({ name }) => name);
+    expect(await jar()).not.toContain("opensteer.session");
+    expect(await jar()).toContain("theirs");
+    const echo = (who: string) =>
+      `fetch(location.origin + "/cookie-echo-${who}", { credentials: "include" }).then((r) => r.text())`;
+    for (const expression of [
+      echo("agent"),
+      `(window.open(location.origin + "/cookie-echo-popup"), "opened")`,
+      `navigator.serviceWorker.register("/sw.js").then(() => "registered")`,
+    ])
+      await repl.command(
+        selected,
+        "Runtime.evaluate",
+        { expression, awaitPromise: true, returnByValue: true, userGesture: true },
+        undefined,
+        replCall,
+      );
+    const person = await chrome.newPage();
+    await person.goto(`${site}/test-tab/Person`);
+    await person.evaluate(echo("person"));
+    await vi.waitFor(() =>
+      expect(cookieEchoes.map((entry) => entry.split(" ")[0]).sort()).toEqual(
+        expect.arrayContaining(["agent", "person", "popup", "worker"]),
+      ),
+    );
+    for (const entry of cookieEchoes) {
+      expect(entry).not.toContain("opensteer.session");
+      expect(entry).toContain("theirs=kept");
+    }
+    // The popup the agent's tab opened is shared with it, as every popup of a shared tab: it goes.
+    for (const tab of chrome!.pages())
+      if (tab.url().includes("/cookie-echo-popup")) await tab.close();
+    await vi.waitFor(() => expect(client.contexts()[0]!.pages()).toHaveLength(1));
+    // The person signs in to their Home in this Chrome while the agent is attached: nothing is
+    // stored, so nothing comes back for it to reach.
+    await person.goto(`${origin}/test-sign-in`).catch(() => undefined);
+    expect(await jar()).not.toContain("opensteer.session");
+    await person.close();
+    expect(probeHits.every((hit) => hit.includes("fixture=fixture-session"))).toBe(true);
+    await control.close();
+    probeHits.length = 0;
     const reads: unknown = JSON.parse(
       await repl.command(
         selected,
@@ -1270,9 +1430,13 @@ async function proveChromeShares(
         replCall,
       ),
     );
-    expect(reads).toMatchObject({
-      cookies: [expect.objectContaining({ name: "fixture", value: "fixture-session" })],
-    });
+    // The page's own cookies are read as ever; the Home's session cookie is not among them.
+    expect((reads as { cookies: { name: string; value: string }[] }).cookies).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "fixture", value: "fixture-session" }),
+      ]),
+    );
+    expect(JSON.stringify(reads)).not.toContain("opensteer.session");
   } finally {
     unsubscribe();
   }
@@ -1302,7 +1466,7 @@ async function proveChromeShares(
   );
   await rootAlias.detach();
   await expect(context.cookies()).rejects.toThrow("requires a whole browser context grant");
-  await page.goto(`${origin}/test-tab/Driven`);
+  await page.goto(`${site}/test-tab/Driven`);
   expect(await page.evaluate(() => document.title)).toBe("Driven");
   await page.locator("#change").click();
   expect(await page.locator("#change").textContent()).toBe("Clicked");
@@ -1349,7 +1513,7 @@ async function proveChromeShares(
   const restartedPopup = await chrome.newPage();
   await restartedPopup.goto(`${extension}/${manifest.action.default_popup}`);
   const restartPage = await chrome.newPage();
-  await restartPage.goto(`${origin}/test-tab/Revoked`);
+  await restartPage.goto(`${site}/test-tab/Revoked`);
   const last = await attach(await share(chrome, restartedPopup, restartPage));
   const revoked = disconnectedFrom(last);
   expect(await sources.revokeSource({ ownerId: run.userId, sourceId })).toBe(true);

@@ -291,6 +291,7 @@
     "apps/host/src/browser/browser-viewer-protocol.ts",
     "apps/host/src/browser/chrome-shared-tabs.ts",
     "apps/host/src/browser/chrome-tab-backend.ts",
+    "apps/host/src/browser/home-addresses.ts",
     "apps/host/src/browser/managed-pool-home.ts",
     "apps/host/src/browser/managed-pool-keys.ts",
     "apps/host/src/browser/managed-pool-target.ts",

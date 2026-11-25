@@ -10,9 +10,38 @@ import {
 import { mayReachExtensionResource } from "./extensions/web-accessible.js";
 import { isLoopbackHostname } from "@opensteer/core";
 import { browserPagePermissionsPolicy } from "@opensteer/browser-runtime-core/page-policy";
+import {
+  homeElsewhereText,
+  isHomeSessionCookieName,
+  type ThisHomeAddressSet,
+} from "@opensteer/shared/homeAddress";
+
+export { homeElsewhereText };
 
 export { browserIdentity, chromeUserAgent } from "@opensteer/browser-core";
 export type { BrowserIdentity, BrowserUserAgentMetadata } from "@opensteer/browser-core";
+
+/** Tabs whose page was refused one of this Home's addresses, until they show where it opens. */
+const homeRefusals = new Set<number>();
+
+/** Whether this tab's last page was refused because it was this Home's; asked once per refusal. */
+export function takeHomeRefusal(webContentsId: number): boolean {
+  return homeRefusals.delete(webContentsId);
+}
+
+/**
+ * Removes this Home's session cookies from a browser profile it owns, once at start (G1): a profile
+ * from before this rule may hold one. None can arrive again, since none of its pages loads here.
+ */
+export async function forgetHomeSessionCookies(session: Pick<Session, "cookies">): Promise<void> {
+  for (const cookie of await session.cookies.get({}))
+    if (isHomeSessionCookieName(cookie.name)) {
+      const host = (cookie.domain ?? "").replace(/^\./u, "");
+      await session.cookies
+        .remove(`${cookie.secure ? "https" : "http"}://${host}${cookie.path ?? "/"}`, cookie.name)
+        .catch(() => undefined);
+    }
+}
 
 export interface BrowserSessionPolicyOptions {
   readonly provider?: boolean;
@@ -22,6 +51,8 @@ export interface BrowserSessionPolicyOptions {
   readonly onMainFrameRequest?: (webContentsId: number, method: string) => void;
   /** Whether a WebContents is currently controlled by a connected agent (cancels `chrome-extension:` requests). */
   readonly isConnectionWebContents?: (webContentsId: number) => boolean;
+  /** This Home's addresses, as the Home last told this browser (G1). */
+  readonly homeAddresses?: () => ThisHomeAddressSet;
   readonly acceptLanguages?: string;
   readonly downloads: Pick<DesktopDownloads, "accept">;
   /** Absolute path of the bundled `browser-page-preload.cjs`. */
@@ -78,6 +109,16 @@ export function applyBrowserSessionPolicy(
     ...(options.acceptLanguages ? [options.acceptLanguages] : []),
   );
   session.webRequest.onBeforeRequest((details, callback) => {
+    // G1: no address of this Home loads in a browser the Home owns, for anyone: a page, a popup, a
+    // frame, a redirect hop (each is asked here), a worker or a service worker (no WebContents).
+    // Its pages never load here, so nobody signs in to it here and its session cookie never
+    // exists in these profiles. One scan of the address for the person's own pages.
+    if (options.homeAddresses?.().includesReported(details.url) === true) {
+      if (details.resourceType === "mainFrame" && details.webContentsId !== undefined)
+        homeRefusals.add(details.webContentsId);
+      callback({ cancel: true });
+      return;
+    }
     if (details.webContentsId !== undefined && !["GET", "HEAD"].includes(details.method))
       options.onUploadRequest?.(details.webContentsId, details.id);
     if (details.resourceType === "mainFrame" && details.webContentsId !== undefined)

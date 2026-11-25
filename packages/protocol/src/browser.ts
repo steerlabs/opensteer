@@ -173,6 +173,13 @@ export function createBrowserBridgeAttachedSchema() {
 export const BrowserBridgeAttachedSchema = createBrowserBridgeAttachedSchema();
 export type BrowserBridgeAttached = z.infer<typeof BrowserBridgeAttachedSchema>;
 
+/** `ThisHomeAddresses` (`@opensteer/shared/homeAddress`) on the wire. */
+export const BrowserHomeAddressesSchema = z.strictObject({
+  origins: z.array(z.string().min(1).max(2_048)).max(8),
+  loopbackPorts: z.array(z.number().int().min(1).max(65_535)).max(8),
+});
+export type BrowserHomeAddresses = z.infer<typeof BrowserHomeAddressesSchema>;
+
 export const BrowserAttachTicketClaimsSchema = z
   .strictObject({
     access: BrowserProfileAccessSchema,
@@ -230,6 +237,12 @@ export const BrowserAttachTicketClaimsSchema = z
      */
     personFillVersion: PersonFillVersionSchema.optional(),
     initialSurfaceId: BrowserSurfaceIdSchema.optional(),
+    /**
+     * This Home's addresses when the ticket is issued (`ThisHomeAddresses`), before the browser's
+     * first page loads: no page of a browser the Home owns loads one, the person's or an agent's
+     * (G1). A route change later reaches a connected runtime as `home.addresses`.
+     */
+    homeAddresses: BrowserHomeAddressesSchema.optional(),
     expiresAt: IsoDateTimeSchema,
     identity: BrowserAttachTicketIdentitySchema,
     issuedAt: IsoDateTimeSchema,
@@ -782,6 +795,15 @@ const BaselineBrowserClientMessageSchema = z
       /** Host-only attribution for Page.navigate and Opensteer.openTab. */
       navigationId: z.uuid().optional(),
       type: z.literal("cdp.command"),
+    }),
+    /**
+     * Host-only. This Home's addresses changed (Remote access on, off, a new route): the runtime
+     * holds them from now on, for every page of its browser (G1).
+     */
+    z.strictObject({
+      ...browserBase,
+      homeAddresses: BrowserHomeAddressesSchema,
+      type: z.literal("home.addresses"),
     }),
     /**
      * Host-only; the Host never relays it from a viewer or an agent. Replaces

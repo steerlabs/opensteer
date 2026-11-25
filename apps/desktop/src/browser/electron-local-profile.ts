@@ -1,3 +1,4 @@
+import { isHomeSessionCookieName } from "@opensteer/shared/homeAddress";
 import { BrowserRuntimeError } from "@opensteer/browser-runtime-core";
 import { LocalProfileBindingSchema, type LocalProfileBinding } from "@opensteer/protocol";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
@@ -265,7 +266,12 @@ export class ElectronLocalProfile {
         return result.cookies;
       },
       restore: async (cookies) => {
-        await command("Network.setCookies", { cookies });
+        // This Home's session cookies never return to a profile of its own browser (G1).
+        await command("Network.setCookies", {
+          cookies: cookies.filter(
+            (cookie) => typeof cookie.name !== "string" || !isHomeSessionCookieName(cookie.name),
+          ),
+        });
         await this.session.cookies.flushStore();
       },
       subscribe: (invalidate) => {

@@ -64,8 +64,27 @@ interface ChromeNotificationOptions {
   type: "basic";
 }
 
+interface ChromeSessionRule {
+  id: number;
+  priority: number;
+  action:
+    | { type: "block" }
+    | {
+        type: "modifyHeaders";
+        responseHeaders: { header: string; operation: "remove" }[];
+      };
+  condition: { tabIds?: number[]; regexFilter: string; resourceTypes: readonly string[] };
+}
+
 interface ChromeApi {
   debugger?: ChromeDebugger;
+  declarativeNetRequest?: {
+    updateSessionRules(options: {
+      addRules?: ChromeSessionRule[];
+      removeRuleIds?: number[];
+    }): Promise<void>;
+    getSessionRules(): Promise<{ id: number }[]>;
+  };
   webNavigation?: {
     onCreatedNavigationTarget: ChromeEvent<
       (details: { sourceTabId: number; tabId: number; url: string }) => void
@@ -80,6 +99,7 @@ interface ChromeApi {
       domain?: string;
       partitionKey?: { hasCrossSiteAncestor?: boolean; topLevelSite: string };
     }): Promise<ChromeCookie[]>;
+    remove(details: { url: string; name: string }): Promise<unknown>;
   };
   notifications: {
     clear(id: string): Promise<boolean>;

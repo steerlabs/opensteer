@@ -373,6 +373,8 @@ export class BrowserController {
   /** Pages the person is closing, until the ledger has let them go. */
   private readonly closingSurfaces = new Set<BrowserSurfaceId>();
   private readonly cdpRouter: SessionCdpRouter;
+  /** The browser refuses this Home's addresses from the ticket (G1). */
+  private readonly homeAddressesApplied: Promise<void>;
   private readonly agentCommands: CommandQueue = {
     pending: 0,
     overflowReported: false,
@@ -503,6 +505,12 @@ export class BrowserController {
     });
     this.cdpRouter = options.cdpRouter;
     this.claims = options.claims;
+    // This Home's addresses, from its ticket, before any page of this attachment loads (G1):
+    // `start` waits for the browser to refuse them, and the first navigation waits for `start`.
+    this.homeAddressesApplied = options.claims.homeAddresses
+      ? this.cdpRouter.setHomeAddresses(options.claims.homeAddresses)
+      : Promise.resolve();
+    this.homeAddressesApplied.catch(() => undefined);
     this.editing =
       options.claims.editingVersion === 2 ||
       (options.claims.editingVersion === 1 && options.clipboard !== undefined);
@@ -626,6 +634,7 @@ export class BrowserController {
   }
 
   async start(): Promise<void> {
+    await this.homeAddressesApplied;
     if (this.closed) throw new BrowserRuntimeError("conflict", "The browser controller is closed.");
     this.rootSurfaceId = this.claims.initialSurfaceId ?? this.ledger.snapshot()[0]?.id;
     this.unsubscribeCdp = this.cdpRouter.onEvent(this.claims.sessionId, (event) => {
@@ -969,6 +978,9 @@ export class BrowserController {
   }
 
   private enqueue(message: BrowserClientMessage): Promise<void> {
+    // A route change: the browser holds the new set from now on, ahead of any queued command (G1).
+    if (message.type === "home.addresses")
+      return this.cdpRouter.setHomeAddresses(message.homeAddresses);
     if (!isCdpRequest(message)) return this.enqueueCommand(message);
     if (message.command.method === browserHostMethods.cancelScriptCommand)
       return this.cancelScriptCommand(message);

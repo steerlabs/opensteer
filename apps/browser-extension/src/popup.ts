@@ -1,3 +1,4 @@
+import { isLoopbackUrl } from "@opensteer/shared/homeAddress";
 import { browserSiteDomain } from "@opensteer/browser-source-wire/site";
 import {
   StatusSchema,
@@ -395,6 +396,14 @@ function sharedTabs(connection: ConnectionView): HTMLElement | null {
       {},
       "The agent can act as you, in this tab, on any site this Chrome is signed in to, until you stop. It can read cookies from this Chrome profile.",
     ),
+    // A Home on this computer's loopback signs out of this Chrome while an agent is attached (G3).
+    isLoopbackUrl(connection.origin)
+      ? h(
+          "p",
+          {},
+          "While an agent is attached to a tab in this Chrome profile, your Home's own page is signed out here. The Opensteer app and your phone are not affected.",
+        )
+      : null,
     button(
       "btn.btn--small",
       "Share this tab with Opensteer",

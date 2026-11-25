@@ -21,6 +21,13 @@ import {
   type CdpParameters,
 } from "@opensteer/browser-runtime-core";
 import { z } from "zod";
+import {
+  ThisHomeAddressSet,
+  isHomeSessionCookieName,
+  isLoopbackUrl,
+  noHomeAddresses,
+  type ThisHomeAddresses,
+} from "@opensteer/shared/homeAddress";
 
 type Listener = (method: string, parameters: CdpParameters) => void;
 type Reply = {
@@ -71,9 +78,17 @@ export class ChromeTabBackend implements BrowserCdpBackend {
   readonly #fail: () => void;
   #pendingBytes = 0;
 
-  constructor(write: (frame: BrowserSourceTabPart<"tab.command">) => boolean, fail: () => void) {
+  /** This Home's addresses as they are now, sent with the command that starts an attachment. */
+  readonly #homeAddresses: () => ThisHomeAddresses;
+
+  constructor(
+    write: (frame: BrowserSourceTabPart<"tab.command">) => boolean,
+    fail: () => void,
+    homeAddresses: () => ThisHomeAddresses = () => noHomeAddresses,
+  ) {
     this.#write = write;
     this.#fail = fail;
+    this.#homeAddresses = homeAddresses;
   }
 
   assertScope(method: string): void {
@@ -362,11 +377,18 @@ export class ChromeTabBackend implements BrowserCdpBackend {
           : {}),
       };
     }
-    return this.#sendCdp(tab, session, method, params);
+    // The person's own Chrome holds the Home's real cookie (G3): no agent writes, overwrites,
+    // deletes or reads it, nor loads the Home's address with it.
+    const home = new ThisHomeAddressSet(this.#homeAddresses());
+    refuseHomeCookieWork(method, params, home);
+    const result = await this.#sendCdp(tab, session, method, params);
+    return homeCookieReads.has(method) ? withoutHomeCookieObjects(result, home) : result;
   }
 
   #sendCdp(tab: Tab, session: string, method: string, params: CdpParameters) {
+    const starts = tab.attachmentId === undefined;
     const attachmentId = (tab.attachmentId ??= randomUUID());
+    const home = starts ? this.#homeAddresses() : undefined;
     return this.#request({
       action: "cdp",
       shareId: tab.info.shareId,
@@ -375,6 +397,10 @@ export class ChromeTabBackend implements BrowserCdpBackend {
       method,
       params,
       ...(session ? { sessionId: session } : {}),
+      // A new attachment carries this Home's addresses as they are then (D2).
+      ...(home && (home.origins.length || home.loopbackPorts.length)
+        ? { homeAddresses: { origins: [...home.origins], loopbackPorts: [...home.loopbackPorts] } }
+        : {}),
     });
   }
 
@@ -501,4 +527,92 @@ export class ChromeTabBackend implements BrowserCdpBackend {
         message: JSON.stringify({ method, params }),
       });
   }
+}
+
+const homeCookieReads = new Set([
+  "Network.getCookies",
+  "Network.getAllCookies",
+  "Storage.getCookies",
+  "Page.getCookies",
+]);
+
+/**
+ * A cookie of this Home's, by the Home's addresses: on one of its origins' hosts, or, for a Home on
+ * this computer's loopback (where every local site shares the host), one of its session cookies.
+ */
+function isHomeCookie(name: string, domain: string, home: ThisHomeAddressSet): boolean {
+  const host = domain.replace(/^\./u, "").replace(/\.$/u, "").toLowerCase();
+  const loopback = isLoopbackUrl(
+    `http://${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}/`,
+  );
+  if (loopback) return home.loopbackPorts.length > 0 && isHomeSessionCookieName(name);
+  return home.origins.some((origin) => new URL(origin).hostname === host);
+}
+
+function refused(method: string): SessionCdpRouterError {
+  return new SessionCdpRouterError("forbidden", `${method} is unavailable on a shared Chrome tab.`);
+}
+
+/**
+ * A cookie write, overwrite or delete aimed at the Home's own cookies is refused, and so is a
+ * clear-everything call, which would take them along; so is a credentialed load of the Home.
+ */
+function refuseHomeCookieWork(
+  method: string,
+  params: CdpParameters,
+  home: ThisHomeAddressSet,
+): void {
+  if (home.empty) return;
+  const aimsAtHome = (cookie: unknown) => {
+    if (cookie === null || typeof cookie !== "object") return false;
+    const { name, domain, url } = cookie as Record<string, unknown>;
+    if (typeof url === "string" && home.includes(url)) return true;
+    const host = typeof domain === "string" ? domain : typeof url === "string" ? safeHost(url) : "";
+    return isHomeCookie(typeof name === "string" ? name : "", host, home);
+  };
+  switch (method) {
+    case "Network.clearBrowserCookies":
+    case "Storage.clearCookies":
+      throw refused(method);
+    case "Network.setCookie":
+    case "Network.deleteCookies":
+      if (aimsAtHome(params)) throw refused(method);
+      return;
+    case "Page.deleteCookie":
+      if (typeof params.url === "string" && home.includes(params.url)) throw refused(method);
+      return;
+    case "Network.setCookies":
+    case "Storage.setCookies":
+      if (Array.isArray(params.cookies) && params.cookies.some(aimsAtHome)) throw refused(method);
+      return;
+    case "Network.loadNetworkResource":
+      if (home.includes(params.url)) throw refused(method);
+      return;
+  }
+}
+
+function safeHost(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
+}
+
+/** A cookie read without the Home's own cookies, chosen by the Home's addresses. */
+function withoutHomeCookieObjects(result: unknown, home: ThisHomeAddressSet): unknown {
+  if (home.empty || result === null || typeof result !== "object") return result;
+  const cookies = (result as { cookies?: unknown }).cookies;
+  if (!Array.isArray(cookies)) return result;
+  return {
+    ...result,
+    cookies: cookies.filter((cookie) => {
+      const { name, domain } = (cookie ?? {}) as { name?: unknown; domain?: unknown };
+      return !(
+        typeof name === "string" &&
+        typeof domain === "string" &&
+        isHomeCookie(name, domain, home)
+      );
+    }),
+  };
 }

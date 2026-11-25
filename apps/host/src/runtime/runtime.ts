@@ -225,6 +225,7 @@ import { loadOrCreateManagedBrowserPoolKeys } from "../browser/managed-pool-keys
 import { ManagedBrowserPoolUnclaimed } from "../browser/managed-pool-target.js";
 import { BrowserSourceService } from "../browser/browser-source-service.js";
 import { BrowserAttachTicketSigner } from "../browser/browser-ticket.js";
+import { HomeAddressBook } from "../browser/home-addresses.js";
 import { PasswordSignInService } from "../browser/password-sign-in-service.js";
 import { passwordsLoginSavedMessage } from "../browser/passwords-offers.js";
 import { SavedLoginService } from "../browser/saved-logins.js";
@@ -890,6 +891,12 @@ export async function createHostRuntime(
           issuer: config.personalAccountIssuer,
         })
       : undefined;
+    // This Home's addresses (rule 1's page rule): held in memory, read again when the route changes.
+    const homeAddresses = new HomeAddressBook({
+      canonicalOrigin: config.canonicalOrigin,
+      listenPort: config.port,
+      readRoute: async () => (await personalRemoteAccess?.routeOrigin()) ?? null,
+    });
     const personalAccount = config.personal
       ? new PersonalRemoteAccessService({
           authority: hostAuthority,
@@ -909,9 +916,17 @@ export async function createHostRuntime(
           onAccountLinkChanged: () => {
             void ownerProfile.refresh().catch(reportOwnerProfileError);
           },
+          // A changed route reaches every browser the Home owns as its new state (G1), and a shared
+          // Chrome tab's agents attach again with it (G3).
+          onRouteChanged: (routeOrigin) => {
+            if (!homeAddresses.publish(routeOrigin)) return;
+            browser.sendHomeAddresses(homeAddresses.current().toJSON());
+            chromeTabs.endAgentAttachments();
+          },
         })
       : undefined;
     const personalRemoteAccess = exposurePolicy.personalRemoteAccess ? personalAccount : undefined;
+    await homeAddresses.refresh();
     const managedHomeClaim =
       config.managedHome && accountGrantVerifier
         ? new ManagedHomeClaimService({
@@ -1345,6 +1360,7 @@ export async function createHostRuntime(
       signer: new BrowserAttachTicketSigner({
         keyId: browserAttachKeyId,
         privateKey: keys.privateKey,
+        homeAddresses: () => homeAddresses.current().toJSON(),
       }),
       ...(config.managedHome?.browserPool
         ? {
@@ -1404,6 +1420,7 @@ export async function createHostRuntime(
     const chromeAttempts = sharedChromeAttempts(database);
     await chromeAttempts.recover();
     const chromeTabs = new ChromeSharedTabs(store, {
+      homeAddresses: () => homeAddresses.current(),
       attempts: chromeAttempts,
       changed: (ownerId) => {
         tabs?.changed(ownerId);
@@ -2228,6 +2245,8 @@ export async function createHostRuntime(
         new BrowserAttachTicketSigner({
           keyId: poolKeys.ticketKey.keyId,
           privateKey: poolKeys.ticketKey.key,
+          // A pooled guest is a browser this Home owns: it refuses the Home's addresses (G1, M2).
+          homeAddresses: () => homeAddresses.current().toJSON(),
         }),
       );
       managedBrowserPool = await startManagedBrowserPool({
@@ -3379,6 +3398,7 @@ export async function createHostRuntime(
       },
       ...(personalRemoteAccess ? { personalRemote: personalRemoteAccess } : {}),
       publicUrl: config.canonicalOrigin,
+      homeOrigins: () => homeAddresses.current().origins,
     });
     administrationCatalogs = new HarnessCatalogReconciliationOwner({
       catalogs: harnessCatalogs,
@@ -3774,6 +3794,7 @@ export async function createHostRuntime(
           .update("opensteer-app-cookie-v1")
           .digest(),
         appRealOrigins: hostAppRealOrigins(config.exposure),
+        homeOrigins: () => homeAddresses.current().origins,
         trustedProxy: hostTrustedProxy(config),
         liveText,
         resourceRevisions,

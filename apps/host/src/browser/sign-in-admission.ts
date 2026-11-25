@@ -2,12 +2,14 @@ import { OpensteerError, isLoopbackHostname } from "@opensteer/core";
 import { browserSiteDomain, browserSiteFromUrl } from "@opensteer/browser-profile/source-state";
 import { BrowserSessionIdSchema, type BrowserSessionId } from "@opensteer/protocol";
 import type { PersonalHostAccessRouteEnvelope } from "@opensteer/deployment-authority";
+import { thisHomeAddresses } from "./home-addresses.js";
 
 /**
- * Sites no sign-in may reach. Loopback addresses hold this Host's own
- * session cookie on a Personal Deployment (and every local dev server's);
- * the sites of the Deployment's canonical origin and remote route hold it
- * everywhere else. An agent signed in there could approve its own Requests.
+ * Sites no sign-in may reach: the sites of this Home's addresses (`thisHomeAddresses`). Cookies
+ * are not scoped by port, so on a Personal Deployment every loopback site holds this Host's own
+ * session cookie (and every local dev server's), not only the ports the Home listens on; the
+ * sites of the Deployment's canonical origin and remote route hold it everywhere else. An agent
+ * signed in there could approve its own Requests.
  */
 export function signInSiteRefusal(options: {
   readonly canonicalOrigin: string;
@@ -17,9 +19,12 @@ export function signInSiteRefusal(options: {
     const host = browserSiteDomain(site);
     if (isLoopbackHostname(host) || host === "0.0.0.0" || host === "[::]") return true;
     const route = await options.currentRoute();
-    return [options.canonicalOrigin, route?.document.route.origin].some(
-      (origin) => origin !== undefined && ownSiteHost(origin) === host,
-    );
+    const home = thisHomeAddresses({
+      canonicalOrigin: options.canonicalOrigin,
+      routeOrigin: route?.document.route.origin,
+      loopbackPorts: [],
+    });
+    return home.origins.some((origin) => ownSiteHost(origin) === host);
   };
 }
 

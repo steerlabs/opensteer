@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { outsideName } from "@opensteer/shared/outsideName";
+import { ThisHomeAddressSet, noHomeAddresses } from "@opensteer/shared/homeAddress";
 import {
   OpensteerError,
   TabIdSchema,
@@ -146,6 +147,8 @@ export class ChromeSharedTabs {
   readonly #device: DeviceAccess;
   readonly #changed: (ownerId: UserId) => void;
   readonly #onError: (error: unknown) => void;
+  /** This Home's addresses as the Host holds them now (`home-addresses.ts`). */
+  readonly #home: () => ThisHomeAddressSet;
 
   constructor(
     store: Pick<OpensteerStore, "admitExecution">,
@@ -154,6 +157,7 @@ export class ChromeSharedTabs {
       readonly device?: DeviceAccess;
       readonly changed?: (ownerId: UserId) => void;
       readonly onError?: (error: unknown) => void;
+      readonly homeAddresses?: () => ThisHomeAddressSet;
     } = {},
   ) {
     this.#store = store;
@@ -166,6 +170,8 @@ export class ChromeSharedTabs {
     this.#changed = options.changed ?? (() => {});
     this.#onError =
       options.onError ?? ((error) => console.error("Shared Chrome cleanup failed", error));
+    const none = new ThisHomeAddressSet(noHomeAddresses);
+    this.#home = options.homeAddresses ?? (() => none);
   }
 
   connectSource(options: {
@@ -179,7 +185,7 @@ export class ChromeSharedTabs {
     fail: () => void;
   }): { receive(frame: SourceFrame): void | Promise<void>; close(): void } {
     this.closeForSource(options.sourceId);
-    const backend = new ChromeTabBackend(options.write, options.fail);
+    const backend = new ChromeTabBackend(options.write, options.fail, () => this.#home().toJSON());
     const source: ChromeSource = {
       ...options,
       backend,
@@ -277,7 +283,7 @@ export class ChromeSharedTabs {
         ? [...entry.source.shares.values()]
             // Rule 1's page rule (P6): the address is the one the browser extension reports; a
             // shared tab on an extension's page does not exist to a connection's work.
-            .filter((share) => authorizePageAddress(execution, share.info.url))
+            .filter((share) => authorizePageAddress(execution, share.info.url, this.#home()))
             .map((share) => ({
               share,
               execution,
@@ -516,6 +522,16 @@ export class ChromeSharedTabs {
     };
   }
 
+  /**
+   * This Home's addresses changed: every agent's client on a shared tab ends, and its tickets, so
+   * the next attachment brings the new set to the extension and this router (B1). The person's
+   * shares stay.
+   */
+  endAgentAttachments(): void {
+    this.standardCdpTickets.revokeAll();
+    for (const share of this.#shares.values()) for (const client of share.clients) client.close();
+  }
+
   async closeForBinding(agentBindingId: string, _reason: string): Promise<void> {
     this.standardCdpTickets.revoke(agentBindingId);
     await Promise.all(
@@ -649,7 +665,7 @@ export class ChromeSharedTabs {
     await this.#authorizeSource(execution, expected.source, false);
     if (
       this.#shares.get(expected.info.shareId) !== expected ||
-      !authorizePageAddress(execution, expected.info.url)
+      !authorizePageAddress(execution, expected.info.url, this.#home())
     )
       throw unavailable();
     if (expected.group.binding && expected.group.binding !== authority.agentBindingId)
@@ -710,6 +726,8 @@ export class ChromeSharedTabs {
       await Promise.all(group.closing);
       check();
       if (group.attempt?.finishing) throw unavailable();
+      // A new attachment knows this Home's addresses as they are now (D2).
+      source.router.setHomeAddresses(this.#home().toJSON());
       const client = source.router.openStandardClient(group.sessionId, {
         wholeContext: false,
         ...(connection ? { connection: true } : {}),

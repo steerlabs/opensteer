@@ -12,6 +12,7 @@ export {
   standardCdpBufferedMaxBytes,
   standardCdpMaxPending,
 } from "./standard-cdp-limits.js";
+import { ThisHomeAddressSet, type ThisHomeAddresses } from "@opensteer/shared/homeAddress";
 import { contextScopedCdpMethods } from "./cdp-context.js";
 import { CdpProductIsolation } from "./cdp-product-isolation.js";
 import { ConnectionExtensionIsolation, isExtensionUrl } from "./connection-extension-isolation.js";
@@ -90,6 +91,11 @@ export interface CdpChannel {
 }
 
 export interface BrowserCdpBackend {
+  /**
+   * This Home's addresses, as the Home last told this browser: no page, frame, worker or service
+   * worker of any of its profiles loads one, the person's or an agent's (G1).
+   */
+  setHomeAddresses?(home: ThisHomeAddressSet): void | Promise<void>;
   readonly protectProductWorlds?: boolean;
   readonly allowsProfileCookieReads?: boolean;
   /** The browser keeps the profile's Chrome extensions and answers CDP's `Extensions` domain. */
@@ -275,6 +281,10 @@ interface ConnectionState extends TargetRoot {
   readonly eventListeners: Set<(event: CdpEvent) => void>;
   nextSequence: number;
 }
+
+/** On a session's root, the browser's and the profile's own domains, which need no page (G6). */
+const sessionRootDomains =
+  /^(?:Browser|SystemInfo|Storage|Extensions|Tracing|IO|Tethering|Memory)\./u;
 
 const standardJsonBudget = { maxBytes: Infinity, maxDepth: 32, maxEntries: 16_384 };
 
@@ -600,6 +610,14 @@ export class SessionCdpRouter {
     return trackPromise(state.physicalWork, start);
   }
 
+  /**
+   * This Home's addresses, from the attach ticket or a route change: the browser's state (G1).
+   * Settles once the browser refuses them.
+   */
+  async setHomeAddresses(home: ThisHomeAddresses): Promise<void> {
+    await this.#backend.setHomeAddresses?.(new ThisHomeAddressSet(home));
+  }
+
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
@@ -907,12 +925,18 @@ export class SessionCdpRouter {
       command = { ...command, parameters };
     }
     this.#backend.assertScope?.(command.method, command.parameters ?? {});
+    // A command that needs a page names a page session (G6): neither a script nor a Run's relay on
+    // the session's root has its root command run in whatever page a browser would pick (Electron's
+    // first page: the person's own tab, or another task's). On a session's root the browser's and
+    // the profile's own domains go without one; a script keeps its narrower list.
     if (
-      state.script &&
+      !state.standard &&
       !command.sessionId &&
       !command.method.startsWith("Target.") &&
       command.method !== "Browser.getVersion" &&
-      !(this.#backend.dedicatedContext && contextScopedCdpMethods.has(command.method))
+      (state.script
+        ? !(this.#backend.dedicatedContext && contextScopedCdpMethods.has(command.method))
+        : !sessionRootDomains.test(command.method))
     )
       throw new SessionCdpRouterError(
         "forbidden",

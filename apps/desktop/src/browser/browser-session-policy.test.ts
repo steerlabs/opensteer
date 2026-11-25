@@ -495,3 +495,101 @@ it("loads a page's own request for an extension resource only when the extension
   expect(cancelled("https://site.test/app.js", web, "script")).toBe(false);
   expect(getExtension).not.toHaveBeenCalled();
 });
+
+describe("no page of a browser the Home owns loads one of the Home's addresses, for anyone (G1)", () => {
+  const policy = async () => {
+    const { applyBrowserSessionPolicy, takeHomeRefusal } =
+      await import("./browser-session-policy.js");
+    const { ThisHomeAddressSet } = await import("@opensteer/shared/homeAddress");
+    const { vi } = await import("vitest");
+    const session = {
+      setPermissionCheckHandler: vi.fn(),
+      setPermissionRequestHandler: vi.fn(),
+      getPreloadScripts: () => [],
+      registerPreloadScript: vi.fn(),
+      webRequest: {
+        onHeadersReceived: vi.fn(),
+        onBeforeRequest: vi.fn(),
+        onBeforeRedirect: vi.fn(),
+        onBeforeSendHeaders: vi.fn(),
+      },
+      setUserAgent: vi.fn(),
+      getUserAgent: () => "Chrome/150",
+    };
+    const home = new ThisHomeAddressSet({
+      origins: ["http://127.0.0.1:4310", "https://route.example.com"],
+      loopbackPorts: [4310],
+    });
+    applyBrowserSessionPolicy(session as unknown as import("electron").Session, {
+      homeAddresses: () => home,
+      downloads: { accept: vi.fn() },
+      pagePolicyPreloadPath: "/policy.cjs",
+    });
+    const before = session.webRequest.onBeforeRequest.mock.calls[0]![0] as (
+      details: Record<string, unknown>,
+      callback: (response: { cancel?: boolean }) => void,
+    ) => void;
+    const ask = (details: Record<string, unknown>) => {
+      let answer: { cancel?: boolean } | undefined;
+      before({ method: "GET", ...details }, (response) => (answer = response));
+      return answer;
+    };
+    return { ask, takeHomeRefusal };
+  };
+
+  it("refuses every request to it: a page, a popup, a frame, a redirect hop, a worker and a service worker, the person's and an agent's alike", async () => {
+    const { ask, takeHomeRefusal } = await policy();
+    const cases = [
+      // The person's own tab, or an agent's: the browser cannot tell, and need not.
+      { url: "http://127.0.0.1:4310/", webContentsId: 7, resourceType: "mainFrame" },
+      { url: "http://localhost:4310/tasks", webContentsId: 8, resourceType: "mainFrame" },
+      { url: "https://route.example.com/settings", webContentsId: 9, resourceType: "mainFrame" },
+      { url: "http://[::1]:4310/", webContentsId: 7, resourceType: "subFrame" },
+      // A redirect hop is asked here again, with its new address.
+      { url: "http://127.0.0.1:4310/v1/rpc/tasks.page", webContentsId: 7, resourceType: "xhr" },
+      // A worker's and a service worker's own requests have no WebContents.
+      { url: "http://127.0.0.1:4310/v1/realtime", resourceType: "webSocket" },
+      { url: "https://route.example.com/v1/auth/session", resourceType: "other" },
+      // Network.loadNetworkResource, a navigation preload and a prerender are requests too.
+      { url: "http://sub.localhost:4310/", webContentsId: 7, resourceType: "other" },
+    ];
+    for (const details of cases) expect(ask(details), details.url).toEqual({ cancel: true });
+    // A refused page says where the Home opens; a refused subresource does not.
+    expect(takeHomeRefusal(7)).toBe(true);
+    expect(takeHomeRefusal(7)).toBe(false);
+    expect(takeHomeRefusal(8)).toBe(true);
+  });
+
+  it("keeps every other site, a dev server on another loopback port included", async () => {
+    const { ask } = await policy();
+    for (const url of ["http://localhost:5173/", "http://127.0.0.1:3000/x", "https://web.test/"])
+      expect(ask({ url, webContentsId: 7, resourceType: "mainFrame" }), url).toEqual({
+        cancel: false,
+      });
+  });
+
+  it("removes a session cookie of the Home's from a profile once, and nothing else", async () => {
+    const { forgetHomeSessionCookies } = await import("./browser-session-policy.js");
+    const jar = [
+      { name: "opensteer.session", domain: "127.0.0.1", path: "/", secure: false },
+      { name: "__Host-opensteer.session", domain: "route.example.com", path: "/", secure: true },
+      { name: "opensteer.admission", domain: "localhost", path: "/", secure: false },
+      { name: "better-auth.session_token", domain: "localhost", path: "/", secure: false },
+      { name: "theirs", domain: "127.0.0.1", path: "/", secure: false },
+    ];
+    const removed: string[] = [];
+    await forgetHomeSessionCookies({
+      cookies: {
+        get: async () => jar,
+        remove: async (url: string, name: string) => {
+          removed.push(`${name}@${url}`);
+        },
+      },
+    } as never);
+    expect(removed).toEqual([
+      "opensteer.session@http://127.0.0.1/",
+      "__Host-opensteer.session@https://route.example.com/",
+      "opensteer.admission@http://localhost/",
+    ]);
+  });
+});

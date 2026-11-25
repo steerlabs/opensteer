@@ -1,3 +1,4 @@
+import type { RuntimeBrowserAttachTicketClaims } from "../packages/protocol/src/browser.js";
 import {
   createHash,
   createPublicKey,
@@ -247,6 +248,8 @@ async function enrollMainRunner(host: PersonalHostRuntime, config: HostConfig): 
 }
 
 interface LoopbackPoolHost {
+  /** Every ticket the guest's runtime verified, as it read it (M2). */
+  readonly verifiedClaims: readonly RuntimeBrowserAttachTicketClaims[];
   readonly agent: TestPoolAgent;
   readonly currentAgent: () => PoolAgent;
   readonly runtime: BrowserRuntime;
@@ -306,6 +309,14 @@ async function startLoopbackPoolHost(input: {
     resolvePublicKey: async (keyId) =>
       keyId === input.registered.ticketKey.keyId ? ticketPublicKeyPem : null,
   });
+  // What every pooled ticket carries, as the guest's runtime verifies it (M2).
+  const verifiedClaims: Awaited<ReturnType<typeof verifier.verify>>[] = [];
+  const verify = verifier.verify.bind(verifier);
+  verifier.verify = async (...args) => {
+    const claims = await verify(...args);
+    verifiedClaims.push(claims);
+    return claims;
+  };
   const launcher = Object.assign(new FakeIsolatingLauncher(), {
     localProfiles: {
       engine: "chromium" as const,
@@ -364,6 +375,7 @@ async function startLoopbackPoolHost(input: {
     },
   };
   return {
+    verifiedClaims,
     agent,
     currentAgent: () => liveAgent,
     runtime,
@@ -549,6 +561,11 @@ describe("Managed browser pool wired into createHostRuntime", () => {
         url: "https://example.test/one",
       });
       expect(target1.pagesOpened()).toBeGreaterThanOrEqual(1);
+      // G1 on a Cloud Computer (M2): every pooled ticket brings this Home's addresses, so the
+      // guest's browser refuses the Home before its first page loads.
+      expect(target1.verifiedClaims.length).toBeGreaterThan(0);
+      for (const claims of target1.verifiedClaims)
+        expect(claims.homeAddresses?.origins).toContain(homeOrigin);
       expect((await target1.agent.agent.status(target1.slotId, target1.term)).phase).toBe(
         "running",
       );

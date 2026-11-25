@@ -19,7 +19,7 @@ import {
 } from "@opensteer/protocol/standard-cdp";
 import type { OpensteerStore } from "@opensteer/database";
 import { SessionCdpRouter } from "@opensteer/browser-runtime-core";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ChromeSharedTabs } from "./chrome-shared-tabs.js";
 import { ChromeTabBackend } from "./chrome-tab-backend.js";
 
@@ -652,4 +652,176 @@ it("names no shared tab on an extension's page to a connection, however it was r
   } finally {
     source.close();
   }
+});
+
+it("names no shared tab on an address of this Home to any agent, a connected agent or the person's own (rule 1)", async () => {
+  const { ThisHomeAddressSet } = await import("@opensteer/shared/homeAddress");
+  const ownerId = createId("user");
+  const authority = { ownerId, agentBindingId: "session:fixture" };
+  let connected = true;
+  const admitExecution: OpensteerStore["admitExecution"] = async ({ ownerUserId, subject }) => ({
+    ownerUserId,
+    subject,
+    actor: connected ? "agent" : "native",
+    agentConnection: connected
+      ? {
+          agentConnectionId: "connected-agent",
+          grant: AgentGrantSchema.parse({ scope: "everything" }),
+          grantRevision: 1,
+          consentVersion: 2,
+          accessMode: "full-access",
+        }
+      : null,
+    mode: "full-access",
+    runId: null,
+    threadId: createId("thread"),
+    runMode: null,
+    taskMode: "full-access",
+  });
+  const home = new ThisHomeAddressSet({
+    origins: ["https://home.example.com"],
+    loopbackPorts: [4310],
+  });
+  const service = new ChromeSharedTabs(
+    { admitExecution },
+    {
+      attempts: {
+        open: async () => {},
+        finish: async () => {},
+        recordDetach: async () => {},
+        recover: async () => {},
+      },
+      device: async () => "Work Mac",
+      homeAddresses: () => home,
+    },
+  );
+  const peer = chromePeer((frame) => {
+    expect(source.receive(frame)).toBeUndefined();
+  });
+  const source = service.connectSource({
+    ownerId,
+    sourceId: createId("browserSource"),
+    deviceId: createId("device"),
+    detachReceipts: true,
+    fail: () => {},
+    name: "Chrome",
+    write: peer.write,
+  });
+  const web = shared();
+  const devServer = { ...shared(), title: "Dev", url: "http://localhost:5173/" };
+  const onHome = [
+    { ...shared(), title: "Opensteer", url: "http://127.0.0.1:4310/tasks" },
+    { ...shared(), title: "Opensteer", url: "https://home.example.com/" },
+  ];
+  const call = {
+    contextKey: "fixture",
+    signal: new AbortController().signal,
+    deadline: Date.now() + 5_000,
+    maxBytes: 4096,
+    maxDepth: 16,
+    maxEntries: 256,
+  };
+  try {
+    for (const tab of [web, devServer, ...onHome]) await source.receive(tab);
+    for (const who of [true, false]) {
+      connected = who;
+      const listed = await service.listForBinding(authority);
+      expect(listed.map(({ tabId }) => tabId).sort(), String(who)).toEqual(
+        [web.shareId, devServer.shareId].sort(),
+      );
+      const pages = await service.browserUsePort(async () => authority).listPages(call);
+      expect(JSON.stringify(pages)).not.toMatch(/4310|home\.example/u);
+      const absent = await service
+        .browserUsePort(async () => authority, crypto.randomUUID())
+        .openPage(crypto.randomUUID(), call)
+        .catch((error: unknown) => error);
+      for (const tab of onHome) {
+        const hidden = await service
+          .browserUsePort(async () => authority, tab.shareId)
+          .openPage(tab.shareId, call)
+          .catch((error: unknown) => error);
+        expect(String(hidden), `${String(who)} ${tab.url}`).toBe(String(absent));
+        await expect(
+          service.issueStandardCdpTicket({ authority, tabId: tab.shareId }),
+        ).rejects.toThrow();
+      }
+    }
+  } finally {
+    source.close();
+  }
+});
+
+describe("a shared Chrome tab's agent never touches the Home's own cookies in the person's Chrome (G3)", () => {
+  const home = { origins: ["https://home.example.com"], loopbackPorts: [4310] };
+  const setup = async () => {
+    const tab = shared();
+    const peer = chromePeer((frame) => backend.read(frame));
+    const backend = new ChromeTabBackend(
+      peer.write,
+      () => {},
+      () => home,
+    );
+    backend.update(tab);
+    const page = await backend.attach(tab.targetId);
+    return { peer, page };
+  };
+
+  it("reads the page's cookies without the Home's, chosen by the Home's addresses", async () => {
+    const { peer, page } = await setup();
+    peer.onCommand.mockImplementation(() => ({
+      cookies: [
+        { name: "__Host-opensteer.session", domain: "home.example.com", value: "s" },
+        { name: "anything", domain: ".home.example.com", value: "s" },
+        { name: "opensteer.session", domain: "127.0.0.1", value: "s" },
+        // A local site of the person's own on the loopback host, and another site's own cookie
+        // that happens to share a name prefix: both stay (finding 9).
+        { name: "theirs", domain: "127.0.0.1", value: "kept" },
+        { name: "better-auth.session_token", domain: "web.test", value: "kept" },
+        { name: "opensteer.session", domain: "web.test", value: "kept" },
+      ],
+    }));
+    for (const method of ["Network.getCookies", "Network.getAllCookies", "Storage.getCookies"]) {
+      const read = (await page.send(method, {})) as { cookies: { name: string; domain: string }[] };
+      expect(
+        read.cookies.map(({ name, domain }) => `${name}@${domain}`),
+        method,
+      ).toEqual([
+        "theirs@127.0.0.1",
+        "better-auth.session_token@web.test",
+        "opensteer.session@web.test",
+      ]);
+    }
+  });
+
+  it("refuses to write, overwrite, delete or clear the Home's cookies, or load the Home with them", async () => {
+    const { peer, page } = await setup();
+    const refusals: [string, Record<string, unknown>][] = [
+      [
+        "Network.setCookie",
+        { name: "__Host-opensteer.session", value: "x", url: "https://home.example.com/" },
+      ],
+      ["Network.setCookie", { name: "opensteer.session", value: "x", domain: "127.0.0.1" }],
+      ["Network.deleteCookies", { name: "__Host-opensteer.session", domain: "home.example.com" }],
+      ["Network.deleteCookies", { name: "opensteer.session", url: "http://localhost:4310/" }],
+      ["Network.setCookies", { cookies: [{ name: "a", value: "b", domain: "home.example.com" }] }],
+      [
+        "Storage.setCookies",
+        { cookies: [{ name: "opensteer.session", value: "b", domain: "localhost" }] },
+      ],
+      ["Page.deleteCookie", { cookieName: "x", url: "https://home.example.com/" }],
+      ["Network.clearBrowserCookies", {}],
+      ["Storage.clearCookies", {}],
+      ["Network.loadNetworkResource", { url: "https://home.example.com/v1/me", options: {} }],
+      ["Network.loadNetworkResource", { url: "http://127.0.0.1:4310/v1/me", options: {} }],
+    ];
+    for (const [method, params] of refusals)
+      await expect(page.send(method, params), method).rejects.toMatchObject({ code: "forbidden" });
+    expect(peer.commands).toEqual([]);
+    // Another site's cookies are the page's to change, as before.
+    await page.send("Network.setCookie", { name: "theirs", value: "x", url: "https://web.test/" });
+    await page.send("Network.deleteCookies", { name: "theirs", url: "http://127.0.0.1:5173/" });
+    expect(
+      peer.commands.map((command) => ("method" in command ? command.method : command.action)),
+    ).toEqual(["Network.setCookie", "Network.deleteCookies"]);
+  });
 });

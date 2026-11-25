@@ -28,6 +28,7 @@ export const realBrowserTests = [
   "apps/browser-runtime/src/browser/harness-actions-deadlines.test.ts",
   "apps/browser-runtime/src/browser/harness-actions-input-lifecycle.test.ts",
   "apps/browser-runtime/src/browser/harness-actions.test.ts",
+  "apps/browser-runtime/src/browser/home-refusal.test.ts",
   "apps/browser-runtime/src/browser/navigation.test.ts",
   "apps/browser-runtime/src/browser/passkey-provider.test.ts",
   "apps/browser-runtime/src/browser/person-save.test.ts",
@@ -38,6 +39,7 @@ export const realBrowserTests = [
   "apps/web/src/components/workspace/workspace-tabs-chromium.interaction.test.tsx",
   "tests/browser-repl.test.ts",
   "tests/editing-far-model.test.ts",
+  "tests/home-samesite.chromium.test.ts",
   "tests/passkey-relay-provider.test.ts",
   "tests/passkey-routing.test.ts",
 ];

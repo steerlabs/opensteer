@@ -10,6 +10,13 @@ import {
   type BrowserSourceTabPart,
   type BrowserSourceTabShared,
 } from "@opensteer/browser-source-wire/frames";
+import {
+  ThisHomeAddressSet,
+  isHomeSessionCookieName,
+  isLoopbackUrl,
+  noHomeAddresses,
+  type ThisHomeAddresses,
+} from "@opensteer/shared/homeAddress";
 import type { TabShareProblemCode } from "./messages.js";
 import { maxChromeDetachReceipts } from "./storage.js";
 
@@ -31,6 +38,10 @@ type Share = {
   detachFailed?: boolean;
 };
 type TabView = { readonly shareId: string; readonly title: string; readonly url: string };
+/** What one paired Home is: the destinations it paired with, and the addresses it last sent. */
+type HomeOf = { paired: readonly string[]; sent: ThisHomeAddresses; set: ThisHomeAddressSet };
+type SessionRules = NonNullable<ChromeApi["declarativeNetRequest"]>;
+type Cookies = Pick<ChromeApi["cookies"], "getAll" | "remove">;
 
 const maxShares = 64;
 const encoder = new TextEncoder();
@@ -151,13 +162,38 @@ export class ChromeTabDebugger {
   readonly #journals = new WeakMap<ChromeTabLink, DetachJournal & { receipts: Set<string> }>();
   readonly #stoppingRoots = new Map<string, string>();
   readonly #popups = new Map<number, { parent: Share; attachment: Attachment }>();
+  readonly #homes = new WeakMap<ChromeTabLink, HomeOf>();
+  readonly #rules: SessionRules | undefined;
+  readonly #cookies: Cookies | undefined;
+  /** The session rules blocking the Home's addresses for each attached shared tab. */
+  readonly #ruleIds = new Map<number, Promise<readonly number[]>>();
+  #nextRuleId = 1;
+  /**
+   * Session rules outlive this service worker; its shares and attachments do not. A worker that
+   * starts again removes every rule it left before it adds one, so none blocks a tab that is the
+   * person's again and none collides with a new rule's id.
+   */
+  readonly #rulesCleared: Promise<void>;
 
   constructor(
     api: ChromeDebugger,
     tabs: ChromeApi["tabs"],
     navigation?: ChromeApi["webNavigation"],
+    rules?: SessionRules,
+    cookies?: Cookies,
   ) {
     this.#debugger = api;
+    this.#rules = rules;
+    this.#cookies = cookies;
+    this.#rulesCleared = rules
+      ? rules
+          .getSessionRules()
+          .then((left) =>
+            left.length
+              ? rules.updateSessionRules({ removeRuleIds: left.map((rule) => rule.id) })
+              : undefined,
+          )
+      : Promise.resolve();
     api.onEvent.addListener((source, method, params) => {
       const share = source.tabId === undefined ? undefined : this.#byTab.get(source.tabId);
       if (!share?.attachment) return;
@@ -177,12 +213,18 @@ export class ChromeTabDebugger {
       const share = source.tabId === undefined ? undefined : this.#byTab.get(source.tabId);
       if (share?.attachment && !this.#detaching.has(share.tabId)) {
         delete share.attachment;
+        void this.#releaseHome(share.tabId).catch(() => undefined);
         void this.#unshare(share);
       }
     });
     navigation?.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId, url }) => {
       const parent = this.#byTab.get(sourceTabId);
-      if (!parent?.attachment || this.#byTab.has(tabId) || !canDebug(url || "about:blank")) return;
+      if (
+        !parent?.attachment ||
+        this.#byTab.has(tabId) ||
+        !canDebug(url || "about:blank", this.#home(parent.link))
+      )
+        return;
       if (this.#shares.size + this.#popups.size >= maxShares) return;
       this.#popups.set(tabId, { parent, attachment: parent.attachment });
       void tabs
@@ -198,7 +240,9 @@ export class ChromeTabDebugger {
       }
       if (!share || (changes.url === undefined && changes.title === undefined)) return;
       const url = tab.url ?? share.info.url;
-      if (!canDebug(url)) {
+      // A shared tab that went to a page no agent may be on (this Home's among them) is shared no
+      // more: the agent's attachment to it ends.
+      if (!canDebug(url, this.#home(share.link))) {
         void this.#unshare(share);
         return;
       }
@@ -224,10 +268,12 @@ export class ChromeTabDebugger {
     stop: () => void,
     detachReceipts = false,
     journal?: DetachJournal,
+    paired: readonly string[] = [],
   ): ChromeTabLink {
     this.disconnect(sourceId);
     const link = new ChromeTabLink(send, stop, (command) => this.#execute(link, command));
     this.#links.set(sourceId, link);
+    this.#setHome(link, paired, noHomeAddresses);
     if (detachReceipts) this.#detachReceipts.add(link);
     if (journal) {
       const receipts = new Set(journal.pending);
@@ -273,7 +319,8 @@ export class ChromeTabDebugger {
     const tabId = tab.id;
     if (!link) throw new TabShareProblem("home-offline");
     if (tabId === undefined) throw new TabShareProblem("tab-unavailable");
-    if (!canDebug(tab.url ?? tab.pendingUrl ?? "")) throw new TabShareProblem("unsupported-page");
+    if (!canDebug(tab.url ?? tab.pendingUrl ?? "", this.#home(link)))
+      throw new TabShareProblem("unsupported-page");
 
     const alreadySharedHere = () => {
       if (this.#links.get(sourceId) !== link) throw new TabShareProblem("home-offline");
@@ -333,7 +380,7 @@ export class ChromeTabDebugger {
       this.#shares.size >= maxShares
     )
       return;
-    if (!canDebug(tab.url || tab.pendingUrl || "about:blank")) return;
+    if (!canDebug(tab.url || tab.pendingUrl || "about:blank", this.#home(parent.link))) return;
     this.#share(parent.sourceId, parent.link, tabId, tab, targetId, parent);
   }
 
@@ -406,6 +453,8 @@ export class ChromeTabDebugger {
   #detach(share: Share): Promise<void> {
     const current = share.attachment;
     if (!current) {
+      // Whatever path ends this share, no rule outlives an agent's hold of its tab (D1).
+      void this.#releaseHome(share.tabId).catch(() => undefined);
       const pending = this.#detaching.get(share.tabId);
       if (pending) return pending;
       return share.detachFailed
@@ -425,6 +474,8 @@ export class ChromeTabDebugger {
           }),
         () => undefined,
       )
+      // The tab is the person's again: its requests to the Home are theirs.
+      .then(() => this.#releaseHome(share.tabId))
       .catch((error: unknown) => {
         share.detachFailed = true;
         share.group.detachFailed = true;
@@ -453,15 +504,30 @@ export class ChromeTabDebugger {
     }
     if (share.detachFailed)
       throw new Error("Opensteer couldn’t confirm that Chrome stopped sharing this tab.");
+    // A new attachment brings this Home's addresses as they are now (D2).
+    if (command.homeAddresses) {
+      const home = this.#homes.get(link);
+      this.#setHome(link, home?.paired ?? [], command.homeAddresses);
+    }
     const existing = share.attachment;
     if (existing && existing.id !== command.attachmentId)
       throw new Error("Chrome stopped sharing this tab.");
     const attachment = (share.attachment ??= {
       id: command.attachmentId,
-      ready: (this.#detaching.get(share.tabId) ?? Promise.resolve()).then(() => {
+      ready: (this.#detaching.get(share.tabId) ?? Promise.resolve()).then(async () => {
         if (this.#shares.get(command.shareId) !== share)
           throw new Error("This Chrome tab is no longer shared.");
-        return this.#debugger.attach({ tabId: share.tabId }, "1.3");
+        // An agent drives this tab from here: it may not be on, or reach, this Home's addresses.
+        if (!canDebug(share.info.url, this.#home(link)))
+          throw new Error("This Chrome tab is no longer shared.");
+        await this.#blockHome(share.tabId, this.#home(link));
+        try {
+          return await this.#debugger.attach({ tabId: share.tabId }, "1.3");
+        } catch (error) {
+          // No agent drives it: its rules go with the attachment that failed (D1).
+          await this.#releaseHome(share.tabId).catch(() => undefined);
+          throw error;
+        }
       }),
     });
     try {
@@ -482,8 +548,130 @@ export class ChromeTabDebugger {
       )) ?? {}
     );
   }
+
+  /** This Home's addresses as this link knows them: its paired destinations and what it sent. */
+  #home(link: ChromeTabLink): ThisHomeAddressSet {
+    return this.#homes.get(link)?.set ?? emptyHome;
+  }
+
+  #setHome(link: ChromeTabLink, paired: readonly string[], sent: ThisHomeAddresses): void {
+    const loopbackPorts = new Set(sent.loopbackPorts);
+    // A paired destination on loopback is this Home on any loopback name for its port.
+    for (const origin of paired) {
+      const port = loopbackPort(origin);
+      if (port !== undefined) loopbackPorts.add(port);
+    }
+    this.#homes.set(link, {
+      paired,
+      sent,
+      set: new ThisHomeAddressSet({
+        origins: [...paired, ...sent.origins],
+        loopbackPorts: [...loopbackPorts],
+      }),
+    });
+  }
+
+  /**
+   * While an agent drives a shared tab (G3):
+   * - a session rule blocks its every request to this Home's addresses, a navigation as much as a
+   *   fetch, so the tab never loads the Home and sends it nothing;
+   * - for a Home on this computer's loopback, whose session cookie Chrome keeps for the loopback
+   *   host on every port, that cookie does not exist in this profile while any attachment lives:
+   *   a rule over the whole profile drops the Home's loopback responses' Set-Cookie, then the
+   *   cookie is removed under every loopback name. Nothing in the profile can then send it to any
+   *   port: not the tab, its popups or its workers. The person's other sites keep every cookie;
+   *   the Home's own page in this Chrome is signed out until the last attachment ends.
+   * Installed, and the cookie gone, before the debugger attaches; an attachment is refused
+   * without them.
+   */
+  async #blockHome(tabId: number, home: ThisHomeAddressSet): Promise<void> {
+    if (!this.#rules || home.empty || this.#ruleIds.has(tabId)) return;
+    await this.#rulesCleared;
+    if (this.#ruleIds.has(tabId)) return;
+    // The same patterns the shared predicate refuses, over pages, frames, requests and sockets.
+    const patterns = home.requestPatterns();
+    const loopback = home.loopbackRequestPatterns();
+    const ids = [...patterns, ...loopback].map(() => this.#nextRuleId++);
+    const rules: ChromeSessionRule[] = [
+      ...patterns.map((regexFilter, index) => ({
+        id: ids[index]!,
+        priority: 1,
+        action: { type: "block" as const },
+        condition: { tabIds: [tabId], regexFilter, resourceTypes: allResourceTypes },
+      })),
+      ...loopback.map((regexFilter, index) => ({
+        id: ids[patterns.length + index]!,
+        priority: 1,
+        action: {
+          type: "modifyHeaders" as const,
+          responseHeaders: [{ header: "set-cookie", operation: "remove" as const }],
+        },
+        condition: { regexFilter, resourceTypes: allResourceTypes },
+      })),
+    ];
+    const installed = this.#rules.updateSessionRules({ addRules: rules }).then(() => ids);
+    this.#ruleIds.set(tabId, installed);
+    try {
+      await installed;
+      if (loopback.length) await this.#forgetHomeSession();
+    } catch (error) {
+      await this.#releaseHome(tabId).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /** The Home's session cookies leave this profile, under every loopback name (G3). */
+  async #forgetHomeSession(): Promise<void> {
+    if (!this.#cookies) throw new Error("Chrome did not let Opensteer sign your Home out here.");
+    for (const cookie of await this.#cookies.getAll({})) {
+      const host = cookie.domain.replace(/^\./u, "");
+      if (!isHomeSessionCookieName(cookie.name) || !isLoopbackUrl(`http://${host}/`)) continue;
+      await this.#cookies.remove({
+        url: `${cookie.secure ? "https" : "http"}://${host}${cookie.path}`,
+        name: cookie.name,
+      });
+    }
+  }
+
+  async #releaseHome(tabId: number): Promise<void> {
+    const installed = this.#ruleIds.get(tabId);
+    if (!installed || !this.#rules) return;
+    this.#ruleIds.delete(tabId);
+    const ids = await installed.catch(() => [] as const);
+    if (ids.length) await this.#rules.updateSessionRules({ removeRuleIds: [...ids] });
+  }
 }
 
-function canDebug(url: string): boolean {
-  return url === "about:blank" || /^https?:\/\//iu.test(url);
+const emptyHome = new ThisHomeAddressSet(noHomeAddresses);
+const allResourceTypes = [
+  "main_frame",
+  "sub_frame",
+  "stylesheet",
+  "script",
+  "image",
+  "font",
+  "object",
+  "xmlhttprequest",
+  "ping",
+  "csp_report",
+  "media",
+  "websocket",
+  "webtransport",
+  "webbundle",
+  "other",
+] as const;
+
+function loopbackPort(origin: string): number | undefined {
+  try {
+    const url = new URL(origin);
+    if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return undefined;
+    return Number(url.port) || (url.protocol === "https:" ? 443 : 80);
+  } catch {
+    return undefined;
+  }
+}
+
+/** A tab an agent may be given: the web or a blank page, and never an address of this Home. */
+function canDebug(url: string, home: ThisHomeAddressSet): boolean {
+  return (url === "about:blank" || /^https?:\/\//iu.test(url)) && !home.includesReported(url);
 }

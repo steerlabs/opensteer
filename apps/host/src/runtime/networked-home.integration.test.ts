@@ -317,6 +317,41 @@ it("boots unclaimed, is claimed once through its setup link, and enrolls its com
     });
     expect(session.json()).toMatchObject({ session: { user: { id: owner.id } } });
 
+    // G2 behind the gateway, as a Cloud Computer's Caddy forwards: the Home compares a cookie
+    // request's Origin with its own configured origin, never with the Host header the gateway
+    // sends. The web app's read (no Origin, same-origin), an address typed (none), its change
+    // (Origin the Home's) and its socket's admission are answered; another site's page is not.
+    const { origin: _origin, ...withoutOrigin } = throughProxy;
+    const asWebApp = (headers: Record<string, string>, url = "/v1/auth/session") =>
+      host.app.inject({ method: "GET", url, headers: { ...headers, cookie: ownerCookie } });
+    for (const headers of [
+      { ...withoutOrigin, "sec-fetch-site": "same-origin" },
+      { ...withoutOrigin, "sec-fetch-site": "none" },
+      { ...throughProxy, "sec-fetch-site": "same-origin" },
+    ])
+      expect((await asWebApp(headers)).json()).toMatchObject({
+        session: { user: { id: owner.id } },
+      });
+    const change = await rpc(
+      host,
+      "apps.view",
+      { appId: `app_${randomUUID()}`, theme: "light" },
+      ownerCookie,
+    );
+    expect(change.statusCode).not.toBe(403);
+    const socket = await asWebApp(
+      { ...throughProxy, "sec-fetch-site": "same-origin" },
+      "/v1/realtime",
+    );
+    expect([401, 403]).not.toContain(socket.statusCode);
+    for (const foreign of [
+      { ...throughProxy, origin: "https://elsewhere.example.test" },
+      { ...withoutOrigin, "sec-fetch-site": "cross-site" },
+    ]) {
+      expect((await asWebApp(foreign)).statusCode).toBe(403);
+      expect((await asWebApp(foreign, "/v1/realtime")).statusCode).toBe(403);
+    }
+
     // Apps never open on the signed-in Home origin.
     const app = await rpc(
       host,

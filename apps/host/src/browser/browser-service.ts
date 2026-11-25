@@ -109,6 +109,7 @@ import {
   type BrowserAgentBackend,
 } from "@opensteer/protocol/browser-actions";
 import type { BrowserEngine } from "@opensteer/protocol";
+import type { ThisHomeAddresses } from "@opensteer/shared/homeAddress";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
@@ -1743,6 +1744,7 @@ export class BrowserService {
         profileId: record.profileId,
       };
       const broker = new HostedBrowserBroker({
+        holdsHomeAddresses: true,
         poolAdmission: this.#poolAdmission(pool, adopting),
         onChannelLost: (documents) => pool.channelLost(sessionId, documents),
         adoptedFromPool: true,
@@ -6397,6 +6399,21 @@ export class BrowserService {
     }
   }
 
+  /**
+   * This Home's addresses changed: every browser it owns that is connected holds the new set from
+   * now on (G1). One that is not connected gets it in its next attach ticket.
+   */
+  sendHomeAddresses(home: ThisHomeAddresses): void {
+    for (const broker of this.#brokers.values())
+      if (broker.holdsHomeAddresses && broker.live)
+        void broker
+          .sendHostCommand({
+            type: "home.addresses",
+            homeAddresses: { origins: [...home.origins], loopbackPorts: [...home.loopbackPorts] },
+          })
+          .catch(() => undefined);
+  }
+
   closeStandardCdpForBinding(agentBindingId: string, reason: string): void {
     this.standardCdpTickets.revoke(agentBindingId);
     for (const { claims, close } of this.#standardCdpAttachments.values())
@@ -8742,6 +8759,7 @@ export class BrowserService {
       const broker = withoutDatabaseOperationSignal(
         () =>
           new HostedBrowserBroker({
+            holdsHomeAddresses: target.actorClaim === true || pooled !== undefined,
             ...(pooled
               ? {
                   poolAdmission: this.#poolAdmission(pooled),
@@ -10082,6 +10100,8 @@ interface PoolBrokerAdmission {
 }
 
 interface HostedBrowserBrokerOptions {
+  /** Its runtime reads the actor claim, and holds this Home's addresses as its own state (G1). */
+  readonly holdsHomeAddresses?: boolean;
   readonly poolAdmission?: PoolBrokerAdmission;
   /**
    * A pooled broker's channel was lost without the Home closing it; `documents` is each tab's
@@ -10413,7 +10433,10 @@ export class HostedBrowserBroker {
   #sessionStateSending: Promise<void> | undefined;
   #rejectReady: ((error: Error) => void) | null = null;
   readonly #passkeys: PasskeyService | undefined;
+  readonly holdsHomeAddresses: boolean;
+
   constructor(options: HostedBrowserBrokerOptions) {
+    this.holdsHomeAddresses = options.holdsHomeAddresses === true;
     this.#poolAdmission = options.poolAdmission;
     this.#poolEnded = options.poolAdmission ? new AbortController() : undefined;
     this.#onChannelLost = options.onChannelLost;

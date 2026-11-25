@@ -1,5 +1,11 @@
 /// <reference lib="dom" />
 import {
+  ThisHomeAddressSet,
+  homeElsewhereText,
+  homeSessionCookieNamePattern,
+  noHomeAddresses,
+} from "@opensteer/shared/homeAddress";
+import {
   SessionCdpRouterError,
   contextScopedCdpMethods,
   reducedUserAgentMetadata,
@@ -644,6 +650,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         this.pooledTransfers,
       );
       if (this.headless) launched.clipboard = await ChromiumClipboard.create(browser);
+      await launched.contextHandle.refuseHomeAddresses(browserCdp);
       // Sessions' agents hear of the pages they own as Chromium announces
       // them. The relay listens before discovery starts.
       await browserCdp.send("Target.setDiscoverTargets", { discover: true });
@@ -961,6 +968,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       );
       if (this.headless) launched.clipboard = ChromiumClipboard.lazy(browser);
       timing("clipboard");
+      await launched.contextHandle.refuseHomeAddresses(browserCdp);
       await browserCdp.send("Target.setDiscoverTargets", { discover: true });
       timing("target-discovery");
       signal?.throwIfAborted();
@@ -984,7 +992,7 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
   private closePromise: Promise<void> | null = null;
   readonly cdp: BrowserCdpBackend;
   readonly context: BrowserContext;
-  private readonly contextHandle: PlaywrightContextHandle;
+  readonly contextHandle: PlaywrightContextHandle;
   private readonly playwrightContext: PlaywrightBrowserContext;
   private readonly persistencePage: Page | undefined;
 
@@ -1356,6 +1364,69 @@ function armWake(): ArmedWake {
  */
 class PlaywrightContextHandle implements BrowserContext {
   private closed = false;
+  /** This Home's addresses, as the Home last told this browser (G1). */
+  readonly home = { current: new ThisHomeAddressSet(noHomeAddresses) };
+
+  /**
+   * G1: no address of this Home loads in this browser, the person's page or an agent's: one rule
+   * over the whole context, which Chromium asks for every request of its pages, popups, frames and
+   * workers and of its service workers, redirect hops included. A top-level page says where the
+   * Home opens instead, in an opaque origin; anything else is refused. Its pages never load here,
+   * so nobody signs in to it here, and a session cookie of it from before goes once.
+   */
+  async refuseHomeAddresses(browserCdp: PlaywrightCdpSession): Promise<void> {
+    this.#homeCdp = browserCdp;
+    untypedCdp(browserCdp).on("Fetch.requestPaused", (event) => {
+      const paused = event as {
+        requestId: string;
+        request: { url: string };
+        resourceType?: string;
+        frameId?: string;
+      };
+      const send = (method: string, parameters: Record<string, unknown>) =>
+        void browserCdp.send(method as never, parameters as never).catch(() => undefined);
+      if (!this.home.current.includesReported(paused.request.url))
+        return send("Fetch.continueRequest", { requestId: paused.requestId });
+      if (paused.resourceType === "Document")
+        return send("Fetch.fulfillRequest", {
+          requestId: paused.requestId,
+          responseCode: 403,
+          responseHeaders: [
+            { name: "content-type", value: "text/plain; charset=utf-8" },
+            { name: "content-security-policy", value: "sandbox; default-src 'none'" },
+          ],
+          body: Buffer.from(homeElsewhereText).toString("base64"),
+        });
+      send("Fetch.failRequest", { requestId: paused.requestId, errorReason: "BlockedByClient" });
+    });
+  }
+
+  #homeCdp: PlaywrightCdpSession | undefined;
+  #homeRuleOn = false;
+
+  /** The browser pauses only requests that may be the Home's; the set decides each one (M3). */
+  async applyHomeAddresses(): Promise<void> {
+    const cdp = this.#homeCdp;
+    if (!cdp) return;
+    const home = this.home.current;
+    // The browser pauses requests whose address contains one of the set's own substrings, every
+    // spelling of the Home included; the handler asks the set itself, and lets the rest go on.
+    const patterns = home.reportedNeedles.map((needle) => `*${needle}*`);
+    if (patterns.length === 0) {
+      if (this.#homeRuleOn) await cdp.send("Fetch.disable" as never).catch(() => undefined);
+      this.#homeRuleOn = false;
+      return;
+    }
+    await cdp.send(
+      "Fetch.enable" as never,
+      {
+        patterns: patterns.map((urlPattern) => ({ urlPattern, requestStage: "Request" })),
+      } as never,
+    );
+    // The first time the browser knows its Home: a session cookie of the Home's from before goes.
+    if (!this.#homeRuleOn) await this.context.clearCookies({ name: homeSessionCookieNamePattern });
+    this.#homeRuleOn = true;
+  }
   isConnected(): boolean {
     return !this.closed && this.context.browser()?.isConnected() === true;
   }
@@ -3452,6 +3523,11 @@ class PlaywrightBrowserCdpBackend implements BrowserCdpBackend {
   private readonly context: PlaywrightContextHandle;
   private readonly handle: PlaywrightCdpHandle;
   private readonly hiddenTargetIds = new Set<string>();
+
+  setHomeAddresses(home: ThisHomeAddressSet): Promise<void> {
+    this.context.home.current = home;
+    return this.context.applyHomeAddresses();
+  }
 
   constructor(
     session: PlaywrightCdpSession,
