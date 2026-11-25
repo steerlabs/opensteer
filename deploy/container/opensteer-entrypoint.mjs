@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { accessSync, constants } from "node:fs";
 import { lstat, readdir, readFile, stat } from "node:fs/promises";
-import { delimiter, join, resolve } from "node:path";
+import { basename, delimiter, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homeServicePackages, nodeTrustEnvironment } from "./opensteer-node-trust.mjs";
 
@@ -18,7 +18,27 @@ export async function main() {
 
   const [command, ...arguments_] = process.argv.slice(2);
   if (!command) fail("Opensteer container entrypoint requires a command.");
-  await runChild(command, arguments_, serviceEnvironment(service, environment));
+  const serviceArguments = nodeServiceArguments(service, command, arguments_, environment);
+  handOver(command, serviceArguments, serviceEnvironment(service, environment));
+}
+
+/**
+ * V8's limits for a Home service's Node process: a young generation of 4 MiB a half-space
+ * (V8 otherwise sizes it from the machine, about 60 MB of it unused in a resting Host), and the
+ * old space its Home sized for this container (OPENSTEER_NODE_OLD_SPACE_MB, from home_limits), so
+ * V8 collects before the kernel kills. Only the flags are added; the variable goes no further.
+ */
+export function nodeServiceArguments(service, command, arguments_, environment) {
+  const oldSpace = environment.OPENSTEER_NODE_OLD_SPACE_MB;
+  delete environment.OPENSTEER_NODE_OLD_SPACE_MB;
+  if (!homeServicePackages.includes(service) || basename(command) !== "node") return arguments_;
+  const flags = ["--max-semi-space-size=4"];
+  if (oldSpace !== undefined && oldSpace !== "") {
+    if (!/^[1-9][0-9]{1,5}$/u.test(oldSpace))
+      fail("OPENSTEER_NODE_OLD_SPACE_MB must be a number of MiB.");
+    flags.push(`--max-old-space-size=${oldSpace}`);
+  }
+  return [...flags, ...arguments_];
 }
 
 /**
@@ -117,35 +137,33 @@ async function readRegularText(filePath) {
   return await readFile(filePath, "utf8");
 }
 
-async function runChild(command, arguments_, environment) {
-  const child = spawn(command, arguments_, {
-    env: environment,
-    shell: false,
-    stdio: "inherit",
-  });
-  const forward = (signal) => {
-    if (!child.killed) child.kill(signal);
-  };
-  const interrupt = () => forward("SIGINT");
-  const terminate = () => forward("SIGTERM");
-  process.once("SIGINT", interrupt);
-  process.once("SIGTERM", terminate);
-  try {
-    const result = await new Promise((resolvePromise, rejectPromise) => {
-      child.once("error", (error) =>
-        rejectPromise(new Error(`Could not start Opensteer: ${error.message}`)),
-      );
-      child.once("exit", (code, signal) => resolvePromise({ code, signal }));
-    });
-    if (result.signal) {
-      process.kill(process.pid, result.signal);
-      return;
+/**
+ * The service replaces this process (execve): one Node runs in the container, under the same
+ * process ID, so tini (or the container runtime) signals it directly and its exit is the
+ * container's. Nothing of this process stays behind to forward signals or report an exit.
+ */
+export function handOver(command, arguments_, environment, execve = process.execve) {
+  const executable = findExecutable(command, environment.PATH);
+  if (!executable) fail(`Could not start Opensteer: ${command} was not found.`);
+  execve(executable, [command, ...arguments_], environment);
+}
+
+/** `command` as execve needs it: a path, or the first executable of that name on PATH. */
+export function findExecutable(command, path = "") {
+  const candidates = command.includes("/")
+    ? [command]
+    : path
+        .split(delimiter)
+        .filter((directory) => isAbsolute(directory))
+        .map((directory) => join(directory, command));
+  return candidates.find((candidate) => {
+    try {
+      accessSync(candidate, constants.X_OK);
+      return true;
+    } catch {
+      return false;
     }
-    process.exitCode = result.code ?? 1;
-  } finally {
-    process.removeListener("SIGINT", interrupt);
-    process.removeListener("SIGTERM", terminate);
-  }
+  });
 }
 
 const serviceReadSecretFiles = new Set([

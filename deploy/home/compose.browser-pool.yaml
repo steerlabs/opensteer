@@ -17,6 +17,9 @@ services:
     oom_score_adj: -500
     environment:
       OPENSTEER_MANAGED_HOME_BROWSER_POOL: "true"
+      # V8's old space for the Host and its plugin engine, from home_limits.
+      OPENSTEER_NODE_OLD_SPACE_MB: ${OPENSTEER_HOME_HEAP_HOST:?Machine limits required}
+      OPENSTEER_PLUGIN_ENGINE_OLD_SPACE_MB: ${OPENSTEER_HOME_HEAP_PLUGIN_ENGINE:?Machine limits required}
   gateway:
     cpus: ${OPENSTEER_HOME_LIMIT_GATEWAY_CPUS:?Machine limits required}
     mem_limit: ${OPENSTEER_HOME_LIMIT_GATEWAY_MEMORY:?Machine limits required}
@@ -28,6 +31,7 @@ services:
     environment:
       # As many Runs at once as its memory holds (home_limits); the Host holds the next back.
       OPENSTEER_MAX_CONCURRENT_RUNS: ${OPENSTEER_HOME_LIMIT_RUNNER_RUNS:?Machine limits required}
+      OPENSTEER_NODE_OLD_SPACE_MB: ${OPENSTEER_HOME_HEAP_RUNNER:?Machine limits required}
       # No local Browser Runtime runs here: the Host reaches the pool host itself, and the Runner
       # is not pointed at a runtime that is not there.
       OPENSTEER_BROWSER_BRIDGE_URL: !reset null
@@ -43,3 +47,5 @@ services:
     cpus: ${OPENSTEER_HOME_LIMIT_CHANNEL_CPUS:?Machine limits required}
     mem_limit: ${OPENSTEER_HOME_LIMIT_CHANNEL_MEMORY:?Machine limits required}
     memswap_limit: ${OPENSTEER_HOME_LIMIT_CHANNEL_MEMORY:?Machine limits required}
+    environment:
+      OPENSTEER_NODE_OLD_SPACE_MB: ${OPENSTEER_HOME_HEAP_CHANNEL:?Machine limits required}

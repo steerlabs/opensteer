@@ -32,7 +32,23 @@ services:
     image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
     user: "70:70"
     network_mode: none
-    command: [postgres, -c, "listen_addresses=", -c, "unix_socket_directories=/var/run/postgresql"]
+    # max_connections: only the Host's pool (10, and a control connection), its plugin engine's (6),
+    # their short-lived clients and the Home's own pg_dump and psql reach it (no network), about 21
+    # at most; 32 leaves room without sizing for PostgreSQL's 100. shared_buffers: PostgreSQL's
+    # 128 MB, or a quarter of a Cloud Computer's PostgreSQL limit (home_limits), since touched
+    # buffers count against it.
+    command:
+      [
+        postgres,
+        -c,
+        "listen_addresses=",
+        -c,
+        "unix_socket_directories=/var/run/postgresql",
+        -c,
+        "max_connections=32",
+        -c,
+        "shared_buffers=${OPENSTEER_HOME_PG_SHARED_BUFFERS:-128MB}",
+      ]
     environment:
       POSTGRES_USER: opensteer
       POSTGRES_DB: opensteer

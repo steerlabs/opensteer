@@ -165,7 +165,14 @@ it("sizes a Cloud Computer's Home from its machine: every ordinary peak fits bes
           `OPENSTEER_HOME_LIMIT_${name}_CPUS`,
           `OPENSTEER_HOME_LIMIT_${name}_MEMORY`,
         ])
-        .concat("OPENSTEER_HOME_LIMIT_RUNNER_RUNS")
+        .concat(
+          "OPENSTEER_HOME_LIMIT_RUNNER_RUNS",
+          "OPENSTEER_HOME_HEAP_HOST",
+          "OPENSTEER_HOME_HEAP_PLUGIN_ENGINE",
+          "OPENSTEER_HOME_HEAP_RUNNER",
+          "OPENSTEER_HOME_HEAP_CHANNEL",
+          "OPENSTEER_HOME_PG_SHARED_BUFFERS",
+        )
         .sort(),
     );
     // Runs at once: as many as fit beside every ordinary peak (the plugin engine's included) and
@@ -213,10 +220,78 @@ it("sizes a Cloud Computer's Home from its machine: every ordinary peak fits bes
     OPENSTEER_HOME_LIMIT_RUNNER_RUNS: "1",
     OPENSTEER_HOME_LIMIT_CHANNEL_CPUS: "1",
     OPENSTEER_HOME_LIMIT_CHANNEL_MEMORY: "256m",
+    OPENSTEER_HOME_HEAP_HOST: "642",
+    OPENSTEER_HOME_HEAP_PLUGIN_ENGINE: "711",
+    OPENSTEER_HOME_HEAP_RUNNER: "685",
+    OPENSTEER_HOME_HEAP_CHANNEL: "192",
+    OPENSTEER_HOME_PG_SHARED_BUFFERS: "64MB",
   });
   expect(homeLimits(16384, 4).OPENSTEER_HOME_LIMIT_RUNNER_MEMORY).toBe("13646m");
   expect(homeLimits(16384, 4).OPENSTEER_HOME_LIMIT_RUNNER_RUNS).toBe("8");
   expect(homeLimits(8192, 2).OPENSTEER_HOME_LIMIT_RUNNER_RUNS).toBe("3");
+});
+
+it("gives each Node process an old space of three quarters of its room, so V8 collects before the kernel kills", () => {
+  for (const memory of [3908, 4096, 8192, 16384]) {
+    const limits = homeLimits(memory, 2);
+    const limit = (name: string) => mebibytes(limits[`OPENSTEER_HOME_LIMIT_${name}_MEMORY`]!);
+    const heap = (name: string) => Number(limits[`OPENSTEER_HOME_HEAP_${name}`]);
+    const runs = Number(limits.OPENSTEER_HOME_LIMIT_RUNNER_RUNS);
+    // Its room: the container's ceiling less its other processes at their ordinary peaks.
+    const room = {
+      HOST: limit("HOST") - peak.plugin,
+      PLUGIN_ENGINE: limit("HOST") - peak.host - 128,
+      RUNNER: limit("RUNNER") - runs * runAllowance,
+      CHANNEL: limit("CHANNEL"),
+    };
+    for (const [name, mib] of Object.entries(room)) {
+      expect(heap(name), `${memory} ${name}`).toBe(Math.floor((mib * 3) / 4));
+      // Above what each was measured using at its peak.
+      expect(heap(name)).toBeGreaterThan(name === "CHANNEL" ? peak.channel : 300);
+    }
+    // The Host and its engine at their old spaces together stay within the Host's ceiling only
+    // with the engine's workerd and young generations beside them; the engine goes first if not.
+    expect(heap("HOST") + heap("PLUGIN_ENGINE")).toBeLessThan(limit("HOST"));
+    // PostgreSQL's shared buffers: a quarter of its ceiling.
+    expect(limits.OPENSTEER_HOME_PG_SHARED_BUFFERS).toBe(`${limit("POSTGRES") / 4}MB`);
+  }
+});
+
+it("hands each Home service and the plugin engine their old space, and PostgreSQL its buffers and connections", () => {
+  const override = parse(read("compose.browser-pool.yaml")) as {
+    services: Record<string, { environment?: Record<string, string> }>;
+  };
+  expect(override.services.host?.environment).toMatchObject({
+    OPENSTEER_NODE_OLD_SPACE_MB: "${OPENSTEER_HOME_HEAP_HOST:?Machine limits required}",
+    OPENSTEER_PLUGIN_ENGINE_OLD_SPACE_MB:
+      "${OPENSTEER_HOME_HEAP_PLUGIN_ENGINE:?Machine limits required}",
+  });
+  expect(override.services.runner?.environment?.OPENSTEER_NODE_OLD_SPACE_MB).toBe(
+    "${OPENSTEER_HOME_HEAP_RUNNER:?Machine limits required}",
+  );
+  expect(override.services["channel-runtime"]?.environment?.OPENSTEER_NODE_OLD_SPACE_MB).toBe(
+    "${OPENSTEER_HOME_HEAP_CHANNEL:?Machine limits required}",
+  );
+  const base = parse(read("compose.yaml")) as { services: { postgres: { command: string[] } } };
+  expect(base.services.postgres.command).toEqual([
+    "postgres",
+    "-c",
+    "listen_addresses=",
+    "-c",
+    "unix_socket_directories=/var/run/postgresql",
+    "-c",
+    "max_connections=32",
+    "-c",
+    "shared_buffers=${OPENSTEER_HOME_PG_SHARED_BUFFERS:-128MB}",
+  ]);
+  // A command that creates no container still names every variable Compose requires.
+  const unused = execFileSync(
+    "bash",
+    ["-c", 'source "$1"; home_limits_unused', "limits", join(home, "common.sh")],
+    { encoding: "utf8", env: { ...process.env, OPENSTEER_HOME_DIR: tmpdir() } },
+  );
+  for (const name of ["HOST", "PLUGIN_ENGINE", "RUNNER", "CHANNEL"])
+    expect(unused).toContain(`OPENSTEER_HOME_HEAP_${name}=`);
 });
 
 it("gives a 4 GiB machine's Host room for the plugin engine a connected agent's call wakes, beside one Run", () => {
@@ -283,7 +358,7 @@ it("starts a machine short of the ordinary peaks, the shortfall out of the kept 
 it("keeps the machine Opensteer sells well above the floor, so an OS update cannot make it refuse", () => {
   // The lowest memory the Home starts on, found from the rule itself.
   let low = 1024;
-  let high = soldMachine.memTotalMib;
+  let high: number = soldMachine.memTotalMib;
   expect(homeStart(high).status).toBe(0);
   expect(homeStart(low).status).not.toBe(0);
   while (high - low > 1) {
@@ -326,6 +401,7 @@ it("applies the machine's limits on a pooled Cloud Computer only, never on a sel
   ];
   expect(override.services.runner?.environment).toEqual({
     OPENSTEER_MAX_CONCURRENT_RUNS: "${OPENSTEER_HOME_LIMIT_RUNNER_RUNS:?Machine limits required}",
+    OPENSTEER_NODE_OLD_SPACE_MB: "${OPENSTEER_HOME_HEAP_RUNNER:?Machine limits required}",
     ...Object.fromEntries(bridge.map((name) => [name, reset])),
   });
   const base = parse(read("compose.yaml")) as {

@@ -64,6 +64,8 @@ export type PluginAnswer = {
 };
 export interface PluginServiceOptions {
   readonly databaseUrl: string;
+  /** V8's old space for the engine in MiB (OPENSTEER_PLUGIN_ENGINE_OLD_SPACE_MB); 1,024 unset. */
+  readonly engineOldSpaceMb?: number;
   readonly dataDirectory: string;
   readonly owner: string;
   readonly credentialKey: Uint8Array;
@@ -117,8 +119,12 @@ const keepForMs = 120_000;
 const wakeLeadMs = 15_000;
 const liveExecution = new Set(["running", "waiting", "answered"]);
 // Agent programs run in the engine process. An explicit heap bound stops a runaway one at 1 GiB
-// instead of V8's machine-sized default; the supervisor then restarts the lost process.
-const engineFlags = ["--max-old-space-size=1024", "--max-semi-space-size=16"];
+// instead of V8's machine-sized default, or at what a Cloud Computer's Home sized for the
+// container the engine shares with the Host (home_limits), so V8 collects before the kernel kills.
+const engineFlags = (oldSpaceMb = 1024) => [
+  `--max-old-space-size=${oldSpaceMb}`,
+  "--max-semi-space-size=16",
+];
 
 type BeforeSend = (engine: EngineProcess | null) => Promise<void>;
 
@@ -391,7 +397,10 @@ export class PluginService {
     this.#set({ status: "starting", generation });
     const entry = this.#options.processEntry ?? pluginEngineEntry(import.meta.url);
     const child = fork(entry, [], {
-      execArgv: [...engineFlags, ...(entry.pathname.endsWith(".ts") ? ["--import", "tsx"] : [])],
+      execArgv: [
+        ...engineFlags(this.#options.engineOldSpaceMb),
+        ...(entry.pathname.endsWith(".ts") ? ["--import", "tsx"] : []),
+      ],
       detached: process.platform !== "win32",
       stdio: ["ignore", "ignore", "ignore", "ipc"],
       serialization: "json",

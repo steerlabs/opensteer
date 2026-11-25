@@ -364,3 +364,47 @@ it("tells a waiting call the engine ran out of memory only on the kernel's recor
   expect(stopped.message).toMatch(/^Plugin engine stopped; earlier calls may have taken effect/u);
   expect(stopped.state.status).toBe("restarting");
 });
+
+it("starts the engine with the old space its Home sized for it, or its own 1,024 MiB", async () => {
+  const started = async (engineOldSpaceMb?: number) => {
+    const child = Object.assign(new EventEmitter(), {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send(raw: unknown) {
+        const message = HostMessageSchema.parse(raw);
+        if (message.type === "init") child.emit("message", { type: "ready", pid: 1, startupMs: 0 });
+        if (message.type === "stop") child.emit("exit");
+        if (message.type === "request" && message.operation === "health")
+          child.emit("message", {
+            type: "result",
+            id: message.id,
+            operation: message.operation,
+            result: { pid: 1, rss: 1, startupMs: 0 },
+          });
+      },
+    });
+    vi.mocked(fork).mockReset();
+    vi.mocked(fork).mockReturnValue(child as unknown as ChildProcess);
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-old-space-"));
+    const service = new PluginService({
+      processEntry: new URL("file:///unused.js"),
+      databaseUrl: "postgres://unused.invalid/unused",
+      dataDirectory: directory,
+      owner: "owner",
+      credentialKey: new Uint8Array(32),
+      origin: "https://fixture.invalid",
+      ...(engineOldSpaceMb === undefined ? {} : { engineOldSpaceMb }),
+    });
+    try {
+      await service.start();
+      await service.health({}, { caller: "owner", mode: "automatic" });
+      return vi.mocked(fork).mock.calls[0]?.[2]?.execArgv;
+    } finally {
+      await service.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  };
+  expect(await started(711)).toEqual(["--max-old-space-size=711", "--max-semi-space-size=16"]);
+  expect(await started()).toEqual(["--max-old-space-size=1024", "--max-semi-space-size=16"]);
+});
