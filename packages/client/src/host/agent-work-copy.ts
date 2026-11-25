@@ -85,6 +85,7 @@ export const agentWorkCopy = {
   "tab.answer": "Answer",
 
   "ask.title": "{agent}: {question}",
+  "ask.listTitle": "{agent} · {question}",
   "ask.says": "{agent} says:",
   "ask.context": "{target} · {device}",
   "ask.calls": "Show exactly what it will run",

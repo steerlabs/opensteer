@@ -1,5 +1,4 @@
-import { useSessionTaskRow } from "./agent-work.js";
-import { AgentMark } from "./settings/agent-mark.js";
+import { useOpenSessionTask } from "./agent-work.js";
 import { runAction, toastOutcome } from "./use-action.js";
 import { NeedsYouList } from "./needs-you-list.js";
 import { placeByKey } from "@opensteer/client/host";
@@ -42,7 +41,6 @@ import {
   type TabFilter,
   listedRowThreadId,
   doneDays,
-  doneTaskList,
   quietlyMoved,
   quietSeenScope,
   actingOccupants,
@@ -99,7 +97,11 @@ import { PlaceMark } from "./workspace/place-mark.js";
 import type { DeviceElsewhere } from "@opensteer/client/computers";
 import { DeviceLabel } from "./computers/device-label.js";
 import { useHereId } from "./computers/here.js";
-import { useTaskDirectory, type TaskDirectory } from "./workspace/task-directory.js";
+import {
+  personDoneTaskList,
+  useTaskDirectory,
+  type TaskDirectory,
+} from "./workspace/task-directory.js";
 import {
   useHighlightMatch,
   useWorkspace,
@@ -165,6 +167,7 @@ export function Sidebar({
   onToggleCollapsed,
 }: SidebarProps) {
   const workspace = useWorkspace();
+  const openSessionTask = useOpenSessionTask();
   const { nav } = workspace;
   const { pathname } = useLocation();
   const snapshot = useTaskSnapshot(hostClient);
@@ -292,9 +295,9 @@ export function Sidebar({
   useEffect(() => {
     if (quietTasks) void hostClient.loadDoneTasks().catch(() => undefined);
   }, [hostClient, quietTasks, userId]);
-  const doneList = useMemo(() => doneTaskList(directory.snapshot), [directory.snapshot]);
-  const doneRows = doneList?.rows ?? list.done;
-  const doneCount = doneList?.total ?? list.done.length;
+  const doneList = useMemo(() => personDoneTaskList(directory.snapshot), [directory.snapshot]);
+  const doneRows = doneList?.rows ?? list.done.filter((row) => !row.connectedAgentTask);
+  const doneCount = doneList ? doneList.total : doneRows.length;
   const [quietSeen, markQuietSeen] = useQuietSeen(quietSeenScope(directory.snapshot));
   const moved = useMemo(() => quietlyMoved(doneList, quietSeen, Date.now()), [doneList, quietSeen]);
   const openDone = () => {
@@ -306,8 +309,8 @@ export function Sidebar({
   const doneActive = !doneView && openInDone;
   // Opening a Done task brings its shelf into view, once the shelf is there to
   // show; the open task moving to Done later leaves the list where it was.
-  const openListed =
-    openRowThreadId !== null && (openInDone || directory.rows.has(openRowThreadId));
+  const openRow = openRowThreadId === null ? undefined : directory.rows.get(openRowThreadId);
+  const openListed = openInDone || (openRow !== undefined && !openRow.connectedAgentTask);
   const opening = useRef<{ readonly threadId: string | null; placed: boolean }>({
     threadId: null,
     placed: false,
@@ -323,6 +326,7 @@ export function Sidebar({
     opening.current.placed = true;
   }, [collapsed, doneActive, openInDone, openListed, openRowThreadId]);
 
+  // Search keeps the full directory, including a connected agent's own task.
   const allTasks = useMemo(() => [...list.working, ...list.ready, ...list.done], [list]);
   const searchSources = useMemo<SidebarSearchSources>(
     () => ({
@@ -525,10 +529,10 @@ export function Sidebar({
 
   const classes = ["sidebar"];
   if (mobileOpen) classes.push("sidebar--open");
-  const rows = [...list.working, ...list.ready];
+  const rows = [...list.working, ...list.ready].filter((row) => !row.connectedAgentTask);
   const days = doneView ? doneDays(doneRows, Date.now()) : [];
   const doneMore = doneList?.hasMore ?? list.hasMore;
-  const doneLine = doneCount > 0 || moved.length > 0;
+  const doneLine = (doneCount ?? 0) > 0 || doneList?.hasMore === true || moved.length > 0;
   const rowKeys = doneView
     ? [
         ...days.flatMap((day) => [`day:${day.id}`, ...day.rows.map((row) => row.threadId)]),
@@ -706,9 +710,16 @@ export function Sidebar({
           onOpen={(entry) => {
             setNeedsYouOpen(false);
             onCloseMobile();
-            nav.openConversation(nav.threadPath(entry.navigationThreadId), {
-              focusRequest: entry.request.id,
-            });
+            if (entry.request.originatingAgentSessionId) {
+              const waiting = snapshot.waitingRequests.find(
+                ({ request }) => request.id === entry.request.id,
+              );
+              openSessionTask(entry.navigationThreadId, waiting ?? { request: entry.request });
+            } else {
+              nav.openConversation(nav.threadPath(entry.navigationThreadId), {
+                focusRequest: entry.request.id,
+              });
+            }
           }}
         />
       ) : null}
@@ -799,7 +810,7 @@ export function Sidebar({
                 <h2 className="side-head__title" id="sidebar-tasks">
                   Done
                 </h2>
-                <span className="side-head__count">{doneCount}</span>
+                {doneCount === null ? null : <span className="side-head__count">{doneCount}</span>}
               </div>
             ) : (
               <div className="side-head">
@@ -847,7 +858,7 @@ export function Sidebar({
                         </li>,
                         ...day.rows.map((row) => taskRow(row)),
                       ]),
-                      ...(days.length === 0
+                      ...(days.length === 0 && !doneMore
                         ? [
                             <li
                               className="sidebar__empty"
@@ -1161,8 +1172,6 @@ const TaskRowItem = memo(function TaskRowItem({
   ];
   const words = taskStateWords(row.tone);
   const mainRef = useRef<HTMLAnchorElement | null>(null);
-  // A connected agent's own task wears the agent's mark and says what it is using.
-  const session = useSessionTaskRow(hostClient, threadId);
   // The conversation beside the list is never out of sight in it.
   useEffect(() => {
     if (open && mainRef.current) revealInList(mainRef.current.closest("li") ?? mainRef.current);
@@ -1224,18 +1233,10 @@ const TaskRowItem = memo(function TaskRowItem({
           title={needsYou ? `${row.title}\n${ask}` : row.title}
           to={nav.conversationHref(nav.threadPath(threadId))}
         >
-          {session ? (
-            <AgentMark identity={session.agent} />
-          ) : (
-            <TaskMark size={20} mark={taskMark(row)} quiet={quiet} />
-          )}
+          <TaskMark size={20} mark={taskMark(row)} quiet={quiet} />
           <span className="side-task__text">
             <span className="side-task__title">{row.title}</span>
-            {needsYou ? (
-              <span className="side-task__ask">{ask}</span>
-            ) : session ? (
-              <span className="side-task__ask side-task__ask--quiet">{session.line}</span>
-            ) : null}
+            {needsYou ? <span className="side-task__ask">{ask}</span> : null}
           </span>
           {unsent ? <UnsentMark /> : null}
           <TaskState state={row.tone} unread={row.unread} />

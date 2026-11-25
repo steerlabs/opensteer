@@ -565,7 +565,9 @@ export function AppShell({
         return open !== null && listedRowThreadId(hostClient.getSnapshot(), open) === threadId;
       };
       const next =
-        done && inView() ? taskAfter(taskList(hostClient.getSnapshot()), threadId) : undefined;
+        done && inView()
+          ? taskAfter(taskList(hostClient.getSnapshot(), { personTasksOnly: true }), threadId)
+          : undefined;
       await hostClient.setTaskDone(threadId, done);
       if (next !== undefined && inView()) openConversation(next === null ? "/" : threadPath(next));
     },

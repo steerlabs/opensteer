@@ -357,6 +357,20 @@ export interface SessionTaskView {
     | { readonly kind: "ready"; readonly rows: readonly OperationRow[] };
 }
 
+type SessionTaskIdentity = {
+  readonly agentSessionId?: string | null | undefined;
+  readonly externalWork?: Pick<AgentSessionSlot, "sessionId"> | null | undefined;
+};
+
+function sessionTaskId(thread: SessionTaskIdentity): string | null {
+  return thread.externalWork?.sessionId ?? thread.agentSessionId ?? null;
+}
+
+/** This task belongs to the connected agent's own session, even after it has ended. */
+export function isConnectedAgentTask(thread: SessionTaskIdentity): boolean {
+  return sessionTaskId(thread) !== null;
+}
+
 /**
  * The task view for a connected agent's own task, or null for any other task. A task is
  * the agent's while the Home names its session (`agentSessionId`), or while the preview's
@@ -371,7 +385,7 @@ export function sessionTaskView(input: {
   readonly withdrawnAt?: string | null | undefined;
 }): SessionTaskView | null {
   const { thread, slot } = input;
-  const sessionId = slot?.sessionId ?? thread.agentSessionId ?? null;
+  const sessionId = sessionTaskId({ ...thread, externalWork: slot });
   if (sessionId === null) return null;
   const agent = sessionAgent(slot?.connection, input.withdrawnAt);
   const agentName = sessionAgentPart(agent);

@@ -1,3 +1,4 @@
+import { isConnectedAgentTask } from "./agent-work.js";
 import { assignmentTitle, workerAssignment } from "./assignment-presentation.js";
 import {
   requestTitleText,
@@ -26,6 +27,8 @@ export type TaskTone = "needs-you" | "working" | "waiting" | "failed" | "finishe
 
 export interface TaskRow {
   readonly threadId: string;
+  /** This row can be searched and opened, but belongs to a connected agent's own work. */
+  readonly connectedAgentTask?: true;
   readonly title: string;
   readonly icon: IconName | null;
   readonly color: MarkColor | null;
@@ -108,6 +111,8 @@ export function sameTaskListSource(previous: TaskListSource, next: TaskListSourc
 export interface TaskListOptions {
   /** The task this screen shows. */
   readonly openThreadId?: string | null | undefined;
+  /** The web Tasks list's navigation skips connected agents' own tasks. */
+  readonly personTasksOnly?: boolean;
   /**
    * The list this screen last drew. An unread Done task waits in Ready, and
    * reading it would move it to Done under the reader who just opened it, so
@@ -244,6 +249,7 @@ function arrange(
     previous?.ready.some(({ threadId, done }) => done && threadId === openThreadId) === true;
   for (const entry of entries) {
     const row = rowOf(snapshot, entry, asks.get(entry.thread.id) ?? []);
+    if (options.personTasksOnly && row.connectedAgentTask) continue;
     if (row.done)
       (row.unread || (holdOpen && row.threadId === openThreadId) ? ready : done).push(row);
     else if (row.stopped) ready.push(row);
@@ -314,6 +320,9 @@ function rowOf(
   const surface = tone === "working" ? workingSurface(snapshot, thread.id) : null;
   return {
     threadId: thread.id,
+    ...(isConnectedAgentTask(held) || isConnectedAgentTask(thread)
+      ? { connectedAgentTask: true }
+      : {}),
     title: held.title,
     icon: held.icon,
     color: held.color,
@@ -451,6 +460,7 @@ function stateWord(tone: TaskTone, failureCode?: string | null): string | null {
 export function sameTaskRow(left: TaskRow, right: TaskRow): boolean {
   return (
     left.threadId === right.threadId &&
+    left.connectedAgentTask === right.connectedAgentTask &&
     left.title === right.title &&
     left.icon === right.icon &&
     left.color === right.color &&
@@ -654,7 +664,7 @@ const unseenQuietWindowMs = 7 * 24 * 60 * 60 * 1_000;
  * counts as far as that list has been read.
  */
 export function quietlyMoved(
-  list: DoneTaskList | null,
+  list: Pick<DoneTaskList, "rows"> | null,
   seenThrough: string | null,
   now: number,
 ): readonly TaskRow[] {

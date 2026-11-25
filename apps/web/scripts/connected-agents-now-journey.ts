@@ -215,6 +215,48 @@ try {
     .locator(".session-activity")
     .getByText("Opened a tab in Shopping on Studio Mac")
     .waitFor();
+  await page.setViewportSize({ width: 1360, height: 820 });
+  await page.evaluate(() => localStorage.removeItem("opensteer.sidebar-width"));
+  await open("three");
+  await page.getByRole("button", { name: "3 agents working" }).waitFor();
+  const tasks = page.locator(".side-section--tasks");
+  const ownTitles = [
+    "Find a desk chair",
+    "Find flights to Lisbon",
+    "Buy the phone case",
+    "Renew the parking permit",
+    "Compare running shoes",
+  ];
+  async function checkPersonTasks() {
+    const titles = await tasks.locator(".side-task__title").allTextContents();
+    if (!titles.length || ownTitles.some((title) => titles.includes(title)))
+      throw new Error(
+        "Tasks should contain the person's tasks and none of the connected agents' own tasks.",
+      );
+  }
+  await checkPersonTasks();
+  await save(page, "tasks-three-agents-dark");
+
+  await open("needs-you");
+  await page.getByRole("button", { name: "Claude needs you · 2 working" }).waitFor();
+  await checkPersonTasks();
+  await page.getByRole("button", { name: /Open Needs you/ }).click();
+  const needsYou = page.getByRole("dialog", { name: "Needs you" });
+  const request = needsYou.getByRole("button", { name: /Claude · Run a script in Travel\?/ });
+  await request.scrollIntoViewIfNeeded();
+  await save(page, "tasks-needs-you-dark");
+  await request.click();
+  await page.locator(".operation-request").waitFor();
+  if (await tasks.locator(".is-filled, .is-open").count())
+    throw new Error("The connected agent's task selected a row in Tasks.");
+
+  await open("three");
+  await showPanel(page);
+  await panel(page).getByRole("button", { name: "Stop all" }).click();
+  await trigger(page).waitFor({ state: "detached" });
+  await checkPersonTasks();
+  await page.mouse.move(650, 640);
+  await save(page, "tasks-idle-dark");
   await context.close();
 } finally {
   await web.close();

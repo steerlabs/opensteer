@@ -7,7 +7,8 @@ import {
   operationRequestView,
   requestDecision,
   requestsWaitingOn,
-  sessionTaskRow,
+  sessionAgent,
+  sessionAgentPart,
   sessionTaskView,
   tabAgentLine,
   tabNeedsYouParts,
@@ -17,13 +18,13 @@ import {
   type RequestView,
   type HostClient,
   type SessionTaskView,
-  type WaitingRequestView,
+  workSentence,
   workWords,
 } from "@opensteer/client/host";
 import { useHostSelector, useTaskActivity } from "@opensteer/client/react";
-import type { Request, RequestResponse, ThreadStatus } from "@opensteer/core";
+import { requestTitleText, type Request, type RequestResponse } from "@opensteer/core";
 import type { NeedsYouEntry } from "@opensteer/protocol";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import { useNavigate } from "react-router";
 import { ActionLine } from "./action-line.js";
 import { useOptionalShell, useShell } from "./app-shell.js";
@@ -83,7 +84,13 @@ export function useStopSession(threadId: string, sessionId: string | null) {
 export function useOpenSessionTask() {
   const workspace = useOptionalWorkspace();
   const navigate = useNavigate();
-  return (threadId: string, waiting?: WaitingRequestView | null) => {
+  return (
+    threadId: string,
+    waiting?: {
+      readonly request: Pick<Request, "id" | "originatingThreadId">;
+      readonly presentation?: { readonly threadId: string } | null | undefined;
+    } | null,
+  ) => {
     const id = waiting?.presentation?.threadId ?? waiting?.request.originatingThreadId ?? threadId;
     if (workspace) {
       workspace.nav.openConversation(
@@ -396,42 +403,28 @@ export function TabAgentStatus({
 const workWordsUnavailable = workWords("work.activityUnavailable");
 const workWordsEmpty = workWords("work.activityEmpty");
 
-/** A Needs you entry for a connected agent's direct operation, or null for anything else. */
-export function useNeedsYouOperation(entry: NeedsYouEntry): OperationRequestView | null {
+/** Name both a direct approval and a question the connected agent asked. */
+export function useNeedsYouAgentRequest(entry: NeedsYouEntry) {
   const snapshot = useOptionalShell()?.snapshot;
   if (!snapshot || entry.kind !== "request") return null;
   const { request } = entry;
-  return operationRequestView({
-    request,
-    session: agentSessionSlot(snapshot, request.originatingThreadId),
-  });
-}
-
-/**
- * A connected agent's own task's row in Tasks, or null for any other task. It selects only
- * this task's facts, so a row redraws only when they change.
- */
-export function useSessionTaskRow(hostClient: HostClient, threadId: string) {
-  const work = useHostSelector(
-    hostClient,
-    useCallback((current) => threadInDirectory(threadId, current)?.externalWork, [threadId]),
-  );
-  const key = useHostSelector(
-    hostClient,
-    useCallback(
-      (current) => {
-        const thread = threadInDirectory(threadId, current);
-        return thread ? `${thread.status}|${thread.agentSessionId ?? ""}` : null;
-      },
-      [threadId],
-    ),
-  );
-  return useMemo(() => {
-    if (key === null) return null;
-    const [status, agentSessionId] = key.split("|") as [ThreadStatus, string];
-    return sessionTaskRow({
-      thread: { status, agentSessionId: agentSessionId || null },
-      slot: sessionSlotFromHome(work),
-    });
-  }, [key, work]);
+  const session = agentSessionSlot(snapshot, request.originatingThreadId);
+  const operation = operationRequestView({ request, session });
+  if (!operation && (!session || session.sessionId !== request.originatingAgentSessionId))
+    return null;
+  const agent = operation?.agent ?? sessionAgent(session?.connection);
+  const presentation = request.presentation;
+  const prompt =
+    request.kind === "person.question" &&
+    presentation.kind === "form" &&
+    presentation.fields.length === 1
+      ? presentation.fields[0]?.prompt.trim()
+      : null;
+  const question = operation?.question ?? (prompt || requestTitleText(presentation));
+  return {
+    agent,
+    listTitleParts: agent.who?.verified
+      ? workSentence("ask.listTitle", { agent: agent.name }, { question })
+      : workSentence("ask.title", { agent: sessionAgentPart(agent) }, { question }),
+  };
 }

@@ -1,5 +1,8 @@
 import { useCallback, useMemo, useRef } from "react";
 import {
+  doneTaskList,
+  isConnectedAgentTask,
+  mainDoneTasks,
   sameTaskListSource,
   sameTaskMark,
   taskAttention,
@@ -122,4 +125,18 @@ export function useTaskMark(hostClient: HostClient, threadId: string | null): Ta
     [threadId],
   );
   return useHostSelector(hostClient, select, sameTaskMark);
+}
+
+/** A server total includes unread pages. Only a fully held page gives a person's total. */
+export function personDoneTaskList(snapshot: HostSnapshot) {
+  const list = doneTaskList(snapshot);
+  if (!list) return null;
+  const entries = snapshot.doneTasks[mainDoneTasks]!.entries;
+  return {
+    rows: list.rows.filter((row) => !row.connectedAgentTask),
+    total: list.hasMore
+      ? null
+      : entries.filter(({ thread }) => !isConnectedAgentTask(thread)).length,
+    hasMore: list.hasMore,
+  };
 }

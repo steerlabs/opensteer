@@ -1150,6 +1150,17 @@ button.side-needs:hover {
   margin-top: 1px;
 }
 
+.side-task--needs-you .agent-mark {
+  width: var(--space-20);
+  height: var(--space-20);
+  font-size: var(--text-xs);
+}
+
+.side-task--needs-you .agent-mark .provider-logo {
+  width: var(--space-12);
+  height: var(--space-12);
+}
+
 .side-task__text {
   display: grid;
   flex: 1;
@@ -1199,11 +1210,6 @@ button.side-needs:hover {
   font-size: var(--text-sm);
   line-height: 1.36;
   white-space: nowrap;
-}
-
-/* A connected agent's own task says what it is using, quietly: it asks nothing. */
-.side-task__ask--quiet {
-  color: var(--muted);
 }
 
 /* A task with no state to show keeps no column for one. */
