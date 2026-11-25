@@ -1,0 +1,26 @@
+# A deleted Cloud Computer was cancelled late or is still not settled with Stripe an hour on; a renewal charged meanwhile is refunded by hand.
+# Runbook: docs/cloud-computer-operations.md, "Stripe outage during delete".
+displayName: "Opensteer: A deleted Cloud Computer needs a look in Stripe"
+severity: WARNING
+userLabels:
+  opensteer_alert: digest
+documentation:
+  mimeType: text/markdown
+  subject: "Opensteer: A deleted Cloud Computer needs a look in Stripe"
+  content: |-
+    A deleted Cloud Computer was cancelled late or is still not settled with Stripe an hour on; a renewal charged meanwhile is refunded by hand.
+
+    Open the runbook, docs/cloud-computer-operations.md, section "Stripe outage during delete".
+combiner: OR
+conditions:
+  - displayName: "A deleted Cloud Computer needs a look in Stripe"
+    conditionMatchedLog:
+      filter: >-
+        resource.type="k8s_container" AND resource.labels.namespace_name="opensteer-system" AND (jsonPayload.event="account.billing.cancelled_late" OR jsonPayload.event="account.billing.deletion_unsettled")
+      labelExtractors:
+        computer_id: EXTRACT(jsonPayload.computerId)
+        event: EXTRACT(jsonPayload.event)
+alertStrategy:
+  notificationRateLimit:
+    period: 86400s
+  autoClose: 604800s

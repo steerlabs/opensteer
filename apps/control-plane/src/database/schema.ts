@@ -58,6 +58,8 @@ export interface UserTable {
   updatedAt: Timestamp;
   /** The deletion attempt holding this Account's fence; see `beginAccountDeletion`. */
   deletionAttemptId: string | null;
+  /** Set only when the synthetic purchase's sign-in made this Account; see app-review-sign-in. */
+  syntheticAt: Generated<Date | null>;
   deletionFencedUntil: NullableTimestamp;
   /** Bumped by every name change; see `AccountProfiles`. */
   nameRevision: ColumnType<string, never, string>;
@@ -523,6 +525,7 @@ export interface ControlPlaneDatabaseSchema {
   cloudComputerBackupTargets: CloudComputerBackupTargetTable;
   cloudComputerBackupNamespaces: CloudComputerBackupNamespaceTable;
   cloudComputerCheckouts: CloudComputerCheckoutTable;
+  cloudComputerHealth: import("../cloud-computers/tables.js").CloudComputerHealthTable;
   cloudComputerEgressEndpoints: CloudComputerEgressEndpointTable;
   cloudComputerStripeEvents: CloudComputerStripeEventTable;
   cloudDeploymentOperations: CloudDeploymentOperationTable;

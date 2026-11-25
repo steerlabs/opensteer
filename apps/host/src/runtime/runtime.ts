@@ -104,6 +104,7 @@ import { AgentDirectoryCache } from "../mcp/connections/agent-directory.js";
 import { AgentConnectionStore, recoverAssignmentResultWaits } from "@opensteer/database";
 import { createHmac } from "node:crypto";
 import { personalHomeKind, personalHomeKindOption } from "./home-kind.js";
+import { HomeProblems, problemReportDestination } from "../problems/home-problems.js";
 import { withFolderPluginPackage } from "../local-servers/folder-plugin-package.js";
 import { AppTunnelHub } from "../apps/app-tunnel-hub.js";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
@@ -3366,6 +3367,16 @@ export async function createHostRuntime(
       onError: (environmentId, error) =>
         app.log.warn({ environmentId, err: error }, "Harness catalog reconciliation failed"),
     });
+    // This Home's own problems and the one report it sends, on its own timer (rule 3 does not
+    // reach it: it is never sent for a connection or a Run; docs/architecture.md).
+    const homeProblems = new HomeProblems({
+      database: store.database,
+      dataDirectory: resolve(config.dataDirectory),
+      home: personalHomeKind(config) ?? "other",
+      readsMachineStatus: config.machineStatus === "root-maintenance",
+      version: process.env.OPENSTEER_RELEASE_VERSION ?? "0.0.0",
+      destination: problemReportDestination(config),
+    });
     const administration = new AdministrationToolHandlers(
       new AdministrationService(
         {
@@ -3723,6 +3734,7 @@ export async function createHostRuntime(
     await recoverCommandAttempts(store.database);
     const app = await createHostServer(
       {
+        problems: homeProblems,
         commandRequests,
         personReads: (handlers) => {
           personReadHandlers = handlers;
@@ -3957,6 +3969,7 @@ export async function createHostRuntime(
     continuations.start();
     automationFailures.start();
     quietTasks.start();
+    homeProblems.start();
     let closed = false;
     let closingStep: string | undefined;
     hostAuthorityPublisher?.start();
@@ -4072,6 +4085,7 @@ export async function createHostRuntime(
           failures.push(error);
         });
         await step("execution lease loop", () => executionLeases.close());
+        await step("problem reports", () => homeProblems.close());
         await step("idle compaction", async () => {
           await idleCompactionService?.close();
         });
