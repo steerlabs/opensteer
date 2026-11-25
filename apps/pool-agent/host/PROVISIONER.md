@@ -287,11 +287,11 @@ No upstream, no start, and the host's credentials are a copy of what the account
   - **None assigned:** what is there is removed, and a stored, signed `applied: false` with
     reason `egress-required` answers; nothing is booted.
   - **Proxy not serving.** Before `start`, the agent requires an active service and a `/health`
-    answer within 5 s. A wake from either tier refuses an already-failed socket or service with
-    `egress-proxy-down` and keeps the saved state. After recording `consumed`, the agent
-    activates the proxy with the bounded health probe alongside guest restore or resume.
-    The socket queues early connections. A failed probe is reported as `proxy: "down"` in
-    signed status so the Home can park and wake the guest to retry.
+    answer within 5 s. A wake from either tier recreates a down socket and resets a failed or
+    restarting service as needed before recording `consumed`. The bounded health probe then
+    activates the proxy alongside restore or resume, and the socket queues early connections.
+    Signed status reports a failed probe as `proxy: "down"` so the Home can park and wake the guest.
+    The agent's periodic health recheck clears the report once the proxy serves again.
   - **The fetch could not be completed** (no answer, a refusal, a malformed answer, its
     deadline): what is there is used, if anything is. Otherwise it is refused as `unavailable`
     ("try again later"), with nothing written.

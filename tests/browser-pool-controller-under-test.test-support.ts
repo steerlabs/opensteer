@@ -32,8 +32,8 @@ export interface PoolControllerUnderTest extends BrowserPoolPhysicalController {
   inject(kind: BrowserPoolPhysicalKind | `sign:${string}` | "any", fault: BrowserPoolFault): void;
   hold(kind: BrowserPoolPhysicalKind, until: () => Promise<void>): void;
   observe(change: Partial<BrowserPoolPhysicalStatus>): void;
-  /** The real agent only: the slot's egress proxy fails its check on each start and wake. */
-  refuseProxy?(refusing: boolean): void;
+  /** The real agent only: controls whether the slot's proxy answers its health check. */
+  setProxyUnhealthy?(unhealthy: boolean): void;
   close?(): Promise<void>;
 }
 
@@ -95,8 +95,7 @@ export class AgentPoolController implements PoolControllerUnderTest {
       // Its host check (which slots' proxies are down) runs often enough for a test to see it.
       hostCheckMs: 200,
       ...(options.now ? { now: options.now } : {}),
-      // As a Cloud Computer's pool host runs: it pulls each slot's egress and confirms the slot's
-      // proxy serves before a start or a wake answers.
+      // A Cloud Computer's pool host pulls each slot's egress and checks its proxy health.
       driver: new FakeHypervisorDriver({
         startsEmpty: options.freshGuests ?? false,
         pullsEgress: true,
@@ -147,8 +146,8 @@ export class AgentPoolController implements PoolControllerUnderTest {
     this.#agent.driver.fail(operation, error);
   }
 
-  refuseProxy(refusing: boolean): void {
-    if (refusing) this.#agent.driver.proxyUnhealthy.add(this.#slotId);
+  setProxyUnhealthy(unhealthy: boolean): void {
+    if (unhealthy) this.#agent.driver.proxyUnhealthy.add(this.#slotId);
     else this.#agent.driver.proxyUnhealthy.delete(this.#slotId);
   }
 
