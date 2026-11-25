@@ -40,6 +40,8 @@ interface Call {
   id: string;
   cpu: number;
   sliceStart: number;
+  /** The Host's own CPU time inside the current slice (see `hostWork`). */
+  sliceHost: number;
   sliceHeldSince: number;
   failure: ReplFailure | undefined;
   poisoned: boolean;
@@ -122,12 +124,26 @@ function sliceFailure(cpu: number, held: number): ReplFailure | undefined {
     );
   return undefined;
 }
+// What the Host does for a guest inside its slice (measuring, copying and
+// parsing what the guest hands it, and emitting its text) is the Host's work, not
+// the guest's code: it never counts against the slice, so whether an argument is
+// refused or admitted never turns on how fast this machine copies. It still holds
+// the shared worker (the wall bound) and counts toward the call's total CPU.
+function hostWork<T>(call: Call, fn: () => T): T {
+  const start = threadCpuMs();
+  try {
+    return fn();
+  } finally {
+    call.sliceHost += threadCpuMs() - start;
+  }
+}
 function slice<T>(context: Context, fn: () => T): T {
   const call = context.call;
   const start = threadCpuMs();
   const heldSince = performance.now();
   if (call) {
     call.sliceStart = start;
+    call.sliceHost = 0;
     call.sliceHeldSince = heldSince;
   }
   try {
@@ -136,7 +152,7 @@ function slice<T>(context: Context, fn: () => T): T {
     if (call) {
       const elapsed = threadCpuMs() - start;
       call.cpu += elapsed;
-      const exceeded = sliceFailure(elapsed, performance.now() - heldSince);
+      const exceeded = sliceFailure(elapsed - call.sliceHost, performance.now() - heldSince);
       if (exceeded) {
         call.poisoned = true;
         call.failure ??= exceeded;
@@ -193,7 +209,8 @@ async function create(key: string, connection: boolean): Promise<Context> {
     const call = context.call;
     if (!call) return false;
     const used = threadCpuMs() - call.sliceStart;
-    if (!call.failure) call.failure = sliceFailure(used, performance.now() - call.sliceHeldSince);
+    if (!call.failure)
+      call.failure = sliceFailure(used - call.sliceHost, performance.now() - call.sliceHeldSince);
     if (!call.failure && call.cpu + used > limits.cpuMs)
       call.failure = failure("The code exceeded 5 seconds of CPU time.", "cpu-limit");
     if (call.failure?.code === "slice-limit" || call.failure?.code === "cpu-limit")
@@ -212,12 +229,15 @@ async function create(key: string, connection: boolean): Promise<Context> {
         limits.bridgeBytes,
         browserReplLimits.requestBytes - call.requestBytes,
       );
-      const input = readGuestString(context.vm, json, remaining);
+      const input = hostWork(call, () => {
+        const text = readGuestString(context.vm, json, remaining);
+        if (text !== undefined) call.requestBytes += Buffer.byteLength(text);
+        return text;
+      });
       if (input === undefined) {
         call.requestBytes = browserReplLimits.requestBytes;
         return bridgeLimit(vm, "Browser request byte budget exceeded.");
       }
-      call.requestBytes += Buffer.byteLength(input);
       const promise = vm.newPromise();
       const id = ++context.nextId;
       call.dispatched.set(id, { id, promise });
@@ -225,9 +245,11 @@ async function create(key: string, connection: boolean): Promise<Context> {
       return promise.handle;
     }
     // Only a measured string primitive leaves the guest; anything else is refused uncoerced.
-    const input = readGuestString(vm, json, limits.bridgeBytes);
-    if (input === undefined) throw new Error(`${label} arguments exceed 1 MiB.`);
-    const request = ReplRequestSchema.parse(JSON.parse(input));
+    const request = hostWork(call, () => {
+      const input = readGuestString(vm, json, limits.bridgeBytes);
+      return input === undefined ? undefined : ReplRequestSchema.parse(JSON.parse(input));
+    });
+    if (request === undefined) throw new Error(`${label} arguments exceed 1 MiB.`);
     const promise = vm.newPromise();
     call.queue.push({ id: ++context.nextId, request, promise });
     return promise.handle;
@@ -235,14 +257,15 @@ async function create(key: string, connection: boolean): Promise<Context> {
   const print = vm.newFunction("computerPrint", (value, encoded = vm.undefined) => {
     const call = context.call;
     if (!call || call.settled) throw new Error(ended);
-    if (!call.poisoned) {
-      if (browser) emitBrowserText(key, context, call, value, encoded);
-      else {
-        const text = readGuestString(vm, value, limits.textBytes - call.textBytes);
-        if (text === undefined) outputExceeded(call);
-        else emitText(key, call, text);
-      }
-    }
+    if (!call.poisoned)
+      hostWork(call, () => {
+        if (browser) emitBrowserText(key, context, call, value, encoded);
+        else {
+          const text = readGuestString(vm, value, limits.textBytes - call.textBytes);
+          if (text === undefined) outputExceeded(call);
+          else emitText(key, call, text);
+        }
+      });
     return vm.undefined;
   });
   vm.setProp(vm.global, "__computerCall", bridge);
@@ -694,6 +717,7 @@ async function handle(input: unknown) {
       id: message.callId,
       cpu: 0,
       sliceStart: 0,
+      sliceHost: 0,
       sliceHeldSince: 0,
       failure: undefined,
       poisoned: false,

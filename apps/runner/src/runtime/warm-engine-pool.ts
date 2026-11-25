@@ -43,12 +43,23 @@ export interface WarmEngine {
   readonly threadId: ThreadId;
 }
 
+const mebibyte = 1024 ** 2;
 const gibibyte = 1024 ** 3;
 
 /**
- * The memory this Runner may use: its container's (cgroup's) limit when it has
- * one below the machine's memory, the machine's otherwise. A Cloud Computer's
- * Runner is limited well below its VM.
+ * The memory one Run's engine may need, measured: OpenCode 1.18.32 writing a
+ * 500-word essay on a 4 GB Cloud Computer (Nov 25) peaked at 0.98 to 1.06 GiB
+ * of anonymous memory; this is that peak and half again, the same allowance a
+ * Cloud Computer's Home sizes its Runner's Runs by (deploy/home/common.sh
+ * run_allowance). The other engines are not measured yet.
+ */
+export const runMemoryAllowanceBytes = 1536 * mebibyte;
+/** The Runner's own process and its supervisor: 131 MiB at rest there, 152 at that peak. */
+const runnerItselfBytes = 192 * mebibyte;
+
+/**
+ * The memory the Runner runs under: its container's limit when it has one below the computer's
+ * memory, the computer's otherwise. A Cloud Computer's Runner is limited well below its VM.
  */
 export function runnerMemoryBytes(
   constrained: number | undefined = process.constrainedMemory(),
@@ -58,16 +69,23 @@ export function runnerMemoryBytes(
 }
 
 /**
- * How many idle engines a computer keeps warm. Each is a resident provider
- * process tree, so a small laptop keeps one or two rather than eight.
+ * How many idle engines a Runner keeps warm. Each is a resident provider
+ * process tree, so a small laptop keeps one or two rather than eight; and what
+ * the Runner may hold at once, its Runs and its warm engines together, fits its
+ * memory at one allowance each: a warm engine takes only the room its
+ * `maxConcurrentRuns` Runs leave. A Runner under 2 GiB (a Cloud Computer's on a 4 GiB machine,
+ * with no swap) therefore keeps none: one beside the Run would invite an out-of-memory kill.
  */
-export function warmEngineIdleCap(totalMemoryBytes: number = runnerMemoryBytes()): number {
-  // Under 2 GiB (a Cloud Computer's Runner on a 4 GiB machine) a warm engine beside the one Run,
-  // with no swap, would invite an out-of-memory kill: none is kept.
-  if (totalMemoryBytes < 2 * gibibyte) return 0;
-  if (totalMemoryBytes <= 4 * gibibyte) return 1;
-  if (totalMemoryBytes <= 8 * gibibyte) return 2;
-  return 8;
+export function warmEngineIdleCap(
+  totalMemoryBytes: number = runnerMemoryBytes(),
+  maxConcurrentRuns = 1,
+): number {
+  const sized = totalMemoryBytes <= 4 * gibibyte ? 1 : totalMemoryBytes <= 8 * gibibyte ? 2 : 8;
+  const room = Math.floor(
+    (totalMemoryBytes - runnerItselfBytes - maxConcurrentRuns * runMemoryAllowanceBytes) /
+      runMemoryAllowanceBytes,
+  );
+  return Math.max(0, Math.min(sized, room));
 }
 
 interface Idle {

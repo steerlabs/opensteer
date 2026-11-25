@@ -1547,6 +1547,45 @@ describe("RunnerRuntime", () => {
     }
   });
 
+  it("refuses a Run beyond its limit of Runs at once with a reason the Home holds it by", async () => {
+    const driverKind = HarnessIdSchema.parse("run-limit-test");
+    const registry = new HarnessRegistry();
+    registry.registerDriver({
+      ...catalogDriver(driverKind),
+      create: async ({ instanceId }) => ({
+        capabilities: fakeHarnessCapabilities,
+        accessModes: fakeHarnessAccessModes,
+        sources: fakeHarnessSources,
+        close: async () => undefined,
+        instanceId,
+        resumeSession: async () => new BlockingHarnessSession(),
+        startSession: async () => new BlockingHarnessSession(),
+      }),
+    });
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, maxConcurrentRuns: 1, registry });
+    const first = executeCommand(environmentId, driverKind);
+    const second = executeCommand(environmentId, driverKind);
+    const messages: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = {
+      send: async (message) => {
+        messages.push(message);
+      },
+    };
+    try {
+      await reconcile(registry, first, second);
+      await expect(runtime.handleCommand(first, sink)).resolves.toEqual({ status: "accepted" });
+      await waitUntil(() => hasEvent(messages, "run.started"));
+      // A second Run, in another task, waits for the first to end: the Home shows it waiting.
+      await expect(runtime.handleCommand(second, sink)).resolves.toMatchObject({
+        error: { code: "conflict", reason: "run-concurrency-limit", retryable: true },
+        status: "rejected",
+      });
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("refuses to sign an AI engine out or remove it while a Run is executing on it", async () => {
     const driverKind = HarnessIdSchema.parse("profile-busy-test");
     const registry = new HarnessRegistry();
@@ -7087,6 +7126,111 @@ describe("harness process environment", () => {
     }
   });
 
+  it("tells the Run whose engine the kernel killed for memory, not another Run failing beside it, and claims nothing for a Run that completed", async () => {
+    const environmentId = createId("environment");
+    const registry = new HarnessRegistry();
+    const killedKind = HarnessIdSchema.parse("memory-killed-engine-test");
+    const otherKind = HarnessIdSchema.parse("memory-other-failure-test");
+    const completedKind = HarnessIdSchema.parse("memory-completed-test");
+    const engineDies = deferred<void>();
+    // Its engine is killed while the other Run runs beside it; its driver sees only its stream end.
+    registry.registerDriver(
+      new FakeHarnessDriver(killedKind, () => new GatedFailureSession(engineDies.promise)),
+    );
+    registry.registerDriver(
+      new FakeHarnessDriver(
+        otherKind,
+        () =>
+          new ScriptedHarnessSession([
+            {
+              data: {
+                code: "engine_error",
+                message: "Its own failure",
+                retryable: false,
+                status: "failed",
+              },
+              type: "run.failed",
+            },
+          ]),
+      ),
+    );
+    registry.registerDriver(
+      new FakeHarnessDriver(
+        completedKind,
+        () =>
+          new ScriptedHarnessSession([{ data: { status: "completed" }, type: "run.completed" }]),
+      ),
+    );
+    const killed = executeCommand(environmentId, killedKind);
+    const other = executeCommand(environmentId, otherKind);
+    const completed = executeCommand(environmentId, completedKind);
+    // One kill counted for the whole Runner after the killed Run started, and a SIGKILL nobody
+    // stopping it sent of the killed Run's engine only. Each Run keeps the count as it starts.
+    let count = 0;
+    const marks = vi.fn(() => ++count);
+    let kills = 1;
+    const claims = vi.fn((since: number | undefined) =>
+      since === 1 && kills > 0 ? (kills--, true) : false,
+    );
+    const runtime = configuredRuntime({
+      engineKilled: (scope) =>
+        scope.endsWith(`.${killed.context.runId}-${killed.context.bindingGeneration}`),
+      environmentId,
+      maxConcurrentRuns: 3,
+      memoryKills: { claimKill: claims, mark: marks },
+      registry,
+    });
+    try {
+      const events: RunnerOperationalReport[] = [];
+      const sink: RunnerMessageSink = {
+        send: async (message) => {
+          events.push(message);
+        },
+      };
+      const end = (command: ReturnType<typeof executeCommand>) =>
+        events.find(
+          (message) =>
+            message.type === "runner.event" &&
+            message.event.runId === command.context.runId &&
+            (message.event.type === "run.failed" || message.event.type === "run.completed"),
+        );
+      await reconcile(registry, killed, other, completed);
+      await expect(runtime.handleCommand(killed, sink)).resolves.toEqual({ status: "accepted" });
+      await waitUntil(() => hasEvent(events, "run.started"));
+      // The other Run fails for its own reason while the kill is counted: it keeps its words.
+      await expect(runtime.handleCommand(other, sink)).resolves.toEqual({ status: "accepted" });
+      await waitUntil(() => end(other) !== undefined);
+      expect(end(other)).toMatchObject({
+        event: { data: { code: "engine_error" }, type: "run.failed" },
+      });
+      expect(claims).not.toHaveBeenCalled();
+      // The killed Run's end claims the kill: it ran out of memory, in its own words.
+      engineDies.resolve();
+      await waitUntil(() => end(killed) !== undefined);
+      expect(end(killed)).toMatchObject({
+        event: {
+          data: {
+            code: "run_out_of_memory",
+            ownerMessage:
+              "This Run ran out of memory and was stopped. What it did before then stays as it is.",
+            status: "failed",
+          },
+          type: "run.failed",
+        },
+      });
+      expect(claims).toHaveBeenCalledTimes(1);
+      // It claimed only a kill counted since it started.
+      expect(claims).toHaveBeenCalledWith(1);
+      // A Run that completed reads the count only as it starts, and claims nothing (rule 7).
+      await expect(runtime.handleCommand(completed, sink)).resolves.toEqual({ status: "accepted" });
+      await waitUntil(() => end(completed) !== undefined);
+      expect(claims).toHaveBeenCalledTimes(1);
+      expect(marks).toHaveBeenCalledTimes(3);
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("keeps a proxy password out of retry messages, failure messages, and start-up errors in events, catalogs, and logs (G7)", async () => {
     const proxy = "http://alice:p@ss/word?q#g7@proxy.invalid:8080";
     const tokenProxy = "http://proxy-token-g7@proxy.invalid:8080";
@@ -7533,6 +7677,40 @@ class SharedEngineSession implements HarnessSession {
     this.#interrupted.resolve();
     this.#stopping ??= this.#settled.then(() => this.#stream.close());
     return this.#stopping;
+  }
+}
+
+/** Starts, then ends in its driver's failure once `dies` settles, as when its engine is killed. */
+class GatedFailureSession implements HarnessSession {
+  readonly providerSessionReference = "gated-failure-provider-session";
+  readonly #stream = new BoundedEventStream<HarnessEvent>({ maxBytes: 100_000, maxItems: 100 });
+  readonly events: AsyncIterable<HarnessEvent> = this.#stream;
+  readonly #dies: Promise<void>;
+
+  constructor(dies: Promise<void>) {
+    this.#dies = dies;
+  }
+
+  async execute(_turn: HarnessRunInput): Promise<void> {
+    publish(this.#stream, { data: { status: "running" }, type: "run.started" });
+    await this.#dies;
+    publish(this.#stream, {
+      data: {
+        code: "opencode_harness_error",
+        message: "OpenCode event stream failed: terminated",
+        retryable: false,
+        status: "failed",
+      },
+      type: "run.failed",
+    });
+  }
+
+  async interrupt(): Promise<void> {}
+
+  async resolveRequest(_requestId: RequestId, _response: RequestResponse): Promise<void> {}
+
+  async stop(): Promise<void> {
+    this.#stream.close();
   }
 }
 
@@ -8352,6 +8530,8 @@ function configuredRuntime(input: {
   readonly logger?: ConstructorParameters<typeof RunnerRuntime>[0]["logger"];
   readonly maxRunEvents?: number;
   readonly maxConcurrentRuns?: number;
+  readonly memoryKills?: ConstructorParameters<typeof RunnerRuntime>[0]["memoryKills"];
+  readonly engineKilled?: ConstructorParameters<typeof RunnerRuntime>[0]["engineKilled"];
   readonly mode?: ConstructorParameters<typeof RunnerRuntime>[0]["mode"];
   readonly networkSecrets?: readonly string[];
   readonly privateStateDirectory?: string;
@@ -8376,6 +8556,8 @@ function configuredRuntime(input: {
       ...(input.containment ? { containment: input.containment } : {}),
       ...(input.logger ? { logger: input.logger } : {}),
       maxConcurrentRuns: input.maxConcurrentRuns ?? 1,
+      ...(input.memoryKills ? { memoryKills: input.memoryKills } : {}),
+      ...(input.engineKilled ? { engineKilled: input.engineKilled } : {}),
       ...(input.maxRunEvents === undefined ? {} : { maxRunEvents: input.maxRunEvents }),
       ...(input.mode === undefined ? {} : { mode: input.mode }),
       ...(input.networkSecrets === undefined ? {} : { networkSecrets: input.networkSecrets }),

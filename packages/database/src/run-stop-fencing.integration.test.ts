@@ -44,6 +44,9 @@ import { NotificationStore } from "./notification-store.js";
 import { revokeRunGrants } from "./run-grants.js";
 import { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
 import { readTranscriptOverlays } from "./personal-overlay-store.js";
+import pg from "pg";
+
+const originalQuery: (...args: unknown[]) => unknown = pg.Client.prototype.query;
 
 /**
  * Stage 1 fault matrix, database side: every way a Stop, an answer, a steer or
@@ -805,6 +808,140 @@ integration.sequential("Run stop fencing", () => {
       const toolItem = page.items.find((item) => item.kind === "tool");
       expect(toolItem?.view.status).toBe("stopped");
     }
+  });
+
+  it("holds a Run its Runner refused at its limit of Runs as waiting for another Run, offers it again, and clears the hold when it starts", async ({
+    storeFixture,
+  }) => {
+    const { bind, fixture, database, store } = storeFixture;
+    const f = await fixture("waiting-for-run");
+    const sent = await store.enqueueThreadInput({
+      content: [{ text: "Write the essay", type: "text" }],
+      idempotencyKey: "waiting-for-run-msg",
+      policy: "queue",
+      requestedBy: f.userId,
+      source: { kind: "human" },
+      threadId: f.thread.id,
+    });
+    await store.claimCommand(sent.command!.id, "test-dispatcher");
+    // The Runner already runs as many Runs as it may (OPENSTEER_MAX_CONCURRENT_RUNS).
+    const busy = Object.assign(new Error("Runner Run concurrency limit is saturated"), {
+      cause: {
+        code: "conflict",
+        message: "Runner Run concurrency limit is saturated",
+        reason: "run-concurrency-limit",
+        retryable: true,
+      },
+    });
+    await store.retryCommand(sent.command!.id, busy);
+    const held = () =>
+      database
+        .selectFrom("runs")
+        .innerJoin("threads", "threads.id", "runs.threadId")
+        .select(["runs.status", "runs.startHoldReason", "threads.runStartHoldReason"])
+        .where("runs.id", "=", sent.run!.id)
+        .executeTakeFirstOrThrow();
+    expect(await held()).toEqual({
+      runStartHoldReason: "waiting-for-run",
+      startHoldReason: "waiting-for-run",
+      status: "queued",
+    });
+    // Unlike an unconfirmed stop, it is offered again: it starts when another Run ends.
+    expect((await store.listPendingCommands()).some(({ id }) => id === sent.command!.id)).toBe(
+      true,
+    );
+    // An offer keeps the wait (no rewrite of the task per offer)...
+    await store.claimCommand(sent.command!.id, "test-dispatcher");
+    expect(await held()).toEqual({
+      runStartHoldReason: "waiting-for-run",
+      startHoldReason: "waiting-for-run",
+      status: "starting",
+    });
+    // ...and the Run's start ends it.
+    const binding = await bind(f, sent.run!.id);
+    await store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      event: pendingEvent({
+        bindingGeneration: binding.bindingGeneration,
+        data: { status: "running" },
+        environmentId: f.environmentId,
+        ordinal: 0,
+        runId: sent.run!.id,
+        threadId: f.thread.id,
+        type: "run.started",
+      }),
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+    });
+    expect(await held()).toEqual({
+      runStartHoldReason: null,
+      startHoldReason: null,
+      status: "running",
+    });
+  });
+
+  it("costs a Run already waiting for another no more statements per refused offer than a Run with no hold", async ({
+    storeFixture,
+  }) => {
+    const { fixture, database, store } = storeFixture;
+    const refusal = (reason: string | undefined) =>
+      Object.assign(new Error("Runner Run concurrency limit is saturated"), {
+        cause: {
+          code: "conflict",
+          message: "Runner Run concurrency limit is saturated",
+          ...(reason ? { reason } : {}),
+          retryable: true,
+        },
+      });
+    // One refused offer (claim, then the Runner's retryable refusal), with every statement traced.
+    const offer = async (name: string, reason: string | undefined, hold: boolean) => {
+      const f = await fixture(name);
+      const sent = await store.enqueueThreadInput({
+        content: [{ text: "Write the essay", type: "text" }],
+        idempotencyKey: `${name}-msg`,
+        policy: "queue",
+        requestedBy: f.userId,
+        source: { kind: "human" },
+        threadId: f.thread.id,
+      });
+      if (hold) await store.holdRunForAnotherRun(sent.run!.id);
+      const statements: string[] = [];
+      const query = vi.spyOn(pg.Client.prototype, "query").mockImplementation(function (
+        this: pg.Client,
+        ...args: unknown[]
+      ) {
+        const first = args[0];
+        statements.push(
+          typeof first === "string"
+            ? first
+            : ((first as { readonly text?: string } | undefined)?.text ?? "<unknown>"),
+        );
+        return Reflect.apply(originalQuery, this, args);
+      });
+      try {
+        await store.claimCommand(sent.command!.id, "test-dispatcher");
+        await store.retryCommand(sent.command!.id, refusal(reason));
+      } finally {
+        query.mockRestore();
+      }
+      const run = await database
+        .selectFrom("runs")
+        .select("startHoldReason")
+        .where("id", "=", sent.run!.id)
+        .executeTakeFirstOrThrow();
+      return { held: run.startHoldReason, statements };
+    };
+    // The base: a Run with no hold, refused for no stated reason, returns to the queue unheld.
+    const unheld = await offer("offer-unheld", undefined, false);
+    expect(unheld.held).toBeNull();
+    // A Run the Home already holds as waiting, refused for capacity: it keeps its hold, and the
+    // task is not rewritten on the way (no clear at claim, no restore at retry).
+    const held = await offer("offer-held", "run-concurrency-limit", true);
+    expect(held.held).toBe("waiting-for-run");
+    expect(held.statements.length).toBe(unheld.statements.length);
+    expect(held.statements.filter((text) => text.startsWith('update "threads"'))).toEqual(
+      unheld.statements.filter((text) => text.startsWith('update "threads"')),
+    );
   });
 
   it("H5(b)+(c): holds next Run on previous-stop-unconfirmed without cycling Starting, records failureCode, and promotes unproven stop to interrupted with stopConfirmedAt on late proof", async ({

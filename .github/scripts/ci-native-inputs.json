@@ -543,6 +543,7 @@
     "apps/runner/src/runtime/execution-containment.windows.test.ts",
     "apps/runner/src/runtime/live-progress.ts",
     "apps/runner/src/runtime/logger.ts",
+    "apps/runner/src/runtime/memory-kills.ts",
     "apps/runner/src/runtime/node-executable.ts",
     "apps/runner/src/runtime/readiness-file.ts",
     "apps/runner/src/runtime/runtime.ts",

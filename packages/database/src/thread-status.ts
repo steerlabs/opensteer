@@ -266,8 +266,14 @@ export async function projectThreadState(
       failed && failure
         ? plainTextExcerpt(failure.ownerMessage ?? failure.message, taskLineMaxLength)
         : null;
+    // A Run waiting for another keeps that reason through each offer its Runner refuses
+    // (queued, starting, queued again): the task is not rewritten per offer. It ends when the
+    // Run starts (run.started clears it) or ends.
     const runStartHoldReason =
-      active?.status === "queued" ? (active.startHoldReason ?? null) : null;
+      active?.status === "queued" ||
+      (active?.status === "starting" && active.startHoldReason === "waiting-for-run")
+        ? (active.startHoldReason ?? null)
+        : null;
     const changed =
       status !== thread.status ||
       failureCode !== thread.failureCode ||

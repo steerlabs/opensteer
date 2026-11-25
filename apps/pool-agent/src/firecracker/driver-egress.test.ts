@@ -329,4 +329,26 @@ describe("a pulling host's slot proxies always require an upstream", () => {
     };
     expect(await driver.verifyProxy("bps-a", AbortSignal.timeout(2_000))).toBe(false);
   });
+
+  it("prepares a wake without probing and rechecks health once without resetting the service", async () => {
+    const { driver } = await host();
+    await driver.writePulledEgress("bps-a", credentials);
+    await driver.prepareSlot("bps-a", undefined);
+
+    const probe = vi.fn(() => new Error("curl: (52) Empty reply from server"));
+    healthProbe = probe;
+    for (const state of ["failed", "activating"]) {
+      stopped.length = 0;
+      serviceStates.set(0, state);
+      await driver.prepareProxy("bps-a", AbortSignal.timeout(2_000));
+      expect(stopped).toEqual(["opensteer-pool-egress-0.service"]);
+      expect(probe).not.toHaveBeenCalled();
+    }
+
+    stopped.length = 0;
+    serviceStates.set(0, "activating");
+    expect(await driver.verifyProxy("bps-a", AbortSignal.timeout(2_000), "recheck")).toBe(false);
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(stopped).toEqual([]);
+  });
 });

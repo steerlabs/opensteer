@@ -870,6 +870,25 @@ export function migrationProvider(options?: {
                   `.execute(database);
                 },
               },
+              "0120_run_waiting_for_run": {
+                /**
+                 * A queued Run whose computer's Runner runs as many Runs as it may is held as
+                 * `waiting-for-run` (offered again, unlike an unconfirmed stop), so the person
+                 * sees that it waits for another Run to end rather than "Starting".
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table runs
+                      drop constraint if exists runs_start_hold_reason_check,
+                      add constraint runs_start_hold_reason_check
+                        check (start_hold_reason in ('previous-stop-unconfirmed', 'waiting-for-run'));
+                    alter table threads
+                      drop constraint if exists threads_run_start_hold_reason_check,
+                      add constraint threads_run_start_hold_reason_check
+                        check (run_start_hold_reason in ('previous-stop-unconfirmed', 'waiting-for-run'));
+                  `.execute(database);
+                },
+              },
             }
           : {}),
       };

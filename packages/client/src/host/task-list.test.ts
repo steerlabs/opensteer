@@ -665,6 +665,13 @@ describe("taskWaitingReason", () => {
     const holdReason = taskWaitingReason(snapshot, thread.id, [held]);
     expect(holdReason?.kind).toBe("stop-unconfirmed");
     expect(holdReason?.label).toContain("couldn’t confirm the last Run stopped");
+
+    // Its computer's Runner runs as many Runs as it may: it says it waits for another, not
+    // "Starting" (the web and the phone read the same sentence).
+    const waiting = { ...queued, startHoldReason: "waiting-for-run" as const };
+    const waitReason = taskWaitingReason(snapshot, thread.id, [waiting]);
+    expect(waitReason?.kind).toBe("waiting-for-run");
+    expect(waitReason?.label).toMatch(/^Waiting for another Run (on .+ )?to finish\.$/u);
     client.dispose();
   });
 

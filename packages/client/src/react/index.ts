@@ -31,7 +31,6 @@ export * from "./use-connected-agent-sessions.js";
 export * from "./use-session-stop.js";
 export * from "./use-connected-agents.js";
 export { useVoice, useVoiceOn, useVoiceValue, VoiceContext } from "./use-voice.js";
-export * from "./use-browser-agent-follow.js";
 
 export * from "./use-thread-server-approvals.js";
 export * from "./use-paged-list.js";

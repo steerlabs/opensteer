@@ -152,6 +152,28 @@ export async function principalIdForUser(
   }
   return principal.id;
 }
+/**
+ * Holds a queued Run as waiting for another Run on its computer to finish: the Home's own
+ * capacity decision (its Runner has no free slot) or that Runner's refusal for capacity
+ * (returnRunToQueue with the same reason). Writes nothing when the Run already has a hold.
+ */
+export async function holdRunForAnotherRun(
+  transaction: Transaction<DatabaseSchema>,
+  runId: import("@opensteer/core").RunId,
+): Promise<boolean> {
+  const held = await transaction
+    .updateTable("runs")
+    .set({ startHoldReason: "waiting-for-run" })
+    .where("id", "=", runId)
+    .where("status", "=", "queued")
+    .where("startHoldReason", "is", null)
+    .returning(["threadId"])
+    .executeTakeFirst(databaseOperationOptions());
+  if (!held) return false;
+  await publishRunQueue(transaction, held.threadId, runId);
+  await projectThreadState(transaction, held.threadId);
+  return true;
+}
 export async function returnRunToQueue(
   transaction: Transaction<DatabaseSchema>,
   input: {
