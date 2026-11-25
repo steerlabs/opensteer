@@ -1537,6 +1537,9 @@ describeStore("automation secrets through the one door", (it) => {
       const topArrMarker = `${m1Prefix}_TOPARR`;
       const deepMarker = `${m1Prefix}_DEEP`;
       const setFirstMarker = `${m1Prefix}_SETFIRST`;
+      const knownNonSecretCreateMarker = `${m1Prefix}_R_KNOWNNONSECRET_CREATE`;
+      const knownNonSecretUpdateMarker = `${m1Prefix}_R_KNOWNNONSECRET_UPDATE`;
+      const foreignIdentityMarker = `${m1Prefix}_X_FOREIGNIDENTITY`;
 
       // Variant 1 (codexPad): oversized >64 KiB arguments that `createToolArguments` turns into
       // JSON text (`withParametersAsText`) if formatted before redaction.
@@ -1644,6 +1647,65 @@ describeStore("automation secrets through the one door", (it) => {
         command: `{"set":{"K":"${setFirstMarker}"},"triggerId":"${triggerId}","ty`,
       });
 
+      // Variant 6 (R6-1: known non-secret types carrying undeclared secret keys through REAL relay
+      // route + Runner event store; R6-2: foreign/unrecognised tool identity backstop through Runner).
+      const knownCreateRes = await app.inject({
+        method: "POST",
+        url: agentToolHostRoutePath,
+        headers: { authorization: "Bearer run-token" },
+        payload: {
+          callId: randomUUID(),
+          name: "opensteer_command",
+          input: {
+            command: {
+              type: "trigger.create",
+              secrets: { TOP: knownNonSecretCreateMarker },
+              input: {
+                anchorThreadId: f.threadId,
+                name: "Bad create",
+                secrets: { NESTED: knownNonSecretCreateMarker },
+              },
+            },
+          },
+        },
+      });
+      expect(knownCreateRes.statusCode).toBe(200);
+      expect(knownCreateRes.body).not.toContain(knownNonSecretCreateMarker);
+
+      const knownUpdateRes = await app.inject({
+        method: "POST",
+        url: agentToolHostRoutePath,
+        headers: { authorization: "Bearer run-token" },
+        payload: {
+          callId: randomUUID(),
+          name: "opensteer_command",
+          input: {
+            command: {
+              type: "trigger.update",
+              triggerId,
+              set: { TOP: knownNonSecretUpdateMarker },
+              input: {
+                expectedRevisionId: created.revision.id,
+                secrets: { NESTED: knownNonSecretUpdateMarker },
+              },
+            },
+          },
+        },
+      });
+      expect(knownUpdateRes.statusCode).toBe(200);
+      expect(knownUpdateRes.body).not.toContain(knownNonSecretUpdateMarker);
+
+      await commitToolStarted(
+        {
+          command: {
+            type: "trigger.secrets.set",
+            triggerId,
+            set: { FOREIGN: foreignIdentityMarker },
+          },
+        },
+        { namespace: "mcp:plugin-opensteer-opensteer", name: "opensteer_command" },
+      );
+
       // Ordinary non-command tools (Edit + Bash with `{` and `\uXXXX`) stay byte-identical in PostgreSQL.
       const editCallId = `ordinary-edit-${randomUUID()}`;
       const bashCallId = `ordinary-bash-${randomUUID()}`;
@@ -1674,6 +1736,9 @@ describeStore("automation secrets through the one door", (it) => {
         topArrMarker,
         deepMarker,
         setFirstMarker,
+        knownNonSecretCreateMarker,
+        knownNonSecretUpdateMarker,
+        foreignIdentityMarker,
       ];
       const baseTables = await sql<{ tableSchema: string; tableName: string }>`
         select table_schema, table_name

@@ -1687,18 +1687,21 @@ export function commandAgentOutput(command: Command, output: unknown): unknown {
 
 export const REDACTED_SECRET_MARKER = "[redacted]";
 
-interface AllowedShape {
-  /** Schema-declared keys that are not secret leaves and contain no nested secret paths. */
-  readonly allowedKeys: ReadonlySet<string>;
-  /** Schema-declared keys that contain nested secret paths (e.g. `input` -> `client` -> `clientSecret`). */
-  readonly nested: ReadonlyMap<string, AllowedShape>;
+interface NestedFieldShape {
+  /** Schema-derived shape when the field holds a plain object (undefined for array-only fields). */
+  readonly shape: AllowedShape | undefined;
+  /** Schema-derived shape for plain-object elements when the field holds an array of objects. */
+  readonly arrayElementShape: AllowedShape | undefined;
+  /** True when the field's schema admits non-object, non-null values (primitives, arrays, etc.). */
+  readonly allowsNonObject: boolean;
 }
 
-const secretCommandTypes: ReadonlySet<string> = new Set(
-  (Object.keys(commandTable) as CommandType[]).filter(
-    (type) => (commandTable[type].secretFields?.length ?? 0) > 0,
-  ),
-);
+interface AllowedShape {
+  /** Schema-declared keys kept as-is (primitives, open records/unknown, never secret). */
+  readonly allowedKeys: ReadonlySet<string>;
+  /** Schema-declared keys whose nested object or array-of-object values are checked recursively. */
+  readonly nested: ReadonlyMap<string, NestedFieldShape>;
+}
 
 /** Non-command top-level arguments declared by `opensteer_command` (recorded as they are). */
 const opensteerCommandPassthroughKeys: ReadonlySet<string> = new Set([
@@ -1707,14 +1710,28 @@ const opensteerCommandPassthroughKeys: ReadonlySet<string> = new Set([
   "taskId",
 ]);
 
-let cachedSecretShapes: Map<string, AllowedShape> | null = null;
+let cachedCommandShapes: Map<string, AllowedShape> | null = null;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function collectObjectSchemas(schema: unknown, out: z.ZodObject[]): void {
-  if (!schema || typeof schema !== "object") return;
+interface FieldSchemaInfo {
+  readonly objectSchemas: z.ZodObject[];
+  readonly arrayElementSchemas: z.ZodObject[];
+  /** True when the schema admits arbitrary keys (`record`, `unknown`, `any`, or non-`never` catchall). */
+  openObject: boolean;
+  /** True when the schema admits non-object, non-null values (primitives, arrays, etc.). */
+  allowsNonObject: boolean;
+}
+
+function collectObjectSchemas(
+  schema: unknown,
+  out: z.ZodObject[],
+  seen = new Set<unknown>(),
+): void {
+  if (!schema || typeof schema !== "object" || seen.has(schema)) return;
+  seen.add(schema);
   const def = (schema as { readonly def?: Record<string, unknown> }).def;
   if (!def || typeof def.type !== "string") return;
   if (def.type === "object" && "shape" in schema) {
@@ -1722,104 +1739,267 @@ function collectObjectSchemas(schema: unknown, out: z.ZodObject[]): void {
     return;
   }
   if ((def.type === "union" || def.type === "discriminatedUnion") && Array.isArray(def.options)) {
-    for (const option of def.options) collectObjectSchemas(option, out);
+    for (const option of def.options) collectObjectSchemas(option, out, seen);
     return;
   }
-  if (def.type === "pipe" && def.out) {
-    collectObjectSchemas(def.out, out);
+  if (def.type === "pipe") {
+    const outDef = (def.out as { readonly def?: { readonly type?: string } } | undefined)?.def;
+    collectObjectSchemas(outDef?.type === "transform" ? def.in : def.out, out, seen);
+    return;
+  }
+  if (def.type === "lazy" && typeof def.getter === "function") {
+    collectObjectSchemas((def.getter as () => unknown)(), out, seen);
     return;
   }
   if (def.innerType) {
-    collectObjectSchemas(def.innerType, out);
+    collectObjectSchemas(def.innerType, out, seen);
+  }
+}
+
+function inspectFieldSchema(
+  schema: unknown,
+  info: FieldSchemaInfo,
+  seen = new Set<unknown>(),
+): void {
+  if (!schema || typeof schema !== "object" || seen.has(schema)) return;
+  seen.add(schema);
+  const def = (schema as { readonly def?: Record<string, unknown> }).def;
+  if (!def || typeof def.type !== "string") return;
+  switch (def.type) {
+    case "object": {
+      if ("shape" in schema) {
+        info.objectSchemas.push(schema as z.ZodObject);
+      }
+      const catchallType = (
+        def.catchall as { readonly def?: { readonly type?: string } } | undefined
+      )?.def?.type;
+      if (catchallType && catchallType !== "never") {
+        info.openObject = true;
+      }
+      return;
+    }
+    case "record":
+    case "unknown":
+    case "any":
+      info.openObject = true;
+      info.allowsNonObject = true;
+      return;
+    case "union":
+    case "discriminatedUnion":
+      if (Array.isArray(def.options)) {
+        for (const option of def.options) inspectFieldSchema(option, info, seen);
+      }
+      return;
+    case "pipe": {
+      const outDef = (def.out as { readonly def?: { readonly type?: string } } | undefined)?.def;
+      inspectFieldSchema(outDef?.type === "transform" ? def.in : def.out, info, seen);
+      return;
+    }
+    case "lazy":
+      if (typeof def.getter === "function") {
+        inspectFieldSchema((def.getter as () => unknown)(), info, seen);
+      }
+      return;
+    case "optional":
+    case "nullable":
+    case "default":
+    case "readonly":
+    case "catch":
+      if (def.innerType) inspectFieldSchema(def.innerType, info, seen);
+      return;
+    case "array": {
+      info.allowsNonObject = true;
+      if (def.element) {
+        const elemInfo: FieldSchemaInfo = {
+          objectSchemas: [],
+          arrayElementSchemas: [],
+          openObject: false,
+          allowsNonObject: false,
+        };
+        inspectFieldSchema(def.element, elemInfo, new Set(seen));
+        if (!elemInfo.openObject && elemInfo.objectSchemas.length > 0) {
+          info.arrayElementSchemas.push(...elemInfo.objectSchemas);
+        }
+      }
+      return;
+    }
+    case "null":
+    case "undefined":
+    case "void":
+    case "never":
+      return;
+    default:
+      info.allowsNonObject = true;
   }
 }
 
 function buildAllowedShape(
   schemas: readonly z.ZodObject[],
   secretPaths: readonly (readonly string[])[],
+  ancestors: ReadonlySet<z.ZodObject> = new Set(),
 ): AllowedShape {
-  const declared = new Set<string>();
-  const childSchemas = new Map<string, z.ZodObject[]>();
+  const fieldInfos = new Map<string, FieldSchemaInfo>();
   for (const obj of schemas) {
     for (const [key, fieldSchema] of Object.entries(obj.shape)) {
-      declared.add(key);
-      const list = childSchemas.get(key) ?? [];
-      collectObjectSchemas(fieldSchema, list);
-      if (list.length > 0) childSchemas.set(key, list);
+      let info = fieldInfos.get(key);
+      if (!info) {
+        info = {
+          objectSchemas: [],
+          arrayElementSchemas: [],
+          openObject: false,
+          allowsNonObject: false,
+        };
+        fieldInfos.set(key, info);
+      }
+      inspectFieldSchema(fieldSchema, info);
     }
   }
   const secretLeaves = new Set<string>();
-  const nestedPaths = new Map<string, string[][]>();
+  const nestedSecretPaths = new Map<string, string[][]>();
   for (const path of secretPaths) {
     if (path.length === 1) {
       secretLeaves.add(path[0]!);
     } else if (path.length > 1) {
       const parent = path[0]!;
-      const rest = nestedPaths.get(parent) ?? [];
+      const rest = nestedSecretPaths.get(parent) ?? [];
       rest.push(path.slice(1));
-      nestedPaths.set(parent, rest);
+      nestedSecretPaths.set(parent, rest);
     }
   }
+  const nextAncestors = new Set(ancestors);
+  for (const obj of schemas) nextAncestors.add(obj);
+
   const allowedKeys = new Set<string>();
-  for (const key of declared) {
-    if (!secretLeaves.has(key) && !nestedPaths.has(key)) {
+  const nested = new Map<string, NestedFieldShape>();
+  for (const [key, info] of fieldInfos) {
+    if (secretLeaves.has(key)) continue;
+    const childSecretPaths = nestedSecretPaths.get(key);
+    if (childSecretPaths) {
+      nested.set(key, {
+        shape: buildAllowedShape(info.objectSchemas, childSecretPaths, nextAncestors),
+        arrayElementShape: undefined,
+        allowsNonObject: false,
+      });
+      continue;
+    }
+    if (info.openObject) {
+      allowedKeys.add(key);
+      continue;
+    }
+    const freshObjectSchemas = info.objectSchemas.filter((s) => !nextAncestors.has(s));
+    const freshArraySchemas = info.arrayElementSchemas.filter((s) => !nextAncestors.has(s));
+    const cyclicObject = info.objectSchemas.length > 0 && freshObjectSchemas.length === 0;
+    const cyclicArray = info.arrayElementSchemas.length > 0 && freshArraySchemas.length === 0;
+    if (cyclicObject || cyclicArray) {
+      allowedKeys.add(key);
+      continue;
+    }
+    if (freshObjectSchemas.length > 0 || freshArraySchemas.length > 0) {
+      nested.set(key, {
+        shape:
+          freshObjectSchemas.length > 0
+            ? buildAllowedShape(freshObjectSchemas, [], nextAncestors)
+            : undefined,
+        arrayElementShape:
+          freshArraySchemas.length > 0
+            ? buildAllowedShape(freshArraySchemas, [], nextAncestors)
+            : undefined,
+        allowsNonObject: info.allowsNonObject,
+      });
+    } else {
       allowedKeys.add(key);
     }
   }
-  const nested = new Map<string, AllowedShape>();
-  for (const [parent, paths] of nestedPaths) {
-    nested.set(parent, buildAllowedShape(childSchemas.get(parent) ?? [], paths));
+  // If a secret path names a parent not found in `schemas`, still fail closed for it.
+  for (const [parent, childSecretPaths] of nestedSecretPaths) {
+    if (!nested.has(parent)) {
+      nested.set(parent, {
+        shape: buildAllowedShape([], childSecretPaths, nextAncestors),
+        arrayElementShape: undefined,
+        allowsNonObject: false,
+      });
+    }
   }
   return { allowedKeys, nested };
 }
 
-function getSecretCommandShape(type: string): AllowedShape | undefined {
-  if (!secretCommandTypes.has(type)) return undefined;
-  if (!cachedSecretShapes) {
-    cachedSecretShapes = new Map();
+function getCommandShape(type: string): AllowedShape | undefined {
+  if (!Object.hasOwn(commandTable, type)) return undefined;
+  if (!cachedCommandShapes) {
+    cachedCommandShapes = new Map();
     const byType = new Map<string, z.ZodObject[]>();
     const members: z.ZodObject[] = [];
     collectObjectSchemas(hostApi["commands.dispatch"].payload, members);
     for (const member of members) {
       const literal = (member.shape.type as { readonly value?: unknown } | undefined)?.value;
-      if (typeof literal === "string" && secretCommandTypes.has(literal)) {
+      if (typeof literal === "string" && Object.hasOwn(commandTable, literal)) {
         const list = byType.get(literal) ?? [];
         list.push(member);
         byType.set(literal, list);
       }
     }
-    for (const secretType of secretCommandTypes) {
-      const secretFields = commandTable[secretType as CommandType].secretFields ?? [];
-      cachedSecretShapes.set(
-        secretType,
+    for (const commandType of Object.keys(commandTable) as CommandType[]) {
+      const secretFields = commandTable[commandType].secretFields ?? [];
+      cachedCommandShapes.set(
+        commandType,
         buildAllowedShape(
-          byType.get(secretType) ?? [],
+          byType.get(commandType) ?? [],
           secretFields.map((path) => path.split(".")),
         ),
       );
     }
   }
-  return cachedSecretShapes.get(type);
+  return cachedCommandShapes.get(type);
+}
+
+function redactNestedField(value: unknown, field: NestedFieldShape): unknown {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) {
+    if (field.arrayElementShape) {
+      let cloned: unknown[] | null = null;
+      for (let i = 0; i < value.length; i++) {
+        const item = value[i];
+        const next = isPlainObject(item)
+          ? redactByAllowedShape(item, field.arrayElementShape)
+          : item;
+        if (next !== item) {
+          cloned ??= value.slice();
+          cloned[i] = next;
+        }
+      }
+      return cloned ?? value;
+    }
+    return field.allowsNonObject ? value : REDACTED_SECRET_MARKER;
+  }
+  if (isPlainObject(value)) {
+    if (field.shape) return redactByAllowedShape(value, field.shape);
+    return field.allowsNonObject ? value : REDACTED_SECRET_MARKER;
+  }
+  if (typeof value === "string") {
+    if (field.shape && !field.allowsNonObject) {
+      try {
+        const parsed = JSON.parse(value) as unknown;
+        if (isPlainObject(parsed)) {
+          const redacted = redactByAllowedShape(parsed, field.shape);
+          return redacted === parsed ? value : JSON.stringify(redacted);
+        }
+      } catch {
+        // Unparseable string where schema expects an object: fail closed.
+      }
+      return REDACTED_SECRET_MARKER;
+    }
+    return field.allowsNonObject ? value : REDACTED_SECRET_MARKER;
+  }
+  return field.allowsNonObject ? value : REDACTED_SECRET_MARKER;
 }
 
 /**
- * Redacts an object against a secret-bearing command's derived allow-list: only schema-declared
- * non-secret keys are preserved; every secret leaf and every undeclared/misspelled key is replaced
- * with `REDACTED_SECRET_MARKER`. Returns the original reference unchanged when nothing needed redaction.
+ * Redacts an object against a command's schema-derived allow-list: only schema-declared
+ * non-secret keys are preserved (recursing into nested schema objects); every secret leaf and
+ * every undeclared/misspelled key is replaced with `REDACTED_SECRET_MARKER`. Returns the original
+ * reference unchanged when nothing needed redaction.
  */
 function redactByAllowedShape(value: unknown, shape: AllowedShape): unknown {
-  if (typeof value === "string") {
-    try {
-      const parsed = JSON.parse(value) as unknown;
-      if (isPlainObject(parsed)) {
-        const redacted = redactByAllowedShape(parsed, shape);
-        return redacted === parsed ? value : JSON.stringify(redacted);
-      }
-    } catch {
-      // Unparseable string in a secret-bearing nested parent: fail closed.
-    }
-    return REDACTED_SECRET_MARKER;
-  }
   if (!isPlainObject(value)) {
     return REDACTED_SECRET_MARKER;
   }
@@ -1829,8 +2009,8 @@ function redactByAllowedShape(value: unknown, shape: AllowedShape): unknown {
     const child = value[key];
     if (child === undefined) continue;
     if (shape.allowedKeys.has(key)) continue;
-    const nestedShape = shape.nested.get(key);
-    const next = nestedShape ? redactByAllowedShape(child, nestedShape) : REDACTED_SECRET_MARKER;
+    const nestedField = shape.nested.get(key);
+    const next = nestedField ? redactNestedField(child, nestedField) : REDACTED_SECRET_MARKER;
     if (next !== child) {
       cloned ??= { ...value };
       cloned[key] = next;
@@ -1841,8 +2021,8 @@ function redactByAllowedShape(value: unknown, shape: AllowedShape): unknown {
 
 /**
  * Redacts a `command` argument of `opensteer_command` strictly:
- * - known command type with `secretFields` -> schema-derived allow-list;
- * - known command type without `secretFields` -> untouched;
+ * - any known command type in `commandTable` -> schema-derived allow-list (declared non-secret
+ *   keys kept byte-identical; secret leaves and any undeclared keys replaced with `[redacted]`);
  * - anything else (missing/unknown `type`, string that does not parse to an object with a known
  *   type, array, deeper wrapper) -> keep `type` if it is a string on an object, and replace
  *   everything else with `REDACTED_SECRET_MARKER`.
@@ -1854,11 +2034,12 @@ function redactOpensteerCommandValue(command: unknown): unknown {
       const parsed = JSON.parse(command) as unknown;
       if (isPlainObject(parsed)) {
         const type = parsed.type;
-        if (typeof type === "string" && Object.hasOwn(commandTable, type)) {
-          const shape = getSecretCommandShape(type);
-          if (!shape) return command;
-          const redacted = redactByAllowedShape(parsed, shape);
-          return redacted === parsed ? command : JSON.stringify(redacted);
+        if (typeof type === "string") {
+          const shape = getCommandShape(type);
+          if (shape) {
+            const redacted = redactByAllowedShape(parsed, shape);
+            return redacted === parsed ? command : JSON.stringify(redacted);
+          }
         }
       }
     } catch {
@@ -1868,10 +2049,9 @@ function redactOpensteerCommandValue(command: unknown): unknown {
   }
   if (!isPlainObject(command)) return REDACTED_SECRET_MARKER;
   const type = command.type;
-  if (typeof type === "string" && Object.hasOwn(commandTable, type)) {
-    const shape = getSecretCommandShape(type);
-    if (!shape) return command;
-    return redactByAllowedShape(command, shape);
+  if (typeof type === "string") {
+    const shape = getCommandShape(type);
+    if (shape) return redactByAllowedShape(command, shape);
   }
   let cloned: Record<string, unknown> | null = null;
   for (const key in command) {
@@ -1919,16 +2099,29 @@ export function redactCommandSecrets(command: unknown): unknown {
 }
 
 /**
- * Redacts tool arguments before durable storage, keyed solely by the tool's canonical identity:
- * - For any tool other than `{ namespace: "opensteer", name: "opensteer_command" }`, returns
- *   `args` immediately without parsing, pattern matching, or traversal (byte-for-byte identical).
- * - For `opensteer_command`, applies the strict command rule to `command` (schema-derived
- *   allow-list for secret-bearing types, untouched for known non-secret types, keep only string
- *   `type` and `[redacted]` for everything else) while leaving declared non-command top-level
- *   fields (`reason`, `withdraw`, `taskId`) as they are.
+ * Redacts tool arguments before durable storage:
+ * - For `{ namespace: "opensteer", name: "opensteer_command" }`, applies the strict schema-derived
+ *   allow-list to every known command type (keeping declared non-secret keys byte-identical and
+ *   replacing secret leaves and undeclared keys with `[redacted]`), fails closed on unknown/missing
+ *   `type` or unparseable/non-object shapes, and keeps declared top-level fields (`reason`,
+ *   `withdraw`, `taskId`) as they are.
+ * - For any other tool identity, performs only constant-time object property checks: if `args` is a
+ *   plain object whose `command` is a plain object carrying a known `commandTable` `type`, applies
+ *   the same `opensteer_command` redaction as an identity-independent backstop; otherwise returns
+ *   `args` immediately without parsing, regex, or traversal (byte-for-byte identical).
  */
 export function redactToolArgumentsForStorage(args: unknown, tool: ToolIdentity): unknown {
-  if (!isOpensteerCommandTool(tool)) return args;
+  if (!isOpensteerCommandTool(tool)) {
+    if (
+      isPlainObject(args) &&
+      isPlainObject(args.command) &&
+      typeof args.command.type === "string" &&
+      Object.hasOwn(commandTable, args.command.type)
+    ) {
+      return redactOpensteerCommandArgsObject(args);
+    }
+    return args;
+  }
   if (args === null || args === undefined) return args;
   if (typeof args === "string") {
     try {

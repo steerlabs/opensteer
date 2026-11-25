@@ -22,6 +22,7 @@ import {
   commandTitles,
 } from "./command-words.js";
 import { decidingInputPaths } from "./command-inputs.test-support.js";
+import { sampleCommand } from "./command-samples.test-support.js";
 import expected from "./command-table.rows.json" with { type: "json" };
 
 interface ExpectedFace {
@@ -549,6 +550,227 @@ describe("the command table", () => {
         expect(result, `${tool.namespace}/${tool.name}`).toEqual(input);
       }
     }
+  });
+
+  it("redacts undeclared keys on known non-secret commands (R6-1), keeps every valid command type byte-identical, and enforces the identity-independent backstop (R6-2)", () => {
+    const commandTool = { namespace: "opensteer", name: "opensteer_command" } as const;
+    const triggerId = "trg_00000000-0000-4000-8000-000000000001";
+    const revisionId = "trv_00000000-0000-4000-8000-000000000001";
+    const threadId = "thr_00000000-0000-4000-8000-000000000001";
+
+    // R6-1: Known non-secret types redact undeclared top-level and nested keys while preserving declared ones + reason.
+    const createTopMarker = "R6_KNOWNNONSECRET_CREATE_TOP";
+    const createNestedMarker = "R6_KNOWNNONSECRET_CREATE_NESTED";
+    const updateTopMarker = "R6_KNOWNNONSECRET_UPDATE_TOP";
+    const updateNestedMarker = "R6_KNOWNNONSECRET_UPDATE_NESTED";
+
+    const createRedacted = redactToolArgumentsForStorage(
+      {
+        command: {
+          type: "trigger.create",
+          secrets: { K: createTopMarker },
+          input: {
+            anchorThreadId: threadId,
+            name: "Morning digest",
+            secrets: { OPENAI_API_KEY: createNestedMarker },
+          },
+        },
+        reason: "keep reason by design",
+      },
+      commandTool,
+    );
+    expect(JSON.stringify(createRedacted)).not.toContain(createTopMarker);
+    expect(JSON.stringify(createRedacted)).not.toContain(createNestedMarker);
+    expect(createRedacted).toEqual({
+      command: {
+        type: "trigger.create",
+        secrets: "[redacted]",
+        input: {
+          anchorThreadId: threadId,
+          name: "Morning digest",
+          secrets: "[redacted]",
+        },
+      },
+      reason: "keep reason by design",
+    });
+
+    const updateRedacted = redactToolArgumentsForStorage(
+      {
+        command: {
+          type: "trigger.update",
+          triggerId,
+          set: { K: updateTopMarker },
+          input: {
+            expectedRevisionId: revisionId,
+            name: "Updated name",
+            secrets: { OPENAI_API_KEY: updateNestedMarker },
+          },
+        },
+      },
+      commandTool,
+    );
+    expect(JSON.stringify(updateRedacted)).not.toContain(updateTopMarker);
+    expect(JSON.stringify(updateRedacted)).not.toContain(updateNestedMarker);
+    expect(updateRedacted).toEqual({
+      command: {
+        type: "trigger.update",
+        triggerId,
+        set: "[redacted]",
+        input: {
+          expectedRevisionId: revisionId,
+          name: "Updated name",
+          secrets: "[redacted]",
+        },
+      },
+    });
+
+    // R6-1 byte-identical proof across EVERY command type in commandTable (all 142 types):
+    // 136 valid directly from sampleCommand(type); 6 have custom string refinements fixed below.
+    const validOverrides: Partial<
+      Record<CommandType, (c: Record<string, unknown>) => Record<string, unknown>>
+    > = {
+      "notification.preview.register": (c) => ({
+        ...c,
+        keyId: Buffer.alloc(16, 1).toString("base64url"),
+        key: Buffer.alloc(32, 2).toString("base64url"),
+      }),
+      "machine.access.update": (c) => ({
+        ...c,
+        policy: { ...(c.policy as Record<string, unknown>), shares: [] },
+      }),
+      "integration.computer.setup.request": (c) => ({
+        ...c,
+        input: {
+          ...(c.input as Record<string, unknown>),
+          app: {
+            ...((c.input as Record<string, unknown>).app as Record<string, unknown>),
+            teamId: "AB12CD34EF",
+          },
+        },
+      }),
+      "integration.computer.setup.set": (c) => ({
+        ...c,
+        input: {
+          ...(c.input as Record<string, unknown>),
+          app: {
+            ...((c.input as Record<string, unknown>).app as Record<string, unknown>),
+            teamId: "AB12CD34EF",
+          },
+        },
+      }),
+      "personal.accountLink.approve": (c) => {
+        const challenge = c.challenge as Record<string, unknown>;
+        const env = challenge.authorityEnvelope as Record<string, unknown>;
+        const doc = env.document as Record<string, unknown>;
+        return {
+          ...c,
+          challenge: {
+            ...challenge,
+            challengeCredential: `olc_${"A".repeat(43)}`,
+            authorityEnvelope: {
+              ...env,
+              document: { ...doc, canonicalOrigin: "https://home.example.com" },
+            },
+          },
+        };
+      },
+      "plugin.authorization.begin": (c) => ({
+        ...c,
+        input: { ...(c.input as Record<string, unknown>), returnPath: "/settings/plugins" },
+      }),
+    };
+
+    const stripPath = (obj: Record<string, unknown>, path: string): void => {
+      const parts = path.split(".");
+      let cur: unknown = obj;
+      for (const seg of parts.slice(0, -1)) {
+        if (typeof cur !== "object" || cur === null || !Object.hasOwn(cur, seg)) return;
+        cur = (cur as Record<string, unknown>)[seg];
+      }
+      if (typeof cur === "object" && cur !== null) {
+        delete (cur as Record<string, unknown>)[parts.at(-1)!];
+      }
+    };
+
+    const allTypes = Object.keys(commandTable) as CommandType[];
+    expect(allTypes.length).toBeGreaterThan(100);
+    for (const type of allTypes) {
+      const sample = sampleCommand(type);
+      const fix = validOverrides[type];
+      const command = fix ? fix({ ...sample.command }) : { ...sample.command };
+      // Confirm every example is actually valid against hostApi["commands.dispatch"].payload.
+      const parsed = hostApi["commands.dispatch"].payload.safeParse(command);
+      expect(parsed.success, `${type} fixture should parse`).toBe(true);
+
+      const secretFields = commandTable[type].secretFields ?? [];
+      if (secretFields.length === 0) {
+        // Every valid non-secret command call stays byte-identical (exact same object reference).
+        const wrapped = { command, reason: "valid call" };
+        expect(redactToolArgumentsForStorage(wrapped, commandTool), type).toBe(wrapped);
+      } else {
+        // For secret-bearing types, stripping declared secret leaves yields a byte-identical call
+        // (proving every declared non-secret field is allowed and nothing valid is over-redacted).
+        const withoutSecrets = structuredClone(command);
+        for (const path of secretFields) stripPath(withoutSecrets, path);
+        const wrapped = { command: withoutSecrets };
+        expect(redactToolArgumentsForStorage(wrapped, commandTool), type).toBe(wrapped);
+      }
+    }
+
+    // R6-2: Identity-independent backstop for any foreign/unrecognised tool identity whose args are
+    // an object with `command` an object carrying a known commandTable `type`.
+    const foreignMarker = "R6_X_FOREIGNIDENTITY_MARKER";
+    const foreignUpdateMarker = "R6_X_FOREIGN_UPDATE_MARKER";
+    for (const foreignTool of [
+      { namespace: "mcp:plugin-opensteer-opensteer", name: "opensteer_command" },
+      { namespace: "acp", name: "other" },
+      { namespace: "acp", name: "mcp__opensteer__opensteer_command" },
+    ]) {
+      const secretRes = redactToolArgumentsForStorage(
+        {
+          command: { type: "trigger.secrets.set", triggerId, set: { K: foreignMarker } },
+          reason: "foreign ok",
+        },
+        foreignTool,
+      );
+      expect(
+        JSON.stringify(secretRes),
+        `${foreignTool.namespace}/${foreignTool.name}`,
+      ).not.toContain(foreignMarker);
+      expect(secretRes).toEqual({
+        command: { type: "trigger.secrets.set", triggerId, set: "[redacted]" },
+        reason: "foreign ok",
+      });
+
+      const nonSecretUndeclaredRes = redactToolArgumentsForStorage(
+        {
+          command: {
+            type: "trigger.update",
+            triggerId,
+            set: { K: foreignUpdateMarker },
+            input: { expectedRevisionId: revisionId, secrets: { K: foreignUpdateMarker } },
+          },
+        },
+        foreignTool,
+      );
+      expect(
+        JSON.stringify(nonSecretUndeclaredRes),
+        `${foreignTool.namespace}/${foreignTool.name} update`,
+      ).not.toContain(foreignUpdateMarker);
+    }
+
+    // Backstop is object-checks-only: non-object `command` (Bash) or unknown `command.type` on a
+    // foreign tool stays byte-identical (exact same reference).
+    const foreignUnknownType = { command: { type: "not.a.real.command", set: { K: "stay" } } };
+    expect(
+      redactToolArgumentsForStorage(foreignUnknownType, { namespace: "acp", name: "custom" }),
+    ).toBe(foreignUnknownType);
+    const bashWithSecretTypeText = {
+      command: '{"type":"trigger.secrets.set","set":{"K":"stay"}}',
+    };
+    expect(
+      redactToolArgumentsForStorage(bashWithSecretTypeText, { namespace: "claude", name: "Bash" }),
+    ).toBe(bashWithSecretTypeText);
   });
 
   it("has a verdict for every input that could decide a command, and none for a gone one (D0b)", () => {
