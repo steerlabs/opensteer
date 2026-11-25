@@ -4,9 +4,11 @@ import {
   PooledBrowserAttachTicketClaimsSchema,
   type RuntimeBrowserAttachTicketClaims,
   type BrowserAttachTicketIdentity,
+  type BrowserHomeAddresses,
   type BrowserSessionId,
 } from "@opensteer/protocol/browser";
 import { randomBytes, sign, type KeyObject } from "node:crypto";
+import type { ThisHomeAddresses } from "@opensteer/shared/homeAddress";
 
 const ticketType = "opensteer-browser-attach+jwt";
 
@@ -49,6 +51,12 @@ interface BrowserAttachTicketSignerOptions {
   readonly keyId: string;
   readonly lifetimeMs?: number;
   readonly privateKey: KeyObject;
+  /**
+   * The addresses of this Home as they are now (`home-addresses.ts`), put on every ticket that
+   * carries the actor claim so the runtime knows where a tab an agent drives may not go. Held in
+   * memory: issuing reads nothing.
+   */
+  readonly homeAddresses?: () => ThisHomeAddresses;
 }
 
 /** Signs the narrow, single-use ticket consumed directly by Browser Runtime. */
@@ -57,6 +65,7 @@ export class BrowserAttachTicketSigner {
   readonly #keyId: string;
   readonly #lifetimeMs: number;
   readonly #privateKey: KeyObject;
+  readonly #homeAddresses: (() => ThisHomeAddresses) | undefined;
 
   constructor(options: BrowserAttachTicketSignerOptions) {
     if (!/^[A-Za-z0-9._:-]{1,255}$/.test(options.keyId)) {
@@ -79,6 +88,7 @@ export class BrowserAttachTicketSigner {
       throw new TypeError("Browser attach ticket lifetime must be from 1 through 300 seconds.");
     }
     this.#privateKey = options.privateKey;
+    this.#homeAddresses = options.homeAddresses;
   }
 
   issue(input: IssueBrowserAttachTicketInput): string {
@@ -86,6 +96,7 @@ export class BrowserAttachTicketSigner {
     const schema = input.pool
       ? PooledBrowserAttachTicketClaimsSchema
       : BrowserAttachTicketClaimsSchema;
+    const home = this.#homeAddresses?.();
     const claims: RuntimeBrowserAttachTicketClaims = schema.parse({
       access: input.access,
       ...(input.standardCdp ? { standardCdp: input.standardCdp } : {}),
@@ -133,6 +144,16 @@ export class BrowserAttachTicketSigner {
       sessionId: input.sessionId,
       subject: input.subject,
       ...(input.viewport ? { viewport: input.viewport } : {}),
+      // Only beside the actor claim: a runtime that reads it (the Mac's, a pooled one) holds the
+      // tabs agents drive; a phone browser reads neither and refuses a claim it does not know.
+      ...(input.actor && home && (home.origins.length || home.loopbackPorts.length)
+        ? {
+            homeAddresses: {
+              origins: [...home.origins],
+              loopbackPorts: [...home.loopbackPorts],
+            } satisfies BrowserHomeAddresses,
+          }
+        : {}),
     });
     return this.#sign(claims, ticketType);
   }

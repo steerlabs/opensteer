@@ -170,8 +170,9 @@ it("derives the shared ticket vectors, with every claim a phone browser can rece
     );
   else expect(tickets, "Regenerate with OPENSTEER_WRITE_PHONE_VECTORS=1").toEqual(generated);
   expect(BrowserAttachTicketClaimsSchema.parse(every)).toEqual(every);
-  // Person autofill, raw CDP (with its lease, its page lineage and its attempt) and the actor
-  // claim are only issued to a runtime that advertises them, which no phone browser does. The reattach marker is only sent on the reconnect after a
+  // Person autofill, raw CDP (with its lease, its page lineage and its attempt), the actor
+  // claim and this Home's addresses beside it are only issued to a runtime that advertises them,
+  // which no phone browser does. The reattach marker is only sent on the reconnect after a
   // planned restart of a Mac's Runner.
   const advertisedOnly = new Set([
     "personFillVersion",
@@ -181,6 +182,8 @@ it("derives the shared ticket vectors, with every claim a phone browser can rece
     "standardCdpAttempt",
     "reattach",
     "actor",
+    // This Home's addresses go only beside the actor claim.
+    "homeAddresses",
   ]);
   expect(Object.keys(every).sort()).toEqual(
     Object.keys(BrowserAttachTicketClaimsSchema.shape)

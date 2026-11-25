@@ -653,3 +653,100 @@ it("names no shared tab on an extension's page to a connection, however it was r
     source.close();
   }
 });
+
+it("names no shared tab on an address of this Home to any agent, a connected agent or the person's own (rule 1)", async () => {
+  const { ThisHomeAddressSet } = await import("@opensteer/shared/homeAddress");
+  const ownerId = createId("user");
+  const authority = { ownerId, agentBindingId: "session:fixture" };
+  let connected = true;
+  const admitExecution: OpensteerStore["admitExecution"] = async ({ ownerUserId, subject }) => ({
+    ownerUserId,
+    subject,
+    actor: connected ? "agent" : "native",
+    agentConnection: connected
+      ? {
+          agentConnectionId: "connected-agent",
+          grant: AgentGrantSchema.parse({ scope: "everything" }),
+          grantRevision: 1,
+          consentVersion: 2,
+          accessMode: "full-access",
+        }
+      : null,
+    mode: "full-access",
+    runId: null,
+    threadId: createId("thread"),
+    runMode: null,
+    taskMode: "full-access",
+  });
+  const home = new ThisHomeAddressSet({
+    origins: ["https://home.example.com"],
+    loopbackPorts: [4310],
+  });
+  const service = new ChromeSharedTabs(
+    { admitExecution },
+    {
+      attempts: {
+        open: async () => {},
+        finish: async () => {},
+        recordDetach: async () => {},
+        recover: async () => {},
+      },
+      device: async () => "Work Mac",
+      homeAddresses: () => home,
+    },
+  );
+  const peer = chromePeer((frame) => {
+    expect(source.receive(frame)).toBeUndefined();
+  });
+  const source = service.connectSource({
+    ownerId,
+    sourceId: createId("browserSource"),
+    deviceId: createId("device"),
+    detachReceipts: true,
+    fail: () => {},
+    name: "Chrome",
+    write: peer.write,
+  });
+  const web = shared();
+  const devServer = { ...shared(), title: "Dev", url: "http://localhost:5173/" };
+  const onHome = [
+    { ...shared(), title: "Opensteer", url: "http://127.0.0.1:4310/tasks" },
+    { ...shared(), title: "Opensteer", url: "https://home.example.com/" },
+  ];
+  const call = {
+    contextKey: "fixture",
+    signal: new AbortController().signal,
+    deadline: Date.now() + 5_000,
+    maxBytes: 4096,
+    maxDepth: 16,
+    maxEntries: 256,
+  };
+  try {
+    for (const tab of [web, devServer, ...onHome]) await source.receive(tab);
+    for (const who of [true, false]) {
+      connected = who;
+      const listed = await service.listForBinding(authority);
+      expect(listed.map(({ tabId }) => tabId).sort(), String(who)).toEqual(
+        [web.shareId, devServer.shareId].sort(),
+      );
+      const pages = await service.browserUsePort(async () => authority).listPages(call);
+      expect(JSON.stringify(pages)).not.toMatch(/4310|home\.example/u);
+      const absent = await service
+        .browserUsePort(async () => authority, crypto.randomUUID())
+        .openPage(crypto.randomUUID(), call)
+        .catch((error: unknown) => error);
+      for (const tab of onHome) {
+        const hidden = await service
+          .browserUsePort(async () => authority, tab.shareId)
+          .openPage(tab.shareId, call)
+          .catch((error: unknown) => error);
+        expect(String(hidden), `${String(who)} ${tab.url}`).toBe(String(absent));
+        await expect(
+          service.issueStandardCdpTicket({ authority, tabId: tab.shareId }),
+        ).rejects.toThrow();
+      }
+    }
+  } finally {
+    source.close();
+  }
+});

@@ -287,6 +287,7 @@
     "apps/host/src/browser/browser-viewer-protocol.ts",
     "apps/host/src/browser/chrome-shared-tabs.ts",
     "apps/host/src/browser/chrome-tab-backend.ts",
+    "apps/host/src/browser/home-addresses.ts",
     "apps/host/src/browser/passkey-service.ts",
     "apps/host/src/browser/password-sign-in-service.ts",
     "apps/host/src/browser/passwords-offers.ts",

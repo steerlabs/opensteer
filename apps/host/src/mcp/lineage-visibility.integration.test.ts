@@ -54,6 +54,10 @@ import {
   queuedRun,
   serveMcp,
 } from "./connection-caller.test-support.js";
+import { ThisHomeAddressSet, noHomeAddresses } from "@opensteer/shared/homeAddress";
+
+/** No address of this Home: these tests judge the tab rules apart from it. */
+const noHome = new ThisHomeAddressSet(noHomeAddresses);
 
 type StoreFixture = Parameters<typeof queuedRun>[0];
 
@@ -459,7 +463,7 @@ describeStore("a selected connection reads only its own lineage", (it) => {
       canRead: async () => {
         throw new Error("Unexpected row read");
       },
-      readAuthority: tabReadAuthority,
+      readAuthority: (actor, db) => tabReadAuthority(actor, db, noHome),
       canReadTask: async (actor, id, db) => (await readableTabTasks(actor, [id], db)).has(id),
       readableTasks: readableTabTasks,
       authorize: unused,
@@ -640,8 +644,8 @@ describeStore("a selected connection reads only its own lineage", (it) => {
         ...(await tabComputer(owner, id, db)),
         connected: true,
       }),
-      canRead: canReadTab,
-      readAuthority: tabReadAuthority,
+      canRead: (actor, row, db) => canReadTab(actor, row, db, noHome),
+      readAuthority: (actor, db) => tabReadAuthority(actor, db, noHome),
       canReadTask: async (actor, id, db) => (await readableTabTasks(actor, [id], db)).has(id),
       readableTasks: readableTabTasks,
       authorize: unused,
@@ -687,7 +691,9 @@ describeStore("a selected connection reads only its own lineage", (it) => {
         expect(JSON.stringify(shown)).not.toContain("chrome-extension:");
         // Not readable: the same answer as a tab that never existed.
         const row = await tabs.get(f.userId, extensionTab, true);
-        expect(await canReadTab(actor, row!, storeFixture.database), actor.kind).toBe(false);
+        expect(await canReadTab(actor, row!, storeFixture.database, noHome), actor.kind).toBe(
+          false,
+        );
       }
       const absent = await service
         .connectionTab(connectionActor, TabIdSchema.parse("bsf_absent"))

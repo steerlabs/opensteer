@@ -56,6 +56,10 @@ import {
   tabReadAuthority,
 } from "../apps/host/src/tabs/tab-authority.js";
 import { requireDeviceAccess } from "../apps/host/src/administration/device-access.js";
+import { ThisHomeAddressSet, noHomeAddresses } from "@opensteer/shared/homeAddress";
+
+/** No address of this Home: these tests judge the tab rules apart from it. */
+const noHome = new ThisHomeAddressSet(noHomeAddresses);
 
 /** A Home and a Device with a real headless Chromium, as the browser script journeys use them. */
 async function browserUseHome() {
@@ -265,10 +269,10 @@ async function browserUseHome() {
       ...(await tabComputer(owner, id, db)),
       connected: true,
     }),
-    canRead: canReadTab,
+    canRead: (actor, row, db) => canReadTab(actor, row, db, noHome),
     canReadTask: async () => true,
-    readAuthority: tabReadAuthority,
-    authorize: authorizeTabTarget,
+    readAuthority: (actor, db) => tabReadAuthority(actor, db, noHome),
+    authorize: (actor, target, db) => authorizeTabTarget(actor, target, db, noHome),
     authorizeMembership: authorizeTabActor,
     onError: (error) => {
       throw error;

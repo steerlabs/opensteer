@@ -471,6 +471,20 @@ The connection is confined (`packages/browser-core/src/portable-session-cdp-rout
   (update Opensteer on that device; `browser_use` still works).
 - It closes on Stop, Disconnect, expiry, a lowered mode or any grant change.
 
+**No tab an agent drives is on this Home.** A page on an address of this Home (its canonical
+origin, its current remote route, loopback on the ports the Host listens on; `ThisHomeAddressSet`
+in `@opensteer/shared/homeAddress`) does not exist to any agent's work, a connected agent's or a Run
+of the person's own agents. Rule 1 decides it (`authorizePageAddress`); the Host holds the set in
+memory (`apps/host/src/browser/home-addresses.ts`) and every attach ticket that carries the actor
+claim, and every new shared Chrome tab attachment, carries it to the browser. An agent's
+navigation, new tab and history step there are refused as any refused address; such a page is not
+listed, attached, woken, filled or pictured; a page that commits one by any route ends the agent's
+channels to it. In the Mac's browser a page any agent holds also cannot navigate, frame, redirect or
+open a window there and sends the Home no cookie; a shared Chrome tab an agent drives has a session
+rule that blocks its requests to the Home. A dev server on another loopback port is not this Home.
+What this costs, by decision: a Run of the person's own agent that opens this Home's own web pages
+is refused (the owner may overturn it).
+
 Through the browser, in `browser_use`, `browser_connect` or a Run in its lineage, a connected agent
 sends only the CDP methods a standard client may, reads a shared Chrome tab's own cookies only, and
 cannot read the clipboard or change a browser permission. A page any agent works in can replace what

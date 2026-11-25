@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@opensteer/browser-source-wire": "workspace:*",
+    "@opensteer/shared": "workspace:*",
     "zod": "catalog:"
   },
   "devDependencies": {

@@ -15,6 +15,11 @@ export {
 import { contextScopedCdpMethods } from "./cdp-context.js";
 import { CdpProductIsolation } from "./cdp-product-isolation.js";
 import { ConnectionExtensionIsolation, isExtensionUrl } from "./connection-extension-isolation.js";
+import {
+  ThisHomeAddressSet,
+  noHomeAddresses,
+  type ThisHomeAddresses,
+} from "@opensteer/shared/homeAddress";
 import { boundedJsonSize, type JsonSizeBudget } from "./bounded-json.js";
 import { utf8Size } from "./bytes.js";
 import {
@@ -103,6 +108,14 @@ export interface BrowserCdpBackend {
   attach(targetId: string, waitForPage?: boolean, signal?: AbortSignal): Promise<CdpChannel>;
   /** Notifies the backend when a target enters or leaves connected-agent control (M1a, S1). */
   setConnectionControlled?(targetId: string, controlled: boolean): void;
+  /**
+   * Notifies the backend when a target enters or leaves any agent's control: a connected agent's
+   * or one of the person's own agents' channel or binding holds it. A tab an agent drives may not
+   * be on an address of this Home; the backend refuses its navigations there.
+   */
+  setAgentControlled?(targetId: string, controlled: boolean): void;
+  /** The addresses of this Home, as the Home last told this browser (`setHomeAddresses`). */
+  setHomeAddresses?(home: ThisHomeAddressSet): void;
   assertScope?(method: string, parameters: CdpParameters): void;
   scopeParameters?(method: string, parameters: CdpParameters): Promise<CdpParameters>;
   onEvent(listener: (method: string, parameters: CdpParameters) => void): () => void;
@@ -375,6 +388,11 @@ export class SessionCdpRouter {
   readonly #browserRootLimits: SessionCdpRouterLimits;
   readonly #ownerByTargetId = new Map<string, TargetClaim>();
   readonly #connectionTargetCounts = new Map<string, number>();
+  readonly #agentTargetCounts = new Map<string, number>();
+  /** This Home's addresses, as the Home last told this browser; none until it has. */
+  #home = new ThisHomeAddressSet(noHomeAddresses);
+  /** Targets whose page the browser last reported on an address of this Home. */
+  readonly #homeTargets = new Set<string>();
   readonly #workByTarget = new Map<string, Set<Promise<unknown>>>();
   #exclusive: ConnectionState | undefined;
   readonly #removeBackendListener: () => void;
@@ -536,29 +554,94 @@ export class SessionCdpRouter {
       nextSequence: 1,
     };
     session.connections.add(state);
-    if (connection) {
-      if (state.lineagePages)
-        for (const targetId of state.lineagePages) this.#retainConnectionTarget(targetId);
-      if (state.script) this.#retainConnectionTarget(state.script.root);
-    }
+    if (state.lineagePages)
+      for (const targetId of state.lineagePages) this.#holdTarget(targetId, connection);
+    if (state.script) this.#holdTarget(state.script.root, connection);
     return state;
   }
 
-  #retainConnectionTarget(targetId: string): void {
-    const next = (this.#connectionTargetCounts.get(targetId) ?? 0) + 1;
-    this.#connectionTargetCounts.set(targetId, next);
-    if (next === 1) this.#backend.setConnectionControlled?.(targetId, true);
+  /**
+   * An agent's channel or binding holds this target: every one is counted as agent-controlled,
+   * a connection's also as connection-controlled. A count is a map entry, not a URL check, so the
+   * person's own agents pay nothing more on their command paths.
+   */
+  #holdTarget(targetId: string, connection: boolean): void {
+    const next = (this.#agentTargetCounts.get(targetId) ?? 0) + 1;
+    this.#agentTargetCounts.set(targetId, next);
+    if (next === 1) this.#backend.setAgentControlled?.(targetId, true);
+    if (!connection) return;
+    const held = (this.#connectionTargetCounts.get(targetId) ?? 0) + 1;
+    this.#connectionTargetCounts.set(targetId, held);
+    if (held === 1) this.#backend.setConnectionControlled?.(targetId, true);
   }
 
-  #releaseConnectionTarget(targetId: string): void {
-    const count = this.#connectionTargetCounts.get(targetId);
-    if (!count) return;
+  /** That hold ends; the mark is released when the last one lets the target go. */
+  #letGoTarget(targetId: string, connection: boolean): void {
+    const count = this.#agentTargetCounts.get(targetId);
     if (count === 1) {
+      this.#agentTargetCounts.delete(targetId);
+      this.#backend.setAgentControlled?.(targetId, false);
+    } else if (count) this.#agentTargetCounts.set(targetId, count - 1);
+    if (!connection) return;
+    const held = this.#connectionTargetCounts.get(targetId);
+    if (held === 1) {
       this.#connectionTargetCounts.delete(targetId);
       this.#backend.setConnectionControlled?.(targetId, false);
-    } else {
-      this.#connectionTargetCounts.set(targetId, count - 1);
+    } else if (held) this.#connectionTargetCounts.set(targetId, held - 1);
+  }
+
+  /**
+   * The addresses of this Home, from the attach ticket the Home signed (or, for a shared Chrome
+   * tab, the Home itself). Kept until the next attach brings the set as it is then: a route that
+   * changes while a channel is open is covered at the next attach, since no channel pushes it.
+   */
+  setHomeAddresses(home: ThisHomeAddresses): void {
+    const next = new ThisHomeAddressSet(home);
+    if (JSON.stringify(next) === JSON.stringify(this.#home)) return;
+    this.#home = next;
+    this.#backend.setHomeAddresses?.(next);
+    this.#homeTargets.clear();
+    if (next.empty) return;
+    // Pages already open learn their place now, not only at their next navigation.
+    void Promise.resolve()
+      .then(() => this.#backend.send("Target.getTargets"))
+      .then((reply) => {
+        if (this.#home !== next) return;
+        const infos = asRecord(reply).targetInfos;
+        if (!Array.isArray(infos)) return;
+        for (const info of infos) this.#noteTargetAddress(asRecord(info));
+      })
+      .catch(() => undefined);
+  }
+
+  /** Is this address one of this Home's? Asked of a page the browser reports. */
+  isHomeAddress(url: unknown): boolean {
+    return this.#home.includesReported(url);
+  }
+
+  /** A target's reported page: on this Home's address, no agent's channel stays on it. */
+  #noteTargetAddress(info: CdpParameters): void {
+    if (this.#home.empty) return;
+    const targetId = readString(info, "targetId");
+    if (!targetId) return;
+    if (!this.#home.includesReported(info.url)) {
+      this.#homeTargets.delete(targetId);
+      return;
     }
+    this.#homeTargets.add(targetId);
+    this.#endHomeChannels(targetId);
+  }
+
+  /**
+   * A page an agent drives committed an address of this Home, by whatever route: every agent's
+   * channel to it ends, as a page session that went away.
+   */
+  #endHomeChannels(targetId: string): void {
+    for (const session of this.#sessions.values())
+      for (const connection of session.session.connections)
+        for (const attached of connection.channels.values())
+          if (attached.physicalTargetId === targetId)
+            void this.#endChannel(connection, attached, true);
   }
 
   #closeConnection(state: ConnectionState): void {
@@ -569,10 +652,10 @@ export class SessionCdpRouter {
     state.session.connections.delete(state);
     if (state.script) {
       state.session.scripts.delete(state.script.id);
-      if (state.connection) this.#releaseConnectionTarget(state.script.root);
+      this.#letGoTarget(state.script.root, state.connection);
     }
-    if (state.connection && state.lineagePages) {
-      for (const targetId of state.lineagePages) this.#releaseConnectionTarget(targetId);
+    if (state.lineagePages) {
+      for (const targetId of state.lineagePages) this.#letGoTarget(targetId, state.connection);
       state.lineagePages.clear();
     }
     state.autoAttached = undefined;
@@ -810,6 +893,7 @@ export class SessionCdpRouter {
       true,
       true,
       !state.connection && command.connection !== true,
+      this.#home,
     );
   }
 
@@ -1173,7 +1257,7 @@ export class SessionCdpRouter {
         return this.#readTargetInfo(state, targetId, claim, parameters, connection);
       }
       case "Target.createTarget": {
-        assertSafeNavigationUrl(parameters.url, true, true, !connection);
+        assertSafeNavigationUrl(parameters.url, true, true, !connection, this.#home);
         const response = asRecord(await this.#backend.send(command.method, parameters));
         const targetId = readString(response, "targetId");
         if (!targetId) {
@@ -1453,9 +1537,14 @@ export class SessionCdpRouter {
   ): CdpParameters | undefined {
     const targetId = readString(info, "targetId");
     if (!targetId || !this.#canReach(state, targetId)) return;
-    if (connection && isExtensionUrl(info.url)) {
+    if (
+      (connection && isExtensionUrl(info.url)) ||
+      this.#homeTargets.has(targetId) ||
+      this.#home.includesReported(info.url)
+    ) {
       // An event's or a reply's projection is where a connection learns a target is an
-      // extension's: from here its id is named to this state nowhere (G2).
+      // extension's: from here its id is named to this state nowhere (G2). A page on an address
+      // of this Home is no agent's to be told of, a connection's or the person's own agent's.
       if (state.connection) this.#setTargetVisibility(state, targetId, false);
       return;
     }
@@ -1629,6 +1718,9 @@ export class SessionCdpRouter {
     };
     assertRoot();
     const claim = this.#assertOwnedTarget(state, targetId);
+    // A page on an address of this Home is no agent's to attach: it reads as a target gone.
+    if (this.#homeTargets.has(targetId))
+      throw new SessionCdpRouterError("not_found", "The target is no longer available.");
     const channel = await this.#backend.attach(
       targetId,
       Boolean(state.standard),
@@ -1673,7 +1765,7 @@ export class SessionCdpRouter {
       this.#handlePageEvent(state, attached, method, parameters);
     });
     state.channels.set(attached.virtualSessionId, attached);
-    if (connection) this.#retainConnectionTarget(targetId);
+    this.#holdTarget(targetId, connection);
     // N2 + S9: start Runtime inventory at attach WITHOUT blocking attach so dialog-blocked pages
     // still accept Page.handleJavaScriptDialog; script and ID-bearing commands wait behind it.
     if (connection && !this.#backend.allowsProfileCookieReads) {
@@ -1718,6 +1810,17 @@ export class SessionCdpRouter {
     )
       return;
     if (!state.channels.has(attached.virtualSessionId)) return;
+    // A frame of a page an agent drives committed an address of this Home, by any route: the
+    // agent's channels to that page end, before the event is told to anyone.
+    if (
+      (method === "Page.frameNavigated" || method === "Page.documentOpened") &&
+      this.#home.includesReported(asRecord(parameters.frame).url)
+    ) {
+      if (asRecord(parameters.frame).parentId === undefined)
+        this.#homeTargets.add(attached.physicalTargetId);
+      this.#endHomeChannels(attached.physicalTargetId);
+      return;
+    }
     // A shared Chrome tab is one tab: a connection sees no cookie of any site in its events.
     if (
       attached.connection &&
@@ -1743,7 +1846,8 @@ export class SessionCdpRouter {
         (!owner && this.#workByTarget.has(targetId)) ||
         (state.standard && state.channels.size + state.aliases.size >= standardCdpMaxPending) ||
         (isWorkerShared(info.type) && (this.#exclusive !== state || attached.connection)) ||
-        (attached.connection && isExtensionUrl(info.url))
+        (attached.connection && isExtensionUrl(info.url)) ||
+        this.#home.includesReported(info.url)
       ) {
         void attached.channel
           .send("Target.detachFromTarget", { sessionId: physicalSessionId })
@@ -1790,8 +1894,8 @@ export class SessionCdpRouter {
         this.#handlePageEvent(state, child, method, params),
       );
       state.channels.set(child.virtualSessionId, child);
+      this.#holdTarget(targetId, attached.connection);
       if (attached.connection) {
-        this.#retainConnectionTarget(targetId);
         if (!this.#backend.allowsProfileCookieReads) {
           void this.#ensureRuntimeInventory(state, child).catch(() => undefined);
         }
@@ -1863,6 +1967,7 @@ export class SessionCdpRouter {
       false,
       Boolean(state.standard || state.script),
       !attached.connection,
+      this.#home,
     );
   }
 
@@ -1938,6 +2043,7 @@ export class SessionCdpRouter {
         false,
         Boolean(state.standard || state.script),
         !attached.connection && command.connection !== true,
+        this.#home,
       );
     }
     if (
@@ -2256,6 +2362,8 @@ export class SessionCdpRouter {
     if (this.#closed) return;
     if (!method.startsWith("Target.")) {
       const targetId = readString(parameters, "targetId") ?? readString(parameters, "frameId");
+      // A page on an address of this Home is no agent's: no agent hears of it.
+      if (targetId && this.#homeTargets.has(targetId)) return;
       const owner = targetId
         ? this.#sessions.get(this.#ownerByTargetId.get(targetId)?.sessionId ?? "")
         : undefined;
@@ -2279,6 +2387,9 @@ export class SessionCdpRouter {
     const info = asRecord(parameters.targetInfo);
     const targetId = readString(info, "targetId") ?? readString(parameters, "targetId");
     if (!targetId) return;
+    if (method === "Target.targetCreated" || method === "Target.targetInfoChanged")
+      this.#noteTargetAddress(info);
+    else if (method === "Target.targetDestroyed") this.#homeTargets.delete(targetId);
 
     if (method === "Target.targetCreated") {
       const parentId = readString(info, "openerId") ?? readString(info, "parentId");
@@ -2375,13 +2486,27 @@ export class SessionCdpRouter {
           return;
         }
         seen.add(targetId);
+      } else if (
+        method === "Target.targetInfoChanged" &&
+        !state.connection &&
+        this.#home.includesReported(asRecord(parameters.targetInfo).url)
+      ) {
+        // A page the person's own agent discovered went to an address of this Home: to that
+        // agent it is gone, as a page that closed.
+        if (seen.delete(targetId))
+          this.#appendEvent(state, "Target.targetDestroyed", { targetId }, root.aliasId);
+        return;
       } else if (!seen.has(targetId)) {
         // A connection's target that was hidden when it was created (an extension page) is
         // announced when it is first shown, so it hears that target's later end.
         const info = asRecord(parameters.targetInfo);
         // A connection learns a target went to an extension's page even if it never discovered
         // it (one of its own channels may be on it), so that target is hidden from it alike.
-        if (state.connection && isExtensionUrl(info.url) && this.#canReach(state, targetId)) {
+        if (
+          state.connection &&
+          (isExtensionUrl(info.url) || this.#home.includesReported(info.url)) &&
+          this.#canReach(state, targetId)
+        ) {
           this.#setTargetVisibility(state, targetId, false);
           return;
         }
@@ -2390,6 +2515,7 @@ export class SessionCdpRouter {
           method !== "Target.targetInfoChanged" ||
           !state.hiddenTargets.has(targetId) ||
           isExtensionUrl(info.url) ||
+          this.#home.includesReported(info.url) ||
           !this.#canReach(state, targetId) ||
           !targetMatchesFilter(info, root.discoveryFilter)
         )
@@ -2454,7 +2580,7 @@ export class SessionCdpRouter {
     if (!parentId && state.lineagePages && state.standard?.lineage) {
       if (!state.lineagePages.has(targetId)) {
         state.lineagePages.add(targetId);
-        if (state.connection) this.#retainConnectionTarget(targetId);
+        this.#holdTarget(targetId, state.connection);
       }
       claim.creatorAttachmentId ??= state.standard.lineage.attachmentId;
     }
@@ -2464,7 +2590,7 @@ export class SessionCdpRouter {
         if (!lineage || !connection.lineagePages || !this.#canReach(connection, openerId)) continue;
         if (!connection.lineagePages.has(targetId)) {
           connection.lineagePages.add(targetId);
-          if (connection.connection) this.#retainConnectionTarget(targetId);
+          this.#holdTarget(targetId, connection.connection);
         }
         claim.creatorAttachmentId ??= lineage.attachmentId;
       }
@@ -2479,7 +2605,7 @@ export class SessionCdpRouter {
         if (!connection.asleepLineage?.delete(woke.from) || !woke.itself) continue;
         if (connection.lineagePages && !connection.lineagePages.has(targetId)) {
           connection.lineagePages.add(targetId);
-          if (connection.connection) this.#retainConnectionTarget(targetId);
+          this.#holdTarget(targetId, connection.connection);
         }
       }
     }
@@ -2535,9 +2661,8 @@ export class SessionCdpRouter {
           );
         }
       }
-      if (connection.lineagePages?.delete(targetId) && connection.connection) {
-        this.#releaseConnectionTarget(targetId);
-      }
+      if (connection.lineagePages?.delete(targetId))
+        this.#letGoTarget(targetId, connection.connection);
       if (connection.script?.root === targetId) this.#closeConnection(connection);
     }
     for (const childId of state.session.ownedTargetIds)
@@ -2556,7 +2681,7 @@ export class SessionCdpRouter {
   ): Promise<void> | undefined {
     if (state.channels.get(attached.virtualSessionId) !== attached) return;
     state.channels.delete(attached.virtualSessionId);
-    if (attached.connection) this.#releaseConnectionTarget(attached.physicalTargetId);
+    this.#letGoTarget(attached.physicalTargetId, attached.connection);
     if (attached.rootAttached || state.script || forceDetachEvent) {
       (attached.rootAlias ?? state).autoAttached?.delete(attached.physicalTargetId);
       if (attached.announced) {
@@ -2901,8 +3026,9 @@ function requiredString(parameters: CdpParameters, key: string): string {
 function assertSafeNavigationUrl(
   value: unknown,
   allowOmitted: boolean,
-  allowAboutBlank = allowOmitted,
-  allowExtensions = true,
+  allowAboutBlank: boolean,
+  allowExtensions: boolean,
+  home: ThisHomeAddressSet,
 ): void {
   if (value === undefined && allowOmitted) return;
   if (typeof value !== "string" || value.length < 1 || value.length > 16_384) {
@@ -2918,8 +3044,10 @@ function assertSafeNavigationUrl(
     });
   }
   const allowed = allowExtensions ? ["http:", "https:", "chrome-extension:"] : ["http:", "https:"];
-  // Extension pages are the browser's own; connected agents stay limited to HTTP(S).
-  if (!allowed.includes(url.protocol) || url.username || url.password) {
+  // Extension pages are the browser's own; connected agents stay limited to HTTP(S). No agent's
+  // tab goes to an address of this Home (rule 1's page rule), refused as any address it may not
+  // open, naming nothing of the Home.
+  if (!allowed.includes(url.protocol) || url.username || url.password || home.includes(value)) {
     throw new SessionCdpRouterError(
       "forbidden",
       allowExtensions

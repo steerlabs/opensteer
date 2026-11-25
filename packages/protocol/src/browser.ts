@@ -173,6 +173,13 @@ export function createBrowserBridgeAttachedSchema() {
 export const BrowserBridgeAttachedSchema = createBrowserBridgeAttachedSchema();
 export type BrowserBridgeAttached = z.infer<typeof BrowserBridgeAttachedSchema>;
 
+/** `ThisHomeAddresses` (`@opensteer/shared/homeAddress`) on the wire. */
+export const BrowserHomeAddressesSchema = z.strictObject({
+  origins: z.array(z.string().min(1).max(2_048)).max(8),
+  loopbackPorts: z.array(z.number().int().min(1).max(65_535)).max(8),
+});
+export type BrowserHomeAddresses = z.infer<typeof BrowserHomeAddressesSchema>;
+
 export const BrowserAttachTicketClaimsSchema = z
   .strictObject({
     access: BrowserProfileAccessSchema,
@@ -230,6 +237,13 @@ export const BrowserAttachTicketClaimsSchema = z
      */
     personFillVersion: PersonFillVersionSchema.optional(),
     initialSurfaceId: BrowserSurfaceIdSchema.optional(),
+    /**
+     * The addresses of this Home as they are when the ticket is issued (`ThisHomeAddresses`): a
+     * tab an agent drives may not be on one (rule 1, `authorizePageAddress`). The runtime keeps
+     * the latest it was given; a route that changes while a channel is open is covered at the
+     * next attach, since no channel pushes it.
+     */
+    homeAddresses: BrowserHomeAddressesSchema.optional(),
     expiresAt: IsoDateTimeSchema,
     identity: BrowserAttachTicketIdentitySchema,
     issuedAt: IsoDateTimeSchema,

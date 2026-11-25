@@ -6,7 +6,13 @@
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAw/uJcJ9G5s6+kLB5i5ot8sspJdUZcNCDgvL2+vJyPVIJIDWajurr8KtXT8wn7SuLMzMgs4AdR+ZBjcBdCo3Y+Pz6fMRF2V+JEiAYx52Xorpt2I9FDNWUg2usIUGARm7IszBd0ZVSSRznMi3qBk1PbjFhuMzCL+OZIwFlClhVmjOyi5pMU3/3rKfVYrH4++pdwc1tiTpIz/NCbG0PunKxgR4aFW1Xdl8pUtbmkU1RET6bDYhT4ZyGa1XQz6585iwrl1mOlCQkrJ6YwQe5wggJhIWNoUPyKU4+tjDgQRTANP4UD5Hs0y8Uc8NZqb6bj1AjMosPvhcqL09pT71OAsWQjQIDAQAB",
   "minimum_chrome_version": "130",
   "incognito": "not_allowed",
-  "permissions": ["alarms", "debugger", "storage", "webNavigation"],
+  "permissions": [
+    "alarms",
+    "debugger",
+    "declarativeNetRequestWithHostAccess",
+    "storage",
+    "webNavigation"
+  ],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "worker.js",

@@ -167,6 +167,7 @@
       "select \"owner_id\" from \"personal_settings\"",
       "select \"owner_id\", \"owner_name\", \"owner_name_account\", \"owner_name_revision\" from \"personal_settings\" where \"singleton_key\" = $1 for no key update",
       "select \"owner_id\", \"owner_name\", \"owner_name_account\", \"owner_name_revision\" from \"personal_settings\" where \"singleton_key\" = $1 for no key update",
+      "select \"personal_remote_access\".*, \"personal_remote_account_link\".\"issuer\" as \"account_issuer\", \"personal_remote_account_link\".\"link_generation\" as \"account_generation\", \"personal_remote_account_link\".\"state\" as \"account_state\", \"personal_remote_account_link\".\"subject\" as \"account_subject\" from \"personal_remote_access\" left join \"personal_remote_account_link\" on \"personal_remote_account_link\".\"singleton_key\" = $1 where \"personal_remote_access\".\"singleton_key\" = $2",
       "select \"personal_settings\".\"owner_name_set_at\", \"users\".\"display_name\", \"users\".\"email\" from \"personal_settings\" inner join \"users\" on \"users\".\"id\" = \"personal_settings\".\"owner_id\" where \"personal_settings\".\"singleton_key\" = $1",
       "select \"primary\".* from (select * from \"auth_accounts\" where \"auth_accounts\".\"user_id\" = $1 limit $2) as \"primary\"",
       "select \"primary\".* from (select * from \"auth_rate_limits\" where \"auth_rate_limits\".\"key\" = $1 limit $2) as \"primary\"",

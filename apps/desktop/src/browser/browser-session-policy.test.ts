@@ -495,3 +495,80 @@ it("loads a page's own request for an extension resource only when the extension
   expect(cancelled("https://site.test/app.js", web, "script")).toBe(false);
   expect(getExtension).not.toHaveBeenCalled();
 });
+
+it("keeps a page an agent drives off this Home's addresses and sends the Home no cookie from it, while the person's pages and other loopback ports are untouched", async () => {
+  const { applyBrowserSessionPolicy } = await import("./browser-session-policy.js");
+  const { ThisHomeAddressSet } = await import("@opensteer/shared/homeAddress");
+  const { vi } = await import("vitest");
+  const session = {
+    setPermissionCheckHandler: vi.fn(),
+    setPermissionRequestHandler: vi.fn(),
+    getPreloadScripts: () => [],
+    registerPreloadScript: vi.fn(),
+    webRequest: {
+      onHeadersReceived: vi.fn(),
+      onBeforeRequest: vi.fn(),
+      onBeforeRedirect: vi.fn(),
+      onBeforeSendHeaders: vi.fn(),
+    },
+    setUserAgent: vi.fn(),
+    getUserAgent: () => "Chrome/150",
+  };
+  const home = new ThisHomeAddressSet({
+    origins: ["https://home.example.com"],
+    loopbackPorts: [4310],
+  });
+  const agentPage = 42;
+  const personPage = 7;
+  applyBrowserSessionPolicy(session as unknown as import("electron").Session, {
+    downloads: { accept: vi.fn() },
+    pagePolicyPreloadPath: "/policy.cjs",
+    isAgentWebContents: (id: number) => id === agentPage,
+    homeAddresses: () => home,
+  });
+  const before = session.webRequest.onBeforeRequest.mock.calls[0]![0];
+  const sendHeaders = session.webRequest.onBeforeSendHeaders.mock.calls[0]![0];
+  const homeUrls = [
+    "http://127.0.0.1:4310/",
+    "http://localhost:4310/tasks",
+    "http://[::1]:4310/",
+    "https://home.example.com/settings",
+  ];
+  // Each route of a navigation reaches this hook as its own request: the page's own navigation, a
+  // link, a form, a redirect hop, a frame, a window it opened (held from its opener).
+  for (const resourceType of ["mainFrame", "subFrame"])
+    for (const url of homeUrls) {
+      const agent = vi.fn();
+      before({ url, webContentsId: agentPage, resourceType, method: "GET" }, agent);
+      expect(agent, `${resourceType} ${url}`).toHaveBeenCalledWith({ cancel: true });
+      const person = vi.fn();
+      before({ url, webContentsId: personPage, resourceType, method: "GET" }, person);
+      expect(person, `${resourceType} ${url}`).toHaveBeenCalledWith({ cancel: false });
+    }
+  for (const url of ["http://localhost:5173/", "http://127.0.0.1:3000/", "https://site.test/"]) {
+    const devServer = vi.fn();
+    before({ url, webContentsId: agentPage, resourceType: "mainFrame", method: "GET" }, devServer);
+    expect(devServer, url).toHaveBeenCalledWith({ cancel: false });
+  }
+  const withCookie = { Cookie: "opensteer.session=secret", Accept: "*/*" };
+  for (const url of homeUrls) {
+    const agent = vi.fn();
+    sendHeaders({ url, webContentsId: agentPage, requestHeaders: withCookie }, agent);
+    expect(agent, url).toHaveBeenCalledWith({ requestHeaders: { Accept: "*/*" } });
+    const lower = vi.fn();
+    sendHeaders(
+      { url, webContentsId: agentPage, requestHeaders: { cookie: "a=b", Accept: "*/*" } },
+      lower,
+    );
+    expect(lower, url).toHaveBeenCalledWith({ requestHeaders: { Accept: "*/*" } });
+    const person = vi.fn();
+    sendHeaders({ url, webContentsId: personPage, requestHeaders: withCookie }, person);
+    expect(person, url).toHaveBeenCalledWith({});
+  }
+  const devServer = vi.fn();
+  sendHeaders(
+    { url: "http://localhost:5173/api", webContentsId: agentPage, requestHeaders: withCookie },
+    devServer,
+  );
+  expect(devServer).toHaveBeenCalledWith({});
+});

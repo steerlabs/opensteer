@@ -62,6 +62,15 @@ const method = z
   .string()
   .max(256)
   .regex(/^[A-Za-z][\w]*\.[A-Za-z][\w]*$/u);
+/**
+ * This Home's addresses (`ThisHomeAddresses`), on the command that starts an attachment: a shared
+ * tab an agent drives may not be on one. The extension keeps the latest beside the destinations it
+ * paired with; a route that changes during an attachment is covered at the next one.
+ */
+export const BrowserSourceHomeAddressesSchema = z.strictObject({
+  origins: z.array(z.string().min(1).max(2_048)).max(8),
+  loopbackPorts: z.array(z.number().int().min(1).max(65_535)).max(8),
+});
 export const BrowserSourceTabCommandSchema = z.discriminatedUnion("action", [
   z.strictObject({
     ...address,
@@ -70,6 +79,7 @@ export const BrowserSourceTabCommandSchema = z.discriminatedUnion("action", [
     method,
     params: parameters.optional(),
     sessionId: cdpSessionId.optional(),
+    homeAddresses: BrowserSourceHomeAddressesSchema.optional(),
   }),
   z.strictObject({ ...address, requestId: z.uuid(), action: z.literal("detach") }),
   z.strictObject({ ...address, requestId: z.uuid(), action: z.literal("unshare") }),

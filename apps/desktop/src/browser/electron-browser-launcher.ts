@@ -10,6 +10,7 @@ import {
   type CdpChannel,
   type CdpParameters,
 } from "@opensteer/browser-core";
+import { ThisHomeAddressSet, noHomeAddresses } from "@opensteer/shared/homeAddress";
 import { type BrowserCookie } from "@opensteer/browser-profile";
 import {
   BrowserPaintTimeoutError,
@@ -167,6 +168,13 @@ export function electronBrowserPartition(partitionKey: BrowserPartitionKey): str
   return `opensteer-browser-${createHash("sha256").update(partitionKey).digest("hex").slice(0, 32)}`;
 }
 
+/** How a page reports agent control to its launcher, and reads this Home's addresses. */
+interface ElectronAgentHooks {
+  onWebContents(webContentsId: number, controlled: boolean): void;
+  home(): ThisHomeAddressSet;
+  setHome(home: ThisHomeAddressSet): void;
+}
+
 /** Electron-native BrowserEngine used only by the connected desktop composition root. */
 export class ElectronBrowserLauncher implements BrowserLauncher {
   readonly hostCost = "partition";
@@ -174,6 +182,10 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   readonly #methods = new Map<number, string>();
   readonly #uploads = new Map<number, number>();
   readonly #connectionWebContents = new Set<number>();
+  /** Pages any agent's channel or binding holds now, by WebContents (D3). */
+  readonly #agentWebContents = new Set<number>();
+  /** This Home's addresses, as its last attach ticket carried them; none before one has. */
+  #home = new ThisHomeAddressSet(noHomeAddresses);
   readonly #authenticator: PasskeyAuthenticator | undefined;
   readonly #clipboard: EngineClipboard | undefined;
   readonly #downloads: ElectronBrowserLauncherOptions["downloads"];
@@ -374,6 +386,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
         if (controlled) this.#connectionWebContents.add(id);
         else this.#connectionWebContents.delete(id);
       },
+      agent: this.#agentHooks(),
       profileSession,
       ...(authenticator ? { authenticator } : {}),
     });
@@ -408,11 +421,26 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
         if (controlled) this.#connectionWebContents.add(id);
         else this.#connectionWebContents.delete(id);
       },
+      agent: this.#agentHooks(),
       profileSession,
       ...(authenticator ? { authenticator } : {}),
       ...(localProfile ? { localProfile } : {}),
       ...(onPageTiming ? { onPageTiming } : {}),
     });
+  }
+
+  /** How a page tells this launcher an agent holds it, and asks this Home's addresses. */
+  #agentHooks(): ElectronAgentHooks {
+    return {
+      onWebContents: (id, controlled) => {
+        if (controlled) this.#agentWebContents.add(id);
+        else this.#agentWebContents.delete(id);
+      },
+      home: () => this.#home,
+      setHome: (home) => {
+        this.#home = home;
+      },
+    };
   }
 
   #configureSession(
@@ -428,6 +456,8 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     applyBrowserSessionPolicy(profileSession, {
       acceptLanguages: browserAcceptLanguages(app.getPreferredSystemLanguages()),
       isConnectionWebContents: (id) => this.#connectionWebContents.has(id),
+      isAgentWebContents: (id) => this.#agentWebContents.has(id),
+      homeAddresses: () => this.#home,
       onMainFrameRequest: (id, method) => {
         if (this.#methods.has(id)) this.#methods.set(id, method);
       },
@@ -814,6 +844,7 @@ interface ElectronBrowserContextOptions {
   ) => ElectronBrowserView;
   readonly createHelper: (options: ElectronBrowserViewOptions) => WebContentsView;
   readonly onConnectionWebContents?: (webContentsId: number, controlled: boolean) => void;
+  readonly agent?: ElectronAgentHooks;
   readonly profileSession: Session;
   readonly localProfile?: ElectronLocalProfile;
   readonly onPageTiming?: PageOpenTiming;
@@ -834,6 +865,7 @@ class ElectronBrowserContext implements BrowserContext {
   readonly #pages = new Set<ElectronBrowserPage>();
   readonly #pagesByTargetId = new Map<string, ElectronBrowserPage>();
   readonly #connectionControlledTargets = new Set<string>();
+  readonly #agentControlledTargets = new Set<string>();
   readonly #handOffs = new Set<(page: BrowserPage, opener: BrowserPage | null) => void>();
   readonly #profileSession: Session;
   readonly #localProfile: ElectronLocalProfile | undefined;
@@ -1025,6 +1057,32 @@ class ElectronBrowserContext implements BrowserContext {
       .catch(() => undefined);
   }
 
+  /**
+   * Target-level agent control (D3), driven by the router's hold counts as connection control
+   * is: a page any agent's channel or binding holds may not go to an address of this Home.
+   */
+  setTargetAgentControlled(targetId: string, controlled: boolean): void {
+    if (controlled) this.#agentControlledTargets.add(targetId);
+    else this.#agentControlledTargets.delete(targetId);
+    const known = this.#pagesByTargetId.get(targetId);
+    if (known) {
+      known.setAgentControlled(controlled);
+      return;
+    }
+    void this.pageByTargetId(targetId)
+      .then((page) => {
+        if (!page) return;
+        this.#pagesByTargetId.set(targetId, page);
+        page.setAgentControlled(this.#agentControlledTargets.has(targetId));
+      })
+      .catch(() => undefined);
+  }
+
+  /** The addresses of this Home, from the attach ticket the Home signed. */
+  setHomeAddresses(home: ThisHomeAddressSet): void {
+    this.#options.agent?.setHome(home);
+  }
+
   async targetInfos(): Promise<Record<string, unknown>[]> {
     return Promise.all(
       [...this.#pages].filter((page) => !page.isClosed()).map((page) => page.targetInfo()),
@@ -1067,6 +1125,7 @@ class ElectronBrowserContext implements BrowserContext {
         }
       },
       this.#options.onConnectionWebContents,
+      this.#options.agent,
     );
     this.#pages.add(page);
     for (const listener of this.#handOffs) listener(page, handOffOpener);
@@ -1090,6 +1149,7 @@ class ElectronBrowserContext implements BrowserContext {
         if (entry === page) {
           this.#pagesByTargetId.delete(id);
           this.#connectionControlledTargets.delete(id);
+          this.#agentControlledTargets.delete(id);
         }
       }
       void page
@@ -1097,6 +1157,7 @@ class ElectronBrowserContext implements BrowserContext {
         .then((targetId) => {
           this.#pagesByTargetId.delete(targetId);
           this.#connectionControlledTargets.delete(targetId);
+          this.#agentControlledTargets.delete(targetId);
           this.#events.emit("target", "Target.targetDestroyed", { targetId });
         })
         .catch(() => undefined);
@@ -1191,6 +1252,7 @@ class ElectronBrowserContext implements BrowserContext {
     if (targetId) {
       this.#pagesByTargetId.set(targetId, page);
       if (this.#connectionControlledTargets.has(targetId)) page.setConnectionControlled(true);
+      if (this.#agentControlledTargets.has(targetId)) page.setAgentControlled(true);
     }
     this.#events.emit("target", "Target.targetCreated", { targetInfo });
     this.#events.emit("page", page);
@@ -1203,6 +1265,9 @@ class ElectronBrowserContext implements BrowserContext {
     ) {
       page.setConnectionControlled(false);
     }
+    // Agent control alike: a popup keeps it only while an agent's channel or binding holds it.
+    if (targetId && page.isAgentControlled() && !this.#agentControlledTargets.has(targetId))
+      page.setAgentControlled(false);
   }
 
   #securePreferences(wake = false): WebPreferences {
@@ -1422,8 +1487,10 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   #stalledSurfaceCopies = 0;
   #controlDown = false;
   #connectionControlled = false;
+  #agentControlled = false;
   readonly #onConnectionWebContents:
     ((webContentsId: number, controlled: boolean) => void) | undefined;
+  readonly #agent: ElectronAgentHooks | undefined;
   #contextMenuTrigger: "person" | "agent" | null = null;
   #contextMenuCandidate: "person" | "agent" | null = null;
   #fullscreen = false;
@@ -1469,6 +1536,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       readonly referrer?: string;
     }) => void,
     onConnectionWebContents?: (webContentsId: number, controlled: boolean) => void,
+    agent?: ElectronAgentHooks,
   ) {
     this.view = view;
     this.initialLoad = initialLoad;
@@ -1477,11 +1545,15 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     this.#onPageCleanupFailure = onPageCleanupFailure;
     this.#openChild = openChild;
     this.#onConnectionWebContents = onConnectionWebContents;
+    this.#agent = agent;
     this.#protection = protection(view.webContents);
     if (opener?.isConnectionControlled()) this.setConnectionControlled(true);
+    // A window an agent's page opens is the agent's from its first request (D3).
+    if (opener?.isAgentControlled()) this.setAgentControlled(true);
     const webContentsId = view.webContents.id;
     view.webContents.once("destroyed", () => {
       this.#onConnectionWebContents?.(webContentsId, false);
+      this.#agent?.onWebContents(webContentsId, false);
     });
     // Electron installs a native message-box listener even with Page enabled.
     // The debugger and ledger own these dialogs for the page's entire lifetime.
@@ -2869,6 +2941,21 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       this.#onConnectionWebContents?.(this.#webContents.id, controlled);
   }
 
+  isAgentControlled(): boolean {
+    return this.#agentControlled;
+  }
+
+  /**
+   * Any agent holds this page (D3): its navigations, frame navigations, redirects and windows to
+   * an address of this Home are refused (`browser-session-policy.ts` by WebContents, and the
+   * window-open handler here), and it sends the Home no cookie.
+   */
+  setAgentControlled(controlled: boolean): void {
+    this.#agentControlled = controlled;
+    if (!this.#webContents.isDestroyed())
+      this.#agent?.onWebContents(this.#webContents.id, controlled);
+  }
+
   installPopupHandler(
     securePreferences: WebPreferences,
     create: (options: ElectronPopupWindowOptions, details: ElectronPopupDetails) => WebContents,
@@ -2876,6 +2963,9 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     const contents = this.#webContents;
     this.#webContents.setWindowOpenHandler((details) => {
       if (!isAllowedBrowserNavigation(details.url, true, !this.#connectionControlled))
+        return { action: "deny" };
+      // An agent's page opens no window on an address of this Home.
+      if (this.#agentControlled && this.#agent?.home().includes(details.url))
         return { action: "deny" };
       const opener = isExtensionUrl(details.url) ? windowOpenerVerdict(contents, details) : "allow";
       if (opener === "deny") return { action: "deny" };
@@ -4747,6 +4837,15 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
   setConnectionControlled(targetId: string, controlled: boolean): void {
     if (this.#closed) return;
     this.#context.setTargetConnectionControlled(targetId, controlled);
+  }
+
+  setAgentControlled(targetId: string, controlled: boolean): void {
+    if (this.#closed) return;
+    this.#context.setTargetAgentControlled(targetId, controlled);
+  }
+
+  setHomeAddresses(home: ThisHomeAddressSet): void {
+    this.#context.setHomeAddresses(home);
   }
 
   assertScope(method: string, parameters: CdpParameters): void {

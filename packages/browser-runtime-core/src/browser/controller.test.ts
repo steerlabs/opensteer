@@ -1022,6 +1022,125 @@ describe("BrowserController", () => {
     }
   });
 
+  it("never lists, wakes for, fills into or pictures a page on an address of this Home to any agent", async () => {
+    const homeAddresses = { origins: ["https://home.example.com"], loopbackPorts: [4310] };
+    const controller = createController(
+      undefined,
+      {},
+      validClaims({ tabRestoreVersion: 1, homeAddresses }),
+    );
+    await controller.start();
+    const fill = vi.spyOn(HostSignIns.prototype, "fill").mockResolvedValue("filled");
+    const surfaceId = ledger.snapshot()[0]!.id;
+    const budget = { maxBytes: 65_536, maxDepth: 16, maxEntries: 256 };
+    const reply = async (message: Record<string, unknown>) => {
+      const requestId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId,
+        ...message,
+      } as BrowserClientMessage);
+      return sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    };
+    const errorOf = (message: unknown) => (message as { error: unknown }).error;
+    try {
+      const loginRef = `lgn_${"a".repeat(32)}`;
+      for (const [who, connection] of [
+        ["a connected agent", true],
+        ["the person's own agent", false],
+      ] as const) {
+        const as: { connection?: true } = connection ? { connection: true } : {};
+        // What a tab, a page session and a page that do not exist answer.
+        const absentTab = errorOf(
+          await reply({
+            ...as,
+            command: {
+              method: browserHostMethods.resumeTab,
+              parameters: { surfaceId: `tab_${"0".repeat(8)}`, loaded: true },
+            },
+          }),
+        );
+        const absentFill = errorOf(
+          await reply({
+            ...as,
+            command: {
+              method: "Opensteer.fillLogin",
+              sessionId: "unknown",
+              parameters: { loginRef, field: "password" },
+            },
+          }),
+        );
+        for (const url of ["http://127.0.0.1:4310/tasks", "https://home.example.com/"]) {
+          page.setMetadata("A page", "https://example.test/");
+          const attached = await cdpRouter.send(validClaims().sessionId, {
+            method: "Target.attachToTarget",
+            parameters: { targetId: await page.targetId(), flatten: true },
+            ...as,
+          });
+          const sessionId = (attached as { sessionId: string }).sessionId;
+          page.setMetadata("Opensteer", url);
+          const listed = await reply({
+            ...as,
+            command: { method: browserHostMethods.listTabs, parameters: {} },
+          });
+          expect(JSON.stringify(listed), `${who} ${url}`).not.toContain(surfaceId);
+          expect(JSON.stringify(listed)).not.toMatch(/4310|home\.example/u);
+          const woken = await reply({
+            ...as,
+            scriptAttachmentId: randomUUID(),
+            replyBudget: budget,
+            scriptEventBudget: budget,
+            command: {
+              method: browserHostMethods.resumeTab,
+              parameters: { surfaceId, loaded: true },
+            },
+          });
+          expect(errorOf(woken), `${who} ${url}`).toEqual(absentTab);
+          const filled = await reply({
+            ...as,
+            command: {
+              method: "Opensteer.fillLogin",
+              sessionId,
+              parameters: { loginRef, field: "password" },
+            },
+          });
+          expect(errorOf(filled), `${who} ${url}`).toEqual(absentFill);
+          const picture = await reply({
+            ...as,
+            command: { method: "Page.captureScreenshot", sessionId, parameters: {} },
+          });
+          // The page closed to it, or its session to the page ended when the page went there.
+          expect(picture, `${who} ${url}`).toMatchObject({
+            type: "cdp.error",
+            error: { code: "not_found" },
+          });
+        }
+        // A dev server on another loopback port is the agent's to use.
+        page.setMetadata("Dev server", "http://localhost:5173/");
+        const listed = await reply({
+          ...as,
+          command: { method: browserHostMethods.listTabs, parameters: {} },
+        });
+        expect(JSON.stringify(listed), who).toContain(surfaceId);
+      }
+      expect(fill).not.toHaveBeenCalled();
+      // The Home's own wake of the person's tab on the Home (no agent's `loaded`) still wakes it.
+      page.setMetadata("Opensteer", "http://localhost:4310/");
+      expect(
+        await reply({
+          command: { method: browserHostMethods.resumeTab, parameters: { surfaceId } },
+        }),
+      ).toMatchObject({ type: "cdp.result" });
+    } finally {
+      fill.mockRestore();
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
   it("fills nothing into a page on an extension's page for a connection (N1)", async () => {
     const controller = createController();
     await controller.start();

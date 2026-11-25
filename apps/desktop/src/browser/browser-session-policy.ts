@@ -10,9 +10,32 @@ import {
 import { mayReachExtensionResource } from "./extensions/web-accessible.js";
 import { isLoopbackHostname } from "@opensteer/core";
 import { browserPagePermissionsPolicy } from "@opensteer/browser-runtime-core/page-policy";
+import type { ThisHomeAddressSet } from "@opensteer/shared/homeAddress";
 
 export { browserIdentity, chromeUserAgent } from "@opensteer/browser-core";
 export type { BrowserIdentity, BrowserUserAgentMetadata } from "@opensteer/browser-core";
+
+/**
+ * A request an agent-controlled page makes to an address of this Home. The person's own pages,
+ * and every page while no agent holds it, pay one set lookup and never parse the address.
+ */
+export function agentRequestToHome(
+  options: Pick<BrowserSessionPolicyOptions, "isAgentWebContents" | "homeAddresses">,
+  details: { readonly webContentsId?: number | undefined; readonly url: string },
+): boolean {
+  return (
+    details.webContentsId !== undefined &&
+    options.isAgentWebContents?.(details.webContentsId) === true &&
+    options.homeAddresses?.().includes(details.url) === true
+  );
+}
+
+/** The request's headers without the cookies a browser would send with it. */
+export function withoutCookies(headers: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(headers).filter(([name]) => name.toLowerCase() !== "cookie"),
+  );
+}
 
 export interface BrowserSessionPolicyOptions {
   readonly provider?: boolean;
@@ -22,6 +45,13 @@ export interface BrowserSessionPolicyOptions {
   readonly onMainFrameRequest?: (webContentsId: number, method: string) => void;
   /** Whether a WebContents is currently controlled by a connected agent (cancels `chrome-extension:` requests). */
   readonly isConnectionWebContents?: (webContentsId: number) => boolean;
+  /**
+   * Whether any agent's channel or binding holds a WebContents now (D3): its navigations to an
+   * address of this Home are cancelled, and it sends this Home no cookie.
+   */
+  readonly isAgentWebContents?: (webContentsId: number) => boolean;
+  /** This Home's addresses, as its last attach ticket carried them. */
+  readonly homeAddresses?: () => ThisHomeAddressSet;
   readonly acceptLanguages?: string;
   readonly downloads: Pick<DesktopDownloads, "accept">;
   /** Absolute path of the bundled `browser-page-preload.cjs`. */
@@ -94,7 +124,15 @@ export function applyBrowserSessionPolicy(
           options.isConnectionWebContents?.(details.webContentsId) === true) ||
         !mayRequestExtensionResource(session, details);
       callback({ cancel });
-    } else if (requestGates.has(session))
+    } else if (
+      (details.resourceType === "mainFrame" || details.resourceType === "subFrame") &&
+      agentRequestToHome(options, details)
+    )
+      // A page an agent drives does not go to an address of this Home: not by its own
+      // navigation, a link, a form, a frame, a redirect (each hop is asked here) or a window
+      // it opened (which an agent holds from its opener).
+      callback({ cancel: true });
+    else if (requestGates.has(session))
       requestGates.get(session)!.beforeRequest(details.webContentsId, callback);
     else callback({ cancel: false });
   });
@@ -141,30 +179,39 @@ export function applyBrowserSessionPolicy(
   // delegate is absent), while the renderer emits the same low-entropy hints
   // on subresource requests. Supply the navigation set from the same
   // identity so the wire agrees with what pages read in JS.
-  if (identity.clientHints) {
-    const hints = identity.clientHints;
+  // Electron keeps one listener per session for this hook: the navigation hints and the Home's
+  // cookie rule are one listener.
+  const hints = identity.clientHints;
+  if (hints || options.isAgentWebContents)
     session.webRequest.onBeforeSendHeaders((details, callback) => {
-      const hasHints = Object.keys(details.requestHeaders).some(
-        (name) => name.toLowerCase() === "sec-ch-ua",
-      );
-      // Chrome sends hints to secure contexts, which includes loopback http.
-      // The hostname comes from the parsed URL: a prefix match would take
-      // "localhost" userinfo for a loopback host.
-      const hintOrigin = details.url.startsWith("https://") || isLoopbackOrigin(details.url);
-      if (hasHints || !hintOrigin) {
-        callback({});
-        return;
+      let requestHeaders = details.requestHeaders;
+      let changed = false;
+      // The second line (D5): a page an agent drives sends this Home no cookie, whatever the
+      // request (a fetch, an image, a form, a navigation the first line did not see).
+      if (agentRequestToHome(options, details)) {
+        requestHeaders = withoutCookies(requestHeaders);
+        changed = true;
       }
-      callback({
-        requestHeaders: {
-          ...details.requestHeaders,
-          "Sec-CH-UA": hints.brands,
-          "Sec-CH-UA-Mobile": "?0",
-          "Sec-CH-UA-Platform": `"${hints.platform}"`,
-        },
-      });
+      if (hints) {
+        const hasHints = Object.keys(requestHeaders).some(
+          (name) => name.toLowerCase() === "sec-ch-ua",
+        );
+        // Chrome sends hints to secure contexts, which includes loopback http.
+        // The hostname comes from the parsed URL: a prefix match would take
+        // "localhost" userinfo for a loopback host.
+        const hintOrigin = details.url.startsWith("https://") || isLoopbackOrigin(details.url);
+        if (!hasHints && hintOrigin) {
+          requestHeaders = {
+            ...requestHeaders,
+            "Sec-CH-UA": hints.brands,
+            "Sec-CH-UA-Mobile": "?0",
+            "Sec-CH-UA-Platform": `"${hints.platform}"`,
+          };
+          changed = true;
+        }
+      }
+      callback(changed ? { requestHeaders } : {});
     });
-  }
   // Only this policy's own preload is replaced: the profile's extensions keep theirs.
   for (const preload of session.getPreloadScripts())
     if (preload.id === pagePolicyPreloadId) session.unregisterPreloadScript(preload.id);

@@ -5,15 +5,21 @@
  *
  * The world: two Browser Sessions, each with a root tab; a person's tab in the first; popups and
  * iframes opened from web and from extension pages; extension service workers and offscreen
- * documents; navigations web -> extension -> web; attaches by a connected standard client, a
+ * documents; pages on an address of this Home (loopback on its port), opened as popups and
+ * navigated to; navigations web -> extension or Home -> web; attaches by a connected standard client, a
  * connected script (opened before or after targets exist) and one of your own agents; auto-attached
  * iframes; crashes, destroys and detaches in either order relative to replies and to each other;
  * browser-level events naming a target by frame. Only leaf targets are destroyed during a run
  * (a browser closes an iframe with its page); everything is destroyed, leaves first, at the end.
  *
  * Exceptions by design (each counted below, never silently):
- * - E1: a target an extension page is shown in at its end is hidden from a connection, so its own
- *   terminal events are dropped (the router's hidden-target rule, kept as at fe6fc0d73).
+ * - E1: a target an extension page (or a page of this Home) is shown in at its end is hidden from
+ *   a connection, so its own terminal events are dropped (the router's hidden-target rule, kept
+ *   as at fe6fc0d73).
+ *
+ * A page on an address of this Home is no agent's: every client's sessions on it end when it goes
+ * there (each connection told once), no client attaches it, and no client, a connection or the
+ * person's own agent, is ever given its address.
  * - E2: a script attachment ends with its root's `Target.targetDestroyed`; its channels' detaches
  *   after that are not sent (the attachment itself has ended).
  * - E3: a child session whose parent session the client detached itself ends with that parent.
@@ -30,6 +36,8 @@ import {
 
 const extensionUrl = (n: number) => `chrome-extension://${"e".repeat(32)}/page-${n}.html`;
 const webUrl = (n: number) => `https://site-${n}.test/`;
+const homeHost = "127.0.0.1:4310";
+const homeUrl = (n: number) => `http://${homeHost}/page-${n}`;
 
 function prng(seed: number): () => number {
   let a = seed >>> 0;
@@ -195,6 +203,7 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
   const pick = <T>(values: readonly T[]): T => values[Math.floor(random() * values.length)]!;
   const backend = new Backend();
   const router = new SessionCdpRouter(backend);
+  router.setHomeAddresses({ origins: [], loopbackPorts: [4310] });
   let serial = 0;
   // How many times each id was a live target (an id the browser reused counts again).
   const incarnations = new Map<string, number>();
@@ -317,9 +326,14 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
   const ownExpected: string[] = [];
   const claimedByA = (target: Target | undefined) => target?.session === "A";
   const isExtension = (target: Target) => target.url.startsWith("chrome-extension:");
+  const isHome = (target: Target) => target.url.includes(homeHost);
+  /** What a connection is not told of: an extension's page, or a page of this Home. */
+  const hiddenPage = (target: Target) => isExtension(target) || isHome(target);
   const emit = (method: string, parameters: CdpParameters, subject?: Target) => {
     trace.push(`browser ${method} ${JSON.stringify(parameters)}`);
-    if (claimedByA(subject)) ownExpected.push(JSON.stringify({ method, parameters }));
+    // Every event about its session's targets, except one that names this Home's address.
+    if (claimedByA(subject) && !JSON.stringify(parameters).includes(homeHost))
+      ownExpected.push(JSON.stringify({ method, parameters }));
     backend.emit(method, parameters);
   };
   const descendants = (id: string) =>
@@ -349,7 +363,7 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
       // Every other session on a released target ends with it, and is told so.
       for (const { client: c, session } of owners(id)) {
         if (!c.connection || !c.open) continue;
-        const exempt = (isExtension(target) && "E1") || (c.rootDestroyed && "E2") || false;
+        const exempt = (hiddenPage(target) && "E1") || (c.rootDestroyed && "E2") || false;
         bump(c, `detach:${session.id}`, exempt);
         endSession(c, session, exempt);
       }
@@ -387,7 +401,7 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
             (e.parameters as { targetId?: unknown }).targetId === target.id,
         ).length;
       // Its own target's crash, exactly once on the web and never on an extension page (E1).
-      const expected = own ? (isExtension(target) ? 0 : 1) : undefined;
+      const expected = own ? (hiddenPage(target) ? 0 : 1) : undefined;
       if (expected === undefined ? told > 1 : told !== expected)
         immediate.push(
           `${c.name} was told ${told} of ${target.id}'s crash (own: ${own}, extension page: ${isExtension(target)})`,
@@ -411,7 +425,7 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
     };
     for (const c of clients) {
       if (!c.connection || !c.open) continue;
-      const hidden = isExtension(target) && "E1";
+      const hidden = hiddenPage(target) && "E1";
       if (c.kind === "script" && target.id === "tgt-a-root" && !c.rootDestroyed) {
         bump(c, `destroy:${target.id}`, hidden);
         c.rootDestroyed = true;
@@ -436,7 +450,7 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
       (c) =>
         c.connection &&
         c.open &&
-        isExtension(target) &&
+        hiddenPage(target) &&
         (c.created.has(target.id) ||
           (c.kind === "script" && target.id === "tgt-a-root") ||
           [...c.sessions.values()].some((x) => x.target === target.id)),
@@ -494,7 +508,9 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
       const from = fromFrame ? backend.targets.get(fromFrame.parent!)! : pick(pages());
       if (!from || !from.alive) return;
       const type = random() < 0.6 ? "page" : "iframe";
-      const url = random() < 0.35 ? extensionUrl(++serial) : webUrl(++serial);
+      const roll = random();
+      const url =
+        roll < 0.3 ? extensionUrl(++serial) : roll < 0.45 ? homeUrl(++serial) : webUrl(++serial);
       const nested = fromFrame && type === "iframe" && random() < 0.5;
       const target = add({
         id: `tgt-${serial}`,
@@ -521,12 +537,28 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
       });
       emit("Target.targetCreated", { targetInfo: backend.info(target) }, target);
     },
-    // A navigation, web -> extension -> web.
+    // A navigation, web -> extension or Home -> web.
     () => {
       const target = pick(pages());
       if (!target) return;
+      const roll = random();
       target.url =
-        isExtension(target) || random() < 0.5 ? webUrl(++serial) : extensionUrl(++serial);
+        hiddenPage(target) || roll < 0.5
+          ? webUrl(++serial)
+          : roll < 0.75
+            ? extensionUrl(++serial)
+            : homeUrl(++serial);
+      if (isHome(target))
+        // Every agent's session on it ends; a connection is told so once, before it is hidden.
+        for (const { client: c, session } of owners(target.id)) {
+          if (!c.connection || !c.open) {
+            session.ended = { exempt: false };
+            continue;
+          }
+          const exempt = (c.rootDestroyed && "E2") || false;
+          bump(c, `detach:${session.id}`, exempt);
+          endSession(c, session, exempt);
+        }
       emit("Target.targetInfoChanged", { targetInfo: backend.info(target) }, target);
     },
     () => {
@@ -558,7 +590,8 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
         target.alive &&
         target.session === c.session &&
         (c.kind === "own" || target.root === c.root) &&
-        !isExtension(target);
+        !isExtension(target) &&
+        !isHome(target);
       const sending = c
         .send({
           method: "Target.attachToTarget",
@@ -575,7 +608,7 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
       }
       const settled = await sending;
       reply(c, settled);
-      if ("reply" in settled && c.connection && !mayAttach)
+      if ("reply" in settled && (c.connection ? !mayAttach : isHome(target)))
         immediate.push(
           `${c.name} was attached to ${target.id}, which the world does not let it reach`,
         );
@@ -584,7 +617,7 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
         const own_ = c.sessions.get(String((settled.reply as { sessionId?: string }).sessionId));
         // Attached to a target that had already ended: its end must still be told once.
         if (own_ && !target.alive && c.connection && !own_.ended) {
-          const exempt = (isExtension(target) && "E1") || (c.rootDestroyed && "E2") || false;
+          const exempt = (hiddenPage(target) && "E1") || (c.rootDestroyed && "E2") || false;
           bump(c, `detach:${own_.id}`, exempt);
           endSession(c, own_, exempt);
         }
@@ -640,14 +673,14 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
       // What the world allows: a live web frame in its reach, on a page of its own on the web.
       const allowed =
         child.alive &&
-        !isExtension(child) &&
+        !hiddenPage(child) &&
         child.session === c.session &&
         child.root === c.root &&
-        !isExtension(backend.targets.get(parent.target)!);
+        !hiddenPage(backend.targets.get(parent.target)!);
       if (allowed && typeof sessionId !== "string")
         immediate.push(`${c.name}'s page auto-attached ${child.id}, and it was not told`);
-      if (!allowed && typeof sessionId === "string" && isExtension(child))
-        immediate.push(`${c.name} was given an extension frame ${child.id} as a child`);
+      if (!allowed && typeof sessionId === "string" && hiddenPage(child))
+        immediate.push(`${c.name} was given an extension or Home frame ${child.id} as a child`);
       if (typeof sessionId === "string")
         c.sessions.set(sessionId, {
           id: sessionId,
@@ -702,7 +735,7 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
       const s = c && pick([...c.sessions.values()].filter((x) => !x.ended && !x.parent));
       if (!c || !s) return;
       const target = backend.targets.get(s.target)!;
-      const exempt = (isExtension(target) && "E1") || (c.rootDestroyed && "E2") || false;
+      const exempt = (hiddenPage(target) && "E1") || (c.rootDestroyed && "E2") || false;
       bump(c, `detach:${s.id}`, exempt);
       endSession(c, s, exempt);
       const before = c.events.length;
@@ -721,7 +754,7 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
     },
     () => {
       // The runtime opens a connection's script only on a tab on the web (N1).
-      if (!script && !isExtension(backend.targets.get("tgt-a-root")!)) openScript();
+      if (!script && !hiddenPage(backend.targets.get("tgt-a-root")!)) openScript();
     },
   ];
 
@@ -730,9 +763,19 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
     const allSessions = new Map<string, Client>();
     for (const c of clients) for (const id of c.sessions.keys()) allSessions.set(id, c);
     for (const c of clients) {
-      if (!c.connection) continue;
+      if (!c.connection) {
+        // The person's own agent is not told of an extension's page's absence, but never of this
+        // Home's address.
+        const fresh = JSON.stringify(c.log.slice(c.checked));
+        c.checked = c.log.length;
+        if (fresh.includes(homeHost))
+          return { step, message: `${c.name} was given this Home's address: ${fresh}` };
+        continue;
+      }
       const fresh = JSON.stringify(c.log.slice(c.checked));
       c.checked = c.log.length;
+      if (fresh.includes(homeHost))
+        return { step, message: `${c.name} was given this Home's address: ${fresh}` };
       if (fresh.includes("chrome-extension:"))
         return { step, message: `${c.name} was given an extension's address: ${fresh}` };
       const known = new Set<string>([
@@ -743,7 +786,7 @@ async function run(seed: number, maxSteps: number): Promise<Failure | undefined>
         const foreign =
           target.home !== c.session ||
           (c.kind !== "own" && target.root !== c.root) ||
-          (isExtension(target) && !known.has(target.id));
+          (hiddenPage(target) && !known.has(target.id));
         if (foreign && fresh.includes(`"${target.id}"`))
           return { step, message: `${c.name} was told of ${target.id}: ${fresh}` };
       }

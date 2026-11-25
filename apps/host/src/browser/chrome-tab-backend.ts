@@ -21,6 +21,7 @@ import {
   type CdpParameters,
 } from "@opensteer/browser-runtime-core";
 import { z } from "zod";
+import { noHomeAddresses, type ThisHomeAddresses } from "@opensteer/shared/homeAddress";
 
 type Listener = (method: string, parameters: CdpParameters) => void;
 type Reply = {
@@ -71,9 +72,17 @@ export class ChromeTabBackend implements BrowserCdpBackend {
   readonly #fail: () => void;
   #pendingBytes = 0;
 
-  constructor(write: (frame: BrowserSourceTabPart<"tab.command">) => boolean, fail: () => void) {
+  /** This Home's addresses as they are now, sent with the command that starts an attachment. */
+  readonly #homeAddresses: () => ThisHomeAddresses;
+
+  constructor(
+    write: (frame: BrowserSourceTabPart<"tab.command">) => boolean,
+    fail: () => void,
+    homeAddresses: () => ThisHomeAddresses = () => noHomeAddresses,
+  ) {
     this.#write = write;
     this.#fail = fail;
+    this.#homeAddresses = homeAddresses;
   }
 
   assertScope(method: string): void {
@@ -366,7 +375,9 @@ export class ChromeTabBackend implements BrowserCdpBackend {
   }
 
   #sendCdp(tab: Tab, session: string, method: string, params: CdpParameters) {
+    const starts = tab.attachmentId === undefined;
     const attachmentId = (tab.attachmentId ??= randomUUID());
+    const home = starts ? this.#homeAddresses() : undefined;
     return this.#request({
       action: "cdp",
       shareId: tab.info.shareId,
@@ -375,6 +386,10 @@ export class ChromeTabBackend implements BrowserCdpBackend {
       method,
       params,
       ...(session ? { sessionId: session } : {}),
+      // A new attachment carries this Home's addresses as they are then (D2).
+      ...(home && (home.origins.length || home.loopbackPorts.length)
+        ? { homeAddresses: { origins: [...home.origins], loopbackPorts: [...home.loopbackPorts] } }
+        : {}),
     });
   }
 

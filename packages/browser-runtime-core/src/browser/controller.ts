@@ -503,6 +503,9 @@ export class BrowserController {
     });
     this.cdpRouter = options.cdpRouter;
     this.claims = options.claims;
+    // The Home's addresses as they were when it signed this attachment's ticket: a tab an agent
+    // drives may not be on one (rule 1's page rule, carried here).
+    if (options.claims.homeAddresses) this.cdpRouter.setHomeAddresses(options.claims.homeAddresses);
     this.editing =
       options.claims.editingVersion === 2 ||
       (options.claims.editingVersion === 1 && options.clipboard !== undefined);
@@ -609,19 +612,31 @@ export class BrowserController {
 
   /**
    * N1: to a connection a page on an extension's address is not an attached page session (a fill
-   * into it answers as one that is missing), whatever the router has yet learned of it.
+   * into it answers as one that is missing), whatever the router has yet learned of it; and to any
+   * agent a page on an address of this Home is not.
    */
-  #onExtensionPageForConnection(
+  #onPageHiddenFromAgent(
     message: { readonly connection?: true | undefined },
     targetId: string,
   ): boolean {
-    if (message.connection !== true) return false;
     const surfaceId = this.ledger.surfaceIdForTarget(targetId);
+    if (surfaceId === undefined) return false;
     // Its live address as well as the ledger's record, as resumeTab checks (P7).
-    return (
-      surfaceId !== undefined &&
-      (isExtensionUrl(this.ledger.toRecord(surfaceId)?.url) ||
-        isExtensionUrl(this.ledger.binding(surfaceId)?.page.url()))
+    return this.#hiddenFromAgent(
+      message.connection === true,
+      this.ledger.toRecord(surfaceId)?.url,
+      this.ledger.binding(surfaceId)?.page.url(),
+    );
+  }
+
+  /**
+   * Is a page at these addresses (a tab's record, its live page) absent to this agent's command?
+   * An extension's page to a connection; a page on an address of this Home to every agent. The
+   * person's own agents pay a string scan, and parse an address only when it could be the Home's.
+   */
+  #hiddenFromAgent(connection: boolean, ...urls: readonly unknown[]): boolean {
+    return urls.some(
+      (url) => (connection && isExtensionUrl(url)) || this.cdpRouter.isHomeAddress(url),
     );
   }
 
@@ -1824,7 +1839,7 @@ export class BrowserController {
               message.command.sessionId,
               message.scriptAttachmentId,
             );
-      if (!params.success || !targetId || this.#onExtensionPageForConnection(message, targetId))
+      if (!params.success || !targetId || this.#onPageHiddenFromAgent(message, targetId))
         throw new BrowserRuntimeError(
           "bad_message",
           "fillCard requires a card reference, field and attached page session.",
@@ -1854,7 +1869,7 @@ export class BrowserController {
               message.command.sessionId,
               message.scriptAttachmentId,
             );
-      if (!params.success || !targetId || this.#onExtensionPageForConnection(message, targetId)) {
+      if (!params.success || !targetId || this.#onPageHiddenFromAgent(message, targetId)) {
         throw new BrowserRuntimeError(
           "bad_message",
           "fillLogin requires valid parameters and an attached page session.",
@@ -3853,12 +3868,16 @@ export class BrowserController {
       );
     const request = parsedCapture.data;
     const page = this.ledger.binding(surfaceId)?.page;
-    // A connection's picture of a page on an extension's address (its live address, or the
-    // ledger's): the same answer as a closed page (N1, P7).
+    // A connection's picture of a page on an extension's address, and any agent's of a page on an
+    // address of this Home (its live address, or the ledger's): the same answer as a closed page
+    // (N1, P7).
     if (
       !page ||
-      (command.connection === true &&
-        (isExtensionUrl(page.url()) || isExtensionUrl(this.ledger.toRecord(surfaceId)?.url)))
+      this.#hiddenFromAgent(
+        command.connection === true,
+        page.url(),
+        this.ledger.toRecord(surfaceId)?.url,
+      )
     )
       throw new BrowserRuntimeError("not_found", "The browser page closed.");
     const stop = new AbortController();
@@ -3980,10 +3999,11 @@ export class BrowserController {
       const parsed = BrowserListTabsParametersSchema.safeParse(parameters ?? {});
       if (!parsed.success) throw new BrowserRuntimeError("bad_message", "Invalid tab-list cursor.");
       const ledger = this.ledger;
-      // N1: a connection is never told of a tab on an extension's page, nor that one opened a tab.
+      // N1: a connection is never told of a tab on an extension's page, nor that one opened a tab;
+      // no agent (only agents list tabs here) is told of a tab on an address of this Home.
       const connection = message.connection === true;
       const hidden = (surfaceId: BrowserSurfaceId) =>
-        connection && isExtensionUrl(ledger.toRecord(surfaceId)?.url);
+        this.#hiddenFromAgent(connection, ledger.toRecord(surfaceId)?.url);
       const records = function* () {
         for (const record of ledger.policyRecords()) {
           if (!record.announced || hidden(record.id)) continue;
@@ -4047,9 +4067,15 @@ export class BrowserController {
         // attachment opens or any target is named.
         const absent = () =>
           new BrowserRuntimeError("not_found", "The browser tab closed.", { unsent: true });
+        // An agent's wake is the one answered once its page has loaded (TS11, `loaded`); the Home's
+        // own wake of a person's tab never asks that, and a tab on this Home's address is not
+        // hidden from it.
         const hiddenFromConnection = (page?: { url(): string }) =>
-          message.connection === true &&
-          (isExtensionUrl(this.ledger.toRecord(surfaceId)?.url) || isExtensionUrl(page?.url()));
+          (message.connection === true &&
+            (isExtensionUrl(this.ledger.toRecord(surfaceId)?.url) ||
+              isExtensionUrl(page?.url()))) ||
+          (parsed.data.loaded === true &&
+            this.#hiddenFromAgent(false, this.ledger.toRecord(surfaceId)?.url, page?.url()));
         if (state === undefined || hiddenFromConnection()) throw absent();
         const reloaded = state === "suspended";
         this.forwarded.add(message);

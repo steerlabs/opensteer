@@ -5445,6 +5445,98 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       await browser.close();
     }
   });
+  it("keeps a page any agent drives, and a window it opens, off this Home's addresses and sends the Home no cookie from it, while the person's own page is untouched (D3-D5)", async () => {
+    const { ThisHomeAddressSet } = await import("@opensteer/shared/homeAddress");
+    const launcher = new ElectronBrowserLauncher({
+      downloads: { accept: () => undefined },
+      pagePolicyPreloadPath: "/policy.cjs",
+    });
+    const browser = await launcher.launch({
+      initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+      partitionKey: "session:agent-home-nav",
+      sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000098"),
+      storage: { kind: "guest" },
+    });
+    try {
+      const page = browser.context.pages()[0]!;
+      const targetId = await page.targetId();
+      const view = electron.views.at(-1)!;
+      const id = webContentsIdOf(view.webContents);
+      const hooks = vi
+        .mocked(session.fromPartition)
+        .mock.results.map(
+          (result) =>
+            (
+              result.value as {
+                webRequest: {
+                  onBeforeRequest: ReturnType<typeof vi.fn>;
+                  onBeforeSendHeaders: ReturnType<typeof vi.fn>;
+                };
+              }
+            ).webRequest,
+        )
+        .filter((webRequest) => webRequest.onBeforeRequest.mock.calls.length > 0)
+        .at(-1)!;
+      const beforeRequest = hooks.onBeforeRequest.mock.calls.at(-1)![0] as (
+        details: object,
+        callback: (answer: unknown) => void,
+      ) => void;
+      const beforeSendHeaders = hooks.onBeforeSendHeaders.mock.calls.at(-1)![0] as (
+        details: object,
+        callback: (answer: unknown) => void,
+      ) => void;
+      const cancelled = (webContentsId: number, url: string, resourceType = "mainFrame") => {
+        const answer = vi.fn();
+        beforeRequest({ url, webContentsId, resourceType, method: "GET" }, answer);
+        return (answer.mock.calls[0]?.[0] as { cancel?: boolean } | undefined)?.cancel === true;
+      };
+      const sentCookie = (webContentsId: number, url: string) => {
+        const answer = vi.fn();
+        beforeSendHeaders(
+          { url, webContentsId, requestHeaders: { Cookie: "opensteer.session=secret" } },
+          answer,
+        );
+        const changed = answer.mock.calls[0]?.[0] as
+          { requestHeaders?: Record<string, string> } | undefined;
+        return changed?.requestHeaders === undefined || "Cookie" in changed.requestHeaders;
+      };
+      const popupHandler = view.webContents.setWindowOpenHandler.mock.calls[0]![0];
+      const homeUrls = ["http://127.0.0.1:4310/", "http://localhost:4310/x", "https://home.test/"];
+      browser.cdp.setHomeAddresses?.(
+        new ThisHomeAddressSet({ origins: ["https://home.test"], loopbackPorts: [4310] }),
+      );
+      // The person's own page: the Home is theirs to open.
+      for (const url of homeUrls) {
+        expect(cancelled(id, url), url).toBe(false);
+        expect(sentCookie(id, url), url).toBe(true);
+        expect(popupHandler({ url }), url).toMatchObject({ action: "allow" });
+      }
+      // Any agent's hold (the router's count), a connected agent's or the person's own agent's.
+      browser.cdp.setAgentControlled?.(targetId, true);
+      await vi.waitFor(() => expect(cancelled(id, homeUrls[0]!)).toBe(true));
+      for (const url of homeUrls) {
+        for (const resourceType of ["mainFrame", "subFrame"])
+          expect(cancelled(id, url, resourceType), `${resourceType} ${url}`).toBe(true);
+        expect(sentCookie(id, url), url).toBe(false);
+        expect(popupHandler({ url }), url).toMatchObject({ action: "deny" });
+      }
+      // A dev server on another loopback port is the agent's to use.
+      expect(cancelled(id, "http://localhost:5173/")).toBe(false);
+      expect(sentCookie(id, "http://localhost:5173/")).toBe(true);
+      // A window the agent's page opens is the agent's from its first request.
+      const beforeViews = electron.views.length;
+      popupHandler({ url: "about:blank", disposition: "new-window" }).createWindow({});
+      const popupId = webContentsIdOf(electron.views[beforeViews]!.webContents);
+      expect(cancelled(popupId, homeUrls[0]!)).toBe(true);
+      // The hold ends: the page is the person's again.
+      browser.cdp.setAgentControlled?.(targetId, false);
+      await vi.waitFor(() => expect(cancelled(id, homeUrls[0]!)).toBe(false));
+      expect(sentCookie(id, homeUrls[0]!)).toBe(true);
+    } finally {
+      await browser.close();
+    }
+  });
+
   it("lets a page that is not connection-controlled reach an extension address only as Chrome lets a web page", async () => {
     const launcher = new ElectronBrowserLauncher({
       downloads: { accept: () => undefined },

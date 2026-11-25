@@ -37,6 +37,9 @@
  *    connection-controlled page cannot navigate, frame-navigate or redirect to an extension's
  *    address (`electron-browser-launcher.ts`); `Browser.downloadWillBegin` meets door 1 (and the
  *    Host's browser-level rule on a shared root).
+ *
+ * The same doors keep a page on an address of this Home from every agent, a connected agent's or
+ * the person's own: `ThisHomeAddressSet` (`./homeAddress.ts`) lists where.
  */
 export function isExtensionUrl(value: unknown): boolean {
   if (typeof value !== "string") return false;

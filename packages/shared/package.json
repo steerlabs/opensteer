@@ -78,6 +78,7 @@
     "./stripRefs": "./src/stripRefs.ts",
     "./personMarkdown": "./src/personMarkdown.ts",
     "./extensionUrl": "./src/extensionUrl.ts",
+    "./homeAddress": "./src/homeAddress.ts",
     "./heartbeat": "./src/heartbeat.ts"
   },
   "scripts": {

@@ -54,6 +54,10 @@ import { BrowserSourceStore } from "../packages/database/src/browser-source-stor
 import { createStoreFixture } from "../packages/database/src/store.integration.test-support.js";
 import { ownTestDatabaseProducer } from "../packages/database/src/test-database.test-support.js";
 import { opensteerChromeLiveTabsExtensionId } from "../packages/protocol/src/browser-sources.js";
+import { ThisHomeAddressSet, noHomeAddresses } from "@opensteer/shared/homeAddress";
+
+/** No address of this Home: these tests judge the tab rules apart from it. */
+const noHome = new ThisHomeAddressSet(noHomeAddresses);
 
 const extension = `chrome-extension://${opensteerChromeLiveTabsExtensionId}`;
 const repository = resolve(import.meta.dirname, "..");
@@ -375,12 +379,14 @@ async function proveChromeShares(
   const scratch = await mkdtemp(join(tmpdir(), "opensteer-live-tabs-e2e-"));
   let chrome: BrowserContext | undefined;
   const clients: Browser[] = [];
+  let pages: ReturnType<typeof createHttpServer> | undefined;
   await ownTestDatabaseProducer(fixture.databaseUrl, async () => ({
     close: async () => {
       for (const client of clients) await client.close().catch(() => undefined);
       await chrome?.close();
       sources.close();
       await home.close();
+      if (pages) await new Promise<void>((done) => pages!.close(() => done()));
       await rm(scratch, { recursive: true, force: true });
     },
   }));
@@ -408,13 +414,22 @@ async function proveChromeShares(
         `<a target="_blank" href="${extension}/connect.html#${invitation}">Pair the companion</a>`,
       ),
   );
-  home.get("/test-tab/:name", async (request, reply) => {
-    const { name } = request.params as { name: string };
-    return reply.type("text/html").send(`<!doctype html><title>${name}</title>
+  await home.listen({ host: "127.0.0.1", port });
+  // The pages shared from Chrome are a web site's, never this Home's: a tab on the Home's own
+  // address is not one an agent may be given (rule 1's page rule).
+  pages = createHttpServer((request, response) => {
+    const name = decodeURIComponent(/^\/test-tab\/([^/?#]+)/u.exec(request.url ?? "")?.[1] ?? "");
+    if (!name) {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html" })
+      .end(`<!doctype html><title>${name}</title>
         <button id="change" onclick="this.textContent='Clicked'">Click</button>
         <button id="popup" onclick="window.open('/test-tab/Popup')">Popup</button>`);
-  });
-  await home.listen({ host: "127.0.0.1", port });
+  }).listen(0, "127.0.0.1");
+  await once(pages, "listening");
+  const site = `http://127.0.0.1:${(pages.address() as AddressInfo).port}`;
   const launch = () =>
     chromium.launchPersistentContext(scratch, {
       channel: "chromium",
@@ -462,7 +477,12 @@ async function proveChromeShares(
   ).toEqual([]);
   const popup = await chrome.newPage();
   await popup.goto(`${extension}/${manifest.action.default_popup}`);
-  const share = async (chromeContext: BrowserContext, extensionPopup: Page, page: Page) => {
+  const share = async (
+    chromeContext: BrowserContext,
+    extensionPopup: Page,
+    page: Page,
+    refused = false,
+  ) => {
     const companion =
       chromeContext.serviceWorkers()[0] ?? (await chromeContext.waitForEvent("serviceworker"));
     type Api = { tabs: { query(options: object): Promise<{ id: number; url: string }[]> } };
@@ -485,6 +505,10 @@ async function proveChromeShares(
       },
       { type: "ui.tab.share", sourceId, tabId },
     );
+    if (refused) {
+      expect(result).toMatchObject({ ok: false, tabShareReason: "unsupported-page" });
+      return "";
+    }
     if (result.ok !== true) {
       const target = await companion.evaluate(async (id) => {
         const api = (
@@ -518,10 +542,18 @@ async function proveChromeShares(
   };
   const first = await chrome.newPage();
   const other = await chrome.newPage();
-  await first.goto(`${origin}/test-tab/First`);
-  await other.goto(`${origin}/test-tab/Other`);
+  await first.goto(`${site}/test-tab/First`);
+  await other.goto(`${site}/test-tab/Other`);
   const firstId = await share(chrome, popup, first);
   const otherId = await share(chrome, popup, other);
+  // A tab on the Home it paired with is not one the extension shares for an agent (rule 1).
+  const onHome = await chrome.newPage();
+  await onHome.goto(`${origin}/test-pair`);
+  await share(chrome, popup, onHome, true);
+  expect((await liveTabs.listForBinding(authority)).map((tab) => tab.url)).not.toContain(
+    onHome.url(),
+  );
+  await onHome.close();
   if (scenario === "connected agents" || scenario === "mode downgrade") {
     const ownerId = run.userId;
     const connections = new AgentConnectionStore(fixture.database);
@@ -561,10 +593,10 @@ async function proveChromeShares(
       },
       apps: { get: unexpected },
       computer: unexpected,
-      canRead: canReadTab,
-      readAuthority: tabReadAuthority,
+      canRead: (actor, row, db) => canReadTab(actor, row, db, noHome),
+      readAuthority: (actor, db) => tabReadAuthority(actor, db, noHome),
       canReadTask: async () => true,
-      authorize: authorizeTabTarget,
+      authorize: (actor, target, db) => authorizeTabTarget(actor, target, db, noHome),
       authorizeMembership: authorizeTabActor,
       onError: (error) => {
         throw error;
@@ -1302,7 +1334,7 @@ async function proveChromeShares(
   );
   await rootAlias.detach();
   await expect(context.cookies()).rejects.toThrow("requires a whole browser context grant");
-  await page.goto(`${origin}/test-tab/Driven`);
+  await page.goto(`${site}/test-tab/Driven`);
   expect(await page.evaluate(() => document.title)).toBe("Driven");
   await page.locator("#change").click();
   expect(await page.locator("#change").textContent()).toBe("Clicked");
@@ -1349,7 +1381,7 @@ async function proveChromeShares(
   const restartedPopup = await chrome.newPage();
   await restartedPopup.goto(`${extension}/${manifest.action.default_popup}`);
   const restartPage = await chrome.newPage();
-  await restartPage.goto(`${origin}/test-tab/Revoked`);
+  await restartPage.goto(`${site}/test-tab/Revoked`);
   const last = await attach(await share(chrome, restartedPopup, restartPage));
   const revoked = disconnectedFrom(last);
   expect(await sources.revokeSource({ ownerId: run.userId, sourceId })).toBe(true);

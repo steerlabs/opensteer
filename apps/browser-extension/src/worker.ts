@@ -79,7 +79,12 @@ type HeldState =
 const links = new Map<string, Link>();
 const liveTabs =
   liveTabsOnly && chrome.debugger
-    ? new ChromeTabDebugger(chrome.debugger, chrome.tabs, chrome.webNavigation)
+    ? new ChromeTabDebugger(
+        chrome.debugger,
+        chrome.tabs,
+        chrome.webNavigation,
+        chrome.declarativeNetRequest,
+      )
     : undefined;
 let pairingInProgress = false;
 /** Settles when the pairing in progress has ended. */
@@ -450,6 +455,8 @@ async function receive(
               acknowledge: (shareId) => record(shareId, false),
             }
           : undefined,
+        // The Home this connection paired with: no shared tab an agent drives goes there.
+        connection.excludedOrigins,
       );
     }
     return;

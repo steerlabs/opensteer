@@ -131,6 +131,10 @@ import { createHostServer } from "../server.js";
 import { hostServerTestDependencies } from "../server/host-server-test-harness.js";
 import { injectRpcRequest } from "../server/test-host-api-request.js";
 import { notifyComputerPresence } from "../shell/machine-access-events.js";
+import { ThisHomeAddressSet, noHomeAddresses } from "@opensteer/shared/homeAddress";
+
+/** No address of this Home: these tests judge the tab rules apart from it. */
+const noHome = new ThisHomeAddressSet(noHomeAddresses);
 
 /**
  * The whole computer-use journey as a model walks it: the real gateway MCP
@@ -5309,7 +5313,7 @@ async function createWorld(
       ...(await tabComputer(ownerId, computerId, db)),
       connected: hub.attached(await store.requireDeviceSelfRunnerId(computerId)),
     }),
-    canRead: canReadTab,
+    canRead: (actor, row, db) => canReadTab(actor, row, db, noHome),
     canReadTask: async () => true,
     authorize: (actor, _target, db) => authorizeTabActor(actor, db),
     authorizeMembership: authorizeTabActor,

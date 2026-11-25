@@ -208,6 +208,7 @@ import WebSocket from "ws";
 import { z } from "zod";
 import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import type { BrowserAttachTicketSigner } from "./browser-ticket.js";
+import { ThisHomeAddressSet, noHomeAddresses } from "@opensteer/shared/homeAddress";
 import type { BrowserPoolGate, BrowserPoolReservation } from "./browser-pool-gate.js";
 import type { BrowserPoolAdopter, BrowserPoolCoordinator } from "./browser-pool-coordinator.js";
 import { PooledBrowserRelay } from "./browser-pool-relay.js";
@@ -277,12 +278,12 @@ function connectedAgentBinding(agentBindingId: string | undefined): boolean {
   return agentBindingId?.startsWith("session:") === true;
 }
 
-/** Whether any string in a (bounded) CDP value is an extension's address. */
-function mentionsChromeExtensionUrl(value: unknown, depth: number): boolean {
-  if (typeof value === "string") return isExtensionUrl(value);
+/** Whether any string in a (bounded) CDP value is an extension's address or this Home's. */
+function mentionsHiddenUrl(value: unknown, depth: number, home: ThisHomeAddressSet): boolean {
+  if (typeof value === "string") return isExtensionUrl(value) || home.includesReported(value);
   if (depth > 16 || value === null || typeof value !== "object") return false;
   for (const entry of Array.isArray(value) ? value : Object.values(value))
-    if (mentionsChromeExtensionUrl(entry, depth + 1)) return true;
+    if (mentionsHiddenUrl(entry, depth + 1, home)) return true;
   return false;
 }
 
@@ -853,6 +854,8 @@ interface BrowserServiceOptions {
   readonly eraseLocalProfiles?: (runnerId: RunnerId) => Promise<void>;
   readonly repository: BrowserSessionRepository;
   readonly signer: BrowserAttachTicketSigner;
+  /** This Home's addresses (`home-addresses.ts`); none in a test that does not give them. */
+  readonly homeAddresses?: () => ThisHomeAddressSet;
   readonly targetResolver?: BrowserRuntimeTargetResolver;
   /** Each pooled Cloud Computer's coordinator, by its Runner; empty for an ordinary Home. */
   readonly pools?: ReadonlyMap<RunnerId, BrowserPoolCoordinator>;
@@ -1094,6 +1097,8 @@ export class BrowserService {
   readonly #lastHeldBindingBySession = new Map<BrowserSessionId, string>();
   readonly #lastHeldSessionByBinding = new Map<string, BrowserSessionId>();
   readonly #signer: BrowserAttachTicketSigner;
+  /** This Home's addresses as the Host holds them now (`home-addresses.ts`). */
+  readonly #homeAddresses: () => ThisHomeAddressSet;
   readonly #targetResolver: BrowserRuntimeTargetResolver | undefined;
   /** Held here by Runner, so a Runner that is away or removed still has its coordinator. */
   readonly #pools: Map<RunnerId, BrowserPoolCoordinator>;
@@ -1185,6 +1190,8 @@ export class BrowserService {
     });
     this.#repository = options.repository;
     this.#signer = options.signer;
+    const noHome = new ThisHomeAddressSet(noHomeAddresses);
+    this.#homeAddresses = options.homeAddresses ?? (() => noHome);
     this.#targetResolver = options.targetResolver;
   }
 
@@ -4678,7 +4685,7 @@ export class BrowserService {
           ...(descriptor.favicon !== undefined ? { favicon: descriptor.favicon } : {}),
         };
         await tabs.open(write, `person-page:${record.id}:${descriptor.id}`, async (tx) =>
-          authorizeTabTarget({ kind: "person", ownerId }, write, tx),
+          authorizeTabTarget({ kind: "person", ownerId }, write, tx, this.#homeAddresses()),
         );
         if (opens) {
           opens.openers.delete(descriptor.id);
@@ -4822,7 +4829,8 @@ export class BrowserService {
         (claims.authority.expiresAt ?? Infinity) <= Date.now()
       )
         throw new BrowserCdpConnectionEnded("This page's browser authority has ended.");
-      await authorizeTabTarget(actor, write, tx);
+      // An agent's new page on an address of this Home is refused (rule 1): it is not adopted.
+      await authorizeTabTarget(actor, write, tx, this.#homeAddresses());
     });
     const row = await tabs.get(ownerId, descriptor.id);
     if (!row) throw new BrowserCdpConnectionEnded("This page is no longer an open task tab.");
@@ -6412,7 +6420,7 @@ export class BrowserService {
           !visibleRootTargets.has(subject)
         )
           return;
-        if (mentionsChromeExtensionUrl(event.parameters, 0)) return;
+        if (mentionsHiddenUrl(event.parameters, 0, this.#homeAddresses())) return;
       }
       if (filterTargetEvents && event.method.startsWith("Target.")) {
         const params = event.parameters as
@@ -6430,7 +6438,11 @@ export class BrowserService {
               : undefined;
         const eventSessionId = typeof params?.sessionId === "string" ? params.sessionId : undefined;
         if (params?.targetInfo !== undefined) {
-          if (isExtensionUrl(params.targetInfo.url)) {
+          // A tab on an extension's page, or on an address of this Home, is no connection's.
+          if (
+            isExtensionUrl(params.targetInfo.url) ||
+            this.#homeAddresses().includesReported(params.targetInfo.url)
+          ) {
             if (targetId) {
               visibleRootTargets.delete(targetId);
               attachedTargets.delete(targetId);

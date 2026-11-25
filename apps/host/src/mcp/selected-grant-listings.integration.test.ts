@@ -42,6 +42,10 @@ import type { ConnectionCaller } from "./agent-caller.js";
 import { connection, expectUnknownTool, serveMcp } from "./connection-caller.test-support.js";
 import { AdministrationToolHandlers } from "./handlers/administration.js";
 import { localServerToolHandlers } from "./handlers/local-servers.js";
+import { ThisHomeAddressSet, noHomeAddresses } from "@opensteer/shared/homeAddress";
+
+/** No address of this Home: these tests judge the tab rules apart from it. */
+const noHome = new ThisHomeAddressSet(noHomeAddresses);
 
 /** What a connection holding `grant` is, as the caller resolver builds it. */
 function selectedCaller(userId: UserId, connectionId: string, grant: AgentGrant): ConnectionCaller {
@@ -461,7 +465,7 @@ describeStore("a selected grant's listings show only what it names", (it) => {
     });
     const list: TabServicePort["list"] = async (actor, _input, _mayName, select) => {
       if (actor.kind !== "browser-binding") throw new Error("Expected a direct session");
-      const allowed = await tabReadAuthority(actor, storeFixture.database);
+      const allowed = await tabReadAuthority(actor, storeFixture.database, noHome);
       const tabs = [];
       for (const tab of [shownTab, privateTab]) {
         if (

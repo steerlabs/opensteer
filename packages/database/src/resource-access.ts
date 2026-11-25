@@ -1,5 +1,6 @@
 import { integrationAccessCeilingForRun } from "@opensteer/integration-core/effective-grants";
 import { assertPersonalOwner } from "./private-resource-owner.js";
+import type { ThisHomeAddressSet } from "@opensteer/shared/homeAddress";
 import {
   AgentGrantSchema,
   AgentSessionIdSchema,
@@ -768,17 +769,30 @@ export function authorizeTarget(
 }
 
 /**
- * May this admitted execution know of a browser page at this address? A page on an extension's
- * address does not exist to a connection's work (its own sessions and the Runs of its tasks): it
- * is neither listed nor reached, and reads exactly as an absent page. The person and their own
- * agents, which no connection leads, see every page.
+ * May this admitted execution know of a browser page at this address? Two rules, one answer:
+ * - A page on an extension's address does not exist to a connection's work (its own sessions and
+ *   the Runs of its tasks).
+ * - A page on an address of this Home (`ThisHomeAddressSet`: its canonical origin, its remote
+ *   route, loopback on its own ports) does not exist to any agent's work, a connected agent's
+ *   (`agent`) or a Run of the person's own agents (`native`): a tab an agent drives may not be on
+ *   it, so it is neither listed, opened nor reached there, and reads exactly as an absent page or
+ *   a refused address.
+ *   `home` is the set the Host holds now; it is null only where the caller judges a recorded
+ *   place, which keeps a site and never a page of this Home.
+ * The person sees every page.
  */
 export function authorizePageAddress(
-  // The connection that leads the work, if any: its admitted execution's, or a caller's lineage.
-  execution: { readonly agentConnection: object | null },
+  // The connection that leads the work, if any: its admitted execution's, or a caller's lineage;
+  // and whose work it is.
+  execution: {
+    readonly agentConnection: object | null;
+    readonly actor: ExecutionAuthority["actor"];
+  },
   url: unknown,
+  home: ThisHomeAddressSet | null,
 ): boolean {
-  return execution.agentConnection === null || !isExtensionUrl(url);
+  if (execution.agentConnection !== null && isExtensionUrl(url)) return false;
+  return execution.actor === "person" || home === null || !home.includes(url);
 }
 
 /**
@@ -796,7 +810,9 @@ export function authorizePlaceSite(
   return (
     execution.agentConnection === null ||
     place.kind !== "page" ||
-    (place.site !== null && authorizePageAddress(execution, place.site))
+    (place.site !== null &&
+      // A place keeps a site, never a page of this Home: only the extension rule judges it.
+      authorizePageAddress({ ...execution, actor: "agent" }, place.site, null))
   );
 }
 

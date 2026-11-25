@@ -218,6 +218,7 @@ import { announceBrowserUsage } from "../browser/browser-presence.js";
 import { BrowserService } from "../browser/browser-service.js";
 import { BrowserSourceService } from "../browser/browser-source-service.js";
 import { BrowserAttachTicketSigner } from "../browser/browser-ticket.js";
+import { HomeAddressBook } from "../browser/home-addresses.js";
 import { PasswordSignInService } from "../browser/password-sign-in-service.js";
 import { passwordsLoginSavedMessage } from "../browser/passwords-offers.js";
 import { SavedLoginService } from "../browser/saved-logins.js";
@@ -872,6 +873,13 @@ export async function createHostRuntime(
           issuer: config.personalAccountIssuer,
         })
       : undefined;
+    // This Home's addresses (rule 1's page rule): held in memory, read again when the route changes.
+    const homeAddresses = new HomeAddressBook({
+      canonicalOrigin: config.canonicalOrigin,
+      listenPort: config.port,
+      readRoute: async () =>
+        (await personalRemoteAccess?.status())?.route?.document.route.origin ?? null,
+    });
     const personalAccount = config.personal
       ? new PersonalRemoteAccessService({
           authority: hostAuthority,
@@ -891,9 +899,16 @@ export async function createHostRuntime(
           onAccountLinkChanged: () => {
             void ownerProfile.refresh().catch(reportOwnerProfileError);
           },
+          onRouteChanged: () =>
+            homeAddresses
+              .refresh()
+              .catch((error: unknown) =>
+                app.log.error({ err: error }, "This Home's addresses could not be read again"),
+              ),
         })
       : undefined;
     const personalRemoteAccess = exposurePolicy.personalRemoteAccess ? personalAccount : undefined;
+    await homeAddresses.refresh();
     const managedHomeClaim =
       config.managedHome && accountGrantVerifier
         ? new ManagedHomeClaimService({
@@ -1311,7 +1326,9 @@ export async function createHostRuntime(
       signer: new BrowserAttachTicketSigner({
         keyId: browserAttachKeyId,
         privateKey: keys.privateKey,
+        homeAddresses: () => homeAddresses.current().toJSON(),
       }),
+      homeAddresses: () => homeAddresses.current(),
       targetResolver: runnerBrowsers,
     });
     closeBrowserSession = (sessionId) => browser.closeAuthSession(sessionId);
@@ -1364,6 +1381,7 @@ export async function createHostRuntime(
     const chromeAttempts = sharedChromeAttempts(database);
     await chromeAttempts.recover();
     const chromeTabs = new ChromeSharedTabs(store, {
+      homeAddresses: () => homeAddresses.current(),
       attempts: chromeAttempts,
       changed: (ownerId) => {
         tabs?.changed(ownerId);
@@ -1646,11 +1664,11 @@ export async function createHostRuntime(
             : computerApps.attached(id),
         };
       },
-      canRead: canReadTab,
+      canRead: (actor, row, db) => canReadTab(actor, row, db, homeAddresses.current()),
       canReadTask: async (actor, id, db) => (await readableTabTasks(actor, [id], db)).has(id),
       readableTasks: (actor, ids, db) => readableTabTasks(actor, ids, db),
       readAuthority: async (actor, db) => {
-        const check = await tabReadAuthority(actor, db);
+        const check = await tabReadAuthority(actor, db, homeAddresses.current());
         return async (row) => {
           try {
             return await check(row);
@@ -1675,9 +1693,10 @@ export async function createHostRuntime(
             ] as const;
           }),
         ),
-      authorize: authorizeTabTarget,
+      authorize: (actor, target, db) =>
+        authorizeTabTarget(actor, target, db, homeAddresses.current()),
       authorizeMembership: authorizeTabActor,
-      deniedRows: deniedTabRows,
+      deniedRows: (actor, rows, db) => deniedTabRows(actor, rows, db, homeAddresses.current()),
       onError: (error) => reportBrowserUsageError(error),
     });
     // A connection gaining authority settles Requests targeting the hosting

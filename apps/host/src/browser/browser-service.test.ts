@@ -1,3 +1,4 @@
+import { ThisHomeAddressSet } from "@opensteer/shared/homeAddress";
 import { OperationOutcomeUnknown } from "../agent-sessions/agent-session-service.js";
 import { RunnerIdSchema, type DeviceId } from "@opensteer/core";
 import { DeviceIdSchema } from "@opensteer/core";
@@ -5608,8 +5609,10 @@ function freshService(options: {
   readonly repository: MemoryBrowserRepository;
   readonly runtime: { readonly url: URL };
   readonly tabs?: TabStore;
+  readonly homeAddresses?: () => ThisHomeAddressSet;
 }): BrowserService {
   const service = new BrowserService({
+    ...(options.homeAddresses ? { homeAddresses: options.homeAddresses } : {}),
     ...(options.requireAgentAccess ? { requireAgentAccess: options.requireAgentAccess } : {}),
     ...(options.tabs
       ? {
@@ -10981,7 +10984,14 @@ describe("work under a connection's authority never uses the clipboard or change
     const repository = new MemoryBrowserRepository(ownerId);
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-    const service = freshService({ keys, runtime, repository, surfaceState });
+    const home = new ThisHomeAddressSet({ origins: [], loopbackPorts: [4310] });
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      surfaceState,
+      homeAddresses: () => home,
+    });
     cleanups.push(async () => service.close());
     const profile = await repository.createBrowserProfile({ ownerId, name });
     const binding = { agentBindingId: `run:${runId}`, ownerId };
@@ -11162,12 +11172,12 @@ describe("work under a connection's authority never uses the clipboard or change
    * Generated sequences on one shared root: two connected subscribers and one of your own agents
    * on one Browser Session. Random attaches, creates and resumes answered or refused in any order;
    * their own detaches, destroys and crashes before and after the reply; their own tabs going web
-   * -> extension -> web; auto-attached children; page events and nested replies on their
+   * -> extension or this Home -> web; auto-attached children; page events and nested replies on their
    * sessions; web tabs announced at the root; a close in mid-flight; and foreign churn (extension
    * pages, service workers and their sessions, other targets' ends, target-less detaches,
    * browser-level events). After every step a connected subscriber may receive no id of the
    * other's sessions or unannounced targets, of an extension's targets or sessions, and no
-   * extension address; at the end each of its own events arrived exactly as often as it happened
+   * extension address nor this Home's; at the end each of its own events arrived exactly as often as it happened
    * (none while its tab was on an extension page: E1), none of a refused command's, none after
    * its close. Your own agent's subscriber hears every event the runtime sent, as before. Bounds:
    * churn stays below 4,096 terminal events inside any one create's or resume's wait (the bound
@@ -11192,6 +11202,7 @@ describe("work under a connection's authority never uses the clipboard or change
     };
     const failures: string[] = [];
     const extensionUrl = (id: number) => `chrome-extension://${"e".repeat(32)}/p-${id}.html`;
+    const homeUrl = (id: number) => `http://127.0.0.1:4310/p-${id}`;
     for (let seed = 1; seed <= 30 && failures.length === 0; seed += 1) {
       const random = prng(seed);
       const pick = <T>(values: readonly T[]): T | undefined =>
@@ -11385,7 +11396,7 @@ describe("work under a connection's authority never uses the clipboard or change
             target.destroyed = true;
           }
         },
-        // Its own tab goes to an extension page, or back to the web.
+        // Its own tab goes to an extension page or to this Home, or back to the web.
         (sub) => {
           const target = pick(sub.targets.filter((t) => !t.destroyed));
           if (!target) return;
@@ -11396,7 +11407,11 @@ describe("work under a connection's authority never uses the clipboard or change
             targetInfo: {
               targetId: target.id,
               type: "page",
-              url: target.hidden ? extensionUrl(++serial) : `https://back-${++serial}.test/`,
+              url: target.hidden
+                ? random() < 0.5
+                  ? extensionUrl(++serial)
+                  : homeUrl(++serial)
+                : `https://back-${++serial}.test/`,
             },
           });
         },
@@ -11565,6 +11580,7 @@ describe("work under a connection's authority never uses the clipboard or change
           sub.checked = sub.events.length;
           const leaked =
             (fresh.includes("chrome-extension:") && "an extension's address") ||
+            (fresh.includes("127.0.0.1:4310") && "this Home's address") ||
             [/"tgt-ext-\d+"/u, /"cdp_ext_\d+"/u, /"tgt-churn-\d+"/u, /"cdp_churn_\d+"/u]
               .map((pattern) => fresh.match(pattern)?.[0])
               .find(Boolean) ||

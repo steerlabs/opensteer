@@ -53,6 +53,42 @@ describe("BrowserAttachTicketSigner", () => {
     expect(claimsOf("agent")).toMatchObject({ creationOrigin: "person", actor: "agent" });
     expect(claimsOf()).not.toHaveProperty("actor");
   });
+  it("carries this Home's addresses only beside the actor claim, read from memory at issue", () => {
+    const keys = generateKeyPairSync("ed25519");
+    let home = { origins: ["https://home.example.com"], loopbackPorts: [4310] };
+    const signer = new BrowserAttachTicketSigner({
+      keyId: "home",
+      privateKey: keys.privateKey,
+      homeAddresses: () => home,
+    });
+    const claimsOf = (actor?: "agent" | "person") =>
+      BrowserAttachTicketClaimsSchema.parse(
+        JSON.parse(
+          Buffer.from(
+            signer
+              .issue({
+                creationOrigin: "agent",
+                ...(actor ? { actor } : {}),
+                access: "read-write",
+                identity: { kind: "fresh" },
+                runtimeId: "browser",
+                sessionId: createBrowserSessionId(),
+                subject: "usr_owner",
+              })
+              .split(".")[1]!,
+            "base64url",
+          ).toString(),
+        ),
+      );
+    expect(claimsOf("agent").homeAddresses).toEqual(home);
+    expect(claimsOf("person").homeAddresses).toEqual(home);
+    // A phone browser reads neither the actor claim nor this one, and refuses a claim it does not
+    // know: it is never given it.
+    expect(claimsOf()).not.toHaveProperty("homeAddresses");
+    // The set as it is when the ticket is issued.
+    home = { origins: ["https://home.example.com", "https://route.test"], loopbackPorts: [4310] };
+    expect(claimsOf("agent").homeAddresses).toEqual(home);
+  });
   it("binds initial navigation to the signed ticket", () => {
     const keys = generateKeyPairSync("ed25519");
     const initialNavigation = { operationKey: "open:1", url: "https://example.test/" };

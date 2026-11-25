@@ -50,6 +50,10 @@ import { createHostServer } from "../apps/host/src/server.js";
 import { hostServerTestDependencies } from "../apps/host/src/server/host-server-test-harness.js";
 import { authorizeTabActor, authorizeTabTarget } from "../apps/host/src/tabs/tab-authority.js";
 import { TabService } from "../apps/host/src/tabs/tab-service.js";
+import { ThisHomeAddressSet, noHomeAddresses } from "@opensteer/shared/homeAddress";
+
+/** No address of this Home: these tests judge the tab rules apart from it. */
+const noHome = new ThisHomeAddressSet(noHomeAddresses);
 
 async function startRelayFixture(
   workspaceTabs: boolean,
@@ -747,7 +751,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       computer: unexpected,
       canRead: async () => true,
       canReadTask: async () => true,
-      authorize: authorizeTabTarget,
+      authorize: (actor, target, db) => authorizeTabTarget(actor, target, db, noHome),
       authorizeMembership: authorizeTabActor,
       onError: (error) => {
         throw error;

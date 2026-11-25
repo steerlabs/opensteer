@@ -64,8 +64,22 @@ interface ChromeNotificationOptions {
   type: "basic";
 }
 
+interface ChromeSessionRule {
+  id: number;
+  priority: number;
+  action: { type: "block" };
+  condition: { tabIds: number[]; urlFilter: string; resourceTypes: readonly string[] };
+}
+
 interface ChromeApi {
   debugger?: ChromeDebugger;
+  declarativeNetRequest?: {
+    updateSessionRules(options: {
+      addRules?: ChromeSessionRule[];
+      removeRuleIds?: number[];
+    }): Promise<void>;
+    getSessionRules(): Promise<{ id: number }[]>;
+  };
   webNavigation?: {
     onCreatedNavigationTarget: ChromeEvent<
       (details: { sourceTabId: number; tabId: number; url: string }) => void

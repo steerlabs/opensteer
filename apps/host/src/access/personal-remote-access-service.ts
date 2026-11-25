@@ -127,6 +127,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
   readonly #accountOperations = new Map<string, Promise<RevokeConnectResponse | undefined>>();
   readonly #disconnectRunners: () => Promise<void>;
   readonly #accountLinkChanged: () => void;
+  readonly #routeChanged: () => Promise<unknown>;
 
   constructor(options: {
     readonly authority: PersonalHostAccountAuthority;
@@ -145,6 +146,8 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     readonly now?: () => Date;
     /** Called after a link becomes active or ends, so what follows the Account can catch up. */
     readonly onAccountLinkChanged?: () => void;
+    /** Called after the route changed and committed, so this Home's addresses are read again. */
+    readonly onRouteChanged?: () => Promise<unknown>;
   }) {
     this.desktopUpdates = new PersonalDesktopUpdate(
       new PersonalDesktopUpdateStore(options.database),
@@ -165,6 +168,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     this.#now = options.now ?? (() => new Date());
     this.#disconnectRunners = options.disconnectRunners ?? (async () => undefined);
     this.#accountLinkChanged = options.onAccountLinkChanged ?? (() => undefined);
+    this.#routeChanged = options.onRouteChanged ?? (async () => undefined);
   }
 
   status(): Promise<PersonalRemoteAccessStatus> {
@@ -298,6 +302,8 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     // shell sessions have ended as the disconnection they are.
     if (reconfigured) {
       this.administration.changed();
+      // Before the computers are taken away: what they reconnect to issues tickets with it.
+      await this.#routeChanged();
       await this.#disconnectRunners();
     }
     return this.status();
