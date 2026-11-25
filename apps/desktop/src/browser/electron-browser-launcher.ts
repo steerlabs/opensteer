@@ -905,6 +905,7 @@ class ElectronBrowserContext implements BrowserContext {
   async createPage(options?: {
     readonly restore?: unknown;
     readonly own?: (page: BrowserPage) => void;
+    readonly agent?: boolean;
   }): Promise<BrowserPage> {
     await this.#localProfile?.ready();
     this.#assertOpen();
@@ -922,6 +923,9 @@ class ElectronBrowserContext implements BrowserContext {
       timing,
       restore === null && this.#localProfile !== undefined,
     );
+    // An agent's page is agent-controlled from construction, before its first request (D3);
+    // the router's holds of it release it.
+    if (options?.agent) page.setAgentControlled(true);
     options?.own?.(page);
     try {
       // Electron needs a renderer to answer Page.enable. Start it while target
@@ -1265,9 +1269,8 @@ class ElectronBrowserContext implements BrowserContext {
     ) {
       page.setConnectionControlled(false);
     }
-    // Agent control alike: a popup keeps it only while an agent's channel or binding holds it.
-    if (targetId && page.isAgentControlled() && !this.#agentControlledTargets.has(targetId))
-      page.setAgentControlled(false);
+    // Agent control is not released here: the router decides it from its holds when it hears
+    // this target's creation (no timer clears a mark, A2).
   }
 
   #securePreferences(wake = false): WebPreferences {
@@ -4901,7 +4904,8 @@ class ElectronBrowserCdpBackend implements BrowserCdpBackend {
       if (!isAllowedBrowserNavigation(url)) {
         throw new Error("Electron browser navigation scheme is not allowed.");
       }
-      const page = (await this.#context.createPage()) as ElectronBrowserPage;
+      // Every page made here is an agent's (only an agent's CDP reaches this backend).
+      const page = (await this.#context.createPage({ agent: true })) as ElectronBrowserPage;
       const targetId = await page.targetId();
       // As CDP's own createTarget does, the tab loads in the background; a
       // failed load stays visible in the tab.

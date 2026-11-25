@@ -1629,6 +1629,64 @@ describe("BrowserController", () => {
       }
     },
   );
+  it.each(["agent", "person"] as const)(
+    "makes a page an agent opens agent-controlled before its first navigation, through its load: %s",
+    async (creationOrigin) => {
+      const claims = validClaims();
+      const url = "https://example.test/redirects";
+      const order: string[] = [];
+      const create = vi.spyOn(context, "createPage");
+      const hold = vi.spyOn(cdpRouter, "holdAgentPage").mockImplementation(() => {
+        order.push("hold");
+        return () => order.push("release");
+      });
+      const navigate = ledger.navigate.bind(ledger);
+      vi.spyOn(ledger, "navigate").mockImplementation((...args) => {
+        order.push("navigate");
+        return navigate(...args);
+      });
+      const controller = new BrowserController({
+        cdpRouter,
+        claims,
+        files,
+        ledger,
+        replaceSiteCookies,
+        platform: "darwin",
+        signIns: noSignIns(),
+        sink,
+        verifyOpenAuthority: async () => ({
+          ...claims,
+          creationOrigin,
+          initialNavigation: { operationKey: `held-${creationOrigin}`, url },
+        }),
+      });
+      try {
+        await controller.start();
+        await controller.handle({
+          type: "cdp.command",
+          requestId: randomUUID(),
+          replyBudget: { maxBytes: 65_536, maxDepth: 16, maxEntries: 256 },
+          command: {
+            method: browserHostMethods.openTab,
+            parameters: { idempotencyKey: `held-${creationOrigin}`, operationAuthority: "s", url },
+          },
+        });
+        await vi.waitFor(() =>
+          expect(order).toEqual(
+            creationOrigin === "agent" ? ["hold", "navigate", "release"] : ["navigate"],
+          ),
+        );
+        expect(create.mock.calls.at(-1)?.[0]?.agent).toBe(
+          creationOrigin === "agent" ? true : undefined,
+        );
+        expect(hold).toHaveBeenCalledTimes(creationOrigin === "agent" ? 1 : 0);
+      } finally {
+        vi.restoreAllMocks();
+        await controller.close();
+        await ledger.close();
+      }
+    },
+  );
   it("commits a tab before its open result and its removal before its close result", async () => {
     [...ledger.policyRecords()][0]!.favicon = "data:image/png;base64,AAAA";
     const controller = createController();

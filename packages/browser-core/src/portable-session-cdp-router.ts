@@ -284,6 +284,12 @@ interface ConnectionState extends TargetRoot {
    * one of these, its script's root, or a target one of its own channels is on (M1).
    */
   readonly shownTargets: Set<string>;
+  /**
+   * Pages this agent's state holds besides its lineage, its script's root and its channels: a page
+   * it created, and a popup of a page it holds (D3). Each is agent-controlled from its first
+   * instant until this state closes or the page ends; no timer releases one.
+   */
+  readonly heldPages: Set<string>;
   readonly aliases: Map<string, TargetRoot>;
   readonly eventListeners: Set<(event: CdpEvent) => void>;
   nextSequence: number;
@@ -548,6 +554,7 @@ export class SessionCdpRouter {
       retiredTargets: new Map(),
       hiddenTargets: new Set(),
       shownTargets: new Set(),
+      heldPages: new Set(),
       aliases: new Map(),
       ...targetRoot(standard === undefined),
       eventListeners: new Set(),
@@ -573,6 +580,38 @@ export class SessionCdpRouter {
     const held = (this.#connectionTargetCounts.get(targetId) ?? 0) + 1;
     this.#connectionTargetCounts.set(targetId, held);
     if (held === 1) this.#backend.setConnectionControlled?.(targetId, true);
+  }
+
+  /** Does this agent's state hold the target now: lineage, script root, a held page or a channel? */
+  #holds(state: ConnectionState, targetId: string): boolean {
+    if (state.closed.signal.aborted) return false;
+    if (state.lineagePages?.has(targetId) || state.script?.root === targetId) return true;
+    if (state.heldPages.has(targetId)) return true;
+    for (const attached of state.channels.values())
+      if (attached.physicalTargetId === targetId) return true;
+    return false;
+  }
+
+  /** A page this state created, or a popup of a page it holds: held until it closes. */
+  #holdPage(state: ConnectionState, targetId: string): void {
+    if (state.closed.signal.aborted) return;
+    if (state.lineagePages?.has(targetId) || state.heldPages.has(targetId)) return;
+    state.heldPages.add(targetId);
+    this.#holdTarget(targetId, state.connection);
+  }
+
+  /**
+   * The runtime's own hold on a page an agent opens (`Opensteer.openTab` for an agent): from
+   * before its first navigation until that open settles. The returned release is idempotent.
+   */
+  holdAgentPage(targetId: string): () => void {
+    this.#holdTarget(targetId, false);
+    let held = true;
+    return () => {
+      if (!held) return;
+      held = false;
+      this.#letGoTarget(targetId, false);
+    };
   }
 
   /** That hold ends; the mark is released when the last one lets the target go. */
@@ -654,6 +693,8 @@ export class SessionCdpRouter {
       state.session.scripts.delete(state.script.id);
       this.#letGoTarget(state.script.root, state.connection);
     }
+    for (const targetId of state.heldPages) this.#letGoTarget(targetId, state.connection);
+    state.heldPages.clear();
     if (state.lineagePages) {
       for (const targetId of state.lineagePages) this.#letGoTarget(targetId, state.connection);
       state.lineagePages.clear();
@@ -1271,6 +1312,8 @@ export class SessionCdpRouter {
           throw new SessionCdpRouterError("not_found", "Browser Session is not registered.");
         }
         const claim = this.#claimTarget(state, targetId, state.script?.root, !state.standard);
+        // The agent's own new page: the backend marked it at creation; this state holds it now.
+        this.#holdPage(state, targetId);
         if (state.standard) {
           state.session.adopting.add(targetId);
           let adopted = false;
@@ -2415,6 +2458,14 @@ export class SessionCdpRouter {
       }
     }
 
+    // A popup inherits its opener's agent mark in the browser at creation; one that no agent's
+    // state holds now is released here, by the router that decides it, never by a timer.
+    if (
+      method === "Target.targetCreated" &&
+      readString(info, "openerId") !== null &&
+      !this.#agentTargetCounts.has(targetId)
+    )
+      this.#backend.setAgentControlled?.(targetId, false);
     const owner = this.#sessions.get(this.#ownerByTargetId.get(targetId)?.sessionId ?? "");
     if (owner) {
       for (const state of owner.session.connections)
@@ -2594,6 +2645,10 @@ export class SessionCdpRouter {
         }
         claim.creatorAttachmentId ??= lineage.attachmentId;
       }
+      // A popup of a page any agent's state holds is that state's from creation (A2): a script's,
+      // a Run's outside a lineage, as much as a lineage's.
+      for (const connection of state.session.connections)
+        if (this.#holds(connection, openerId)) this.#holdPage(connection, targetId);
     }
     // A place kept under this id is stale unless this claim wakes from it: ids are not trusted
     // to be unique for ever.
@@ -2663,6 +2718,7 @@ export class SessionCdpRouter {
       }
       if (connection.lineagePages?.delete(targetId))
         this.#letGoTarget(targetId, connection.connection);
+      if (connection.heldPages.delete(targetId)) this.#letGoTarget(targetId, connection.connection);
       if (connection.script?.root === targetId) this.#closeConnection(connection);
     }
     for (const childId of state.session.ownedTargetIds)

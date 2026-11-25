@@ -1425,7 +1425,12 @@ export class SurfaceLedger {
       this.session,
       options.surfaceId ?? null,
       "open-failed",
-      (own, signal) => this.context.createPage({ own, signal }),
+      (own, signal) =>
+        this.context.createPage({
+          own,
+          signal,
+          ...(options.origin === "agent" ? { agent: true } : {}),
+        }),
     );
     try {
       page = await withTimeout(creation.page, 18_000, {

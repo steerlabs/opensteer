@@ -5526,12 +5526,33 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       // A window the agent's page opens is the agent's from its first request.
       const beforeViews = electron.views.length;
       popupHandler({ url: "about:blank", disposition: "new-window" }).createWindow({});
-      const popupId = webContentsIdOf(electron.views[beforeViews]!.webContents);
+      const popupView = electron.views[beforeViews]!;
+      const popupSend = popupView.webContents.debugger.sendCommand;
+      popupView.webContents.debugger.sendCommand = vi.fn(
+        (method: string, params?: Record<string, unknown>, sid?: string) =>
+          method === "Target.getTargetInfo"
+            ? Promise.resolve({ targetInfo: { targetId: "target-agent-popup" } })
+            : popupSend(method, params, sid),
+      );
+      const popupId = webContentsIdOf(popupView.webContents);
       expect(cancelled(popupId, homeUrls[0]!)).toBe(true);
+      // And stays so past its announcement: no timer clears the mark, only the router's holds (A2).
+      for (let turn = 0; turn < 5; turn += 1) await new Promise((done) => setImmediate(done));
+      expect(cancelled(popupId, homeUrls[0]!)).toBe(true);
+      expect(sentCookie(popupId, homeUrls[0]!)).toBe(false);
       // The hold ends: the page is the person's again.
       browser.cdp.setAgentControlled?.(targetId, false);
       await vi.waitFor(() => expect(cancelled(id, homeUrls[0]!)).toBe(false));
       expect(sentCookie(id, homeUrls[0]!)).toBe(true);
+      // The popup's own release is the router's: it holds until told.
+      expect(cancelled(popupId, homeUrls[0]!)).toBe(true);
+      browser.cdp.setAgentControlled?.("target-agent-popup", false);
+      await vi.waitFor(() => expect(cancelled(popupId, homeUrls[0]!)).toBe(false));
+      // A page an agent creates is marked before its first navigation request leaves (A1).
+      await browser.cdp.send("Target.createTarget", { url: "https://site.test/redirects-home" });
+      const createdId = webContentsIdOf(electron.views.at(-1)!.webContents);
+      expect(cancelled(createdId, homeUrls[0]!)).toBe(true);
+      expect(sentCookie(createdId, homeUrls[0]!)).toBe(false);
     } finally {
       await browser.close();
     }

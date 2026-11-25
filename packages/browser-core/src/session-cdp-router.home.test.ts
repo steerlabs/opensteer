@@ -271,6 +271,68 @@ describe("SessionCdpRouter: a tab an agent drives may not be on an address of th
     });
   }
 
+  describe("a page is agent-controlled from its first instant to the end of the hold (A)", () => {
+    const budget = { maxBytes: 65_536, maxDepth: 16, maxEntries: 256 };
+    const popup = (targetId: string, openerId: string) => ({
+      targetInfo: { targetId, type: "page", url: "about:blank", openerId, attached: false },
+    });
+    const marks = (backend: Backend, targetId: string) =>
+      backend.agentControlled.filter(([id]) => id === targetId).map(([, held]) => held);
+
+    it("holds a popup of a browser_use script's page until the script ends", async () => {
+      const backend = new Backend();
+      backend.targetInfos = [{ targetId: "seed", type: "page", url: "https://web.test/" }];
+      const router = new SessionCdpRouter(backend);
+      router.registerSession("s", "seed", async () => true, "/files/s");
+      router.setHomeAddresses(home);
+      router.openScriptAttachment("s", "script", "seed", budget, () => {}, { connection: true });
+      backend.emit("Target.targetCreated", popup("pop", "seed"));
+      // Long past any setImmediate: nothing but the script's end lets it go.
+      for (let turn = 0; turn < 5; turn += 1) await new Promise((done) => setImmediate(done));
+      expect(marks(backend, "pop")).toEqual([true]);
+      await router.closeScriptAttachment("s", "script");
+      expect(marks(backend, "pop")).toEqual([true, false]);
+    });
+
+    it("holds a page a Run's client outside a lineage creates, and its popups", async () => {
+      const backend = new Backend();
+      backend.targetInfos = [{ targetId: "seed", type: "page", url: "https://web.test/" }];
+      const router = new SessionCdpRouter(backend);
+      router.registerSession("s", "seed", async () => true, "/files/s");
+      const client = router.openStandardClient("s", { wholeContext: false });
+      const { targetId } = (await client.send({
+        method: "Target.createTarget",
+        parameters: { url: "https://web.test/new" },
+      })) as { targetId: string };
+      expect(marks(backend, targetId)).toEqual([true]);
+      backend.emit("Target.targetCreated", popup("pop", targetId));
+      for (let turn = 0; turn < 5; turn += 1) await new Promise((done) => setImmediate(done));
+      expect(marks(backend, "pop")).toEqual([true]);
+      client.close();
+      expect(marks(backend, targetId)).toEqual([true, false]);
+      expect(marks(backend, "pop")).toEqual([true, false]);
+    });
+
+    it("releases a popup whose opener no agent holds, by its decision and not a timer", async () => {
+      const backend = new Backend();
+      backend.targetInfos = [{ targetId: "seed", type: "page", url: "https://web.test/" }];
+      const router = new SessionCdpRouter(backend);
+      router.registerSession("s", "seed", async () => true, "/files/s");
+      backend.emit("Target.targetCreated", popup("pop", "seed"));
+      expect(marks(backend, "pop")).toEqual([false]);
+    });
+
+    it("holds a page an agent opens through its first load, then lets it go", () => {
+      const backend = new Backend();
+      const router = new SessionCdpRouter(backend);
+      const release = router.holdAgentPage("opened");
+      expect(marks(backend, "opened")).toEqual([true]);
+      release();
+      release();
+      expect(marks(backend, "opened")).toEqual([true, false]);
+    });
+  });
+
   it("refuses nothing before the Home has told the browser its addresses", async () => {
     const backend = new Backend();
     backend.targetInfos = [{ targetId: "seed", type: "page", url: "https://web.test/" }];
