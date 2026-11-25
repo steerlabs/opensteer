@@ -65,10 +65,11 @@ const initial: readonly AcpSessionConfigOption[] = [
 ];
 
 describe("Antigravity ACP policy", () => {
-  it("uses Opensteer identity, prompt steering, read-only files, resume, and explicit access-mode mappings", () => {
-    expect(antigravityHarnessCapabilities.steering).toBe(true);
-    expect(antigravityHarnessCapabilities.messageAttachments?.nativeImages?.steering).toBe(true);
-    expect(antigravitySessionPolicy(1)).toMatchObject({
+  it("uses Opensteer identity, restart steering (no native prompt steering), read-only files, resume, and explicit access-mode mappings", () => {
+    expect(antigravityHarnessCapabilities.steering).toBe(false);
+    expect(antigravityHarnessCapabilities.messageAttachments?.nativeImages?.steering).toBe(false);
+    const policyV1 = antigravitySessionPolicy(1);
+    expect(policyV1).toMatchObject({
       accessModeIds: {
         "approval-required": "default",
         "auto-accept-edits": "auto_edit",
@@ -85,8 +86,8 @@ describe("Antigravity ACP policy", () => {
         type: "config-options",
       },
       resume: { method: "resume", suppressReplay: false },
-      steering: "prompt",
     });
+    expect(policyV1.steering).toBeUndefined();
   });
 
   it("enforces access modes via permissionDisposition when the 1.5 CLI stays in default mode", async () => {
@@ -258,44 +259,47 @@ describe("Antigravity ACP policy", () => {
     }
   });
 
-  it("gates native prompt steering on ACP protocol version 1", async () => {
-    expect(antigravitySessionPolicy(1).steering).toBe("prompt");
+  it("disables native prompt steering for both ACP protocol versions so Antigravity steers by restart (X1)", async () => {
+    expect(antigravitySessionPolicy(1).steering).toBeUndefined();
     expect(antigravitySessionPolicy(2).steering).toBeUndefined();
 
-    const fixture = await setupTurn("skills");
-    const prepared = vi.spyOn(antigravityRuntime, "prepareAntigravityRuntime").mockResolvedValue({
-      directory: fixture.context.workspacePath,
-      executable: process.execPath,
-      protocolVersion: 2,
-      version: "1.5.16",
-    });
-    const driver = new AntigravityHarnessDriver({
-      nodeExecutable: process.execPath,
-      runtimeCacheDirectory: fixture.context.workspacePath,
-    });
-    try {
-      await driver.prepare({
-        config: {},
-        environment: fixture.context.environment,
-        providerState: fixture.context.providerState,
-        signal: AbortSignal.timeout(2_000),
-        sourceId: "google",
-        workingDirectory: fixture.context.workspacePath,
+    for (const protocolVersion of [1, 2] as const) {
+      const fixture = await setupTurn("skills");
+      const prepared = vi.spyOn(antigravityRuntime, "prepareAntigravityRuntime").mockResolvedValue({
+        directory: fixture.context.workspacePath,
+        executable: process.execPath,
+        protocolVersion,
+        version: "1.5.16",
       });
-      const adapter = await driver.create({
-        config: {},
-        instanceId: fixture.context.harnessInstanceId,
-        sourceId: "google",
+      const driver = new AntigravityHarnessDriver({
+        nodeExecutable: process.execPath,
+        runtimeCacheDirectory: fixture.context.workspacePath,
       });
       try {
-        expect(adapter.capabilities.steering).toBe(false);
-        expect(adapter.capabilities.messageAttachments?.nativeImages?.steering).toBe(false);
+        expect(driver.capabilities.steering).toBe(false);
+        await driver.prepare({
+          config: {},
+          environment: fixture.context.environment,
+          providerState: fixture.context.providerState,
+          signal: AbortSignal.timeout(2_000),
+          sourceId: "google",
+          workingDirectory: fixture.context.workspacePath,
+        });
+        const adapter = await driver.create({
+          config: {},
+          instanceId: fixture.context.harnessInstanceId,
+          sourceId: "google",
+        });
+        try {
+          expect(adapter.capabilities.steering).toBe(false);
+          expect(adapter.capabilities.messageAttachments?.nativeImages?.steering).toBe(false);
+        } finally {
+          await adapter.close();
+        }
       } finally {
-        await adapter.close();
+        prepared.mockRestore();
+        await fixture.adapter.close();
       }
-    } finally {
-      prepared.mockRestore();
-      await fixture.adapter.close();
     }
   });
 

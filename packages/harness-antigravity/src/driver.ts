@@ -122,13 +122,20 @@ export const antigravityHarnessCapabilities: HarnessCapabilities = Object.freeze
       maxBytes: attachmentMaxBytes,
       maxPixels: attachmentImageMaxPixels,
       mediaTypes: attachmentNativeImageMediaTypes,
-      steering: true,
+      steering: false,
     },
   },
   interruption: true,
   mcpImageContent: true,
   resume: true,
-  steering: true,
+  // Native steering is off so Antigravity steers by Run restart (`runSteeringMode` ->
+  // "restart"): ACP v1 `session/prompt` carries no per-prompt delivery receipt before turn
+  // end, so a live steer could only show as unconfirmed for the whole turn. Before setting
+  // this true again, ACP must provide a receipt tied to the steer prompt, undocumented
+  // implementation-defined server errors must stay `unknown` (already enforced in
+  // harness-acp), and each steer prompt's receipt must be recorded independently of which
+  // prompt owns the Run's terminal outcome.
+  steering: false,
   toolCalls: true,
   userInput: true,
   warmReuse: true,
@@ -639,30 +646,6 @@ export function antigravitySessionPolicy(protocolVersion: 1 | 2): AcpSessionPoli
     },
     protocolVersion,
     resume: { method: "resume", suppressReplay: false },
-    ...(protocolVersion === 1 ? { steering: "prompt" as const } : {}),
-  };
-}
-
-function antigravityCapabilitiesForProtocol(protocolVersion: 1 | 2): HarnessCapabilities {
-  if (protocolVersion === 1) return antigravityHarnessCapabilities;
-  return {
-    ...antigravityHarnessCapabilities,
-    ...(antigravityHarnessCapabilities.messageAttachments
-      ? {
-          messageAttachments: {
-            ...antigravityHarnessCapabilities.messageAttachments,
-            ...(antigravityHarnessCapabilities.messageAttachments.nativeImages
-              ? {
-                  nativeImages: {
-                    ...antigravityHarnessCapabilities.messageAttachments.nativeImages,
-                    steering: false,
-                  },
-                }
-              : {}),
-          },
-        }
-      : {}),
-    steering: false,
   };
 }
 
@@ -1209,7 +1192,7 @@ function looksLikeAuthenticationFailure(error: unknown): boolean {
 }
 
 class AntigravityAdapter implements HarnessAdapter {
-  readonly capabilities: HarnessCapabilities;
+  readonly capabilities = antigravityHarnessCapabilities;
   readonly instanceId: HarnessDriverCreateContext["instanceId"];
   readonly #adapter: AcpHarnessAdapter;
   readonly #authMethod: AntigravityAuthMethod;
@@ -1224,7 +1207,6 @@ class AntigravityAdapter implements HarnessAdapter {
     options: AntigravityHarnessDriverOptions,
     runtime: PreparedAntigravityRuntime,
   ) {
-    this.capabilities = antigravityCapabilitiesForProtocol(runtime.protocolVersion);
     this.instanceId = instanceId;
     this.#authMethod = authMethod;
     this.#config = config;

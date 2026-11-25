@@ -1,6 +1,7 @@
 import { toolOutputWithImages } from "@opensteer/harness";
 import {
   engineDiagnosticSecrets,
+  hasShortNamedSecret,
   networkCredentialSecrets,
   redactNetworkCredentials,
 } from "@opensteer/shared/safeMessage";
@@ -199,8 +200,7 @@ class AcpHarnessSession implements HarnessSession {
   readonly #pending = new Map<RequestId, PendingInteraction>();
   /** Calls earlier turns announced, so a frame an engine sends late cannot reopen them. */
   readonly #endedTools = new Set<string>();
-  readonly #diagnosticSecrets: readonly string[];
-  readonly #networkSecrets: readonly string[];
+  readonly #sanitizer: AcpDiagnosticSanitizer;
   #stderr = "";
   #stderrDropped = 0;
   readonly #lifetime = new AbortController();
@@ -223,26 +223,18 @@ class AcpHarnessSession implements HarnessSession {
     dependencies: Required<AcpHarnessDependencies>,
     context: HarnessSessionContext,
     process: SupervisedProcess,
-    networkSecrets: readonly string[],
-    launchSecrets: readonly string[],
+    sanitizer: AcpDiagnosticSanitizer,
     onClose: (session: AcpHarnessSession) => void,
   ) {
     this.#options = options;
     this.#context = context;
     this.#process = process;
-    this.#networkSecrets = networkSecrets;
+    this.#sanitizer = sanitizer;
     this.#onClose = onClose;
     this.#publisher = new TurnPublisher({
       maxBytes: options.maxEventBytes,
       maxItems: options.maxEventItems,
     });
-    this.#diagnosticSecrets = [
-      ...new Set([
-        ...(context.agentTools.token.length >= 4 ? [context.agentTools.token] : []),
-        ...engineDiagnosticSecrets(context.environment, 4),
-        ...launchSecrets,
-      ]),
-    ];
     this.events = this.#publisher.events;
     if (options.policy.steering === "prompt" && options.policy.protocolVersion === 1) {
       this.steer = (input) => this.#steerWithPrompt(input);
@@ -282,20 +274,34 @@ class AcpHarnessSession implements HarnessSession {
     onClose: (session: AcpHarnessSession) => void,
   ): Promise<AcpHarnessSession> {
     context.signal.throwIfAborted();
-    const rawLaunch = await options.launch({ accessMode: context.accessMode, context });
-    const launch = context.wrapProcessLaunch(rawLaunch);
-    const process = dependencies.spawn({
-      ...launch,
-      maxOutputBytes: acpProtocolOutputBytes,
-      signal: context.signal,
-    });
+    const sanitizer = new AcpDiagnosticSanitizer(context.environment, context.agentTools.token);
+    let process: SupervisedProcess;
+    try {
+      const rawLaunch = await options.launch({ accessMode: context.accessMode, context });
+      sanitizer.addEnvironment(rawLaunch.environment);
+      const launch = context.wrapProcessLaunch(rawLaunch);
+      sanitizer.addEnvironment(launch.environment);
+      process = dependencies.spawn({
+        ...launch,
+        maxOutputBytes: acpProtocolOutputBytes,
+        signal: context.signal,
+      });
+    } catch (error) {
+      const classified =
+        error instanceof OpensteerError
+          ? error
+          : options.hooks.classifyError(error, {
+              operation: mode.type === "resume" ? "resume" : "new",
+              stderrTail: "",
+            });
+      throw sanitizer.sanitizeError(classified);
+    }
     const session = new AcpHarnessSession(
       options,
       dependencies,
       context,
       process,
-      networkCredentialSecrets(launch.environment),
-      engineDiagnosticSecrets(launch.environment, 4),
+      sanitizer,
       onClose,
     );
     try {
@@ -1538,7 +1544,10 @@ class AcpHarnessSession implements HarnessSession {
   }
 
   #appendStderr(chunk: Buffer | string): void {
-    this.#stderr += chunk.toString();
+    // Redact the continuous stderr buffer BEFORE ring-buffer or prompt-offset
+    // slicing so a secret split across adjacent chunks or a slice boundary
+    // cannot survive half-matched.
+    this.#stderr = this.#sanitizer.redactText(this.#stderr + chunk.toString());
     this.#wakeStderrWaiters();
     if (this.#stderr.length <= 16_000) return;
     const removed = this.#stderr.length - 16_000;
@@ -1551,7 +1560,7 @@ class AcpHarnessSession implements HarnessSession {
   }
 
   #stderrTail(): string {
-    return this.#redactSecrets(this.#stderr);
+    return this.#stderr;
   }
 
   #stderrPosition(): number {
@@ -1559,49 +1568,27 @@ class AcpHarnessSession implements HarnessSession {
   }
 
   #stderrSince(position: number): string {
-    return this.#redactSecrets(this.#stderr.slice(Math.max(0, position - this.#stderrDropped)));
+    return this.#stderr.slice(Math.max(0, position - this.#stderrDropped));
   }
 
   #stderrBefore(position: number): string {
-    return this.#redactSecrets(this.#stderr.slice(0, Math.max(0, position - this.#stderrDropped)));
+    return this.#stderr.slice(0, Math.max(0, position - this.#stderrDropped));
   }
 
   #redactSecrets(value: string): string {
-    let sanitized = redactNetworkCredentials(value, this.#networkSecrets);
-    for (const secret of this.#diagnosticSecrets)
-      sanitized = sanitized.replaceAll(secret, "[REDACTED]");
-    return sanitized
-      .replace(/Bearer\s+\S+/giu, "Bearer [REDACTED]")
-      .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/gu, "[REDACTED]")
-      .replace(
-        /\b(api[ _-]?key|authorization|credential|password|secret|token)\s*[:=]\s*[^,\s]+/giu,
-        "$1=[REDACTED]",
-      );
+    return this.#sanitizer.redactText(value);
   }
 
   #sanitizePublicMessage(value: string): string {
-    const cleaned = stripControlCharacters(this.#redactSecrets(value)).trim();
-    return cleaned.length > maxPublicDiagnosticLength
-      ? `${cleaned.slice(0, maxPublicDiagnosticLength - 1)}…`
-      : cleaned;
+    return this.#sanitizer.sanitizePublicMessage(value);
   }
 
   #sanitizeError(error: OpensteerError): OpensteerError {
-    const message = this.#sanitizePublicMessage(error.message);
-    if (message === error.message) return error;
-    return new OpensteerError({
-      cause: error.cause,
-      code: error.code,
-      ...(error.details === undefined ? {} : { details: error.details }),
-      message,
-      ...(error.next === undefined ? {} : { next: error.next }),
-      ...(error.reason === undefined ? {} : { reason: error.reason }),
-      retryable: error.retryable,
-    });
+    return this.#sanitizer.sanitizeError(error);
   }
 
   #classifyError(error: unknown, context: AcpErrorContext): OpensteerError {
-    return this.#sanitizeError(this.#options.hooks.classifyError(error, context));
+    return this.#sanitizer.sanitizeError(this.#options.hooks.classifyError(error, context));
   }
 
   #publish(event: HarnessEvent): void {
@@ -1675,6 +1662,76 @@ function acpFailure(error: OpensteerError): {
 
 const steerAdmissionWindowMs = 50;
 const maxPublicDiagnosticLength = 2_000;
+const suppressedDiagnosticMessage =
+  "Engine diagnostic detail was suppressed because a short credential value is configured.";
+
+class AcpDiagnosticSanitizer {
+  readonly #networkSecrets = new Set<string>();
+  readonly #diagnosticSecrets = new Set<string>();
+  #hasShortSecret = false;
+
+  constructor(environment: Readonly<Record<string, string | undefined>>, agentToolsToken: string) {
+    if (agentToolsToken.length >= 4) {
+      this.#diagnosticSecrets.add(agentToolsToken);
+    } else if (agentToolsToken.length > 0) {
+      this.#hasShortSecret = true;
+    }
+    this.addEnvironment(environment);
+  }
+
+  addEnvironment(environment: Readonly<Record<string, string | undefined>> | undefined): void {
+    if (!environment) return;
+    for (const secret of networkCredentialSecrets(environment)) {
+      this.#networkSecrets.add(secret);
+    }
+    for (const secret of engineDiagnosticSecrets(environment, 4)) {
+      this.#diagnosticSecrets.add(secret);
+    }
+    if (hasShortNamedSecret(environment, 4)) {
+      this.#hasShortSecret = true;
+    }
+  }
+
+  redactText(value: string): string {
+    const networkList = [...this.#networkSecrets].sort((left, right) => right.length - left.length);
+    const diagnosticList = [...this.#diagnosticSecrets].sort(
+      (left, right) => right.length - left.length,
+    );
+    let sanitized = redactNetworkCredentials(value, networkList);
+    for (const secret of diagnosticList) {
+      sanitized = sanitized.replaceAll(secret, "[REDACTED]");
+    }
+    return sanitized
+      .replace(/Bearer\s+\S+/giu, "Bearer [REDACTED]")
+      .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/gu, "[REDACTED]")
+      .replace(
+        /\b(api[ _-]?key|authorization|credential|password|secret|token)\s*[:=]\s*[^,\s]+/giu,
+        "$1=[REDACTED]",
+      );
+  }
+
+  sanitizePublicMessage(value: string): string {
+    if (this.#hasShortSecret) return suppressedDiagnosticMessage;
+    const cleaned = stripControlCharacters(this.redactText(value)).trim();
+    return cleaned.length > maxPublicDiagnosticLength
+      ? `${cleaned.slice(0, maxPublicDiagnosticLength - 1)}…`
+      : cleaned;
+  }
+
+  sanitizeError(error: OpensteerError): OpensteerError {
+    const message = this.sanitizePublicMessage(error.message);
+    if (message === error.message) return error;
+    return new OpensteerError({
+      cause: error.cause,
+      code: error.code,
+      ...(error.details === undefined ? {} : { details: error.details }),
+      message,
+      ...(error.next === undefined ? {} : { next: error.next }),
+      ...(error.reason === undefined ? {} : { reason: error.reason }),
+      retryable: error.retryable,
+    });
+  }
+}
 
 function stripControlCharacters(value: string): string {
   let result = "";
@@ -1695,15 +1752,13 @@ function isExplicitAcpSteerRefusal(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const code = (error as { readonly code?: unknown }).code;
   if (typeof code !== "number" || !Number.isInteger(code)) return false;
-  // -32800 (requestCancelled) and -32603 (internalError) can occur after the
-  // provider accepted or began processing the prompt; they do not prove refusal.
-  if (code === -32800 || code === -32603) return false;
+  // Only standard JSON-RPC protocol non-admission codes and ACP's documented
+  // session-not-found code (-32002) prove the prompt was never applied.
+  // Undocumented implementation-defined server errors (e.g. -32042, -32000),
+  // -32800 (requestCancelled), -32603 (internalError), and plain transport
+  // errors do not prove non-admission and stay unknown.
   return (
-    code === -32700 ||
-    code === -32600 ||
-    code === -32601 ||
-    code === -32602 ||
-    (code >= -32099 && code <= -32000)
+    code === -32700 || code === -32600 || code === -32601 || code === -32602 || code === -32002
   );
 }
 
@@ -1882,22 +1937,8 @@ function selectAutoPermissionOption(
   options: readonly AcpPermissionOption[],
   disposition: "allow" | "deny",
 ): AcpPermissionOption | undefined {
-  if (disposition === "allow") {
-    return (
-      options.find((option) => option.kind.toLowerCase() === "allow_once") ??
-      options.find((option) => {
-        const kind = option.kind.toLowerCase();
-        return kind.includes("allow") && !kind.includes("always");
-      })
-    );
-  }
-  return (
-    options.find((option) => option.kind.toLowerCase() === "reject_once") ??
-    options.find((option) => {
-      const kind = option.kind.toLowerCase();
-      return kind.includes("reject") && !kind.includes("always");
-    })
-  );
+  const target = disposition === "allow" ? "allow_once" : "reject_once";
+  return options.find((option) => option.kind.toLowerCase() === target);
 }
 
 function invalidRequestResponse(): OpensteerError {

@@ -8815,3 +8815,119 @@ it("strips unacknowledged run.retry events and keeps ordinals contiguous on Host
     await runtime.close();
   }
 });
+
+it("advertises Antigravity without native steering so the Home routes steers through restart (X1)", async () => {
+  const registry = createHarnessRegistry(
+    harnessKindRecord((kind) => `/opt/fake/${kind}`),
+    { nodeExecutable: process.execPath, runtimeCacheDirectory: testPrivateStateRoot },
+  );
+  const runtime = configuredRuntime({ environmentId: createId("environment"), registry });
+  try {
+    const drivers = await runtime.harnessDrivers();
+    const antigravity = drivers.find(({ driverKind }) => driverKind === "antigravity");
+    expect(antigravity).toMatchObject({
+      driverKind: "antigravity",
+      steering: false,
+    });
+    if (antigravity && "messageAttachments" in antigravity && antigravity.messageAttachments) {
+      expect(antigravity.messageAttachments.nativeImages?.steering).toBe(false);
+    }
+  } finally {
+    await runtime.close();
+  }
+});
+
+it("redacts named Run environment secrets and suppresses detail on short secrets in Runner fallback errors and logs (X4)", async () => {
+  const longSecret = "runner-named-secret-7K9P";
+  const shortSecret = "Q7z";
+  const logged: Array<{ readonly message: string; readonly details?: Record<string, unknown> }> =
+    [];
+  const logger = {
+    error: (message: string, details?: Record<string, unknown>) => {
+      logged.push({ message, ...(details ? { details } : {}) });
+    },
+    info: () => undefined,
+  };
+
+  for (const probe of [
+    {
+      envKey: "TEST_API_KEY",
+      envValue: longSecret,
+      errorText: `engine launch threw with ${longSecret}`,
+      forbidden: longSecret,
+    },
+    {
+      envKey: "TEST_SHORT_SECRET",
+      envValue: shortSecret,
+      errorText: `engine launch threw with ${shortSecret}`,
+      forbidden: shortSecret,
+    },
+  ]) {
+    vi.stubEnv(probe.envKey, probe.envValue);
+    const messages: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+    const driverKind = HarnessIdSchema.parse("named-secret-fallback-test");
+    const harnessInstanceId = createId("harnessInstance");
+    const registry = new HarnessRegistry();
+    registry.registerDriver({
+      ...catalogDriver(driverKind),
+      create: async () => ({
+        capabilities: {
+          approvals: true,
+          attachments: true,
+          interruption: true,
+          mcpImageContent: false,
+          resume: true,
+          steering: false,
+          toolCalls: true,
+          userInput: true,
+        },
+        close: async () => undefined,
+        instanceId: harnessInstanceId,
+        resumeSession: async () => {
+          throw new Error(probe.errorText);
+        },
+        startSession: async () => {
+          throw new Error(probe.errorText);
+        },
+      }),
+    });
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({
+      environmentId,
+      logger,
+      registry,
+    });
+    try {
+      const baseCommand = executeCommand(environmentId, driverKind);
+      const command = {
+        ...baseCommand,
+        context: {
+          ...baseCommand.context,
+          harness: {
+            ...baseCommand.context.harness,
+            id: harnessInstanceId,
+          },
+          harnessInstanceId,
+        },
+      };
+      await reconcile(registry, command);
+      await runtime.handleCommand(command, sink);
+      await waitUntil(() => hasEvent(messages, "run.failed"));
+      const failed = messages.find(
+        (message): message is Extract<RunnerOperationalReport, { readonly type: "runner.event" }> =>
+          message.type === "runner.event" && message.event.type === "run.failed",
+      );
+      expect(failed?.event.type).toBe("run.failed");
+      if (failed?.event.type === "run.failed") {
+        expect(failed.event.data.message).not.toContain(probe.forbidden);
+      }
+      const failedLog = logged.findLast((entry) => entry.message === "run.failed");
+      expect(failedLog).toBeDefined();
+      expect(String(failedLog?.details?.detail ?? "")).not.toContain(probe.forbidden);
+    } finally {
+      await runtime.close();
+      vi.unstubAllEnvs();
+    }
+  }
+});

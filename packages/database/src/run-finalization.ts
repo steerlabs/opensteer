@@ -219,7 +219,7 @@ export async function settleFinishChildren(
     "completedAt" | "source" | "requestCancellationReason" | "failure"
   >,
   children: Awaited<ReturnType<typeof readFinishChildren>>,
-  recovering = false,
+  _recovering = false,
 ) {
   if (children.steers.length) {
     const run = await tx
@@ -308,7 +308,7 @@ export async function settleFinishChildren(
       current.type === "run.restart"
         ? replacement?.dispatchedAt == null
         : current.status === "pending" || current.status === "failed";
-    const unknown = current.state === "unknown" || (recovering && !unclaimed);
+    const unknown = current.state === "unknown" || (!delivered && !unclaimed);
     const requeue = current.policy === "queue" && unclaimed && !delivered && !unknown;
     const stopped =
       requeue && stoppedConversation && current.authoritySource.kind === "user-session";
@@ -323,11 +323,11 @@ export async function settleFinishChildren(
             ? { state: "cancelled", cancelReason: "stopped" }
             : requeue
               ? { state: "pending", runId: null, steerCommandId: null }
-              : current.policy === "queue" || unknown
-                ? { state: "unknown" }
+              : unknown
+                ? { state: "unknown", cancelReason: null }
                 : {
                     state: "cancelled",
-                    cancelReason: unclaimed ? "steer-not-delivered" : "run-ended-delivery-unknown",
+                    cancelReason: "steer-not-delivered",
                   }),
         updatedAt: input.completedAt,
       })

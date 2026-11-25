@@ -39,6 +39,9 @@ interface LastStep {
 }
 
 export function sanitizeAntigravityFailureMessage(message: string): string {
+  // Keep the full payload (already bounded by maxErrorPayloadBytes) until
+  // AcpHarnessSession applies named-secret redaction and final truncation, so
+  // a secret spanning the 2,000-character cut cannot survive half-sliced.
   return message
     .replace(/Bearer\s+\S+/giu, "Bearer [REDACTED]")
     .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/gu, "[REDACTED]")
@@ -47,8 +50,7 @@ export function sanitizeAntigravityFailureMessage(message: string): string {
       "$1=[REDACTED]",
     )
     .replace(/[\r\n\0]+/gu, " ")
-    .trim()
-    .slice(0, 2_000);
+    .trim();
 }
 
 export function brokenAntigravitySessionError(): OpensteerError {

@@ -103,6 +103,25 @@ export function engineDiagnosticSecrets(
   return [...new Set([...networkCredentialSecrets(environment), ...namedValues])];
 }
 
+/**
+ * True when any non-proxy credential-named environment variable is non-empty
+ * and shorter than `minimumLength` characters (too short to redact safely by
+ * literal substring replacement).
+ */
+export function hasShortNamedSecret(
+  environment: Readonly<Record<string, string | undefined>>,
+  minimumLength = 4,
+): boolean {
+  return Object.entries(environment).some(
+    ([name, value]) =>
+      typeof value === "string" &&
+      value.length > 0 &&
+      value.length < minimumLength &&
+      !proxyAddressNameSet.has(name) &&
+      credentialNamePattern.test(name),
+  );
+}
+
 // Both parts are bounded, so a long run of letters cannot make it backtrack
 // for every position of a long message.
 export const urlCredentialRedaction = Object.freeze({
