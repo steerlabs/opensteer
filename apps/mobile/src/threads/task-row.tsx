@@ -97,7 +97,7 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
   // A connected agent's own task wears the agent's mark and says what it is using.
   const session = useSessionRow(useSelectedHostClient(), row.threadId);
   const ask = props.ask ?? null;
-  const said = ask ?? session?.line ?? null;
+  const said = ask ?? (session ? phoneSentence(session.lineParts) : null);
   const subtitle = line === null ? said : line;
   const startedBy = props.origin ? phoneSentence(props.origin) : null;
 

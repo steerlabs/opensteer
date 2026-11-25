@@ -1,6 +1,8 @@
 import type { AgentOperationView } from "@opensteer/core";
-import { operationAction, operationRow, operationTime } from "./agent-work.js";
-import { distinctAgentPlaces } from "./connected-agents-now.js";
+import { operationActionParts, operationRow, operationTime } from "./agent-work.js";
+import { distinctAgentPlaces, type ConnectedAgentNow } from "./connected-agents-now.js";
+import { joinSentenceParts, named, plainSentence, type SentencePart } from "./sentence-parts.js";
+import { agentWords } from "./connected-agents-copy.js";
 
 interface EarlierSession {
   readonly sessionId: string;
@@ -9,6 +11,9 @@ interface EarlierSession {
   readonly actionCount: number | null;
   readonly at: string;
   readonly action: string;
+  readonly labelParts: readonly SentencePart[];
+  readonly detailParts: readonly SentencePart[];
+  readonly time: string;
   readonly outcome: string;
 }
 
@@ -19,6 +24,7 @@ interface EarlierDay {
 }
 
 const formatDate = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
+const formatTime = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 
 /** Past sessions that have recorded actions. A session with no recorded action has no row. */
 export function connectedAgentEarlier(input: {
@@ -47,13 +53,22 @@ export function connectedAgentEarlier(input: {
       : distinctAgentPlaces(operations.map(({ target }) => target));
     // The cursor orders operations across all sessions. Another page can contain
     // an older action for any displayed session, even one above the oldest group.
+    const place = places.length > 1 ? `${places.length} places` : last.target.name;
+    const actionParts = operationActionParts(last);
+    const actionCount = input.hasEarlier ? null : operations.length;
     return {
       sessionId: last.sessionId,
       threadId: last.taskId,
-      place: places.length > 1 ? `${places.length} places` : last.target.name,
-      actionCount: input.hasEarlier ? null : operations.length,
+      place,
+      actionCount,
+      labelParts: joinSentenceParts([
+        [named(place)],
+        actionCount === null ? [] : [`${actionCount} ${actionCount === 1 ? "action" : "actions"}`],
+      ]),
+      detailParts: joinSentenceParts([actionParts, [row.outcome.label]]),
+      time: formatTime.format(new Date(row.at)),
       at: row.at,
-      action: operationAction(last),
+      action: plainSentence(actionParts, { quoteNames: false }),
       outcome: row.outcome.label,
     };
   });
@@ -75,4 +90,37 @@ export function connectedAgentEarlier(input: {
     }
   }
   return [...byDay].map(([day, group]) => ({ day, ...group }));
+}
+
+/** The view of the pages already loaded, including whether there is anything to show. */
+export function connectedAgentEarlierSection(
+  history: {
+    readonly page?:
+      | {
+          readonly operations: readonly AgentOperationView[];
+          readonly nextBefore: string | null;
+        }
+      | null
+      | undefined;
+    readonly loadingMore: boolean;
+    readonly failed: boolean;
+  },
+  activeAgents: readonly Pick<ConnectedAgentNow, "sessionId">[],
+) {
+  const { page } = history;
+  const days = page
+    ? connectedAgentEarlier({
+        operations: page.operations,
+        activeSessionIds: new Set(activeAgents.map(({ sessionId }) => sessionId)),
+        hasEarlier: page.nextBefore !== null,
+      })
+    : [];
+  const more = page?.nextBefore
+    ? {
+        label: history.loadingMore ? agentWords("common.loading") : "Show earlier",
+        disabled: history.loadingMore,
+      }
+    : null;
+  const error = history.failed ? "Couldn’t load earlier activity." : null;
+  return days.length || more || error ? { days, more, error } : null;
 }

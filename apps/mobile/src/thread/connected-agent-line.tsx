@@ -1,7 +1,6 @@
 import {
-  connectedAgentNamePart,
   phoneSentence,
-  workSentence,
+  sessionActionParts,
   workWords,
   type HostClient,
   type SessionAgent,
@@ -22,6 +21,8 @@ export function ConnectedAgentLine({
   title,
   detail,
   needsYou,
+  distinction,
+  openLabel,
   onOpen,
 }: {
   readonly agent: SessionAgent;
@@ -31,16 +32,21 @@ export function ConnectedAgentLine({
   readonly title: string;
   readonly detail?: string | null;
   readonly needsYou?: boolean;
+  readonly distinction?: string | undefined;
+  readonly openLabel?: string | undefined;
   readonly onOpen: () => void;
 }): ReactNode {
-  const stop = useAgentSessionStop(host, threadId);
-  const stopLabel = phoneSentence(
-    workSentence("work.stop", { agent: connectedAgentNamePart(agent) }),
-  );
+  const stop = useAgentSessionStop(host, threadId, sessionId);
+  const stopLabel = phoneSentence(sessionActionParts("work.stop", agent, distinction));
   return (
     <View style={styles.group}>
       <View style={styles.row}>
-        <Pressable accessibilityRole="button" onPress={onOpen} style={styles.open}>
+        <Pressable
+          accessibilityLabel={openLabel}
+          accessibilityRole="button"
+          onPress={onOpen}
+          style={styles.open}
+        >
           <ExternalAgentMark initial={agent.initial} providerId={agent.providerId} size={20} />
           <View style={styles.words}>
             <AppText role="secondaryMedium">{title}</AppText>
@@ -57,7 +63,7 @@ export function ConnectedAgentLine({
             accessibilityRole="button"
             accessibilityState={{ busy: stop.running, disabled: stop.running }}
             disabled={stop.running}
-            onPress={() => void stop.run(sessionId)}
+            onPress={() => void stop.run()}
             style={styles.stop}
           >
             <AppText role="action" tone="ember">
@@ -66,7 +72,7 @@ export function ConnectedAgentLine({
           </Pressable>
         )}
       </View>
-      {stop.line ? <ActionLine line={stop.line} onDismiss={stop.dismiss} /> : null}
+      {stop.line ? <ActionLine line={stop.line} /> : null}
     </View>
   );
 }

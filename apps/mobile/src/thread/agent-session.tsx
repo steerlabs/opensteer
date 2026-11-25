@@ -3,9 +3,11 @@ import {
   deriveSurface,
   mutationIdempotencyKey,
   phoneSentence,
+  connectedAgentNamePart,
   formatClockTime,
   requestDecision,
   canRespondToRequests,
+  sessionQuestionTitleParts,
   sessionQuestions,
   workWords,
   type HostClient,
@@ -96,7 +98,7 @@ export function AgentSessionPane(props: {
   // Where the agent works now, and the page its questions are about: the task's own tabs.
   const place = useThreadAgentPlace(hostClient, threadId);
   const showTab = useShowTab(props.deploymentId, threadId);
-  const stop = useAgentSessionStop(hostClient, threadId);
+  const stop = useAgentSessionStop(hostClient, threadId, view.stop?.sessionId ?? null);
   const activity = view.activity;
   return (
     <View style={styles.pane} testID="agent-session">
@@ -165,7 +167,7 @@ export function AgentSessionPane(props: {
               kind="stop"
               label={phoneSentence(view.stop.labelParts)}
               onPress={() => {
-                if (view.stop) void stop.run(view.stop.sessionId);
+                if (view.stop) void stop.run();
               }}
             />
           )}
@@ -173,7 +175,7 @@ export function AgentSessionPane(props: {
         <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" tone="muted">
           {phoneSentence(view.noComposerParts)}
         </AppText>
-        {stop.line === null ? null : <ActionLine line={stop.line} onDismiss={stop.dismiss} />}
+        {stop.line === null ? null : <ActionLine line={stop.line} />}
       </View>
     </View>
   );
@@ -189,6 +191,8 @@ export function SessionQuestionCard({
   readonly deploymentId: string;
   readonly request: RequestView;
 }): ReactNode {
+  const thread = useSessionThread(hostClient, request.originatingThreadId);
+  const titleParts = sessionQuestionTitleParts(request, thread);
   const user = useHostValue(hostClient, selectUser, null);
   const canRespond = useHostValue(hostClient, canRespondToRequests, false);
   const { drafts } = useMobileClient();
@@ -205,6 +209,7 @@ export function SessionQuestionCard({
         drafts={drafts}
         hostClient={hostClient}
         surface={surface}
+        title={titleParts ? phoneSentence(titleParts) : undefined}
         userId={user.id}
       />
     </View>
@@ -240,7 +245,9 @@ export function OperationRowView({
     : null;
   const words = (
     <View style={stacked ? undefined : styles.grow}>
-      <AppText role="secondary">{row.action}</AppText>
+      <AppText role="secondary">
+        {phoneSentence(row.actionParts ?? [row.action], { quoteNames: false })}
+      </AppText>
       <AppText role="caption" tone="muted">
         {[mode, row.allowedBy !== mode ? row.allowedBy : null, row.outcome.label]
           .filter(Boolean)
@@ -325,12 +332,16 @@ export function OperationRequestCard(props: {
           size={20}
         />
         <AppText role="secondaryMedium" tone="muted">
-          {view.agent.name}
+          {phoneSentence([connectedAgentNamePart(view.agent)], { quoteNames: true })}
         </AppText>
       </View>
       <AppText role="bodyMedium">{view.question}</AppText>
       {(view.context ?? view.summary) ? (
-        <AppText role="secondary">{view.context ?? view.summary}</AppText>
+        <AppText role="secondary">
+          {view.contextParts
+            ? phoneSentence(view.contextParts, { quoteNames: false })
+            : view.summary}
+        </AppText>
       ) : null}
       {view.agentWords === null ? null : (
         <View style={styles.agentWords}>

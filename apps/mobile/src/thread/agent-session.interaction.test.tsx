@@ -69,6 +69,7 @@ vi.mock("../ui/mobile-client-context.js", async (actual) => ({
 vi.mock("./waiting-questions.js", () => ({
   QuestionCard: (props: {
     readonly canRespond: boolean;
+    readonly title?: string;
     readonly surface: {
       readonly request: {
         readonly presentation: {
@@ -80,7 +81,7 @@ vi.mock("./waiting-questions.js", () => ({
     };
   }) => (
     <section data-testid="question-card">
-      <h2>{props.surface.request.presentation.title}</h2>
+      <h2>{props.title ?? props.surface.request.presentation.title}</h2>
       <p>{props.surface.request.presentation.detail}</p>
       {props.surface.request.presentation.fields?.[0]?.choices?.map(({ label }) => (
         <button disabled={!props.canRespond} key={label}>
@@ -151,7 +152,7 @@ describe("a connected agent's own task on the phone", () => {
     const page = await render(client, threadId);
     expect(read).toHaveBeenCalledWith({ threadId }, { signal: expect.any(AbortSignal) });
     const text = page.textContent ?? "";
-    expect(text).toContain("Listed tabs in Travel on Studio Mac");
+    expect(text).toContain("Listed tabs in \u2068Travel\u2069 on \u2068Studio Mac\u2069");
     expect(text).toContain("Reading only · Done");
     expect(text).toContain("Allowed by you · Failed");
     expect(text).toContain("Uncertain");
@@ -193,7 +194,11 @@ describe("a connected agent's own task on the phone", () => {
     const dispatch = vi.spyOn(client, "dispatch");
     const page = await render(client, threadId);
     await vi.waitFor(() => expect(page.textContent).toContain("Run a script in Shopping?"));
-    expect(page.textContent).toContain("Shopping · Studio Mac");
+    expect(page.textContent).toContain("\u2068Shopping\u2069 · \u2068Studio Mac\u2069");
+    const card = [...page.querySelectorAll("div")].find((node) =>
+      node.getAttribute("data-testid")?.startsWith("operation-request:"),
+    );
+    expect(card?.textContent).toContain("“\u2068Grok\u2069”Run a script in Shopping?");
     expect(page.textContent).toContain("“\u2068Grok\u2069” says:");
     expect(page.textContent).toContain("Buy the $12 phone case you asked for.");
     expect(page.textContent).not.toContain("Place order");
@@ -216,7 +221,9 @@ describe("a connected agent's own task on the phone", () => {
     const threadId = idOf(client, "Find flights to Lisbon");
     const page = await render(client, threadId);
     await vi.waitFor(() =>
-      expect(page.textContent).toContain("Connected agent Claude asks in Find flights to Lisbon"),
+      expect(page.textContent).toContain(
+        "Connected agent Claude asks in “\u2068Find flights to Lisbon\u2069”",
+      ),
     );
     const card = page.querySelector('[data-testid="question-card"]')!;
     expect(card.textContent).toContain("Enter passwords and codes only in the page.");

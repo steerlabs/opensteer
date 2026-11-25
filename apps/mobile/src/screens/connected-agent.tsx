@@ -4,7 +4,6 @@ import {
   agentBrowserOptions,
   agentHomeName,
   agentSentence,
-  agentText,
   agentWords,
   workSentence,
   workWords,
@@ -13,6 +12,9 @@ import {
   chatTaskStop,
   chatTasksNow,
   connectedAgentConnected,
+  connectedAgentNamePart,
+  sessionAgentPart,
+  showConnectedAgentStatus,
   connectedAgentActivity,
   connectionsRead,
   connectedAgentDetail,
@@ -29,6 +31,7 @@ import {
   type ConnectedAgentDetail,
   type ChatTaskNow,
   type HostClient,
+  type SentencePart,
 } from "@opensteer/client/host";
 import {
   useAgentAppOptions,
@@ -89,11 +92,7 @@ export function ConnectedAgentController(props: {
   const connection = agents.connections?.find((row) => row.id === connectionId) ?? null;
   const direct = connection !== null && !connection.bridge;
   const work = useConnectedAgentWork(chatHost, connectionId, direct);
-  const liveSessions = work.view.agents
-    .map(({ sessionId }) => sessionId)
-    .sort()
-    .join(",");
-  const history = useConnectedAgentHistory(chatHost, connectionId, liveSessions);
+  const history = useConnectedAgentHistory(chatHost, connectionId);
   const activity = history.page
     ? connectedAgentActivity({ ...history.page, operations: direct ? [] : history.page.operations })
     : undefined;
@@ -127,9 +126,13 @@ export function ConnectedAgentController(props: {
           ...(activity ? { activity } : {}),
         });
   const agent = detail?.row.identity.label ?? null;
+  const name: SentencePart | null = detail
+    ? connectedAgentNamePart({ name: detail.row.identity.label, who: detail.row.identity.who })
+    : null;
+  const title = name === null ? null : phoneSentence([name], { quoteNames: !connection?.bridge });
   useEffect(() => {
-    if (agent !== null) navigation.setOptions({ title: agent });
-  }, [agent, navigation]);
+    if (title !== null) navigation.setOptions({ title });
+  }, [title, navigation]);
   // A sheet open when a refresh fails closes without saving what it held.
   useEffect(() => {
     if (agents.readFailed) setSheet(null);
@@ -140,7 +143,7 @@ export function ConnectedAgentController(props: {
   const apps = useAgentAppOptions(host, sheet?.which === "apps" || hasKind("computer-app"));
   const plugins = useAgentPluginOptions(host, sheet?.which === "plugins" || hasKind("plugin"));
 
-  if (detail === null || connection === null || agent === null)
+  if (detail === null || connection === null || agent === null || name === null)
     return (
       <NativeSettingsPage
         sections={[
@@ -176,6 +179,7 @@ export function ConnectedAgentController(props: {
       />
     );
 
+  const agentPart = sessionAgentPart({ name: agent, who: detail.row.identity.who });
   const pending = agents.pending === connection.id ? agents.pendingAction : null;
   const busy = pending !== null || creating;
   const browser = agentBrowserOptions(snapshot);
@@ -183,7 +187,7 @@ export function ConnectedAgentController(props: {
   const chatShape = connection.bridge?.grantShape as ChatGrantShape | undefined;
   const context = {
     ...(chatShape ? { chat: chatShape } : {}),
-    agent: { name: agent },
+    agent: agentPart,
     home: agentHomeName(snapshot),
     chromeTabs,
     browser,
@@ -242,7 +246,7 @@ export function ConnectedAgentController(props: {
       return;
     }
     Alert.alert(
-      agentText("agent.narrow.title", { agent: { name: agent } }),
+      phoneSentence(agentSentence("agent.narrow.title", { agent: agentPart })),
       agentWords("agent.narrow.body"),
       [
         { text: agentWords("common.cancel"), style: "cancel" },
@@ -259,7 +263,7 @@ export function ConnectedAgentController(props: {
   };
   const disconnect = () =>
     Alert.alert(
-      agentText("agent.disconnect.title", { agent: { name: agent } }),
+      phoneSentence(agentSentence("agent.disconnect.title", { agent: agentPart })),
       agentWords("agent.disconnect.body"),
       [
         { text: agentWords("common.cancel"), style: "cancel" },
@@ -405,6 +409,7 @@ export function connectedAgentSections(props: {
   const { detail } = props;
   const watchThreadId = props.directWork === undefined ? detail.live?.threadId : undefined;
   const agent = detail.row.identity.label;
+  const agentName = sessionAgentPart({ name: agent, who: detail.row.identity.who });
   const who = whoLines(detail.row.identity.who, { consent: false });
   // Still connected (active, paused, or a state this app doesn't know): it can be disconnected.
   const active = connectedAgentConnected(detail.row.phase);
@@ -417,7 +422,7 @@ export function connectedAgentSections(props: {
     label:
       props.pending === "revoke"
         ? agentWords("agent.disconnecting")
-        : phoneSentence(agentSentence("agent.disconnect", { agent: { name: agent } })),
+        : phoneSentence(agentSentence("agent.disconnect", { agent: agentName })),
     destructive: true,
     disabled: props.busy,
     onPress: props.onDisconnect,
@@ -482,7 +487,7 @@ export function connectedAgentSections(props: {
           },
         ]
       : []),
-    ...(props.directWork?.some(({ key }) => key === "now")
+    ...(!showConnectedAgentStatus(detail.row)
       ? []
       : [
           {
@@ -643,7 +648,7 @@ export function connectedAgentSections(props: {
         rows: [],
         footer:
           props.note === "saved"
-            ? { text: phoneSentence(agentSentence("agent.saved", { agent: { name: agent } })) }
+            ? { text: phoneSentence(agentSentence("agent.saved", { agent: agentName })) }
             : { text: agentWords("consent.error.newProfile"), tone: "danger" },
       });
   }

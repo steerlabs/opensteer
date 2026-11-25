@@ -62,6 +62,9 @@ import {
   browserSiteLabel,
   deriveSurface,
   isQuestionRequest,
+  isolatedPlainSentence,
+  sessionQuestionTitleParts,
+  threadInDirectory,
   mutationIdempotencyKey,
   requestsWaitingOn,
   waitingRequestSource,
@@ -72,6 +75,7 @@ import {
   type WaitingRequestView,
 } from "@opensteer/client/host";
 import { AnswerField, QuestionBody, untitledQuestion } from "./question-answer.js";
+import { SentenceText } from "../ui/address-text.js";
 import { useAnswersInComposer, useQuestionSessionKey } from "./question-session.js";
 
 export function InputSurface({
@@ -658,8 +662,10 @@ function RequestRow({
   readonly item: DockedRequest;
   readonly onOpen: (requestId: string) => void;
 }) {
+  const { snapshot } = useShell();
   const { request } = item.surface;
-  const title = requestTitle(request);
+  const titleParts = connectedQuestionTitle(request, snapshot);
+  const title = titleParts ? isolatedPlainSentence(titleParts) : requestTitle(request);
   const choices = request.presentation.kind === "choice" ? request.presentation.options.length : 0;
   const count = choices > 0 ? `${choices} ${choices === 1 ? "choice" : "choices"}` : null;
   return (
@@ -682,7 +688,9 @@ function RequestRow({
           <Icon name={requestIcon(request)} />
         )}
       </span>
-      <span className="request-row__title">{title}</span>
+      <span className="request-row__title">
+        {titleParts ? <SentenceText parts={titleParts} /> : title}
+      </span>
       {count ? <span className="request-row__count">{count}</span> : null}
       <Icon className="request-row__chevron" name="chevron-down" />
     </button>
@@ -700,6 +708,12 @@ function inputSurfaceClass(surface: SurfaceModel | null): string {
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+function connectedQuestionTitle(request: Request, snapshot: HostSnapshot) {
+  return request.kind === "person.question" && request.originatingAgentSessionId
+    ? sessionQuestionTitleParts(request, threadInDirectory(request.originatingThreadId, snapshot))
+    : null;
 }
 
 /** A request's name as the reader answers it; a sign-in names its site, whatever the wording. */
@@ -751,7 +765,7 @@ function RequestPanel({
   /** The task on screen, whose composer sits below. */
   viewThreadId: string;
 }) {
-  const { hostClient } = useShell();
+  const { hostClient, snapshot } = useShell();
   const { request } = surface;
   const asker = useRequestAsker(hostClient, request);
   // An agent's app request reads as the title and the model's own reason; the
@@ -766,7 +780,8 @@ function RequestPanel({
           request.payload.kind === "device.access"
         ? request.payload.reason
         : request.presentation.detail;
-  const title = requestTitle(request);
+  const titleParts = connectedQuestionTitle(request, snapshot);
+  const title = titleParts ? isolatedPlainSentence(titleParts) : requestTitle(request);
   // An access card names the app and the reason itself, so the panel's own
   // head would only say them twice.
   const ownHead = request.kind === "integration.access" && !surface.denied;
@@ -785,7 +800,9 @@ function RequestPanel({
           <span aria-hidden className="action-panel__icon">
             <Icon name={requestIcon(request)} />
           </span>
-          <span className="action-panel__title">{title}</span>
+          <span className="action-panel__title">
+            {titleParts ? <SentenceText parts={titleParts} /> : title}
+          </span>
         </div>
       )}
       <div className="action-panel__content" data-scroll-edges="" ref={contentRef}>

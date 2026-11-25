@@ -1,7 +1,7 @@
 import { hostsDeployment } from "@opensteer/client/computers";
 import {
   connectedAgentNamePart,
-  formatRelativeTime,
+  connectedAgentNowRow,
   isolatedPlainSentence,
   type ConnectedAgentNow,
   type HostClient,
@@ -11,7 +11,7 @@ import {
 } from "@opensteer/client/host";
 import {
   useConnectedAgentWork,
-  useConnectedAgents,
+  useConnectedAgentRowDistinctions,
   useHostSelector,
 } from "@opensteer/client/react";
 import {
@@ -35,7 +35,7 @@ const selectHomeName = (snapshot: HostSnapshot) =>
   snapshot.machines.find(hostsDeployment)?.name ?? null;
 
 type SessionStop = ReturnType<typeof useStopSession>;
-type StopState = Pick<SessionStop, "running" | "outcome">;
+type StopState = Pick<SessionStop, "running" | "unconfirmed">;
 type StopStatus = { readonly running: boolean; readonly unconfirmed: boolean };
 type ReportStop = (sessionId: string, state: StopState | null) => void;
 type AgentsView = ReturnType<typeof useConnectedAgentWork>["view"];
@@ -64,15 +64,7 @@ export function ConnectedAgentsProvider({
     setStops((previous) => {
       const before = previous.get(id);
       const running = state?.running ?? false;
-      const outcome = state?.outcome;
-      const unconfirmed =
-        outcome === undefined
-          ? false
-          : outcome === null
-            ? (before?.unconfirmed ?? false)
-            : outcome.kind !== "confirmed" ||
-              outcome.value.type !== "agent.session.stop" ||
-              !outcome.value.ended;
+      const unconfirmed = state?.unconfirmed ?? false;
       if (running === (before?.running ?? false) && unconfirmed === (before?.unconfirmed ?? false))
         return previous;
       const next = new Map(previous);
@@ -83,7 +75,7 @@ export function ConnectedAgentsProvider({
   }, []);
   const stop = useCallback(
     (entries: readonly ConnectedAgentNow[]) => {
-      for (const { sessionId } of entries) void actions.get(sessionId)?.(undefined);
+      for (const { sessionId } of entries) void actions.get(sessionId)?.();
     },
     [actions],
   );
@@ -91,14 +83,14 @@ export function ConnectedAgentsProvider({
   return (
     <ConnectedAgentsContext value={value}>
       {view.agents.map((entry) => (
-        <SessionStopOwner actions={actions} entry={entry} key={entry.sessionId} report={report} />
+        <ObserveSessionStop actions={actions} entry={entry} key={entry.sessionId} report={report} />
       ))}
       {children}
     </ConnectedAgentsContext>
   );
 }
 
-function SessionStopOwner({
+function ObserveSessionStop({
   actions,
   entry: { threadId, sessionId },
   report,
@@ -107,7 +99,7 @@ function SessionStopOwner({
   readonly entry: ConnectedAgentNow;
   readonly report: ReportStop;
 }) {
-  const { run, running, outcome } = useStopSession(threadId, sessionId);
+  const { run, running, unconfirmed } = useStopSession(threadId, sessionId);
   useEffect(() => {
     actions.set(sessionId, run);
     return () => {
@@ -115,7 +107,10 @@ function SessionStopOwner({
       report(sessionId, null);
     };
   }, [actions, sessionId, run, report]);
-  useEffect(() => report(sessionId, { running, outcome }), [sessionId, running, outcome, report]);
+  useEffect(
+    () => report(sessionId, { running, unconfirmed }),
+    [sessionId, running, unconfirmed, report],
+  );
   return null;
 }
 
@@ -171,10 +166,11 @@ function ActiveAgents({
     agents.flatMap(({ places }) => places.flatMap(({ device }) => (device ? [device.name] : []))),
   );
   const deviceName = devices.size > 1 ? null : ([...devices][0] ?? homeName);
-  const duplicates = duplicateRows(agents, deviceName);
-  const catalog = useConnectedAgents(anchor && duplicates.size ? hostClient : null);
-  const created = new Map(catalog.connections?.map(({ id, createdAt }) => [id, createdAt]));
-  const now = new Date();
+  const distinctions = useConnectedAgentRowDistinctions(
+    anchor ? hostClient : null,
+    agents,
+    deviceName,
+  );
   const stopping = agents.some(({ sessionId }) => stops.get(sessionId)?.running);
   const remaining = agents.filter(({ sessionId }) => stops.get(sessionId)?.unconfirmed);
   const warning = remaining.length ? stopWarning(remaining) : null;
@@ -278,23 +274,11 @@ function ActiveAgents({
           <ul className="agents-now-panel__list">
             {agents.map((entry) => {
               const { agent, waiting } = entry;
-              const action = entry.state === "needs-you" ? "Review" : "Watch";
-              const group = duplicates.get(entry.sessionId);
-              const joined = group ? created.get(entry.connectionId) : undefined;
-              const age = joined ? formatRelativeTime(joined, now) : "";
-              const sameAge =
-                group &&
-                [...group].some((id) => {
-                  const other = created.get(id);
-                  return (
-                    id !== entry.connectionId && other && formatRelativeTime(other, now) === age
-                  );
-                });
-              const connected = age
-                ? `Connected ${age === "now" ? "just now" : /^\d/u.test(age) ? `${age} ago` : age}${sameAge && joined ? ` · ${clock.format(new Date(joined))}` : ""}`
-                : null;
+              const connected = distinctions.get(entry.sessionId);
+              const row = connectedAgentNowRow(entry, deviceName, connected);
+              const action = row.needsYou ? "Review" : "Watch";
               const actionLabel = (key: "work.stop" | "work.watch" | "work.review") =>
-                [sessionActionLabel(key, agent), connected].filter(Boolean).join(" — ");
+                sessionActionLabel(key, agent, connected);
               return (
                 <li
                   className="agents-now-panel__row"
@@ -305,28 +289,24 @@ function ActiveAgents({
                   <div className="agents-now-panel__detail">
                     <div className="agents-now-panel__where">
                       <strong>
-                        <SentenceText parts={[connectedAgentNamePart(agent)]} quoteNames />
+                        <SentenceText parts={row.nameParts} quoteNames />
                       </strong>
-                      {entry.places.map(({ device, name }, index) => (
+                      {row.placeLines.map((parts, index) => (
                         <span key={index}>
-                          <OutsideName value={name} />
-                          {device && device.name !== deviceName && device.name !== name ? (
-                            <>
-                              {" "}
-                              · <OutsideName value={device.name} />
-                            </>
-                          ) : null}
+                          <SentenceText parts={parts} quoteNames={false} />
                         </span>
                       ))}
                     </div>
-                    {entry.action ? <div dir="auto">{entry.action}</div> : null}
+                    {entry.action ? (
+                      <div dir="auto">
+                        <SentenceText parts={entry.actionParts} quoteNames={false} />
+                      </div>
+                    ) : null}
                     {connected ? <div>{connected}</div> : null}
                   </div>
                   <div className="agents-now-panel__actions">
                     <button
-                      aria-label={actionLabel(
-                        entry.state === "needs-you" ? "work.review" : "work.watch",
-                      )}
+                      aria-label={actionLabel(row.primaryAction)}
                       className={`btn btn--small${waiting ? " btn--primary" : ""}`}
                       onClick={() => {
                         leave();
@@ -372,37 +352,6 @@ function ActiveAgents({
       ) : null}
     </div>
   );
-}
-
-const clock = new Intl.DateTimeFormat(undefined, {
-  hour: "numeric",
-  minute: "2-digit",
-  second: "2-digit",
-});
-
-function duplicateRows(agents: readonly ConnectedAgentNow[], deviceName: string | null) {
-  const groups = new Map<string, ConnectedAgentNow[]>();
-  for (const agent of agents) {
-    const key = JSON.stringify([
-      connectedAgentNamePart(agent.agent),
-      agent.state,
-      agent.action,
-      agent.places.map(({ name, device }) => [
-        name,
-        device?.name !== deviceName && device?.name !== name ? device?.name : null,
-      ]),
-    ]);
-    const group = groups.get(key);
-    if (group) group.push(agent);
-    else groups.set(key, [agent]);
-  }
-  const duplicates = new Map<string, ReadonlySet<string>>();
-  for (const group of groups.values()) {
-    const connections = new Set(group.map(({ connectionId }) => connectionId));
-    if (connections.size > 1)
-      for (const { sessionId } of group) duplicates.set(sessionId, connections);
-  }
-  return duplicates;
 }
 
 function stopWarning(remaining: readonly ConnectedAgentNow[]): readonly SentencePart[] {

@@ -315,8 +315,8 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   }, [docked, visible]);
 
   const openTask = useCallback(
-    (threadId: string) => {
-      if (deploymentId !== null) actions.onOpenTask(deploymentId, threadId);
+    (threadId: string, requestId?: string) => {
+      if (deploymentId !== null) actions.onOpenTask(deploymentId, threadId, requestId);
     },
     [actions, deploymentId],
   );

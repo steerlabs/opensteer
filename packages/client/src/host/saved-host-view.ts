@@ -22,7 +22,7 @@ const text = (bytes: number) =>
     .max(bytes)
     .refine((value) => utf8.encode(value).byteLength <= bytes);
 export const SavedViewScopeSchema = z.strictObject({
-  schema: z.literal(1),
+  schema: z.literal(2),
   epoch: z.number().int().positive(),
   hostIdentity: z.strictObject({
     deploymentId: DeploymentIdSchema,

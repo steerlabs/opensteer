@@ -1,8 +1,9 @@
 import {
-  connectedAgentEarlier,
-  formatClockTime,
-  operationRow,
-  sessionQuestions,
+  connectedAgentEarlierSection,
+  connectedAgentNowSection,
+  joinSentenceParts,
+  phoneSentence,
+  workWords,
   type HostClient,
 } from "@opensteer/client/host";
 import type { useConnectedAgentHistory, useConnectedAgentWork } from "@opensteer/client/react";
@@ -12,8 +13,8 @@ import {
   OperationRowView,
   SessionQuestionCard,
 } from "../thread/agent-session.js";
-import { operationRequestsOf } from "../thread/agent-session-model.js";
 import { ConnectedAgentLine } from "../thread/connected-agent-line.js";
+import { AppText } from "../ui/primitives.js";
 import { space } from "../theme.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 
@@ -30,90 +31,79 @@ export function connectedAgentWorkSections({
   readonly history: ReturnType<typeof useConnectedAgentHistory>;
   readonly open: (threadId: string, requestId?: string) => void;
 }): NativeSettingsSection[] {
-  const now = work.view.agents.map((entry): NativeSettingsRow => {
-    const thread = work.tasks.find(({ id }) => id === entry.threadId)!;
-    const request = entry.waiting?.request;
-    const item = request
-      ? operationRequestsOf({ threads: [thread] }, thread.id, [request])[0]
-      : undefined;
-    const places = entry.places
-      .map(({ name, device }) =>
-        device && device.name !== name ? `${name} · ${device.name}` : name,
-      )
-      .join(" · ");
-    const needsYou = entry.state === "needs-you";
-    return {
-      key: entry.sessionId,
-      kind: "content",
-      label: thread.title,
-      content: (
-        <View style={{ gap: space[12], width: "100%" }}>
-          <ConnectedAgentLine
-            agent={entry.agent}
-            detail={[places, needsYou ? "Needs you" : "Working"].filter(Boolean).join(" · ")}
-            host={host}
-            needsYou={needsYou}
-            onOpen={() => open(thread.id, request?.id)}
-            sessionId={entry.sessionId}
-            threadId={thread.id}
-            title={thread.title}
-          />
-          {item ? (
-            <OperationRequestCard hostClient={host} item={item} />
-          ) : request && sessionQuestions([request]).length ? (
-            <SessionQuestionCard hostClient={host} deploymentId={deploymentId} request={request} />
-          ) : null}
-          {work.activity?.get(thread.id)?.map((operation) => (
-            <OperationRowView key={operation.id} row={operationRow(operation)} showModeAndTime />
-          ))}
-        </View>
-      ),
-    };
-  });
-
-  const earlier: NativeSettingsRow[] = [];
-  if (history.page) {
-    const days = connectedAgentEarlier({
-      operations: history.page.operations,
-      activeSessionIds: new Set(work.view.agents.map(({ sessionId }) => sessionId)),
-      hasEarlier: history.page.nextBefore !== null,
+  const now = connectedAgentNowSection(work);
+  const sections: NativeSettingsSection[] = [];
+  if (now.length) {
+    sections.push({
+      key: "now",
+      title: "Now",
+      rows: now.map(({ entry, row, titleParts, detailParts, view, operation, question }) => {
+        const title = phoneSentence(titleParts);
+        const { activity } = view;
+        return {
+          key: entry.sessionId,
+          kind: "content",
+          label: title,
+          content: (
+            <View style={{ gap: space[12], width: "100%" }}>
+              <ConnectedAgentLine
+                agent={entry.agent}
+                detail={phoneSentence(detailParts, { quoteNames: false })}
+                host={host}
+                needsYou={row.needsYou}
+                onOpen={() => open(entry.threadId, row.requestId)}
+                sessionId={entry.sessionId}
+                threadId={entry.threadId}
+                title={title}
+              />
+              {operation ? (
+                <OperationRequestCard hostClient={host} item={operation} />
+              ) : question ? (
+                <SessionQuestionCard
+                  hostClient={host}
+                  deploymentId={deploymentId}
+                  request={question}
+                />
+              ) : null}
+              {activity.kind === "unavailable" ? (
+                <AppText tone="muted">{workWords("work.activityUnavailable")}</AppText>
+              ) : activity.rows.length ? (
+                activity.rows.map((row) => (
+                  <OperationRowView key={row.id} row={row} showModeAndTime />
+                ))
+              ) : (
+                <AppText tone="muted">{workWords("work.activityEmpty")}</AppText>
+              )}
+            </View>
+          ),
+        };
+      }),
     });
-    for (const day of days) {
-      earlier.push({ kind: "text", key: day.day, label: day.label });
-      for (const session of day.sessions) {
-        const count = session.actionCount;
-        const where =
-          count === null
-            ? session.place
-            : `${session.place} · ${count} ${count === 1 ? "action" : "actions"}`;
-        earlier.push({
-          kind: "button",
-          key: session.sessionId,
-          label: `${where} · ${formatClockTime(session.at)}`,
-          detail: `${session.action} · ${session.outcome}`,
-          opens: true,
-          onPress: () => open(session.threadId),
-        });
-      }
-    }
-    if (history.page.nextBefore) {
-      earlier.push({
+  }
+  const earlier = connectedAgentEarlierSection(history, work.view.agents);
+  if (earlier) {
+    const rows: NativeSettingsRow[] = earlier.days.flatMap(({ day, label, sessions }) => [
+      { kind: "text", key: day, label },
+      ...sessions.map((session): NativeSettingsRow => ({
+        kind: "button",
+        key: session.sessionId,
+        label: phoneSentence(joinSentenceParts([session.labelParts, [session.time]]), {
+          quoteNames: false,
+        }),
+        detail: phoneSentence(session.detailParts, { quoteNames: false }),
+        opens: true,
+        onPress: () => open(session.threadId),
+      })),
+    ]);
+    if (earlier.more)
+      rows.push({
         kind: "button",
         key: "more",
-        label: history.loadingMore ? "Loading…" : "Show earlier",
-        disabled: history.loadingMore,
+        ...earlier.more,
         onPress: () => void history.showEarlier(),
       });
-    }
+    if (earlier.error) rows.push({ kind: "text", key: "failed", label: earlier.error });
+    sections.push({ key: "earlier", title: "Earlier", rows });
   }
-  if (history.failed)
-    earlier.push({
-      kind: "text",
-      key: "failed",
-      label: "Couldn’t load earlier activity.",
-    });
-  const sections: NativeSettingsSection[] = [];
-  if (now.length) sections.push({ key: "now", title: "Now", rows: now });
-  if (earlier.length) sections.push({ key: "earlier", title: "Earlier", rows: earlier });
   return sections;
 }

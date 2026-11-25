@@ -22,16 +22,12 @@ async function readActivityPage(
   );
 }
 
-/** One initial read, then a page when asked or a fresh cut when the live session list changes. */
+/** One initial read, then another page only when asked. */
 export function useConnectedAgentHistory(
   client: Pick<ChatScreenHost, "rpc">,
   connectionId: string,
-  liveSessions?: string,
 ) {
-  const scope = useMemo(
-    () => ({ client, connectionId, liveSessions }),
-    [client, connectionId, liveSessions],
-  );
+  const scope = useMemo(() => ({ client, connectionId }), [client, connectionId]);
   const lifetime = useRef<{ scope: typeof scope; controller: AbortController; busy: boolean }>(
     null,
   );
@@ -64,14 +60,7 @@ export function useConnectedAgentHistory(
   const showEarlier = async () => {
     const request = lifetime.current;
     const page = current?.page;
-    if (
-      connectionId === null ||
-      !request ||
-      request.scope !== scope ||
-      request.busy ||
-      !page?.nextBefore
-    )
-      return;
+    if (!request || request.scope !== scope || request.busy || !page?.nextBefore) return;
     request.busy = true;
     setRead({ scope, page, loadingMore: true, failed: false });
     try {

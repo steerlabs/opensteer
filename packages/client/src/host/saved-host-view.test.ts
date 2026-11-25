@@ -75,7 +75,7 @@ it("bounds Unicode subjects and retains the newest fifty across working, ready a
 });
 it("binds saved rows to the expected Host, epoch and login", () => {
   const scope = {
-    schema: 1 as const,
+    schema: 2 as const,
     epoch: 6,
     hostIdentity: {
       deploymentId: createId("deployment"),

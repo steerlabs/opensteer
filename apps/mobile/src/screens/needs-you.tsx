@@ -1,8 +1,10 @@
 import { presentClientIssue } from "@opensteer/client/feedback";
 import { useHostSelector } from "@opensteer/client/react";
 import {
+  needsYouAgentRequest,
   needsYouEntryKey,
   phoneSentence,
+  sessionSlotFromHome,
   threadInDirectory,
   type HostClient,
 } from "@opensteer/client/host";
@@ -17,7 +19,6 @@ import { Screen } from "../ui/screen.js";
 import { space } from "../theme.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { ConnectedAgentLine } from "../thread/connected-agent-line.js";
-import { needsYouOperation } from "../thread/agent-session-model.js";
 
 export function NeedsYouScreen(props: StaticScreenProps<{ readonly deploymentId: string }>) {
   const { deploymentId } = props.route.params;
@@ -104,9 +105,9 @@ function NeedsYouRow(props: {
   const navigation = useNavigation();
   const threadId = entry.request.originatingThreadId;
   const thread = useHostSelector(client, (snapshot) => threadInDirectory(threadId, snapshot));
-  const operation = needsYouOperation(
-    { threads: thread ? [thread] : [] },
-    { request: entry.request, threadId },
+  const agentRequest = needsYouAgentRequest(
+    entry.request,
+    sessionSlotFromHome(thread?.externalWork),
   );
   const open = () =>
     navigation.navigate("Thread", {
@@ -114,19 +115,14 @@ function NeedsYouRow(props: {
       requestId: entry.request.id,
       threadId: entry.navigationThreadId,
     });
-  if (operation) {
-    const work = thread?.externalWork;
-    const sessionId =
-      work?.status === "active" && work.sessionId === entry.request.originatingAgentSessionId
-        ? work.sessionId
-        : null;
+  if (agentRequest) {
     return (
       <ConnectedAgentLine
         host={client}
         threadId={threadId}
-        sessionId={sessionId}
-        agent={operation.agent}
-        title={phoneSentence(operation.listTitleParts)}
+        sessionId={agentRequest.stop?.sessionId ?? null}
+        agent={agentRequest.agent}
+        title={phoneSentence(agentRequest.listTitleParts)}
         onOpen={open}
         needsYou
       />

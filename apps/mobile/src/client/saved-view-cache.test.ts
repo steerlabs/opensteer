@@ -14,7 +14,7 @@ afterEach(() => {
   for (const close of cleanup.splice(0)) close();
 });
 const view = (): SavedHostView => ({
-  schema: 1,
+  schema: 2,
   epoch: hostApiVersion,
   hostIdentity: {
     deploymentId: createId("deployment"),

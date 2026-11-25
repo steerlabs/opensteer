@@ -1,4 +1,6 @@
 import {
+  named,
+  phoneSentence,
   personDoneTaskList,
   quietlyMoved,
   quietSeenScope,
@@ -28,6 +30,7 @@ import { useContentInsets } from "../ui/pane.js";
 import { AppText, Notice, PrimaryButton } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { TaskMark } from "../ui/task-mark.js";
+import { useTaskOrigins } from "./use-task-origins.js";
 import { runTaskDone, TaskDoneLine } from "./task-row.js";
 
 export type QuietlyMovedScreenProps = StaticScreenProps<{ readonly deploymentId: string }>;
@@ -68,6 +71,10 @@ function QuietlyMoved(props: {
   const [movingAll, setMovingAll] = useState(false);
   const rows = quietlyMoved(personDoneTaskList(snapshot), since, Date.now());
   const days = snapshot.quietTaskDays;
+  const origins = useTaskOrigins(
+    hostClient,
+    rows.some((row) => row.originConnectionId),
+  );
 
   const shownThrough = seenThroughOf(rows, null);
   useEffect(() => {
@@ -172,50 +179,62 @@ function QuietlyMoved(props: {
         ) : (
           <>
             <View style={styles.group}>
-              {rows.map((row, index) => (
-                <View key={row.threadId} style={[styles.row, index > 0 && styles.separated]}>
-                  <Pressable
-                    accessibilityHint="Opens this task"
-                    accessibilityLabel={row.title}
-                    accessibilityRole="button"
-                    onPress={() => openTask(row.threadId)}
-                    style={({ pressed }) => [styles.open, pressed && styles.pressed]}
-                  >
-                    <TaskMark mark={taskMark(row)} quiet />
-                    <View style={styles.words}>
-                      <AppText
-                        maxFontSizeMultiplier={controlFontScaleLimit}
-                        numberOfLines={1}
-                        role="secondary"
-                        style={styles.title}
-                      >
-                        {row.title}
-                      </AppText>
-                      <TaskDoneLine threadId={row.threadId} />
-                    </View>
-                  </Pressable>
-                  <Pressable
-                    accessibilityLabel={`Move ${row.title} back`}
-                    accessibilityRole="button"
-                    accessibilityState={{ busy: moving.has(row.threadId) }}
-                    disabled={moving.has(row.threadId) || movingAll}
-                    onPress={() => moveOne(row)}
-                    style={({ pressed }) => [styles.back, pressed && styles.pressed]}
-                  >
-                    {moving.has(row.threadId) ? (
-                      <ActivityIndicator color={color.muted} size="small" />
-                    ) : (
-                      <AppText
-                        maxFontSizeMultiplier={controlFontScaleLimit}
-                        role="secondaryMedium"
-                        tone="ember"
-                      >
-                        Move back
-                      </AppText>
-                    )}
-                  </Pressable>
-                </View>
-              ))}
+              {rows.map((row, index) => {
+                const label = phoneSentence([named(row.title)]);
+                const parts = row.originConnectionId
+                  ? origins.get(row.originConnectionId)
+                  : undefined;
+                const startedBy = parts ? phoneSentence(parts) : null;
+                return (
+                  <View key={row.threadId} style={[styles.row, index > 0 && styles.separated]}>
+                    <Pressable
+                      accessibilityHint="Opens this task"
+                      accessibilityLabel={startedBy ? `${label} — ${startedBy}` : label}
+                      accessibilityRole="button"
+                      onPress={() => openTask(row.threadId)}
+                      style={({ pressed }) => [styles.open, pressed && styles.pressed]}
+                    >
+                      <TaskMark mark={taskMark(row)} quiet />
+                      <View style={styles.words}>
+                        <AppText
+                          maxFontSizeMultiplier={controlFontScaleLimit}
+                          numberOfLines={1}
+                          role="secondary"
+                          style={styles.title}
+                        >
+                          {label}
+                        </AppText>
+                        {startedBy ? (
+                          <AppText role="caption" tone="muted">
+                            {startedBy}
+                          </AppText>
+                        ) : null}
+                        <TaskDoneLine threadId={row.threadId} />
+                      </View>
+                    </Pressable>
+                    <Pressable
+                      accessibilityLabel={`Move ${label} back`}
+                      accessibilityRole="button"
+                      accessibilityState={{ busy: moving.has(row.threadId) }}
+                      disabled={moving.has(row.threadId) || movingAll}
+                      onPress={() => moveOne(row)}
+                      style={({ pressed }) => [styles.back, pressed && styles.pressed]}
+                    >
+                      {moving.has(row.threadId) ? (
+                        <ActivityIndicator color={color.muted} size="small" />
+                      ) : (
+                        <AppText
+                          maxFontSizeMultiplier={controlFontScaleLimit}
+                          role="secondaryMedium"
+                          tone="ember"
+                        >
+                          Move back
+                        </AppText>
+                      )}
+                    </Pressable>
+                  </View>
+                );
+              })}
             </View>
             <PrimaryButton
               busy={movingAll}
