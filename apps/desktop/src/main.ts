@@ -41,7 +41,6 @@ import { NativeDictationHelperClient } from "./dictation/helper-client.js";
 import { bundledDictationBrokerPath } from "./dictation/paths.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createDesktopHostApi } from "./connections/desktop-host-api.js";
 import {
   app,
   BaseWindow,
@@ -221,7 +220,7 @@ import {
 } from "./app/background-update.js";
 import { DesktopMenuBarService } from "./app/menu-bar-service.js";
 import { DesktopMenuBar } from "./app/menu-bar.js";
-import { createForwardedHostApi } from "./connections/desktop-host-api.js";
+import { homeHostApi } from "./connections/desktop-host-api.js";
 
 registerDesktopAppScheme(protocol);
 keepDesktopAliveWithoutWindows(app);
@@ -881,6 +880,9 @@ async function runDesktop(
     for (const deploymentId of deploymentIds)
       hostTransport.closeDeploymentConnections(DeploymentIdSchema.parse(deploymentId));
   });
+  // Main reads and writes each Home under that Home's own sign-in, selected or not.
+  const homeApi = homeHostApi(hostTransport);
+  const ownerHost = (deploymentId: string) => homeApi(DeploymentIdSchema.parse(deploymentId));
   const localRunner = new LocalRunnerService(loaded.config, {
     agentsStoppedSince: () => localStop.agentsStoppedSince,
     onUncontainedBoot: (mode: string) => localStop.noteUncontainedBoot(mode),
@@ -896,11 +898,8 @@ async function runDesktop(
     },
     clearDeploymentSession: (deploymentId) => hostNetwork.clearDeploymentSession(deploymentId),
     leaveFetch: serviceNetwork.fetch.bind(serviceNetwork),
-    hostApi: (deploymentId, origin) =>
-      createDesktopHostApi({
-        origin,
-        fetch: (input, init) => hostNetwork.partitionFetch(deploymentId, input, init),
-      }),
+    // Bind, retire and leave reach a Home the way the window does, with its own sign-in.
+    hostApi: (deploymentId) => ownerHost(deploymentId),
     profileErasure,
     log: reportEvent,
     browser: (input) =>
@@ -1647,11 +1646,6 @@ async function runDesktop(
       null
     );
   };
-  // Main reads each Home under that Home's own owner session, selected or not.
-  const ownerHost = (deploymentId: string) =>
-    createForwardedHostApi(hostTransport, DeploymentIdSchema.parse(deploymentId), {
-      anyHome: true,
-    });
   const localActivity = () => ({
     appSessions: computerUse.agentSessions,
     browserTabs: agentBrowserGate.agentTabs,

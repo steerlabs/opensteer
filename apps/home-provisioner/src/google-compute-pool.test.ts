@@ -5,6 +5,8 @@ import {
 } from "@opensteer/control-plane-protocol";
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "./config.js";
+import { checkPoolNetwork } from "./main.js";
+import { provisionerFailure } from "./http.js";
 import {
   ComputeFake,
   computeCreate,
@@ -222,9 +224,6 @@ describe("Google Compute pool host provider", () => {
       OPENSTEER_HOME_GCP_NETWORK: "home-net",
       OPENSTEER_HOME_GCP_SUBNET: "home-subnet",
     };
-    const withoutPool = loadConfig(baseEnv);
-    expect(withoutPool.pool).toBeUndefined();
-
     const withPool = loadConfig({
       ...baseEnv,
       OPENSTEER_POOL_PROVISIONER_KEY: provisionerKeyPkcs8,
@@ -238,6 +237,28 @@ describe("Google Compute pool host provider", () => {
       provisionerCidr: "10.50.0.0/24",
       localSsdCount: 2,
       adminPort: 7311,
+    });
+  });
+});
+
+describe("the Homes' subnet as the pool network (review S3)", () => {
+  it("starts only when OPENSTEER_POOL_HOME_CIDR is the subnet's own range", async () => {
+    const provider = new ComputeFake().adapter();
+    const signal = new AbortController().signal;
+    expect(await provider.subnetRange(signal)).toBe("10.40.0.0/20");
+    await expect(checkPoolNetwork(provider, "10.40.0.0/20", signal)).resolves.toBeUndefined();
+    // Each Home's firewall opens exactly this network: a range that is not the subnet's would
+    // open the wrong one, or leave the pool unreachable.
+    await expect(checkPoolNetwork(provider, "10.40.0.0/16", signal)).rejects.toThrow(
+      "OPENSTEER_POOL_HOME_CIDR (10.40.0.0/16) is not the subnet's range (10.40.0.0/20)",
+    );
+    // Its fatal log says why, not only that a pass failed.
+    const failure = await checkPoolNetwork(provider, "10.40.0.0/16", signal).catch(
+      (error: unknown) => error,
+    );
+    expect(provisionerFailure(failure)).toEqual({
+      event: "home-provisioner.pool.network-mismatch",
+      message: "OPENSTEER_POOL_HOME_CIDR (10.40.0.0/16) is not the subnet's range (10.40.0.0/20)",
     });
   });
 });

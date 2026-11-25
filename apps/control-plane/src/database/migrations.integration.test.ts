@@ -418,8 +418,8 @@ integration("browser pool expand-only migration (0036_browser_pool)", () => {
     await maintenance?.end();
   });
 
-  it("defaults existing Cloud Computers to browser_mode='local' and enforces S1 schema invariants", async () => {
-    // Ensure a pre-existing-style insert (omitting new columns) defaults cleanly to local.
+  it("pools a Cloud Computer inserted without browser_mode and enforces S1 schema invariants", async () => {
+    // A pre-existing-style insert (omitting the pool's columns): its browser is in the pool.
     await sql`
       insert into public.users (id, display_name, email, email_verified)
       values ('acct_00000000-0000-4000-8000-000000000099', 'Ada', 'ada@example.test', true)
@@ -441,7 +441,7 @@ integration("browser pool expand-only migration (0036_browser_pool)", () => {
       select browser_mode, browser_slot_erased_at from public.cloud_computers
       where id = 'cc_00000000-0000-4000-8000-000000000099'
     `.execute(database);
-    expect(computer.rows[0]).toEqual({ browserMode: "local", browserSlotErasedAt: null });
+    expect(computer.rows[0]).toEqual({ browserMode: "pool", browserSlotErasedAt: null });
 
     // S1: no port columns on browser_pool_hosts.
     const portCols = await sql<{ columnName: string }>`
@@ -451,6 +451,135 @@ integration("browser pool expand-only migration (0036_browser_pool)", () => {
     `.execute(database);
     expect(portCols.rows).toEqual([]);
     expect(browserPoolMigration).toBeDefined();
+  });
+});
+
+integration("every Cloud Computer's browser in the pool (0040_browser_always_pooled)", () => {
+  const databaseName = `opensteer_always_pooled_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  let maintenance: Pool;
+  let database: Kysely<ControlPlaneDatabaseSchema>;
+  const urlForDatabase = (name: string) => {
+    const url = new URL(databaseUrl ?? "postgres://unconfigured");
+    url.pathname = `/${name}`;
+    return url.toString();
+  };
+  // One live Cloud Computer per account: each row has its own.
+  const owner = (n: number) => `acct_00000000-0000-4000-8000-0000000000f${n}`;
+  const id = (n: number) => `cc_00000000-0000-4000-8000-0000000000f${n}`;
+  beforeAll(async () => {
+    maintenance = new Pool({ connectionString: urlForDatabase("postgres") });
+    await maintenance.query(`create database ${databaseName}`);
+    database = createControlPlaneDatabase({ connectionString: urlForDatabase(databaseName) });
+    await migrateControlPlaneToLatest(database);
+    // The schema before this migration: a Cloud Computer could say its browser ran in its VM.
+    await sql`
+      alter table public.cloud_computers
+        drop constraint cloud_computers_browser_mode_check,
+        add constraint cloud_computers_browser_mode_check check (browser_mode in ('local', 'pool')),
+        alter column browser_mode set default 'local';
+      alter table public.cloud_computer_provisioner_lease drop column pool_network,
+        add column pool_configured boolean;
+      drop index public.browser_pool_slots_one_live_per_computer;
+      alter table public.browser_pool_slots
+        add constraint browser_pool_slots_computer_id_key unique (computer_id);
+      -- This migration and any after it, which the migrator then runs again in name order.
+      delete from public.kysely_migration where name >= '0040_browser_always_pooled';
+    `.execute(database);
+  });
+  afterAll(async () => {
+    await database?.destroy();
+    await maintenance?.query(`drop database if exists ${databaseName}`);
+    await maintenance?.end();
+  });
+
+  it("moves each local Cloud Computer into the pool, keeps every row, and admits no local one again", async () => {
+    for (const n of [1, 2, 3, 4, 5])
+      await sql`
+        insert into public.users (id, display_name, email, email_verified)
+        values (${owner(n)}, 'Ada', ${`ada-${n}@example.test`}, true)
+      `.execute(database);
+    // 1 active, 2 suspended, 3 deletion requested, 4 deleted and tombstoned, 5 already pooled.
+    for (const [n, state, mode, deletionRequested, tombstoned] of [
+      [1, "active", "local", false, false],
+      [2, "suspended", "local", false, false],
+      [3, "active", "local", true, false],
+      [4, "deleted", "local", true, true],
+      [5, "active", "pool", false, false],
+    ] as const)
+      await sql`
+        insert into public.cloud_computers (
+          id, account_id, generation, state, hostname, region, server_type, release,
+          readiness_started_at, phase, stripe_checkout_id, stripe_customer_id,
+          stripe_subscription_id, stripe_price_id, billing_currency, billing_status,
+          browser_mode, deletion_requested_at, tombstoned_at, created_at, updated_at
+        ) values (
+          ${id(n)}, ${owner(n)}, 1, ${state}, ${`cc-f${n}.home.example.test`}, 'us-central1-a',
+          'default', '{}'::jsonb, now(), 'ready', ${`cs_f${n}`}, ${`cus_f${n}`}, ${`sub_f${n}`},
+          'price_1', 'usd', 'active', ${mode}, ${deletionRequested ? sql`now()` : null},
+          ${tombstoned ? sql`now()` : null}, now(), now()
+        )
+      `.execute(database);
+    await sql`
+      insert into public.browser_pool_slots
+        (slot_id, computer_id, state, phase, guest_vcpus, guest_memory_mib, profile_mib)
+      values ('bps_00000000-0000-4000-8000-0000000000f5', ${id(5)}, 'active', 'preparing', 4, 4096, 1024)
+    `.execute(database);
+
+    await migrateControlPlaneToLatest(database);
+
+    const computers = await sql<{ id: string; browserMode: string; slotErased: boolean }>`
+      select id, browser_mode, browser_slot_erased_at is not null as slot_erased
+        from public.cloud_computers order by id
+    `.execute(database);
+    expect(computers.rows).toEqual([
+      { id: id(1), browserMode: "pool", slotErased: false },
+      { id: id(2), browserMode: "pool", slotErased: false },
+      // Never had a slot, so its deletion does not wait for one to be erased.
+      { id: id(3), browserMode: "pool", slotErased: true },
+      { id: id(4), browserMode: "pool", slotErased: true },
+      { id: id(5), browserMode: "pool", slotErased: false },
+    ]);
+    const slots = await sql<Record<string, unknown>>`
+      select computer_id, term, state, phase, host_id, guest_vcpus, guest_memory_mib, profile_mib
+        from public.browser_pool_slots order by computer_id
+    `.execute(database);
+    const fresh = { term: 1, state: "active", phase: "preparing", hostId: null };
+    expect(slots.rows).toEqual([
+      // Rows 1 and 2 get theirs from the account, at its configured size (see the browser pool
+      // tests): a migration cannot know POOL_PROFILE_MIB.
+      // An existing slot is left exactly as it was.
+      { computerId: id(5), ...fresh, guestVcpus: 4, guestMemoryMib: 4096, profileMib: 1024 },
+    ]);
+    await expect(
+      sql`update public.cloud_computers set browser_mode = 'local' where id = ${id(1)}`.execute(
+        database,
+      ),
+    ).rejects.toThrow(/cloud_computers_browser_mode_check/u);
+    // One live slot per Cloud Computer; a tombstoned one leaves room for its next Home's.
+    const slot = (n: string, tombstoned: boolean) => sql`
+      insert into public.browser_pool_slots
+        (slot_id, computer_id, state, phase, guest_vcpus, guest_memory_mib, profile_mib, tombstoned_at)
+      values (${`bps_00000000-0000-4000-8000-0000000000${n}`}, ${id(1)}, 'active', 'preparing',
+        2, 2048, 2048, ${tombstoned ? sql`now()` : null})
+    `;
+    await slot("e1", false).execute(database);
+    await expect(slot("e3", false).execute(database)).rejects.toThrow(
+      /browser_pool_slots_one_live_per_computer/u,
+    );
+    await slot("e2", true).execute(database);
+    // What the provisioner no longer sends is gone (review S9).
+    const leaseColumns = await sql<{ columnName: string }>`
+      select column_name from information_schema.columns
+      where table_schema = 'public' and table_name = 'cloud_computer_provisioner_lease'
+    `.execute(database);
+    expect(leaseColumns.rows.map((row) => row.columnName)).not.toContain("pool_configured");
+    // The lease keeps the pool network its provisioner reported, a private one only.
+    await expect(
+      sql`
+        insert into public.cloud_computer_provisioner_lease (singleton, holder, expires_at, pool_network)
+        values (true, gen_random_uuid(), now(), '8.8.8.0/24')
+      `.execute(database),
+    ).rejects.toThrow(/pool_network/u);
   });
 });
 

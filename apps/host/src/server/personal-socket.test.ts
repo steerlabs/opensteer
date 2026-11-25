@@ -26,6 +26,7 @@ const minute = 60_000;
 function attach(
   expiresInMs: number,
   reauthenticate?: () => Promise<AuthenticatedHostSession["session"] | null>,
+  credentialKind: AuthenticatedHostSession["credentialKind"] = "browser-cookie",
 ) {
   const now = Date.now();
   const session = {
@@ -40,7 +41,11 @@ function attach(
   attachPersonalSocket({
     socket: socket as unknown as WebSocket,
     logFailure: () => {},
-    authenticated: { session, surface: "canonical" } as unknown as AuthenticatedHostSession,
+    authenticated: {
+      credentialKind,
+      session,
+      surface: "canonical",
+    } as unknown as AuthenticatedHostSession,
     realtime: {
       registerConnection: () => () => {},
       closeSession,
@@ -107,4 +112,19 @@ it("ends a realtime socket at its deadline while a session check is still pendin
 
   expect(stalled).toHaveBeenCalledOnce();
   expect(closeSession).toHaveBeenCalledWith(session.id);
+});
+
+it("closes a socket whose native access token ran out for a reconnect, never as its session ending", async () => {
+  // A native sign-in's access token lives ten minutes; its session lives on. The app
+  // reconnects with a refreshed token; were the session gone, that reconnect is refused.
+  vi.useFakeTimers();
+  const { socket, closeSession } = attach(10 * minute, undefined, "native-oauth");
+
+  await vi.advanceTimersByTimeAsync(10 * minute + 1_000);
+
+  expect(closeSession).not.toHaveBeenCalled();
+  expect(socket.close).toHaveBeenCalledOnce();
+  const [code, reason] = socket.close.mock.calls[0] as unknown as [number, string];
+  expect(code).toBe(1001);
+  expect(reason).not.toBe("Session ended");
 });

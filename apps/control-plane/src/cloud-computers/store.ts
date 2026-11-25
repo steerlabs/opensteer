@@ -22,6 +22,7 @@ import {
   cloudWords,
   type ManagedHomeClaimReceipt,
   CloudComputerBootReleaseSchema,
+  CloudComputerBrowserPoolNetworkSchema,
   cloudComputerReadinessDeadline,
   CloudComputerBootResponseSchema,
   CloudComputerDesiredSchema,
@@ -848,7 +849,8 @@ export class CloudComputerStore {
         restoreSnapshot: null,
         deletionRequestedAt: null,
         ipv6Enabled: config.ipv6Enabled,
-        browserMode: config.browserPool ? "pool" : "local",
+        // Its browser runs in the browser pool, never in its own VM.
+        browserMode: "pool",
         readinessStartedAt: now,
         phase: "provisioning",
         providerServerId: null,
@@ -867,9 +869,7 @@ export class CloudComputerStore {
         tombstonedAt: null,
       })
       .executeTakeFirst();
-    if (config.browserPool) {
-      await this.#pool.createSlotForComputer(tx, paid.id, now);
-    }
+    await this.#pool.createSlotForComputer(tx, paid.id, now);
   }
 
   /**
@@ -906,9 +906,7 @@ export class CloudComputerStore {
           updatedAt: now,
         })
         .executeTakeFirst();
-      if (row.browserMode === "pool") {
-        await this.#pool.markComputerDeleted(tx, row.id, now);
-      }
+      await this.#pool.markComputerDeleted(tx, row.id, now);
       return;
     }
     const status =
@@ -1282,20 +1280,31 @@ export class CloudComputerStore {
       throw new ControlPlaneError("conflict", "The holder does not have an expired lease");
   }
 
-  async lease(holder: string, acquire: boolean, poolConfigured?: boolean): Promise<boolean> {
+  /** Ends a lease its holder gives back; its pool network stays for the next holder's Homes. */
+  async giveBackLease(holder: string): Promise<boolean> {
+    const now = this.#now();
+    const result = await sql`
+      update cloud_computer_provisioner_lease set expires_at = ${now}
+      where singleton and holder = ${holder}::uuid and expires_at > ${now}
+      returning holder
+    `.execute(this.#db);
+    return result.rows.length === 1;
+  }
+
+  async lease(holder: string, acquire: boolean, poolNetwork?: string): Promise<boolean> {
     const now = this.#now();
     const expires = new Date(now.getTime() + 10 * 60_000);
-    const poolFlag = poolConfigured ?? null;
+    const network = poolNetwork ?? null;
     const result = acquire
       ? await sql`
-          insert into cloud_computer_provisioner_lease (singleton, holder, expires_at, pool_configured)
-          values (true, ${holder}::uuid, ${expires}, ${poolFlag})
+          insert into cloud_computer_provisioner_lease (singleton, holder, expires_at, pool_network)
+          values (true, ${holder}::uuid, ${expires}, ${network}::cidr)
           on conflict (singleton) do update set
             holder = excluded.holder,
             expires_at = excluded.expires_at,
-            pool_configured = case
-              when ${poolFlag}::boolean is not null then ${poolFlag}::boolean
-              when cloud_computer_provisioner_lease.holder = excluded.holder then cloud_computer_provisioner_lease.pool_configured
+            pool_network = case
+              when ${network}::cidr is not null then ${network}::cidr
+              when cloud_computer_provisioner_lease.holder = excluded.holder then cloud_computer_provisioner_lease.pool_network
               else null
             end
           where cloud_computer_provisioner_lease.expires_at <= ${now}
@@ -1684,20 +1693,14 @@ export class CloudComputerStore {
     await this.#db.transaction().execute(async (tx) => {
       const row = await tx
         .selectFrom("cloudComputers")
-        .select([
-          "vmDestroyedAt",
-          "backupsUnreadableAt",
-          "backupKeyProject",
-          "browserMode",
-          "browserSlotErasedAt",
-        ])
+        .select(["vmDestroyedAt", "backupsUnreadableAt", "backupKeyProject", "browserSlotErasedAt"])
         .where("id", "=", id)
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!row?.vmDestroyedAt || row.backupsUnreadableAt) return;
       await this.#vault(row.backupKeyProject ?? undefined).destroy(id);
       const now = this.#now();
-      const settled = row.browserMode !== "pool" || row.browserSlotErasedAt !== null;
+      const settled = row.browserSlotErasedAt !== null;
       await tx
         .updateTable("cloudComputers")
         .where("id", "=", id)
@@ -1832,6 +1835,16 @@ export class CloudComputerStore {
         throw invalidBoot();
       const owner = snapshot.accountId;
       if (!owner || owner !== locked?.accountId) throw invalidBoot();
+      // Review C1: without it this Home would have no path to its browser, for good. The
+      // installer retries a 503 until the provisioner's lease names the pool network. Decided
+      // before any credential is prepared or the backup key vault is written, so a retry writes
+      // nothing.
+      const poolNetwork = await this.#poolNetwork(tx);
+      if (!poolNetwork)
+        throw new ControlPlaneError(
+          "unavailable",
+          "The browser pool's network is not known yet; the Cloud Computer will boot once it is",
+        );
       const { managedHome, credentials } = await this.#prepareManagedHome(tx, snapshot, owner);
       const row = await tx
         .selectFrom("cloudComputers")
@@ -1853,9 +1866,6 @@ export class CloudComputerStore {
           .set(credentials)
           .executeTakeFirstOrThrow();
       }
-      const pooled = row.browserMode === "pool";
-      const endpoint = pooled ? undefined : await this.#assignEgress(tx, id);
-      const egress = endpoint ? this.#egressCredentials(endpoint) : undefined;
       const { cipher } = this.#options;
       const backup = await tx
         .selectFrom("cloudComputerBackupTargets")
@@ -1898,11 +1908,11 @@ export class CloudComputerStore {
           version: row.release.version,
           images: row.release.images,
         }),
-        ...(this.#options.config.releaseManifestUrl
-          ? { releaseManifestUrl: this.#options.config.releaseManifestUrl }
-          : {}),
-        ...(pooled ? { browserPool: true } : {}),
-        ...(egress ? { egress } : {}),
+        releaseManifestUrl: this.#options.config.releaseManifestUrl,
+        // Its browser runs on a pool host, which alone holds its egress password (T9).
+        browserPool: true,
+        // The pool network its firewall may reach, and nothing else private.
+        browserPoolNetwork: poolNetwork,
         backup: {
           endpoint: backupEndpoint,
           bucket,
@@ -1914,6 +1924,21 @@ export class CloudComputerStore {
         },
       };
     });
+  }
+
+  /**
+   * The network the provisioner holding the lease creates pool hosts in, with the ports this
+   * account publishes in each Home's pool target: one source for each.
+   */
+  async #poolNetwork(tx: TransactionDb) {
+    const result = await sql<{ poolNetwork: string | null }>`
+      select host(pool_network) || '/' || masklen(pool_network) as "poolNetwork"
+        from cloud_computer_provisioner_lease where singleton
+    `.execute(tx);
+    const cidr = result.rows[0]?.poolNetwork;
+    if (!cidr) return undefined;
+    const { agentPort, relayPort } = this.#options.config.browserPool;
+    return CloudComputerBrowserPoolNetworkSchema.parse({ cidr, agentPort, relayPort });
   }
 
   #egressCredentials(endpoint: Selectable<CloudComputerEgressEndpointTable>) {
@@ -2030,16 +2055,38 @@ export class CloudComputerStore {
 
   async egressForHome(id: CloudComputerId, authorization: string | undefined) {
     return this.#db.transaction().execute(async (tx) => {
-      const row = await this.#requireBootedHome(tx, id, authorization, "share");
-      // T9: A pooled Cloud Computer's egress password is held only by its pool host.
-      if (row.browserMode === "pool") return {};
-      const endpoint = await tx
-        .selectFrom("cloudComputerEgressEndpoints")
-        .selectAll()
-        .where("computerId", "=", id)
-        .executeTakeFirst();
-      const egress = endpoint ? this.#egressCredentials(endpoint) : undefined;
-      return egress ? { egress } : {};
+      await this.#requireBootedHome(tx, id, authorization, "share");
+      // T9: A Cloud Computer's egress password is held only by its pool host, never its Home.
+      return {};
+    });
+  }
+
+  /** The ports every Home's Host reaches its pool host on. */
+  get poolPorts() {
+    const { agentPort, relayPort } = this.#options.config.browserPool;
+    return { agentPort, relayPort };
+  }
+
+  /** The pool network now, to a booted Home that proves its credentials (review S2). */
+  async poolNetworkForHome(id: CloudComputerId, authorization: string | undefined) {
+    return this.#db.transaction().execute(async (tx) => {
+      await this.#requireBootedHome(tx, id, authorization, "share");
+      const browserPoolNetwork = await this.#poolNetwork(tx);
+      if (!browserPoolNetwork)
+        throw new ControlPlaneError("unavailable", "The browser pool's network is not known yet");
+      return { browserPoolNetwork };
+    });
+  }
+
+  /** The feed this account gives now, to a booted Home that proves its credentials. */
+  async releaseFeedForHome(id: CloudComputerId, authorization: string | undefined) {
+    return this.#db.transaction().execute(async (tx) => {
+      await this.#requireBootedHome(tx, id, authorization, "share");
+      const { installerSha256, installerUrl } = this.#options.config.release;
+      return {
+        releaseManifestUrl: this.#options.config.releaseManifestUrl,
+        recipe: { url: installerUrl, sha256: installerSha256 },
+      };
     });
   }
 
@@ -2718,6 +2765,10 @@ export class CloudComputerStore {
         };
         // The next generation is a new Home; the Account forgets the one it replaces.
         await forgetHome(tx, row, action === "reissue");
+        // Restored from a snapshot it is the same Home (its deployment and profiles come back
+        // with its database), and keeps its browser slot. A fresh Home does not have the old
+        // one's profiles: that slot is erased and the fresh Home gets its own.
+        if (!changes.restoreSnapshot) await this.#pool.retireSlotForFreshHome(tx, id, now);
         if (action === "reissue" && credentialsIssued) {
           await tx
             .updateTable("cloudComputerEgressEndpoints")
@@ -3129,8 +3180,8 @@ export class CloudComputerStore {
     });
   }
 
-  desiredPoolHosts(after?: BrowserPoolHostId, limit?: number, probe?: boolean) {
-    return this.#pool.desiredHosts(after, limit, probe);
+  desiredPoolHosts(after?: BrowserPoolHostId, limit?: number) {
+    return this.#pool.desiredHosts(after, limit);
   }
 
   checkPoolHost(id: BrowserPoolHostId, check: BrowserPoolHostCheck) {

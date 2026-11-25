@@ -2,6 +2,42 @@ import { expect, it, vi } from "vitest";
 // @ts-expect-error The standalone Harness runs directly as JavaScript.
 import { createPage } from "./page.mjs";
 
+it("reports a missing heading only after its CDP object group is released", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  const release = Promise.withResolvers<void>();
+  const command = vi.fn(async (method: string) => {
+    if (method === "Runtime.evaluate") return { result: { objectId: "document" } };
+    if (method === "Runtime.callFunctionOn") return { result: { objectId: "empty-array" } };
+    if (method === "Runtime.getProperties") return { result: [] };
+    if (method === "Runtime.releaseObjectGroup") return release.promise;
+    throw new Error(`Unexpected CDP command: ${method}`);
+  });
+  const { page } = createPage({ bind: async () => ({ sessionId: "session" }), command });
+  try {
+    let failure: unknown;
+    const read = page
+      .locator("h1")
+      .textContent()
+      .catch((error: unknown) => {
+        failure = error;
+      });
+    await vi.advanceTimersByTimeAsync(9_500);
+    expect(
+      command.mock.calls.filter(([method]) => method === "Runtime.releaseObjectGroup"),
+    ).toHaveLength(1);
+    expect(failure).toBeUndefined();
+    release.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(failure).toMatchObject({
+      message: /locator\("h1"\)\.textContent\(\).*no element matched/iu,
+    });
+    await read;
+  } finally {
+    release.resolve();
+    vi.useRealTimers();
+  }
+});
+
 it("awaits a failed lookup's release after CDP answers beyond the action deadline", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
   const query = Promise.withResolvers<{ nodes: unknown[] }>();

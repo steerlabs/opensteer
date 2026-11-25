@@ -57,7 +57,10 @@ export const runMemoryAllowanceBytes = 1536 * mebibyte;
 /** The Runner's own process and its supervisor: 131 MiB at rest there, 152 at that peak. */
 const runnerItselfBytes = 192 * mebibyte;
 
-/** The memory the Runner runs under: its container's limit when it has one, else the computer's. */
+/**
+ * The memory the Runner runs under: its container's limit when it has one below the computer's
+ * memory, the computer's otherwise. A Cloud Computer's Runner is limited well below its VM.
+ */
 export function runnerMemoryBytes(
   constrained: number | undefined = process.constrainedMemory(),
   total: number = totalmem(),
@@ -70,7 +73,8 @@ export function runnerMemoryBytes(
  * process tree, so a small laptop keeps one or two rather than eight; and what
  * the Runner may hold at once, its Runs and its warm engines together, fits its
  * memory at one allowance each: a warm engine takes only the room its
- * `maxConcurrentRuns` Runs leave.
+ * `maxConcurrentRuns` Runs leave. A Runner under 2 GiB (a Cloud Computer's on a 4 GiB machine,
+ * with no swap) therefore keeps none: one beside the Run would invite an out-of-memory kill.
  */
 export function warmEngineIdleCap(
   totalMemoryBytes: number = runnerMemoryBytes(),

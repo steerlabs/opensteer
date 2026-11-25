@@ -858,6 +858,168 @@ integration("IdentityService", () => {
     }
   });
 
+  it("starts a Home sign-in whose state lapsed again once, and ends every other failure on the Home's own page", async () => {
+    let expectedCodeChallenge: string | null = null;
+    const issuer = createServer((request, response) => {
+      void (async () => {
+        const origin = `http://127.0.0.1:${(issuer.address() as AddressInfo).port}`;
+        response.setHeader("content-type", "application/json");
+        if (request.url === "/.well-known/openid-configuration") {
+          response.end(
+            JSON.stringify({
+              authorization_endpoint: `${origin}/authorize`,
+              issuer: origin,
+              jwks_uri: `${origin}/jwks`,
+              token_endpoint: `${origin}/token`,
+              userinfo_endpoint: `${origin}/userinfo`,
+            }),
+          );
+          return;
+        }
+        if (request.method === "POST" && request.url === "/token") {
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(Buffer.from(chunk));
+          const body = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+          const challenge = createHash("sha256")
+            .update(body.get("code_verifier") ?? "")
+            .digest("base64url");
+          if (challenge !== expectedCodeChallenge) {
+            response.statusCode = 400;
+            response.end(JSON.stringify({ error: "invalid_grant" }));
+            return;
+          }
+          response.end(
+            JSON.stringify({
+              access_token: "account-access",
+              expires_in: 600,
+              token_type: "Bearer",
+            }),
+          );
+          return;
+        }
+        if (request.url === "/userinfo") {
+          response.end(
+            JSON.stringify({
+              email: "acct_bound_subject@example.test",
+              email_verified: true,
+              name: "Account Person",
+              sub: "acct_bound_subject",
+            }),
+          );
+          return;
+        }
+        response.statusCode = 404;
+        response.end();
+      })().catch((error: unknown) =>
+        response.destroy(error instanceof Error ? error : new Error("Issuer failed")),
+      );
+    });
+    await new Promise<void>((resolve) => issuer.listen(0, "127.0.0.1", resolve));
+    try {
+      const issuerOrigin = `http://127.0.0.1:${(issuer.address() as AddressInfo).port}`;
+      const publicOrigin = "http://127.0.0.1:4310";
+      const setupCode = "managed-home-restart-setup-code-with-entropy";
+      const identity = identityService({
+        initialOwnerEnrollment: {
+          expiresAt: new Date(Date.now() + 3_600_000),
+          tokenDigest: digestSecret(setupCode),
+        },
+        localPasswordEnabled: false,
+        managedOwner: { providerId: "opensteer-account" },
+        oidcProviders: [{ ...accountProvider(issuerOrigin), allowPrivateNetwork: true }],
+        signupPolicy: "closed",
+      });
+      await identity.initialize();
+      await identity.claimManagedOwner({
+        ...accountLinked("acct_bound_subject", issuerOrigin),
+        claimKey: "k",
+        owner: { displayName: "Pat Owner", email: "pat@example.test", emailVerified: true },
+        receipt: {},
+        setupCode,
+      });
+      const callback = (query: string, cookie?: string) =>
+        identity.handleOidcCallback(
+          new Request(`${publicOrigin}/v1/auth/oidc/callback?${query}`, {
+            headers: {
+              accept: "text/html",
+              ...(cookie ? { cookie } : {}),
+              "sec-fetch-mode": "navigate",
+            },
+          }),
+        );
+      const errorPage = (response: Response) => {
+        expect(response.status).toBeGreaterThanOrEqual(300);
+        expect(response.status).toBeLessThan(400);
+        const location = new URL(response.headers.get("location") ?? "", publicOrigin);
+        expect(location.origin).toBe(publicOrigin);
+        expect(location.pathname).toBe("/auth/error");
+        return location.searchParams;
+      };
+      const begun = await identity.beginOidcSignIn({
+        headers: new Headers({ origin: publicOrigin }),
+        providerId: "opensteer-account",
+        returnPath: "/",
+      });
+      const first = new URL(begun.data.redirectUrl);
+
+      // The Home's state cookie lapsed while the person signed in at the Account: no cookie
+      // comes back. The Home starts the sign-in again, once, with a fresh state of its own.
+      const lapsed = await callback(
+        `code=fixture-code&state=${encodeURIComponent(first.searchParams.get("state") ?? "")}`,
+      );
+      expect(lapsed.status).toBeGreaterThanOrEqual(300);
+      expect(lapsed.status).toBeLessThan(400);
+      const restarted = new URL(lapsed.headers.get("location") ?? "");
+      expect(restarted.origin).toBe(issuerOrigin);
+      expect(restarted.pathname).toBe("/authorize");
+      expect(restarted.searchParams.get("state")).not.toBe(first.searchParams.get("state"));
+      expectedCodeChallenge = restarted.searchParams.get("code_challenge");
+      const signedIn = await callback(
+        `code=fixture-code&state=${encodeURIComponent(restarted.searchParams.get("state") ?? "")}`,
+        cookieHeader(lapsed.headers),
+      );
+      const session = signedIn.headers
+        .getSetCookie()
+        .map((value) => value.split(";", 1)[0])
+        .find((value) => /(?:^|\s)(?:__Host-)?opensteer\.session=.+/u.test(value ?? ""));
+      await expect(
+        session ? identity.authenticate(new Headers({ cookie: session })) : null,
+      ).resolves.toMatchObject({ user: { email: "pat@example.test" } });
+
+      // The restarted attempt lapses too (this browser keeps no cookie): the Home's own page
+      // says so, and nothing starts again.
+      const again = await identity.beginOidcSignIn({
+        headers: new Headers({ origin: publicOrigin }),
+        providerId: "opensteer-account",
+        returnPath: "/",
+      });
+      const lapsedOnce = await callback(
+        `code=fixture-code&state=${encodeURIComponent(new URL(again.data.redirectUrl).searchParams.get("state") ?? "")}`,
+      );
+      const restartedOnce = new URL(lapsedOnce.headers.get("location") ?? "");
+      const lapsedTwice = await callback(
+        `code=fixture-code&state=${encodeURIComponent(restartedOnce.searchParams.get("state") ?? "")}`,
+      );
+      expect(errorPage(lapsedTwice).get("error")).toBe("state_mismatch");
+
+      // The person declined at the Account: the Home's own page, never its internal path.
+      const declined = await identity.beginOidcSignIn({
+        headers: new Headers({ origin: publicOrigin }),
+        providerId: "opensteer-account",
+        returnPath: "/",
+      });
+      const refused = await callback(
+        `error=access_denied&state=${encodeURIComponent(new URL(declined.data.redirectUrl).searchParams.get("state") ?? "")}`,
+        cookieHeader(declined.headers),
+      );
+      expect(errorPage(refused).get("error")).toBe("access_denied");
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        issuer.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
   it("declares a machine owner only for a seeded owner nobody can sign in as", async () => {
     await expect(identityService().configuration()).resolves.toMatchObject({
       machineOwner: false,

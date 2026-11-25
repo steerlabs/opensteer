@@ -39,6 +39,7 @@ export * from "./use-tool-output.js";
 
 export * from "./use-browser-tabs.js";
 export * from "./use-browser-sleep.js";
+export * from "./use-viewer-grace.js";
 export * from "./use-tabs.js";
 export * from "./use-browser-tab-icon.js";
 export * from "./use-syncing-placeholder.js";

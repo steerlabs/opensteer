@@ -112,15 +112,13 @@ export const BrowserPoolHostDesiredSchema = z
   });
 export type BrowserPoolHostDesired = z.infer<typeof BrowserPoolHostDesiredSchema>;
 
-export const BrowserPoolHostDesiredPageSchema = z.object({
+export const BrowserPoolHostDesiredPageSchema = z.strictObject({
   after: BrowserPoolHostIdSchema.optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100),
-  probe: z.coerce.boolean().optional(),
 });
 
 export const BrowserPoolHostDesiredResponseSchema = z.strictObject({
   next: BrowserPoolHostIdSchema.optional(),
-  poolEnabled: z.boolean().optional(),
   hosts: z
     .array(BrowserPoolHostDesiredSchema)
     .max(10_000)

@@ -240,18 +240,21 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
     powerMonitor.emit("lock-screen");
     const locked = await snapshot(
       "simulated-lock",
-      (s) =>
-        !s.visible && subscriptions.size === 0 && s.retains === s.releases && s.openDisplays === 0,
+      (s) => !s.visible && s.retains === s.releases && s.openDisplays === 0,
     );
     assert.equal(locked.visible, false);
-    assert.equal(locked.subscriptions.length, 0);
+    // Browser viewers stay through `browserViewerGraceMs`, so a short hidden spell reconnects
+    // nothing; the display sockets pause at once.
+    assert.equal(locked.subscriptions.length, 2);
     assert.equal(locked.retains, locked.releases);
-    // Hiding pauses every picture socket; the views keep their holds and last pictures.
+    // The views keep their holds and last pictures.
     assert.equal(locked.openDisplays, 0);
     assert(locked.finderRetains > locked.finderReleases);
-    // Longer than the real owner-view renewal period: no fake clock.
+    // Longer than the real owner-view renewal period and the browser viewer grace: no fake clock.
     await delay(31_000);
-    const quiet = await snapshot("locked-past-renewal");
+    const quiet = await snapshot("locked-past-renewal", () => subscriptions.size === 0);
+    // Past the grace the hidden client is no longer a browser viewer.
+    assert.equal(quiet.subscriptions.length, 0);
     assert.equal(quiet.captures, locked.captures);
     assert.equal(quiet.openDisplays, 0);
     assert.equal(quiet.renewals, locked.renewals);
@@ -275,12 +278,10 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
     assert.equal(unlocked.subscriptions.length, 2);
     notifications.get("NSWorkspaceScreensDidSleepNotification")?.();
     powerMonitor.emit("unlock-screen");
-    const asleep = await snapshot(
-      "display-asleep-after-unlock",
-      (s) => !s.visible && subscriptions.size === 0,
-    );
+    const asleep = await snapshot("display-asleep-after-unlock", (s) => !s.visible);
     assert.equal(asleep.visible, false);
-    assert.equal(asleep.subscriptions.length, 0);
+    // Within the grace: the browser viewers stay.
+    assert.equal(asleep.subscriptions.length, 2);
     notifications.get("NSWorkspaceScreensDidWakeNotification")?.();
     const awake = await snapshot("display-wake", (s) => s.visible);
     assert(awake.visible);
@@ -289,18 +290,15 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
     powerMonitor.emit("unlock-screen");
     const hidden = await snapshot(
       "hidden-document-after-unlock",
-      (s) => !s.visible && subscriptions.size === 0 && s.openDisplays === 0,
+      (s) => !s.visible && s.openDisplays === 0,
     );
     assert.equal(hidden.visible, false);
-    assert.equal(hidden.subscriptions.length, 0);
+    assert.equal(hidden.subscriptions.length, 2);
     assert.equal(hidden.openDisplays, 0);
     await window.webContents.executeJavaScript("window.idleLifecycleSmoke.documentVisible(true)");
     powerMonitor.emit("suspend");
-    const suspended = await snapshot(
-      "system-suspend",
-      (s) => subscriptions.size === 0 && s.openDisplays === 0,
-    );
-    assert.equal(suspended.subscriptions.length, 0);
+    const suspended = await snapshot("system-suspend", (s) => s.openDisplays === 0);
+    assert.equal(suspended.subscriptions.length, 2);
     assert.equal(suspended.openDisplays, 0);
     powerMonitor.emit("resume");
     const resumed = await snapshot("system-resume", (s) => s.visible && subscriptions.size === 2);

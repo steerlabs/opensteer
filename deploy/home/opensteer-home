@@ -1,35 +1,45 @@
 #!/usr/bin/env bash
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'Run opensteer-home as root.' >&2; exit 1; }
-# A Home's own copy of this command operates that Home; the copy on the path operates the
-# default Home. The directory is checked before anything in it is read or removed.
-default_dir=/etc/opensteer-home
-own_dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
-if [[ -f "$own_dir/common.sh" && -f "$own_dir/install-scheduler.sh" ]]; then default_dir=$own_dir; fi
-home_dir=${OPENSTEER_HOME_DIR:-$default_dir}
-if [[ ! $home_dir =~ ^/[a-zA-Z0-9._/-]+$ || $home_dir == / || $home_dir =~ (^|/)\.\.?(/|$) ||
-  -L $home_dir || ! -d $home_dir || $(stat -c '%u:%a' "$home_dir") != 0:700 || ! -f "$home_dir/common.sh" ]]; then
-  echo "No Home is installed at $home_dir." >&2
+# This command is a release's, <home>/releases/<id>/opensteer-home, run through the Home's `current`.
+# The Home's directory is checked before anything in it is read or removed.
+own=$(readlink -f -- "$0")
+home_dir=${own%/releases/*}
+if [[ $own != "$home_dir"/releases/*/opensteer-home || ! $home_dir =~ ^/[a-zA-Z0-9._/-]+$ || $home_dir == / ||
+  $home_dir =~ (^|/)\.\.?(/|$) || ! -d $home_dir || $(stat -c '%u:%a' "$home_dir") != 0:700 ]]; then
+  echo "No Home is installed at ${own%/*}." >&2
   exit 1
 fi
 export OPENSTEER_HOME_DIR="$home_dir"
+command_args=("$@")
 # shellcheck source=deploy/home/common.sh
-source "$home_dir/common.sh"
+source "${own%/*}/common.sh"
 
 # A failed first install can be removed before it wrote its configuration.
 [[ -f "$home_dir/config.env" || ( ${1:-} == uninstall && -d $home_dir ) ]] ||
   fail "No Home configuration was found at $home_dir."
 
 # shellcheck source=deploy/home/backup.sh
-source "$home_dir/backup.sh"
+source "$release_dir/backup.sh"
 # shellcheck source=deploy/home/update.sh
-source "$home_dir/update.sh"
+source "$release_dir/update.sh"
 # shellcheck source=deploy/home/machine-status.sh
-if [[ -f "$home_dir/machine-status.sh" ]]; then source "$home_dir/machine-status.sh"; fi
+source "$release_dir/machine-status.sh"
+
+# lock_release: the Home's lock; a command that waited while an update switched runs as the current release.
+lock_release() {
+  local current
+  lock_home
+  current=$(current_release) || exit
+  if [[ ${current##*/} != "${release_dir##*/}" ]]; then
+    exec 9>&-
+    exec "$current/opensteer-home" "${command_args[@]}"
+  fi
+}
 
 recover_home() {
   restore_rollback
-  update_recovery
+  recover_switch
   if [[ -f "$home_dir/backup.resume" ]]; then
     start_pod
     rm -f -- "$home_dir/backup.resume"
@@ -37,10 +47,16 @@ recover_home() {
 }
 
 case "${1:-}" in
+  release-prepare|release-gate)
+    # A step of a switch to this release, run under the lock of the update (or installer) switching.
+    [[ $# == 1 && ${OPENSTEER_HOME_SWITCHING:-} == "${release_dir##*/}" ]] ||
+      fail "Usage: opensteer-home $1 (only from a switch to this release)"
+    if [[ $1 == release-prepare ]]; then prepare_release; else gate_release; fi
+    ;;
   status)
     [[ $# == 1 ]] || fail "Usage: opensteer-home status"
     # shellcheck source=/dev/null
-    source "$home_dir/images.env"
+    source "$release_dir/images.env"
     printf 'Version %s\n' "$OPENSTEER_HOME_VERSION"
     compose ps --all
     state=$(claimed_state) || fail "The Home's claim state is unavailable."
@@ -48,7 +64,7 @@ case "${1:-}" in
     ;;
   setup-link)
     [[ $# == 1 ]] || fail "Usage: opensteer-home setup-link"
-    lock_home
+    lock_release
     [[ ! -f "$home_dir/managed" ]] || fail "The Opensteer Account issues claims for this managed Home."
     recover_home
     state=$(claimed_state) || fail "Start the Home before issuing a setup link."
@@ -61,49 +77,62 @@ case "${1:-}" in
     print_setup_link "$token"
     ;;
   start)
-    lock_home
+    lock_release
     recover_home
     start_pod
+    refresh_units || echo "This Home's units could not be refreshed; the next start tries again." >&2
     ;;
   maintain)
-    lock_home
+    lock_release
     recover_home
-    pid=$(host_pid) || pid=''
+    snapshot=$(pod_snapshot) || snapshot=''
+    pid=$(snapshot_host_pid "$snapshot") || pid=''
     if ! { [[ -n $pid && -f "$home_dir/host.pid" && $pid == "$(cat "$home_dir/host.pid")" ]] &&
       { check_firewall "$pid" || { apply_firewall "$pid" && check_firewall "$pid"; }; } &&
-      compose ps --all --format json | jq -es 'length == 7 and all(.[]; .Health == "healthy")' >/dev/null; }; then
+      pod_healthy "$snapshot"; }; then
       compose down
       start_pod
+      snapshot=$(pod_snapshot) || snapshot=''
     fi
-    if [[ -f "$home_dir/managed" && -f "$home_dir/managed-egress.sh" ]]; then
+    # A Cloud Computer follows the pool network its account gives now (checked as at boot).
+    if refresh_pool_network && pid=$(host_pid); then
+      apply_firewall "$pid" && check_firewall "$pid"
+    fi
+    if [[ -f "$home_dir/managed" ]]; then
       # shellcheck source=deploy/home/managed-egress.sh
-      source "$home_dir/managed-egress.sh"
+      source "$release_dir/managed-egress.sh"
       maintain_managed_egress
     fi
-    if declare -F publish_machine_status >/dev/null; then publish_machine_status; fi
+    publish_machine_status "$snapshot"
     ;;
   stop)
-    lock_home
+    lock_release
     compose down
     ;;
   update|scheduled-update)
+    # update --retry: one more try of a release that failed its check here (a timer never retries).
+    retry_failed=false
+    if [[ $1 == update && ${2:-} == --retry ]]; then retry_failed=true; set -- update "${@:3}"; fi
     if [[ -f "$home_dir/managed" && $# != 1 ]]; then fail 'Managed Homes update only from the Account feed.'; fi
-    lock_home
+    lock_release
     recover_home
     rm -f -- "$home_dir/update.recorded"
     update_status=0
     update_home "$@" || update_status=$?
-    if ((update_status != 0)) && [[ ! -f "$home_dir/update.recorded" ]] &&
-      declare -F record_update_result >/dev/null; then
-      record_update_result failed
-    fi
+    if ((update_status != 0)) && [[ ! -f "$home_dir/update.recorded" ]]; then record_update_result failed; fi
     exit "$update_status"
+    ;;
+  rollback)
+    [[ $# == 1 ]] || fail "Usage: opensteer-home rollback"
+    lock_release
+    recover_home
+    rollback_home
     ;;
   snapshots)
     backup_command "$@"
     ;;
   backup|scheduled-backup|restore)
-    lock_home
+    lock_release
     recover_home
     backup_command "$@"
     ;;
@@ -126,7 +155,7 @@ case "${1:-}" in
       systemctl disable --now "$unit-managed.service"
     fi
     if [[ -f "$system_files.service" ]] &&
-       grep -Fxq "ExecStart=$home_dir/opensteer-home start" "$system_files.service"; then
+       grep -Fxq "ExecStart=$home_dir/current/opensteer-home start" "$system_files.service"; then
       for timer in update backup maintain; do
         if [[ -f "$system_files-$timer.timer" ]]; then
           systemctl disable --now "$unit-$timer.timer"
@@ -140,7 +169,7 @@ case "${1:-}" in
       if [[ -f "$home_dir/config.env" ]]; then compose_down_home --volumes; fi
       remove_runner_apparmor
       if [[ -f "$system_files.service" ]] &&
-         grep -Fxq "ExecStart=$home_dir/opensteer-home start" "$system_files.service"; then
+         grep -Fxq "ExecStart=$home_dir/current/opensteer-home start" "$system_files.service"; then
         rm -f -- "$system_files"{.service,-update.service,-update.timer,-backup.service,-backup.timer,-maintain.service,-maintain.timer}
       fi
       if owns_operator_command; then rm -f /usr/local/bin/opensteer-home; fi
@@ -156,5 +185,5 @@ case "${1:-}" in
       echo "Stopped. Home data and configuration are retained in Docker volumes and $home_dir."
     fi
     ;;
-  *) fail "Usage: opensteer-home {status|setup-link|update|logs <service>|backup|snapshots|restore|uninstall [--purge]}" ;;
+  *) fail "Usage: opensteer-home {status|setup-link|update [--retry]|rollback|logs <service>|backup|snapshots|restore|uninstall [--purge]}" ;;
 esac

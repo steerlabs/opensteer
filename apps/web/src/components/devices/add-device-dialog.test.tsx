@@ -156,3 +156,60 @@ it("lists what can be added by the thing itself, with a pairing code under Advan
   await click("Chrome");
   expect(container.querySelector('[data-testid="add-chrome"]')).not.toBeNull();
 });
+
+async function openAddMac(portalOrigin: string | null) {
+  client = new MockHostClient({ latencyMs: 0 });
+  await client.load();
+  const snapshot = client.getSnapshot();
+  shell = {
+    hostClient: client,
+    snapshot: { ...snapshot, identityConfig: { ...snapshot.identityConfig, portalOrigin } },
+  };
+  const container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => {
+    root!.render(<AddDeviceDialog homeName="Home" onClose={() => undefined} />);
+  });
+  await click("A Mac");
+  return container;
+}
+
+it("gives the way to the Mac app from the Opensteer account, opening in a new tab, with a link to copy", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  const container = await openAddMac("https://opensteer.example");
+  // What a person does, in order, in the words the Mac app shows: no Mac sets itself up.
+  const name = client!.getSnapshot().identityConfig!.deployment.name;
+  const steps = [...container.querySelectorAll(".add-device__steps > li")].map((step) =>
+    (step.firstChild?.textContent ?? "").trim(),
+  );
+  expect(steps).toEqual([
+    "Install Opensteer on the Mac.",
+    "Sign in with the same Opensteer account.",
+    `Open ${name} there and choose Connect. You choose what your agent can use on the Mac.`,
+  ]);
+  expect(container.textContent).not.toContain("sets itself up");
+  const get = [...container.querySelectorAll("a")].find(
+    (element) => element.textContent?.trim() === "Get Opensteer for Mac",
+  );
+  expect(get, "no way to get the Mac app").toBeDefined();
+  expect(get!.getAttribute("href")).toBe("https://opensteer.example/mac");
+  expect(get!.getAttribute("target")).toBe("_blank");
+  expect(get!.getAttribute("rel")).toContain("noopener");
+  await click("Copy link");
+  expect(writeText).toHaveBeenCalledExactlyOnceWith("https://opensteer.example/mac");
+  expect(container.textContent).toContain("Copied");
+});
+
+it("points a Home with no Opensteer account to its pairing code, with no dead link", async () => {
+  const container = await openAddMac(null);
+  expect(container.querySelector('a[href$="/mac"]')).toBeNull();
+  expect(container.textContent).not.toContain("Copy link");
+  expect(container.textContent).not.toContain("same Opensteer account");
+  await click("Use a pairing code");
+  expect(container.querySelector("h2, [id]")?.textContent ?? container.textContent).toContain(
+    "Use a pairing code",
+  );
+  expect(container.textContent).toContain("Create a pairing code");
+});

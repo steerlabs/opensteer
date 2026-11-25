@@ -80,10 +80,19 @@ describe("control-plane-protocol browser pool contracts", () => {
     );
 
     const holder = "11111111-1111-4111-8111-111111111111";
-    expect(CloudComputerLeaseSchema.parse({ holder }).poolConfigured).toBeUndefined();
-    expect(CloudComputerLeaseSchema.parse({ holder, poolConfigured: true }).poolConfigured).toBe(
-      true,
-    );
+    // The provisioner always names the network its pool hosts live in, and nothing else.
+    expect(CloudComputerLeaseSchema.safeParse({ holder }).success).toBe(false);
+    expect(
+      CloudComputerLeaseSchema.safeParse({
+        holder,
+        poolConfigured: true,
+        poolNetwork: "10.40.0.0/20",
+      }).success,
+    ).toBe(false);
+    expect(CloudComputerLeaseSchema.parse({ holder, poolNetwork: "10.40.0.0/20" })).toEqual({
+      holder,
+      poolNetwork: "10.40.0.0/20",
+    });
   });
 
   it("validates pool host desired, replace-unready, and report invariants", () => {

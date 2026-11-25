@@ -1417,6 +1417,8 @@ export interface HostClient extends TabsClient {
       readonly captureRegion?: boolean;
       readonly frameWindow?: boolean;
       readonly rasterDemand?: boolean;
+      /** False: keep the tab and its last picture without a socket: no viewer to the Home. */
+      readonly connect?: boolean;
     },
   ) => () => void;
   /** Reads the verified Host descriptor's optional target-control capability. */

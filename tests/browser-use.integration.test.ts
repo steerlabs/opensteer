@@ -326,6 +326,10 @@ async function browserUseHome() {
       return;
     }
     response.setHeader("content-type", "text/html");
+    if (request.url === "/without-heading") {
+      response.end("<!doctype html><title>No heading</title><p>A paragraph.</p>");
+      return;
+    }
     response.end(
       request.url === "/popup"
         ? "<title>Popup</title><h1>Popup</h1>"
@@ -762,6 +766,28 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       // The rest of this journey is the person's own work again.
       await setLineage(null);
     }
+  },
+);
+
+it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
+  "reports a missing locator match as a failed browser script",
+  async () => {
+    const { run, origin, profile } = await browserUseHome();
+    expect(
+      await run(`
+        globalThis.page = await newPage("about:blank", { profileId: ${JSON.stringify(profile.id)} });
+        await page.goto(${JSON.stringify(`${origin}/without-heading`)});
+      `),
+    ).not.toHaveProperty("isError", true);
+    expect(await run('return await page.locator("h1").textContent();')).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: "failed",
+          message: 'page.locator("h1").textContent(): Timeout 10000ms: no element matched',
+        },
+      },
+    });
   },
 );
 

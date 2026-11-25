@@ -2,7 +2,7 @@ import { useState } from "react";
 import { harnessCatalogEntry } from "@opensteer/core";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import type { ProblemReporting } from "@opensteer/protocol";
-import { problemTable, type Problem } from "@opensteer/protocol/problems";
+import { problemText, type Problem } from "@opensteer/protocol/problems";
 import { Dialog } from "../../dialog.js";
 import { useShell } from "../../app-shell.js";
 import { useSettingsRead } from "../use-settings-read.js";
@@ -30,7 +30,7 @@ export function problemDetail(problem: Problem): string {
   if (fields.updateTarget)
     parts.push(fields.updateTarget === "desktop" ? "The desktop app" : "This Home");
   if (problem.count > 1) parts.push(`${problem.count} times`);
-  parts.push(problemTable[problem.code].next);
+  parts.push(problemText(problem).next);
   return parts.join(" · ");
 }
 
@@ -101,7 +101,7 @@ export function ProblemsGroup() {
           <SettingsRow
             detail={problemDetail(problem)}
             key={`${problem.code} ${JSON.stringify(problem.fields)}`}
-            title={problemTable[problem.code].words}
+            title={problemText(problem).words}
           />
         ))
       )}

@@ -37,6 +37,14 @@ export interface ClientLifecycle {
    * being hidden, so it trusts them however long it was away.
    */
   readonly socketTrustWindowMs?: number;
+  /**
+   * The platform is about to stop this page's timers: the web's Page Lifecycle `freeze` (its
+   * handler runs before the freeze), or a phone app the system may suspend once it is in the
+   * background. A timer the client set would not fire, so it lets go of what it must not keep.
+   */
+  onFreeze?(listener: () => void): () => void;
+  /** The page runs again after a freeze. Its visibility then says whether it is seen. */
+  onResume?(listener: () => void): () => void;
 }
 
 /**
@@ -46,6 +54,17 @@ export interface ClientLifecycle {
  * than waiting for a probe that a dead socket will never answer.
  */
 export const socketTrustWindowMs = 10_000;
+
+/**
+ * How long a client nobody can see stays a browser viewer. A client is a viewer only while the
+ * person can see the picture: the Home keeps a browser awake (and, on a Cloud Computer, its pooled
+ * guest running) for every viewer, so a Home left open in a hidden tab, a minimised window or a
+ * page under another screen would otherwise hold it for good. Past this the client lets go of its
+ * viewer sockets, and takes them again the moment the picture can be seen. It is long enough that
+ * flipping between two tabs does not reconnect, and short against the five idle minutes after
+ * which the Home parks a browser nobody holds.
+ */
+export const browserViewerGraceMs = 30_000;
 
 /** A probe that goes unanswered this long means the socket is dead. */
 export const socketProbeDeadlineMs = 3_000;

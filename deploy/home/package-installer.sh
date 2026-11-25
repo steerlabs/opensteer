@@ -6,7 +6,10 @@ version=$(jq -er .version "$home_source/../../package.json")
 package=$(mktemp -d)
 trap 'rm -rf -- "$package"' EXIT
 printf '%s\n' "$version" > "$package/version"
-for file in install.sh managed-boot.sh common.sh firewall.sh backup.sh update.sh machine-status.sh opensteer-home install-scheduler.sh install-managed-unit.sh compose.yaml compose.egress.yaml compose.egress-pending.yaml managed-egress.sh compose.apparmor.yaml compose.ipv6.yaml compose.browser-pool.yaml; do
+# The release's files, as common.sh lists them for the installer and for an update.
+release_files=$(sed -n 's/^release_files=(\(.*\))$/\1/p' "$home_source/common.sh")
+[[ -n $release_files ]] || { echo 'common.sh lists no release files.' >&2; exit 1; }
+for file in $release_files; do
   install -m 0700 "$home_source/$file" "$package/$file"
 done
 {
