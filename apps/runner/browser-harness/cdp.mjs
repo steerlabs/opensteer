@@ -13,7 +13,13 @@ import { open, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { COMMAND_TIMEOUT, CdpProtocolError, createPage, evaluationResult } from "./page.mjs";
 
-const MAX_MESSAGE_BYTES = 1_048_576;
+/**
+ * The one limit for a CDP message on an agent's path to a browser, the same at every hop
+ * (standardCdpMessageMaxBytes in packages/browser-core/src/standard-cdp-limits.ts, which this file
+ * cannot import: it ships as it is). The router beside the browser refuses a larger answer as a
+ * failure of its own command; were one to arrive here anyway, only that command fails.
+ */
+export const MAX_MESSAGE_BYTES = 8 * 1_024 * 1_024;
 const MAX_EVENTS = 500;
 const STAGE_CHUNK_BYTES = 256 * 1_024;
 const PERSON_ACTIVITY = {
@@ -78,6 +84,12 @@ class CdpTimeoutError extends Error {}
 function ago(timestamp, now) {
   const at = Date.parse(timestamp);
   return Number.isFinite(at) ? ` ${formatAge(Math.max(0, now - at))} ago` : "";
+}
+
+function formatBytes(bytes) {
+  return bytes >= 1_024 * 1_024
+    ? `${(bytes / (1_024 * 1_024)).toFixed(1)} MiB`
+    : `${Math.ceil(bytes / 1_024)} KiB`;
 }
 
 function formatAge(milliseconds) {
@@ -176,6 +188,7 @@ export class CdpClient {
       }, COMMAND_TIMEOUT);
       timeout.unref();
       this.#pending.set(id, {
+        method,
         reject,
         resolve,
         timeout,
@@ -233,9 +246,9 @@ export class CdpClient {
       typeof data === "string"
         ? data
         : Buffer.from(data instanceof ArrayBuffer ? data : data.buffer).toString("utf8");
-    if (Buffer.byteLength(serialized) > MAX_MESSAGE_BYTES) {
-      this.#rejectPending(new Error("CDP response is too large"));
-      this.#socket.close(1009);
+    const size = Buffer.byteLength(serialized);
+    if (size > MAX_MESSAGE_BYTES) {
+      this.#refuseTooLarge(serialized, size);
       return;
     }
     let message;
@@ -273,6 +286,28 @@ export class CdpClient {
     } else {
       pending.resolve(message.result ?? {});
     }
+  }
+
+  /**
+   * An answer over the limit fails its own command; the page and the connection stay usable. An
+   * event over it is dropped. Nothing about the browser was lost: the answer was too big.
+   */
+  #refuseTooLarge(serialized, size) {
+    let id;
+    try {
+      id = JSON.parse(serialized)?.id;
+    } catch {
+      return;
+    }
+    const pending = Number.isInteger(id) ? this.#pending.get(id) : undefined;
+    if (!pending) return;
+    this.#pending.delete(id);
+    clearTimeout(pending.timeout);
+    pending.reject(
+      new CdpProtocolError(
+        `The browser's answer to ${pending.method} is ${formatBytes(size)}, over the ${formatBytes(MAX_MESSAGE_BYTES)} limit for one answer. Ask the page for less: a slice of the text, an element by selector, or innerText instead of the HTML.`,
+      ),
+    );
   }
 
   #rejectPending(error) {

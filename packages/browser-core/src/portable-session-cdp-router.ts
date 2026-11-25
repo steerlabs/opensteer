@@ -3,11 +3,12 @@ import {
   standardCdpRootTargetMethods as standardRootTargets,
 } from "./standard-cdp-page-methods.js";
 import {
-  standardCdpMessageMaxBytes,
+  standardCdpAnswerMaxBytes,
   standardCdpBufferedMaxBytes,
   standardCdpMaxPending,
 } from "./standard-cdp-limits.js";
 export {
+  standardCdpAnswerMaxBytes,
   standardCdpMessageMaxBytes,
   standardCdpBufferedMaxBytes,
   standardCdpMaxPending,
@@ -304,7 +305,7 @@ const defaultLimits: SessionCdpRouterLimits = {
   internalRuntimeEnableTimeoutMs: 5_000,
 };
 
-const browserRootLimit = standardCdpMessageMaxBytes - 4_096;
+const browserRootLimit = standardCdpAnswerMaxBytes;
 const maxRetiredTargets = 256;
 
 function readTargetFilter(value: unknown): ConnectionState["discoveryFilter"] {
@@ -806,12 +807,8 @@ export class SessionCdpRouter {
           maxBytes: Math.min(maxResultBytes, budget.maxBytes),
         }) === undefined
       : serializedBytes(result) > maxResultBytes;
-    if (tooLarge) {
-      throw new SessionCdpRouterError(
-        "too_large",
-        "CDP result exceeds the bounded agent transport. Query a narrower result in the page.",
-      );
-    }
+    if (tooLarge)
+      throw new SessionCdpRouterError("too_large", tooLargeAnswer(result, maxResultBytes));
   }
 
   /**
@@ -3023,6 +3020,29 @@ function assertIdentifier(value: string, label: string): void {
   if (value.length < 1 || value.length > 512 || /\p{Cc}/u.test(value)) {
     throw new SessionCdpRouterError("bad_command", `${label} is invalid.`);
   }
+}
+
+/**
+ * What an agent is told of an answer over the limit: its size where it can be measured (an answer
+ * too deep or with too many entries cannot), the limit, and how to ask for less.
+ */
+function tooLargeAnswer(result: unknown, maxBytes: number): string {
+  const size = boundedJsonSize(result, {
+    maxBytes: Number.MAX_SAFE_INTEGER,
+    maxDepth: standardJsonBudget.maxDepth,
+    maxEntries: standardJsonBudget.maxEntries,
+  });
+  const what =
+    size === undefined
+      ? "is too deeply nested or has too many entries"
+      : `is ${formatBytes(size)}, over the ${formatBytes(maxBytes)} limit`;
+  return `The browser's answer ${what}, so it exceeds the bounded agent transport. Ask the page for less: a slice of the text, an element by selector, or innerText instead of the HTML.`;
+}
+
+function formatBytes(bytes: number): string {
+  return bytes >= 1_024 * 1_024
+    ? `${(bytes / (1_024 * 1_024)).toFixed(1)} MiB`
+    : `${Math.ceil(bytes / 1_024)} KiB`;
 }
 
 function serializedBytes(value: unknown): number {
