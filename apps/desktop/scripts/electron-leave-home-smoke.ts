@@ -490,15 +490,24 @@ async function run(): Promise<void> {
     );
 
   // This Mac becomes a device of both Homes, and signs in to each over its own partition.
+  // The window's road to a Home: set the device up (which also clears a Home this Mac left),
+  // then hand the Runner its enrollment.
   const connectTo = async (target: DesktopLocalRunnerTarget) => {
     const before = children.length;
+    const device = { deploymentId: target.deploymentId, runAgents: true, runnerName: "Studio Mac" };
+    await service.setUpDevice(device);
+    let refused: unknown;
     const started = service.start({
-      deploymentId: target.deploymentId,
+      ...device,
       enrollmentToken: randomBytes(32).toString("hex"),
-      runAgents: true,
-      runnerName: "Studio Mac",
     });
-    await eventually("the Runner to start", () => children.length === before + 1);
+    started.catch((error: unknown) => {
+      refused = error ?? new Error("The Runner's start was refused.");
+    });
+    await eventually("the Runner to start", () => {
+      if (refused) throw refused;
+      return children.length === before + 1;
+    });
     welcome(children[before]!);
     await started;
     const signIn = await hostNetwork.partitionFetch(
