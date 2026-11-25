@@ -1110,6 +1110,10 @@ export class BrowserService {
   readonly #targetResolver: BrowserRuntimeTargetResolver | undefined;
   /** Held here by Runner, so a Runner that is away or removed still has its coordinator. */
   readonly #pools: Map<RunnerId, BrowserPoolCoordinator>;
+  readonly #poolPlacements = new Map<
+    RunnerId,
+    { readonly label: string; readonly environmentIds: readonly EnvironmentId[] }
+  >();
   #pooledRunner: RunnerId | undefined;
   readonly #pooledOnly: boolean;
   #pooledUnavailableReason: (() => string | undefined) | undefined;
@@ -1320,14 +1324,23 @@ export class BrowserService {
    * A pooled Cloud Computer's coordinator, chosen by its Home's target service for the target it
    * read (phase B, W6): nothing else adds one, and a Home with no target has none.
    */
-  async adoptPool(runnerId: RunnerId, coordinator: BrowserPoolCoordinator): Promise<void> {
+  async adoptPool(
+    runnerId: RunnerId,
+    coordinator: BrowserPoolCoordinator,
+    placement?: { readonly label: string; readonly environmentIds: readonly EnvironmentId[] },
+  ): Promise<void> {
     if (this.#closed) throw unavailable("The Host browser service is shutting down.");
     if (this.#pools.size && !this.#pools.has(runnerId))
       throw new Error("A Home serves at most one pooled browser.");
     if (this.#pools.has(runnerId))
       throw new Error("This pooled browser already has a coordinator.");
     this.#pools.set(runnerId, coordinator);
+    if (placement) this.#poolPlacements.set(runnerId, placement);
+    else this.#poolPlacements.delete(runnerId);
     coordinator.setAdopter(this.#poolAdopter(runnerId));
+    // Rule 3: a pooled Home has a browser placement from the moment its ready slot is adopted,
+    // whatever the guest's phase and whether or not a relay is attached yet.
+    this.#onSessionsChanged([]);
     // Its first recovery is not awaited here: a pool host that does not answer holds this
     // browser's gate closed, never the Home's start.
     void coordinator.recover().catch((error: unknown) => this.#onError(error));
@@ -1361,7 +1374,9 @@ export class BrowserService {
       await coordinator.retire(reason);
     } finally {
       this.#pools.delete(runnerId);
+      this.#poolPlacements.delete(runnerId);
     }
+    this.#onSessionsChanged([]);
     this.#onTabsChanged();
   }
 
@@ -1806,9 +1821,10 @@ export class BrowserService {
   resourcePlacements(ids?: readonly RunnerId[]): BrowserPlacement[] {
     if (this.#closed) return [];
     const allowed = ids && new Set(ids);
-    return (this.#targetResolver?.placements(ids) ?? [])
-      .filter(({ runnerId }) => !allowed || allowed.has(runnerId))
-      .map(publicPlacement);
+    const live = (this.#targetResolver?.placements(ids) ?? []).filter(
+      ({ runnerId }) => !allowed || allowed.has(runnerId),
+    );
+    return this.#mergePooledPlacements(live, ids).map(publicPlacement);
   }
 
   #placeData(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId) {
@@ -2320,8 +2336,9 @@ export class BrowserService {
     if (await this.#waitForBrowser(homes, intended?.runnerId, signal))
       return this.#resolveIdentityOpen(ownerId, command, signal, agent);
     // Reserve the pooled browser's gate before checking target availability and keep that
-    // reservation into `select()`: a Runner reconnect, park, or wake waits here instead of
-    // refusing as unavailable or selecting a stale session before reattach finishes.
+    // reservation into `select()`: a parked (memory or disk) slot, Home restart, or relay
+    // reconnect wakes here on demand instead of refusing as unavailable or selecting a stale
+    // session before reattach finishes.
     const candidateRunnerId =
       intended?.runnerId ??
       (() => {
@@ -9529,13 +9546,51 @@ export class BrowserService {
     throw unavailable("No Browser Runtime is connected.");
   }
 
+  #poolHasBrowser(pool: BrowserPoolCoordinator): boolean {
+    const phase = pool.gate.phase;
+    return phase !== "released" && phase !== "unavailable";
+  }
+
+  #mergePooledPlacements(
+    live: readonly BrowserRuntimePlacement[],
+    ids?: readonly RunnerId[],
+    homeNames?: ReadonlyMap<RunnerId, string>,
+  ): BrowserRuntimePlacement[] {
+    if (!this.#pools.size) return [...live];
+    const allowed = ids ? new Set(ids) : undefined;
+    const merged = [...live];
+    for (const [runnerId, pool] of this.#pools) {
+      if (allowed && !allowed.has(runnerId)) continue;
+      if (!this.#poolHasBrowser(pool)) continue;
+      const index = merged.findIndex((placement) => placement.runnerId === runnerId);
+      const existing = index >= 0 ? merged[index] : undefined;
+      if (existing?.available) continue;
+      if (existing && !this.#targetResolver?.pendingAdmission?.(runnerId)) continue;
+      const meta = this.#poolPlacements.get(runnerId);
+      const synthesized: BrowserRuntimePlacement = {
+        available: true,
+        agents: false,
+        environmentIds: [...(meta?.environmentIds ?? existing?.environmentIds ?? [])],
+        kind: "runner",
+        label: meta?.label ?? homeNames?.get(runnerId) ?? existing?.label ?? "Cloud Computer",
+        runnerId,
+        runtimeId: pool.runtimeId,
+      };
+      if (index >= 0) merged[index] = synthesized;
+      else merged.push(synthesized);
+    }
+    return merged;
+  }
+
   #eligiblePlacements(
     homes: Awaited<ReturnType<OpensteerStore["listEligibleBrowserRunners"]>>,
   ): BrowserRuntimePlacement[] {
-    const ids = new Set(homes.map((home) => home.id));
-    return (
-      this.#targetResolver?.placements().filter((placement) => ids.has(placement.runnerId)) ?? []
-    );
+    const ids = homes.map((home) => home.id);
+    const idSet = new Set(ids);
+    const homeNames = new Map(homes.map((home) => [home.id, home.name]));
+    const live =
+      this.#targetResolver?.placements().filter((placement) => idSet.has(placement.runnerId)) ?? [];
+    return this.#mergePooledPlacements(live, ids, homeNames);
   }
 
   #profileHome(

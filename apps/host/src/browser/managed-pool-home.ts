@@ -703,7 +703,10 @@ export async function startManagedBrowserPool(input: {
     };
     applied = candidate;
     try {
-      await input.browser.adoptPool(runnerId, coordinator);
+      await input.browser.adoptPool(runnerId, coordinator, {
+        label: input.runnerName ?? "Cloud Computer",
+        environmentIds: input.environmentIds ?? [],
+      });
     } catch (error) {
       coordinator.close();
       relay?.retire();

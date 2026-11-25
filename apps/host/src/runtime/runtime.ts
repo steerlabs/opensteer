@@ -2253,7 +2253,10 @@ export async function createHostRuntime(
           ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
         },
         ...options.managedBrowserPoolTiming,
-        onStatusChanged: (status) => logManagedBrowserPoolStatus(status),
+        onStatusChanged: (status) => {
+          logManagedBrowserPoolStatus(status);
+          announceResources("browser-placement", "browser-availability", "tab");
+        },
         onError: (error) => reportManagedBrowserPoolError(error),
       });
       browser.setPooledUnavailableReason(() => managedBrowserPool!.unavailableReason());

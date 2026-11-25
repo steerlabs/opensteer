@@ -53,6 +53,7 @@ import {
 } from "../packages/database/src/test-database.test-support.js";
 import { hostKeyFingerprint } from "../packages/deployment-authority/src/index.js";
 import {
+  createRunnerAuthenticationSignature,
   createRunnerAuxiliarySignature,
   createRunnerEnrollmentSignature,
   hashRunnerEnrollmentToken,
@@ -67,6 +68,10 @@ import {
 } from "../packages/browser-runtime-core/src/test-support/fakes.js";
 import { createRelayServer } from "../apps/pool-agent/src/relay.js";
 import {
+  createHomeServer,
+  listen,
+  PoolAgent,
+  SlotJournal,
   startTestPoolAgent,
   testGuest,
   type TestPoolAgent,
@@ -239,11 +244,13 @@ async function enrollMainRunner(host: PersonalHostRuntime, config: HostConfig): 
 
 interface LoopbackPoolHost {
   readonly agent: TestPoolAgent;
+  readonly currentAgent: () => PoolAgent;
   readonly runtime: BrowserRuntime;
   readonly target: ManagedBrowserPoolTarget;
   readonly slotId: string;
   readonly term: number;
   readonly pagesOpened: () => number;
+  restartAgent(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -260,8 +267,13 @@ async function startLoopbackPoolHost(input: {
   const relayKeys = generateKeyPairSync("ed25519");
   const relayKeyPem = relayKeys.privateKey.export({ format: "pem", type: "pkcs8" }).toString();
   const relayCertificate = selfSignedCertificate(relayKeys.privateKey);
-  const agent = await startTestPoolAgent({ saveAfterMs: null });
-  const summary = await agent.agent.createSlot({
+  const hostKeys = generateKeyPairSync("ed25519");
+  const agent = await startTestPoolAgent({ saveAfterMs: null, hostKeys });
+  let liveAgent: PoolAgent = agent.agent;
+  let restartedServer: import("node:http").Server | undefined;
+  let closeAgent: () => Promise<void> = () => agent.close();
+  const agentPort = Number(new URL(agent.url).port);
+  const summary = await liveAgent.createSlot({
     slotId: input.slotId,
     term: input.term,
     homeKey: input.registered.homeKey,
@@ -320,7 +332,7 @@ async function startLoopbackPoolHost(input: {
   const relay: Server = createRelayServer({
     key: relayKeyPem,
     certificate: relayCertificate,
-    authorize: async (hello, clientKey) => agent.agent.authorizeRelay(hello, clientKey),
+    authorize: async (hello, clientKey) => liveAgent.authorizeRelay(hello, clientKey),
   });
   const relaySockets = new Set<Socket>();
   relay.on("connection", (socket) => {
@@ -343,16 +355,41 @@ async function startLoopbackPoolHost(input: {
   };
   return {
     agent,
+    currentAgent: () => liveAgent,
     runtime,
     target,
     slotId: input.slotId,
     term: input.term,
     pagesOpened: () => launcher.launchCount,
+    restartAgent: async () => {
+      for (const socket of relaySockets) socket.destroy();
+      await closeAgent();
+      const nextJournal = new SlotJournal(join(agent.directory, "journal"));
+      const nextAgent = new PoolAgent({
+        saveAfterMs: null,
+        journal: nextJournal,
+        driver: agent.driver,
+      });
+      await nextAgent.start();
+      const nextServer = createHomeServer({
+        agent: nextAgent,
+        hostKey: hostKeys.privateKey,
+      });
+      await listen(nextServer, { host: "127.0.0.1", port: agentPort });
+      liveAgent = nextAgent;
+      restartedServer = nextServer;
+      closeAgent = async () => {
+        nextAgent.close();
+        nextServer.closeAllConnections();
+        await new Promise<void>((resolve) => nextServer.close(() => resolve()));
+      };
+    },
     close: async () => {
       for (const socket of relaySockets) socket.destroy();
       await new Promise<void>((resolve) => relay.close(() => resolve()));
       await runtimeServer.close();
-      await agent.close();
+      await closeAgent();
+      void restartedServer;
     },
   };
 }
@@ -3239,6 +3276,354 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
         await pool.close();
       }
     } finally {
+      await host?.close();
+      await poolHost?.close();
+      await database.drop();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("Rule 3: keeps a ready pooled slot available across Home restarts while parked (0 sessions or with sessions, memory or disk) and after a pool-agent restart, and wakes on person and connected-agent opens", async () => {
+    const database = await cloneTestDatabase("host");
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-pool-rule3-"));
+    const port = await freePort();
+    const config = managedConfig(database.url, directory, port, { browserPool: true });
+    let registeredKeys:
+      | {
+          readonly homeKey: string;
+          readonly relayKey: string;
+          readonly ticketKey: { readonly keyId: string; readonly spki: string };
+        }
+      | undefined;
+    let targetResponse: ManagedBrowserPoolTargetResponse = { status: "preparing" };
+    let host: PersonalHostRuntime | undefined;
+    let poolHost: LoopbackPoolHost | undefined;
+    let primary: WebSocket | undefined;
+
+    const accountControlFetch: typeof globalThis.fetch = async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === managedBrowserPoolRegistrationPath && init?.method === "PUT") {
+        const parsed = ManagedBrowserPoolRegistrationRequestSchema.parse(
+          JSON.parse(String(init.body)),
+        );
+        registeredKeys = parsed.document.keys;
+        return Response.json(targetResponse);
+      }
+      if (url.pathname === managedBrowserPoolTargetPath && (init?.method ?? "GET") === "GET") {
+        return Response.json(registeredKeys ? targetResponse : { status: "unregistered" });
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const nextJson = (socket: WebSocket) =>
+      new Promise<Record<string, unknown>>((resolve, reject) => {
+        const onMessage = (raw: WebSocket.RawData) => {
+          socket.off("error", onError);
+          resolve(JSON.parse(String(raw)) as Record<string, unknown>);
+        };
+        const onError = (error: Error) => {
+          socket.off("message", onMessage);
+          reject(error);
+        };
+        socket.once("message", onMessage);
+        socket.once("error", onError);
+      });
+
+    const runnerId = createId("runner");
+    const runnerKeys = generateKeyPairSync("ed25519");
+    const runnerPublicKeyPem = runnerKeys.publicKey
+      .export({ format: "pem", type: "spki" })
+      .toString();
+
+    const connectMainRunner = async (enroll: boolean) => {
+      primary?.terminate();
+      primary = new WebSocket(`ws://127.0.0.1:${port}/internal/v1/runners`);
+      const challenge = RunnerChallengeSchema.parse(await nextJson(primary));
+      const descriptor = RunnerDescriptorSchema.parse({
+        bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
+        capabilities: [],
+        modules: { browser: { wireVersion: 2, runtimeId: "browser-main" } },
+        name: "Cloud Computer",
+        runnerId,
+        runnerKind: "main",
+        runtimeVersion: "test",
+      });
+      const welcomePromise = nextJson(primary);
+      if (enroll) {
+        const credential = {
+          enrollmentToken: mainRunnerToken,
+          kind: "host-enrollment-token" as const,
+        };
+        primary.send(
+          JSON.stringify({
+            challengeId: challenge.challengeId,
+            credential,
+            descriptor,
+            proofFormatVersion: runnerProofFormatVersion,
+            publicKeyPem: runnerPublicKeyPem,
+            signature: createRunnerEnrollmentSignature(runnerKeys.privateKey, {
+              challenge,
+              credential,
+              descriptor,
+              publicKeyPem: runnerPublicKeyPem,
+            }),
+            type: "runner.enroll",
+          }),
+        );
+      } else {
+        primary.send(
+          JSON.stringify({
+            challengeId: challenge.challengeId,
+            descriptor,
+            proofFormatVersion: runnerProofFormatVersion,
+            signature: createRunnerAuthenticationSignature(runnerKeys.privateKey, {
+              challenge,
+              descriptor,
+            }),
+            type: "runner.authenticate",
+          }),
+        );
+      }
+      expect((await welcomePromise).type).toBe("host.welcome");
+    };
+
+    const startHome = async (idleParkMs: number | null) => {
+      const started = await ownTestDatabaseProducer(database.url, async () => {
+        const runtime = await createHostRuntime(config, {
+          personalAccountGrantFetch: jwksFetch(),
+          accountControlFetch,
+          managedBrowserPoolTiming: {
+            firstDelayMs: 40,
+            maxDelayMs: 120,
+            idleParkMs,
+            statusEveryMs: 120,
+          },
+        });
+        if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
+        await runtime.listen();
+        return { host: runtime, close: () => runtime.close() };
+      });
+      host = started.host;
+      return started.host;
+    };
+
+    try {
+      const home1 = await startHome(120);
+      const { ownerId } = await claimHome(home1);
+      await connectMainRunner(true);
+      await initializePersonalState(home1.store.database, {
+        agentHome: config.personal!.agentHome,
+        environmentId: config.personal!.environmentId,
+      });
+
+      // Before a ready slot exists, no browser placement is reported.
+      expect(home1.browser.resourcePlacements()).toEqual([]);
+      expect((await home1.browser.workspaceBootstrap(ownerId)).available).toBe(false);
+
+      await vi.waitFor(() => expect(registeredKeys).toBeDefined(), { timeout: 5_000 });
+      poolHost = await startLoopbackPoolHost({
+        directory,
+        slotId: `bps_${randomUUID()}`,
+        term: 1,
+        registered: registeredKeys!,
+      });
+      targetResponse = { status: "ready", target: poolHost.target };
+
+      await vi.waitFor(
+        async () => {
+          expect((await home1.app.inject({ method: "GET", url: "/ready" })).json()).toEqual({
+            ok: true,
+            browserPool: "ready",
+          });
+        },
+        { timeout: 10_000 },
+      );
+
+      // Create an unbound browser profile for person and agent opens.
+      const profile = await home1.browser.createProfile({
+        ownerId,
+        name: "Rule 3 Profile",
+        idempotencyKey: `profile-rule3-${randomUUID()}`,
+      });
+      // Enable device browser access for agent/Run opens.
+      await home1.store.database
+        .updateTable("devices")
+        .set({
+          accessPolicy: {
+            reach: "owner",
+            commands: true,
+            browser: true,
+            apps: true,
+            forwarding: true,
+            shares: [],
+          },
+        })
+        .where("id", "=", runnerId as unknown as import("../packages/core/src/index.js").DeviceId)
+        .execute();
+
+      const waitForMemoryPark = async (label = "") => {
+        let savedId = "";
+        await vi.waitFor(
+          async () => {
+            const status = await poolHost!.currentAgent().status(poolHost!.slotId, poolHost!.term);
+            expect(status.phase, `waitForMemoryPark(${label})`).toBe("paused");
+            expect(status.savedState?.id).toBeTruthy();
+            savedId = status.savedState!.id;
+          },
+          { timeout: 10_000 },
+        );
+        return savedId;
+      };
+      const waitForDiskPark = async (label = "") => {
+        const savedId = await waitForMemoryPark(label);
+        expect(await poolHost!.currentAgent().saveToDisk(poolHost!.slotId, savedId)).toBe("saved");
+        const status = await poolHost!.currentAgent().status(poolHost!.slotId, poolHost!.term);
+        expect(status.phase).toBe("paused");
+        expect(status.savedState?.id).toBe(savedId);
+      };
+
+      // 1) ZERO-SESSION case: guest idles and parks to DISK before any tab was ever opened,
+      // then the Home restarts with 0 sessions and 0 relays attached.
+      await waitForDiskPark("step1-home1");
+      expect(await home1.store.listBrowserSessions(ownerId)).toEqual([]);
+      primary?.terminate();
+      await home1.close();
+      host = undefined;
+      const home2 = await startHome(120);
+      await vi.waitFor(
+        async () => {
+          expect((await home2.app.inject({ method: "GET", url: "/ready" })).json()).toEqual({
+            ok: true,
+            browserPool: "ready",
+          });
+        },
+        { timeout: 10_000 },
+      );
+      const parkedPlacements = home2.browser.resourcePlacements();
+      expect(parkedPlacements).toMatchObject([{ runnerId, available: true }]);
+      expect(home2.browser.resourcePlacements([runnerId])).toEqual(parkedPlacements);
+      const bootstrapEmptyDisk = await home2.browser.workspaceBootstrap(ownerId);
+      expect(bootstrapEmptyDisk.available).toBe(true);
+      expect(bootstrapEmptyDisk.placements).toEqual(parkedPlacements);
+
+      // Person's very first open (unbound profile) creates demand, wakes from disk, and opens.
+      const firstOpen = await home2.browser.openTab(ownerId, {
+        type: "browser.tab.open",
+        idempotencyKey: `person-first-open-${randomUUID()}`,
+        identity: { kind: "profile", profileId: profile.id },
+        url: "https://example.test/first-ever",
+      });
+      expect(firstOpen.tabId).toBeTruthy();
+      expect((await poolHost.currentAgent().status(poolHost.slotId, poolHost.term)).phase).toBe(
+        "running",
+      );
+      // Synthesized placement while parked matches the live attached stream placement identically.
+      expect(home2.browser.resourcePlacements()).toEqual(parkedPlacements);
+
+      // 2) WITH SESSIONS: park to MEMORY tier, restart the Home, verify placement & tabs.open wake.
+      await waitForMemoryPark("step2-home2");
+      await home2.close();
+      host = undefined;
+      const home3 = await startHome(120);
+      await vi.waitFor(
+        async () => {
+          expect((await home3.app.inject({ method: "GET", url: "/ready" })).json()).toEqual({
+            ok: true,
+            browserPool: "ready",
+          });
+        },
+        { timeout: 10_000 },
+      );
+      expect(home3.browser.resourcePlacements()).toMatchObject([{ runnerId, available: true }]);
+      expect((await home3.browser.workspaceBootstrap(ownerId)).available).toBe(true);
+
+      const memPersonOpen = await home3.tabs.open(
+        { kind: "person", ownerId },
+        { kind: "page", profileId: profile.id, url: "https://example.test/from-memory-person" },
+        `person-mem-open-${randomUUID()}`,
+      );
+      expect(memPersonOpen.tab.tabId).toBeTruthy();
+      expect((await poolHost.currentAgent().status(poolHost.slotId, poolHost.term)).phase).toBe(
+        "running",
+      );
+
+      // 3) Park to DISK tier, restart the POOL AGENT (dropping relays), restart the Home,
+      // and wake on a connected agent's open.
+      const agentBinding = await createConnectedAgentSession(home3, ownerId, config);
+      await waitForDiskPark("step3-home3");
+      await poolHost.restartAgent();
+      const postRestartStatus = await poolHost
+        .currentAgent()
+        .status(poolHost.slotId, poolHost.term);
+      expect(postRestartStatus.phase).toBe("paused");
+      expect(postRestartStatus.savedState?.id).toBeTruthy();
+
+      await home3.close();
+      host = undefined;
+      const home4 = await startHome(120);
+      await connectMainRunner(false);
+      await vi.waitFor(
+        async () => {
+          expect((await home4.app.inject({ method: "GET", url: "/ready" })).json()).toEqual({
+            ok: true,
+            browserPool: "ready",
+          });
+        },
+        { timeout: 10_000 },
+      );
+      expect(home4.browser.resourcePlacements()).toMatchObject([{ runnerId, available: true }]);
+
+      const diskAgentOpen = await home4.browser.openTab(
+        ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `agent-disk-open-${randomUUID()}`,
+          identity: { kind: "profile", profileId: profile.id },
+          url: "https://example.test/from-disk-agent",
+        },
+        agentBinding,
+      );
+      expect(diskAgentOpen.tabId).toBeTruthy();
+      expect((await poolHost.currentAgent().status(poolHost.slotId, poolHost.term)).phase).toBe(
+        "running",
+      );
+      await home4.browser.detachAgentSessionsForBinding(agentBinding.agentBindingId);
+
+      // 4) Park to DISK tier, restart the Home with no live stream attached, drop the pool host,
+      // and verify openTab's wake loop ends promptly with its signal (never spinning when the
+      // pool cannot wake).
+      await waitForDiskPark("step4-home4");
+      primary?.terminate();
+      await home4.close();
+      host = undefined;
+      await poolHost.close();
+      poolHost = undefined;
+      const home5 = await startHome(120);
+      await vi.waitFor(
+        () =>
+          expect(home5.browser.resourcePlacements()).toMatchObject([{ runnerId, available: true }]),
+        { timeout: 10_000 },
+      );
+      await expect(
+        home5.browser.openTab(
+          ownerId,
+          {
+            type: "browser.tab.open",
+            idempotencyKey: `unready-bounded-${randomUUID()}`,
+            identity: { kind: "profile", profileId: profile.id },
+            url: "https://example.test/never-wakes",
+          },
+          undefined,
+          AbortSignal.timeout(150),
+        ),
+      ).rejects.toThrow();
+
+      // 5) Once the slot is gone/retired, placement disappears (Rule 3 negative boundary).
+      await home5.browser.retirePool(runnerId, "slot-gone");
+      expect(home5.browser.resourcePlacements()).toEqual([]);
+      expect((await home5.browser.workspaceBootstrap(ownerId)).available).toBe(false);
+    } finally {
+      primary?.terminate();
       await host?.close();
       await poolHost?.close();
       await database.drop();
