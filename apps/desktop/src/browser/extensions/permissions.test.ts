@@ -250,3 +250,25 @@ describe("match pattern hosts (S1)", () => {
     expect(matchesPattern("*://*/*", "https://a.test/")).toBe(true);
   });
 });
+
+describe("match pattern hosts and ports, one parse (R4)", () => {
+  it("refuses userinfo, a query, a fragment or a backslash in the host", () => {
+    for (const pattern of [
+      "https://user@site.test/*",
+      "https://site.test?foo/*",
+      "https://site.test#foo/*",
+      "https://site.test\\foo/*",
+      "https://site.test%2F/*",
+    ])
+      expect(matchesPattern(pattern, "https://site.test/"), pattern).toBe(false);
+  });
+
+  it("matches a pattern's port the way the web-accessible rule does", () => {
+    expect(matchesPattern("https://site.test:8443/*", "https://site.test:8443/a")).toBe(true);
+    expect(matchesPattern("https://site.test:8443/*", "https://site.test/a")).toBe(false);
+    expect(matchesPattern("https://site.test:443/*", "https://site.test/a")).toBe(true);
+    expect(matchesPattern("https://*.site.test:*/*", "https://a.site.test:9/a")).toBe(true);
+    expect(matchesPattern("http://[::1]:8080/*", "http://[::1]:8080/a")).toBe(true);
+    expect(matchesPattern("https://site.test/*", "https://site.test:8443/a")).toBe(true);
+  });
+});

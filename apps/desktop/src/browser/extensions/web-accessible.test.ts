@@ -32,7 +32,7 @@ const reach = (
   target: string,
   initiator: string | undefined,
   manifest: unknown = mv3,
-  options?: { redirect?: boolean },
+  options?: { redirect?: boolean; dynamicAlias?: boolean },
 ) => mayReachExtensionResource(target, initiator, lookup({ [id]: manifest }), options);
 
 describe("mayReachExtensionResource", () => {
@@ -256,5 +256,48 @@ describe("an extension's dynamic host (use_dynamic_url, S2)", () => {
 
   it("grants nothing at the static address through a use_dynamic_url entry", () => {
     expect(reach(ext("dynamic.html"), web)).toBe(false);
+  });
+});
+
+describe("MV3 `matches` hosts parsed strictly (R4)", () => {
+  const only = (pattern: string) => ({
+    manifest_version: 3,
+    web_accessible_resources: [{ resources: ["page.html"], matches: [pattern] }],
+  });
+  it("refuses userinfo, a query, a fragment or a backslash in a pattern's host", () => {
+    for (const pattern of [
+      "https://user@site.test/*",
+      "https://site.test?foo/*",
+      "https://site.test#foo/*",
+      "https://site.test\\foo/*",
+    ])
+      expect(reach(ext("page.html"), "https://site.test", only(pattern)), pattern).toBe(false);
+  });
+});
+
+describe("a dynamic address judged at its hop (R1)", () => {
+  const dynamicManifest = {
+    manifest_version: 3,
+    web_accessible_resources: [
+      { resources: ["dyn.html"], matches: ["https://site.test/*"], use_dynamic_url: true },
+    ],
+  };
+  it("counts a use_dynamic_url entry as listed only for the hop", () => {
+    expect(reach(ext("dyn.html"), web, dynamicManifest)).toBe(false);
+    expect(reach(ext("dyn.html"), web, dynamicManifest, { dynamicAlias: true })).toBe(true);
+    expect(
+      reach(ext("dyn.html"), "https://evil.test", dynamicManifest, { dynamicAlias: true }),
+    ).toBe(false);
+    expect(
+      reach(ext("dyn.html"), web, dynamicManifest, { dynamicAlias: true, redirect: true }),
+    ).toBe(true);
+    expect(reach(ext("nonwar.html"), web, dynamicManifest, { dynamicAlias: true })).toBe(false);
+  });
+
+  it("refuses a redirect into a dynamic address from an origin that is not the web", () => {
+    const dynamic = "chrome-extension://e7c508fa-1f5c-471b-9065-5bf03292faaa/dyn.html";
+    expect(reach(dynamic, "https://idp.test", mv3, { redirect: true })).toBe(true);
+    expect(reach(dynamic, undefined, mv3, { redirect: true })).toBe(false);
+    expect(reach(dynamic, `chrome-extension://${id}`, mv3, { redirect: true })).toBe(false);
   });
 });

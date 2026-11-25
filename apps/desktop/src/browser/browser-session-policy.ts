@@ -109,7 +109,7 @@ export function applyBrowserSessionPolicy(
         details.resourceType === "mainFrame" || details.resourceType === "subFrame";
       if (!navigation) {
         if (isDynamicExtensionHop(details.url, details.redirectURL))
-          recordDynamicExtensionRequestHop(details.id, details.redirectURL);
+          recordDynamicExtensionRequestHop(session, details.id, details.redirectURL);
         return;
       }
       if (details.webContentsId === undefined || !isExtensionUrl(details.redirectURL)) return;
@@ -121,6 +121,7 @@ export function applyBrowserSessionPolicy(
       }
       if (frameTreeNodeId === undefined) return;
       recordExtensionRedirect(
+        session,
         details.webContentsId,
         frameTreeNodeId,
         details.url,
@@ -251,7 +252,7 @@ function mayRequestExtensionResource(
   if (details.resourceType === "mainFrame" || details.resourceType === "subFrame") return true;
   // Chromium's own rewrite of an extension's dynamic address: it enforces the resource's access
   // at this static address itself.
-  if (takeDynamicExtensionRequestHop(details.id, details.url)) return true;
+  if (takeDynamicExtensionRequestHop(session, details.id, details.url)) return true;
   let origin: string | undefined;
   try {
     origin = details.frame ? details.frame.origin : details.initiatorOrigin;

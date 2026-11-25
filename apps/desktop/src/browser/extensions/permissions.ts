@@ -148,7 +148,9 @@ export function parsePatternHost(host: string): PatternHost | null {
   if (name === "*") return { hostname: "*", ...(port !== undefined ? { port } : {}) };
   const wildcard = name.startsWith("*.");
   const bare = wildcard ? name.slice(2) : name;
-  if (!bare || bare.includes("*") || bare.endsWith(".")) return null;
+  // A host name, or an IPv6 address in brackets: no userinfo, query, fragment, backslash, path
+  // or other character URL parsing would quietly drop or reread (R4).
+  if (!/^(?:[a-z0-9_-]+(?:\.[a-z0-9_-]+)*|\[[0-9a-f:.]+\])$/iu.test(bare)) return null;
   let canonical: string;
   try {
     canonical = new URL(`http://${bare}/`).hostname;
@@ -160,6 +162,23 @@ export function parsePatternHost(host: string): PatternHost | null {
     hostname: wildcard ? `*.${canonical}` : canonical,
     ...(port !== undefined ? { port } : {}),
   };
+}
+
+/**
+ * Whether `url`'s host and port match a pattern's: no port or `*` in the pattern matches any port;
+ * otherwise the URL's port, or its scheme's default when it names none.
+ */
+export function patternHostMatches(host: PatternHost, url: URL): boolean {
+  const scheme = url.protocol.slice(0, -1).toLowerCase();
+  const port = url.port || (scheme === "https" ? "443" : scheme === "http" ? "80" : "");
+  if (host.port !== undefined && host.port !== "*" && host.port !== port) return false;
+  const hostname = url.hostname.toLowerCase();
+  if (host.hostname === "*") return true;
+  if (host.hostname.startsWith("*.")) {
+    const suffix = host.hostname.slice(2);
+    return hostname === suffix || hostname.endsWith(`.${suffix}`);
+  }
+  return hostname === host.hostname;
 }
 
 /** Returns true when `url` matches a Chrome match pattern. */
@@ -181,15 +200,8 @@ export function matchesPattern(pattern: string, urlString: string): boolean {
   } else if (protocol !== parsed.scheme) {
     return false;
   }
-  const hostname = url.hostname.toLowerCase();
-  if (parsed.host !== "*") {
-    if (parsed.host.startsWith("*.")) {
-      const suffix = parsed.host.slice(2);
-      if (hostname !== suffix && !hostname.endsWith(`.${suffix}`)) return false;
-    } else if (hostname !== parsed.host) {
-      return false;
-    }
-  }
+  const host = parsePatternHost(parsed.host);
+  if (!host || !patternHostMatches(host, url)) return false;
   const pathWithQuery = `${url.pathname}${url.search}`;
   return globMatch(parsed.pathPattern, pathWithQuery);
 }

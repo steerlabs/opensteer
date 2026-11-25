@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  extensionNavigationEnded,
+  extensionNavigationStarted,
+  extensionRedirectedIntoDynamic,
+  forgetExtensionNavigations,
   isDynamicExtensionHop,
+  isDynamicExtensionUrl,
   recordDynamicExtensionRequestHop,
   recordExtensionRedirect,
   takeDynamicExtensionRequestHop,
@@ -24,28 +29,104 @@ describe("Chromium's rewrite of an extension's dynamic address", () => {
     expect(isDynamicExtensionHop(`${staticBase}/dyn.html`, `${staticBase}/dyn.html`)).toBe(false);
     expect(isDynamicExtensionHop(`${dynamic}/dyn.html`, `${dynamic}/dyn.html`)).toBe(false);
     expect(isDynamicExtensionHop("not a url", `${staticBase}/dyn.html`)).toBe(false);
+    expect(isDynamicExtensionUrl(`${dynamic}/dyn.html`)).toBe(true);
+    expect(isDynamicExtensionUrl(`${staticBase}/dyn.html`)).toBe(false);
   });
 
-  it("is told apart from a web response's redirect and taken once", () => {
-    recordExtensionRedirect(1, 7, `${dynamic}/dyn.html`, `${staticBase}/dyn.html`);
-    expect(takeExtensionRedirect(1, 7, `${staticBase}/dyn.html`)).toEqual({
-      from: undefined,
-      dynamicHop: true,
+  it("carries how the navigation came to the dynamic address into its hop", () => {
+    const session = {};
+    // A page started it.
+    extensionNavigationStarted(session, 1, 7, `${dynamic}/dyn.html`, {
+      initiatorOrigin: "https://site.test",
     });
-    expect(takeExtensionRedirect(1, 7, `${staticBase}/dyn.html`)).toBeUndefined();
-    recordExtensionRedirect(1, 7, "https://idp.test/auth", `${staticBase}/callback.html`);
-    expect(takeExtensionRedirect(1, 8, `${staticBase}/callback.html`)).toBeUndefined();
-    expect(takeExtensionRedirect(1, 7, `${staticBase}/callback.html`)).toEqual({
-      from: "https://idp.test",
+    recordExtensionRedirect(session, 1, 7, `${dynamic}/dyn.html`, `${staticBase}/dyn.html`);
+    expect(takeExtensionRedirect(session, 1, 7, `${staticBase}/dyn.html`)).toEqual({
+      dynamicHop: true,
+      judge: { kind: "initiator", origin: "https://site.test" },
+    });
+    // The browser started it.
+    extensionNavigationStarted(session, 1, 7, `${dynamic}/dyn.html`, { browserStarted: true });
+    recordExtensionRedirect(session, 1, 7, `${dynamic}/dyn.html`, `${staticBase}/dyn.html`);
+    expect(takeExtensionRedirect(session, 1, 7, `${staticBase}/dyn.html`)).toEqual({
+      dynamicHop: true,
+      judge: { kind: "browser" },
+    });
+    // A web response's redirect led there.
+    extensionRedirectedIntoDynamic(session, 1, 7, `${dynamic}/nonwar.html`, "https://evil.test");
+    recordExtensionRedirect(session, 1, 7, `${dynamic}/nonwar.html`, `${staticBase}/nonwar.html`);
+    expect(takeExtensionRedirect(session, 1, 7, `${staticBase}/nonwar.html`)).toEqual({
+      dynamicHop: true,
+      judge: { kind: "redirect", origin: "https://evil.test" },
+    });
+    // Nothing said how: the hop has no judge.
+    recordExtensionRedirect(session, 1, 7, `${dynamic}/dyn.html`, `${staticBase}/dyn.html`);
+    expect(takeExtensionRedirect(session, 1, 7, `${staticBase}/dyn.html`)).toEqual({
+      dynamicHop: true,
+      judge: undefined,
+    });
+  });
+
+  it("keeps a web response's redirect apart, per frame, used once", () => {
+    const session = {};
+    recordExtensionRedirect(session, 1, 7, "https://idp.test/auth", `${staticBase}/callback.html`);
+    expect(takeExtensionRedirect(session, 1, 8, `${staticBase}/callback.html`)).toBeUndefined();
+    expect(takeExtensionRedirect(session, 1, 7, `${staticBase}/callback.html`)).toEqual({
       dynamicHop: false,
+      from: "https://idp.test",
+    });
+    expect(takeExtensionRedirect(session, 1, 7, `${staticBase}/callback.html`)).toBeUndefined();
+  });
+
+  it("keeps one store per Session", () => {
+    const one = {};
+    const two = {};
+    recordExtensionRedirect(one, 1, 7, "https://idp.test/auth", `${staticBase}/callback.html`);
+    expect(takeExtensionRedirect(two, 1, 7, `${staticBase}/callback.html`)).toBeUndefined();
+    recordDynamicExtensionRequestHop(one, 42, `${staticBase}/dyn.txt`);
+    expect(takeDynamicExtensionRequestHop(two, 42, `${staticBase}/dyn.txt`)).toBe(false);
+    expect(takeDynamicExtensionRequestHop(one, 42, `${staticBase}/dyn.txt`)).toBe(true);
+  });
+
+  it("drops a frame's records when it starts or ends a navigation, and a page's with it (R2)", () => {
+    const session = {};
+    const record = (frame: number) =>
+      recordExtensionRedirect(
+        session,
+        1,
+        frame,
+        "https://trusted.test/x",
+        `${staticBase}/trusted-only.html`,
+      );
+    record(7);
+    extensionNavigationStarted(session, 1, 7, "https://elsewhere.test/", {
+      initiatorOrigin: "https://elsewhere.test",
+    });
+    expect(takeExtensionRedirect(session, 1, 7, `${staticBase}/trusted-only.html`)).toBeUndefined();
+    record(7);
+    record(8);
+    extensionNavigationEnded(session, 1, 7);
+    expect(takeExtensionRedirect(session, 1, 7, `${staticBase}/trusted-only.html`)).toBeUndefined();
+    expect(takeExtensionRedirect(session, 1, 8, `${staticBase}/trusted-only.html`)).toEqual({
+      dynamicHop: false,
+      from: "https://trusted.test",
+    });
+    record(7);
+    extensionNavigationStarted(session, 1, 9, `${dynamic}/dyn.html`, { browserStarted: true });
+    forgetExtensionNavigations(session, 1);
+    expect(takeExtensionRedirect(session, 1, 7, `${staticBase}/trusted-only.html`)).toBeUndefined();
+    recordExtensionRedirect(session, 1, 9, `${dynamic}/dyn.html`, `${staticBase}/dyn.html`);
+    expect(takeExtensionRedirect(session, 1, 9, `${staticBase}/dyn.html`)).toEqual({
+      dynamicHop: true,
+      judge: undefined,
     });
   });
 
   it("follows a subresource request by its id and address, once", () => {
-    recordDynamicExtensionRequestHop(42, `${staticBase}/dyn.txt`);
-    expect(takeDynamicExtensionRequestHop(43, `${staticBase}/dyn.txt`)).toBe(false);
-    expect(takeDynamicExtensionRequestHop(42, `${staticBase}/nonwar.txt`)).toBe(false);
-    expect(takeDynamicExtensionRequestHop(42, `${staticBase}/dyn.txt`)).toBe(true);
-    expect(takeDynamicExtensionRequestHop(42, `${staticBase}/dyn.txt`)).toBe(false);
+    const session = {};
+    recordDynamicExtensionRequestHop(session, 42, `${staticBase}/dyn.txt`);
+    expect(takeDynamicExtensionRequestHop(session, 43, `${staticBase}/dyn.txt`)).toBe(false);
+    expect(takeDynamicExtensionRequestHop(session, 42, `${staticBase}/nonwar.txt`)).toBe(false);
+    expect(takeDynamicExtensionRequestHop(session, 42, `${staticBase}/dyn.txt`)).toBe(true);
+    expect(takeDynamicExtensionRequestHop(session, 42, `${staticBase}/dyn.txt`)).toBe(false);
   });
 });

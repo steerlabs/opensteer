@@ -70,7 +70,15 @@ import path from "node:path";
 import { z } from "zod";
 import { desktopBrowserAppShortcut } from "../app/application-menu.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
-import { takeExtensionRedirect } from "./extensions/extension-redirects.js";
+import {
+  extensionNavigationEnded,
+  extensionNavigationStarted,
+  extensionRedirectedIntoDynamic,
+  forgetExtensionNavigations,
+  isDynamicExtensionUrl,
+  takeExtensionRedirect,
+  type ExtensionRedirect,
+} from "./extensions/extension-redirects.js";
 import { mayReachExtensionResource } from "./extensions/web-accessible.js";
 import { boundPageRestore, ElectronPageRestoreSchema, WakeSeeds } from "./page-restore.js";
 import {
@@ -1599,32 +1607,66 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       )
         details.preventDefault();
     });
+    // The records a redirect into an extension is judged by (extension-redirects.ts): how each
+    // of the page's navigations started, kept until the frame starts or ends another, and dropped
+    // with the page.
+    const pageId = pageContents.id;
+    let pageSession: Session | undefined;
+    const navigationSession = (): Session | undefined => {
+      if (!pageSession && !pageContents.isDestroyed()) pageSession = pageContents.session;
+      return pageSession;
+    };
+    const frameEnded = (frame: WebFrameMain | undefined) => {
+      const session = navigationSession();
+      if (!session) return;
+      const frameTreeNodeId = frameTreeNodeIdOf(frame);
+      if (frameTreeNodeId === undefined) forgetExtensionNavigations(session, pageId);
+      else extensionNavigationEnded(session, pageId, frameTreeNodeId);
+    };
+    view.webContents.on("did-start-navigation", (details) => {
+      if (details.isSameDocument) return;
+      const session = navigationSession();
+      const frameTreeNodeId = frameTreeNodeIdOf(details.frame);
+      if (!session || frameTreeNodeId === undefined) return;
+      // No initiator: the browser started it. A null one: the frame that started it is gone.
+      extensionNavigationStarted(
+        session,
+        pageId,
+        frameTreeNodeId,
+        details.url,
+        details.initiator === undefined
+          ? { browserStarted: true }
+          : { initiatorOrigin: frameOrigin(details.initiator) },
+      );
+    });
+    // A main frame's commit ends its navigation; a subframe's records go at its next start.
+    view.webContents.on("did-navigate", () =>
+      frameEnded(pageContents.isDestroyed() ? undefined : pageContents.mainFrame),
+    );
+    view.webContents.on(
+      "did-fail-load",
+      (_event, _code, _text, _url, _isMainFrame, processId, routingId) =>
+        frameEnded(frameById(pageContents, processId, routingId)),
+    );
+    view.webContents.once("destroyed", () => {
+      if (pageSession) forgetExtensionNavigations(pageSession, pageId);
+    });
     view.webContents.on("will-redirect", (event, url) => {
       if (!isExtensionUrl(url)) return;
+      const session = navigationSession();
+      const frameTreeNodeId = frameTreeNodeIdOf(event.frame);
+      // Taken on every exit, so no record outlives the redirect it was made for.
+      const redirect = session
+        ? takeExtensionRedirect(session, pageId, frameTreeNodeId, url)
+        : undefined;
       if (this.#connectionControlled) {
         event.preventDefault();
         return;
       }
-      // A server redirect into an extension is judged by the origin of the response that
-      // redirects, whoever started the navigation (W1); one the session did not see (a service
-      // worker's own redirect) is refused.
-      let frameTreeNodeId: number | undefined;
-      try {
-        frameTreeNodeId = event.frame?.frameTreeNodeId;
-      } catch {
-        frameTreeNodeId = undefined;
-      }
-      const redirect = pageContents.isDestroyed()
-        ? undefined
-        : takeExtensionRedirect(pageContents.id, frameTreeNodeId, url);
-      // Chromium's own rewrite of an extension's dynamic address into its static one: Chromium
-      // enforces the resource's access at the static address itself.
-      if (redirect?.dynamicHop) return;
       if (
-        redirect?.from === undefined ||
-        !mayReachExtensionResource(url, redirect.from, profileManifests(pageContents), {
-          redirect: true,
-        })
+        !session ||
+        frameTreeNodeId === undefined ||
+        !mayRedirectIntoExtension(pageContents, session, frameTreeNodeId, url, redirect)
       )
         event.preventDefault();
     });
@@ -4894,6 +4936,65 @@ function mayPageReachExtension(
   );
 }
 
+/**
+ * Whether a redirect of the page's navigation to the extension address `url` may go on.
+ * A web response's redirect is judged by its origin (W1); into a dynamic address, that origin is
+ * carried to the hop that follows. Chromium's own dynamic-to-static hop is judged as the static
+ * address by how the navigation came to the dynamic one: the frame that started it, the web
+ * origin whose redirect led there (a `use_dynamic_url` entry counts as listed for this hop), or
+ * the browser itself (Opensteer's own load, let through as at a static address). A redirect the
+ * session did not see is refused.
+ */
+function mayRedirectIntoExtension(
+  contents: WebContents,
+  session: Session,
+  frameTreeNodeId: number,
+  url: string,
+  redirect: ExtensionRedirect | undefined,
+): boolean {
+  const manifests = profileManifests(contents);
+  if (redirect?.dynamicHop) {
+    const judge = redirect.judge;
+    if (!judge) return false;
+    if (judge.kind === "browser") return true;
+    return mayReachExtensionResource(url, judge.origin, manifests, {
+      dynamicAlias: true,
+      ...(judge.kind === "redirect" ? { redirect: true } : {}),
+    });
+  }
+  const from = redirect?.from;
+  if (from === undefined || !mayReachExtensionResource(url, from, manifests, { redirect: true }))
+    return false;
+  if (isDynamicExtensionUrl(url))
+    extensionRedirectedIntoDynamic(session, contents.id, frameTreeNodeId, url, from);
+  return true;
+}
+
+/** A frame's tree node id, or undefined when there is no frame or it is gone. */
+function frameTreeNodeIdOf(frame: WebFrameMain | null | undefined): number | undefined {
+  try {
+    return frame?.frameTreeNodeId;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The page's frame with this process and routing id, if it is still there. */
+function frameById(
+  contents: WebContents,
+  processId: number,
+  routingId: number,
+): WebFrameMain | undefined {
+  try {
+    if (contents.isDestroyed()) return undefined;
+    return contents.mainFrame.framesInSubtree.find(
+      (frame) => frame.processId === processId && frame.routingId === routingId,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
 /** The manifests of the extensions loaded in the page's own profile. */
 function profileManifests(contents: WebContents): (extensionId: string) => unknown {
   return (extensionId) =>
@@ -4922,7 +5023,11 @@ function windowOpenerVerdict(
   contents: WebContents,
   details: { readonly url: string; readonly referrer?: Electron.Referrer },
 ): "allow" | "deny" | "popup-judges" {
+  // A dynamic address is an alias whose static address only its first navigation's hop shows:
+  // never loaded by Opensteer, judged there (R1).
+  if (isDynamicExtensionUrl(details.url)) return "popup-judges";
   const frames = openerFrames(contents);
+  const manifests = profileManifests(contents);
   const referrer = details.referrer?.url;
   if (referrer) {
     let origin: string;
@@ -4932,11 +5037,13 @@ function windowOpenerVerdict(
       return "deny";
     }
     if (!frames.some((frame) => frameOrigin(frame) === origin)) return "deny";
-    return mayReachExtensionResource(details.url, origin, profileManifests(contents))
-      ? "allow"
-      : "deny";
+    return mayReachExtensionResource(details.url, origin, manifests) ? "allow" : "deny";
   }
-  return mayPageReachExtension(contents, details.url, frames) ? "allow" : "popup-judges";
+  const allowed = frames.filter((frame) =>
+    mayReachExtensionResource(details.url, frameOrigin(frame), manifests),
+  );
+  if (allowed.length === 0) return "deny";
+  return allowed.length === frames.length ? "allow" : "popup-judges";
 }
 
 /** Every frame of the page that may have opened a window. */

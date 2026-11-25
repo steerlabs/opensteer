@@ -352,9 +352,11 @@ site that only bounces cannot, and a redirect Opensteer did not see (a service w
 refused. A window is judged by the frame that opens it: by the origin the browser reports for the
 opener, or, when it reports none, by the window's own first navigation. An extension's dynamic
 address (a resource it lists with `use_dynamic_url`, which `chrome.runtime.getURL()` gives under a
-random host that changes each session) is left to Chromium, which on Electron rewrites it to the
-extension's own address and enforces the same list there: the extension and the pages it hands
-the address to reach what it lists, and a guessed host reaches nothing. Opensteer's own opening
+random host that changes each session) is only another name for its own address: Chromium rewrites
+it to that address, and the navigation is judged there exactly as at that address, by the page that
+started it or the site whose redirect led there, with the `use_dynamic_url` resource counting as
+listed; a window opened onto one is judged by its own first navigation, and a guessed host reaches
+nothing. Opensteer's own opening
 of an extension's pages (its popup, its options page) is not a page's navigation and stays
 allowed. Two residuals remain: main-world DOM mutations written directly into a page by an
 extension's content script remain readable from the page's default world, and a tab opened via

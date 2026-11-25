@@ -5544,23 +5544,28 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       expect(opens(war, ["https://site.test"]).action).toBe("allow");
       expect(opens(nonWar, [`chrome-extension://${extId}`]).action).toBe("allow");
       expect(opens("https://example.test/", []).action).toBe("allow");
+      // No frame of the page could reach it: refused at once, no blank window (R3).
+      expect.soft(opens(nonWar, ["https://site.test"])).toEqual({ action: "deny" });
+      expect.soft(opens(absent, ["https://site.test"])).toEqual({ action: "deny" });
+      expect.soft(opens(war, [])).toEqual({ action: "deny" });
       // Otherwise the window opens and its own first navigation decides. A window Opensteer would
-      // load itself (no pre-created contents) starts blank instead of at the address.
-      for (const [url, origins] of [
-        [nonWar, [`chrome-extension://${extId}`, "https://site.test"]],
-        [war, ["https://site.test", "null"]],
-        [nonWar, ["https://site.test"]],
-        [absent, ["https://site.test"]],
-        [war, []],
+      // load itself (no pre-created contents) starts blank instead of at the address. A dynamic
+      // address is always judged so, never handed to loadURL (M1, R1).
+      const dynamicNonWar = "chrome-extension://e7c508fa-1f5c-471b-9065-5bf03292faaa/nonwar.html";
+      for (const [url, origins, referrer] of [
+        [nonWar, [`chrome-extension://${extId}`, "https://site.test"], ""],
+        [war, ["https://site.test", "null"], ""],
+        [dynamicNonWar, ["https://site.test"], ""],
+        [dynamicNonWar, ["https://site.test"], "https://site.test/"],
       ] as const) {
-        const answer = opens(url, origins);
-        expect(answer.action, `${url} from ${origins.join(",")}`).toBe("allow");
+        const answer = opens(url, origins, referrer);
+        expect.soft(answer.action, `${url} from ${origins.join(",")}`).toBe("allow");
         const before = electron.views.length;
         answer.createWindow!({});
         const loaded = electron.views
           .slice(before)
           .flatMap((child) => child.webContents.loadURL.mock.calls.map(([target]) => target));
-        expect(loaded, `${url} loaded by Opensteer`).not.toContain(url);
+        expect.soft(loaded, `${url} loaded by Opensteer`).not.toContain(url);
       }
       // A window Electron navigates itself: its first navigation names the frame that opened it.
       const { WebContentsView } = await import("electron");
@@ -5613,6 +5618,7 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
             { resources: ["trusted-only.html"], matches: ["https://trusted.test/*"] },
             { resources: ["callback.html"], matches: ["https://idp.test/*"] },
             { resources: ["ext-only.html"], extension_ids: ["*"] },
+            { resources: ["dyn.html"], matches: ["<all_urls>"], use_dynamic_url: true },
           ],
         },
       });
@@ -5679,20 +5685,117 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       });
       expect(refuses(page("callback.html"), null, null)).toBe(false);
       expect(refuses(page("callback.html"), null, null)).toBe(true);
-      // Chromium's own rewrite of an extension's dynamic address into its static one (S2) is let
-      // through: Chromium enforces the resource's access there itself.
+      // A dynamic address is only an alias of its static one (R1): Chromium's hop to the static
+      // address is judged as that address, by how the navigation came to the alias.
       const dynamicHost = "chrome-extension://e7c508fa-1f5c-471b-9065-5bf03292faaa";
-      expect(refuses(page("dyn.html"), `${dynamicHost}/dyn.html`, trusted), "dynamic hop").toBe(
-        false,
+      const emit = (name: string, ...args: unknown[]) => {
+        for (const [event, listener] of view.webContents.on.mock.calls)
+          if (event === name) (listener as (...values: unknown[]) => void)(...args);
+      };
+      const started = (url: string, initiator?: object | null, frameTreeNodeId = 1) =>
+        emit("did-start-navigation", {
+          url,
+          isSameDocument: false,
+          isMainFrame: frameTreeNodeId === 1,
+          frame: { frameTreeNodeId },
+          ...(initiator === undefined ? {} : { initiator }),
+        });
+      /** A navigation to a dynamic address, then Chromium's hop: whether the hop is refused. */
+      const hopRefused = (path: string) => refuses(page(path), `${dynamicHost}/${path}`, null);
+      started(`${dynamicHost}/dyn.html`, trusted);
+      expect.soft(hopRefused("dyn.html"), "a web page's own use_dynamic_url address").toBe(false);
+      started(`${dynamicHost}/nonwar.html`, trusted);
+      expect.soft(hopRefused("nonwar.html"), "a web page to a page not listed").toBe(true);
+      started(`${dynamicHost}/trusted-only.html`, trusted);
+      expect.soft(hopRefused("trusted-only.html"), "listed for that page's origin").toBe(false);
+      started(`${dynamicHost}/trusted-only.html`, { origin: "https://evil.test" });
+      expect.soft(hopRefused("trusted-only.html"), "not listed for this one").toBe(true);
+      started(`${dynamicHost}/nonwar.html`, own);
+      expect.soft(hopRefused("nonwar.html"), "the extension's own page").toBe(false);
+      started(`${dynamicHost}/nonwar.html`, null);
+      expect.soft(hopRefused("nonwar.html"), "a page whose frame is gone").toBe(true);
+      started(`${dynamicHost}/dyn.html`);
+      expect.soft(hopRefused("dyn.html"), "Opensteer's own load").toBe(false);
+      expect.soft(hopRefused("dyn.html"), "a hop no navigation start accounts for").toBe(true);
+      // M2: a web response's redirect into a dynamic address is judged, at the hop, as that origin.
+      const viaRedirect = (from: string, initiator: object | null, path: string) => {
+        started(from, initiator);
+        const intoAlias = refuses(`${dynamicHost}/${path}`, from, initiator);
+        return { intoAlias, hop: refuses(page(path), `${dynamicHost}/${path}`, initiator) };
+      };
+      expect
+        .soft(viaRedirect("https://evil.test/bounce", own, "nonwar.html"), "ext -> evil -> nonwar")
+        .toEqual({
+          intoAlias: false,
+          hop: true,
+        });
+      expect
+        .soft(
+          viaRedirect("https://evil.test/bounce", null, "nonwar.html"),
+          "browser -> evil -> nonwar",
+        )
+        .toEqual({
+          intoAlias: false,
+          hop: true,
+        });
+      expect
+        .soft(
+          viaRedirect("https://evil.test/bounce", trusted, "trusted-only.html"),
+          "trusted -> evil -> trusted-only",
+        )
+        .toEqual({ intoAlias: false, hop: true });
+      expect
+        .soft(viaRedirect("https://idp.test/auth", own, "dyn.html"), "ext -> idp -> dyn")
+        .toEqual({
+          intoAlias: false,
+          hop: false,
+        });
+      // M3a: a navigation that ends or gives way leaves no record a later redirect can use.
+      started(`${dynamicHost}/nonwar.html`);
+      beforeRedirect({
+        webContentsId: webContentsIdOf(view.webContents),
+        frame: { frameTreeNodeId: 1 },
+        url: `${dynamicHost}/nonwar.html`,
+        redirectURL: page("nonwar.html"),
+        resourceType: "mainFrame",
+      });
+      started("https://evil.test/sw-page", { origin: "https://evil.test" });
+      expect
+        .soft(refuses(page("nonwar.html"), null, null), "a service worker's redirect after")
+        .toBe(true);
+      beforeRedirect({
+        webContentsId: webContentsIdOf(view.webContents),
+        frame: { frameTreeNodeId: 1 },
+        url: "https://trusted.test/bounce",
+        redirectURL: page("trusted-only.html"),
+        resourceType: "mainFrame",
+      });
+      emit("did-fail-load", {}, -3, "ERR_ABORTED", "https://trusted.test/bounce", true, 9, 9);
+      expect
+        .soft(refuses(page("trusted-only.html"), null, trusted), "after a failed load")
+        .toBe(true);
+      // M3b: a connection-controlled page's refusal uses its record up too, so nothing is left for
+      // a later redirect once control is released.
+      const targetId = await browser.context.pages()[0]!.targetId();
+      browser.cdp.setConnectionControlled?.(targetId, true);
+      await vi.waitFor(() =>
+        expect(refuses(page("war.html"), "https://trusted.test/x", trusted)).toBe(true),
       );
-      expect(
-        refuses(page("nonwar.html"), `${dynamicHost}/dyn.html`, trusted),
-        "not the same path",
-      ).toBe(true);
-      expect(
-        refuses(`${dynamicHost}/dyn.html`, "https://evil.test/bounce", trusted),
-        "into a dynamic host",
-      ).toBe(false);
+      beforeRedirect({
+        webContentsId: webContentsIdOf(view.webContents),
+        frame: { frameTreeNodeId: 1 },
+        url: "https://trusted.test/bounce",
+        redirectURL: page("trusted-only.html"),
+        resourceType: "mainFrame",
+      });
+      expect.soft(refuses(page("trusted-only.html"), null, trusted), "while controlled").toBe(true);
+      browser.cdp.setConnectionControlled?.(targetId, false);
+      await vi.waitFor(() =>
+        expect(refuses(page("war.html"), "https://trusted.test/x", trusted)).toBe(false),
+      );
+      expect
+        .soft(refuses(page("trusted-only.html"), null, trusted), "after control ends")
+        .toBe(true);
       // Ordinary redirects are not this rule's, and a redirect from a non-web origin is refused.
       expect(refuses("https://example.test/next", null, null)).toBe(false);
       expect(refuses(page("war.html"), page("war.html", peerId), null)).toBe(true);
@@ -7422,15 +7525,18 @@ const warManifest = {
   ],
 };
 
-/** Gives a mock page the profile's loaded extensions, as Electron's `session.extensions` holds them. */
+/**
+ * Gives a mock page the profile's loaded extensions, as Electron's `session.extensions` holds them,
+ * on the profile's own Session (the one the browser session policy listens on).
+ */
 function withExtensions(contents: object, manifests: Record<string, unknown>): void {
-  Object.assign(contents, {
-    session: {
-      extensions: {
-        getExtension: (id: string) => (id in manifests ? { manifest: manifests[id] } : null),
-      },
+  const profile = vi.mocked(session.fromPartition).mock.results.at(-1)!.value as object;
+  Object.assign(profile, {
+    extensions: {
+      getExtension: (id: string) => (id in manifests ? { manifest: manifests[id] } : null),
     },
   });
+  Object.assign(contents, { session: profile });
 }
 
 /** Gives a mock page the frames Electron reports in `mainFrame.framesInSubtree`. */

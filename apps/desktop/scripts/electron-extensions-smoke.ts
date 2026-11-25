@@ -1297,6 +1297,45 @@ async function checkWebAccessibleResources(
       guessed,
       "the static address of a use_dynamic_url resource was reachable",
     );
+    // A dynamic address is only an alias of the static one (R1): a page that knows it reaches
+    // what is listed for it, and nothing else, by a link, a new tab or a server redirect.
+    const dynamicNonWar = `${dynamicBase}nonwar.html`;
+    await load(page, `${web}/start`);
+    await contents(page).executeJavaScript(
+      `location.href = ${JSON.stringify(dynamicPage)}; "started"`,
+    );
+    await waitFor(() => page.url() === `${base}dyn.html`);
+    assert.equal(await contents(page).executeJavaScript("document.title"), "Smoke dyn");
+    await load(page, `${web}/start`);
+    await contents(page).executeJavaScript(
+      `location.href = ${JSON.stringify(bounce(other, dynamicPage))}; "started"`,
+    );
+    await waitFor(() => page.url() === `${base}dyn.html`);
+    const redirectedToNonWar = await redirected(other, dynamicNonWar);
+    assert.deepEqual(
+      redirectedToNonWar,
+      { url: `${web}/start`, title: "/start" },
+      `a server redirect reached the non-web-accessible page through the dynamic address: ${JSON.stringify(redirectedToNonWar)}`,
+    );
+    await load(page, `${web}/start`);
+    const tabbed = await popupsOf(() =>
+      contents(page).executeJavaScript(`(() => {
+        const a = document.createElement("a");
+        a.href = ${JSON.stringify(dynamicNonWar)};
+        a.target = "_blank";
+        document.body.append(a);
+        a.click();
+        return "clicked";
+      })()`),
+    );
+    assert.ok(
+      !tabbed.urls.includes(`${base}nonwar.html`) &&
+        !tabbed.urls.some((url) => url.startsWith(dynamicBase)),
+      `a new tab reached the non-web-accessible page through the dynamic address: ${JSON.stringify(tabbed)}`,
+    );
+    console.log(
+      `[extensions-smoke] extension-web-accessible: dynamic redirect=${JSON.stringify(redirectedToNonWar)} tab=${JSON.stringify(tabbed)}`,
+    );
     sectionChecks.push("an extension's dynamic address works, a guessed one reaches nothing");
 
     // The extension's own page moves to its own page that is not web-accessible, and the

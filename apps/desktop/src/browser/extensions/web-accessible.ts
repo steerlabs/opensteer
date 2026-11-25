@@ -4,6 +4,7 @@ import {
   isRecord,
   parseMatchPattern,
   parsePatternHost,
+  patternHostMatches,
 } from "./permissions.js";
 
 /** The manifest of an extension loaded in the page's profile, or undefined when none is. */
@@ -34,22 +35,25 @@ export function isDynamicExtensionHost(hostname: string): boolean {
  * with `use_dynamic_url` grants nothing at the extension's own address; an unknown or opaque
  * initiator matches no MV3 entry.
  *
- * An address at an extension's dynamic host (`use_dynamic_url`) is let through for every
- * initiator: the host is a per-session random value only the extension hands out, so it says
- * nothing about what is installed, and on real Electron 44 Chromium rewrites every request to it
- * into a redirect to the static address, where it enforces the resource's access itself (probe
- * 20261125T022627Z-0fb895a2). That hop is let through by the redirect and request gates, which
- * see Chromium's own rewrite in the session's `onBeforeRedirect`.
+ * An address at an extension's dynamic host (`use_dynamic_url`) is only an alias of its static
+ * address, which this rule cannot see from it: it is let through here, and judged where Chromium
+ * rewrites it into the static address (on real Electron 44 every request to a dynamic host becomes
+ * that redirect; probe 20261125T022627Z-0fb895a2). A navigation is judged at that hop by its
+ * caller with `dynamicAlias: true`; a subresource is left to Chromium, which judges the hop by the
+ * request's own initiator.
  *
  * `options.redirect: true` judges a server redirect into an extension: `initiatorOrigin` is then
  * the origin of the response that redirects, which must be a web (http/https) origin; neither the
  * own-pages allowance nor `extension_ids` applies, whoever started the navigation.
+ *
+ * `options.dynamicAlias: true` judges the static address a dynamic one was rewritten into: an entry
+ * with `use_dynamic_url` then counts as listed.
  */
 export function mayReachExtensionResource(
   target: string,
   initiatorOrigin: string | undefined,
   manifestOf: ExtensionManifestLookup,
-  options: { readonly redirect?: boolean } = {},
+  options: { readonly redirect?: boolean; readonly dynamicAlias?: boolean } = {},
 ): boolean {
   const redirect = options.redirect === true;
   let url: URL;
@@ -71,16 +75,21 @@ export function mayReachExtensionResource(
   if (url.protocol !== extensionScheme) return true;
   // Chromium treats chrome-extension as a standard scheme: its host is case-insensitive.
   const extensionId = url.hostname.toLowerCase();
-  if (isDynamicExtensionHost(extensionId)) return !url.port && !url.username && !url.password;
-  if (!isExtensionId(extensionId) || url.port || url.username || url.password) return false;
-  if (redirect) {
-    if (!isWebOrigin(initiatorOrigin)) return false;
-  } else if (initiatorOrigin === `${extensionScheme}//${extensionId}`) return true;
+  if (url.port || url.username || url.password) return false;
+  if (redirect && !isWebOrigin(initiatorOrigin)) return false;
+  if (isDynamicExtensionHost(extensionId)) return true;
+  if (!isExtensionId(extensionId)) return false;
+  if (!redirect && initiatorOrigin === `${extensionScheme}//${extensionId}`) return true;
   const resource = resourcePath(url.pathname);
   if (resource === undefined) return false;
   const manifest = manifestOf(extensionId);
   if (!isRecord(manifest)) return false;
-  return isWebAccessibleResource(manifest, resource, initiatorOrigin);
+  return isWebAccessibleResource(
+    manifest,
+    resource,
+    initiatorOrigin,
+    options.dynamicAlias === true,
+  );
 }
 
 /** Whether `manifest` lists `resource` (a decoded path without the leading slash) for `initiatorOrigin`. */
@@ -88,6 +97,7 @@ export function isWebAccessibleResource(
   manifest: Record<string, unknown>,
   resource: string,
   initiatorOrigin: string | undefined,
+  dynamicAlias = false,
 ): boolean {
   const entries = manifest.web_accessible_resources;
   if (!Array.isArray(entries)) return false;
@@ -97,7 +107,7 @@ export function isWebAccessibleResource(
   return entries.some(
     (entry) =>
       isRecord(entry) &&
-      entry.use_dynamic_url !== true &&
+      (dynamicAlias || entry.use_dynamic_url !== true) &&
       Array.isArray(entry.resources) &&
       entry.resources.some(
         (pattern) => typeof pattern === "string" && resourceMatches(pattern, resource),
@@ -147,18 +157,7 @@ function originMatches(pattern: string, origin: URL): boolean {
   if (parsed.scheme !== "*" && parsed.scheme !== scheme) return false;
   if (parsed.scheme === "chrome-extension") return false;
   const host = parsePatternHost(parsed.host);
-  if (!host) return false;
-  // No port in the pattern, or `*`: any port. Otherwise the origin's port, its scheme's default
-  // when the origin names none.
-  const port = origin.port || (scheme === "https" ? "443" : "80");
-  if (host.port !== undefined && host.port !== "*" && host.port !== port) return false;
-  const hostname = origin.hostname.toLowerCase();
-  if (host.hostname === "*") return true;
-  if (host.hostname.startsWith("*.")) {
-    const suffix = host.hostname.slice(2);
-    return hostname === suffix || hostname.endsWith(`.${suffix}`);
-  }
-  return hostname === host.hostname;
+  return host !== null && patternHostMatches(host, origin);
 }
 
 function resourceMatches(pattern: string, resource: string): boolean {
