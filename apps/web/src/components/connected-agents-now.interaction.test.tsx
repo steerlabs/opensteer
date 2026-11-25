@@ -181,6 +181,46 @@ it("names a connection only once when two of its sessions have unconfirmed Stops
   );
 });
 
+it("distinguishes matching rows for different connections by their catalog age", async () => {
+  const seeded = mockConnectedAgents("seeded");
+  const ago = (hours: number) => new Date(Date.now() - hours * 3_600_000 - 120_000).toISOString();
+  await mount("/", {
+    mock: {
+      ...seeded,
+      connections: seeded.connections.map((row) =>
+        row.label === "Claude"
+          ? { ...row, createdAt: ago(1) }
+          : row.label === "Grok"
+            ? { ...row, createdAt: ago(2) }
+            : row,
+      ),
+    },
+    hostClient(source) {
+      source.mockAgentWork({ livePanel: "three" });
+      const { threads } = source.getSnapshot();
+      const first = threads.find(({ id }) => id === mockAgentWorkThreads.working)!.externalWork!;
+      const second = threads.find(({ id }) => id === mockAgentWorkThreads.waiting)!.externalWork!;
+      (second as { connection: typeof second.connection }).connection = {
+        ...first.connection,
+        id: second.connection.id,
+      };
+      Object.defineProperty(source.rpc, "threads.activity", {
+        value: async () => ({ ok: true, data: { operations: [], nextBefore: null } }),
+        configurable: true,
+      });
+      return source;
+    },
+  });
+  const dialog = await openPanel();
+  await vi.waitFor(() => {
+    expect(button("Stop Claude — Connected 1h ago", dialog)).toBeDefined();
+    expect(button("Watch Claude — Connected 2h ago", dialog)).toBeDefined();
+    expect(dialog.textContent).toContain("Connected 1h ago");
+    expect(dialog.textContent).toContain("Connected 2h ago");
+    expect(button("Stop ChatGPT", dialog)).toBeDefined();
+  });
+});
+
 it("keeps the last operations for a task whose activity refresh fails", async () => {
   await mount("/", options("one"));
   expect(trigger()?.getAttribute("aria-label")).toBe("ChatGPT is working in Shopping");

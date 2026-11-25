@@ -1,6 +1,7 @@
 import { hostsDeployment } from "@opensteer/client/computers";
 import {
   connectedAgentNamePart,
+  formatRelativeTime,
   isolatedPlainSentence,
   type ConnectedAgentNow,
   type HostClient,
@@ -8,7 +9,7 @@ import {
   type SentencePart,
   workWords,
 } from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
+import { useConnectedAgents, useHostSelector } from "@opensteer/client/react";
 import {
   createContext,
   useCallback,
@@ -167,6 +168,10 @@ function ActiveAgents({
     agents.flatMap(({ places }) => places.flatMap(({ device }) => (device ? [device.name] : []))),
   );
   const deviceName = devices.size > 1 ? null : ([...devices][0] ?? homeName);
+  const duplicates = duplicateRows(agents, deviceName);
+  const catalog = useConnectedAgents(anchor && duplicates.size ? hostClient : null);
+  const created = new Map(catalog.connections?.map(({ id, createdAt }) => [id, createdAt]));
+  const now = new Date();
   const stopping = agents.some(({ sessionId }) => stops.get(sessionId)?.running);
   const remaining = agents.filter(({ sessionId }) => stops.get(sessionId)?.unconfirmed);
   const warning = remaining.length ? stopWarning(remaining) : null;
@@ -271,6 +276,22 @@ function ActiveAgents({
             {agents.map((entry) => {
               const { agent, waiting } = entry;
               const action = entry.state === "needs-you" ? "Review" : "Watch";
+              const group = duplicates.get(entry.sessionId);
+              const joined = group ? created.get(entry.connectionId) : undefined;
+              const age = joined ? formatRelativeTime(joined, now) : "";
+              const sameAge =
+                group &&
+                [...group].some((id) => {
+                  const other = created.get(id);
+                  return (
+                    id !== entry.connectionId && other && formatRelativeTime(other, now) === age
+                  );
+                });
+              const connected = age
+                ? `Connected ${age === "now" ? "just now" : /^\d/u.test(age) ? `${age} ago` : age}${sameAge && joined ? ` · ${clock.format(new Date(joined))}` : ""}`
+                : null;
+              const actionLabel = (key: "work.stop" | "work.watch" | "work.review") =>
+                [sessionActionLabel(key, agent), connected].filter(Boolean).join(" — ");
               return (
                 <li
                   className="agents-now-panel__row"
@@ -296,12 +317,12 @@ function ActiveAgents({
                       ))}
                     </div>
                     {entry.action ? <div dir="auto">{entry.action}</div> : null}
+                    {connected ? <div>{connected}</div> : null}
                   </div>
                   <div className="agents-now-panel__actions">
                     <button
-                      aria-label={sessionActionLabel(
+                      aria-label={actionLabel(
                         entry.state === "needs-you" ? "work.review" : "work.watch",
-                        agent,
                       )}
                       className={`btn btn--small${waiting ? " btn--primary" : ""}`}
                       onClick={() => {
@@ -313,7 +334,7 @@ function ActiveAgents({
                       {action}
                     </button>
                     <button
-                      aria-label={sessionActionLabel("work.stop", agent)}
+                      aria-label={actionLabel("work.stop")}
                       className="btn btn--small"
                       disabled={stopping}
                       onClick={() => stop([entry])}
@@ -348,6 +369,37 @@ function ActiveAgents({
       ) : null}
     </div>
   );
+}
+
+const clock = new Intl.DateTimeFormat(undefined, {
+  hour: "numeric",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
+function duplicateRows(agents: readonly ConnectedAgentNow[], deviceName: string | null) {
+  const groups = new Map<string, ConnectedAgentNow[]>();
+  for (const agent of agents) {
+    const key = JSON.stringify([
+      connectedAgentNamePart(agent.agent),
+      agent.state,
+      agent.action,
+      agent.places.map(({ name, device }) => [
+        name,
+        device?.name !== deviceName && device?.name !== name ? device?.name : null,
+      ]),
+    ]);
+    const group = groups.get(key);
+    if (group) group.push(agent);
+    else groups.set(key, [agent]);
+  }
+  const duplicates = new Map<string, ReadonlySet<string>>();
+  for (const group of groups.values()) {
+    const connections = new Set(group.map(({ connectionId }) => connectionId));
+    if (connections.size > 1)
+      for (const { sessionId } of group) duplicates.set(sessionId, connections);
+  }
+  return duplicates;
 }
 
 function stopWarning(remaining: readonly ConnectedAgentNow[]): readonly SentencePart[] {
