@@ -54,7 +54,9 @@ class ViewerSocket implements WebSocketClient {
 function platform(visible = true) {
   const foreground = new Set<() => void>();
   const background = new Set<() => void>();
-  const network = new Set<(state: "online" | "offline", path: "changed") => void>();
+  const network = new Set<(state: "online" | "offline", path: "changed" | "same") => void>();
+  const freeze = new Set<() => void>();
+  const resume = new Set<() => void>();
   let state = { visible, online: true };
   const lifecycle: ClientLifecycle = {
     getSnapshot: () => ({
@@ -73,6 +75,14 @@ function platform(visible = true) {
       network.add(listener);
       return () => network.delete(listener);
     },
+    onFreeze: (listener) => {
+      freeze.add(listener);
+      return () => freeze.delete(listener);
+    },
+    onResume: (listener) => {
+      resume.add(listener);
+      return () => resume.delete(listener);
+    },
   };
   return {
     lifecycle,
@@ -84,6 +94,20 @@ function platform(visible = true) {
     online(next: boolean) {
       state = { ...state, online: next };
       for (const listener of network) listener(next ? "online" : "offline", "changed");
+    },
+    /** A handover to another network: still online, every socket suspect. */
+    handover() {
+      for (const listener of network) listener("online", "changed");
+    },
+    /** The platform stops the page's timers; the handler runs first. */
+    freeze() {
+      for (const listener of freeze) listener();
+    },
+    /** The page runs again, seen or not as its visibility says. */
+    resume(visible: boolean) {
+      state = { ...state, visible };
+      for (const listener of resume) listener();
+      for (const listener of visible ? foreground : background) listener();
     },
   };
 }
@@ -207,6 +231,67 @@ describe("a client is a browser viewer only while the person can see the picture
     expect(admitted()).toBe(true);
     client.sendBrowserCommand(sessionId, { type: "input.cancel", surfaceId: page.tabId });
     expect(sockets[0]!.sent.some((raw) => JSON.parse(raw).type === "input.cancel")).toBe(true);
+  });
+
+  it("attaches nothing new while unseen: a network blip inside the grace brings no viewer back", async () => {
+    const { client, device, page, sessionId, sockets, open } = await viewing();
+    client.retainBrowserViewer(sessionId, page.tabId);
+    expect(open()).toHaveLength(1);
+    vi.useFakeTimers();
+    device.show(false);
+    vi.advanceTimersByTime(browserViewerGraceMs / 3);
+    device.online(false);
+    expect(open()).toHaveLength(0);
+    device.online(true);
+    vi.advanceTimersByTime(browserViewerGraceMs / 3);
+    expect(open(), "a reconnect while nobody can see the picture").toHaveLength(0);
+    expect(sockets).toHaveLength(1);
+    vi.advanceTimersByTime(browserViewerGraceMs * 10);
+    expect(sockets).toHaveLength(1);
+    device.show(true);
+    expect(open()).toHaveLength(1);
+  });
+
+  it("attaches nothing new while unseen: a network handover or a new hold inside the grace", async () => {
+    const { client, device, page, sessionId, sockets, open } = await viewing();
+    client.retainBrowserViewer(sessionId, page.tabId);
+    vi.useFakeTimers();
+    device.show(false);
+    vi.advanceTimersByTime(browserViewerGraceMs / 3);
+    // A new hold, such as a live card mounting, while the page is hidden.
+    client.retainBrowserWatch(sessionId, page.tabId);
+    expect(sockets, "a viewer opened while nobody can see it").toHaveLength(1);
+    // The sockets on the old path are suspect: they go, and nothing replaces them unseen.
+    device.handover();
+    expect(open()).toHaveLength(0);
+    expect(sockets).toHaveLength(1);
+    device.show(true);
+    expect(open()).toHaveLength(2);
+  });
+
+  it("lets go at once when the page is frozen, whose timers would never let it go", async () => {
+    const { client, device, page, sessionId, open } = await viewing();
+    client.retainBrowserViewer(sessionId, page.tabId);
+    client.retainBrowserWatch(sessionId, page.tabId);
+    vi.useFakeTimers();
+    device.show(false);
+    device.freeze();
+    expect(open(), "a frozen page keeps its sockets, and the Home its browser").toHaveLength(0);
+    // Resumed but still hidden: nothing to keep, nothing attached.
+    device.resume(false);
+    vi.advanceTimersByTime(browserViewerGraceMs * 2);
+    expect(open()).toHaveLength(0);
+    device.resume(true);
+    expect(open()).toHaveLength(2);
+  });
+
+  it("lets go at once when a visible page is frozen, and attaches again when it resumes seen", async () => {
+    const { client, device, page, sessionId, open } = await viewing();
+    client.retainBrowserViewer(sessionId, page.tabId);
+    device.freeze();
+    expect(open()).toHaveLength(0);
+    device.resume(true);
+    expect(open()).toHaveLength(1);
   });
 
   it("still lets go at once when the network is lost, visible or not", async () => {

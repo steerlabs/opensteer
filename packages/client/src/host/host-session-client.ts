@@ -955,6 +955,10 @@ export class HttpHostClient {
     // A client that starts hidden has shown no picture to keep: it is unseen from the start.
     this.#unseen = this.#visibility === "background";
     this.#seen(this.#visibility === "foreground");
+    const platform = options.lifecycle;
+    if (platform?.onFreeze) this.#lifecycleDisposers.push(platform.onFreeze(() => this.#frozen()));
+    if (platform?.onResume)
+      this.#lifecycleDisposers.push(platform.onResume(() => this.#resumed(platform)));
     let observed = this.connection.getSnapshot();
     this.#lifecycleDisposers.push(
       this.connection.subscribe(() => {
@@ -3275,9 +3279,14 @@ export class HttpHostClient {
       readonly captureRegion?: boolean;
       readonly frameWindow?: boolean;
       readonly rasterDemand?: boolean;
+      readonly connect?: boolean;
     },
   ): (() => void) => {
-    if (options?.picture === false && !this.#capabilities?.includes("browser-target-control-v1"))
+    if (
+      options?.picture === false &&
+      options.connect !== false &&
+      !this.#capabilities?.includes("browser-target-control-v1")
+    )
       throw new Error("This Host does not advertise browser-target-control-v1.");
     return this.#targetedControl.retain(sessionId, surfaceId, options);
   };
@@ -4573,20 +4582,48 @@ export class HttpHostClient {
       this.#unseenTimer = null;
       this.#unseen = false;
     } else if (!this.#unseen && !this.#unseenTimer && !this.#disposed) {
+      // The grace runs from when the picture was last seen, whatever happens to the sockets.
       this.#unseenTimer = setTimeout(() => {
         this.#unseenTimer = null;
         this.#unseen = true;
-        this.#suspendViewers();
+        this.#applyViewerPresence();
       }, browserViewerGraceMs);
       unrefTimer(this.#unseenTimer);
     }
-    this.#suspendViewers();
+    this.#applyViewerPresence();
   }
 
-  #suspendViewers(): void {
-    const suspended = this.#unseen || this.#network === "offline";
-    this.#targetedControl.suspend(suspended);
-    this.#targetedWatch.suspend(suspended);
+  /**
+   * The platform stops this page's timers (the web's Page Lifecycle `freeze`; a phone app the
+   * system may suspend): the grace's timer would never fire, while the platform may keep the
+   * sockets answering the Home. So the client lets go now, and is unseen until it is seen again.
+   */
+  #frozen(): void {
+    if (this.#unseenTimer) clearTimeout(this.#unseenTimer);
+    this.#unseenTimer = null;
+    this.#unseen = true;
+    this.#applyViewerPresence();
+  }
+
+  /** Running again: seen or not as the platform says now; a hidden page stays unseen. */
+  #resumed(lifecycle: ClientLifecycle): void {
+    if (lifecycle.getSnapshot().visibility === "foreground") this.#seen(true);
+  }
+
+  /**
+   * Seen: sockets open as views hold them. Hidden inside the grace: those already open stay, and
+   * nothing opens, not even a reconnect or a new hold, so a hidden client never wakes a browser.
+   * Unseen past the grace, frozen or offline: none.
+   */
+  #applyViewerPresence(): void {
+    const mode =
+      this.#unseen || this.#network === "offline"
+        ? "closed"
+        : this.#visibility === "background"
+          ? "keep"
+          : "open";
+    this.#targetedControl.presence(mode);
+    this.#targetedWatch.presence(mode);
   }
 
   openConnection(attempt: ConnectionAttempt): Promise<ConnectionLease> {

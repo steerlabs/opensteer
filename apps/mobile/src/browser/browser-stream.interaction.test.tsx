@@ -18,8 +18,10 @@ import type {
 } from "@opensteer/client/host";
 import {
   BrowserCursorStore,
+  BrowserWatchStore,
   browserTabPicture,
   browserViewerGraceMs,
+  type WebSocketClient,
 } from "@opensteer/client/host";
 import { tabFixture, tabStoreFixture } from "@opensteer/client/test-support";
 import { mockBrowserPoolReport } from "@opensteer/client/mock";
@@ -449,6 +451,137 @@ function setup(interactive = true, cursor?: BrowserCursorStore) {
   };
 }
 
+/** A viewer socket of the real targeted store, answered as the Home answers it. */
+class TargetSocket implements WebSocketClient {
+  binaryType: "arraybuffer" | "blob" = "blob";
+  readyState = 0;
+  readonly sent: string[] = [];
+  readonly #listeners = new Map<string, Set<(event: never) => void>>();
+  addEventListener(type: string, listener: (event: never) => void): void {
+    const listeners = this.#listeners.get(type) ?? new Set();
+    listeners.add(listener);
+    this.#listeners.set(type, listeners);
+  }
+  close(code = 1000, reason = ""): void {
+    if (this.readyState === 3) return;
+    this.readyState = 3;
+    this.#emit("close", { code, reason });
+  }
+  open(): void {
+    act(() => {
+      this.readyState = 1;
+      this.#emit("open", {});
+    });
+  }
+  admit(): void {
+    act(() =>
+      this.#emit("message", {
+        data: JSON.stringify({
+          type: "browser.snapshot",
+          sessionId,
+          state: "ready",
+          access: "read-write",
+          targetedStreamingVersion: 1,
+          dialog: null,
+          surfaces: [{ id: surfaceId, active: true, title: "A page", url: "https://example.com" }],
+        }),
+      }),
+    );
+  }
+  picture(sequence: number): void {
+    const header = new TextEncoder().encode(
+      JSON.stringify({
+        ...frame().header,
+        frameId: sequence,
+        watchToken: `00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`,
+      }),
+    );
+    const bytes = new Uint8Array(4 + header.length + 4);
+    new DataView(bytes.buffer).setUint32(0, header.length);
+    bytes.set(header, 4);
+    bytes.set([0xff, 0xd8, 0xff, 0xd9], 4 + header.length);
+    act(() => this.#emit("message", { data: bytes.buffer }));
+  }
+  send(data: string): void {
+    this.sent.push(data);
+  }
+  #emit(type: string, event: unknown): void {
+    for (const listener of this.#listeners.get(type) ?? []) listener(event as never);
+  }
+}
+
+/** The page over the client's own targeted store: its holds, sockets and pictures are real. */
+function realStore() {
+  const sockets: TargetSocket[] = [];
+  const store = new BrowserWatchStore(
+    () => {
+      const socket = new TargetSocket();
+      sockets.push(socket);
+      return socket;
+    },
+    "control",
+    undefined,
+    () => 100,
+  );
+  const frames: BrowserFrameStore = {
+    invalidationKey: store.invalidationKey,
+    claim: (session, surface, token) => store.claim(session, surface, token),
+    accept: (session, surface, token) => store.accept(session, surface, token),
+    get: (session, surface) => store.get(session, surface).frame,
+    rasterDemand: (session, surface) => store.rasterDemand(session, surface),
+    subscribe: (session, listener, surface) => store.subscribe(session, surface!, listener),
+  };
+  const listed = {
+    tabs: tabStoreFixture([tabFixture({ tabId: surfaceId, title: "A page" })]),
+  } as unknown as HostSnapshot;
+  const hostClient: BrowserStreamProps["hostClient"] = {
+    acceptBrowserWatchFrame: (session, token, surface) => store.accept(session, surface, token),
+    getSnapshot: () => listed,
+    browserFrames: frames,
+    browserWatchFrames: frames,
+    retainBrowserViewer: (session, surface, options) => store.retain(session, surface, options),
+    retainBrowserWatch: () => () => undefined,
+    sendBrowserCommand: (session, command) => store.send(session, surfaceId, command),
+    browserViewerState: (session, surface) => store.status(session, surface),
+    subscribeBrowserViewer: (session, surface, listener) =>
+      store.subscribeStatus(session, surface, listener),
+    browserWatchState: () => ({ frame: null, status: "unavailable", error: null }),
+    subscribeBrowserWatch: () => () => undefined,
+  };
+  const container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  const render = (active: boolean) =>
+    act(() => {
+      root?.render(
+        <BrowserStream
+          active={active}
+          held
+          hostClient={hostClient}
+          interactive
+          label="A page, example.com"
+          session={session("synchronized")}
+          tabId={surfaceId}
+          zoom={{ value: 1 }}
+        />,
+      );
+    });
+  const decode = async () => {
+    if (native.presenter === "image")
+      return act(() => {
+        const image = [...container.querySelectorAll("img")].at(-1);
+        if (!image) throw new Error("The store delivered no image.");
+        image.dispatchEvent(new Event("load"));
+      });
+    await act(async () => {
+      const picture = native.presented.shift();
+      if (!picture) throw new Error("The store delivered no picture.");
+      picture.settle("presented");
+    });
+  };
+  return { container, decode, render, sockets, store };
+}
+
 const sessionId = session("synchronized").id;
 const tapPoint = {
   geometryRevision: 7,
@@ -595,38 +728,43 @@ describe.each(["image", "picture"] as const)(
       expect(viewerRelease).toHaveBeenCalledTimes(3);
     });
 
-    it("lets go of its kept viewer once off screen past the grace, keeping the last picture, and takes it again when shown", async () => {
+    it("lets go of its kept viewer once off screen past the grace, keeping the last picture through its return (real store)", async () => {
       vi.useFakeTimers();
       try {
-        const { container, decode, emit, hostClient, render, viewerRelease } = setup();
+        const real = realStore();
+        const { container, render, sockets } = real;
         const shown = () => container.querySelector('img[alt="A page, example.com"]') !== null;
-        render("synchronized", true, { held: true });
-        emit();
-        await decode();
-        const holds = vi.mocked(hostClient.retainBrowserViewer).mock.calls.length;
+        render(true);
+        expect(sockets).toHaveLength(1);
+        sockets[0]!.open();
+        sockets[0]!.admit();
+        sockets[0]!.picture(1);
+        await real.decode();
+        expect(shown()).toBe(true);
 
-        // Another screen goes over the page: its picture goes, its pictureless viewer stays.
-        render("synchronized", false, { held: true });
-        expect(viewerRelease).toHaveBeenCalledTimes(1);
+        // Another screen goes over the page: its picture stops, its pictureless viewer stays.
+        render(false);
         act(() => {
           vi.advanceTimersByTime(browserViewerGraceMs - 1);
         });
-        expect(viewerRelease, "a quick look at another screen reconnects nothing").toBeCalledTimes(
-          1,
-        );
+        expect(sockets[0]!.readyState, "a quick look at another screen reconnects nothing").toBe(1);
         // Past the grace nobody can see it: the Home must not count it as a viewer any more.
         act(() => {
           vi.advanceTimersByTime(1);
         });
-        expect(viewerRelease).toHaveBeenCalledTimes(2);
-        expect(shown(), "the last picture stays for its return").toBe(true);
+        expect(sockets.filter((socket) => socket.readyState !== 3)).toHaveLength(0);
+        expect(shown(), "the last picture stays while the page is off screen").toBe(true);
 
-        // Shown again, it takes its viewer at once.
-        render("synchronized", true, { held: true });
-        expect(hostClient.retainBrowserViewer).toHaveBeenCalledTimes(holds + 2);
-        expect(hostClient.retainBrowserViewer).toHaveBeenCalledWith(sessionId, surfaceId, {
-          picture: false,
-        });
+        // Shown again: it takes its viewer at once, and shows the last picture until a new one.
+        render(true);
+        expect(sockets).toHaveLength(2);
+        expect(shown(), "the page came back blank instead of its last picture").toBe(true);
+        sockets[1]!.open();
+        sockets[1]!.admit();
+        expect(shown()).toBe(true);
+        sockets[1]!.picture(2);
+        await real.decode();
+        expect(shown()).toBe(true);
       } finally {
         vi.useRealTimers();
       }

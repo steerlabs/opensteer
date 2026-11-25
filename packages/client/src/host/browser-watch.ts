@@ -48,6 +48,8 @@ interface Watch {
   holds: number;
   pictureHolds: number;
   asleepHolds: number;
+  /** Holds that keep this target and its last picture without asking for a socket. */
+  socketlessHolds: number;
   captureRegionHolds: number;
   frameWindowHolds: number;
   rasterDemandHolds: number;
@@ -92,7 +94,10 @@ export class BrowserWatchStore {
   }
   readonly #authorityDenied = new Set<string>();
   #authorized: (sessionId: string, surfaceId: string) => boolean = () => true;
+  /** No socket at all: the client is offline, or nobody can see it. */
   #suspended = false;
+  /** Sockets already open stay, and nothing opens: the client is hidden, inside its grace. */
+  #keeping = false;
   #allowed: (sessionId: string, surfaceId: string, asleep: boolean) => boolean = () => true;
   #isAllowed(target: Watch): boolean {
     return this.#allowed(target.sessionId, target.surfaceId, target.asleepHolds > 0);
@@ -212,10 +217,16 @@ export class BrowserWatchStore {
       readonly frameWindow?: boolean;
       /** This holder's presenter states its raster density through `rasterDemand`. */
       readonly rasterDemand?: boolean;
+      /**
+       * False: keep this target and its last picture, and no socket for it. A view nobody can
+       * see holds its page this way, so it is no viewer to the Home and still has its picture.
+       */
+      readonly connect?: boolean;
     } = {},
   ): () => void {
-    const picture = options.picture !== false;
-    const asleep = !picture && options.asleep === true;
+    const socketless = options.connect === false;
+    const picture = !socketless && options.picture !== false;
+    const asleep = !picture && !socketless && options.asleep === true;
     const key = this.#key(sessionId, surfaceId);
     let target = this.#targets.get(key);
     if (!target) {
@@ -227,6 +238,7 @@ export class BrowserWatchStore {
         holds: 0,
         pictureHolds: 0,
         asleepHolds: 0,
+        socketlessHolds: 0,
         captureRegionHolds: 0,
         frameWindowHolds: 0,
         rasterDemandHolds: 0,
@@ -252,6 +264,7 @@ export class BrowserWatchStore {
     const frameWindow = picture && options.frameWindow === true;
     const rasterDemand = picture && options.rasterDemand === true;
     target.holds++;
+    if (socketless) target.socketlessHolds++;
     if (picture) target.pictureHolds++;
     if (asleep) target.asleepHolds++;
     if (captureRegion) target.captureRegionHolds++;
@@ -266,7 +279,7 @@ export class BrowserWatchStore {
       this.#subscribeTarget(target);
     this.#diagnose({ stage: "retain", holds: target.holds });
     if (picture) this.#scheduleDemand(key);
-    if (!this.#suspended && this.#isAllowed(target) && !target.socket && !target.timer)
+    if (this.#mayOpen(target) && this.#isAllowed(target) && !target.socket && !target.timer)
       this.#open(target);
     const current = target;
     let released = false;
@@ -276,12 +289,21 @@ export class BrowserWatchStore {
       this.#diagnose({ stage: "release", holds: current.holds - 1 });
       const previouslyOptedIn = current.captureRegionHolds === current.pictureHolds;
       const previouslyWindowed = current.frameWindowHolds === current.pictureHolds;
+      if (socketless) current.socketlessHolds--;
       if (picture) current.pictureHolds--;
       if (asleep) current.asleepHolds--;
       if (captureRegion) current.captureRegionHolds--;
       if (frameWindow) current.frameWindowHolds--;
       if (rasterDemand) current.rasterDemandHolds--;
       if (--current.holds > 0) {
+        // Only socketless holds are left: the socket goes, the target and its picture stay.
+        if (!this.#needsSocket(current)) {
+          if (current.socket || current.timer) {
+            this.#close(current);
+            this.#set(current, this.#kept(current));
+          }
+          return;
+        }
         if (asleep && current.asleepHolds === 0 && !this.#isAllowed(current)) {
           this.#close(current);
           this.#set(current, this.#kept(current));
@@ -388,8 +410,24 @@ export class BrowserWatchStore {
   }
   /** No socket while suspended: the client is offline, or nobody can see it. */
   suspend(suspended: boolean): void {
-    this.#suspended = suspended;
+    this.presence(suspended ? "closed" : "open");
+  }
+  /**
+   * Whether this client is a viewer. `open`: sockets open as holds need them. `keep`: nobody
+   * can see the client, inside its grace: sockets already open stay, and nothing opens, not even
+   * a reconnect or a new hold. `closed`: no socket at all. Targets and their last pictures stay
+   * in every mode.
+   */
+  presence(mode: "open" | "keep" | "closed"): void {
+    this.#suspended = mode === "closed";
+    this.#keeping = mode === "keep";
     this.reconcile(this.#allowed, this.#authorized);
+  }
+  #needsSocket(target: Watch): boolean {
+    return target.holds > target.socketlessHolds;
+  }
+  #mayOpen(target: Watch): boolean {
+    return !this.#suspended && !this.#keeping && this.#needsSocket(target);
   }
   reconcile(
     allowed: (sessionId: string, surfaceId: string, asleep: boolean) => boolean = this.#allowed,
@@ -418,11 +456,12 @@ export class BrowserWatchStore {
       if (!this.#isAllowed(target)) {
         this.#close(target);
         this.#set(target, this.#kept(target));
-      } else if (this.#suspended) {
+      } else if (this.#suspended || !this.#needsSocket(target)) {
         if (!target.socket && !target.timer) continue;
         this.#close(target);
         this.#set(target, this.#kept(target));
-      } else if (!target.socket && !target.timer && !target.terminal) this.#open(target);
+      } else if (this.#keeping) continue;
+      else if (!target.socket && !target.timer && !target.terminal) this.#open(target);
     }
   }
   /**
@@ -469,7 +508,7 @@ export class BrowserWatchStore {
   }
   #open(target: Watch): void {
     if (
-      this.#suspended ||
+      !this.#mayOpen(target) ||
       !this.#isAllowed(target) ||
       !this.#authorized(target.sessionId, target.surfaceId)
     )
@@ -726,7 +765,7 @@ export class BrowserWatchStore {
     });
   }
   #retry(target: Watch): void {
-    if (this.#suspended || !target.holds) return;
+    if (!this.#mayOpen(target) || !target.holds) return;
     const delay = this.retryDelay(target.attempt++, target.unreadableFrames);
     if (target.unreadableFrames > 0) target.unreadableRetryAt = Date.now() + delay;
     target.timer = setTimeout(() => {

@@ -15,8 +15,10 @@ export function useViewerGrace(seen: boolean): boolean {
       setRecent(true);
       return;
     }
+    // Unseen from the start, or the grace already over: nothing to wait for.
+    if (!recent) return;
     const timer = setTimeout(() => setRecent(false), browserViewerGraceMs);
     return () => clearTimeout(timer);
-  }, [seen]);
+  }, [recent, seen]);
   return seen || recent;
 }

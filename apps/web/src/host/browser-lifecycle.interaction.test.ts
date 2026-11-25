@@ -42,7 +42,8 @@ afterEach(() => {
   setHidden(false);
 });
 
-it("lets go of the page's viewer once the Home's tab is hidden past the grace, and takes it again when shown", async () => {
+/** A Home's page, viewed through the web's own lifecycle, and the viewer sockets it has open. */
+async function viewing() {
   const seed = new MockHostClient({ latencyMs: 0 });
   await seed.load();
   const page = [...seed.getSnapshot().tabs.rows.values()].find((tab) => tab.kind === "page")!;
@@ -72,6 +73,11 @@ it("lets go of the page's viewer once the Home's tab is hidden past the grace, a
   // The browser panel's own hold: the picture and its controls.
   client.retainBrowserViewer(viewer.sessionId, page.tabId);
   expect(open()).toHaveLength(1);
+  return { client, page, sockets, open };
+}
+
+it("lets go of the page's viewer once the Home's tab is hidden past the grace, and takes it again when shown", async () => {
+  const { client, page, sockets, open } = await viewing();
 
   vi.useFakeTimers();
   // Flipping to another tab and back reconnects nothing.
@@ -89,6 +95,20 @@ it("lets go of the page's viewer once the Home's tab is hidden past the grace, a
   // Only the viewer goes: the tab list stays.
   expect(client.getSnapshot().tabs.rows.has(page.tabId)).toBe(true);
 
+  setHidden(false);
+  expect(open()).toHaveLength(1);
+});
+
+it("lets go at once when the browser freezes the hidden tab, and attaches again when it resumes seen", async () => {
+  const { open } = await viewing();
+  vi.useFakeTimers();
+  setHidden(true);
+  // Chrome freezes a hidden tab: its timers stop, so the grace would never end.
+  document.dispatchEvent(new Event("freeze"));
+  expect(open(), "a frozen tab keeps its viewer, and the Home its browser").toHaveLength(0);
+  document.dispatchEvent(new Event("resume"));
+  vi.advanceTimersByTime(browserViewerGraceMs * 2);
+  expect(open(), "resumed but hidden: nothing to attach").toHaveLength(0);
   setHidden(false);
   expect(open()).toHaveLength(1);
 });

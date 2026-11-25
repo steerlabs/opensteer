@@ -37,6 +37,14 @@ export interface ClientLifecycle {
    * being hidden, so it trusts them however long it was away.
    */
   readonly socketTrustWindowMs?: number;
+  /**
+   * The platform is about to stop this page's timers: the web's Page Lifecycle `freeze` (its
+   * handler runs before the freeze), or a phone app the system may suspend once it is in the
+   * background. A timer the client set would not fire, so it lets go of what it must not keep.
+   */
+  onFreeze?(listener: () => void): () => void;
+  /** The page runs again after a freeze. Its visibility then says whether it is seen. */
+  onResume?(listener: () => void): () => void;
 }
 
 /**

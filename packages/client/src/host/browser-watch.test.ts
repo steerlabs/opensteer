@@ -169,6 +169,68 @@ class TargetSocket implements WebSocketClient {
 }
 
 describe("BrowserWatchStore", () => {
+  it("keeps a target and its last picture under a socketless hold, and opens a socket only for the others", () => {
+    const sockets: TargetSocket[] = [];
+    const store = new BrowserWatchStore(
+      () => {
+        const socket = new TargetSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      "control",
+      undefined,
+      () => 0,
+    );
+    // Alone, a socketless hold asks for no socket: it is no viewer to the Home.
+    const quiet = store.retain(sessionId, surfaceId, { connect: false });
+    expect(sockets).toHaveLength(0);
+    const live = store.retain(sessionId, surfaceId, { picture: false });
+    expect(sockets).toHaveLength(1);
+    sockets[0]!.open();
+    sockets[0]!.admit();
+    sockets[0]!.picture();
+    const picture = store.get(sessionId, surfaceId).frame;
+    expect(picture).not.toBeNull();
+    // The view no one sees swaps its live hold for the socketless one: the socket goes, the picture stays.
+    live();
+    expect(sockets[0]!.readyState).toBe(3);
+    expect(store.get(sessionId, surfaceId).frame).toBe(picture);
+    // Seen again: a socket opens, and the last picture stands until a new one.
+    const again = store.retain(sessionId, surfaceId);
+    expect(sockets).toHaveLength(2);
+    expect(store.get(sessionId, surfaceId).frame).toBe(picture);
+    again();
+    quiet();
+    store.dispose();
+  });
+
+  it("opens nothing while keeping, not a new hold nor a reconnect, and keeps what is open", () => {
+    const sockets: TargetSocket[] = [];
+    const store = new BrowserWatchStore(
+      () => {
+        const socket = new TargetSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      "control",
+      undefined,
+      () => 0,
+    );
+    const first = store.retain(sessionId, surfaceId);
+    store.presence("keep");
+    expect(sockets[0]!.readyState).not.toBe(3);
+    const second = store.retain(sessionId, "srf_00000000-0000-4000-8000-000000000002");
+    expect(sockets).toHaveLength(1);
+    store.reconnect();
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]!.readyState).toBe(3);
+    store.presence("open");
+    expect(sockets).toHaveLength(3);
+    first();
+    second();
+    store.dispose();
+  });
+
   it("resolves viewer icon references from its own connection and clears them on reconnect", () => {
     const sockets: TargetSocket[] = [];
     const store = new BrowserWatchStore(
