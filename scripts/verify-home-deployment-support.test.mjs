@@ -868,7 +868,10 @@ await test("interrupted update reselects the previous images without touching th
     test ! -e "$journal"
     test "$(cat "$home_dir/update-database.dump")" = 'manual recovery copy'
   `);
-  assert.match(output, /^OPENSTEER_HOME_VERSION=2\.0\.0 down\nOPENSTEER_HOME_VERSION=1\.0\.0\n/u);
+  assert.match(
+    output,
+    /^OPENSTEER_HOME_VERSION=2\.0\.0 down --remove-orphans\nOPENSTEER_HOME_VERSION=1\.0\.0\n/u,
+  );
 });
 
 for (const { name, fixture, recover, selector } of [
