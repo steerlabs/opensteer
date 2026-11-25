@@ -396,16 +396,22 @@ FROM node-runtime AS host
 WORKDIR /app
 ENV OPENSTEER_WEB_DISTRIBUTION_DIRECTORY=/usr/local/share/opensteer/web \
     OPENSTEER_WEB_DISTRIBUTION_MANIFEST=/usr/local/share/opensteer/web/opensteer-web.json
-COPY --from=host-build --chown=10001:10001 /output/host ./
-COPY --from=package-stamps --chown=10001:10001 /output/host/package.json ./package.json
+# The code tree is root's and readable by any uid: it does not depend on who runs it (the Host
+# runs as 10001, or 10002 on a Cloud Computer), and the user it runs as cannot change it.
+COPY --from=host-build /output/host ./
+COPY --from=package-stamps /output/host/package.json ./package.json
 COPY --from=runner-native-fs-build --chmod=0555 /output/opensteer-native-fs ./native-fs-helper/opensteer-native-fs
-COPY --from=web-build --chown=10001:10001 /source/apps/web/dist /usr/local/share/opensteer/web
+COPY --from=web-build /source/apps/web/dist /usr/local/share/opensteer/web
 ARG OPENSTEER_RELEASE_VERSION
 ARG OPENSTEER_SOURCE_REVISION
 ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
     OPENSTEER_SOURCE_REVISION=${OPENSTEER_SOURCE_REVISION}
 ENV OPENSTEER_HOST_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION}
 COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
+# Staged runtime packages (sharp and its dependencies) arrive with 0700 directories.
+RUN --mount=type=bind,source=deploy/container/assert-readable-tree.sh,target=/tmp/assert-readable-tree.sh \
+    chmod -R a+rX,go-w /app /usr/local/share/opensteer/web && \
+    sh /tmp/assert-readable-tree.sh --root-owned /app /usr/local/share/opensteer/web
 USER 10001:10001
 EXPOSE 4310
 CMD ["node", "dist/main.js"]
@@ -499,6 +505,8 @@ ARG OPENSTEER_SOURCE_REVISION
 ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
     OPENSTEER_SOURCE_REVISION=${OPENSTEER_SOURCE_REVISION}
 COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
+RUN --mount=type=bind,source=deploy/container/assert-readable-tree.sh,target=/tmp/assert-readable-tree.sh \
+    chmod -R a+rX /app && sh /tmp/assert-readable-tree.sh /app
 USER 10001:10001
 CMD ["node", "dist/main.js"]
 
@@ -511,6 +519,8 @@ ARG OPENSTEER_SOURCE_REVISION
 ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
     OPENSTEER_SOURCE_REVISION=${OPENSTEER_SOURCE_REVISION}
 COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
+RUN --mount=type=bind,source=deploy/container/assert-readable-tree.sh,target=/tmp/assert-readable-tree.sh \
+    chmod -R a+rX /app && sh /tmp/assert-readable-tree.sh /app
 USER 10001:10001
 EXPOSE 4313
 CMD ["node", "dist/egress-main.js"]
@@ -537,6 +547,8 @@ ARG OPENSTEER_SOURCE_REVISION
 ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
     OPENSTEER_SOURCE_REVISION=${OPENSTEER_SOURCE_REVISION}
 COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
+RUN --mount=type=bind,source=deploy/container/assert-readable-tree.sh,target=/tmp/assert-readable-tree.sh \
+    chmod -R a+rX /app && sh /tmp/assert-readable-tree.sh /app
 USER 10001:10001
 EXPOSE 4320
 CMD ["node", "dist/main.js"]
@@ -574,6 +586,10 @@ ARG OPENSTEER_SOURCE_REVISION
 ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
     OPENSTEER_SOURCE_REVISION=${OPENSTEER_SOURCE_REVISION}
 COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
+USER root
+RUN --mount=type=bind,source=deploy/container/assert-readable-tree.sh,target=/tmp/assert-readable-tree.sh \
+    chmod -R a+rX /app && sh /tmp/assert-readable-tree.sh /app
+USER 10001:10001
 
 FROM ${CADDY_IMAGE} AS gateway
 COPY deploy/gateway/Caddyfile /etc/caddy/Caddyfile
@@ -589,6 +605,8 @@ COPY --from=caddy-capability-free /caddy /usr/bin/opensteer-home-caddy
 RUN install -d -o 1000 -g 1000 -m 0700 /data/caddy /config/caddy
 COPY deploy/home/Caddyfile /etc/caddy/Caddyfile
 COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
+RUN --mount=type=bind,source=deploy/container/assert-readable-tree.sh,target=/tmp/assert-readable-tree.sh \
+    sh /tmp/assert-readable-tree.sh /etc/caddy /usr/bin/opensteer-home-caddy
 USER 1000:1000
 EXPOSE 80 443
 ENTRYPOINT ["/usr/bin/opensteer-home-caddy"]
