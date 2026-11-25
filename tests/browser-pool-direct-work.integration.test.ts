@@ -288,9 +288,13 @@ it("keeps a connected agent's pooled browser_use page attachment alive across mu
 
     // 2. A second script using openPage(tabId) on the tab created by the first script succeeds on
     // its first and subsequent commands (including goto).
-    const pages = await home.service.savedPages(j.task.userId, session.id);
-    const createdTab = pages.find((row) => row.url?.includes("r=linked"));
-    if (!createdTab?.pageBinding) throw new Error("Expected the navigated page tab.");
+    // The page's own navigation (the link click) is saved shortly after the script returns.
+    const createdTab = await vi.waitFor(async () => {
+      const pages = await home.service.savedPages(j.task.userId, session.id);
+      const tab = pages.find((row) => row.url?.includes("r=linked"));
+      if (!tab?.pageBinding) throw new Error("Expected the navigated page tab.");
+      return tab;
+    });
     const second = await work.use(
       `const q = await openPage(${JSON.stringify(createdTab.id)}); print(await q.url()); await q.goto(${JSON.stringify(`${origin}/?r=2`)}); return await q.title();`,
     );
