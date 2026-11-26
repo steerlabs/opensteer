@@ -1018,9 +1018,23 @@ export function executionAccess(
   return intersectResourceAccess(explicitAccess, executionAccessCeiling(execution));
 }
 
+/**
+ * What an execution may be offered and may attempt, before its grant and the target's approval.
+ *
+ * A connected agent acting itself (its session, or the connection before it has opened one) gets
+ * "read-write": every effect it attempts is one operation of `AgentSessionService.run()`, which
+ * admits it, asks the person when the connection's mode says so, and decides it before hand-off
+ * (and its changes to the Home go through the command door, which does the same). So its mode
+ * decides only whether the person is asked, never whether a write exists; what it may reach is its
+ * grant's and the approval's to say. Your own agents' Runs, and work delegated by a connection,
+ * act without being asked effect by effect, so their mode is their ceiling.
+ */
 function executionAccessCeiling(execution: Pick<ExecutionAuthority, "mode" | "subject">) {
-  // The session pipeline already decides each effect before hand-off.
-  if (execution.subject.kind === "binding" && execution.subject.bindingId.startsWith("session:"))
+  const { subject } = execution;
+  if (
+    (subject.kind === "binding" && subject.bindingId.startsWith("session:")) ||
+    (subject.kind === "connection" && !subject.delegated)
+  )
     return "read-write";
   return integrationAccessCeilingForRun(execution.mode);
 }

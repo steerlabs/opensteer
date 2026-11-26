@@ -6333,6 +6333,66 @@ integration.sequential("Computer use for a connected agent, through its session"
     },
   );
 
+  const waitingRequests = () =>
+    database.selectFrom("requests").select("id").where("status", "=", "pending").execute();
+
+  it.each(["everything", "selected"] as const)(
+    "asks a supervised %s connection before it acts in a Mac app approved from the device page: allowed it acts once, refused nothing",
+    async (scope) => {
+      const s = await connectedAgent("approval-required", {
+        target: "mac",
+        personApproved: true,
+        scope,
+      });
+      try {
+        const listed = await s.apps({ query: "Notes" });
+        expect(listed.items).toContainEqual(
+          expect.objectContaining({ name: "Notes", access: "read-write" }),
+        );
+        const acts = () =>
+          s.world.fakeMac.frames.filter(({ operation }) => operation === "act").length;
+        const pending = await s.call({ code: actInNotes }, `${scope}-supervised-act`);
+        expect(pending, JSON.stringify(pending)).toMatchObject({ status: "pending" });
+        expect(await waitingRequests()).toEqual([{ id: pending.requestId }]);
+        expect(acts()).toBe(0);
+        await s.answer(pending.requestId as string, "allow");
+        const done = await s.call(
+          { code: actInNotes, taskId: pending.taskId },
+          `${scope}-supervised-act`,
+        );
+        expect(done, JSON.stringify(done)).toMatchObject({ status: "completed" });
+        expect(acts()).toBe(1);
+        const asked = await s.call({ code: actInNotes }, `${scope}-supervised-refused`);
+        expect(await waitingRequests()).toEqual([{ id: asked.requestId }]);
+        await s.answer(asked.requestId as string, "deny");
+        await expect(
+          s.call({ code: actInNotes, taskId: asked.taskId }, `${scope}-supervised-refused`),
+        ).rejects.toThrow("The person did not allow it.");
+        expect(acts()).toBe(1);
+      } finally {
+        await s.world.close();
+      }
+    },
+  );
+
+  it("refuses a supervised connection's act in a see-only Mac app, asking nobody", async () => {
+    const s = await connectedAgent("approval-required", {
+      target: "mac",
+      personApproved: true,
+      access: "read",
+      scope: "everything",
+    });
+    try {
+      await expect(s.call({ code: actInNotes }, "supervised-see-only")).rejects.toThrow(
+        "This target allows observation only. Use readOnly: true.",
+      );
+      expect(await waitingRequests()).toEqual([]);
+      expect(s.world.fakeMac.frames.some(({ operation }) => operation === "act")).toBe(false);
+    } finally {
+      await s.world.close();
+    }
+  });
+
   it("tells a connected agent discovering a Mac whose apps are off that the switch is the person's", async () => {
     const s = await connectedAgent("full-access", {
       target: "mac",

@@ -61,11 +61,14 @@ export function deviceAppBlocked(
     { dataApp: input.dataApp, computerId: input.computerId },
     input.canAsk,
   );
-  if (blocked?.code === "access_required" && input.readOnlyGrant && input.canAsk)
+  // The person approved this data app for reading only: that is the true reason, whoever asks.
+  if (blocked?.code === "access_required" && input.readOnlyGrant)
     return {
       code: "access_denied",
       message: `${input.name} allows reading only.`,
-      next: `To ${input.operation}, call app_access_request with dataApp "${input.dataApp}", computerId "${input.computerId}" and access "read-write"; do not retry this call until it is fulfilled.`,
+      next: input.canAsk
+        ? `To ${input.operation}, call app_access_request with dataApp "${input.dataApp}", computerId "${input.computerId}" and access "read-write"; do not retry this call until it is fulfilled.`
+        : "Use its read operations. The person can allow changes in the device's settings in Opensteer.",
     };
   return blocked;
 }

@@ -9,7 +9,12 @@ import {
   requireSelfDeviceId,
   requireDeviceSelfRunnerId,
 } from "./device-inventory-store.js";
-import { DeviceIdSchema, agentGrantAccess, type DeviceId } from "@opensteer/core";
+import {
+  DeviceIdSchema,
+  agentGrantAccess,
+  intersectResourceAccess,
+  type DeviceId,
+} from "@opensteer/core";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { integrationAccountLabel } from "@opensteer/integration-core";
 import {
@@ -1760,19 +1765,24 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
       // that reading decides: a grant narrowed while the lending was read applies to this answer.
       const authority = connection ? await resolveResourceAccess(this.database, subject) : lending;
       const grant = authority.execution.agentConnection?.grant;
-      return tools.filter((tool) => {
+      return tools.flatMap((tool) => {
         const write = integrationToolEffect(tool.tool.annotations) !== "read";
-        if (authority.runAccess !== "read-write" && write) return false;
-        if (grant?.scope !== "selected") return true;
+        if (authority.runAccess !== "read-write" && write) return [];
+        if (grant?.scope !== "selected") return [tool];
         // Each tool's own effect is intersected with what the grant allows of its target.
         const target = tool.grant.connectionId ? targets?.get(tool.grant.connectionId) : undefined;
-        const access =
+        const allowed =
           tool.server.transport.type === "runner"
             ? localServerGrantAccess(grant, tool.server.id)
             : target
               ? agentGrantAccess(grant, target)
               : null;
-        return access !== null && (!write || access === "read-write");
+        const access = intersectResourceAccess(tool.grant.access, allowed);
+        if (access === null || (write && access !== "read-write")) return [];
+        // The tool carries the access this reading gives it, never one read before it.
+        return [
+          access === tool.grant.access ? tool : { ...tool, grant: { ...tool.grant, access } },
+        ];
       });
     };
     const scope = { ownerUserId: input.ownerUserId };

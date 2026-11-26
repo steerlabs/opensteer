@@ -320,8 +320,27 @@ export class PluginToolHandlers {
       );
       const resolved = await o.service.resolveTools({ paths }, context, signal);
       const first = resolved[0];
-      if (!first || resolved.length !== paths.length || resolved.some((entry) => !entry))
+      if (!first || resolved.length !== paths.length || resolved.some((entry) => !entry)) {
+        // A tool of a local provider this connection is shown, there but blocked (a data app the
+        // person approved for reading only, its device's apps off), says why before anything is
+        // asked: never that it does not exist, and never a Request for what cannot run. One its
+        // grant does not reach (`access_required`) reads as absent, as anything outside a grant.
+        const shown = (await o.localProviders?.providers(context)) ?? [];
+        for (const path of paths)
+          for (const provider of shown) {
+            const prefix = `${localToolPath(localNamespace(provider.slug, provider.id))}.`;
+            const blocked = path.startsWith(prefix)
+              ? provider.toolBlockers?.[path.slice(prefix.length)]
+              : undefined;
+            if (blocked && blocked.code !== "access_required")
+              throw new OpensteerError({
+                code: "forbidden",
+                message: blocked.message,
+                ...(blocked.next ? { next: blocked.next } : {}),
+              });
+          }
         throw unavailable();
+      }
       if (
         resolved.some((entry) => entry?.plugin !== first.plugin || entry.version !== first.version)
       )
