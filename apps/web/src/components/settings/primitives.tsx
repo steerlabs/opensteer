@@ -208,11 +208,14 @@ export function SettingsSignOut({
   label,
   warning,
   pending,
+  error = null,
   onConfirm,
 }: {
   readonly label: string;
   readonly warning: string;
   readonly pending: boolean;
+  /** Why the sign-out did not happen (or could not be confirmed), said where it was asked. */
+  readonly error?: string | null;
   readonly onConfirm: () => void;
 }) {
   const [confirming, setConfirming] = useState(false);
@@ -249,6 +252,7 @@ export function SettingsSignOut({
           }
         >
           <p>{warning}</p>
+          <SettingsError message={error} />
         </Dialog>
       ) : null}
     </>
