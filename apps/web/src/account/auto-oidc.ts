@@ -24,3 +24,13 @@ export function shouldAutoStartOidc(config: IdentityConfig, options: AutoOidcOpt
     options.signedOut !== true
   );
 }
+
+/**
+ * This page was signed in and the Home then ended its session: the person signed this browser
+ * out from another device (or it expired) while it was open. Like a sign-out here, it stays
+ * signed out until the person chooses to sign in again: an automatic sign-in would answer from
+ * the still signed-in Opensteer account and stand up a new session of this browser at once.
+ */
+export function sessionEndedHere(wasSignedIn: boolean, session: string): boolean {
+  return wasSignedIn && session === "authentication-required";
+}
