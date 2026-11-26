@@ -261,9 +261,12 @@ export function computerUseView(input: {
   if (!definition) return null;
   const { machine } = input;
   if (machine.phoneDisplay) return null;
+  // A machine of no known kind lends computer use only when it is a Mac (a Mac whose Runner was
+  // connected without the Opensteer app).
   if (
     machine.capabilities &&
-    (!machine.capabilities.apps.supported || machine.device?.platform !== "macos")
+    (!machine.capabilities.apps.supported ||
+      (machine.kind === "unknown" && machine.device?.platform !== "macos"))
   )
     return null;
   const report = machine.computerUse ?? null;
