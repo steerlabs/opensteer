@@ -127,3 +127,97 @@ it("names discover, never a lookup it lacks, when a connection omits the namespa
     "Supply the one plugin namespace from discover.",
   );
 });
+
+describe("plugin_call's reason for a tool that is there but cannot run", () => {
+  // A local provider with a write tool "x%" (the engine's path `x%25`) and a read tool "x%25"
+  // (its path `x%2525`), both blocked, each for its own reason.
+  const provider = `app_server_isv_${randomUUID()}`;
+  const namespace = localNamespace("tools-server", provider);
+  const write = {
+    code: "unavailable",
+    message: "The write cannot run now.",
+    next: "Continue other work.",
+  };
+  const read = { code: "unavailable", message: "The read cannot run now.", next: "Continue." };
+  const listed: PluginHostProvider = {
+    id: provider,
+    name: "Tools server",
+    slug: "tools-server",
+    version: `srv_${provider}`,
+    tools: [
+      { name: "x%", description: "Write", inputSchema: {}, readOnly: false },
+      { name: "x%25", description: "Read", inputSchema: {}, readOnly: true },
+    ] as never,
+    toolBlockers: { "x%": write, "x%25": read },
+  };
+  /** A path in the bracket form the engine also takes: `tools["ns"]["tool"]`. */
+  const bracket = (segment: string) =>
+    `tools[${JSON.stringify(namespace)}][${JSON.stringify(segment)}]`;
+  /** The engine's own answer for each path: the tool its parser and escaping name, or none. */
+  const engine: Record<string, { name: string; readOnly: boolean; blocked: typeof read } | null> = {
+    [`tools.${namespace}.x%25`]: { name: "x%", readOnly: false, blocked: write },
+    [bracket("x%25")]: { name: "x%", readOnly: false, blocked: write },
+    [`tools.${namespace}.x%2525`]: { name: "x%25", readOnly: true, blocked: read },
+  };
+  const call = async (access: "read" | "read-write", path: string, withheld = false) => {
+    const handlers = new PluginToolHandlers({
+      service: {
+        list: async () => [],
+        resolveTools: async ({ paths }: { paths: string[] }) =>
+          paths.map((each) => {
+            const found = engine[each];
+            // `withheld`: the engine leaves a blocked tool out, as it did before it said why.
+            return found && !withheld
+              ? { plugin: provider, version: listed.version, ...found, name: listed.name }
+              : null;
+          }),
+      },
+      localProviders: { providers: async () => [listed] },
+      sessions: () => ({}),
+      authority: {
+        admit: () => ({ caller: "connection", mode: "automatic" }),
+        scoped: (_caller: unknown, work: () => unknown) => work(),
+      },
+      settings: { settings: async () => [] },
+    } as unknown as PluginToolHandlers["options"]).handlers();
+    const caller = {
+      kind: "connection",
+      userId: "usr_test",
+      connectionId: "agc_test",
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [
+          {
+            kind: "plugin",
+            target: { kind: "local-server", serverId: provider.slice("app_server_".length) },
+            access,
+          },
+        ],
+      },
+    } as unknown as AgentCaller;
+    return handlers.plugin_call!({
+      caller,
+      input: { calls: { path, input: {} } },
+      operationKey: "k",
+    } as never).then(
+      () => "ran",
+      (error: unknown) =>
+        JSON.stringify(agentToolFailureResult(agentToolFailure(error, "read", undefined, true))),
+    );
+  };
+  const absent = (access: "read" | "read-write") => call(access, `tools.${namespace}.nothing`);
+
+  it("never tells a read grant the reason of a write the engine names by the same path", async () => {
+    // The engine reads `x%25` as the write tool "x%"; a read grant does not hold it. No second
+    // reading of the path finds the read tool "x%25" there instead.
+    for (const path of [`tools.${namespace}.x%25`, bracket("x%25")])
+      for (const withheld of [false, true])
+        expect(await call("read", path, withheld)).toBe(await absent("read"));
+  });
+
+  it("tells the reason of the tool the engine names, in its own escaping", async () => {
+    expect(await call("read-write", `tools.${namespace}.x%25`)).toContain(write.message);
+    expect(await call("read", `tools.${namespace}.x%2525`)).toContain(read.message);
+  });
+});

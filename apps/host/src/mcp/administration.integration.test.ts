@@ -6,7 +6,12 @@ import {
   personalBrowserRepository,
 } from "@opensteer/database/test-support/store";
 import { createId, DeviceIdSchema, type UserId } from "@opensteer/core";
-import { AgentConnectionStore, BrowserSourceStore, commandAdmission } from "@opensteer/database";
+import {
+  AgentConnectionStore,
+  BrowserSourceStore,
+  commandAdmission,
+  commandSubject,
+} from "@opensteer/database";
 import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
 import { describeStore } from "@opensteer/database/test-support/store";
 import { RealtimeHub } from "@opensteer/orchestration";
@@ -279,7 +284,7 @@ describeStore("MCP administration", (it) => {
               authoritySource: { kind: "mcp" },
               ...commandAdmission({
                 ownerUserId: run.userId,
-                callerKey: `connection:${agent.connection.id}`,
+                subject: commandSubject(`connection:${agent.connection.id}`),
                 command: {
                   type: "machine.rename",
                   idempotencyKey: randomUUID(),

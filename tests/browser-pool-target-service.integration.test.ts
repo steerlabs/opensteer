@@ -26,6 +26,9 @@ afterEach(async () => {
   for (const directory of directories.splice(0)) await rm(directory, { recursive: true });
 });
 
+/** A bound no machine reaches: these waits are for events, never for time. */
+const long = { timeout: 10_000, interval: 20 };
+
 const cloudComputerId = "cc_0192f4a1-1111-4000-8000-000000000001";
 const target = (term: number): ManagedBrowserPoolTarget => ({
   kind: "managed-pool",
@@ -45,7 +48,12 @@ async function databaseRecord() {
   return { record, read: () => record.read() };
 }
 
-async function fixture(account: ManagedBrowserPoolAccount, onTarget = vi.fn()) {
+async function fixture(
+  account: ManagedBrowserPoolAccount,
+  onTarget = vi.fn(),
+  now?: () => Date,
+  onNotReady?: () => void,
+) {
   const directory = await mkdtemp(join(tmpdir(), "opensteer-pool-target-"));
   directories.push(directory);
   const keys = await loadOrCreateManagedBrowserPoolKeys(directory);
@@ -60,9 +68,30 @@ async function fixture(account: ManagedBrowserPoolAccount, onTarget = vi.fn()) {
     onTarget,
     firstDelayMs: 40,
     maxDelayMs: 1_000,
+    ...(now ? { now } : {}),
+    ...(onNotReady ? { onNotReady } : {}),
   });
   services.push(service);
-  return { service, memory, hostKey, onTarget };
+  /** The Home starts again on the same record and keys: its service reads what it saved. */
+  const restart = (
+    next: ManagedBrowserPoolAccount,
+    nextOnTarget = vi.fn(),
+  ): { service: ManagedBrowserPoolTargetService; onTarget: typeof nextOnTarget } => {
+    const again = new ManagedBrowserPoolTargetService({
+      cloudComputerId,
+      keys,
+      hostKey: hostKey.privateKey,
+      account: next,
+      record: memory.record,
+      onTarget: nextOnTarget,
+      firstDelayMs: 40,
+      maxDelayMs: 1_000,
+      ...(now ? { now } : {}),
+    });
+    services.push(again);
+    return { service: again, onTarget: nextOnTarget };
+  };
+  return { service, memory, hostKey, onTarget, restart };
 }
 
 it("writes the attempt before the registration leaves, signs it with the pinned host key, and reads the target", async () => {
@@ -145,4 +174,211 @@ it("asks a not-ready target again later and later, then nothing while ready, unt
   f.service.suspect();
   await vi.waitFor(() => expect(onTarget).toHaveBeenLastCalledWith(target(2)));
   expect(asked.length).toBe(settled + 1);
+});
+
+it("asks the account at once when a settled target's call goes unanswered, at most once per 10 s, and takes a new target as a suspicion does", async () => {
+  let clock = Date.parse("2026-11-26T16:26:52Z");
+  const asked: number[] = [];
+  let answer: ManagedBrowserPoolTargetResponse = { status: "ready", target: target(2) };
+  const account: ManagedBrowserPoolAccount = {
+    register: async () => answer,
+    target: async () => {
+      asked.push(clock);
+      return answer;
+    },
+  };
+  const onTarget = vi.fn();
+  const f = await fixture(account, onTarget, () => new Date(clock));
+  f.service.start();
+  await vi.waitFor(() => expect(onTarget).toHaveBeenCalledWith(target(2)), long);
+  const settled = asked.length;
+  // A call to the settled target went unanswered at the very instant of the read that settled it
+  // (a host replaced right after): the account is asked now, once. The loop's own reads never
+  // delay an early read. It names the same target: nothing changes, and the Home stays settled.
+  f.service.check();
+  await vi.waitFor(() => expect(asked.length).toBe(settled + 1), long);
+  // More unanswered calls inside the same 10 s ask nothing more.
+  clock += 9_999;
+  f.service.check();
+  f.service.check();
+  await f.memory.read();
+  expect(asked.length).toBe(settled + 1);
+  expect(onTarget).toHaveBeenCalledTimes(1);
+  // The account cannot be reached for one: nothing changes, and the target in hand stays.
+  answer = { status: "preparing" };
+  clock += 1;
+  f.service.check();
+  await vi.waitFor(() => expect(asked.length).toBe(settled + 2), long);
+  // The pool host was replaced: the next unanswered call, 10 s on, learns the new target (another
+  // address, the term one higher) and delivers it as any read does.
+  const replaced = {
+    ...target(3),
+    agentUrl: "http://10.40.0.11:7310",
+    relay: { ...target(3).relay, host: "10.40.0.11" },
+  };
+  answer = { status: "ready", target: replaced };
+  clock += 10_000;
+  f.service.check();
+  await vi.waitFor(() => expect(onTarget).toHaveBeenLastCalledWith(replaced), long);
+  expect(asked.length).toBe(settled + 3);
+  // Settled again: with no unanswered call, nothing is read.
+  clock += 60_000;
+  await f.memory.read();
+  expect(asked.length).toBe(settled + 3);
+});
+
+/** The Home's saved row, compared whole: an early read that learned nothing writes nothing. */
+const savedRow = async (f: { memory: { read: () => Promise<unknown> } }) =>
+  JSON.stringify(await f.memory.read());
+
+/** One early read, now: asked until it starts (one in flight takes no other). */
+async function earlyRead(service: ManagedBrowserPoolTargetService, asked: readonly number[]) {
+  const reads = asked.length;
+  await vi.waitFor(() => {
+    service.check();
+    expect(asked.length).toBe(reads + 1);
+  }, long);
+}
+
+it("changes nothing in memory or on disk when an early read is preparing, fails, or names the same target", async () => {
+  let clock = Date.parse("2026-11-26T16:26:52Z");
+  const asked: number[] = [];
+  let answer: ManagedBrowserPoolTargetResponse | Error = { status: "ready", target: target(2) };
+  const account: ManagedBrowserPoolAccount = {
+    register: async () => ({ status: "ready", target: target(2) }),
+    target: async () => {
+      asked.push(clock);
+      if (answer instanceof Error) throw answer;
+      return answer;
+    },
+  };
+  const onTarget = vi.fn();
+  // What the person is shown while not ready is memory too: an early read never moves it.
+  const onNotReady = vi.fn();
+  const f = await fixture(account, onTarget, () => new Date(clock), onNotReady);
+  f.service.start();
+  await vi.waitFor(() => expect(onTarget).toHaveBeenCalledWith(target(2)), long);
+  const before = await savedRow(f);
+  expect(JSON.parse(before)).toMatchObject({ status: "ready", target: target(2) });
+  for (const each of [
+    { status: "preparing" },
+    { status: "unregistered" },
+    new Error("The account did not answer."),
+    { status: "ready", target: target(2) },
+  ] satisfies (ManagedBrowserPoolTargetResponse | Error)[]) {
+    answer = each;
+    clock += 10_000;
+    await earlyRead(f.service, asked);
+    // Its turn has ended once the next read 10 s on can start.
+    clock += 10_000;
+    await earlyRead(f.service, asked);
+    expect(await savedRow(f)).toBe(before);
+  }
+  expect(onTarget).toHaveBeenCalledTimes(1);
+  expect(onNotReady).not.toHaveBeenCalled();
+});
+
+it("never saves or delivers an older term of the same slot, on an early read, a suspicion, or after a restart", async () => {
+  let clock = Date.parse("2026-11-26T16:26:52Z");
+  let answer: ManagedBrowserPoolTargetResponse = { status: "ready", target: target(2) };
+  const asked: number[] = [];
+  const account: ManagedBrowserPoolAccount = {
+    register: async () => answer,
+    target: async () => {
+      asked.push(clock);
+      return answer;
+    },
+  };
+  const onTarget = vi.fn();
+  const terms = () =>
+    onTarget.mock.calls.map(([delivered]) => (delivered as { term: number }).term);
+  const f = await fixture(account, onTarget, () => new Date(clock));
+  f.service.start();
+  await vi.waitFor(() => expect(onTarget).toHaveBeenCalledWith(target(2)), long);
+  const before = await savedRow(f);
+  // A stale answer naming term 1 of the same slot, on an early read.
+  answer = { status: "ready", target: target(1) };
+  clock += 10_000;
+  await earlyRead(f.service, asked);
+  clock += 10_000;
+  await earlyRead(f.service, asked);
+  expect(terms()).toEqual([2]);
+  expect(await savedRow(f)).toBe(before);
+  // The same stale answer on the suspicion's own reads: asked again, paced, never taken.
+  let reads = asked.length;
+  f.service.suspect();
+  await vi.waitFor(() => expect(asked.length).toBeGreaterThanOrEqual(reads + 2), long);
+  expect(terms()).toEqual([2]);
+  expect(await savedRow(f)).toBe(before);
+  // The account names term 2 again: the suspicion settles on it, nothing replaced.
+  answer = { status: "ready", target: target(2) };
+  reads = asked.length;
+  await vi.waitFor(() => expect(asked.length).toBeGreaterThan(reads), long);
+  await f.service.close();
+  expect(terms()).toEqual([2]);
+  // A Home restarted with term 2 saved: its first reads, naming term 1, are not taken either.
+  answer = { status: "ready", target: target(1) };
+  const again = f.restart(account);
+  reads = asked.length;
+  again.service.start();
+  await vi.waitFor(() => expect(asked.length).toBeGreaterThanOrEqual(reads + 2), long);
+  expect(again.onTarget).not.toHaveBeenCalled();
+  expect(JSON.parse(await savedRow(f))).toMatchObject({ status: "ready", target: target(2) });
+  // A newer term is still taken as before.
+  answer = { status: "ready", target: target(3) };
+  await vi.waitFor(() => expect(again.onTarget).toHaveBeenCalledWith(target(3)), long);
+  expect(JSON.parse(await savedRow(f))).toMatchObject({ status: "ready", target: target(3) });
+});
+
+it("paces early reads by when each read starts, one at a time, even behind a slow read", async () => {
+  let clock = Date.parse("2026-11-26T16:26:52Z");
+  const starts: number[] = [];
+  let slow: PromiseWithResolvers<void> | undefined;
+  const account: ManagedBrowserPoolAccount = {
+    register: async () => ({ status: "ready", target: target(2) }),
+    target: async () => {
+      starts.push(clock);
+      await slow?.promise;
+      return { status: "ready", target: target(2) };
+    },
+  };
+  const onTarget = vi.fn();
+  const f = await fixture(account, onTarget, () => new Date(clock));
+  f.service.start();
+  await vi.waitFor(() => expect(onTarget).toHaveBeenCalledWith(target(2)), long);
+  /** Lets the service's loop take whatever turn it would (each turn reads its record first). */
+  const settle = async () => {
+    for (let index = 0; index < 4; index++) await f.memory.read();
+  };
+  clock += 10_000;
+  const zero = clock;
+  starts.length = 0;
+  // An early read the account answers slowly: it starts at 0 and ends at 15 s.
+  slow = Promise.withResolvers<void>();
+  f.service.check();
+  await vi.waitFor(() => expect(starts).toEqual([zero]), long);
+  // Another unanswered call at 10 s, while that read is still out: it starts nothing, then or once
+  // the read ends.
+  clock = zero + 10_000;
+  f.service.check();
+  clock = zero + 15_000;
+  slow.resolve();
+  slow = undefined;
+  await settle();
+  // At 15 s, 15 s after the last start, an unanswered call asks.
+  await vi.waitFor(() => {
+    f.service.check();
+    expect(starts.length).toBeGreaterThanOrEqual(2);
+  }, long);
+  // At 20 s, 5 s after that start, one asks nothing.
+  clock = zero + 20_000;
+  f.service.check();
+  await settle();
+  // At 25 s it asks again.
+  clock = zero + 25_000;
+  await vi.waitFor(() => {
+    f.service.check();
+    expect(starts.length).toBeGreaterThanOrEqual(3);
+  }, long);
+  expect(starts).toEqual([zero, zero + 15_000, zero + 25_000]);
 });

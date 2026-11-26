@@ -2631,18 +2631,6 @@ export async function createHostServer(
         );
         return { ...result, type: command.type };
       }
-      case "browser.profile.create":
-        return {
-          profile: await dependencies.browser.createProfile({
-            ...(command.input.homeRunnerId !== undefined
-              ? { homeRunnerId: command.input.homeRunnerId }
-              : {}),
-            name: command.input.name,
-            idempotencyKey: command.idempotencyKey,
-            ownerId: userId,
-          }),
-          type: command.type,
-        };
       case "tab.open":
       case "tab.reopen":
       case "tab.close":

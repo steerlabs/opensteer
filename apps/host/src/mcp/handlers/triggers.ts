@@ -446,7 +446,8 @@ export class TriggerToolHandlers implements AgentAutomationExecutor {
         {
           commandIdentity: commandAdmission({
             ownerUserId: caller.userId,
-            callerKey: caller.key,
+            // As the door just admitted it.
+            subject: admission.execution!.subject,
             command: admitCmd,
           }),
           operationKey: writeKey,

@@ -198,6 +198,8 @@ const withoutTool: Readonly<Record<string, string>> = {
     "no tool disconnects a device app: computer_apps lists, app_access_request asks for more",
   "trigger.secrets.set":
     "no legacy tool sets automation secrets; added directly through opensteer_command",
+  "browser.profile.create":
+    "no tool makes a profile: browser_profile_request opens a browser.access Request for the person (and holds the Run's call for their answer); the door's own answers are held below",
 };
 /**
  * Step-A commands a tool performs that the recording does not cover yet, each with its tool;
@@ -1805,6 +1807,8 @@ export default defineApp({}, { tools: router({ tick }),
     const recording = process.env.OPENSTEER_RECORD_TOOL_PARITY === "1";
     return {
       names: ordered.map((scenario) => scenario.name),
+      /** The real door's answer to one caller, for a command no tool performs. */
+      doorAnswer,
       /** One scenario, its five callers: its own differences, and its row as it was frozen. */
       async run(name: string) {
         const scenario = ordered.find((candidate) => candidate.name === name);
@@ -1902,6 +1906,30 @@ describe("parity with today's tools: what each caller may do, and the door answe
     const fresh = parity.names.filter((name) => !frozenOrder.includes(name));
     if (process.env.OPENSTEER_RECORD_TOOL_PARITY !== "1") expect(fresh).toEqual([]);
     for (const name of fresh) await parity.run(name);
+  });
+  it("answers making a browser profile by the rule: now at Full access, with Everything for a connection", async () => {
+    // No tool makes one (withoutTool), so the door alone is held to the rule here. The person's
+    // own command is the browser route's (browser-route.integration.test.ts).
+    const answers: Record<string, Door> = {};
+    const every: Caller[] = [
+      "own-full",
+      "own-supervised",
+      "everything",
+      "selected-covering",
+      "selected-not",
+    ];
+    for (const caller of every)
+      answers[caller] = await parity.doorAnswer(caller, {
+        type: "browser.profile.create",
+        input: { name: `Parity ${caller}` },
+      });
+    expect(answers).toEqual({
+      "own-full": "now",
+      "own-supervised": "ask",
+      everything: "now",
+      "selected-covering": "ask",
+      "selected-not": "ask",
+    });
   });
   it("covers every step-A command, and the record holds every row", () => parity.finish());
 });

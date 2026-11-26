@@ -727,8 +727,16 @@ describe("DeviceService computer discovery", () => {
   );
 
   it.each([
+    // Offline: the device's own refusal says it, in the listing and the call alike.
     [false, false, null, "READY", null],
-    [true, false, null, "READY", null],
+    // Online, its integrations service not running: the listing says it, as the call does.
+    [
+      true,
+      false,
+      null,
+      "INTEGRATION_UNAVAILABLE",
+      "Opensteer's integrations service is unavailable on Studio Mac.",
+    ],
     [
       true,
       true,
@@ -741,7 +749,7 @@ describe("DeviceService computer discovery", () => {
       "Messages needs Full access on Studio Mac.",
     ],
   ] as const)(
-    "leaves an unreachable computer to the call in an agent's listing: connected=%s attached=%s",
+    "leaves only an offline computer to the device's refusal in a Run's listing: connected=%s attached=%s",
     async (runnerConnected, attached, status, expectedCode, expectedDetail) => {
       const callable = computerCallable("read");
       const runnerId = createId("runner");

@@ -2882,11 +2882,11 @@
           }
         }
       ],
-      "step": "B",
-      "note": "",
+      "step": "A",
+      "note": "its handler admits the agent where the profile is written (`browser-session-store.ts` createBrowserProfile)",
       "effect": {
         "where": "outside",
-        "why": "browser-service.ts:1517: tells the Runners after the write",
+        "why": "browser-service.ts:2189: tells the Runners after the write",
         "ongoing": false
       }
     },

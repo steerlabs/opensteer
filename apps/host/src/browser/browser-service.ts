@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { browserScriptHousekeepingMethod } from "../browser-use/browser-repl-messages.js";
 import { StandardCdpProfileLeases } from "./standard-cdp-profile-leases.js";
 import {
   cdpCommandRefusal,
@@ -118,6 +119,7 @@ import {
   isExtensionUrl,
   normalizePageOpenUrl,
   OpensteerError,
+  raisedBeforeEffect,
   agentGrantAllows,
   threadAccessModeAtMost,
   RunnerIdSchema,
@@ -212,6 +214,8 @@ import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import type { BrowserAttachTicketSigner } from "./browser-ticket.js";
 import {
   BrowserPoolAttemptRefused,
+  BrowserPoolTargetReplaced,
+  browserPoolWakeRefusal,
   type BrowserPoolGate,
   type BrowserPoolReservation,
 } from "./browser-pool-gate.js";
@@ -898,6 +902,9 @@ interface BrowserServiceOptions {
  * The Host owns the single upstream Browser Runtime connection. UI clients attach
  * as bounded consumers; future agent controllers can use the same broker boundary.
  */
+/** The task a binding was bound to a tab for, as its owner reads it; null where the bind names none. */
+type BoundHolder = { readonly ownerId: UserId; readonly threadId: ThreadId } | null;
+
 interface BrowserActor {
   readonly token: string;
   readonly binding: string;
@@ -1415,8 +1422,10 @@ export class BrowserService {
   }
 
   pooledDirectBrowser(runnerId: RunnerId) {
-    const pool = this.#pool(runnerId);
-    if (!pool) return undefined;
+    const found = this.#pool(runnerId);
+    if (!found) return undefined;
+    /** The coordinator this call waits on, and once admitted, the one that serves it. */
+    let pool: BrowserPoolCoordinator = found;
     return {
       identity: () => pool.identity(),
       reserve: async (
@@ -1425,10 +1434,19 @@ export class BrowserService {
           | { readonly sessionId: BrowserSessionId }
           | { readonly ownerId: UserId; readonly profileId: BrowserProfileId },
       ) => {
-        const reservation = await pool.gate.reserve(
-          signal,
-          "sessionId" in scope ? scope : undefined,
-        );
+        let reservation: BrowserPoolReservation;
+        for (;;) {
+          try {
+            reservation = await pool.gate.reserve(signal, "sessionId" in scope ? scope : undefined);
+            break;
+          } catch (error) {
+            // A different target replaced the one this call waited for (a replaced pool host):
+            // nothing was sent, and a call on the profile waits for the new one within its own
+            // bound. A call on a session of the old target is refused: that session ended with it.
+            if (!(error instanceof BrowserPoolTargetReplaced) || "sessionId" in scope) throw error;
+            pool = await this.#replacementPool(runnerId, pool, signal);
+          }
+        }
         if ("profileId" in scope && pool.reattaching()) {
           const { runtimeId } = pool.identity();
           try {
@@ -1533,6 +1551,7 @@ export class BrowserService {
     if (this.#pools.has(runnerId))
       throw new Error("This pooled browser already has a coordinator.");
     this.#pools.set(runnerId, coordinator);
+    this.#poolChanged();
     if (placement) this.#poolPlacements.set(runnerId, placement);
     else this.#poolPlacements.delete(runnerId);
     coordinator.setAdopter(this.#poolAdopter(runnerId));
@@ -1573,9 +1592,47 @@ export class BrowserService {
     } finally {
       this.#pools.delete(runnerId);
       this.#poolPlacements.delete(runnerId);
+      this.#poolChanged();
     }
     this.#onSessionsChanged([]);
     this.#onTabsChanged();
+  }
+
+  /** Aborted whenever a pooled browser's coordinator is adopted or retired. */
+  #poolsChanged = new AbortController();
+
+  #poolChanged(): void {
+    const previous = this.#poolsChanged;
+    this.#poolsChanged = new AbortController();
+    previous.abort();
+  }
+
+  /**
+   * The coordinator that replaced `replaced` for this Runner's pooled browser, once adopted. A
+   * caller refused because its target was replaced waits here, within its own bound, never past
+   * it: nothing was sent, so the new target may serve it.
+   */
+  async #replacementPool(
+    runnerId: RunnerId,
+    replaced: BrowserPoolCoordinator,
+    signal: AbortSignal,
+  ): Promise<BrowserPoolCoordinator> {
+    const bounded = AbortSignal.any([signal, this.#closing.signal]);
+    for (;;) {
+      if (bounded.aborted) throw browserPoolWakeRefusal(bounded);
+      const next = this.#pool(runnerId);
+      if (next && next !== replaced) return next;
+      const changed = this.#poolsChanged.signal;
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          changed.removeEventListener("abort", done);
+          bounded.removeEventListener("abort", done);
+          resolve();
+        };
+        changed.addEventListener("abort", done, { once: true });
+        bounded.addEventListener("abort", done, { once: true });
+      });
+    }
   }
 
   async initialize(): Promise<void> {
@@ -2084,8 +2141,13 @@ export class BrowserService {
     };
   }
 
-  /** Only people create profiles; every device of theirs learns of it, not just the one that asked. */
+  /**
+   * A profile the person makes, or an agent the rule lets make one at once (its identity admitted
+   * again where the profile is written); every device of theirs learns of it, not just the one
+   * that asked.
+   */
   async createProfile(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly homeRunnerId?: RunnerId | null;
     readonly name: string;
     readonly ownerId: UserId;
@@ -2093,7 +2155,11 @@ export class BrowserService {
     /** `engine-sign-in` keeps it out of every connected agent's grant. */
     readonly purpose?: "person" | "engine-sign-in";
   }): Promise<BrowserProfile> {
-    if (!input.homeRunnerId && this.#repository instanceof OpensteerStore) {
+    if (
+      !input.administration &&
+      !input.homeRunnerId &&
+      this.#repository instanceof OpensteerStore
+    ) {
       const previous = await this.#repository.database
         .selectFrom("commands")
         .select("payload")
@@ -2200,18 +2266,23 @@ export class BrowserService {
     const main = this.#personal ? homes.find((home) => home.kind === "main") : undefined;
     const selected = preferred ?? main ?? (homes.length === 1 ? homes[0] : undefined);
     if (selected) return selected.id;
+    // A read, before anything is written or told: nothing has happened when it refuses.
     if (homes.length === 0)
-      throw new OpensteerError({
-        code: "runner_offline",
-        reason: "browser-placement-unavailable",
-        message: "No computer can hold your browser profiles.",
-      });
+      throw raisedBeforeEffect(
+        new OpensteerError({
+          code: "runner_offline",
+          reason: "browser-placement-unavailable",
+          message: "No computer can hold your browser profiles.",
+        }),
+      );
     if (legacy) return null;
-    throw new OpensteerError({
-      code: "conflict",
-      reason: "browser-placement-ambiguous",
-      message: "Choose a computer for this browser profile.",
-    });
+    throw raisedBeforeEffect(
+      new OpensteerError({
+        code: "conflict",
+        reason: "browser-placement-ambiguous",
+        message: "Choose a computer for this browser profile.",
+      }),
+    );
   }
 
   /**
@@ -4898,7 +4969,10 @@ export class BrowserService {
           code: "conflict",
           message: "This tab is in use by another task.",
         });
-      return this.#bindWorkspacePage(actor.authority, row, actor.signal, actor.browserSend);
+      return this.#bindWorkspacePage(actor.authority, row, actor.signal, actor.browserSend, {
+        ownerId: actor.authority.ownerId,
+        threadId: actor.threadId,
+      });
     },
     personClosed: (row) => {
       const binding = row.pageBinding;
@@ -4950,9 +5024,14 @@ export class BrowserService {
                 ? ("open" as const)
                 : ("asleep" as const),
             usedBy: binding
-              ? this.#occupants(ownerId, binding.sessionId, row.id).map((holder) => ({
-                  taskId: holder.threadId,
-                }))
+              ? [
+                  ...new Set([
+                    ...this.#occupants(ownerId, binding.sessionId, row.id).map(
+                      (holder) => holder.threadId,
+                    ),
+                    ...this.#boundHolders(ownerId, binding.sessionId, row.id),
+                  ]),
+                ].map((taskId) => ({ taskId }))
               : [],
           },
         ];
@@ -5235,6 +5314,8 @@ export class BrowserService {
     row: TabRecord,
     signal?: AbortSignal,
     pooled?: PooledBrowserSend,
+    /** The task the bind is for, where it names one: the tab is that task's while bound. */
+    holder: BoundHolder = null,
   ) {
     signal?.throwIfAborted();
     await this.admitAgentBrowser(agent);
@@ -5273,7 +5354,7 @@ export class BrowserService {
         );
         const { backend } = await this.#admitAgentBackend({ ...agent, sessionId: session.id });
         await this.#recordAgentTabPlace(agent, session, row.id);
-        this.#noteBoundTab(session.id, row.id, agent.agentBindingId);
+        this.#noteBoundTab(session.id, row.id, agent.agentBindingId, holder);
         return { tabId: row.id, sessionId: session.id, backend, reloaded: true };
       }
       const session = await this.#usableAgentSession(agent, old.sessionId, false);
@@ -5290,7 +5371,7 @@ export class BrowserService {
       // V5: a pooled bind records the agent's tab like every other bind, so the tab is the
       // agent's (slept last) from the bind, not from its first input.
       await this.#recordAgentTabPlace(agent, session, row.id);
-      this.#noteBoundTab(session.id, row.id, agent.agentBindingId);
+      this.#noteBoundTab(session.id, row.id, agent.agentBindingId, holder);
       return { tabId: row.id, sessionId: session.id, backend, reloaded: false };
     }
     const found =
@@ -5396,7 +5477,7 @@ export class BrowserService {
       await this.pageTabs.admitted!(fresh);
       await this.admitAgentBrowser(agent, "read-write", [session]);
       await this.#recordAgentTabPlace(agent, session, row.id);
-      this.#noteBoundTab(session.id, row.id, agent.agentBindingId);
+      this.#noteBoundTab(session.id, row.id, agent.agentBindingId, holder);
       return {
         tabId: row.id,
         sessionId: session.id,
@@ -7658,8 +7739,14 @@ export class BrowserService {
                         assertAttached(false);
                       },
                       beforeWrite,
-                      submitted: browserSend.submitted,
-                      acknowledged: browserSend.acknowledged,
+                      // The broker still tracks and cancels the request. Releasing DevTools
+                      // handles adds no effect to the script's operation receipt.
+                      ...(command.method === browserScriptHousekeepingMethod
+                        ? { submitted: () => {} }
+                        : {
+                            submitted: browserSend.submitted,
+                            acknowledged: browserSend.acknowledged,
+                          }),
                     }
                   : pooledRelay
                     ? {
@@ -8119,16 +8206,44 @@ export class BrowserService {
   }
 
   readonly #attachHolds = new Map<string, NodeJS.Timeout>();
-  /** V5: the tabs each binding was handed at its bind, per session, until the binding ends. */
-  readonly #boundTabs = new Map<BrowserSessionId, Map<BrowserSurfaceId, Set<string>>>();
-  #noteBoundTab(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId, binding: string): void {
-    const tabs = this.#boundTabs.get(sessionId) ?? new Map<BrowserSurfaceId, Set<string>>();
+  /**
+   * V5: the tabs each binding was handed at its bind, per session, until the binding ends, with
+   * the task it was bound for where the bind names one (a script's). Such a tab is that task's
+   * while the binding lives, before and beside any actor: a connected agent's direct work has a
+   * binding (`session:`) and no place actor, and is its tab's holder only by this.
+   */
+  readonly #boundTabs = new Map<
+    BrowserSessionId,
+    Map<BrowserSurfaceId, Map<string, BoundHolder>>
+  >();
+  #noteBoundTab(
+    sessionId: BrowserSessionId,
+    surfaceId: BrowserSurfaceId,
+    binding: string,
+    holder: BoundHolder = null,
+  ): void {
+    const tabs =
+      this.#boundTabs.get(sessionId) ?? new Map<BrowserSurfaceId, Map<string, BoundHolder>>();
     this.#boundTabs.set(sessionId, tabs);
-    const bindings = tabs.get(surfaceId) ?? new Set<string>();
+    const bindings = tabs.get(surfaceId) ?? new Map<string, BoundHolder>();
     tabs.set(surfaceId, bindings);
-    if (bindings.has(binding)) return;
-    bindings.add(binding);
-    this.#brokers.get(sessionId)?.refreshSessionState();
+    const known = bindings.get(binding);
+    if (bindings.has(binding) && (holder === null || known?.threadId === holder.threadId)) return;
+    const added = !bindings.has(binding);
+    bindings.set(binding, holder ?? known ?? null);
+    if (added) this.#brokers.get(sessionId)?.refreshSessionState();
+    // Who holds the tab changed: the person's tab rows say it.
+    if (holder) this.#invalidatePageSessions([sessionId]);
+  }
+  /** The tasks live bindings were bound for in this tab, as the person `ownerId` reads them. */
+  #boundHolders(ownerId: UserId, sessionId: BrowserSessionId, surfaceId: string): ThreadId[] {
+    const bindings = this.#boundTabs.get(sessionId)?.get(surfaceId as BrowserSurfaceId);
+    if (!bindings) return [];
+    return [...bindings].flatMap(([binding, holder]) =>
+      holder && holder.ownerId === ownerId && !this.#endedBindings.has(binding)
+        ? [holder.threadId]
+        : [],
+    );
   }
   /** V4: keeps a tab woken for an agent's connection awake until it attaches or the link ends. */
   #holdForAttach(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId, ttlMs: number): void {
@@ -8232,7 +8347,7 @@ export class BrowserService {
     // V5: and every tab a live binding was handed at its bind, before the agent has an actor
     // in this session (a connected agent's script, a pooled bind).
     for (const [surfaceId, bindings] of this.#boundTabs.get(sessionId) ?? [])
-      if ([...bindings].some((binding) => !this.#endedBindings.has(binding)))
+      if ([...bindings.keys()].some((binding) => !this.#endedBindings.has(binding)))
         agentTabs.add(surfaceId);
     return {
       runs,
@@ -9717,7 +9832,8 @@ export class BrowserService {
                 !profileId ||
                 !agentGrantAllows(grant, { kind: "browser-profile", profileId }, access),
             )
-          : !grant.resources.some((resource) => resource.kind === "browser-profile"))
+          : // It may read the grant itself: browser profiles, no device and no approval.
+            !grant.resources.some((resource) => resource.kind === "browser-profile"))
       ) {
         if (input.agentBindingId.startsWith("session:") && profiles.length)
           throw new OpensteerError({ code: "not_found", message: "Tab not found." });
@@ -10037,7 +10153,10 @@ export class BrowserService {
           if (!bindings.size) tabs.delete(surfaceId);
         }
       if (!tabs.size) this.#boundTabs.delete(sessionId);
-      if (changed) this.#brokers.get(sessionId)?.refreshSessionState();
+      if (changed) {
+        this.#brokers.get(sessionId)?.refreshSessionState();
+        this.#invalidatePageSessions([sessionId]);
+      }
     }
     const now = this.#activityClock.now();
     this.#endedBindings.delete(agentBindingId);
@@ -10776,6 +10895,8 @@ export class HostedBrowserBroker {
   #stateImportTail = Promise.resolve();
   #streamReconcileTail = Promise.resolve();
   #runtimeReady = false;
+  /** Its one channel closed; set at the close itself, before the broker finishes. */
+  #channelClosed = false;
   #reconnecting = false;
   #runtimeConnectionGeneration = 0;
   #protocolFailed = false;
@@ -11093,9 +11214,13 @@ export class HostedBrowserBroker {
     return this.#readyPromise;
   }
 
-  /** The Runtime has sent its snapshot and the session has not ended. */
+  /**
+   * The Runtime has sent its snapshot, the session has not ended, and its channel is open. A
+   * closed channel is not live from its close, though the broker finishes later: the pool keeps a
+   * session lost, waiting for it, only while its broker is not live.
+   */
   get live(): boolean {
-    return this.#runtimeReady && !this.#settled;
+    return this.#runtimeReady && !this.#settled && !this.#channelClosed;
   }
 
   get pooled(): boolean {
@@ -11850,6 +11975,7 @@ export class HostedBrowserBroker {
           .catch(fail);
       });
       this.#socket.on("close", (code, reason) => {
+        this.#channelClosed = true;
         this.#failure ??= `Browser Runtime closed the connection (${code} ${reason.toString()}).`;
         abortReady(
           new Error(`Browser Runtime closed during attach (${code} ${reason.toString()}).`),

@@ -1,6 +1,7 @@
 import { createId, ModelSelectionSchema, type Thread } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
-import type { ConnectionCaller } from "../mcp/agent-caller.js";
+import type { AgentCaller, ConnectionCaller } from "../mcp/agent-caller.js";
+import { commandSubject } from "@opensteer/database";
 import { dispatchCommand, type CommandAuthority } from "../commands/dispatch.js";
 import { ThreadService } from "./thread-service.js";
 describe("new Thread access ceilings", () => {
@@ -69,7 +70,11 @@ describe("new Thread access ceilings", () => {
           },
         },
       } as never,
-      admit: async () => ({ answer: "now", face: 0, execution: null }),
+      admit: async (caller: AgentCaller) => ({
+        answer: "now",
+        face: 0,
+        execution: { subject: commandSubject(caller.key) } as never,
+      }),
       scope: async () => ({
         scope: "everything",
         grant: { scope: "everything" },

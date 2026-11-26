@@ -842,6 +842,8 @@ export function authorizeTarget(
 /** One approval on the person's devices (an app, a phone screen, a data app), as a grant covers it. */
 export interface GrantedDeviceApproval {
   readonly id: IntegrationConnectionId;
+  /** The device it is on. */
+  readonly deviceId: string;
   readonly displayName: string;
   readonly installationId: IntegrationInstallationId;
   readonly createdAt: Date;
@@ -907,7 +909,14 @@ export async function grantedDeviceApprovals(
     .where("integrationConnections.status", "=", "connected")
     .where("integrationConnections.computerBlockedAt", "is", null)
     .where("integrationConnections.computerAccess", "is not", null)
-    .where("devices.removedAt", "is", null);
+    .where("devices.removedAt", "is", null)
+    // The device is the person's, as their device list reads it: their own, or the Home's.
+    .where((eb) =>
+      eb.or([
+        eb("devices.ownerUserId", "=", ownerUserId),
+        eb("devices.ownerKind", "=", "deployment"),
+      ]),
+    );
   if (named) query = query.where(sql<string>`lower(integration_connections.id)`, "in", named);
   return (await query.execute()).flatMap((row) => {
     const target = integrationConnectionGrantTarget(row);
@@ -916,6 +925,7 @@ export async function grantedDeviceApprovals(
       ? [
           {
             id: row.id,
+            deviceId: row.deviceId!,
             displayName: row.displayName,
             installationId: row.installationId,
             createdAt: row.createdAt,

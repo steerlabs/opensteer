@@ -20,6 +20,7 @@ import { agentToolFailureResult, agentToolRecordResult, agentTools } from "@open
 import { OpensteerMcpService } from "../../apps/host/src/mcp/opensteer-mcp-service.js";
 import type { AgentToolHandlers } from "../../apps/host/src/mcp/handlers/types.js";
 import { TriggerToolHandlers } from "../../apps/host/src/mcp/handlers/triggers.js";
+import { commandSubject } from "../../packages/database/src/resource-access.js";
 import type { RunToolScope } from "../../apps/host/src/agents/run-tool-tokens.js";
 
 import { type EvalCase } from "./cases.js";
@@ -94,7 +95,13 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
       door: (_caller, registry) => ({
         registry,
         scope: async () => ({ scope: null, grant: null, mode: "full-access" }),
-        admit: async () => ({ answer: "now", face: 0, execution: null }),
+        // As the real door admits an agent: it names the subject it admitted, which every later
+        // admission of the command reads again.
+        admit: async (caller) => ({
+          answer: "now",
+          face: 0,
+          execution: { subject: commandSubject(caller.key) } as never,
+        }),
         secretDigestKey: Buffer.alloc(32, 0x33),
       }),
     },

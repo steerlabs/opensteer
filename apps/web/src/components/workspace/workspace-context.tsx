@@ -60,7 +60,11 @@ export class StartPageHandle {
     };
   };
   readonly leave = (): void => this.#leave?.();
-  readonly focus = (): void => this.#focus?.();
+  /** Whether a start page was open to take focus. */
+  readonly focus = (): boolean => {
+    this.#focus?.();
+    return this.#focus !== null;
+  };
 }
 
 export interface DockState {

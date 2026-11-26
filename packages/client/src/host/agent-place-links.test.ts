@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TabIdSchema } from "@opensteer/core";
-import { requestPageTab, threadAgentPlace } from "./agent-place-links.js";
+import { requestPageTab, threadAgentPage, threadAgentPlace } from "./agent-place-links.js";
 
 const a = { tabId: TabIdSchema.parse("a") };
 const b = { tabId: TabIdSchema.parse("b") };
@@ -69,6 +69,22 @@ describe("where a task's agent is working", () => {
       tabId: TabIdSchema.parse("a"),
       kind: "page",
       title: "Le Petit Jardin",
+    });
+  });
+
+  it("names, for Watch, the page the task's agent used last among its pages, and no other kind", () => {
+    const older = held("a", "task", "2026-01-01T00:00:00.000Z");
+    const newer = held("b", "task", "2026-01-01T00:00:02.000Z");
+    const app = held("w", "task", "2026-01-01T00:00:03.000Z", { kind: "window" });
+    const others = held("c", "other", "2026-01-01T00:00:04.000Z");
+    expect(threadAgentPage(source(older, newer, app, others), "task")).toEqual({
+      tabId: TabIdSchema.parse("b"),
+    });
+    expect(threadAgentPage(source(app, others), "task")).toBeNull();
+    // A page that cannot be shown now is no place to land.
+    const closed = held("b", "task", "2026-01-01T00:00:02.000Z", { state: "unavailable" });
+    expect(threadAgentPage(source(older, closed), "task")).toEqual({
+      tabId: TabIdSchema.parse("a"),
     });
   });
 

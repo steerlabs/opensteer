@@ -40,6 +40,7 @@ describe("computer access", () => {
       },
       store: {
         requesterGrant: async () => null,
+        requesterShown: async () => null,
         listDeviceComputerAppSetupRequests: async () => [],
         integrationRequests: { listPendingIntegrationAccessRequests: async () => [] },
       },
@@ -82,6 +83,7 @@ describe("computer access", () => {
       },
       store: {
         requesterGrant: async () => null,
+        requesterShown: async () => null,
         listDeviceComputerAppSetupRequests: async () => [
           {
             kind: "app",

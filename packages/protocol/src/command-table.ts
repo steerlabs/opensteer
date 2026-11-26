@@ -1305,7 +1305,7 @@ export const commandTable: CommandTable = {
   "browser.profile.create": {
     family: "browser",
     scope: "new",
-    step: "B",
+    step: "A",
     faces: one("widen-self"),
     governsKinds: ["browser-profile"],
     governs: () => resource("browser-profile"),

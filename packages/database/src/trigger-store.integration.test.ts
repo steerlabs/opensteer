@@ -28,6 +28,7 @@ import {
   TriggerStore,
   admitWatchControlRequest,
   commandAdmission,
+  commandSubject,
   createDatabase,
   triggerAnchorStopIsHeld,
 } from "./index.js";
@@ -457,7 +458,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       anchorThreadId: f.threadId,
       commandIdentity: commandAdmission({
         ownerUserId: f.userId,
-        callerKey: `run:${lowerRun!.id}`,
+        subject: commandSubject(`run:${lowerRun!.id}`),
         command: {
           type: "trigger.create",
           idempotencyKey: "own-task-refused",

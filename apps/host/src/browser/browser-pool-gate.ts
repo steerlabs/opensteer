@@ -14,6 +14,33 @@ export class BrowserPoolAttemptRefused extends BrowserPoolAdmissionClosed {
   }
 }
 
+/** What a caller refused before anything was sent may do: nothing reached the browser. */
+export const browserPoolUnsentNext = "Nothing was sent. It is safe to call again.";
+
+/** The caller's own wake bound ran out while it waited: nothing was sent. */
+export function browserPoolWakeRefusal(signal: AbortSignal): OpensteerError {
+  // A Stop or a cut keeps its own refusal; a deadline is a refusal before any effect.
+  return signal.reason instanceof OpensteerError
+    ? signal.reason
+    : new BrowserPoolAdmissionClosed(
+        "The pooled browser did not wake in time. Nothing was sent.",
+        signal.reason,
+        browserPoolUnsentNext,
+      );
+}
+
+/**
+ * A different target replaced this one while the caller waited (a replaced pool host, a new term):
+ * nothing was sent, and the browser's new target may serve it. A caller that holds the replacement
+ * waits there within its own bound; any other reads the words of a target that is over.
+ */
+export class BrowserPoolTargetReplaced extends BrowserPoolAdmissionClosed {
+  constructor() {
+    super("This browser is not ready. Nothing was sent.", undefined, browserPoolUnsentNext);
+    this.name = "BrowserPoolTargetReplaced";
+  }
+}
+
 /** Where the browser is when it is not simply running: senders wait, and nothing wakes it twice. */
 export type BrowserPoolAway = "parking" | "parked" | "waking" | "reconnecting";
 
@@ -47,6 +74,8 @@ export class BrowserPoolGate {
   #recovered = false;
   #away: BrowserPoolAway | null = null;
   #hold: BrowserPoolHold | null = null;
+  /** The target is over because a different one replaced it: its new target may serve. */
+  #replaced = false;
   #preparing = false;
   #demanded = false;
   #waiting = 0;
@@ -79,9 +108,12 @@ export class BrowserPoolGate {
     readonly recovered?: boolean;
     readonly away?: BrowserPoolAway | null;
     readonly hold?: BrowserPoolHold | null;
+    /** With `over`: a different target replaced this one. */
+    readonly replaced?: boolean;
   }): void {
     if (this.#hold === "released") return;
     if (facts.recovered !== undefined) this.#recovered = facts.recovered;
+    if (facts.replaced !== undefined) this.#replaced = facts.replaced;
     if (facts.away !== undefined) this.#away = facts.away;
     if (facts.hold !== undefined) {
       // Every holder is asked to stop when a hold begins.
@@ -282,17 +314,17 @@ export class BrowserPoolGate {
     let waited = false;
     try {
       for (;;) {
-        if (signal.aborted)
-          // A Stop or a cut keeps its own refusal; a deadline is a refusal before any effect.
-          throw signal.reason instanceof OpensteerError
-            ? signal.reason
-            : new BrowserPoolAdmissionClosed(
-                "The pooled browser did not wake in time. Nothing was sent.",
-                signal.reason,
-              );
+        if (signal.aborted) throw browserPoolWakeRefusal(signal);
         // A target that is over has no browser to wait for: refused at once, not at a deadline.
+        // Replaced, the caller may wait for the new target instead (it knows how to find it).
         if (this.#hold === "over")
-          throw new BrowserPoolAdmissionClosed("This browser is not ready. Nothing was sent.");
+          throw this.#replaced
+            ? new BrowserPoolTargetReplaced()
+            : new BrowserPoolAdmissionClosed(
+                "This browser is not ready. Nothing was sent.",
+                undefined,
+                browserPoolUnsentNext,
+              );
         if (this.#hold === "released")
           throw new BrowserPoolAdmissionClosed("This device was removed. Nothing was sent.");
         if (failOnRefusal && this.#refusalGeneration !== seenRefusal)

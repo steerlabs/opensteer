@@ -36,6 +36,7 @@ import { mutationIdempotencyKey } from "@opensteer/client/host";
 import { AddDeviceDialog } from "./add-device-dialog.js";
 import { useHomeKind } from "./home-facts.js";
 import { deviceRoute, otherDeviceRoute } from "./device-routes.js";
+import { rememberSignedOutHere } from "../../account/signed-out-here.js";
 
 export const otherDeviceIcon: Record<OtherDevice["kind"], IconName> = {
   camera: "camera",
@@ -105,6 +106,7 @@ export function DevicesSection() {
     )
       .then(() => {
         if (row.session.current) {
+          rememberSignedOutHere();
           window.location.assign("/");
           return;
         }

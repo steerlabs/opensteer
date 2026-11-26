@@ -19,6 +19,7 @@ import {
 } from "@opensteer/database/personal-mutation";
 import {
   createRunFinishDrain,
+  grantedDeviceApprovals,
   recoverCommandAttempts,
   republishThreads,
 } from "@opensteer/database";
@@ -512,6 +513,12 @@ export interface HostRuntimeOptions {
     readonly maxDelayMs?: number;
     readonly idleParkMs?: number | null;
     readonly statusEveryMs?: number;
+    /** Each controller call's own deadline (10 s). */
+    readonly callTimeoutMs?: number;
+    /** How long calls may go unanswered before the target is suspected (two minutes). */
+    readonly unansweredMs?: number;
+    /** The target service's clock. */
+    readonly now?: () => Date;
     readonly onWake?: (
       trace: import("../browser/browser-pool-coordinator.js").BrowserPoolWakeTrace,
     ) => void;
@@ -990,19 +997,31 @@ export async function createHostRuntime(
       recordRunnerOutdated: async (runner) => {
         await store.recordRunnerUpdateRequired({ ...runner, reason: "runner-outdated" });
       },
-      requireDeviceAgentAccess: async (deviceId) => {
-        const binding = deviceDrivers.binding(deviceId);
+      requireDeviceAgentAccess: async (deviceId, known) => {
+        // No driver loaded yet (an iPhone whose apps stream has not attached): the device's own
+        // switch still holds; whether it can serve now is what its apps' state says, in the
+        // listing and at the send, never a raw error here.
+        let binding: ReturnType<typeof deviceDrivers.binding> | undefined;
+        try {
+          binding = deviceDrivers.binding(deviceId);
+        } catch {
+          binding = undefined;
+        }
         await requireDeviceAccess(
           database,
           deviceId,
           "apps",
-          binding.role === "self"
-            ? runners.isRunnerConnected(binding.runnerId)
-            : computerApps.attached(deviceId),
-          {
-            asleep: runners.isRunnerAsleep(binding.runnerId),
-            stopped: runners.agentsStoppedSince(binding.runnerId) !== null,
-          },
+          !binding ||
+            (binding.role === "self"
+              ? runners.isRunnerConnected(binding.runnerId)
+              : computerApps.attached(deviceId)),
+          binding
+            ? {
+                asleep: runners.isRunnerAsleep(binding.runnerId),
+                stopped: runners.agentsStoppedSince(binding.runnerId) !== null,
+              }
+            : {},
+          known,
         );
       },
       onDeviceInputWithdrawn: (deviceId) => displayStreams?.withdrawOwnerInput(deviceId),
@@ -3523,10 +3542,9 @@ export async function createHostRuntime(
           .closeBrowserScriptsForBinding(bindingId)
           .catch((error: unknown) => reportAgentSessionError(error));
         // A connected agent's computer work ends with its session: the app, then the script.
-        endSessionComputerWork(bindingId, {
+        return endSessionComputerWork(bindingId, {
           computerUse,
           devices,
-          onError: (error) => reportComputerUseSweepError(error),
         });
       },
       onError: (error) => reportAgentSessionError(error),
@@ -3581,7 +3599,9 @@ export async function createHostRuntime(
         plugins: pluginTools,
         localServers: localServerRegistry,
         apps,
-        tabs: new TabToolHandlers(tabs, agentSessions),
+        tabs: new TabToolHandlers(tabs, agentSessions, (owner, grant) =>
+          grantedDeviceApprovals(store.database, owner, grant),
+        ),
         discoverSources: { tabs, browserSources, store },
         browser: new BrowserToolHandlers({
           sessions: agentSessions,
@@ -3671,6 +3691,12 @@ export async function createHostRuntime(
         await agentTools.closeLineage(connectionId, minimumGrantRevision);
       },
       stopper: {
+        stopAgentSession: (attempt, cleanup, settle) =>
+          agentSessions.stopAgentSession(
+            attempt.id,
+            connectionCleanupEnding(cleanup.reason),
+            settle,
+          ),
         stopDirectOperation: (attempt, cleanup) =>
           agentSessions.stopDirectOperation(attempt.id, connectionCleanupEnding(cleanup.reason)),
         async stop(attempt, cleanup) {
@@ -3761,12 +3787,8 @@ export async function createHostRuntime(
       },
       onFailure: (error, connectionId) =>
         app.log.warn({ err: error, connectionId }, "A connected agent's work did not stop"),
-      afterStop: (connectionId, reason, cause) =>
-        agentSessions.closeConnection(
-          connectionId,
-          reason === "disconnect",
-          connectionCleanupEnding(cause),
-        ),
+      afterStop: (connectionId, _reason, cause) =>
+        agentSessions.closeConnection(connectionId, false, connectionCleanupEnding(cause)),
     });
     const driveConnectionCleanups = () =>
       connectionEffects.driveCleanups().finally(() => connectionMaintenance?.wake());

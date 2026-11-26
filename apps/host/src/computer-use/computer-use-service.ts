@@ -585,6 +585,7 @@ export class ComputerUseService {
   readonly #writes = new Set<Promise<unknown>>();
   /** Sessions the Host has let go whose close the Mac has not yet answered. */
   readonly #undeliveredCloses = new Set<Session>();
+  readonly #closingSessions = new Map<Session, Promise<void>>();
   readonly #onPlaceActivity: ComputerUseServiceOptions["onPlaceActivity"];
   readonly #resolveActor: ComputerUseServiceOptions["resolveActor"];
   readonly #threadTitle: ComputerUseServiceOptions["threadTitle"];
@@ -1669,19 +1670,28 @@ export class ComputerUseService {
    * lease ends. A Mac that went offline ended its sessions with its
    * connection, so there is nothing left to tell it.
    */
-  async #deliverClose(session: Session, submitted?: () => void): Promise<void> {
+  #deliverClose(session: Session, submitted?: () => void): Promise<void> {
+    const existing = this.#closingSessions.get(session);
+    if (existing) return existing;
+    const close = this.#sendClose(session, submitted).finally(() => {
+      this.#closingSessions.delete(session);
+    });
+    this.#closingSessions.set(session, close);
+    return close;
+  }
+
+  async #sendClose(session: Session, submitted?: () => void): Promise<void> {
     try {
       await this.#close(session, submitted);
       this.#undeliveredCloses.delete(session);
     } catch (error) {
-      if (error instanceof ComputerUseError && error.code === "offline") {
+      if (
+        (error instanceof ComputerUseError && error.code === "offline") ||
+        this.#removedDevices.has(session.deviceId) ||
+        (session.route && !this.#hub.routeCurrent?.(session.route))
+      )
         this.#undeliveredCloses.delete(session);
-      } else if (
-        !this.#removedDevices.has(session.deviceId) &&
-        (!session.route || this.#hub.routeCurrent?.(session.route))
-      ) {
-        this.#undeliveredCloses.add(session);
-      }
+      else this.#undeliveredCloses.add(session);
     } finally {
       this.#scheduleSweep();
     }
@@ -1721,6 +1731,28 @@ export class ComputerUseService {
 
   /** A Run that has ended has no authority left, so its sessions end with it. */
   closeForRun(runId: RunId): void {
+    this.#clearStopsForRun(runId);
+    for (const session of this.#snapshot()) {
+      if (session.runId !== runId) continue;
+      void this.#closeSession(session).catch(() => undefined);
+    }
+  }
+
+  /** Disconnect waits for the device's close or loss of its route, including idle holds. */
+  async closeForAgentSession(runId: RunId): Promise<void> {
+    this.#clearStopsForRun(runId);
+    const sessions = new Set(
+      [...this.#snapshot(), ...this.#closingSessions.keys(), ...this.#undeliveredCloses].filter(
+        (session) => session.runId === runId,
+      ),
+    );
+    await Promise.all([...sessions].map((session) => this.#closeSession(session)));
+    for (const session of sessions)
+      if (this.#undeliveredCloses.has(session))
+        throw new Error("The device has not confirmed that its computer use ended.");
+  }
+
+  #clearStopsForRun(runId: RunId): void {
     for (const key of this.#stopped) {
       if (key.startsWith(`${runId}|`)) this.#stopped.delete(key);
     }
@@ -1729,10 +1761,6 @@ export class ComputerUseService {
     }
     this.#scheduleSweep();
     void this.#write(this.#stops.clear(runId)).catch(this.#onError);
-    for (const session of this.#snapshot()) {
-      if (session.runId !== runId) continue;
-      void this.#closeSession(session).catch(() => undefined);
-    }
   }
 
   /**

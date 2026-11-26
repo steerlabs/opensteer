@@ -4,7 +4,7 @@ import { agentToolFailureResult } from "@opensteer/agent-tools";
 import { BrowserActionErrorSchema, ComputerUseErrorSchema } from "@opensteer/protocol";
 import { expect, it } from "vitest";
 import { DeviceAccessRefusal } from "../administration/device-access.js";
-import { deviceVisibleTo } from "../devices/device-visibility.js";
+import { lentDevice, type LentNow } from "./lent-now.js";
 import { agentToolFailure } from "./agent-tool-failure.js";
 
 it.each(["device-access-off", "device-offline"] as const)(
@@ -82,9 +82,8 @@ it.each(["device-asleep", "device-stopped"] as const)(
     const machineId = DeviceIdSchema.parse(createId("runner"));
     const error = new DeviceAccessRefusal(reason, machineId, "browser", "Studio Mac mini");
     const code = reason === "device-asleep" ? "computer_asleep" : "computer_stopped";
-    const named = agentToolFailureResult(
-      agentToolFailure(error, "write", deviceVisibleTo(undefined)),
-    ).structuredContent.error;
+    const named = agentToolFailureResult(agentToolFailure(error, "write", lentDevice(null)))
+      .structuredContent.error;
     expect(named).toMatchObject({ code, device: { id: machineId, name: "Studio Mac mini" } });
     // The sentence an agent reads is the same either way.
     const unnamed = agentToolFailureResult(agentToolFailure(error, "write")).structuredContent
@@ -92,26 +91,21 @@ it.each(["device-asleep", "device-stopped"] as const)(
     expect(unnamed).not.toHaveProperty("device");
     expect(named.message).toBe(unnamed.message);
 
-    // A selected grant learns of a Device only when its apps or phone screens name it.
+    // A selected grant learns of a Device only when what the one rule lends it now is on it.
     const selected = (deviceId: string) =>
       ({
-        scope: "selected",
-        resources: [
-          {
-            kind: "computer-app",
-            deviceId,
-            approvalId: "app-approval",
-            app: { kind: "phone-screen", definitionId: "screen" },
-          },
-        ],
-      }) as never;
+        grant: { scope: "selected", tasks: false, resources: [] },
+        approvals: [],
+        approvalIds: new Set(["app-approval"]),
+        deviceIds: new Set([deviceId]),
+      }) as unknown as LentNow;
     const selectedRefusal = agentToolFailureResult(
-      agentToolFailure(error, "write", deviceVisibleTo(selected(createId("runner")))),
+      agentToolFailure(error, "write", lentDevice(selected(createId("runner")))),
     );
     expect(selectedRefusal.structuredContent.error).toMatchObject({ code });
     expect(JSON.stringify(selectedRefusal)).not.toContain(machineId);
     expect(JSON.stringify(selectedRefusal)).not.toContain("Studio Mac mini");
-    expect(agentToolFailure(error, "write", deviceVisibleTo(selected(machineId)))).toMatchObject({
+    expect(agentToolFailure(error, "write", lentDevice(selected(machineId)))).toMatchObject({
       device: { id: machineId, name: "Studio Mac mini" },
     });
   },
@@ -124,7 +118,7 @@ it("names no Device for refusals other than asleep and stopped", () => {
       agentToolFailure(
         new DeviceAccessRefusal(reason, machineId, "apps", "Studio Mac mini"),
         "write",
-        deviceVisibleTo(undefined),
+        lentDevice(null),
       ),
     ).not.toHaveProperty("device");
 });

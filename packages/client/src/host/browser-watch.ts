@@ -27,6 +27,13 @@ export interface BrowserWatchState {
   readonly inputError?: ClientIssue | null;
 }
 const openFailed: ClientIssue = { code: "open-failed", resource: "this page" };
+/**
+ * How long the page's refusal of the person's input stays said after its latest refusal. The
+ * browser answers an input only when it refuses it, so nothing tells this view that a later one
+ * was taken: the words end with time, never with the person's next key, which would wipe them
+ * before they could be read at typing speed.
+ */
+export const browserInputRefusalShownMs = 4_000;
 /** A Host or Browser Runtime too old for targeted viewing: refused for good, until it updates. */
 class TargetedViewingUnsupported extends Error {}
 const empty: BrowserWatchState = { frame: null, status: "unavailable", error: null };
@@ -68,6 +75,8 @@ interface Watch {
   terminal: boolean;
   sequence: number;
   generation: number;
+  /** Ends the shown refusal of the person's input. */
+  refusalTimer: ReturnType<typeof setTimeout> | null;
 }
 /** One producer per exact target, with newest-frame storage and Watch credit. */
 export class BrowserWatchStore {
@@ -174,13 +183,6 @@ export class BrowserWatchStore {
       throw new Error("The targeted browser control is not synchronized.");
     }
     if (target.state.input === "basic" && !browserBasicInputAllows(command)) return;
-    if (
-      target.state.inputError &&
-      command.type !== "input.wheel" &&
-      !(command.type === "input.pointer" && command.action === "move") &&
-      command.type !== "viewport.follow"
-    )
-      this.#set(target, { ...target.state, inputError: null });
     target.socket.send(
       JSON.stringify(
         TargetedBrowserClientMessageSchema.parse({
@@ -191,6 +193,17 @@ export class BrowserWatchStore {
       ),
     );
     if (command.type === "input.cancel") target.generation++;
+  }
+  #endRefusalLater(target: Watch): void {
+    if (target.refusalTimer) clearTimeout(target.refusalTimer);
+    target.refusalTimer = setTimeout(() => {
+      target.refusalTimer = null;
+      if (
+        this.#targets.get(this.#key(target.sessionId, target.surfaceId)) === target &&
+        target.state.inputError
+      )
+        this.#set(target, { ...target.state, inputError: null });
+    }, browserInputRefusalShownMs);
   }
   #key(sessionId: string, surfaceId: string): string {
     return JSON.stringify([sessionId, surfaceId]);
@@ -254,6 +267,7 @@ export class BrowserWatchStore {
         terminal: false,
         sequence: 0,
         generation: 0,
+        refusalTimer: null,
       };
       this.#targets.set(key, target);
     }
@@ -499,6 +513,8 @@ export class BrowserWatchStore {
       if (!this.#targets.has(key)) for (const listener of listeners) listener();
   }
   dispose(): void {
+    for (const target of this.#targets.values())
+      if (target.refusalTimer) clearTimeout(target.refusalTimer);
     this.clear();
     this.#targets.clear();
     this.#listeners.clear();
@@ -658,7 +674,7 @@ export class BrowserWatchStore {
               message.inputGeneration !== undefined
             )
               target.generation = Math.max(target.generation, message.inputGeneration + 1);
-            if (this.mode === "control")
+            if (this.mode === "control") {
               this.#set(target, {
                 ...target.state,
                 inputError: {
@@ -668,6 +684,8 @@ export class BrowserWatchStore {
                   ...(message.error.reason ? { reason: message.error.reason } : {}),
                 },
               });
+              this.#endRefusalLater(target);
+            }
             this.onMessage?.(target.sessionId, message, target.surfaceId);
             return;
           }

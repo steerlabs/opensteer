@@ -24,6 +24,7 @@ import {
   BrowserProfileIdSchema,
   type ContentPart,
   OpensteerError,
+  raisedBeforeEffect,
   type RunId,
   RunIdSchema,
   type RunnerId,
@@ -185,6 +186,8 @@ export async function insertBrowserProfileOnLockedHome(
 export async function createBrowserProfile(
   database: Kysely<DatabaseSchema>,
   input: {
+    /** An agent's: admitted again here, and recorded as its command, in this transaction. */
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly idempotencyKey: string;
     readonly homeRunnerId?: RunnerId | null;
     readonly name: string;
@@ -192,6 +195,28 @@ export async function createBrowserProfile(
     readonly purpose?: "person" | "engine-sign-in";
   },
 ): Promise<BrowserProfileRecord> {
+  const { administration } = input;
+  if (administration)
+    return commitPersonalMutation(database, async (transaction) => {
+      try {
+        return await administrationCommand(transaction, administration, async () => {
+          const homeRunnerId =
+            input.homeRunnerId === null
+              ? null
+              : await lockBrowserHomeRunner(transaction, input.ownerId, input.homeRunnerId);
+          return insertBrowserProfileOnLockedHome(transaction, {
+            name: input.name,
+            ownerId: input.ownerId,
+            homeRunnerId,
+            ...(input.purpose ? { purpose: input.purpose } : {}),
+          });
+        });
+      } catch (error) {
+        // Raised inside the transaction, before it commits (an agent no longer admitted, a full
+        // Home): it rolls back, and the Runners are told only after a commit. Nothing happened.
+        throw error instanceof Error ? raisedBeforeEffect(error) : error;
+      }
+    });
   return commitPersonalMutation(database, async (transaction) => {
     await lockCommandIdempotency(transaction, input.ownerId, input.idempotencyKey);
     const command = await findCommandByIdempotency(

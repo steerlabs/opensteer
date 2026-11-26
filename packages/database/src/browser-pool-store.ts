@@ -52,13 +52,19 @@ export interface BrowserPoolSessionLoss {
  * failed or unknown, because nothing reached the browser.
  */
 export class BrowserPoolAdmissionClosed extends OpensteerError {
-  constructor(message = "The pooled browser could not be reached in time.", cause?: unknown) {
+  constructor(
+    message = "The pooled browser could not be reached in time.",
+    cause?: unknown,
+    /** What a connected agent may do next, when the refusal says it. */
+    next?: string,
+  ) {
     super({
       code: "runner_offline",
       message,
       reason: "browser-pool-unavailable",
       retryable: true,
       cause,
+      ...(next === undefined ? {} : { next }),
     });
     this.name = "BrowserPoolAdmissionClosed";
   }

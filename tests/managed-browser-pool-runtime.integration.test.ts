@@ -9,6 +9,7 @@ import {
   verify,
 } from "node:crypto";
 import { access, mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -45,6 +46,7 @@ import { AgentConnectionStore, beginAgentSession } from "../packages/database/sr
 import {
   BrowserPoolAdmissionClosed,
   listBrowserPoolUnconfirmedClosings,
+  readBrowserPoolSlot,
   recordBrowserPoolTargetAnswer,
   stopBrowserPoolSession,
 } from "../packages/database/src/browser-pool-store.js";
@@ -69,6 +71,9 @@ import {
   testSessionFilesRoot,
 } from "../packages/browser-runtime-core/src/test-support/fakes.js";
 import { createRelayServer } from "../apps/pool-agent/src/relay.js";
+import { chromium } from "playwright-core";
+import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
+import { connectAgent } from "../apps/host/src/runtime/connected-agent.test-support.js";
 import {
   createHomeServer,
   listen,
@@ -259,8 +264,11 @@ interface LoopbackPoolHost {
   readonly slotId: string;
   readonly term: number;
   readonly pagesOpened: () => number;
+  readonly profilesRoot: string;
   stopAgent(): Promise<void>;
   restartAgent(): Promise<void>;
+  /** The VM goes away: its relay, its guest's runtime and its agent all stop answering. */
+  vanish(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -273,7 +281,13 @@ async function startLoopbackPoolHost(input: {
     readonly relayKey: string;
     readonly ticketKey: { readonly keyId: string; readonly spki: string };
   };
+  /** The guest runs a real Chromium, for a connected agent's scripts. */
+  readonly chromium?: boolean;
+  /** Where the guest keeps its browser profiles: a replaced host takes over the slot's disk. */
+  readonly profilesRoot?: string;
 }): Promise<LoopbackPoolHost> {
+  const profilesRoot =
+    input.profilesRoot ?? join(input.directory, `profiles-${input.slotId}-${input.term}`);
   const relayKeys = generateKeyPairSync("ed25519");
   const relayKeyPem = relayKeys.privateKey.export({ format: "pem", type: "pkcs8" }).toString();
   const relayCertificate = selfSignedCertificate(relayKeys.privateKey);
@@ -319,18 +333,25 @@ async function startLoopbackPoolHost(input: {
     verifiedClaims.push(claims);
     return claims;
   };
-  const launcher = Object.assign(new FakeIsolatingLauncher(), {
+  const fake = Object.assign(new FakeIsolatingLauncher(), {
     localProfiles: {
       engine: "chromium" as const,
       createFiles: async () => {},
       release: async () => "released" as const,
     },
   });
+  const launcher = input.chromium
+    ? new PlaywrightChromiumLauncher({
+        chromiumSandbox: false,
+        executablePath: chromium.executablePath(),
+        headless: true,
+      })
+    : fake;
   const runtime = new BrowserRuntime({
     launcher,
     runtimeId: "browser-main",
     sessionFilesRoot: testSessionFilesRoot(),
-    localProfiles: { root: join(input.directory, `profiles-${input.slotId}-${input.term}`) },
+    localProfiles: { root: profilesRoot },
     ticketVerifier: verifier,
     pool: {
       controllerKey: controlKey,
@@ -384,9 +405,16 @@ async function startLoopbackPoolHost(input: {
     target,
     slotId: input.slotId,
     term: input.term,
-    pagesOpened: () => launcher.launchCount,
+    pagesOpened: () => fake.launchCount,
+    profilesRoot,
     stopAgent: async () => {
       for (const socket of relaySockets) socket.destroy();
+      await closeAgent();
+    },
+    vanish: async () => {
+      for (const socket of relaySockets) socket.destroy();
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+      await runtimeServer.close().catch(() => undefined);
       await closeAgent();
     },
     restartAgent: async () => {
@@ -972,6 +1000,52 @@ describe("Managed browser pool wired into createHostRuntime", () => {
     }
   });
 });
+
+/** A main Runner enrolled and connected over the Runner WebSocket: its device is online. */
+async function connectMainRunnerSocket(port: number): Promise<{
+  readonly runnerId: RunnerId;
+  readonly socket: WebSocket;
+}> {
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/internal/v1/runners`);
+  const nextJson = () =>
+    new Promise<Record<string, unknown>>((resolve, reject) => {
+      socket.once("message", (raw) => resolve(JSON.parse(String(raw)) as Record<string, unknown>));
+      socket.once("error", reject);
+    });
+  const runnerId = createId("runner");
+  const runnerKeys = generateKeyPairSync("ed25519");
+  const publicKeyPem = runnerKeys.publicKey.export({ format: "pem", type: "spki" }).toString();
+  const challenge = RunnerChallengeSchema.parse(await nextJson());
+  const descriptor = RunnerDescriptorSchema.parse({
+    bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
+    capabilities: [],
+    modules: { browser: { wireVersion: 2, runtimeId: "browser-main" } },
+    name: "Cloud Computer",
+    runnerId,
+    runnerKind: "main",
+    runtimeVersion: "test",
+  });
+  const welcome = nextJson();
+  const credential = { enrollmentToken: mainRunnerToken, kind: "host-enrollment-token" as const };
+  socket.send(
+    JSON.stringify({
+      challengeId: challenge.challengeId,
+      credential,
+      descriptor,
+      proofFormatVersion: runnerProofFormatVersion,
+      publicKeyPem,
+      signature: createRunnerEnrollmentSignature(runnerKeys.privateKey, {
+        challenge,
+        credential,
+        descriptor,
+        publicKeyPem,
+      }),
+      type: "runner.enroll",
+    }),
+  );
+  expect((await welcome).type).toBe("host.welcome");
+  return { runnerId, socket };
+}
 
 async function createConnectedAgentSession(
   host: PersonalHostRuntime,
@@ -4200,4 +4274,513 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
       await rm(directory, { recursive: true, force: true });
     }
   }, 60_000);
+});
+
+/**
+ * A pooled Home settled on target A whose pool host was replaced: the account now places the slot
+ * on another host, one term higher, and A never answers again. The Home was not told.
+ */
+async function replacedPoolHost(
+  key: string,
+  options: {
+    /** What the account answers once A stops answering: the new host, or A again. */
+    readonly accountAnswers: "replacement" | "same";
+    /** How long calls may go unanswered before the target is suspected (two minutes). */
+    readonly unansweredMs?: number;
+  },
+) {
+  const database = await cloneTestDatabase("host");
+  const directory = await mkdtemp(join(tmpdir(), `opensteer-pool-${key}-`));
+  const config = managedConfig(database.url, directory, await freePort(), { browserPool: false });
+  const cleanups: (() => Promise<unknown>)[] = [
+    () => rm(directory, { recursive: true, force: true }),
+    () => database.drop(),
+  ];
+  const close = async () => {
+    vi.restoreAllMocks();
+    for (const cleanup of cleanups.splice(0).reverse()) await cleanup().catch(() => undefined);
+  };
+  try {
+    const started = await ownTestDatabaseProducer(database.url, async () => {
+      const runtime = await createHostRuntime(config, { personalAccountGrantFetch: jwksFetch() });
+      if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
+      return { host: runtime, close: () => runtime.close() };
+    });
+    const host = started.host;
+    cleanups.push(() => host.close());
+    const { ownerId } = await claimHome(host);
+    const runnerId = await enrollMainRunner(host, config);
+    const keys = await loadOrCreateManagedBrowserPoolKeys(join(directory, "host"));
+    const slotId = `bps_${randomUUID()}`;
+    const registered = managedBrowserPoolRegistration(keys);
+    const hostA = await startLoopbackPoolHost({ directory, slotId, term: 1, registered });
+    cleanups.push(() => hostA.close());
+    // The slot on its new host: another address, the term one higher.
+    const hostB = await startLoopbackPoolHost({ directory, slotId, term: 2, registered });
+    cleanups.push(() => hostB.close());
+    expect(new URL(hostB.target.agentUrl).port).not.toBe(new URL(hostA.target.agentUrl).port);
+    let placed = hostA.target;
+    /** What the account answered, in order: the term of each read. */
+    const reads: { readonly term: number }[] = [];
+    /**
+     * What happened, in order: each controller call that went unanswered, and each account read
+     * with the term it answered. No wall-clock number is read from it.
+     */
+    const events: string[] = [];
+    let onRead: ((target: ManagedBrowserPoolTarget) => void) | undefined;
+    const answer = (): ManagedBrowserPoolTargetResponse => {
+      reads.push({ term: placed.term });
+      events.push(`read:${placed.term}`);
+      onRead?.(placed);
+      return { status: "ready", target: placed };
+    };
+    const unanswered = (error: unknown): boolean => {
+      for (let cause = error, depth = 0; cause instanceof Error && depth < 4; depth++) {
+        if (cause.name === "BrowserPoolUnanswered") return true;
+        cause = cause.cause;
+      }
+      return false;
+    };
+    const hub = new RunnerBrowserHub();
+    cleanups.push(async () => hub.close());
+    const pool = await startManagedBrowserPool({
+      database: host.store.database,
+      dataDirectory: join(directory, "host"),
+      cloudComputerId,
+      runnerId,
+      hostKey: generateKeyPairSync("ed25519").privateKey,
+      browser: host.browser,
+      browserRelay: hub,
+      idleParkMs: 150,
+      firstDelayMs: 30,
+      maxDelayMs: 60,
+      // One controller call's own deadline (10 s on a Home). An unanswered call's early read must
+      // start before the next call has also gone unanswered: one timeout and one retry gap apart.
+      callTimeoutMs: 1_000,
+      ...(options.unansweredMs !== undefined ? { unansweredMs: options.unansweredMs } : {}),
+      // The target service's clock stands still: every read, the one that settled the target
+      // included, is "just now", so nothing here depends on how fast the machine is.
+      now: () => new Date(Date.parse("2026-11-26T16:26:42Z")),
+      account: { register: async () => answer(), target: async () => answer() },
+      onError: (error) => {
+        if (unanswered(error)) events.push("unanswered");
+      },
+    });
+    cleanups.push(() => pool.close());
+    const slot = () => readBrowserPoolSlot(host.store.database, runnerId);
+    // Settled on A: it answered, the guest ran, and with nobody holding it the browser parked.
+    await vi.waitFor(async () => expect(await slot()).toMatchObject({ term: 1, phase: "parked" }), {
+      timeout: 20_000,
+      interval: 50,
+    });
+    const profileId = createId("browserProfile");
+    /** A call with the caller's own wake bound: its signal, aborted when the bound runs out. */
+    const call = (wakeBound: AbortSignal) => {
+      const direct = host.browser.pooledDirectBrowser(runnerId);
+      if (!direct) throw new Error("The Home has no pooled browser.");
+      return {
+        direct,
+        reserved: direct
+          .reserve(wakeBound, { ownerId, profileId })
+          .then((reservation) => ({ reservation })),
+      };
+    };
+    /** A stops answering: every controller call to it waits for an answer that never comes. */
+    const silenceA = () => {
+      const silent = () => new Promise<never>(() => {});
+      const agent = hostA.currentAgent();
+      vi.spyOn(agent, "apply").mockImplementation(silent);
+      vi.spyOn(agent, "status").mockImplementation(silent);
+      vi.spyOn(agent, "result").mockImplementation(silent);
+      if (options.accountAnswers === "replacement") placed = hostB.target;
+    };
+    return {
+      host,
+      pool,
+      slot,
+      call,
+      silenceA,
+      reads,
+      events,
+      hostB,
+      onRead: (hook: typeof onRead) => {
+        onRead = hook;
+      },
+      close,
+    };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
+describe("A replaced pool host is learned at the first unanswered call", () => {
+  it("serves the first browser call after a host replace on the new target after one unanswered call and one account read, with no refusal", async () => {
+    const f = await replacedPoolHost("replaced-first", { accountAnswers: "replacement" });
+    try {
+      const suspect = vi.spyOn(f.pool.targets, "suspect");
+      // The target was settled by a read just now (the service's clock stands still).
+      f.silenceA();
+      const since = f.events.length;
+      // The caller's own wake bound (two minutes for a connected agent's call; 30 s here, inside
+      // the test's own bound). It only bounds a failure: nothing below reads a clock.
+      const first = f.call(AbortSignal.timeout(30_000));
+      const { reservation } = await first.reserved;
+      try {
+        // Admitted on B: the call's own port follows the target it was served by.
+        expect(first.direct.identity()).toMatchObject({ slotId: f.hostB.slotId, term: 2 });
+        expect(await f.slot()).toMatchObject({ term: 2, phase: "running" });
+      } finally {
+        reservation.release();
+      }
+      // One unanswered call to A, then one read of the account, which named B: learned at the
+      // first unanswered call, not by a suspicion, and with no refusal.
+      expect(f.events.slice(since, since + 2)).toEqual(["unanswered", "read:2"]);
+      expect(f.events.slice(since).filter((event) => event.startsWith("read:"))).toEqual([
+        "read:2",
+      ]);
+      expect(suspect).not.toHaveBeenCalled();
+    } finally {
+      await f.close();
+    }
+  }, 60_000);
+
+  it("serves a second call that starts while the switch is under way, not refused as not ready", async () => {
+    const f = await replacedPoolHost("replaced-second", { accountAnswers: "replacement" });
+    try {
+      f.silenceA();
+      let second: ReturnType<typeof f.call> | undefined;
+      // The second call begins as the account names B: the Home still holds A, and retires it next.
+      const since = f.events.length;
+      f.onRead((target) => {
+        if (target.term === 2 && !second) second = f.call(AbortSignal.timeout(30_000));
+      });
+      const first = f.call(AbortSignal.timeout(30_000));
+      const one = await first.reserved;
+      one.reservation.release();
+      expect(second).toBeDefined();
+      const two = await second!.reserved;
+      two.reservation.release();
+      expect(second!.direct.identity()).toMatchObject({ slotId: f.hostB.slotId, term: 2 });
+      expect(first.direct.identity()).toMatchObject({ term: 2 });
+      expect(f.events.slice(since, since + 2)).toEqual(["unanswered", "read:2"]);
+    } finally {
+      await f.close();
+    }
+  }, 60_000);
+
+  it("keeps the target in hand when the account names it again: reads at most once per 10 s, the suspicion fires as before, and the wake refusal says it is safe to call again", async () => {
+    const f = await replacedPoolHost("replaced-same", {
+      accountAnswers: "same",
+      // The two-minute suspicion, on the test's clock.
+      unansweredMs: 1_000,
+    });
+    try {
+      const settledReads = f.reads.length;
+      const suspect = vi.spyOn(f.pool.targets, "suspect");
+      f.silenceA();
+      // The caller's wake bound runs out once the suspicion has fired, as a deadline does.
+      const wakeBound = new AbortController();
+      const waiting = f.call(wakeBound.signal).reserved.catch((error: unknown) => error);
+      await vi.waitFor(() => expect(suspect).toHaveBeenCalled(), { timeout: 30_000 });
+      wakeBound.abort(new DOMException("The operation timed out.", "TimeoutError"));
+      const refused = await waiting;
+      expect(refused).toBeInstanceOf(BrowserPoolAdmissionClosed);
+      expect(refused).toMatchObject({
+        message: "The pooled browser did not wake in time. Nothing was sent.",
+        next: "Nothing was sent. It is safe to call again.",
+      });
+      // No switch: still A.
+      expect(await f.slot()).toMatchObject({ term: 1 });
+      expect(f.reads.slice(settledReads).every(({ term }) => term === 1)).toBe(true);
+      // Beyond the suspicion's own reads, the unanswered calls asked the account at most once per
+      // 10 s of the service's clock, which stands still here: once at most.
+      expect(f.reads.length - settledReads).toBeLessThanOrEqual(suspect.mock.calls.length + 1);
+    } finally {
+      await f.close();
+    }
+  }, 60_000);
+
+  it("reads nothing more from the account while the target answers, over a run of calls", async () => {
+    const f = await replacedPoolHost("answering", { accountAnswers: "same" });
+    try {
+      const settledReads = f.reads.length;
+      // Not even a paced ask: no answered call asks the account at all.
+      const check = vi.spyOn(f.pool.targets, "check");
+      for (let index = 0; index < 3; index++) {
+        // Parked between calls: each call wakes it, through calls A answers.
+        await vi.waitFor(async () => expect(await f.slot()).toMatchObject({ phase: "parked" }), {
+          timeout: 20_000,
+          interval: 50,
+        });
+        const { reservation } = await f.call(AbortSignal.timeout(30_000)).reserved;
+        reservation.release();
+      }
+      expect(await f.slot()).toMatchObject({ term: 1 });
+      expect(check).not.toHaveBeenCalled();
+      expect(f.reads.length).toBe(settledReads);
+    } finally {
+      await f.close();
+    }
+  }, 60_000);
+});
+
+/**
+ * A pooled Home wired as on a Cloud Computer (createHostRuntime with browserPool), its main Runner
+ * connected, a connected agent's session, and an account whose answer the test sets.
+ */
+async function wiredPooledHome(key: string, options: { readonly chromium?: boolean } = {}) {
+  const database = await cloneTestDatabase("host");
+  const directory = await mkdtemp(join(tmpdir(), `opensteer-pool-${key}-`));
+  const port = await freePort();
+  const config = managedConfig(database.url, directory, port, { browserPool: true });
+  const cleanups: (() => Promise<unknown>)[] = [
+    () => rm(directory, { recursive: true, force: true }),
+    () => database.drop(),
+  ];
+  const close = async () => {
+    vi.restoreAllMocks();
+    for (const cleanup of cleanups.splice(0).reverse()) await cleanup().catch(() => undefined);
+  };
+  try {
+    let registeredKeys: Parameters<typeof startLoopbackPoolHost>[0]["registered"] | undefined;
+    let answer: ManagedBrowserPoolTargetResponse = { status: "preparing" };
+    /** Each account read of the target, in order, with what it answered. */
+    const reads: string[] = [];
+    const accountControlFetch: typeof globalThis.fetch = async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === managedBrowserPoolRegistrationPath && init?.method === "PUT") {
+        registeredKeys = ManagedBrowserPoolRegistrationRequestSchema.parse(
+          JSON.parse(String(init.body)),
+        ).document.keys;
+        return Response.json(answer);
+      }
+      if (url.pathname === managedBrowserPoolTargetPath && (init?.method ?? "GET") === "GET") {
+        reads.push(answer.status === "ready" ? `ready:${answer.target!.term}` : answer.status);
+        return Response.json(registeredKeys ? answer : { status: "unregistered" });
+      }
+      return new Response("not found", { status: 404 });
+    };
+    const started = await ownTestDatabaseProducer(database.url, async () => {
+      const runtime = await createHostRuntime(config, {
+        personalAccountGrantFetch: jwksFetch(),
+        accountControlFetch,
+        managedBrowserPoolTiming: {
+          firstDelayMs: 40,
+          maxDelayMs: 120,
+          idleParkMs: null,
+          callTimeoutMs: 1_000,
+          // The two-minute suspicion, shorter than the gap the account takes to place B.
+          unansweredMs: 1_000,
+          // The target service's clock stands still: one early read at most, ever.
+          now: () => new Date(Date.parse("2026-11-26T17:45:06Z")),
+        },
+      });
+      if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
+      await runtime.listen();
+      return { host: runtime, close: () => runtime.close() };
+    });
+    const host = started.host;
+    cleanups.push(() => host.close());
+    const { ownerId } = await claimHome(host);
+    const runner = await connectMainRunnerSocket(port);
+    cleanups.push(async () => runner.socket.terminate());
+    const runnerId = runner.runnerId;
+    await initializePersonalState(host.store.database, {
+      agentHome: config.personal!.agentHome,
+      environmentId: config.personal!.environmentId,
+    });
+    await vi.waitFor(() => expect(registeredKeys).toBeDefined(), { timeout: 10_000 });
+    const slotId = `bps_${randomUUID()}`;
+    const hostA = await startLoopbackPoolHost({
+      directory,
+      slotId,
+      term: 1,
+      registered: registeredKeys!,
+      ...(options.chromium ? { chromium: true } : {}),
+    });
+    cleanups.push(() => hostA.close());
+    /**
+     * The slot on its new host: another address, the term one higher, on the slot's own disk (its
+     * browser profiles moved with it). Started once A is gone: one runtime holds that disk.
+     */
+    let hostB: LoopbackPoolHost | undefined;
+    const startB = async () => {
+      if (hostB) return hostB;
+      const started = await startLoopbackPoolHost({
+        directory,
+        slotId,
+        term: 2,
+        registered: registeredKeys!,
+        profilesRoot: hostA.profilesRoot,
+        ...(options.chromium ? { chromium: true } : {}),
+      });
+      hostB = started;
+      cleanups.push(() => started.close());
+      return started;
+    };
+    answer = { status: "ready", target: hostA.target };
+    await vi.waitFor(
+      async () =>
+        expect((await host.app.inject({ method: "GET", url: "/ready" })).json()).toEqual({
+          ok: true,
+          browserPool: "ready",
+        }),
+      { timeout: 20_000 },
+    );
+    const profile = await host.browser.createProfile({
+      ownerId,
+      name: `Profile ${key}`,
+      idempotencyKey: `profile-${key}-${randomUUID()}`,
+    });
+    await host.store.database
+      .updateTable("devices")
+      .set({
+        accessPolicy: {
+          reach: "owner",
+          commands: true,
+          browser: true,
+          apps: true,
+          forwarding: true,
+          shares: [],
+        },
+      })
+      .where("id", "=", runnerId as unknown as import("../packages/core/src/index.js").DeviceId)
+      .execute();
+    const agent = await createConnectedAgentSession(host, ownerId, config);
+    /** A connected agent's open on the profile, as a script's newPage makes it. */
+    const open = (label: string, signal: AbortSignal) =>
+      host.browser.openTab(
+        ownerId,
+        {
+          type: "browser.tab.open",
+          idempotencyKey: `${key}-${label}-${randomUUID()}`,
+          identity: { kind: "profile", profileId: profile.id },
+          url: `https://example.test/${label}`,
+        },
+        agent,
+        signal,
+      );
+    /** A connected agent signed in over the Home's own MCP route, with every resource granted. */
+    const mcpAgent = async () => {
+      const connected = await connectAgent(
+        { origin: homeOrigin, ownerId, store: host.store },
+        { scope: "everything" },
+        "full-access",
+        { via: `http://127.0.0.1:${port}`, callTimeoutMs: 170_000 },
+      );
+      cleanups.push(() => connected.close());
+      return connected;
+    };
+    return {
+      host,
+      ownerId,
+      runnerId,
+      profile,
+      agent,
+      mcpAgent,
+      hostA,
+      startB,
+      reads,
+      open,
+      place: (next: ManagedBrowserPoolTargetResponse) => {
+        answer = next;
+      },
+      slot: () => readBrowserPoolSlot(host.store.database, runnerId),
+      close,
+    };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
+/** A page the guest's Chromium can load, and a script that opens it, reads it and closes it. */
+async function servedPage() {
+  const site = createServer((_request, response) =>
+    response.end("<!doctype html><title>Served</title><p>served</p>"),
+  );
+  await new Promise<void>((resolve) => site.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${(site.address() as AddressInfo).port}/`;
+  return {
+    code: `const page = await newPage(${JSON.stringify(url)}); const title = await page.title(); await page.close(); return title;`,
+    close: async () => {
+      site.closeAllConnections();
+      await new Promise<void>((resolve) => site.close(() => resolve()));
+    },
+  };
+}
+
+/** Settled on A, then A's VM goes away and the account names nothing ready past the suspicion. */
+async function intoTheGap(f: Awaited<ReturnType<typeof wiredPooledHome>>) {
+  f.place({ status: "preparing" });
+  const since = f.reads.length;
+  await f.hostA.vanish();
+  await vi.waitFor(
+    () =>
+      expect(f.reads.slice(since).filter((read) => read === "preparing").length).toBeGreaterThan(2),
+    { timeout: 30_000 },
+  );
+}
+
+/** The newest operation of the connected agent, as the Home recorded it. */
+const newestOperation = (f: Awaited<ReturnType<typeof wiredPooledHome>>) =>
+  f.host.store.database
+    .selectFrom("agentOperations")
+    .select(["id", "state", "handedOffAt"])
+    .orderBy("createdAt", "desc")
+    .executeTakeFirst();
+
+describe("Today: a connected agent's call that waits while no ready target exists", () => {
+  it("is refused when its old target is retired, never served twice, with the next line (today's behaviour: no follow to the new target)", async () => {
+    const f = await wiredPooledHome("gap-refused", { chromium: true });
+    const page = await servedPage();
+    try {
+      const agent = await f.mcpAgent();
+      const use = () =>
+        agent.call("browser_use", { profileId: f.profile.id, reason: "Read", code: page.code });
+      expect((await use()).isError).toBeFalsy();
+      expect(await f.slot()).toMatchObject({ term: 1, phase: "running" });
+      await intoTheGap(f);
+      // A call starts in the gap and waits: A is gone and the account names nothing ready.
+      const before = (await newestOperation(f))?.id;
+      const call = use();
+      await vi.waitFor(async () => expect((await newestOperation(f))?.id).not.toBe(before), {
+        timeout: 10_000,
+      });
+      const waiting = await newestOperation(f);
+      const reads = f.reads.length;
+      await vi.waitFor(() => expect(f.reads.length).toBeGreaterThan(reads + 2), {
+        timeout: 30_000,
+      });
+      // The account names B: the waiting call is refused as A is retired, saying it may call again.
+      f.place({ status: "ready", target: (await f.startB()).target });
+      const result = await call;
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        status: "refused",
+        error: {
+          code: "computer_offline",
+          message: "The pooled browser did not wake in time. Nothing was sent.",
+          next: "Nothing was sent. It is safe to call again.",
+        },
+      });
+      // Nothing of it was handed off, and it stays refused: never served, now or later.
+      const refused = () =>
+        f.host.store.database
+          .selectFrom("agentOperations")
+          .select(["state", "handedOffAt"])
+          .where("id", "=", waiting!.id)
+          .executeTakeFirstOrThrow();
+      expect(await refused()).toMatchObject({ state: "refused", handedOffAt: null });
+      // Calling again is served by B, as its next line says.
+      const again = await use();
+      expect(again.isError, JSON.stringify(again)).toBeFalsy();
+      expect(await f.slot()).toMatchObject({ term: 2, phase: "running" });
+      expect(await refused()).toMatchObject({ state: "refused", handedOffAt: null });
+    } finally {
+      await page.close();
+      await f.close();
+    }
+  }, 180_000);
 });

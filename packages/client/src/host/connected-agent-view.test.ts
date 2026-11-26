@@ -890,6 +890,37 @@ describe("what the Home recorded under Check its last action (F3)", () => {
     ).toBe(`${generic} Contact was lost before this action confirmed it had ended.`);
   });
 
+  it("says the cause the Home kept, and lost contact only when contact was lost", () => {
+    // Real Mac: after Disconnect, and after a narrowing, the summary said contact was lost.
+    const ended = (ending: "stopped" | "disconnected" | "expired" | "narrowed" | "tab-closed") =>
+      uncertain({ ...recorded("", null), reason: null, ending }).detail;
+    const check =
+      "Part of it may have happened. Check what it was working on before you rely on it.";
+    expect(ended("disconnected")).toBe(
+      `You disconnected “Grok” while it was in the middle of something. ${check}`,
+    );
+    expect(ended("narrowed")).toBe(
+      `You changed what “Grok” can use while it was in the middle of something. ${check}`,
+    );
+    expect(ended("stopped")).toBe(
+      `You stopped “Grok” while it was in the middle of something. ${check}`,
+    );
+    expect(ended("expired")).toBe(
+      `Access for “Grok” expired while it was in the middle of something. ${check}`,
+    );
+    expect(ended("tab-closed")).toBe(
+      `You closed the tab “Grok” was using while it was in the middle of something. ${check}`,
+    );
+    for (const ending of ["stopped", "disconnected", "expired", "narrowed", "tab-closed"] as const)
+      expect(ended(ending)).not.toMatch(/contact/i);
+    expect(
+      uncertain({
+        ...recorded("Contact was lost before this action confirmed it had ended.", null),
+        ending: "contact-lost",
+      }).detail,
+    ).toBe(`${generic} Contact was lost before this action confirmed it had ended.`);
+  });
+
   it("reads only the general sentence when nothing was recorded", () => {
     expect(uncertain(null).detail).toBe(generic);
   });

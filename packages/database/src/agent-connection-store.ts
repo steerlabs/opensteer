@@ -32,7 +32,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { outsideName } from "@opensteer/shared/outsideName";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
-import type { RunId } from "@opensteer/core";
+import { AgentOperationEndingSchema, type RunId } from "@opensteer/core";
 import type { AgentConnectionTable, DatabaseSchema } from "./schema.js";
 import { isIdentityStillVerified } from "./agent-directory-verification.js";
 import { withDatabaseTransaction } from "./connection.js";
@@ -777,6 +777,8 @@ function connectionView(
           taskId: detailText(row.lastActionUncertain, "taskId"),
           tool: detailText(row.lastActionUncertain, "tool"),
           reason: detailText(row.lastActionUncertain, "reason"),
+          ending:
+            AgentOperationEndingSchema.safeParse(row.lastActionUncertain?.ending).data ?? null,
         }
       : null,
     revokedAt: row.revokedAt?.toISOString() ?? null,

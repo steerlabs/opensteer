@@ -376,10 +376,10 @@ describe("IntegrationConnectCard", () => {
 
     expect(text()).toContain("No computer is offering Calendar yet");
     expect(text()).toContain(
-      "Open Opensteer on a Mac or an iPhone, open this deployment, then add it in Settings → Computers. Return here when it appears.",
+      "Open Opensteer on a Mac or an iPhone, open this deployment, then add it in Settings → Devices. Return here when it appears.",
     );
     expect(text()).not.toContain("desktop app");
-    expect(text()).not.toContain("Add computer");
+    expect(text()).not.toContain("Add a device");
   });
 
   it("keeps a Mac-only app's desktop-app steps once no Mac offers it", async () => {
@@ -390,7 +390,7 @@ describe("IntegrationConnectCard", () => {
     await act(async () => client.setMachines([]));
 
     expect(text()).toContain(
-      "Open Opensteer on a Mac in the desktop app. Open this deployment, then Settings → Computers → Add computer and follow the steps. Return here when it appears.",
+      "Open Opensteer on a Mac in the desktop app. Open this deployment, then Settings → Devices → Add a device and follow the steps. Return here when it appears.",
     );
   });
 

@@ -6,12 +6,14 @@ import { createHash } from "node:crypto";
 import {
   commandAdmission,
   type AdministrationCommandIdentity,
+  type AuthoritySubject,
   requirePersonalOwner,
 } from "@opensteer/database";
 import { z } from "zod";
 import {
   EnvironmentIdSchema,
   OpensteerError,
+  raisedBeforeEffect,
   DeviceIdSchema,
   type AuthSessionId,
   type EnvironmentId,
@@ -79,6 +81,7 @@ const coreTypes = [
   "iphone.screen.attach",
   "iphone.screen.detach",
   "machine.access.session.stop",
+  "browser.profile.create",
   "browser.profile.rename",
   "browser.profile.delete",
   "browser.history.remove",
@@ -164,29 +167,47 @@ export class AdministrationService {
       });
     return environment;
   }
+  /**
+   * The person's command, or an agent's the command door admitted: `admitted` is the subject the
+   * door admitted it as, which the write admits again; an agent's command without one is refused.
+   */
   async execute(
     caller: AdministrationCaller,
     command: AdministrationCommand,
     afterResponse?: (effect: () => void) => void,
+    admitted?: AuthoritySubject,
   ): Promise<HostApiCommandOutput> {
     if (caller.kind === "person") return this.#authorizedExecute(caller, command, afterResponse);
+    if (!admitted)
+      throw new OpensteerError({
+        code: "internal",
+        message: "An agent's administration command is admitted at the command door",
+      });
     return this.#mutations.run(JSON.stringify([caller.userId, command.idempotencyKey]), () =>
-      this.#authorizedExecute(caller, command, afterResponse),
+      this.#authorizedExecute(caller, command, afterResponse, admitted),
     );
   }
   async #authorizedExecute(
     caller: AdministrationCaller,
     command: AdministrationCommand,
     afterResponse?: (effect: () => void) => void,
+    admitted?: AuthoritySubject,
   ): Promise<HostApiCommandOutput> {
     await this.authorize(caller, command);
     const actor = await this.actor(caller);
     const administration =
-      caller.kind === "person" ? undefined : this.#commandIdentity(caller, command);
+      caller.kind === "person" || !admitted
+        ? undefined
+        : this.#commandIdentity(caller, command, admitted);
     if (administration) {
       if (command.type.startsWith("harness.") && "environmentId" in command)
         await this.admitHarnessManagement(actor, command.environmentId);
-      const replay = await this.dependencies.store.replayAdministrationCommand(administration);
+      // A read, under the agent's admission again: a refusal here comes before anything happened.
+      const replay = await this.dependencies.store
+        .replayAdministrationCommand(administration)
+        .catch((error: unknown) => {
+          throw error instanceof Error ? raisedBeforeEffect(error) : error;
+        });
       if (replay?.output) return hostApi["commands.dispatch"].success.parse(replay.output);
       if (replay && command.type === "machine.access.session.stop")
         return hostApi["commands.dispatch"].success.parse({
@@ -203,6 +224,7 @@ export class AdministrationService {
   #commandIdentity(
     caller: AgentCaller,
     command: AdministrationCommand,
+    admitted: AuthoritySubject,
   ): AdministrationCommandIdentity {
     const { idempotencyKey, type, ...fields } = command;
     const request =
@@ -225,7 +247,7 @@ export class AdministrationService {
         callerKey: caller.key,
       },
       // The one command rule, at commit: what an agent may change is the table's, not this list's.
-      ...commandAdmission({ ownerUserId: caller.userId, callerKey: caller.key, command }),
+      ...commandAdmission({ ownerUserId: caller.userId, subject: admitted, command }),
       output: async (result) => {
         let fields: Record<string, unknown> = {};
         if (command.type.startsWith("harness.")) {
@@ -269,7 +291,10 @@ export class AdministrationService {
               deletion: PendingBrowserProfileDeletionSchema.optional(),
             })
             .parse(result);
-        if (command.type === "browser.profile.rename") {
+        if (
+          command.type === "browser.profile.rename" ||
+          command.type === "browser.profile.create"
+        ) {
           const { purpose, ...profile } = BrowserProfileSchema.extend({
             purpose: z.enum(["person", "engine-sign-in"]).optional(),
           }).parse(result);
@@ -624,6 +649,19 @@ export class AdministrationService {
           type: command.type,
         };
       }
+      case "browser.profile.create":
+        return {
+          profile: await dependencies.browser.createProfile({
+            administration,
+            ...(command.input.homeRunnerId !== undefined
+              ? { homeRunnerId: command.input.homeRunnerId }
+              : {}),
+            name: command.input.name,
+            idempotencyKey: command.idempotencyKey,
+            ownerId: userId,
+          }),
+          type: command.type,
+        };
       case "browser.profile.rename":
         return {
           profile: await dependencies.browser.renameProfile({

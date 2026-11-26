@@ -16,6 +16,11 @@ import { agentCommandRegistry } from "./agent-door.js";
 import { dispatchCommand, type AgentCommandDoor } from "./dispatch.js";
 import { proposedCommand } from "./requests.js";
 
+/** A stand-in door's admission names the subject it admitted, as the real one's does. */
+const standInExecution = {
+  subject: { kind: "binding", bindingId: "stand-in" },
+} as unknown as NonNullable<import("@opensteer/database").CommandAdmission["execution"]>;
+
 const userId = "usr_owner" as UserId;
 const types = Object.keys(commandTable) as CommandType[];
 const selected: AgentGrant = { scope: "selected", tasks: true, resources: [] };
@@ -101,7 +106,7 @@ function door(agent: AgentCaller, own: boolean): AgentCommandDoor {
         ownWork: own,
         ownLineage: own,
       });
-      return { ...rule, face, execution: null } as never;
+      return { ...rule, face, execution: standInExecution } as never;
     },
     propose: async () => ({ status: "pending", requestId: "req_1", existing: false }) as never,
     secretDigestKey: Buffer.alloc(32, 0x33),
@@ -156,7 +161,8 @@ describe("the listing tells the truth about dispatch (ruling 2)", () => {
 
   it("keeps an ask for want of an agent handler apart from an ask of the rule", () => {
     // A connected agent with everything at Full access: the commands the rule would run now that
-    // still ask, because their handler is the person's until a later step.
+    // still ask, because their handler is the person's until a later step. Making a browser
+    // profile left this list when its handler began admitting an agent itself (75, from 76).
     const waiting = types.filter((type) =>
       commandMark(type, { scope: "everything", mode: "full-access" }, registry).asks.includes(
         "no agent handler yet",

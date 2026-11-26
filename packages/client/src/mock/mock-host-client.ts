@@ -5209,6 +5209,20 @@ export class MockHostClient implements HostClient {
     this.#state.mockDeviceStates();
   }
 
+  /**
+   * The preview's Notes session on the Mac mini, held by another task instead, with the apps
+   * given (in the order it took them) and the ones it acted in last.
+   */
+  mockComputerUseSessionTask(
+    threadId: string,
+    options: {
+      readonly apps?: readonly ComputerAppIdentity[];
+      readonly actingAppKeys?: readonly string[];
+    } = {},
+  ): void {
+    this.#state.mockComputerUseSessionTask(threadId, options);
+  }
+
   /** Connected agents working tasks themselves, in each state, with a tab each uses. */
   mockAgentWork(
     options: {
@@ -8005,6 +8019,7 @@ class MockHostState {
     // The working agent uses a tab of its own; the waiting one, a tab the person shares.
     const placed: Readonly<Record<string, string>> =
       options.livePanel === "one" ||
+      options.livePanel === "cloud-tab" ||
       options.livePanel === "long-one" ||
       options.livePanel === "long-place" ||
       options.livePanel === "one-history"
@@ -8042,11 +8057,20 @@ class MockHostState {
       };
     });
     const seededIds = new Set(seed.threads.map(({ id }) => id));
+    // The agent's tab is in the pooled browser of the computer the Home runs on, running.
+    const cloudTab = browserSessions.find((session) =>
+      session.catalog?.tabs.some(({ id }) => id === "mock-tab-1-0"),
+    );
+    const pooled =
+      options.livePanel === "cloud-tab" && cloudTab?.placement.kind === "runner"
+        ? [mockBrowserPoolReport("awake", cloudTab.placement.runnerId, "mock-tab-1-0")]
+        : undefined;
     this.update({
       ...this.snapshot,
       threads: [...this.snapshot.threads.filter(({ id }) => !seededIds.has(id)), ...seed.threads],
       requests: { ...this.snapshot.requests, ...seed.requests } as typeof this.snapshot.requests,
       browserSessions,
+      ...(pooled ? { browserPools: pooled } : {}),
     });
   }
 
@@ -8078,6 +8102,38 @@ class MockHostState {
     };
     this.update({ ...this.snapshot, threads: [...this.snapshot.threads, task] });
     return id;
+  }
+
+  mockComputerUseSessionTask(
+    threadId: string,
+    options: {
+      readonly apps?: readonly ComputerAppIdentity[];
+      readonly actingAppKeys?: readonly string[];
+    },
+  ): void {
+    this.update({
+      ...this.snapshot,
+      machines: this.snapshot.machines.map((machine) =>
+        machine.computerUse
+          ? {
+              ...machine,
+              computerUse: {
+                ...machine.computerUse,
+                sessions: machine.computerUse.sessions.map((session) =>
+                  session.sessionId === mockComputerUseSession.sessionId
+                    ? {
+                        ...session,
+                        threadId: ThreadIdSchema.parse(threadId),
+                        apps: [...(options.apps ?? session.apps)],
+                        actingAppKeys: [...(options.actingAppKeys ?? session.actingAppKeys)],
+                      }
+                    : session,
+                ),
+              },
+            }
+          : machine,
+      ),
+    });
   }
 
   mockDeviceStates(): void {

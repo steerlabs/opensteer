@@ -62,10 +62,20 @@ export function agentCommandRegistry(
       agentAdministrationTypes.has(type)
         ? {
             accepts: "any" as const,
-            run: async (actor: { readonly kind: string }, command: unknown) => {
-              if (actor.kind === "person")
+            run: async (
+              actor: { readonly kind: string },
+              command: unknown,
+              { authority }: { readonly authority: CommandAuthority | null },
+            ) => {
+              if (actor.kind === "person" || !authority)
                 throw new OpensteerError({ code: "internal", message: "Not the person's door" });
-              return administration.execute(actor as AgentCaller, command as AdministrationCommand);
+              // Admitted again where it is written as the door admitted it: the same subject.
+              return administration.execute(
+                actor as AgentCaller,
+                command as AdministrationCommand,
+                undefined,
+                authority.subject,
+              );
             },
           }
         : automations && agentAutomationTypes.has(type)
@@ -104,7 +114,7 @@ export function agentCommandDoor(input: {
     admit: agentCommandAdmission(input.database, input.taskId),
     scope: agentCommandScope(input.database, input.taskId),
     attempts: commandAttempts(input.database),
-    readmit: agentCommandReadmission(input.taskId),
+    readmit: agentCommandReadmission(),
     ...(input.propose ? { propose: input.propose } : {}),
     secretDigestKey: input.secretDigestKey,
   };

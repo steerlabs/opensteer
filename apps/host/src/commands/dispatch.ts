@@ -12,6 +12,7 @@ import {
   commandNotFoundMessage,
   commandSubject,
   connectionAdmissionSubject,
+  type AuthoritySubject,
   type CommandAdmission,
   type CommandAskReason,
   type CommandHolder,
@@ -105,6 +106,8 @@ export interface AgentCommandDoor extends CommandDoor {
     transaction: Kysely<DatabaseSchema>,
     caller: AgentCaller,
     command: HostApiCommand,
+    /** The subject the door admitted it as. */
+    subject: AuthoritySubject,
   ) => Promise<void>;
   /** Opens the person's Request for a command that waits for them; without it, `ask` is returned. */
   readonly propose?: (
@@ -136,13 +139,9 @@ export function agentCommandScope(
 }
 
 /** The last admission before an outside command acts, as the door admitted it (G3). */
-export function agentCommandReadmission(taskId?: string): NonNullable<AgentCommandDoor["readmit"]> {
-  return async (transaction, caller, command) =>
-    assertCommandAdmitted(transaction, {
-      ownerUserId: caller.userId,
-      subject: await admittedSubject(transaction, caller, taskId),
-      command,
-    });
+export function agentCommandReadmission(): NonNullable<AgentCommandDoor["readmit"]> {
+  return async (transaction, caller, command, subject) =>
+    assertCommandAdmitted(transaction, { ownerUserId: caller.userId, subject, command });
 }
 
 /** `admitCommand` for an agent the Home authenticated, from its live execution. */
@@ -248,7 +247,14 @@ export async function dispatchCommand(
     agentRunsNow(row, admission.face, handler, holder?.scope ?? null);
   assertNoSecretPaths(row, command, runsNow);
   if (runsNow) {
-    const authority = commandAuthority(actor, command, row, door.secretDigestKey);
+    // One subject from here on: the one the door just admitted, read again at every later step.
+    const subject = admission.execution?.subject;
+    if (!subject)
+      throw new OpensteerError({
+        code: "internal",
+        message: "An agent's admission names its subject",
+      });
+    const authority = commandAuthority(actor, subject, command, row, door.secretDigestKey);
     const readmit = door.readmit;
     const effect = await runCommandEffect({
       row,
@@ -263,7 +269,7 @@ export async function dispatchCommand(
         type: command.type,
         idempotencyKey: (command as { readonly idempotencyKey: string }).idempotencyKey,
       },
-      readmit: readmit ? (transaction) => readmit(transaction, actor, command) : undefined,
+      readmit: readmit ? (transaction) => readmit(transaction, actor, command, subject) : undefined,
       act: () => handler.run(actor, command as never, { context: null, authority }),
     });
     if (effect.status === "done")
@@ -321,12 +327,15 @@ export function agentRunsNow(
 /** What a handler written for agents is given: the identity its store admits at commit. */
 export interface CommandAuthority {
   readonly caller: AgentCaller;
+  /** The subject the door admitted this command as: every later admission reads it again. */
+  readonly subject: AuthoritySubject;
   readonly identity: CommandIdentity;
 }
 const authorities = new WeakSet<object>();
 
 function commandAuthority(
   caller: AgentCaller,
+  subject: AuthoritySubject,
   command: HostApiCommand,
   row: CommandRow,
   secretDigestKey: Buffer,
@@ -346,13 +355,14 @@ function commandAuthority(
   });
   const authority = Object.freeze({
     caller,
+    subject,
     identity: {
       requestedBy: caller.userId,
       idempotencyKey,
       type,
       request: sanitized,
       authoritySource: { kind: "mcp", callerKind: caller.kind, callerKey: caller.key },
-      ...commandAdmission({ ownerUserId: caller.userId, callerKey: caller.key, command }),
+      ...commandAdmission({ ownerUserId: caller.userId, subject, command }),
     },
   });
   authorities.add(authority);

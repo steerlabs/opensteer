@@ -332,6 +332,42 @@ integration("Task naming through the Runner", () => {
     await named(unnamed, "March receipts");
     expect((await models()).slice(8)).toEqual(["gpt-6-luna"]);
   });
+  it("names a task whose next Run asked while its failing naming was still running", async () => {
+    // The next Run's request came while the last attempt was out (on workbench-1, during its
+    // catalog refresh): it joined that job, which ended unnamed, and nothing asked again.
+    const f = await start();
+    const last = f.hold("last-attempt");
+    await f.script({
+      "gpt-6-luna": { error: "You've hit your usage limit." },
+      "gpt-5.6-luna": { error: "Model unavailable." },
+      "gpt-5.6-sol": { error: "You've hit your usage limit.", hold: last },
+    });
+    const threadId = await f.task("Sort the receipts from March");
+    await f.send(threadId, "Sort the receipts from March");
+    await vi.waitFor(
+      async () =>
+        expect((await f.turns()).map((turn) => turn.model)).toEqual([
+          "gpt-6-luna",
+          "gpt-5.6-luna",
+          "gpt-5.6-sol",
+        ]),
+      waitOptions,
+    );
+    // The last attempt is out; the task's next Run asks for its name meanwhile.
+    await f.script({ "gpt-6-luna": { reply: "March receipts\nmail" } });
+    await f.send(threadId, "Start with the hotel ones");
+    expect(await f.thread(threadId)).toMatchObject({ titleSource: "provisional" });
+    await f.release(last);
+    await vi.waitFor(
+      async () =>
+        expect(await f.thread(threadId)).toMatchObject({
+          title: "March receipts",
+          titleSource: "generated",
+        }),
+      waitOptions,
+    );
+    expect((await f.turns()).map((turn) => turn.model).slice(3)).toEqual(["gpt-6-luna"]);
+  });
   it("keeps a person's rename made while naming is in flight", async () => {
     const f = await start();
     const held = f.hold("rename");

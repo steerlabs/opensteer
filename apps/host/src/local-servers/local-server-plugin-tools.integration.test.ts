@@ -547,7 +547,10 @@ integration("local servers as plugin tools", () => {
     const blocked = await gateway.call("plugin_search", {
       namespace: /"([^"]+)"/u.exec(pair)?.[1],
     });
-    // Its saved tools are listed; its namespace says once why none can be called yet.
+    // Its saved tools are listed; its namespace says once why none can be called yet, asking
+    // for what its changes need. A tool carries a reason only where its own differs from the
+    // app's, as its call says it (pluginToolReason): the read asks for reading only. Pin moved
+    // with 2601faaec: before it, the read's item said nothing while its call asked for "read".
     expect(blocked).toMatchObject({
       items: expect.arrayContaining([expect.objectContaining({ path: pair })]),
       namespaces: [
@@ -555,13 +558,21 @@ integration("local servers as plugin tools", () => {
           blocked: {
             code: "access_required",
             message: expect.any(String),
-            next: expect.stringContaining('"server":"tv"'),
+            next: expect.stringContaining('"server":"tv","access":"read-write"'),
           },
         },
       ],
       unavailableApps: [],
     });
-    expect(JSON.stringify(blocked.items)).not.toContain("blocked");
+    const items = blocked.items as { path: string; blocked?: { code: string; next: string } }[];
+    expect(items.find((item) => item.path === pair)?.blocked).toBeUndefined();
+    expect(items.filter((item) => item.blocked).map((item) => item.path)).toEqual([
+      pair.replace(/\.pair$/u, ".status"),
+    ]);
+    expect(items.find((item) => item.blocked)?.blocked).toMatchObject({
+      code: "access_required",
+      next: expect.stringContaining('"server":"tv","access":"read"'),
+    });
     await dispatch(host, {
       type: "integration.grant.create",
       input: {

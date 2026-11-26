@@ -168,6 +168,22 @@ try {
   );
   await page.locator(".session-activity").waitFor();
 
+  // A connected agent working in a tab of the Cloud Computer's own pooled browser (tester run
+  // 12): Watch lands on that tab's live picture beside the task, never on the launcher.
+  await openSettings("cloud-tab", chatgpt);
+  await ready();
+  await now.getByRole("button", { name: "Watch ChatGPT" }).click();
+  await page.waitForURL(
+    (url) =>
+      url.pathname === "/tasks/thr_00000000-0000-4000-8000-0000000000a5" &&
+      url.searchParams.get("tab") === "mock-tab-1-0",
+  );
+  await page.locator(".place--page").waitFor();
+  if (await page.locator(".place--launcher").count())
+    throw new Error("Watch on a Cloud Computer's tab stayed on the launcher.");
+  await page.locator(".session-activity").waitFor();
+  await save(page, "watch-cloud-tab-dark");
+
   await openSettings("needs-you", claude);
   await now.getByText("Run a script in Travel?", { exact: true }).waitFor();
   const waitingHead = now.locator(".connected-agent__session-head");

@@ -194,16 +194,28 @@ async function startRelayFixture(
     response.end("<title>Home CDP fixture</title><button>Home</button>"),
   );
   const clients: Awaited<ReturnType<typeof chromium.connectOverCDP>>[] = [];
+  // The step the close is in, named by the containment error if the close overruns.
+  let closing: string | undefined;
   await ownTestDatabaseProducer(fixture.databaseUrl, async () => ({
+    closing: () => closing,
     close: async () => {
-      for (const client of clients) await client.close();
+      for (const [index, client] of clients.entries()) {
+        closing = `the Playwright client ${index + 1} of ${clients.length} (client.close)`;
+        await client.close();
+      }
+      closing = "the Home (home.close)";
       await home.close();
+      closing = "the browser service (browser.close)";
       await browser.close();
       targetResolver.close();
       runner.detach();
+      closing = "the browser runtime server (runtimeServer.close)";
       await runtimeServer.close();
+      closing = "the fixture site (site.close)";
       if (site.listening) await new Promise<void>((resolve) => site.close(() => resolve()));
+      closing = "the scratch directory (rm)";
       await rm(scratch, { recursive: true, force: true });
+      closing = undefined;
     },
   }));
   await runner.attach({
