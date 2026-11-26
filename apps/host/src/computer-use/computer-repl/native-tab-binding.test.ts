@@ -403,42 +403,6 @@ it.each(["paused", "protected"] as const)(
   },
 );
 
-describe("NativeTabTargets.currentWindow", () => {
-  it("takes the app's shown window from its own list, resolves it exactly, and never launches it", async () => {
-    const minimized = WindowIdSchema.parse("win_00000000-0000-4000-8000-000000000002");
-    let listed = [
-      { windowId: minimized, title: "Old", minimized: true },
-      { windowId, title: "After relaunch" },
-    ];
-    const windows = vi.fn(async () => listed);
-    const queryWindow = vi.fn(async (_computer: unknown, target: unknown) => ({
-      windowId: (target as { windowId: string }).windowId,
-      app,
-      title: "After relaunch",
-      unavailableReason: null,
-    }));
-    const targets = new NativeTabTargets({
-      views: { list: async () => [], openForTab: vi.fn(), closeTabViews: vi.fn(), windows },
-      connections: async () => [connection],
-      owns: async () => true,
-      connected: () => true,
-      queryWindow,
-      users: () => [],
-      phoneUnavailable: () => null,
-    });
-    await expect(targets.currentWindow(ownerId, computerId, app)).resolves.toMatchObject({
-      windowId,
-      title: "After relaunch",
-    });
-    expect(windows).toHaveBeenCalledWith(ownerId, computerId, app);
-    expect(queryWindow).toHaveBeenCalledWith(computerId, { windowId });
-    // A quit app lists no window: nothing is resolved by bundle, so nothing launches it.
-    listed = [];
-    await expect(targets.currentWindow(ownerId, computerId, app)).resolves.toBeNull();
-    expect(queryWindow).toHaveBeenCalledTimes(1);
-  });
-});
-
 describe("NativeTabTargets.windowStates batching and observed cache bounding", () => {
   it("batches owns, connections, and views.list once per computer across multiple window tabs", async () => {
     const computerA = createId("runner");

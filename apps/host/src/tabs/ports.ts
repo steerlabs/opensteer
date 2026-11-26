@@ -137,12 +137,6 @@ export interface DeviceNativeTabTargetsPort {
   ): Promise<ComputerView>;
 }
 export interface NativeTabTargetsPort {
-  /** The window an approved app shows now, without launching it; null when it shows none. */
-  currentWindow?(
-    ownerId: UserId,
-    computerId: RunnerId,
-    app: ComputerAppIdentity,
-  ): Promise<ResolvedTabWindow | null>;
   resolveWindow(
     ownerId: UserId,
     computerId: RunnerId,

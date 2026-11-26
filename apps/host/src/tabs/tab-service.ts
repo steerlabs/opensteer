@@ -1,4 +1,3 @@
-import { computerAppIdentitiesEqual } from "@opensteer/integration-core";
 import type { OpensteerStore } from "@opensteer/database";
 import { requireSelfDeviceId } from "@opensteer/database";
 import { normalizeToolError } from "@opensteer/agent-tools";
@@ -1117,44 +1116,20 @@ export class TabService implements TabServicePort {
   ) {
     return this.#row(actor, tabId);
   }
-  /** The window this tab shows was retitled on its Mac while the person watched it. */
-  async retitleWindow(
-    ownerId: UserId,
-    tabId: TabId,
-    windowId: WindowId,
-    title: string,
-  ): Promise<void> {
-    try {
-      if (await this.options.store.retitleWindow(ownerId, tabId, windowId, title))
-        this.changed(ownerId, [tabId]);
-    } catch (error) {
-      this.options.onError(error);
-    }
-  }
   /** The app's current window, bound to this window tab in place of the one that ended. */
   async #rebindWindow(
     actor: TabActor & { kind: "person" },
     row: TabRecord,
     runnerId: RunnerId,
   ): Promise<TabRecord | null> {
-    // Never by bundle: resolving an app launches it, and a quit app stays quit until the
-    // person opens it; then Open again finds its window.
-    const current = this.options.nativeTargets.currentWindow
-      ? await this.options.nativeTargets
-          .currentWindow(actor.ownerId, runnerId, row.windowApp!)
-          .catch((error: unknown) => {
-            // No window, the app gone or the computer away: the tab says its own window closed.
-            if (error instanceof OpensteerError) return null;
-            throw error;
-          })
-      : null;
-    // Only another window of the same approved app the tab already held, on the same device.
-    if (
-      !current ||
-      current.windowId === row.windowId ||
-      !computerAppIdentitiesEqual(current.app, row.windowApp!)
-    )
-      return null;
+    const current = await this.options.nativeTargets
+      .resolveWindow(actor.ownerId, runnerId, { bundleId: row.windowApp!.bundleId })
+      .catch((error: unknown) => {
+        // No window, the app gone or the computer away: the tab says its own window closed.
+        if (error instanceof OpensteerError) return null;
+        throw error;
+      });
+    if (!current || current.windowId === row.windowId) return null;
     const next = { ...row, windowId: current.windowId, windowApp: current.app };
     await this.options.authorize(actor, next, this.options.store.database);
     return this.options.store.rebindWindow(actor.ownerId, row.id, row.generation, row.windowId!, {

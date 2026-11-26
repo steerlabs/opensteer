@@ -28,8 +28,7 @@ export interface NativeWindowQueryResult {
   unavailableReason: string | null;
 }
 export interface NativeTabTargetsOptions {
-  views: Pick<ComputerViewService, "openForTab" | "closeTabViews" | "list"> &
-    Partial<Pick<ComputerViewService, "windows">>;
+  views: Pick<ComputerViewService, "openForTab" | "closeTabViews" | "list">;
   connections(ownerId: UserId): Promise<readonly DeviceComputerConnection[]>;
   owns(ownerId: UserId, computerId: ComputerTargetId): Promise<boolean>;
   connected(computerId: ComputerTargetId): boolean;
@@ -418,23 +417,6 @@ export class NativeTabTargets implements NativeTabTargetsPort {
     if (!(await this.#options.owns(ownerId, computerId)))
       throw refused("not_found", "This computer is unavailable.");
     return this.#filterComputerConnections(await this.#options.connections(ownerId), computerId);
-  }
-  /**
-   * The window an approved app shows now, from the same list the person picks windows from:
-   * an app that is not running lists none, and nothing is launched. A window that is not
-   * minimized comes first; it is then resolved exactly, under resolveWindow's own checks.
-   */
-  async currentWindow(
-    ownerId: UserId,
-    computerId: ComputerTargetId,
-    app: ComputerAppIdentity,
-  ): Promise<ResolvedTabWindow | null> {
-    if (!this.#options.views.windows) return null;
-    await this.#connections(ownerId, computerId);
-    const windows = await this.#options.views.windows(ownerId, computerId, app);
-    const window = windows.find((each) => !each.minimized) ?? windows[0];
-    if (!window) return null;
-    return this.resolveWindow(ownerId, computerId, { windowId: window.windowId });
   }
   async resolveWindow(
     ownerId: UserId,
