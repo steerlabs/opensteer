@@ -123,7 +123,7 @@ const stateAreaWords: Readonly<Record<StateArea, string>> = {
   devices: "devices: the person's devices and what each allows.",
   chats: "chats: chat accounts and their chats.",
   engines: "engines: AI engine accounts.",
-  requests: "requests: what waits for the person.",
+  requests: "requests: what waits for the person and what happened after recent approvals.",
   activity: "activity: what agents did.",
   problems: "problems: what is going wrong with this Home, as the person's Settings shows it.",
 };
@@ -146,7 +146,7 @@ export const opensteer_state = defineAgentTool({
   name: "opensteer_state",
   title: "See what is set up",
   description:
-    "See what is set up in Opensteer now, as the person's apps show it, cut to what you may see. connections: connected agents (the other AI apps the person connected) and what each may use. devices: the person's devices and what each allows. chats: chat accounts and their chats. engines: AI engine accounts. requests: what waits for the person. activity: what agents did. problems: what is going wrong with this Home. settings. Read here what another agent, a device or a chat can use. An area you cannot see is unavailable.",
+    "See what is set up in Opensteer now, as the person's apps show it, cut to what you may see. connections: connected agents (the other AI apps the person connected) and what each may use. devices: the person's devices and what each allows. chats: chat accounts and their chats. engines: AI engine accounts. requests: what waits for the person and what happened after recent approvals. activity: what agents did. problems: what is going wrong with this Home. settings. Read here what another agent, a device or a chat can use. An area you cannot see is unavailable.",
   input: z.strictObject({ area: z.enum(stateAreas) }),
   output: z.object({ area: z.string(), view: z.record(z.string(), z.unknown()) }),
   access: "read",

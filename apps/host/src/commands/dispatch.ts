@@ -270,7 +270,10 @@ export async function dispatchCommand(
       return { status: "done", output: commandAgentOutput(command, effect.output) };
     if (effect.status === "failed") throw effect.error;
     // It may have happened: never failed, never retried by the Home (rule 4).
-    throw new OperationOutcomeUnknown("This change may have happened. Check before trying again.");
+    throw new OperationOutcomeUnknown(
+      effect.receipt?.progress.message ??
+        "This change may have happened. Check before trying again.",
+    );
   }
   const answers =
     row.answersAsk && admission.face !== undefined && row.answersAsk.faces.includes(admission.face)
@@ -287,6 +290,13 @@ export async function dispatchCommand(
     return { status: "pending", requestId: answers.id, reason: ask.reason, existing: true };
   if (answers || !door.propose) return ask;
   const proposed = await door.propose(actor, command, ask, admission.face);
+  if (
+    proposed.status === "answered" &&
+    proposed.outcome.status === "done" &&
+    proposed.outcome.result !== undefined &&
+    holder.scope !== null
+  )
+    return { ...proposed, outcome: { status: "done", result: { type: command.type } } };
   return proposed.status === "pending" ? { ...proposed, reason: ask.reason } : proposed;
 }
 

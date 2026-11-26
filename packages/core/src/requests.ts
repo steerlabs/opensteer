@@ -623,14 +623,24 @@ export const commandRequestOutcomeSchema = z.discriminatedUnion("status", [
   /** The person approved it and it is running. */
   z.object({ status: z.literal("running") }),
   z.object({ status: z.literal("done"), result: z.json().optional() }),
-  /** It was refused before anything happened. */
+  /** The Home has evidence the requested change did not happen. */
   z.object({
     status: z.literal("failed"),
     code: z.string().max(100),
     message: z.string().max(2_000),
+    result: z.json().optional(),
   }),
   /** It may have happened; the Home does not know and never runs it again. */
-  z.object({ status: z.literal("unknown") }),
+  z.object({
+    status: z.literal("unknown"),
+    /** Evidence of incomplete work. The outer status keeps older clients from treating it as done. */
+    progress: z
+      .object({
+        kind: z.enum(["partial", "pending", "unconfirmed"]),
+        message: z.string().max(2_000),
+      })
+      .optional(),
+  }),
 ]);
 export const CommandRequestPartSchema = z.object({
   type: z.string().min(1).max(100),
@@ -747,6 +757,14 @@ export function commandAgentStatus(request: {
   }
 }
 export type CommandRequestOutcome = z.infer<typeof commandRequestOutcomeSchema>;
+
+/** The words for a failure the command itself confirmed, as shown on the approved Request. */
+export function commandRequestReportedFailure(
+  outcome: CommandRequestOutcome | undefined,
+): string | undefined {
+  if (outcome?.status !== "failed" || outcome.result === undefined) return undefined;
+  return `You approved this, but ${outcome.message[0]?.toLowerCase() ?? ""}${outcome.message.slice(1)}`;
+}
 
 const requestBaseShape = {
   settlementProvenance: z

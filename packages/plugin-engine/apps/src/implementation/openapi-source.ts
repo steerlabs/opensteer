@@ -317,7 +317,8 @@ export interface OpenapiSourceOptions extends Omit<
   "operations" | "definitions"
 > {
   readonly cache: AppCache;
-  readonly source: { readonly url: string } | { readonly document: JsonObject };
+  readonly source:
+    { readonly url: string } | { readonly document: JsonObject; readonly documentUrl?: string };
   /**
    * The origin that may receive credentials, or several origins of one service, such as its API
    * and upload hosts. Operations on any other origin are left out.
@@ -498,9 +499,10 @@ const sourceDocument = (
   });
 
 /** Compile a definition with the source's static settings. */
-const compileSource = (options: OpenapiCompileSettings, document: JsonObject) =>
-  compileOpenApiDocument(
-    { name: "API", ...("url" in options.source ? { connectUrl: options.source.url } : {}) },
+const compileSource = (options: OpenapiCompileSettings, document: JsonObject) => {
+  const connectUrl = "url" in options.source ? options.source.url : options.source.documentUrl;
+  return compileOpenApiDocument(
+    { name: "API", ...(connectUrl === undefined ? {} : { connectUrl }) },
     document,
     {
       allowedOrigin: options.allowedOrigin,
@@ -512,6 +514,7 @@ const compileSource = (options: OpenapiCompileSettings, document: JsonObject) =>
       ...(options.pathPrefix === undefined ? {} : { pathPrefix: options.pathPrefix }),
     },
   );
+};
 type OpenapiCompileSettings = Pick<
   OpenapiSourceOptions,
   "source" | "allowedOrigin" | "securitySchemes" | "fallbackSecurity" | "baseUrl" | "pathPrefix"

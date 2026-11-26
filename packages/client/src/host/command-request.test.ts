@@ -48,6 +48,26 @@ const pending = {
 } as unknown as Request & { reviewedRevision: string };
 
 describe("a command Request as the person reviews it", () => {
+  it("shows the build's confirmed failure on the approved Request", () => {
+    const message = "The OpenAPI document contains no supported operations.";
+    const view = commandRequestView({
+      ...pending,
+      status: "fulfilled",
+      command: {
+        ...part,
+        type: "plugins.install",
+        outcome: {
+          status: "failed",
+          code: "bad_request",
+          message: `The plugin did not build: ${message}`,
+          result: { type: "plugins.install", result: { status: "build-error", message } },
+        },
+      },
+    });
+    expect(view?.line).toBe(`You approved this, but the plugin did not build: ${message}`);
+    expect(view?.approve).toBeNull();
+  });
+
   it("shows the Home's sentence, who asked, the agent's words apart, and every argument", () => {
     const view = commandRequestView(pending)!;
     expect(view.sentence).toBe("Change a connected agent's access: “Research”");
@@ -254,6 +274,10 @@ describe("a command Request as the person reviews it", () => {
     const unknown = settled("fulfilled", { status: "unknown" });
     expect(unknown.state).toBe("unknown");
     expect(unknown.line).not.toMatch(/fail/iu);
+    const message = "1 tab closed. 1 tab could not be closed.";
+    expect(
+      settled("fulfilled", { status: "unknown", progress: { kind: "partial", message } }),
+    ).toMatchObject({ line: message, approve: null });
     expect(settled("declined").line).toBe(commandRequestWords.declined);
     expect(settled("cancelled").line).toBe(commandRequestWords.closed);
     for (const status of ["fulfilled", "declined", "cancelled"] as const)

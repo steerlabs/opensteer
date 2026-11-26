@@ -188,7 +188,7 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
   /** Controls how `state.import` replies in tests: default replies, or drops/disconnects after submit. */
   onStateImport: (
     message: Extract<BrowserClientMessage, { type: "state.import" }>,
-  ) => "reply" | "drop" | "drop-and-close" = () => "reply";
+  ) => "reply" | "drop" | "drop-and-close" | "error" = () => "reply";
   /** Optional hook to delay a send callback (blocks `#commandTail` for queued-timeout tests). */
   onSend?: (message: BrowserClientMessage, callback: (error?: Error) => void) => boolean;
   send(data: string, _options: { readonly binary: false }, callback: (error?: Error) => void) {
@@ -198,10 +198,13 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
     if (!this.holdStartAck || message.type !== "login.authorize") callback();
     if (message.type === "state.import") {
       const mode = this.onStateImport(message);
-      if (mode === "reply") {
+      if (mode === "reply" || mode === "error") {
         queueMicrotask(() =>
           this.#reply({
-            error: null,
+            error:
+              mode === "error"
+                ? { code: "internal", message: "Cookie persistence failed.", retryable: false }
+                : null,
             operationId: message.operationId,
             type: "state.import.result",
           }),
@@ -3483,64 +3486,67 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     }
   });
 
-  it("M8: rejects with OperationOutcomeUnknown when state.import loses its reply after submit, never settles session-closed, and never resends", async () => {
-    const ready = await scene();
-    const paired = await pairChrome(ready.ownerId, "Chrome on Mac");
-    const chrome = await connectChrome(paired);
-    try {
-      const asked = await service.agentCopyChromeCookies({
-        ...ready.agent,
-        callId: `m8-lost-${randomUUID()}`,
-        site: "https://example.test",
-      });
-      expect(asked.status).toBe("pending");
-      if (asked.status !== "pending") throw new Error("Expected pending Request");
-      const pending = await store.requests.get(asked.requestId);
-      expect(pending?.status).toBe("pending");
+  it.each(["drop-and-close", "error"] as const)(
+    "keeps state.import unknown after submit on %s and never resends",
+    async (mode) => {
+      const ready = await scene();
+      const paired = await pairChrome(ready.ownerId, "Chrome on Mac");
+      const chrome = await connectChrome(paired);
+      try {
+        const asked = await service.agentCopyChromeCookies({
+          ...ready.agent,
+          callId: `m8-lost-${randomUUID()}`,
+          site: "https://example.test",
+        });
+        expect(asked.status).toBe("pending");
+        if (asked.status !== "pending") throw new Error("Expected pending Request");
+        const pending = await store.requests.get(asked.requestId);
+        expect(pending?.status).toBe("pending");
 
-      // After state.import is sent, the runtime stream drops before sending state.import.result.
-      ready.connection.onStateImport = () => "drop-and-close";
-      const err = await service
-        .respond({
-          decision: { decision: "allow", sourceId: paired.sourceId },
-          expectedRevision: (await store.requests.revision(asked.requestId))!,
-          ownerId: ready.ownerId,
-          requestId: asked.requestId,
-        })
-        .then(
-          (value) => value,
-          (error: unknown) => error,
-        );
-      expect(err).toBeInstanceOf(OperationOutcomeUnknown);
+        // A missing reply or a persistence error after send cannot rule out a cookie write.
+        ready.connection.onStateImport = () => mode;
+        const err = await service
+          .respond({
+            decision: { decision: "allow", sourceId: paired.sourceId },
+            expectedRevision: (await store.requests.revision(asked.requestId))!,
+            ownerId: ready.ownerId,
+            requestId: asked.requestId,
+          })
+          .then(
+            (value) => value,
+            (error: unknown) => error,
+          );
+        expect(err).toBeInstanceOf(OperationOutcomeUnknown);
 
-      // The Request must NOT have been settled as session-closed; it settles durably as unconfirmed (Sol 8).
-      const after = await store.requests.get(asked.requestId);
-      expect(after?.status).toBe("fulfilled");
-      expect(after?.response).toEqual({ kind: "external", value: { outcome: "unconfirmed" } });
+        // The Request must NOT have been settled as session-closed; it settles durably as unconfirmed (Sol 8).
+        const after = await store.requests.get(asked.requestId);
+        expect(after?.status).toBe("fulfilled");
+        expect(after?.response).toEqual({ kind: "external", value: { outcome: "unconfirmed" } });
 
-      // HTTP normalization carries the uncertain-outcome contract.
-      const normalized = normalizeHostError(err);
-      expect(normalized.error).toMatchObject({
-        code: "conflict",
-        reason: "outcome-unknown",
-        retryable: false,
-      });
+        // HTTP normalization carries the uncertain-outcome contract.
+        const normalized = normalizeHostError(err);
+        expect(normalized.error).toMatchObject({
+          code: "conflict",
+          reason: "outcome-unknown",
+          retryable: false,
+        });
 
-      // Retrying the same Request must still reject with OperationOutcomeUnknown and never send
-      // a second state.import with a fresh operationId.
-      await expect(
-        service.respond({
-          decision: { decision: "allow", sourceId: paired.sourceId },
-          expectedRevision: (await store.requests.revision(asked.requestId))!,
-          ownerId: ready.ownerId,
-          requestId: asked.requestId,
-        }),
-      ).rejects.toBeInstanceOf(OperationOutcomeUnknown);
-      expect(ready.connection.imports()).toHaveLength(1);
-    } finally {
-      await chrome.close();
-    }
-  });
+        // Retrying the same Request must still reject with OperationOutcomeUnknown and never send
+        // a second state.import with a fresh operationId.
+        await expect(
+          service.respond({
+            decision: { decision: "allow", sourceId: paired.sourceId },
+            expectedRevision: (await store.requests.revision(asked.requestId))!,
+            ownerId: ready.ownerId,
+            requestId: asked.requestId,
+          }),
+        ).rejects.toBeInstanceOf(OperationOutcomeUnknown);
+        expect(ready.connection.imports()).toHaveLength(1);
+      } finally {
+        await chrome.close();
+      }
+    },
+  );
 
   it("M8: rejects with OperationOutcomeUnknown on state.import reply timeout after submit, while pre-submit disconnect stays a plain failure", async () => {
     const ready = await scene();
