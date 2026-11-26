@@ -2,6 +2,7 @@ import { z } from "zod";
 import { AgentConnectionIdentityAtConsentViewSchema } from "@opensteer/control-plane-protocol";
 import {
   AgentGrantViewSchema,
+  AgentOperationEndingSchema,
   RunIdSchema,
   ThreadAccessModeSchema,
   UserIdSchema,
@@ -158,6 +159,12 @@ export const AgentConnectionSchema = z.object({
       taskId: z.string().max(255).nullable(),
       tool: z.string().max(100).nullable(),
       reason: z.string().max(255).nullable(),
+      /**
+       * Why that action ended without a confirmed outcome, where the Home knows it (the person's
+       * Stop or Disconnect, an expiry, a changed access, a closed tab); lost contact only when
+       * it is `contact-lost`, or absent for work that keeps no such cause.
+       */
+      ending: AgentOperationEndingSchema.nullable().optional(),
     })
     .nullable()
     .optional(),

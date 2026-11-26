@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { expect, it, vi } from "vitest";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { standardCdpEndpoint } from "../apps/host/src/browser/standard-cdp-endpoint.test-support.js";
 import { AgentSessionService } from "../apps/host/src/agent-sessions/agent-session-service.js";
 import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
@@ -26,7 +27,13 @@ import { OpensteerError, type RequestId, type ThreadId } from "../packages/core/
 import { type TabRecord } from "../packages/database/src/index.js";
 import { listBrowserPoolDocumentLosses } from "./browser-pool-journey.test-support.js";
 import { TabSleeper } from "../packages/browser-runtime-core/src/browser/tab-sleeper.js";
-import { before, holdResume, journey, until } from "./browser-pool-journey.test-support.js";
+import {
+  before,
+  holdResume,
+  journey,
+  TestRuntimeConnection,
+  until,
+} from "./browser-pool-journey.test-support.js";
 
 type Journey = Awaited<ReturnType<typeof journey>>;
 type Home = Awaited<ReturnType<Journey["startHome"]>>;
@@ -45,6 +52,8 @@ async function directWork(
     readonly grant?: AgentGrant;
     /** Runs after a script's bind decided its tab and bound the page, inside the call. */
     readonly afterBind?: () => Promise<void>;
+    /** Each call's own bound (two minutes). */
+    readonly executionMs?: number;
   } = {},
 ) {
   let tabChange: ((tab: TabRecord) => TabRecord | Promise<TabRecord>) | undefined;
@@ -83,7 +92,11 @@ async function directWork(
       return { kind: tab.kind, profile: tab.profileId ? { profileId: tab.profileId } : null };
     },
   };
-  const sessions = new AgentSessionService({ store: j.store, holdMs: 0 });
+  const sessions = new AgentSessionService({
+    store: j.store,
+    holdMs: 0,
+    ...(options.executionMs ? { executionMs: options.executionMs } : {}),
+  });
   const confinement = new BrowserScriptConfinement();
   const scripts = new BrowserScriptService({
     browser: home().service,
@@ -516,9 +529,16 @@ it("keeps a session whose unanswered command was settled unknown when the Runner
     // The Runner comes back inside the window: the same page is reattached and usable, and the
     // command is never sent again.
     w.j.runnerUp();
-    await vi.waitFor(() => expect(w.home.coordinator.gate.phase).toBe("open"), {
-      timeout: 10_000,
-    });
+    // The gate opens once the Runner is reachable; this session is back when its own reattach
+    // is (a call meanwhile waits for it, per session). Read on the gate alone, the pages were
+    // read before the reattach had them (workbench-1, 1 run in 3 to 11).
+    await vi.waitFor(
+      () => {
+        expect(w.home.coordinator.gate.phase).toBe("open");
+        expect(w.home.coordinator.reattaching(w.session.id)).toBe(false);
+      },
+      { timeout: 10_000 },
+    );
     expect((await w.j.row(w.session.id))?.state).toBe("ready");
     expect(w.home.service.pageInventory(w.session.id)?.records.get(w.tab.id)?.documentId).toBe(
       w.document,
@@ -805,7 +825,7 @@ it("restarts only once a command in flight has its recorded outcome, and once pe
 });
 
 /** A connected agent that already used the profile, with the browser parked afterwards. */
-async function parkedAfterWork(key: string) {
+async function parkedAfterWork(key: string, options: { readonly executionMs?: number } = {}) {
   const j = await journey(key, { profile: true });
   const home = await j.startHome();
   const { session } = await home.service.start({
@@ -815,7 +835,7 @@ async function parkedAfterWork(key: string) {
   const [tab] = await home.service.savedPages(j.task.userId, session.id);
   if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
   const page = await j.draft();
-  const work = await directWork(j, () => home);
+  const work = await directWork(j, () => home, options);
   const read = `return await page.js("document.querySelector('input').value")`;
   const first = await work.use(
     `globalThis.page = await openPage(${JSON.stringify(tab.id)}); ${read}`,
@@ -1836,7 +1856,12 @@ it("tells the agent and the person that the person closed the tab a call was usi
     // The agent's script uses the page, waits, and uses it again: the person closes the tab
     // between the two, as the tester did.
     const running = work.use(
-      `await mine.goto(${JSON.stringify(`${origin}/started`)}); await mine.waitForTimeout(4000); return await mine.title();`,
+      `const marker = (await mine.title()) + "-private-timeout-marker";
+       print(marker);
+       await mine.goto(${JSON.stringify(`${origin}/started`)});
+       await mine.waitForTimeout(4000);
+       try { await mine.title(); } catch {}
+       throw new Error(marker);`,
     );
     await vi.waitFor(() => expect(hits).toContain("/started"), { timeout: 15_000 });
     const tabs = new TabService({
@@ -1861,12 +1886,18 @@ it("tells the agent and the person that the person closed the tab a call was usi
       next: "The person closed this tab while the command ran; whether it took effect is unknown. Open the page again if you still need it.",
     });
     expect(text(result)).not.toContain("lost track");
+    expect(JSON.stringify(result)).not.toContain("Held-private-timeout-marker");
     const operation = await j.database
       .selectFrom("agentOperations")
-      .select(["id", "state", "outcome", "ending"])
+      .select(["id", "state", "outcome", "ending", "resultSummary"])
       .orderBy("createdAt", "desc")
       .executeTakeFirstOrThrow();
-    expect(operation).toMatchObject({ state: "unknown", outcome: "unknown", ending: "tab-closed" });
+    expect(operation).toMatchObject({
+      state: "unknown",
+      outcome: "unknown",
+      ending: "tab-closed",
+      resultSummary: null,
+    });
     // The person's activity reads the same cause.
     const [listed] = (
       await listAgentOperations(j.database, {
@@ -1987,12 +2018,14 @@ it("never says the person closed a tab they closed and reopened before the call,
       { timeout: 15_000 },
     );
     // A later call uses the reopened tab, and contact is lost under its command: nothing the
-    // person did ended it.
+    // person did ended it. The cut waits for the page itself to show the command ran: cut on
+    // the navigation's hit alone, it could land after the command existed but before it was
+    // sent, whose honest answer is failed with nothing sent (workbench-1, 1 run in 3).
     const hanging = work.use(
-      `const page = await openPage(${JSON.stringify(tabId)}); await page.goto(${JSON.stringify(`${origin}/hang`)}); return await page.js("new Promise(() => {})");`,
+      `const page = await openPage(${JSON.stringify(tabId)}); await page.goto(${JSON.stringify(`${origin}/hang`)}); return await page.js("(fetch('/sent'), new Promise(() => {}))");`,
     );
     await Promise.race([
-      vi.waitFor(() => expect(hits).toContain("/hang"), { timeout: 15_000 }),
+      vi.waitFor(() => expect(hits).toContain("/sent"), { timeout: 15_000 }),
       hanging.then((result) => {
         throw new Error(`The call ended before its command hung: ${text(result)}`);
       }),
@@ -2247,6 +2280,174 @@ it("clicks a target=_blank link in the person's pooled tab and reaches the popup
   }
 });
 
+async function installClickTarget(
+  person: Awaited<ReturnType<typeof heldPersonTab>>["person"],
+  covered: boolean,
+) {
+  await person.cdp.send("Runtime.evaluate", {
+    expression: `window.clicks = 0;
+      document.body.innerHTML =
+        '<button id="click-target" style="position:fixed;left:40px;top:40px;width:120px;height:50px">Click</button>' +
+        (${covered} ? '<div id="cover" style="position:fixed;z-index:10;inset:0"></div>' : '');
+      document.querySelector("#click-target").onclick = () => window.clicks++;`,
+  });
+  return async () =>
+    (
+      await person.cdp.send<{ result: { value: number } }>("Runtime.evaluate", {
+        expression: "window.clicks",
+        returnByValue: true,
+      })
+    ).result.value;
+}
+
+it.each([false, true])(
+  "ends a covered pooled click with its timeout (caught: %s)",
+  async (caught) => {
+    const { work, close, own, person } = await heldPersonTab("covered-click");
+    try {
+      const clicks = await installClickTarget(person, true);
+      const click =
+        'await p.locator("#click-target").click(' + (caught ? "{timeout:800}" : "") + ");";
+      const code = caught ? `try { ${click} } catch(e) { print(e.message); }` : click;
+      const start = performance.now();
+      const result = await work.use(`
+      const p = await openPage(${JSON.stringify(own.id)});
+      print("before click");
+      ${code}
+    `);
+      const elapsed = Math.round(performance.now() - start);
+      expect(await clicks()).toBe(0);
+      expect(result.structuredContent, `${elapsed} ms: ${text(result)}`).toMatchObject(
+        caught
+          ? { status: "completed" }
+          : {
+              status: "failed",
+              error: {
+                message: expect.stringContaining(
+                  'Timeout 10000ms: <div id="cover"> intercepts pointer events',
+                ),
+              },
+            },
+      );
+      expect(text(result)).toContain("before click");
+      expect(text(result)).toContain("intercepts pointer events");
+      if (!caught) expect(elapsed).toBeLessThan(10_500);
+    } finally {
+      await close();
+    }
+  },
+);
+
+it.each(["cleanup", "input", "hit test"] as const)(
+  "settles a pooled script with the %s reply withheld",
+  async (kind) => {
+    const { work, close, own, person, j } = await heldPersonTab("click-reply");
+    const withheld = new Set<string>();
+    const dropped = Promise.withResolvers<void>();
+    let syncRequest: string | undefined;
+    let geometryCalls = 0;
+    const send = TestRuntimeConnection.prototype.send;
+    const emit = TestRuntimeConnection.prototype.emit;
+    const sendSpy = vi.spyOn(TestRuntimeConnection.prototype, "send").mockImplementation(function (
+      this: TestRuntimeConnection,
+      data,
+      options,
+      callback,
+    ) {
+      const frame = JSON.parse(data);
+      if (frame.type === "cdp.command") {
+        const { method, parameters } = frame.command;
+        if (kind === "cleanup" && method === "Runtime.evaluate" && parameters.expression === "1")
+          syncRequest = frame.requestId;
+        if (
+          (kind === "cleanup" &&
+            method === "Runtime.releaseObjectGroup" &&
+            parameters.objectGroup === "withheld") ||
+          (kind === "input" &&
+            method === "Input.dispatchMouseEvent" &&
+            parameters.type === "mouseReleased") ||
+          (kind === "hit test" &&
+            method === "Runtime.callFunctionOn" &&
+            parameters.arguments?.[0]?.value === "geometry" &&
+            ++geometryCalls === 2)
+        )
+          withheld.add(frame.requestId);
+      }
+      send.call(this, data, options, callback);
+    });
+    const emitSpy = vi.spyOn(TestRuntimeConnection.prototype, "emit").mockImplementation(function (
+      this: TestRuntimeConnection,
+      event,
+      ...args
+    ) {
+      if (event === "message" && args[1] === false) {
+        const message = JSON.parse(String(args[0]));
+        if (message.type === "cdp.result" && withheld.delete(message.requestId)) {
+          dropped.resolve();
+          return true;
+        }
+        // Host admission for the awaited read can finish before admission for cleanup.
+        // Let the script throw only once Chromium has actually answered cleanup and we dropped it.
+        if (message.type === "cdp.result" && message.requestId === syncRequest && syncRequest) {
+          void dropped.promise.then(() => emit.call(this, event, ...args));
+          return true;
+        }
+      }
+      return emit.call(this, event, ...args);
+    });
+    try {
+      const clicks = await installClickTarget(person, kind === "hit test");
+      const code =
+        kind === "cleanup"
+          ? `void p.cdp("Runtime.releaseObjectGroup", { objectGroup: "withheld" }).catch(() => {});
+           await p.js("1");
+           throw new Error("the script's own error");`
+          : 'await p.locator("#click-target").click({timeout:1500});';
+      const running = work.use(`
+        const p = await openPage(${JSON.stringify(own.id)});
+        print("before the reply");
+        ${code}
+      `);
+      await before(
+        withTimeout(dropped.promise, 10_000, {
+          timeoutError: () => new Error("Chromium did not send the CDP reply to withhold."),
+        }),
+        running,
+        "The withheld CDP reply",
+      );
+      const result = await running;
+      const status = kind === "cleanup" ? "failed" : "unknown";
+      const message = kind === "cleanup" ? "the script's own error" : "Timeout 1500ms";
+      expect(await clicks()).toBe(kind === "input" ? 1 : 0);
+      expect(result.structuredContent, text(result)).toMatchObject({
+        status,
+        error: {
+          code: kind === "cleanup" ? "failed" : "outcome-unknown",
+          message: expect.stringContaining(message),
+          ...(kind === "input" ? { method: "Input.dispatchMouseEvent" } : {}),
+        },
+      });
+      expect(text(result)).toContain("before the reply");
+      if (kind !== "cleanup") expect(text(result)).toContain("did not confirm its outcome");
+      expect(
+        await j.database
+          .selectFrom("agentOperations")
+          .select(["state", "resultSummary"])
+          .orderBy("createdAt", "desc")
+          .executeTakeFirstOrThrow(),
+      ).toMatchObject({
+        state: status,
+        resultSummary: { scriptError: { message: expect.stringContaining(message) } },
+      });
+    } finally {
+      dropped.resolve();
+      emitSpy.mockRestore();
+      sendSpy.mockRestore();
+      await close();
+    }
+  },
+);
+
 /** The script's returned lines. */
 const lines = (result: Awaited<ReturnType<Awaited<ReturnType<typeof directWork>>["use"]>>) =>
   JSON.parse(
@@ -2466,5 +2667,156 @@ it("loads a tab the person closed and reopened when the agent opens it first, on
     expect((await j.tabs.get(j.task.userId, own.id))?.pageBinding?.sessionId).not.toBe(session.id);
   } finally {
     await held.close();
+  }
+});
+
+/** What an agent reads back over MCP for a refusal: the receipt's error, as structured content. */
+const refusalOf = (result: Awaited<ReturnType<Awaited<ReturnType<typeof directWork>>["use"]>>) =>
+  (result.structuredContent as { error?: { message?: string; next?: string } } | undefined)?.error;
+
+it("tells the agent over MCP that nothing was sent and it may call again when its wake bound runs out", async () => {
+  const p = await parkedAfterWork("wake-bound-next", { executionMs: 1_500 });
+  try {
+    const resume = holdResume(p.j.controller);
+    const call = p.work.use(p.read);
+    await before(resume.seen, call, "The parked call");
+    const result = await call;
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ status: "refused" });
+    expect(refusalOf(result)).toMatchObject({
+      message: "The pooled browser did not wake in time. Nothing was sent.",
+      next: "Nothing was sent. It is safe to call again.",
+    });
+    resume.allow();
+  } finally {
+    await p.j.close();
+  }
+});
+
+/** Retires the Home's only target for another not yet adopted: the gap of a replaced host. */
+const retireForReplacement = (p: Awaited<ReturnType<typeof parkedAfterWork>>) =>
+  p.home.service.retirePool(p.j.task.runnerId, "browser-replaced");
+
+/** The call's operation, newest first. */
+const latestOperation = (p: Awaited<ReturnType<typeof parkedAfterWork>>) =>
+  p.j.database
+    .selectFrom("agentOperations")
+    .select(["state", "sessionId", "handedOffAt"])
+    .orderBy("createdAt", "desc")
+    .executeTakeFirstOrThrow();
+
+it("refuses at once, over MCP with its next line, a call on a session of a target retired while it waited", async () => {
+  const p = await parkedAfterWork("retired-session-next");
+  try {
+    const resume = holdResume(p.j.controller);
+    // Its tab is a page of the retired target's session: the call ends with that session.
+    const call = p.work.useTab(p.read, p.tab.id);
+    await before(resume.seen, call, "The tab-targeted call");
+    await retireForReplacement(p);
+    const result = await call;
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ status: "refused" });
+    expect(refusalOf(result)).toMatchObject({
+      message: "This browser is not ready. Nothing was sent.",
+      next: "Nothing was sent. It is safe to call again.",
+    });
+    resume.allow();
+  } finally {
+    await p.j.close();
+  }
+});
+
+it("ends a call waiting through a replaced host's gap at once with the person's Stop, in its words", async () => {
+  const p = await parkedAfterWork("gap-stop");
+  try {
+    const resume = holdResume(p.j.controller);
+    let settled = false;
+    const call = p.work.use(p.read).finally(() => {
+      settled = true;
+    });
+    await before(resume.seen, call, "The profile call");
+    await retireForReplacement(p);
+    // It follows: no next target yet, so it waits, nothing handed off.
+    expect(await latestOperation(p)).toMatchObject({ handedOffAt: null });
+    expect(settled).toBe(false);
+    await p.work.sessions.stopSession({
+      ownerUserId: p.j.task.userId,
+      sessionId: (await latestOperation(p)).sessionId,
+      threadId: p.taskId,
+    });
+    const result = await call;
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("stopped");
+    expect(text(result)).not.toContain("did not wake in time");
+    resume.allow();
+  } finally {
+    await p.j.close();
+  }
+});
+
+it("ends a call waiting through a replaced host's gap at once with the person's Disconnect", async () => {
+  const p = await parkedAfterWork("gap-disconnect");
+  try {
+    const resume = holdResume(p.j.controller);
+    let settled = false;
+    const call = p.work
+      .use(p.read)
+      .catch((error: unknown) => error)
+      .finally(() => {
+        settled = true;
+      });
+    await before(resume.seen, call, "The profile call");
+    await retireForReplacement(p);
+    expect(await latestOperation(p)).toMatchObject({ handedOffAt: null });
+    expect(settled).toBe(false);
+    await p.connection.revoke(p.work.agent.id);
+    await p.j.store.driveConnectionCleanups();
+    // Its end, never a wake refusal at its bound: Disconnect ends the wait itself.
+    expect(JSON.stringify(await call)).not.toContain("did not wake in time");
+    const [row] = (await p.connection.list()).filter(({ id }) => id === p.work.agent.id);
+    expect(row).toMatchObject({ state: "stopped" });
+    resume.allow();
+  } finally {
+    await p.j.close();
+  }
+});
+
+it("today: settles unknown, and never replays, a command already sent when its target is retired for another", async () => {
+  const j = await journey("retired-in-flight", { profile: true });
+  try {
+    const home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const [tab] = await home.service.savedPages(j.task.userId, session.id);
+    if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
+    const page = await j.draft();
+    const work = await directWork(j, () => home);
+    const bound = await work.use(`globalThis.page = await openPage(${JSON.stringify(tab.id)});`);
+    expect(bound.isError, text(bound)).not.toBe(true);
+    const sent = async () =>
+      (
+        await page.cdp.send<{ result: { value?: number } }>("Runtime.evaluate", {
+          expression: "window.__sent ?? 0",
+          returnByValue: true,
+        })
+      ).result.value;
+    const hanging = work.use(
+      `return await page.js("(window.__sent = (window.__sent ?? 0) + 1, new Promise(() => {}))")`,
+    );
+    await vi.waitFor(async () => expect(await sent()).toBe(1));
+    const operations = () =>
+      j.database.selectFrom("agentOperations").select(["id", "state", "outcome"]).execute();
+    const before = (await operations()).length;
+    await home.service.retirePool(j.task.runnerId, "browser-replaced");
+    // Sent to the retired target: unknown, recorded once, and never carried anywhere else.
+    expect((await hanging).structuredContent).toMatchObject({ status: "unknown" });
+    const after = await operations();
+    expect(after.length).toBe(before);
+    expect(after.filter(({ state }) => state === "unknown")).toHaveLength(1);
+    expect(after.filter(({ state }) => state === "handed-off")).toHaveLength(0);
+  } finally {
+    await j.close();
   }
 });

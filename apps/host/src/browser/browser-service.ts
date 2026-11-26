@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { browserScriptHousekeepingMethod } from "../browser-use/browser-repl-messages.js";
 import { StandardCdpProfileLeases } from "./standard-cdp-profile-leases.js";
 import {
   cdpCommandRefusal,
@@ -213,6 +214,8 @@ import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import type { BrowserAttachTicketSigner } from "./browser-ticket.js";
 import {
   BrowserPoolAttemptRefused,
+  BrowserPoolTargetReplaced,
+  browserPoolWakeRefusal,
   type BrowserPoolGate,
   type BrowserPoolReservation,
 } from "./browser-pool-gate.js";
@@ -1416,8 +1419,10 @@ export class BrowserService {
   }
 
   pooledDirectBrowser(runnerId: RunnerId) {
-    const pool = this.#pool(runnerId);
-    if (!pool) return undefined;
+    const found = this.#pool(runnerId);
+    if (!found) return undefined;
+    /** The coordinator this call waits on, and once admitted, the one that serves it. */
+    let pool: BrowserPoolCoordinator = found;
     return {
       identity: () => pool.identity(),
       reserve: async (
@@ -1426,10 +1431,19 @@ export class BrowserService {
           | { readonly sessionId: BrowserSessionId }
           | { readonly ownerId: UserId; readonly profileId: BrowserProfileId },
       ) => {
-        const reservation = await pool.gate.reserve(
-          signal,
-          "sessionId" in scope ? scope : undefined,
-        );
+        let reservation: BrowserPoolReservation;
+        for (;;) {
+          try {
+            reservation = await pool.gate.reserve(signal, "sessionId" in scope ? scope : undefined);
+            break;
+          } catch (error) {
+            // A different target replaced the one this call waited for (a replaced pool host):
+            // nothing was sent, and a call on the profile waits for the new one within its own
+            // bound. A call on a session of the old target is refused: that session ended with it.
+            if (!(error instanceof BrowserPoolTargetReplaced) || "sessionId" in scope) throw error;
+            pool = await this.#replacementPool(runnerId, pool, signal);
+          }
+        }
         if ("profileId" in scope && pool.reattaching()) {
           const { runtimeId } = pool.identity();
           try {
@@ -1534,6 +1548,7 @@ export class BrowserService {
     if (this.#pools.has(runnerId))
       throw new Error("This pooled browser already has a coordinator.");
     this.#pools.set(runnerId, coordinator);
+    this.#poolChanged();
     if (placement) this.#poolPlacements.set(runnerId, placement);
     else this.#poolPlacements.delete(runnerId);
     coordinator.setAdopter(this.#poolAdopter(runnerId));
@@ -1574,9 +1589,47 @@ export class BrowserService {
     } finally {
       this.#pools.delete(runnerId);
       this.#poolPlacements.delete(runnerId);
+      this.#poolChanged();
     }
     this.#onSessionsChanged([]);
     this.#onTabsChanged();
+  }
+
+  /** Aborted whenever a pooled browser's coordinator is adopted or retired. */
+  #poolsChanged = new AbortController();
+
+  #poolChanged(): void {
+    const previous = this.#poolsChanged;
+    this.#poolsChanged = new AbortController();
+    previous.abort();
+  }
+
+  /**
+   * The coordinator that replaced `replaced` for this Runner's pooled browser, once adopted. A
+   * caller refused because its target was replaced waits here, within its own bound, never past
+   * it: nothing was sent, so the new target may serve it.
+   */
+  async #replacementPool(
+    runnerId: RunnerId,
+    replaced: BrowserPoolCoordinator,
+    signal: AbortSignal,
+  ): Promise<BrowserPoolCoordinator> {
+    const bounded = AbortSignal.any([signal, this.#closing.signal]);
+    for (;;) {
+      if (bounded.aborted) throw browserPoolWakeRefusal(bounded);
+      const next = this.#pool(runnerId);
+      if (next && next !== replaced) return next;
+      const changed = this.#poolsChanged.signal;
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          changed.removeEventListener("abort", done);
+          bounded.removeEventListener("abort", done);
+          resolve();
+        };
+        changed.addEventListener("abort", done, { once: true });
+        bounded.addEventListener("abort", done, { once: true });
+      });
+    }
   }
 
   async initialize(): Promise<void> {
@@ -7673,8 +7726,14 @@ export class BrowserService {
                         assertAttached(false);
                       },
                       beforeWrite,
-                      submitted: browserSend.submitted,
-                      acknowledged: browserSend.acknowledged,
+                      // The broker still tracks and cancels the request. Releasing DevTools
+                      // handles adds no effect to the script's operation receipt.
+                      ...(command.method === browserScriptHousekeepingMethod
+                        ? { submitted: () => {} }
+                        : {
+                            submitted: browserSend.submitted,
+                            acknowledged: browserSend.acknowledged,
+                          }),
                     }
                   : pooledRelay
                     ? {
@@ -10791,6 +10850,8 @@ export class HostedBrowserBroker {
   #stateImportTail = Promise.resolve();
   #streamReconcileTail = Promise.resolve();
   #runtimeReady = false;
+  /** Its one channel closed; set at the close itself, before the broker finishes. */
+  #channelClosed = false;
   #reconnecting = false;
   #runtimeConnectionGeneration = 0;
   #protocolFailed = false;
@@ -11108,9 +11169,13 @@ export class HostedBrowserBroker {
     return this.#readyPromise;
   }
 
-  /** The Runtime has sent its snapshot and the session has not ended. */
+  /**
+   * The Runtime has sent its snapshot, the session has not ended, and its channel is open. A
+   * closed channel is not live from its close, though the broker finishes later: the pool keeps a
+   * session lost, waiting for it, only while its broker is not live.
+   */
   get live(): boolean {
-    return this.#runtimeReady && !this.#settled;
+    return this.#runtimeReady && !this.#settled && !this.#channelClosed;
   }
 
   get pooled(): boolean {
@@ -11865,6 +11930,7 @@ export class HostedBrowserBroker {
           .catch(fail);
       });
       this.#socket.on("close", (code, reason) => {
+        this.#channelClosed = true;
         this.#failure ??= `Browser Runtime closed the connection (${code} ${reason.toString()}).`;
         abortReady(
           new Error(`Browser Runtime closed during attach (${code} ${reason.toString()}).`),

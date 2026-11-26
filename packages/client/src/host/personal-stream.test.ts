@@ -2847,6 +2847,35 @@ test("shows a task's new return hint from its republished thread value, with no 
   }
 });
 
+test("an open task carries each republished revision, so its activity is read again when only that moves", async () => {
+  // Real Home: a connected agent's call refused before anything was sent republished its task,
+  // yet the open task kept showing the call "Running…": the open task's summary had no revision.
+  const host = scriptedHost({ tasks: [{ ...task, status: "idle" }] });
+  const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+    Response.json({
+      ok: false,
+      error: { code: "not_found", message: "Unavailable", retryable: false },
+    }),
+  );
+  const client = scriptedClient(host, fetch);
+  try {
+    client.activateThread(threadId);
+    await client.load();
+    await vi.waitFor(() =>
+      expect(client.getThreadTranscript(threadId)?.getSnapshot().synchronized).toBe(true),
+    );
+    const revisionShown = () =>
+      client.getSnapshot().threads.find(({ id }) => id === threadId)?.revision;
+    for (const revision of ["2", "3"]) {
+      const value = detailThread({ ...task, status: "idle" as const, revision });
+      host.commit([], { threadId, changes: [upsert("thread", threadId, value)] });
+      expect(revisionShown()).toBe(revision);
+    }
+  } finally {
+    client.dispose();
+  }
+});
+
 test("opening a task reads each follow-up once, beside its snapshot, and the family's open work only when the newest page is not all of it", async () => {
   const calls: string[] = [];
   const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {

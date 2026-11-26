@@ -254,8 +254,14 @@ export const unknownNext = agentOperationEndingSentence("contact-lost");
 export const scriptFailedNext =
   "Earlier steps may have taken effect. Check the current state before trying again.";
 
-export function storedScriptError(summary: AgentOperationRow["resultSummary"]) {
-  return ReplFailureSchema.safeParse(summary?.scriptError).data;
+function keepsScriptDiagnostics(ending: AgentOperationEnding | null): boolean {
+  return ending === null || ending === "contact-lost";
+}
+
+export function storedScriptError(row: Pick<AgentOperationRow, "ending" | "resultSummary">) {
+  return keepsScriptDiagnostics(row.ending)
+    ? ReplFailureSchema.safeParse(row.resultSummary?.scriptError).data
+    : undefined;
 }
 const interruptedNext =
   "Part of it may have happened. Check the current state before doing anything else.";
@@ -339,6 +345,7 @@ export class AgentSessionService {
   >();
   readonly #decisions = new EventEmitter();
   readonly #holdMs: number;
+  readonly #executionMs: number;
   readonly #sweeper: DeadlineDrain;
   #sweeping = false;
 
@@ -349,9 +356,12 @@ export class AgentSessionService {
     readonly onError?: (error: unknown) => void;
     /** How long a call waits for the person's decision before it returns pending. */
     readonly holdMs?: number;
+    /** An operation's own bound when it names none (two minutes; tests shorten it). */
+    readonly executionMs?: number;
   }) {
     this.#store = options.store;
     this.#holdMs = options.holdMs ?? agentOperationHoldMs;
+    this.#executionMs = options.executionMs ?? defaultExecutionMs;
     this.#closeBinding = options.closeBinding ?? (() => {});
     this.#onError = options.onError ?? (() => {});
     this.#decisions.setMaxListeners(0);
@@ -628,13 +638,13 @@ export class AgentSessionService {
           };
         }
         case "failed": {
-          const scriptError = storedScriptError(row.resultSummary);
+          const scriptError = storedScriptError(row);
           return scriptError
             ? { status: "failed", ...base, scriptError, next: scriptFailedNext }
             : { status: "failed", ...base, next: "It failed. Check the current state." };
         }
         case "unknown": {
-          const scriptError = storedScriptError(row.resultSummary);
+          const scriptError = storedScriptError(row);
           return {
             status: "unknown",
             ...base,
@@ -815,7 +825,7 @@ export class AgentSessionService {
     stop: AbortSignal,
   ): Promise<DirectOperationResult<Result>> {
     const bindingId = `session:${row.sessionId}` as const;
-    const deadline = Date.now() + (operation.timeoutMs ?? defaultExecutionMs);
+    const deadline = Date.now() + (operation.timeoutMs ?? this.#executionMs);
     const signal = AbortSignal.any([stop, AbortSignal.timeout(Math.max(0, deadline - Date.now()))]);
     let reservation: BrowserPoolReservation | undefined;
     let handed: AgentOperationRow | null = null;
@@ -980,7 +990,7 @@ export class AgentSessionService {
     };
     this.#sessions.set(row.sessionId, entry);
     entry.work++;
-    const deadline = pooled?.deadline ?? Date.now() + (operation.timeoutMs ?? defaultExecutionMs);
+    const deadline = pooled?.deadline ?? Date.now() + (operation.timeoutMs ?? this.#executionMs);
     const signal = AbortSignal.any([
       entry.controller.signal,
       stop,
@@ -999,7 +1009,7 @@ export class AgentSessionService {
         });
       if (current.state === "completed")
         return { ...base, status: "completed", summary: current.resultSummary };
-      const scriptError = storedScriptError(current.resultSummary);
+      const scriptError = storedScriptError(current);
       return {
         ...base,
         ...(current.state === "failed"
@@ -1192,12 +1202,18 @@ export class AgentSessionService {
       ) {
         // A command was submitted and never answered: its effect is unknown.
         const uncertainty = scriptError?.code === "outcome-unknown" ? scriptError : undefined;
-        const ending = agentOperationEndingOf(uncertainty?.message) ?? "contact-lost";
+        const ending =
+          agentOperationEndingOf(uncertainty?.message) ??
+          agentOperationEndingOf(uncertainty?.next ?? undefined) ??
+          "contact-lost";
+        // A script error can quote its target just like a print. An authority ending only
+        // releases the Home's own receipt, including when the REPL learns of it first.
+        const keepOutput = keepsScriptDiagnostics(ending);
         const settled = await settleAgentOperation(
           this.#store.database,
           row.id,
           "unknown",
-          uncertainty ? { ...summary, scriptError: uncertainty } : summary,
+          keepOutput ? (scriptError ? { ...summary, scriptError } : summary) : null,
           ending,
         );
         if (!settled) return recorded();
@@ -1205,8 +1221,7 @@ export class AgentSessionService {
           status: "unknown",
           ...base,
           next: unknownOperationNext(ending),
-          result,
-          ...(uncertainty ? { scriptError: uncertainty } : {}),
+          ...(keepOutput ? { result, ...(scriptError ? { scriptError } : {}) } : {}),
         };
       }
       const settled = await settleAgentOperation(

@@ -154,10 +154,8 @@ export function openWorkspaceWebLink(
 export function useNewTab() {
   const { nav, selection, startPage } = useWorkspace();
   return useCallback(() => {
-    if (selection.kind === "launcher") {
-      startPage.focus();
-      return;
-    }
+    // The middle may show the app a task's agent is using in the launcher's place: then a new one.
+    if (selection.kind === "launcher" && startPage.focus()) return;
     nav.showLauncher();
   }, [nav, selection, startPage]);
 }

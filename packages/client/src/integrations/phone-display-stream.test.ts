@@ -8,6 +8,7 @@ import type { NativeViewerSource } from "../host/surfaces.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ComputerUseSessionIdSchema,
+  DisplayClientDiagnosticSchema,
   displayRefreshCoalescingMs,
   encodeDisplayViewerFrame,
   type DisplayInputEvent,
@@ -215,6 +216,49 @@ describe("display lifecycle diagnostics", () => {
     );
     expect(lease.getSnapshot().closeCode).toBe(4002);
     expect(JSON.stringify(diagnostic.mock.calls)).not.toContain("scope-a");
+    lease.release();
+  });
+
+  it("records each change of the display's state and reason once, with no picture data", () => {
+    const diagnostic = vi.fn();
+    streams = new DisplayStreams({ connect, diagnostic });
+    const lease = streams.retain(target);
+    const socket = sockets.at(-1)!;
+    socket.open();
+    const state = (name: string, reason?: string) =>
+      socket.json({
+        type: "display.state",
+        state: name,
+        ...(reason ? { reason } : {}),
+        generation: 1,
+        width: 0,
+        height: 0,
+      });
+    state("starting");
+    state("protected", "target-unavailable");
+    state("protected", "target-unavailable");
+    state("live");
+    socket.frame({ sequence: 1, key: true });
+    state("protected", "target-unavailable");
+    const lines = diagnostic.mock.calls
+      .map(([record]) => record as Record<string, unknown>)
+      .filter((record) => record.transition === "display-state");
+    const line = (fields: Record<string, unknown>) => ({
+      transition: "display-state",
+      connection: expect.any(Number),
+      kind: "task-session",
+      sessionId,
+      ...fields,
+    });
+    expect(lines).toEqual([
+      line({ displayState: "starting", framed: false }),
+      line({ displayState: "protected", displayReason: "target-unavailable", framed: false }),
+      line({ displayState: "live", framed: false }),
+      line({ displayState: "protected", displayReason: "target-unavailable", framed: true }),
+    ]);
+    // Each is a line the Desktop accepts as it is, and carries no picture or address.
+    for (const entry of lines) expect(DisplayClientDiagnosticSchema.parse(entry)).toEqual(entry);
+    expect(JSON.stringify(lines)).not.toContain("scope-a");
     lease.release();
   });
 

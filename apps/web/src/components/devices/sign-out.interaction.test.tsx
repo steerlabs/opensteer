@@ -19,6 +19,7 @@ afterEach(() => {
   host = undefined;
   vi.restoreAllMocks();
   document.body.replaceChildren();
+  window.localStorage.clear();
 });
 
 /** This browser window, signed in to the Home and bound to no device, as a person's web app is. */
@@ -109,6 +110,8 @@ it("keeps the sign-out confirmation through a re-read of the devices, and signs 
     expect.objectContaining({ type: "session.revoke", sessionId: thisWindow.id }),
   );
   expect(assign).toHaveBeenCalledWith("/");
+  // This browser stays signed out of this Opensteer until the person chooses to sign in again.
+  expect(window.localStorage.getItem("opensteer.signed-out-here")).not.toBeNull();
 });
 
 it("says in the confirmation when the sign-out did not reach the Home, and stays where it is", async () => {

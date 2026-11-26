@@ -269,20 +269,27 @@ export interface PhoneDisplayPictureState {
  * or a transient reconnect keeps the last picture, which stays true until
  * something newer decodes.
  */
-export function hidesPhoneDisplayPicture({
-  connection,
-  closeCode,
-  display,
-}: DisplaySnapshot): boolean {
+export function hidesPhoneDisplayPicture(
+  { connection, closeCode, display }: DisplaySnapshot,
+  macWindow = false,
+): boolean {
   return (
     connection === "closed" ||
     closeCode === displayViewerCloseCodes.loginEnded ||
-    display?.state === "protected" ||
+    (display?.state === "protected" && !(macWindow && passingWindowPause(display))) ||
     display?.state === "screen-off" ||
     display?.state === "stopped" ||
     display?.state === "failed" ||
     display?.state === "unsupported"
   );
+}
+
+/**
+ * A Mac window's capture holding back its pictures for a moment (it re-reads the window after a
+ * change): nothing private appeared, so the last picture, already seen, may stay.
+ */
+export function passingWindowPause(display: DisplaySnapshot["display"]): boolean {
+  return display?.state === "protected" && display.reason === "target-unavailable";
 }
 
 /**
@@ -320,9 +327,12 @@ export class PhoneDisplayPicture {
     waitingForKey: true,
   };
   #disposed = false;
+  /** A Mac window's picture, which a passing pause of its capture keeps. */
+  readonly #macWindow: boolean;
 
-  constructor(lease: PictureLease, acceleration: HardwareAcceleration) {
+  constructor(lease: PictureLease, acceleration: HardwareAcceleration, macWindow = false) {
     this.#lease = lease;
+    this.#macWindow = macWindow;
     this.#decoder = new PhoneDisplayDecoder({
       acceleration,
       onPicture: (picture, frame) => this.#accept(picture, frame),
@@ -333,7 +343,7 @@ export class PhoneDisplayPicture {
     const unframe = lease.onFrame((frame) => this.#push(frame));
     const unlisten = lease.subscribe(() => {
       const snapshot = lease.getSnapshot();
-      if (hidesPhoneDisplayPicture(snapshot)) this.clear();
+      if (hidesPhoneDisplayPicture(snapshot, this.#macWindow)) this.clear();
       else if (snapshot.connection !== "open" && this.#state.shown) {
         this.#current = null;
         this.#update({ stale: true });
@@ -416,7 +426,7 @@ export class PhoneDisplayPicture {
 
   #push(frame: DisplayFrame): void {
     // Defence in depth: the Host forwards nothing while the phone is hidden.
-    if (this.#disposed || hidesPhoneDisplayPicture(this.#lease.getSnapshot())) {
+    if (this.#disposed || hidesPhoneDisplayPicture(this.#lease.getSnapshot(), this.#macWindow)) {
       frame.done();
       return;
     }
@@ -507,6 +517,7 @@ export function retainPhoneDisplayPicture(
   streams: DisplayStreams,
   target: ComputerDisplayTarget,
   acceleration: HardwareAcceleration,
+  macWindow = false,
 ): { readonly picture: PhoneDisplayPicture; readonly release: () => void } {
   let pool = pictures.get(streams);
   if (!pool) {
@@ -516,7 +527,10 @@ export function retainPhoneDisplayPicture(
   const key = computerDisplayTargetKey(target);
   let held = pool.get(key);
   if (!held) {
-    held = { picture: new PhoneDisplayPicture(streams.retain(target), acceleration), holds: 0 };
+    held = {
+      picture: new PhoneDisplayPicture(streams.retain(target), acceleration, macWindow),
+      holds: 0,
+    };
     pool.set(key, held);
   }
   const entry = held;

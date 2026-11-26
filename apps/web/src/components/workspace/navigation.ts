@@ -330,6 +330,11 @@ export interface WorkspaceNavigation {
       readonly subagent?: string;
       /** Takes the current entry's place in history: a hop between siblings. */
       readonly replace?: boolean;
+      /**
+       * Watch: the middle opens beside it, fresh, where the app the task's agent is using shows.
+       * Only the place survives the hop otherwise.
+       */
+      readonly watch?: boolean;
     },
   ) => void;
   /** Includes synchronous choices made since the last render. */
@@ -493,6 +498,18 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
     (path, options) => {
       // A path may carry its own query (All tasks' filter); the place shown stays beside it.
       const [pathname = path, query = ""] = path.split("?", 2);
+      if (options?.watch) {
+        // An entry of its own, even at the address already shown (a start page opened in this
+        // task): the person's Watch always lands on the picture, never on that start page.
+        choosePlace({ kind: "launcher" }, pathname, {
+          replace: options.replace === true,
+          state: {
+            watch: true,
+            ...(options.focusRequest ? { focusRequest: options.focusRequest } : {}),
+          },
+        });
+        return;
+      }
       const params = placeOnly(latest.current.search);
       for (const [key, value] of new URLSearchParams(query)) params.set(key, value);
       if (options?.messageId) params.set("messageId", options.messageId);
@@ -509,7 +526,7 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
         options?.replace,
       );
     },
-    [go],
+    [choosePlace, go],
   );
   const placeSearch = useCallback(
     (destination: SurfaceDestination) => {

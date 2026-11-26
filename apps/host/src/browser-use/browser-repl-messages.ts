@@ -2,6 +2,9 @@ import { browserScriptScreenshotMaxBytes } from "@opensteer/protocol/browser";
 import { agentCdpMessageMaxBytes } from "@opensteer/protocol/standard-cdp";
 import { z } from "zod";
 
+/** Releases DevTools handles without running code or changing the page. */
+export const browserScriptHousekeepingMethod = "Runtime.releaseObjectGroup";
+
 export const browserReplLimits = {
   handles: 16,
   pending: 32,
