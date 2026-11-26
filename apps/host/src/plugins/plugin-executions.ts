@@ -158,6 +158,21 @@ export class PluginExecutions {
                 .forNoKeyUpdate()
                 .executeTakeFirst()
             : undefined;
+        // Ending the operation publishes its task when this mutation commits, which writes the
+        // task's row: in the Home's lock order the task comes before the plugin's execution, so
+        // its row is taken first.
+        if (operation && row.agentSessionId)
+          await tx
+            .selectFrom("threads")
+            .select("threads.id")
+            .where("threads.id", "=", (eb) =>
+              eb
+                .selectFrom("agentSessions")
+                .select("agentSessions.threadId")
+                .where("agentSessions.id", "=", row.agentSessionId!),
+            )
+            .forNoKeyUpdate()
+            .executeTakeFirst();
         const now = new Date();
         const reason = "The plugin call never left the Home.";
         const settled = await tx
