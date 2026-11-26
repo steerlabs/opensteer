@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { browserScriptHousekeepingMethod } from "../browser-use/browser-repl-messages.js";
 import { StandardCdpProfileLeases } from "./standard-cdp-profile-leases.js";
 import {
   cdpCommandRefusal,
@@ -7658,8 +7659,14 @@ export class BrowserService {
                         assertAttached(false);
                       },
                       beforeWrite,
-                      submitted: browserSend.submitted,
-                      acknowledged: browserSend.acknowledged,
+                      // The broker still tracks and cancels the request. Releasing DevTools
+                      // handles adds no effect to the script's operation receipt.
+                      ...(command.method === browserScriptHousekeepingMethod
+                        ? { submitted: () => {} }
+                        : {
+                            submitted: browserSend.submitted,
+                            acknowledged: browserSend.acknowledged,
+                          }),
                     }
                   : pooledRelay
                     ? {

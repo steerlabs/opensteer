@@ -7,6 +7,7 @@ import type { z } from "zod";
 import {
   browserJsonShapeFits,
   browserReplLimits,
+  browserScriptHousekeepingMethod,
   decodedBase64Bytes,
 } from "../../browser-use/browser-repl-messages.js";
 import { Worker } from "node:worker_threads";
@@ -476,11 +477,6 @@ export class ReplService<Request extends AnyReplRequest> {
       return;
     }
     const request = parsed.data;
-    const mutation =
-      request.operation === "browser.open" ||
-      request.operation === "browser.new" ||
-      request.operation === "browser.command";
-    const portOperation = mutation || request.operation === "browser.pages";
     const method = ReplFailureSchema.shape.method.safeParse(
       request.operation === "browser.command" &&
         typeof request.args === "object" &&
@@ -489,6 +485,12 @@ export class ReplService<Request extends AnyReplRequest> {
         ? request.args.method
         : request.operation,
     ).data;
+    const housekeeping = method === browserScriptHousekeepingMethod;
+    const mutation =
+      request.operation === "browser.open" ||
+      request.operation === "browser.new" ||
+      (request.operation === "browser.command" && !housekeeping);
+    const portOperation = mutation || housekeeping || request.operation === "browser.pages";
     const capture =
       request.operation === "browser.command" &&
       typeof request.args === "object" &&
@@ -546,7 +548,7 @@ export class ReplService<Request extends AnyReplRequest> {
       this.#browserPendingByContext.set(call.key, pending + 1);
       this.#browserPendingByBinding.set(call.bindingKey, bindingPending + 1);
       this.#browserPending++;
-      call.operationsInFlight++;
+      if (!housekeeping) call.operationsInFlight++;
       if (mutation) call.mutationsInFlight.set(message.id, method);
     }
     call.reservedReplyBytes += maxBytes;
@@ -579,7 +581,7 @@ export class ReplService<Request extends AnyReplRequest> {
           if (bindingCount === 1) this.#browserPendingByBinding.delete(call.bindingKey);
           else this.#browserPendingByBinding.set(call.bindingKey, bindingCount - 1);
           this.#browserPending--;
-          call.operationsInFlight--;
+          if (!housekeeping) call.operationsInFlight--;
           if (mutation) call.mutationsInFlight.delete(message.id);
         }
       }
@@ -594,7 +596,10 @@ export class ReplService<Request extends AnyReplRequest> {
       if (call.cancellation.signal.aborted && error === call.cancellation.signal.reason) return;
       const failure = this.#events!.error(error);
       if (failure.code === "outcome-unknown") {
-        this.#rememberUncertainty(call, failure, method);
+        if (housekeeping) {
+          failure.code = "failed";
+          failure.message = "The browser did not confirm object-group cleanup.";
+        } else this.#rememberUncertainty(call, failure, method);
       }
       if (this.#contexts.get(call.key)?.call === call && !call.cancellation.signal.aborted)
         this.#post({ type: "reply", ...address, error: boundedReplFailure(failure) });
