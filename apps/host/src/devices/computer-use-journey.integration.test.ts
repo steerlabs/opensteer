@@ -6741,7 +6741,7 @@ integration.sequential("Computer use for a connected agent, through its session"
         const message =
           ending === "Stop on the task"
             ? "The person stopped this work."
-            : "The connected agent's access to this work ended.";
+            : "The person disconnected this agent.";
         await expect(inFlight).rejects.toMatchObject({
           message,
           blocked: {
@@ -6750,7 +6750,10 @@ integration.sequential("Computer use for a connected agent, through its session"
             next: "Part of it may have happened. Check the current state before doing anything else.",
           },
         });
-        expect(await s.operation("in-flight")).toMatchObject({ outcome: "unknown" });
+        expect(await s.operation("in-flight")).toMatchObject({
+          outcome: "unknown",
+          ending: ending === "Stop on the task" ? "stopped" : "disconnected",
+        });
         await vi.waitFor(() => expect(s.fake.received("close")).toBeGreaterThan(0));
         expect(s.world.computerUse.sessionsForRunner(s.computerId)).toEqual([]);
         await expect(s.call({ code: "return 1", taskId: first.taskId })).rejects.toThrow();
