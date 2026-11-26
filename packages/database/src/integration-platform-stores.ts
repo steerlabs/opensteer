@@ -18,7 +18,11 @@ import {
 } from "./administration-command.js";
 import { replaceSecrets, type LocalMcpSecretsUpdate } from "./local-mcp-server-store.js";
 import { isRecord } from "@opensteer/shared/isRecord";
-import { resolveResourceAccess, type ResourceAccessInput } from "./resource-access.js";
+import {
+  grantedComputerApprovals,
+  resolveResourceAccess,
+  type ResourceAccessInput,
+} from "./resource-access.js";
 import {
   integrationConnectionGrantAccess,
   integrationConnectionGrantTargets,
@@ -1719,7 +1723,7 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     const permitted = async (personal: readonly CallableIntegrationTool[]) => {
       const subject = requesterSubject(input);
       let authority = await resolveResourceAccess(this.database, subject);
-      const tools = [...personal, ...(await this.sharedApprovalTools(input, authority, personal))];
+      const tools = [...personal, ...(await this.grantedApprovalTools(input, authority, personal))];
       const targetIds = tools.flatMap(({ grant, server }) =>
         grant.connectionId && server.transport.type !== "runner" ? [grant.connectionId] : [],
       );
@@ -1802,62 +1806,37 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
   }
 
   /**
-   * A connected agent's grant names Mac apps and phone screens by the person's approval of each.
-   * That approval and the grant are the terms of the rule for it (ownership, the grant, the mode,
-   * the device's switch, the target's own approval): the person's personal grant, which their own
-   * agents need for an app, is not one of them, and a connected agent cannot ask for it. So an
-   * approval the grant names that no personal grant lends is lent by the connection's grant itself,
-   * at the approval's own access: its tools resolve through the same ceilings, the same
-   * eligibility and the same filter below, under a grant id of this connection and approval that
-   * is never stored and is the same on every read.
+   * The person's approvals of apps and phone screens that a connected agent's grant covers
+   * (`grantedComputerApprovals`, the one rule for it) and that no personal grant already lends. The
+   * person's personal grant is what their own agents need for an app; a connected agent cannot ask
+   * for it, so each such approval is lent by the connection's grant itself, at the approval's own
+   * access: its tools resolve through the same ceilings, the same eligibility and the same filter
+   * as any other, under a grant id of this connection and approval that is never stored and is
+   * the same on every read.
    */
-  private async sharedApprovalTools(
+  private async grantedApprovalTools(
     input: IntegrationRequester,
     authority: Awaited<ReturnType<typeof resolveResourceAccess>>,
     personal: readonly CallableIntegrationTool[],
   ): Promise<readonly CallableIntegrationTool[]> {
     const connection = authority.execution.agentConnection;
-    if (connection?.grant.scope !== "selected") return [];
+    if (!connection) return [];
     const lent = new Set(
       personal.flatMap(({ grant }) =>
         grant.connectionId ? [grant.connectionId.toLowerCase()] : [],
       ),
     );
-    const named = [
-      ...new Set(
-        connection.grant.resources.flatMap((resource) =>
-          resource.kind === "computer-app" && !lent.has(resource.approvalId)
-            ? [resource.approvalId]
-            : [],
-        ),
-      ),
-    ];
-    if (!named.length) return [];
-    const rows = await this.database
-      .selectFrom("integrationConnections")
-      .innerJoin(
-        "integrationServers",
-        "integrationServers.id",
-        "integrationConnections.integrationServerId",
-      )
-      .select([
-        "integrationConnections.id",
-        "integrationConnections.displayName",
-        "integrationServers.installationId",
-        "integrationConnections.createdAt",
-      ])
-      .where("integrationConnections.ownerUserId", "=", input.ownerUserId)
-      .where("integrationConnections.connectionKind", "=", "computer")
-      .where(sql<string>`lower(integration_connections.id)`, "in", named)
-      .execute();
-    if (!rows.length) return [];
-    const grants: IntegrationGrant[] = rows.map((row) => ({
-      access: "read-write",
-      alias: outsideName(row.displayName, 80) || "App",
-      connectionId: row.id,
-      createdAt: row.createdAt.toISOString(),
-      id: sharedApprovalGrantId(connection.agentConnectionId, row.id),
-      installationId: row.installationId,
+    const approvals = (
+      await grantedComputerApprovals(this.database, input.ownerUserId, connection.grant)
+    ).filter(({ id }) => !lent.has(id.toLowerCase()));
+    if (!approvals.length) return [];
+    const grants: IntegrationGrant[] = approvals.map((approval) => ({
+      access: approval.access,
+      alias: outsideName(approval.displayName, 80) || "App",
+      connectionId: approval.id,
+      createdAt: approval.createdAt.toISOString(),
+      id: sharedApprovalGrantId(connection.agentConnectionId, approval.id),
+      installationId: approval.installationId,
       isDefault: false,
       ownerUserId: input.ownerUserId,
       revokedAt: null,

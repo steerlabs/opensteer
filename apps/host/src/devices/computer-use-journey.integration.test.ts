@@ -66,6 +66,7 @@ import type { TranscriptOrderCursor } from "@opensteer/protocol/transcript";
 import { resolvedInputParts } from "@opensteer/harness";
 import { computerAppIntegrations } from "@opensteer/integration-catalog/devices";
 import { type ComputerAppIdentity } from "@opensteer/integration-core/computer-app";
+import { IntegrationConnectionIdSchema } from "@opensteer/integration-core/ids";
 import { type IntegrationDefinition } from "@opensteer/integration-core/adapter";
 import {
   CommandService,
@@ -96,6 +97,7 @@ import {
   type PendingAgentEvent,
   type RunnerAuxiliaryFrameFence,
   agentSessionGuardsCapability,
+  machineAccessPolicyDefault,
 } from "@opensteer/protocol";
 import { releasedRunnerCapabilities } from "../computer-apps/released-runner.test-support.js";
 
@@ -5184,10 +5186,11 @@ async function createWorld(
     recordRunnerOutdated: async (runner) => {
       outdatedRunners.push({ ...runner });
     },
-    requireDeviceAgentAccess: async (deviceId) => {
-      if (options.stoppedDevices?.has(deviceId))
-        await requireDeviceAccess(database, deviceId, "apps", false, { stopped: true });
-    },
+    // As the runtime wires it, with every device here connected: Stop, then the apps switch.
+    requireDeviceAgentAccess: async (deviceId) =>
+      await requireDeviceAccess(database, deviceId, "apps", true, {
+        stopped: options.stoppedDevices?.has(deviceId) ?? false,
+      }),
     knownDefinitionIds: () => new Set(computerAppIntegrations.map(({ id }) => id)),
     onChanged: () => undefined,
     onComputerUseEvent: (runnerId, event) => computerUse.handleHelperEvent(runnerId, event),
@@ -5947,7 +5950,12 @@ integration.sequential("Computer use for a connected agent, through its session"
       };
     };
     const discover = discoverHandler(
-      { computer_apps: (call) => handlers.computer_apps(call) },
+      {
+        computer_apps: (call) => handlers.computer_apps(call),
+        // An `everything` grant discovers its browsers and tasks too: this person has none.
+        browser_profile_list: async () => ({ profiles: [], sites: [] }),
+        opensteer_task_list: async () => ({ threads: [], hasMore: false, nextBefore: null }),
+      },
       {
         store: world.store,
         tabs: { project: async () => ({ tabs: [], layout: { revision: 0, items: [] } }) },
@@ -6131,6 +6139,111 @@ integration.sequential("Computer use for a connected agent, through its session"
       await s.world.close();
     }
   });
+
+  it("lets an Everything connection use an app the person approved from the device page", async () => {
+    // A grant of everything covers every approved app on the person's devices: Add app on the
+    // Mac's page and Allow is all it takes, with no task of theirs asking for the app.
+    const s = await connectedAgent("full-access", {
+      target: "mac",
+      personApproved: true,
+      scope: "everything",
+    });
+    try {
+      const listed = await s.apps({ query: "Notes" });
+      expect(JSON.stringify(listed)).toContain("Notes");
+      const read = await s.call(
+        {
+          code: 'const w = await (await app("Notes")).window(); print(await w.observe())',
+          readOnly: true,
+        },
+        "everything-person-approved-read",
+      );
+      expect(read, JSON.stringify(read)).toMatchObject({ status: "completed" });
+      expect(s.world.fakeMac.frames.some(({ operation }) => operation === "bind")).toBe(true);
+    } finally {
+      await s.world.close();
+    }
+  });
+
+  it.each([
+    ["everything", "blocked"],
+    ["everything", "removed"],
+    ["selected", "blocked"],
+    ["selected", "removed"],
+  ] as const)(
+    "lends a %s connection nothing of an approval the person %s",
+    async (scope, change) => {
+      const s = await connectedAgent("full-access", { target: "mac", personApproved: true, scope });
+      try {
+        const approval = {
+          connectionId: IntegrationConnectionIdSchema.parse(s.approvalId),
+          ownerUserId: s.world.owner.userId,
+          requestId: `${change}-notes`,
+        };
+        if (change === "blocked")
+          await s.world.platform.devices.computerAppApprovals.blockComputerApp(approval);
+        else
+          await s.world.platform.devices.computerAppApprovals.disconnectComputerConnection(
+            approval,
+          );
+        // Discover may still show a blocked app, as one the agent cannot use; never a usable one.
+        const listed = await s
+          .apps({ query: "Notes" })
+          .catch((): { items: { name: string; reachable?: boolean }[] } => ({ items: [] }));
+        expect(
+          (listed as { items: { name: string; reachable?: boolean }[] }).items.filter(
+            ({ name, reachable }) => name === "Notes" && reachable !== false,
+          ),
+        ).toEqual([]);
+        const read = await s
+          .call(
+            {
+              code: 'const w = await (await app("Notes")).window(); print(await w.observe())',
+              readOnly: true,
+            },
+            `${scope}-${change}-read`,
+          )
+          .catch((error: unknown) => ({ thrown: String(error) }));
+        expect(read, JSON.stringify(read)).not.toMatchObject({ status: "completed" });
+        expect(s.world.fakeMac.frames.some(({ operation }) => operation === "bind")).toBe(false);
+      } finally {
+        await s.world.close();
+      }
+    },
+  );
+
+  it.each(["everything", "selected"] as const)(
+    "refuses a %s connection an app approved from the device page while the Mac's apps are off",
+    async (scope) => {
+      const s = await connectedAgent("full-access", { target: "mac", personApproved: true, scope });
+      try {
+        await database
+          .updateTable("devices")
+          .set({
+            accessPolicy: sql`${JSON.stringify({ ...machineAccessPolicyDefault, apps: false })}::jsonb`,
+            accessPolicyRevision: sql`access_policy_revision + 1`,
+          })
+          .where("id", "=", s.computerId)
+          .execute();
+        const read = await s
+          .call(
+            {
+              code: 'const w = await (await app("Notes")).window(); print(await w.observe())',
+              readOnly: true,
+            },
+            `${scope}-apps-off-read`,
+          )
+          .catch((error: unknown) => ({ thrown: String(error) }));
+        expect(JSON.stringify(read)).toContain(
+          `Apps access is off on ${mac}. The person can turn it on in Opensteer.`,
+        );
+        expect(JSON.stringify(read)).not.toContain("computer_access_request");
+        expect(s.world.fakeMac.frames.some(({ operation }) => operation === "bind")).toBe(false);
+      } finally {
+        await s.world.close();
+      }
+    },
+  );
 
   it("sends a connected agent's own paste chord in a Mac app like any other key", async () => {
     const s = await connectedAgent("full-access", { target: "mac" });

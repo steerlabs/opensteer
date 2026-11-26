@@ -502,11 +502,12 @@ export class DeviceService {
     return this.#store;
   }
 
-  async localDeviceAccessBlocked(deviceId: DeviceId) {
+  /** Why this device refuses agents now, worded for a connected agent when `connection` is set. */
+  async localDeviceAccessBlocked(deviceId: DeviceId, connection = false) {
     try {
       await this.#deviceApps.requireAgentAccess(deviceId);
     } catch (error) {
-      const blocked = deviceAccessBlocked(error);
+      const blocked = deviceAccessBlocked(error, connection);
       if (!blocked) throw error;
       return blocked;
     }
@@ -869,7 +870,10 @@ export class DeviceService {
         )
           throw new IntegrationAuthorizationRequiredError(callable);
         if (caller.session) await this.#assertSessionComputer(caller.session, connection);
-        const blocked = await this.localDeviceAccessBlocked(connection.deviceId);
+        const blocked = await this.localDeviceAccessBlocked(
+          connection.deviceId,
+          caller.session !== undefined,
+        );
         if (blocked) throw new ToolBlockedError(blocked);
         if (
           definition.id === computerUseDefinitionId &&

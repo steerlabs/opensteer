@@ -1,4 +1,8 @@
 import { integrationAccessCeilingForRun } from "@opensteer/integration-core/effective-grants";
+import type {
+  IntegrationConnectionId,
+  IntegrationInstallationId,
+} from "@opensteer/integration-core/ids";
 import { assertPersonalOwner } from "./private-resource-owner.js";
 import type { ThisHomeAddressSet } from "@opensteer/shared/homeAddress";
 import {
@@ -46,6 +50,7 @@ import {
 import { sql, type Kysely, type RawBuilder } from "kysely";
 import type { BridgeSenders, DatabaseSchema } from "./schema.js";
 import { connectionState } from "./connection-liveness.js";
+import { integrationConnectionGrantTarget } from "./agent-grant-targets.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { readerSees, type TaskReader } from "./task-reader.js";
 
@@ -782,6 +787,83 @@ export function authorizeTarget(
       ? agentGrantAccess(execution.agentConnection.grant, target)
       : null;
   return execution.actor === "person" || execution.actor === "native" ? "read-write" : null;
+}
+
+/** One approval of an app or a phone screen on the person's devices, as a grant covers it. */
+export interface GrantedComputerApproval {
+  readonly id: IntegrationConnectionId;
+  readonly displayName: string;
+  readonly installationId: IntegrationInstallationId;
+  readonly createdAt: Date;
+  /** The approval's own access, which is all the grant lends of it. */
+  readonly access: ResourceAccessLevel;
+}
+
+/**
+ * Which of the person's approvals of an app or a phone screen a connected agent's grant covers.
+ * A grant of `everything` covers every approved app and phone screen on the person's devices; a
+ * selected grant covers those it names, by the approval row, its device and its app. Either
+ * covers an approval only while it stands (connected, not blocked, not removed) and only at the
+ * approval's own access. The person's own grant for their agents is not a term of this: a
+ * connected agent cannot ask for it. Ownership, the mode and the device's switch are still the
+ * admission's (`admitExecution`) and the device's to decide, on every call.
+ */
+export async function grantedComputerApprovals(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  grant: AgentGrant,
+): Promise<readonly GrantedComputerApproval[]> {
+  const named =
+    grant.scope === "selected"
+      ? [
+          ...new Set(
+            grant.resources.flatMap((resource) =>
+              resource.kind === "computer-app" ? [resource.approvalId] : [],
+            ),
+          ),
+        ]
+      : null;
+  if (named?.length === 0) return [];
+  let query = database
+    .selectFrom("integrationConnections")
+    .innerJoin(
+      "integrationServers",
+      "integrationServers.id",
+      "integrationConnections.integrationServerId",
+    )
+    .select([
+      "integrationConnections.id",
+      "integrationConnections.displayName",
+      "integrationConnections.createdAt",
+      "integrationConnections.deviceId",
+      "integrationConnections.computerApp",
+      "integrationConnections.computerAccess",
+      "integrationConnections.integrationDefinitionId",
+      "integrationServers.installationId",
+    ])
+    .where("integrationConnections.ownerUserId", "=", ownerUserId)
+    .where("integrationConnections.connectionKind", "=", "computer")
+    .where("integrationConnections.status", "=", "connected")
+    .where("integrationConnections.computerBlockedAt", "is", null)
+    .where("integrationConnections.computerAccess", "is not", null)
+    .where("integrationConnections.deviceId", "is not", null);
+  if (named) query = query.where(sql<string>`lower(integration_connections.id)`, "in", named);
+  return (await query.execute()).flatMap((row) => {
+    const target = integrationConnectionGrantTarget(row);
+    if (target.kind !== "computer-app") return [];
+    const access = intersectResourceAccess(agentGrantAccess(grant, target), row.computerAccess);
+    return access
+      ? [
+          {
+            id: row.id,
+            displayName: row.displayName,
+            installationId: row.installationId,
+            createdAt: row.createdAt,
+            access,
+          },
+        ]
+      : [];
+  });
 }
 
 /**

@@ -1,4 +1,5 @@
 import { DeviceAccessRefusal } from "../../administration/device-access.js";
+import { deviceRefusalSentence } from "../../devices/target-blocked.js";
 import { agentOperationEndingOf, utf8Prefix, OpensteerError } from "@opensteer/core";
 import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { delay } from "@opensteer/shared/delay";
@@ -410,7 +411,8 @@ export class ReplService<Request extends AnyReplRequest> {
           : {}),
         message:
           error instanceof DeviceAccessRefusal
-            ? `${error.message} ${error.next ?? ""}`
+            ? (deviceRefusalSentence(error, call.context.reportUnknownEffects === true) ??
+              `${error.message} ${error.next ?? ""}`)
             : error instanceof Error
               ? error.message
               : `${this.#label} operation failed.`,

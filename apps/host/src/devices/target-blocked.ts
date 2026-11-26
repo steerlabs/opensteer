@@ -3,8 +3,26 @@ import { DeviceAccessRefusal } from "../administration/device-access.js";
 import type { Blocked } from "@opensteer/core";
 import type { IntegrationReadiness } from "@opensteer/integration-core";
 
-export function deviceAccessBlocked(error: unknown): Blocked | undefined {
+const deviceCapabilityLabel = { apps: "Apps", browser: "Browser", files: "Files" } as const;
+
+/**
+ * The sentence a connected agent reads for a device's refusal, or null where it reads the same as
+ * any agent. It is told the person's switch is off and that turning it on is the person's: it has
+ * no tool to ask for it with.
+ */
+export function deviceRefusalSentence(
+  error: DeviceAccessRefusal,
+  connection: boolean,
+): string | null {
+  return connection && error.reason === "device-access-off"
+    ? `${deviceCapabilityLabel[error.capability]} access is off on ${error.machineName ?? "this device"}. The person can turn it on in Opensteer.`
+    : null;
+}
+
+/** What a device's refusal blocks, worded for a connected agent when `connection` is set. */
+export function deviceAccessBlocked(error: unknown, connection = false): Blocked | undefined {
   if (!(error instanceof DeviceAccessRefusal)) return undefined;
+  const sentence = deviceRefusalSentence(error, connection);
   const { code, message, next } = normalizeToolError({
     code: error.code,
     message: error.message,
@@ -21,7 +39,7 @@ export function deviceAccessBlocked(error: unknown): Blocked | undefined {
           ? { next: "Continue without it and tell the person what the message says." }
           : {}),
   });
-  return { code, message, next: next ?? "Continue without this device." };
+  return { code, message: sentence ?? message, next: next ?? "Continue without this device." };
 }
 
 export function deviceAppBlocked(
