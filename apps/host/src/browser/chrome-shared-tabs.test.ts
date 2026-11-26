@@ -730,7 +730,8 @@ it("names no shared tab on an address of this Home to any agent, a connected age
         [web.shareId, devServer.shareId].sort(),
       );
       const pages = await service.browserUsePort(async () => authority).listPages(call);
-      expect(JSON.stringify(pages)).not.toMatch(/4310|home\.example/u);
+      // The port with its colon: a random tab id is hex and can hold "4310" by chance.
+      expect(JSON.stringify(pages)).not.toMatch(/:4310|home\.example/u);
       const absent = await service
         .browserUsePort(async () => authority, crypto.randomUUID())
         .openPage(crypto.randomUUID(), call)
