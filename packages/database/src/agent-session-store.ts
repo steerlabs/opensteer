@@ -1246,9 +1246,19 @@ export async function settleAgentOperation(
         .where("id", "=", id)
         .where("state", "=", "handed-off")
         .returningAll()
+        // Its task, in the same statement: the publish needs no read of its own.
+        .returning((eb) =>
+          eb
+            .selectFrom("agentSessions")
+            .select("agentSessions.threadId")
+            .whereRef("agentSessions.id", "=", "agentOperations.sessionId")
+            .as("taskId"),
+        )
         .executeTakeFirst()) ?? null;
-    if (settled) await publishOperationTasks(tx, [settled.sessionId]);
-    return settled;
+    if (!settled) return null;
+    const { taskId, ...row } = settled;
+    if (taskId) await publishThreadSummary(tx, taskId);
+    return row;
   });
 }
 

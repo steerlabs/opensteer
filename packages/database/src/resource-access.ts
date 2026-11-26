@@ -197,6 +197,8 @@ async function readConnectionStanding(
   ownerUserId: UserId,
   agentConnectionId: string,
   lock: boolean,
+  /** Also why its work ended (its cleanup's reason): read only by a refusal that names it. */
+  withCause = false,
 ) {
   const query = database
     .selectFrom("agentConnections")
@@ -209,11 +211,11 @@ async function readConnectionStanding(
       "accessMode",
       "cleanupMinimumGrantRevision",
       "cleanupMaximumMode",
-      "cleanupReason",
       "bridgeSenders",
       "bridgeAccountId",
       connectionState().as("connectionState"),
     ])
+    .$if(withCause, (query) => query.select("cleanupReason"))
     .where("id", "=", agentConnectionId)
     .where("userId", "=", ownerUserId);
   const row = await (lock ? query.forShare("agentConnections") : query).executeTakeFirst();
@@ -389,7 +391,7 @@ export async function connectionEndReason(
   ownerUserId: UserId,
   agentConnectionId: string,
 ): Promise<"revoked" | "expired" | "narrowed" | null> {
-  const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, false);
+  const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, false, true);
   if (!read) return null;
   return read.connection.cleanupReason ?? (read.state === "ended" ? "expired" : null);
 }
