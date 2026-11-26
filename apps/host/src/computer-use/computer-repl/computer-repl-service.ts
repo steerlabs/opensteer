@@ -31,6 +31,8 @@ export interface ComputerReplContext {
   readonly runId: string;
   readonly generation: number;
   readonly reportUnknownEffects?: true;
+  /** A connected agent's own session runs this code: it reads its own sentences. */
+  readonly connectedAgent?: true;
 }
 export type ComputerReplInvocation = ReplInvocation<ReplRequest>;
 export type ReplInvocation<Request> = Request & {
@@ -411,7 +413,7 @@ export class ReplService<Request extends AnyReplRequest> {
           : {}),
         message:
           error instanceof DeviceAccessRefusal
-            ? (deviceRefusalSentence(error, call.context.reportUnknownEffects === true) ??
+            ? (deviceRefusalSentence(error, call.context.connectedAgent === true) ??
               `${error.message} ${error.next ?? ""}`)
             : error instanceof Error
               ? error.message

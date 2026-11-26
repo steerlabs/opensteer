@@ -143,7 +143,10 @@ export class LocalProviders {
     if (provider.blocked) {
       const access =
         provider.kind === "device-app" && provider.computer
-          ? await this.#options.devices.localDeviceAccessBlocked(provider.computer.id)
+          ? await this.#options.devices.localDeviceAccessBlocked(
+              provider.computer.id,
+              caller.kind === "connection",
+            )
           : undefined;
       return { kind: "blocked", blocked: access ?? provider.blocked };
     }

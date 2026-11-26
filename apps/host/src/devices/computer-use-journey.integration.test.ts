@@ -5812,6 +5812,11 @@ integration.sequential("Computer use for a connected agent, through its session"
        * request for the app, answered on the Mac, with no task asking for it.
        */
       personApproved?: boolean;
+      /**
+       * Before the person approves Notes from the device page, one of their own tasks asked for
+       * it at this access and was allowed: a personal grant of the person's own agents on the row.
+       */
+      ownTaskAsked?: "read" | "read-write";
     } = {},
   ) {
     const stoppedDevices = new Set<DeviceId>();
@@ -5826,6 +5831,22 @@ integration.sequential("Computer use for a connected agent, through its session"
     });
     const onMac = options.target === "mac";
     const definitionId = onMac ? "macos-app" : "android-phone";
+    if (options.ownTaskAsked && onMac) {
+      const asked = await (
+        await world.gateway(await world.startRun("Ask for Notes"))
+      ).call("app_access_request", {
+        computerId: world.macId,
+        app: "Notes",
+        access: options.ownTaskAsked,
+        reason: "Use Notes",
+      });
+      expect(asked.isError).toBeUndefined();
+      const own = (await world.persistence.listComputerAppSetupRequests(world.owner.userId)).find(
+        (request) => request.definitionId === definitionId,
+      );
+      if (!own) throw new Error("Missing the task's device approval");
+      await world.approveOnMac(own);
+    }
     if (options.personApproved && onMac)
       await world.platform.devices.computerAppApprovals.requestComputerAppSetup({
         access: options.access ?? "read-write",
@@ -6244,6 +6265,145 @@ integration.sequential("Computer use for a connected agent, through its session"
       }
     },
   );
+
+  const actInNotes =
+    'const w = await (await app("Notes")).window(); await w.observe(); await w.key("cmd+a")';
+  /** The person's own agents' grants on Notes, and what the person approved Notes with. */
+  const notesStanding = async (approvalId: string) => ({
+    approval: (
+      await database
+        .selectFrom("integrationConnections")
+        .select("computerAccess")
+        .where("id", "=", approvalId as never)
+        .executeTakeFirstOrThrow()
+    ).computerAccess,
+    ownGrants: (
+      await database
+        .selectFrom("integrationGrants")
+        .select("access")
+        .where("connectionId", "=", approvalId as never)
+        .where("status", "=", "active")
+        .execute()
+    ).map(({ access }) => access),
+  });
+
+  it.each(["everything", "selected"] as const)(
+    "lets a %s connection act at the device-page approval's access over a narrower grant of the person's own task",
+    async (scope) => {
+      const s = await connectedAgent("full-access", {
+        target: "mac",
+        ownTaskAsked: "read",
+        personApproved: true,
+        scope,
+      });
+      try {
+        expect(await notesStanding(s.approvalId)).toEqual({
+          approval: "read-write",
+          ownGrants: ["read"],
+        });
+        const acted = await s.call({ code: actInNotes }, `${scope}-act-over-narrower-own-grant`);
+        expect(acted, JSON.stringify(acted)).toMatchObject({ status: "completed" });
+        expect(s.world.fakeMac.frames.some(({ operation }) => operation === "act")).toBe(true);
+      } finally {
+        await s.world.close();
+      }
+    },
+  );
+
+  it.each(["everything", "selected"] as const)(
+    "never gives a %s connection more than the device-page approval, over a wider grant of the person's own task",
+    async (scope) => {
+      const s = await connectedAgent("full-access", {
+        target: "mac",
+        ownTaskAsked: "read-write",
+        personApproved: true,
+        access: "read",
+        scope,
+      });
+      try {
+        const standing = await notesStanding(s.approvalId);
+        expect(standing.approval).toBe("read");
+        await expect(
+          s.call({ code: actInNotes }, `${scope}-act-over-wider-own-grant`),
+        ).rejects.toThrow("This target allows observation only. Use readOnly: true.");
+        expect(s.world.fakeMac.frames.some(({ operation }) => operation === "act")).toBe(false);
+      } finally {
+        await s.world.close();
+      }
+    },
+  );
+
+  it("tells a connected agent discovering a Mac whose apps are off that the switch is the person's", async () => {
+    const s = await connectedAgent("full-access", {
+      target: "mac",
+      personApproved: true,
+      scope: "everything",
+    });
+    try {
+      await database
+        .updateTable("devices")
+        .set({
+          accessPolicy: sql`${JSON.stringify({ ...machineAccessPolicyDefault, apps: false })}::jsonb`,
+          accessPolicyRevision: sql`access_policy_revision + 1`,
+        })
+        .where("id", "=", s.computerId)
+        .execute();
+      const listed = await s
+        .apps({ id: s.computerId })
+        .catch((error: unknown) =>
+          error instanceof Error ? { ...error, message: error.message } : error,
+        );
+      expect(JSON.stringify(listed)).toContain(
+        `Apps access is off on ${mac}. The person can turn it on in Opensteer.`,
+      );
+      expect(JSON.stringify(listed)).not.toContain("computer_access_request");
+    } finally {
+      await s.world.close();
+    }
+  });
+
+  it("lends nothing a grant narrowed between the lending and the standing excludes", async () => {
+    const s = await connectedAgent("full-access", {
+      target: "mac",
+      personApproved: true,
+      scope: "everything",
+    });
+    try {
+      // The grant store the listing runs on, with its resolving step watched.
+      const store = s.world.platform.devices.store.grants;
+      const watched = store as unknown as {
+        resolveCallableTools: (input: unknown, grants?: unknown) => Promise<unknown>;
+      };
+      const resolve = watched.resolveCallableTools.bind(store);
+      let narrowed = false;
+      // The person narrows the connection to nothing right after its lending was read.
+      watched.resolveCallableTools = async (input, grants) => {
+        const resolved = await resolve(input, grants);
+        if (grants !== undefined && !narrowed) {
+          narrowed = true;
+          const { grantRevision } = await database
+            .selectFrom("agentConnections")
+            .select("grantRevision")
+            .where("id", "=", s.record.id)
+            .executeTakeFirstOrThrow();
+          await s.agents.update(s.world.owner.userId, {
+            connectionId: s.record.id,
+            expectedRevision: grantRevision,
+            grant: { scope: "selected", tasks: false, resources: [] },
+          });
+        }
+        return resolved;
+      };
+      const tools = await store.listCallableTools({
+        ownerUserId: s.world.owner.userId,
+        connectionId: s.record.id,
+      });
+      expect(narrowed).toBe(true);
+      expect(tools.filter(({ grant }) => grant.connectionId === s.approvalId)).toEqual([]);
+    } finally {
+      await s.world.close();
+    }
+  });
 
   it("sends a connected agent's own paste chord in a Mac app like any other key", async () => {
     const s = await connectedAgent("full-access", { target: "mac" });

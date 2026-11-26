@@ -174,6 +174,27 @@ describe("computer REPL worker boundary", () => {
       structuredContent: { error: { code: "device-access-off", machineId, capability: "apps" } },
     });
   });
+  it("words the apps switch for who runs the script: a connected agent, or a program that may ask", async () => {
+    const machineId = DeviceIdSchema.parse(createId("runner"));
+    const invoke = async () => {
+      throw new DeviceAccessRefusal("device-access-off", machineId, "apps", "Studio Mac");
+    };
+    const run = (context: Parameters<typeof service.execute>[0]) =>
+      service.execute(context, "await apps()", undefined, invoke);
+    // The person's own automation program also reports unknown effects; it holds the request tool.
+    const program = await run({ runId: runId(), generation: 1, reportUnknownEffects: true });
+    expect(output(program)).toContain("Use computer_access_request if needed.");
+    const agent = await run({
+      runId: runId(),
+      generation: 1,
+      reportUnknownEffects: true,
+      connectedAgent: true,
+    });
+    expect(output(agent)).toContain(
+      "Apps access is off on Studio Mac. The person can turn it on in Opensteer.",
+    );
+    expect(output(agent)).not.toContain("computer_access_request");
+  });
   it("has no Node, network, filesystem or ambient timer capabilities", async () => {
     const { run } = setup();
     expect(

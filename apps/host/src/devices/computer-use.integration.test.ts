@@ -335,7 +335,7 @@ integration.sequential("Host computer-use approval transactions", () => {
       resolveCallableTools: (...args: unknown[]) => Promise<unknown>;
     };
     const resolve = grants.resolveCallableTools.bind(grants);
-    const filled = vi
+    const resolving = vi
       .spyOn(grants, "resolveCallableTools")
       .mockImplementationOnce(async (...args) => {
         const resolved = await resolve(...args);
@@ -350,10 +350,13 @@ integration.sequential("Host computer-use approval transactions", () => {
       listing
         .listCallableTools({ ownerUserId: test.task.userId, connectionId })
         .then((rows) => rows.map((row) => row.tool.name).sort());
+    // The owner's cache is filled once; what a connection's grant lends of an approval is
+    // resolved apart, with its grants given, and never cached.
+    const filled = () => resolving.mock.calls.filter((args) => args[1] === undefined).length;
     expect(await list(narrowed.id)).toEqual([]);
-    expect(filled).toHaveBeenCalledOnce();
+    expect(filled()).toBe(1);
     expect(await list(kept.id)).toEqual(["act", "observe"]);
-    expect(filled).toHaveBeenCalledOnce();
+    expect(filled()).toBe(1);
   });
 
   it("creates automatically, keeps connections when policy turns off, blocks, and unblocks only through owner approval", async () => {

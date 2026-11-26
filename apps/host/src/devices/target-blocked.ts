@@ -39,7 +39,9 @@ export function deviceAccessBlocked(error: unknown, connection = false): Blocked
           ? { next: "Continue without it and tell the person what the message says." }
           : {}),
   });
-  return { code, message: sentence ?? message, next: next ?? "Continue without this device." };
+  return sentence
+    ? { code, message: sentence, next: "Continue without this device." }
+    : { code, message, next: next ?? "Continue without this device." };
 }
 
 export function deviceAppBlocked(

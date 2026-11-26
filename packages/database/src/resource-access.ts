@@ -789,36 +789,46 @@ export function authorizeTarget(
   return execution.actor === "person" || execution.actor === "native" ? "read-write" : null;
 }
 
-/** One approval of an app or a phone screen on the person's devices, as a grant covers it. */
-export interface GrantedComputerApproval {
+/** One approval on the person's devices (an app, a phone screen, a data app), as a grant covers it. */
+export interface GrantedDeviceApproval {
   readonly id: IntegrationConnectionId;
   readonly displayName: string;
   readonly installationId: IntegrationInstallationId;
   readonly createdAt: Date;
-  /** The approval's own access, which is all the grant lends of it. */
+  /** What the grant names it as: a `computer-app`, or a data app's `device-account` plugin. */
+  readonly target: AgentGrantTarget;
+  /** The access the connection has to it: the approval's own, within what the grant allows. */
   readonly access: ResourceAccessLevel;
 }
 
 /**
- * Which of the person's approvals of an app or a phone screen a connected agent's grant covers.
- * A grant of `everything` covers every approved app and phone screen on the person's devices; a
- * selected grant covers those it names, by the approval row, its device and its app. Either
- * covers an approval only while it stands (connected, not blocked, not removed) and only at the
- * approval's own access. The person's own grant for their agents is not a term of this: a
- * connected agent cannot ask for it. Ownership, the mode and the device's switch are still the
- * admission's (`admitExecution`) and the device's to decide, on every call.
+ * What a connected agent's grant covers of what the person approved on their devices: a Mac app,
+ * a phone screen, or a data app (Calendar on a Mac, Photos on an iPhone). A grant of `everything`
+ * covers every such approval; a selected grant covers those it names (an app or a phone screen by
+ * its approval row, device and app; a data app as its device account, at the access the grant
+ * gives it). Either covers an approval only while it stands (connected, not blocked, its device not
+ * removed) and only at the approval's own access.
+ *
+ * This is the connection's whole answer for these approvals, at listing, admission and execution
+ * alike: the grants the person's own tasks hold on the same rows are not a term of it, neither to
+ * widen nor to narrow it, and a connected agent cannot ask for them. Ownership, the mode and the
+ * device's switch are still the admission's (`admitExecution`) and the device's to decide.
  */
-export async function grantedComputerApprovals(
+export async function grantedDeviceApprovals(
   database: Kysely<DatabaseSchema>,
   ownerUserId: UserId,
   grant: AgentGrant,
-): Promise<readonly GrantedComputerApproval[]> {
+): Promise<readonly GrantedDeviceApproval[]> {
   const named =
     grant.scope === "selected"
       ? [
           ...new Set(
             grant.resources.flatMap((resource) =>
-              resource.kind === "computer-app" ? [resource.approvalId] : [],
+              resource.kind === "computer-app"
+                ? [resource.approvalId]
+                : resource.kind === "plugin" && resource.target.kind === "device-account"
+                  ? [resource.target.integrationConnectionId.toLowerCase()]
+                  : [],
             ),
           ),
         ]
@@ -831,6 +841,7 @@ export async function grantedComputerApprovals(
       "integrationServers.id",
       "integrationConnections.integrationServerId",
     )
+    .innerJoin("devices", "devices.id", "integrationConnections.deviceId")
     .select([
       "integrationConnections.id",
       "integrationConnections.displayName",
@@ -846,11 +857,10 @@ export async function grantedComputerApprovals(
     .where("integrationConnections.status", "=", "connected")
     .where("integrationConnections.computerBlockedAt", "is", null)
     .where("integrationConnections.computerAccess", "is not", null)
-    .where("integrationConnections.deviceId", "is not", null);
+    .where("devices.removedAt", "is", null);
   if (named) query = query.where(sql<string>`lower(integration_connections.id)`, "in", named);
   return (await query.execute()).flatMap((row) => {
     const target = integrationConnectionGrantTarget(row);
-    if (target.kind !== "computer-app") return [];
     const access = intersectResourceAccess(agentGrantAccess(grant, target), row.computerAccess);
     return access
       ? [
@@ -859,6 +869,7 @@ export async function grantedComputerApprovals(
             displayName: row.displayName,
             installationId: row.installationId,
             createdAt: row.createdAt,
+            target,
             access,
           },
         ]

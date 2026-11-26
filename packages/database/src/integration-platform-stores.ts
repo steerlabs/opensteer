@@ -19,8 +19,9 @@ import {
 import { replaceSecrets, type LocalMcpSecretsUpdate } from "./local-mcp-server-store.js";
 import { isRecord } from "@opensteer/shared/isRecord";
 import {
-  grantedComputerApprovals,
+  grantedDeviceApprovals,
   resolveResourceAccess,
+  type AgentConnectionAuthority,
   type ResourceAccessInput,
 } from "./resource-access.js";
 import {
@@ -1336,10 +1337,25 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       this.authoritySnapshot(input.ownerUserId),
       this.activeGrants({ ownerUserId: input.ownerUserId }),
     ]);
-    const activeGrants = grants.filter(({ status }) => status === "active");
     const { connections } = authority;
     const requesterAccess = await resolveResourceAccess(this.database, requesterSubject(input));
     const lineageGrant = requesterAccess.execution.agentConnection?.grant;
+    // A connected agent's readiness for what the person approved on their devices is what the
+    // rule lends it, as at listing and execution; your own agents read their grants as before.
+    const requesterConnection = requesterAccess.execution.agentConnection;
+    const computerConnectionIds = new Set(
+      connections.flatMap(({ connectionKind, id }) => (connectionKind === "computer" ? [id] : [])),
+    );
+    const activeGrants = requesterConnection
+      ? [
+          ...grants.filter(
+            ({ connectionId, status }) =>
+              status === "active" &&
+              (connectionId === null || !computerConnectionIds.has(connectionId)),
+          ),
+          ...(await lentApprovalGrants(this.database, input.ownerUserId, requesterConnection)),
+        ]
+      : grants.filter(({ status }) => status === "active");
     const grantedConnections =
       lineageGrant?.scope === "selected"
         ? await integrationConnectionGrantAccess(
@@ -1722,16 +1738,27 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     // grant narrowed while the cache was being filled applies to this answer.
     const permitted = async (personal: readonly CallableIntegrationTool[]) => {
       const subject = requesterSubject(input);
-      let authority = await resolveResourceAccess(this.database, subject);
-      const tools = [...personal, ...(await this.grantedApprovalTools(input, authority, personal))];
+      const lending = await resolveResourceAccess(this.database, subject);
+      const connection = lending.execution.agentConnection;
+      // A connected agent's access to what the person approved on their devices is the rule's
+      // answer alone (`grantedDeviceApprovals`): the grants the person's own tasks hold on those
+      // rows neither widen nor narrow it. Your own agents keep their grants and add no query.
+      const tools = connection
+        ? [
+            ...personal.filter(({ server }) => server.connectionRequirement.kind !== "computer"),
+            ...(await this.grantedApprovalTools(input, connection)),
+          ]
+        : personal;
       const targetIds = tools.flatMap(({ grant, server }) =>
         grant.connectionId && server.transport.type !== "runner" ? [grant.connectionId] : [],
       );
       const targets =
-        authority.execution.agentConnection?.grant.scope === "selected" && targetIds.length
+        connection && targetIds.length
           ? await integrationConnectionGrantTargets(this.database, [...new Set(targetIds)])
           : null;
-      if (targets) authority = await resolveResourceAccess(this.database, subject);
+      // Where the connection stands is read again after everything it judges was read, and only
+      // that reading decides: a grant narrowed while the lending was read applies to this answer.
+      const authority = connection ? await resolveResourceAccess(this.database, subject) : lending;
       const grant = authority.execution.agentConnection?.grant;
       return tools.filter((tool) => {
         const write = integrationToolEffect(tool.tool.annotations) !== "read";
@@ -1806,43 +1833,18 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
   }
 
   /**
-   * The person's approvals of apps and phone screens that a connected agent's grant covers
-   * (`grantedComputerApprovals`, the one rule for it) and that no personal grant already lends. The
-   * person's personal grant is what their own agents need for an app; a connected agent cannot ask
-   * for it, so each such approval is lent by the connection's grant itself, at the approval's own
-   * access: its tools resolve through the same ceilings, the same eligibility and the same filter
-   * as any other, under a grant id of this connection and approval that is never stored and is
-   * the same on every read.
+   * The tools of what the person approved on their devices that a connected agent's grant covers
+   * (`grantedDeviceApprovals`, the one rule for it), each lent by the connection's grant itself at
+   * the access the rule gives it. They resolve through the same ceilings, the same eligibility and
+   * the same filter as any other, under a grant id of this connection and approval that is never
+   * stored and is the same on every read.
    */
   private async grantedApprovalTools(
     input: IntegrationRequester,
-    authority: Awaited<ReturnType<typeof resolveResourceAccess>>,
-    personal: readonly CallableIntegrationTool[],
+    connection: AgentConnectionAuthority,
   ): Promise<readonly CallableIntegrationTool[]> {
-    const connection = authority.execution.agentConnection;
-    if (!connection) return [];
-    const lent = new Set(
-      personal.flatMap(({ grant }) =>
-        grant.connectionId ? [grant.connectionId.toLowerCase()] : [],
-      ),
-    );
-    const approvals = (
-      await grantedComputerApprovals(this.database, input.ownerUserId, connection.grant)
-    ).filter(({ id }) => !lent.has(id.toLowerCase()));
-    if (!approvals.length) return [];
-    const grants: IntegrationGrant[] = approvals.map((approval) => ({
-      access: approval.access,
-      alias: outsideName(approval.displayName, 80) || "App",
-      connectionId: approval.id,
-      createdAt: approval.createdAt.toISOString(),
-      id: sharedApprovalGrantId(connection.agentConnectionId, approval.id),
-      installationId: approval.installationId,
-      isDefault: false,
-      ownerUserId: input.ownerUserId,
-      revokedAt: null,
-      status: "active",
-    }));
-    return this.resolveCallableTools(input, grants);
+    const grants = await lentApprovalGrants(this.database, input.ownerUserId, connection);
+    return grants.length ? this.resolveCallableTools(input, grants) : [];
   }
 
   private async resolveCallableTools(
@@ -2511,8 +2513,30 @@ export async function replaceServerToolsInTransaction(
   });
 }
 
+/** The grants a connection's grant lends of the person's device approvals; never stored. */
+async function lentApprovalGrants(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  connection: AgentConnectionAuthority,
+): Promise<IntegrationGrant[]> {
+  return (await grantedDeviceApprovals(database, ownerUserId, connection.grant)).map(
+    (approval) => ({
+      access: approval.access,
+      alias: outsideName(approval.displayName, 80) || "App",
+      connectionId: approval.id,
+      createdAt: approval.createdAt.toISOString(),
+      id: sharedApprovalGrantId(connection.agentConnectionId, approval.id),
+      installationId: approval.installationId,
+      isDefault: false,
+      ownerUserId,
+      revokedAt: null,
+      status: "active",
+    }),
+  );
+}
+
 /**
- * The id a connected agent's grant lends one approved app or phone screen under: a grant id, the
+ * The id a connected agent's grant lends one device approval (an app, a phone screen, a data app) under: a grant id, the
  * same for the same connection and approval on every read, and never a stored grant's.
  */
 export function sharedApprovalGrantId(
