@@ -340,7 +340,8 @@ export class BrowserToolHandlers {
   }
 
   async #pooledTarget(caller: ConnectionCaller, target: BrowserTarget) {
-    if (target.profileId === null) return;
+    const { profileId } = target;
+    if (profileId === null) return;
     const pool = this.#ports.pooledBrowser?.(target.runnerId);
     if (!pool) return;
     const actor = { kind: "connection", caller } as const;
@@ -366,7 +367,11 @@ export class BrowserToolHandlers {
     let document = seen?.document ?? null;
     return {
       ...pool,
-      reserve: (signal: AbortSignal) => pool.reserve(signal, seen?.sessionId),
+      reserve: (signal: AbortSignal) =>
+        pool.reserve(
+          signal,
+          seen ? { sessionId: seen.sessionId } : { ownerId: caller.userId, profileId },
+        ),
       generation: seen
         ? JSON.stringify([...(JSON.parse(seen.tab) as unknown[]), seen.document])
         : null,

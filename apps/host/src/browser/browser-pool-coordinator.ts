@@ -856,9 +856,9 @@ export class BrowserPoolCoordinator {
     this.#kick();
   }
 
-  /** The session has no channel and is inside its window: the loop is reattaching it. */
-  reattaching(sessionId: BrowserSessionId): boolean {
-    return this.#lost.has(sessionId);
+  /** Whether a session, or any session of this guest, is waiting for its channel. */
+  reattaching(sessionId?: BrowserSessionId): boolean {
+    return sessionId === undefined ? this.#lost.size > 0 : this.#lost.has(sessionId);
   }
 
   /** A pooled session's Runner channel was lost: the loop reattaches it inside its window. */

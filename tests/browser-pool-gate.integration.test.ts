@@ -2690,11 +2690,7 @@ it("lets every service call made while the Runner is away wait for it, never ref
     await until(() => expect(home.coordinator.gate.demand).toBe(true));
     j.runnerUp();
     (await watching.attaching).close();
-    const opened = await opening;
-    expect(opened).toMatchObject({ tabId: expect.any(String), sessionId: expect.any(String) });
-    expect((await j.tabs.get(j.task.userId, opened.tabId))?.pageBinding?.sessionId).toBe(
-      opened.sessionId,
-    );
+    expect(await opening).toMatchObject({ tabId: expect.any(String), sessionId });
     expect(await activating).toMatchObject({ kind: "page", sessionId });
     expect((await j.row(sessionId))?.state).toBe("ready");
   } finally {
@@ -2729,16 +2725,7 @@ it("waits on the reconnecting pool gate instead of refusing openTab as unavailab
       await until(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
       await until(() => expect(home.coordinator.gate.demand).toBe(true));
       j.runnerUp();
-      const opened = await opening;
-      expect(opened).toMatchObject({ tabId: expect.any(String), sessionId: expect.any(String) });
-      expect((await j.tabs.get(j.task.userId, opened.tabId))?.pageBinding?.sessionId).toBe(
-        opened.sessionId,
-      );
-      // An unbound open can be served while the seed session reattaches. The old tab still comes
-      // back under its own session.
-      await until(() =>
-        expect(home.service.pageInventory(seed.sessionId)?.records.has(seed.tabId)).toBe(true),
-      );
+      expect(await opening).toMatchObject({ tabId: expect.any(String), sessionId: seed.sessionId });
     } finally {
       runnerSpy.mockRestore();
     }
@@ -2798,6 +2785,55 @@ it("waits on the reconnecting pool gate instead of refusing openTab as unavailab
       await nonPersonal.close().catch(() => undefined);
     }
   } finally {
+    j.runnerUp();
+    await j.close();
+  }
+});
+
+it("opens an unbound tab in the reconnecting Guest session with its cookies", async () => {
+  const j = await journey("guest-open-reconnecting", { channelDeadlineMs: 60_000 });
+  const reattaching = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  try {
+    let home = await j.startHome();
+    const seed = await home.service.openTab(j.task.userId, j.command("guest-seed"));
+    const { cdp } = await j.draft();
+    expect(
+      await cdp.send("Network.setCookie", {
+        name: "signedIn",
+        value: "fixture",
+        url: "https://account.example.test/",
+      }),
+    ).toMatchObject({ success: true });
+    j.runnerDown();
+    home = await j.crashHome(home);
+    const attach = j.guest.attach.bind(j.guest);
+    vi.spyOn(j.guest, "attach").mockImplementationOnce(async (...args) => {
+      reattaching.resolve();
+      await resume.promise;
+      return attach(...args);
+    });
+    j.runnerUp();
+    await reattaching.promise;
+    expect(home.coordinator.gate.phase).toBe("open");
+    let opened = false;
+    const opening = home.service.openTab(j.task.userId, j.command("guest-new")).finally(() => {
+      opened = true;
+    });
+    void opening.catch(() => undefined);
+    await until(() => expect(opened || home.coordinator.gate.demand).toBe(true));
+    expect(opened).toBe(false);
+    resume.resolve();
+    expect(await opening).toMatchObject({ tabId: expect.any(String), sessionId: seed.sessionId });
+    const newest = j.launched()!.context.pages().at(-1);
+    if (!newest) throw new Error("The tab did not open.");
+    expect(
+      await (
+        await newest.cdp()
+      ).send("Network.getCookies", { urls: ["https://account.example.test/"] }),
+    ).toMatchObject({ cookies: [{ name: "signedIn", value: "fixture" }] });
+  } finally {
+    resume.resolve();
     j.runnerUp();
     await j.close();
   }
