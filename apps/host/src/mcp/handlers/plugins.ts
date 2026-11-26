@@ -289,6 +289,19 @@ export class PluginToolHandlers {
       });
     const { taskId, reason } = call.input;
     const signal = call.signal;
+    // What this connection's grant and the person's plugin setting let it do in an app: the one
+    // gate every call here passes, whether the app can be reached now or not.
+    const holds = async (plugin: string, write: boolean) => {
+      const access = agentGrantAccess(caller.grant, {
+        kind: "plugin",
+        target: pluginGrantTarget(plugin),
+      });
+      if (!access || (write && access !== "read-write")) return false;
+      const setting = (await o.settings.settings(caller.userId)).find(
+        ({ pluginId }) => pluginId === plugin,
+      )?.access;
+      return setting !== "off" && !(write && setting === "read-only");
+    };
     let target: { plugin: string; name: string; version: string; readOnly: boolean };
     let tool: "plugin_call" | "plugin_execute" | "plugin_resume";
     let input: { calls: PluginInput<"call">["calls"] } | { code: string } | { executionId: string };
@@ -321,23 +334,26 @@ export class PluginToolHandlers {
       const resolved = await o.service.resolveTools({ paths }, context, signal);
       const first = resolved[0];
       if (!first || resolved.length !== paths.length || resolved.some((entry) => !entry)) {
-        // A tool of a local provider this connection is shown, there but blocked (a data app the
-        // person approved for reading only, its device's apps off), says why before anything is
-        // asked: never that it does not exist, and never a Request for what cannot run. One its
-        // grant does not reach (`access_required`) reads as absent, as anything outside a grant.
+        // A tool of a local provider this connection holds, there but blocked (a data app the
+        // person approved for reading only, a macOS permission its device has not been given),
+        // says why before anything is asked: never that it does not exist, and never a Request
+        // for what cannot run. The reason is the tool's own, or its whole app's when nothing of
+        // it can run. What the grant does not reach (`access_required`, or a change it does not
+        // allow) reads as absent, as anything outside a grant.
         const shown = (await o.localProviders?.providers(context)) ?? [];
         for (const path of paths)
           for (const provider of shown) {
             const prefix = `${localToolPath(localNamespace(provider.slug, provider.id))}.`;
-            const blocked = path.startsWith(prefix)
-              ? provider.toolBlockers?.[path.slice(prefix.length)]
-              : undefined;
-            if (blocked && blocked.code !== "access_required")
-              throw new OpensteerError({
-                code: "forbidden",
-                message: blocked.message,
-                ...(blocked.next ? { next: blocked.next } : {}),
-              });
+            if (!path.startsWith(prefix)) continue;
+            const name = path.slice(prefix.length);
+            const tool = provider.tools.find((entry) => entry.name === name);
+            const blocked = tool && (provider.toolBlockers?.[name] ?? provider.blocked);
+            if (
+              blocked &&
+              blocked.code !== "access_required" &&
+              (await holds(provider.id, tool.readOnly !== true))
+            )
+              throw new ToolBlockedError(blocked);
           }
         throw unavailable();
       }
@@ -411,17 +427,7 @@ export class PluginToolHandlers {
         message: `Use at most ${requestOperationCallsMaxLength.toLocaleString("en-US")} characters per connected plugin operation.`,
       });
     const grant = { kind: "plugin", target: pluginGrantTarget(target.plugin) } as const;
-    const access = agentGrantAccess(caller.grant, grant);
-    if (!access || ((!target.readOnly || continuationWrites) && access !== "read-write"))
-      throw unavailable();
-    const currentAccess = (await o.settings.settings(caller.userId)).find(
-      ({ pluginId }) => pluginId === target.plugin,
-    )?.access;
-    if (
-      currentAccess === "off" ||
-      ((!target.readOnly || continuationWrites) && currentAccess === "read-only")
-    )
-      throw unavailable();
+    if (!(await holds(target.plugin, !target.readOnly || continuationWrites))) throw unavailable();
     if (continuation) {
       const { taskId } = continuation;
       let { row } = continuation;

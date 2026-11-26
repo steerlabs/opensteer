@@ -721,7 +721,7 @@ integration("computer apps", () => {
       // 1. Full access not yet allowed: its tools are listed, and its namespace says why once.
       const calendarNamespace = () => gateway.call("plugin_search", { namespace: calendarSlug });
       const fullAccess =
-        "apple-calendar is unavailable: Calendar needs macOS full access to calendars for Opensteer Computer Use on Studio Mac.";
+        "Calendar needs macOS full access to calendars for Opensteer Computer Use on Studio Mac.";
       await waitForCondition(async () =>
         JSON.stringify(await calendarNamespace()).includes("needs macOS full access"),
       );
@@ -735,7 +735,7 @@ integration("computer apps", () => {
             blocked: {
               code: "unavailable",
               message: fullAccess,
-              next: "Continue without it and tell the person what the message says.",
+              next: "The person finishes this on Studio Mac. Tell them what the message says, and continue without Calendar on Studio Mac until then.",
             },
           },
         ],

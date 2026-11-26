@@ -1,5 +1,6 @@
 import {
   deviceAppBlocked,
+  deviceAppUnavailable,
   deviceAccessBlocked,
   localTargetBlocked,
 } from "../devices/target-blocked.js";
@@ -61,6 +62,8 @@ type Located = PluginHostProvider & {
   readonly transport: "computer" | "runner";
   /** What app_access_request names this provider by: a data app's name or a server's. */
   readonly requestName: string;
+  /** The app's own title, without its device. */
+  readonly title: string;
   readonly waitingForLaunchApproval?: true;
   readonly blocked?: Blocked;
   readonly toolBlockers: Readonly<Record<string, Blocked>>;
@@ -101,6 +104,7 @@ export class LocalProviders {
         connectionId: _c,
         transport: _t,
         requestName: _r,
+        title: _title,
         waitingForLaunchApproval: _approval,
         toolBlockers,
         ...provider
@@ -351,6 +355,8 @@ export class LocalProviders {
         provider.kind === "device-app" && provider.computer
           ? deviceAppBlocked(state, {
               name: provider.name,
+              app: provider.title,
+              device: provider.computer.name,
               dataApp: provider.requestName,
               computerId: provider.computer.id,
               readOnlyGrant:
@@ -441,7 +447,11 @@ export class LocalProviders {
                 : [],
             );
             const ready = states.some(({ code }) => code === "READY");
-            const state = states.find(({ code }) => code !== "READY");
+            // When nothing can run, the reason of what the grant reaches comes first: that the
+            // grant does not reach some operations is no reason the others cannot run.
+            const state =
+              states.find(({ code }) => code !== "READY" && code !== "ACCESS_GRANT_REQUIRED") ??
+              states.find(({ code }) => code !== "READY");
             if (!ready && !state) continue;
             const connection = await facts.connectionFor(account.connectionId);
             if (!connection) continue;
@@ -461,17 +471,25 @@ export class LocalProviders {
                 connectionId: account.connectionId,
                 transport: "computer",
                 requestName: dataAppName(definition),
+                title: entry.installation.title,
                 blocked: ready
                   ? undefined
-                  : localTargetBlocked(
-                      state,
-                      definition.id,
-                      {
-                        dataApp: dataAppName(definition),
-                        computerId: connection.deviceId,
-                      },
-                      canAsk,
-                    ),
+                  : state?.code === "INTEGRATION_UNAVAILABLE" && state.detail
+                    ? // What the device reports, as discover and the device's state read it.
+                      deviceAppUnavailable({
+                        detail: state.detail,
+                        app: entry.installation.title,
+                        device: connection.runnerName,
+                      })
+                    : localTargetBlocked(
+                        state,
+                        definition.id,
+                        {
+                          dataApp: dataAppName(definition),
+                          computerId: connection.deviceId,
+                        },
+                        canAsk,
+                      ),
                 unavailable: ready
                   ? undefined
                   : (state?.detail ??
@@ -532,6 +550,7 @@ export class LocalProviders {
               connectionId: null,
               transport: "runner",
               requestName: serverName,
+              title: entry.installation.title,
               ...(launchStatus?.state === "waiting"
                 ? { waitingForLaunchApproval: true as const }
                 : {}),
@@ -622,6 +641,7 @@ function provider(input: {
   connectionId: string | null;
   transport: "computer" | "runner";
   requestName: string;
+  title: string;
   unavailable: string | undefined;
   waitingForLaunchApproval?: true;
   blocked?: Blocked | undefined;
@@ -646,6 +666,7 @@ function provider(input: {
     connectionId: input.connectionId,
     transport: input.transport,
     requestName: input.requestName,
+    title: input.title,
     ...(input.phoneAddedAt ? { phoneAddedAt: input.phoneAddedAt } : {}),
     ...(input.unavailable ? { ownerUnavailable: input.unavailable } : {}),
     ...(input.waitingForLaunchApproval ? { waitingForLaunchApproval: true as const } : {}),

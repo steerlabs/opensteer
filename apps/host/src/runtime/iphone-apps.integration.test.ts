@@ -172,13 +172,15 @@ integration.sequential("iPhone integrations Host contract", () => {
       }),
     );
     const macCalls: unknown[] = [];
+    // What the Mac reports of Calendar's operations: ready unless a test says otherwise.
+    const macStatus: Pick<ComputerAppStatusEntry, "operations"> = status("apple-calendar");
     const mac = keep(
       await connectComputerAppMachine(
         host,
         {
           definitionId: "apple-calendar",
           platforms: ["darwin"],
-          inspect: async () => status("apple-calendar").operations,
+          inspect: async () => macStatus.operations,
           invoke: async (...args) => {
             macCalls.push(args);
             return { calendars: [] };
@@ -242,6 +244,7 @@ integration.sequential("iPhone integrations Host contract", () => {
     return {
       mac,
       macCalls,
+      macStatus,
       phone,
       macCalendar,
       phoneCalendar,
@@ -583,6 +586,149 @@ integration.sequential("iPhone integrations Host contract", () => {
       "Apps access is off on Studio Mac. The person can turn it on in Opensteer.",
     );
     expect(JSON.stringify(off.raw)).not.toContain("computer_access_request");
+    expect(world.macCalls).toHaveLength(0);
+  });
+
+  /** macOS has not yet let the Mac's helper read calendars: the person allows it on the Mac. */
+  const calendarPermission =
+    "Calendar needs macOS full access to calendars for Opensteer Computer Use.";
+  const macPermissionMissing = async (world: Awaited<ReturnType<typeof calendarsTurnedOn>>) => {
+    world.macStatus.operations = world.macStatus.operations.map((operation) => ({
+      ...operation,
+      state: "permission-required",
+      detail: calendarPermission,
+      remedy: "calendars",
+    }));
+    // The Mac reports its apps again, as it does when its helper's state changes.
+    await world.mac.disconnectModule();
+    await world.mac.reconnectModule();
+    const watcher = keep(await connectAgent(host, { scope: "everything" }));
+    await waitForCondition(async () => {
+      const { item } = await discovered(watcher, "Calendar on Studio Mac");
+      return (item as { reachable?: boolean }).reachable === false;
+    });
+  };
+  /** What a connected agent reads for a call: the whole reply, as it is sent. */
+  const reply = async (
+    agent: Awaited<ReturnType<typeof connectAgent>>,
+    path: string,
+    input: Record<string, unknown> = {},
+  ) => (await agent.call("plugin_call", { calls: { path, input } })).structuredContent;
+  const permissionReply = {
+    error: {
+      code: "unavailable",
+      message:
+        "Calendar needs macOS full access to calendars for Opensteer Computer Use on Studio Mac.",
+      next: "The person finishes this on Studio Mac. Tell them what the message says, and continue without Calendar on Studio Mac until then.",
+    },
+  };
+
+  it.each([
+    ["Everything", { scope: "everything" }],
+    ["a read selection of it", "selected"],
+  ] as const)(
+    "tells a connected agent holding a data app (%s) the macOS permission it still needs, and that the person gives it on that device",
+    async (_, grant) => {
+      const world = await calendarsTurnedOn("read-write");
+      const agent = keep(
+        await connectAgent(
+          host,
+          grant === "selected"
+            ? {
+                scope: "selected",
+                tasks: false,
+                resources: [
+                  {
+                    kind: "plugin",
+                    target: {
+                      kind: "device-account",
+                      integrationConnectionId: world.macCalendar as never,
+                    },
+                    access: "read",
+                  },
+                ],
+              }
+            : grant,
+        ),
+      );
+      await macPermissionMissing(world);
+      // Discover says the app is there and cannot be reached now; the call says why and whose
+      // move it is, in the Home's words, never that it does not exist.
+      expect(
+        await reply(agent, world.macPath("list_events"), {
+          start: "2026-11-26",
+          end: "2026-11-27",
+        }),
+      ).toEqual(permissionReply);
+      expect(await reply(agent, world.macPath())).toEqual(permissionReply);
+      expect(world.macCalls).toHaveLength(0);
+    },
+  );
+
+  it("reads a data app outside a connection's grant exactly like one that does not exist, while its device lacks a permission", async () => {
+    const world = await calendarsTurnedOn("read-write");
+    const named = (access: "read" | "read-write", connectionId: string) =>
+      ({
+        kind: "plugin",
+        target: { kind: "device-account", integrationConnectionId: connectionId as never },
+        access,
+      }) as const;
+    // One grant names only the iPhone's Calendar; another names the Mac's for reading only.
+    const phoneOnly = keep(
+      await connectAgent(host, {
+        scope: "selected",
+        tasks: false,
+        resources: [named("read", world.phoneCalendar)],
+      }),
+    );
+    const readOnly = keep(
+      await connectAgent(host, {
+        scope: "selected",
+        tasks: false,
+        resources: [named("read", world.macCalendar)],
+      }),
+    );
+    await macPermissionMissing(world);
+    const inventedId = `con_${randomUUID()}`;
+    const invented = (tool: string) =>
+      `tools[${JSON.stringify(localNamespace("calendar-studio-mac", `app_device_${inventedId}`))}].${tool}`;
+    const same = (value: unknown, id: string) => JSON.stringify(value).replaceAll(id, "ID");
+    // The Mac's Calendar, which the grant does not name, and an app that never existed.
+    const uncovered = await phoneOnly.call("plugin_call", {
+      calls: { path: world.macPath(), input: {} },
+    });
+    const absent = await phoneOnly.call("plugin_call", {
+      calls: { path: invented("list_calendars"), input: {} },
+    });
+    expect(same(uncovered, world.macCalendar)).toBe(same(absent, inventedId));
+    expect(JSON.stringify(uncovered)).not.toMatch(/macOS|Studio Mac|person/u);
+    // A change the grant does not allow, in the app it names for reading.
+    const write = await readOnly.call("plugin_call", {
+      calls: { path: world.macPath("create_event"), input: dentist },
+    });
+    const absentWrite = await readOnly.call("plugin_call", {
+      calls: { path: invented("create_event"), input: dentist },
+    });
+    expect(same(write, world.macCalendar)).toBe(same(absentWrite, inventedId));
+    expect(JSON.stringify(write)).not.toMatch(/macOS|Studio Mac|person/u);
+    expect(world.macCalls).toHaveLength(0);
+  });
+
+  it("tells a connected agent holding a data app when the device's helper is not running, or the device is offline", async () => {
+    const world = await calendarsTurnedOn();
+    const agent = keep(await connectAgent(host, { scope: "everything" }));
+    await world.mac.disconnectModule();
+    const helperDown = await agentPluginCall(agent, world.macPath());
+    expect(helperDown.failure, JSON.stringify(helperDown.raw)).toBe(
+      "Opensteer's integrations service is unavailable on Studio Mac.",
+    );
+    await world.mac.close();
+    const offline = await agentPluginCall(agent, world.macPath());
+    // In the words a Mac app on an offline Mac reads.
+    expect(offline.failure, JSON.stringify(offline.raw)).toBe("Studio Mac is offline.");
+    expect(JSON.stringify(offline.raw)).toContain(
+      '"next":"The person can bring it online; other work can continue."',
+    );
     expect(world.macCalls).toHaveLength(0);
   });
 

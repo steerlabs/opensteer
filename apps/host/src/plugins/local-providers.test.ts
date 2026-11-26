@@ -359,8 +359,8 @@ it.each([
     },
     {
       code: "unavailable",
-      message: "apple-calendar is unavailable: Update Opensteer on Test iPhone to use its apps.",
-      next: "Continue without it and tell the person what the message says.",
+      message: "Update Opensteer on Test iPhone to use its apps.",
+      next: "The person finishes this on Test iPhone. Tell them what the message says, and continue without Calendar on Test iPhone until then.",
     },
   ],
 ] as const)(

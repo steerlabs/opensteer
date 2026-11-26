@@ -7,16 +7,18 @@ const deviceCapabilityLabel = { apps: "Apps", browser: "Browser", files: "Files"
 
 /**
  * The sentence a connected agent reads for a device's refusal, or null where it reads the same as
- * any agent. It is told the person's switch is off and that turning it on is the person's: it has
- * no tool to ask for it with.
+ * any agent. It is told the person's switch is off and that turning it on is the person's, or that
+ * the device it was shown is offline, by the name it was shown: it has no tool to ask with.
  */
 export function deviceRefusalSentence(
   error: DeviceAccessRefusal,
   connection: boolean,
 ): string | null {
-  return connection && error.reason === "device-access-off"
-    ? `${deviceCapabilityLabel[error.capability]} access is off on ${error.machineName ?? "this device"}. The person can turn it on in Opensteer.`
-    : null;
+  if (!connection) return null;
+  if (error.reason === "device-access-off")
+    return `${deviceCapabilityLabel[error.capability]} access is off on ${error.machineName ?? "this device"}. The person can turn it on in Opensteer.`;
+  if (error.reason === "device-offline") return `${error.machineName ?? "This device"} is offline.`;
+  return null;
 }
 
 /** What a device's refusal blocks, worded for a connected agent when `connection` is set. */
@@ -40,14 +42,42 @@ export function deviceAccessBlocked(error: unknown, connection = false): Blocked
           : {}),
   });
   return sentence
-    ? { code, message: sentence, next: "Continue without this device." }
+    ? {
+        code,
+        message: sentence,
+        // As a Mac app on an offline Mac says it (computer-use-discovery.ts).
+        next:
+          error.reason === "device-offline"
+            ? "The person can bring it online; other work can continue."
+            : "Continue without this device.",
+      }
     : { code, message, next: next ?? "Continue without this device." };
+}
+
+/**
+ * A data app the person approved that its device cannot serve now (a macOS permission not given
+ * yet, Opensteer there needing an update): the device's own reason, as the person's device page
+ * and an agent's device state say it, and that the next move is the person's, on that device.
+ */
+export function deviceAppUnavailable(input: {
+  readonly detail: string;
+  readonly app: string;
+  readonly device: string;
+}): Blocked {
+  return {
+    code: "unavailable",
+    message: input.detail.slice(0, 2000),
+    next: `The person finishes this on ${input.device}. Tell them what the message says, and continue without ${input.app} on ${input.device} until then.`,
+  };
 }
 
 export function deviceAppBlocked(
   readiness: IntegrationReadiness | undefined,
   input: {
     name: string;
+    /** The app's own title and its device's name, for the person's move on that device. */
+    app: string;
+    device: string;
     dataApp: string;
     computerId: string;
     readOnlyGrant: boolean;
@@ -55,6 +85,8 @@ export function deviceAppBlocked(
     canAsk: boolean;
   },
 ): Blocked | undefined {
+  if (readiness?.code === "INTEGRATION_UNAVAILABLE" && readiness.detail)
+    return deviceAppUnavailable({ detail: readiness.detail, app: input.app, device: input.device });
   const blocked = localTargetBlocked(
     readiness,
     input.name,
