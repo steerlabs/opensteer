@@ -2586,7 +2586,7 @@ it("ends a call waiting through a replaced host's gap at once with the person's 
   }
 });
 
-it("settles unknown, and never replays, a command already sent when its target is retired for another", async () => {
+it("today: settles unknown, and never replays, a command already sent when its target is retired for another", async () => {
   const j = await journey("retired-in-flight", { profile: true });
   try {
     const home = await j.startHome();

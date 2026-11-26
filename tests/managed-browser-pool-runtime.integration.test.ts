@@ -4695,53 +4695,6 @@ async function wiredPooledHome(key: string, options: { readonly chromium?: boole
   }
 }
 
-describe("A call waiting through a pool host replace that takes longer than the suspicion", () => {
-  it("serves a connected agent's open that starts in the gap on the new target, with no refusal", async () => {
-    const f = await wiredPooledHome("gap");
-    try {
-      // Served by A: its guest runs, with the profile's session on it.
-      await f.open("before", AbortSignal.timeout(30_000));
-      expect(await f.slot()).toMatchObject({ term: 1, phase: "running" });
-      // A's VM goes away; the account places nothing ready for longer than the suspicion.
-      f.place({ status: "preparing" });
-      const since = f.reads.length;
-      await f.hostA.vanish();
-      await vi.waitFor(
-        () =>
-          expect(
-            f.reads.slice(since).filter((read) => read === "preparing").length,
-          ).toBeGreaterThan(2),
-        { timeout: 30_000 },
-      );
-      // A call starts in the gap and waits for this Home's browser.
-      let outcome: "served" | "refused" | undefined;
-      const during = f.open("during", AbortSignal.timeout(60_000)).then(
-        (opened) => {
-          outcome = "served";
-          return opened;
-        },
-        (error: unknown) => {
-          outcome = "refused";
-          throw error;
-        },
-      );
-      void during.catch(() => undefined);
-      const waiting = f.reads.length;
-      await vi.waitFor(() => expect(f.reads.length).toBeGreaterThan(waiting + 1), {
-        timeout: 30_000,
-      });
-      expect(outcome).toBeUndefined();
-      // The account names B: the call that waited is served by it.
-      f.place({ status: "ready", target: (await f.startB()).target });
-      const opened = await during;
-      expect(opened.tabId).toBeTruthy();
-      expect(await f.slot()).toMatchObject({ term: 2, phase: "running" });
-    } finally {
-      await f.close();
-    }
-  }, 120_000);
-});
-
 /** A page the guest's Chromium can load, and a script that opens it, reads it and closes it. */
 async function servedPage() {
   const site = createServer((_request, response) =>
@@ -4778,158 +4731,53 @@ const newestOperation = (f: Awaited<ReturnType<typeof wiredPooledHome>>) =>
     .orderBy("createdAt", "desc")
     .executeTakeFirst();
 
-describe("A connected agent's browser_use waiting through a pool host replace", () => {
-  it("serves a script's newPage that starts in the gap on the new target, with no refusal", async () => {
-    const f = await wiredPooledHome("gap-use", { chromium: true });
-    const site = createServer((_request, response) =>
-      response.end("<!doctype html><title>Served</title><p>served</p>"),
-    );
-    await new Promise<void>((resolve) => site.listen(0, "127.0.0.1", resolve));
-    const page = `http://127.0.0.1:${(site.address() as AddressInfo).port}/`;
-    try {
-      const agent = await f.mcpAgent();
-      // What the real machine ran: open a page on the profile, read its title, close it.
-      const use = () =>
-        agent.call("browser_use", {
-          profileId: f.profile.id,
-          reason: "Read a page",
-          code: `const page = await newPage(${JSON.stringify(page)}); const title = await page.title(); await page.close(); return title;`,
-        });
-      const before = await use();
-      expect(before.isError, JSON.stringify(before)).toBeFalsy();
-      expect(await f.slot()).toMatchObject({ term: 1, phase: "running" });
-      f.place({ status: "preparing" });
-      const since = f.reads.length;
-      await f.hostA.vanish();
-      await vi.waitFor(
-        () =>
-          expect(
-            f.reads.slice(since).filter((read) => read === "preparing").length,
-          ).toBeGreaterThan(2),
-        { timeout: 30_000 },
-      );
-      let settled = false;
-      const during = use().finally(() => {
-        settled = true;
-      });
-      const waiting = f.reads.length;
-      await vi.waitFor(() => expect(f.reads.length).toBeGreaterThan(waiting + 2), {
-        timeout: 30_000,
-      });
-      expect(settled).toBe(false);
-      f.place({ status: "ready", target: (await f.startB()).target });
-      const result = await during;
-      expect(result.isError, JSON.stringify(result)).toBeFalsy();
-      expect(await f.slot()).toMatchObject({ term: 2, phase: "running" });
-    } finally {
-      site.closeAllConnections();
-      await new Promise<void>((resolve) => site.close(() => resolve()));
-      await f.close();
-    }
-  }, 180_000);
-});
-
-describe("A call that has sent nothing follows this Home's next pooled target", () => {
-  it("serves a browser_use and an open that start between the old target's retirement and the new one's adoption", async () => {
-    const f = await wiredPooledHome("window", { chromium: true });
+describe("Today: a connected agent's call that waits while no ready target exists", () => {
+  it("is refused when its old target is retired, never served twice, with the next line (today's behaviour: no follow to the new target)", async () => {
+    const f = await wiredPooledHome("gap-refused", { chromium: true });
     const page = await servedPage();
     try {
       const agent = await f.mcpAgent();
       const use = () =>
         agent.call("browser_use", { profileId: f.profile.id, reason: "Read", code: page.code });
       expect((await use()).isError).toBeFalsy();
-      // B's adoption waits until the test lets it: the window after A's retirement.
-      const adopting = Promise.withResolvers<void>();
-      const adopt = Promise.withResolvers<void>();
-      const original = f.host.browser.adoptPool.bind(f.host.browser);
-      vi.spyOn(f.host.browser, "adoptPool").mockImplementation(async (...args) => {
-        adopting.resolve();
-        await adopt.promise;
-        return original(...args);
-      });
+      expect(await f.slot()).toMatchObject({ term: 1, phase: "running" });
       await intoTheGap(f);
-      f.place({ status: "ready", target: (await f.startB()).target });
-      await adopting.promise;
+      // A call starts in the gap and waits: A is gone and the account names nothing ready.
       const before = (await newestOperation(f))?.id;
       const call = use();
       await vi.waitFor(async () => expect((await newestOperation(f))?.id).not.toBe(before), {
         timeout: 10_000,
       });
-      const opening = f.open("window", AbortSignal.timeout(30_000));
-      adopt.resolve();
-      const result = await call;
-      expect(result.isError, JSON.stringify(result)).toBeFalsy();
-      expect((await opening).tabId).toBeTruthy();
-      expect(await f.slot()).toMatchObject({ term: 2, phase: "running" });
-    } finally {
-      await page.close();
-      await f.close();
-    }
-  }, 180_000);
-
-  it("refuses a call in the gap at its own bound, never earlier, saying nothing was sent and it may call again", async () => {
-    const f = await wiredPooledHome("gap-bound");
-    try {
-      await f.open("before", AbortSignal.timeout(30_000));
-      await intoTheGap(f);
-      const direct = f.host.browser.pooledDirectBrowser(f.runnerId);
-      if (!direct) throw new Error("The Home has no pooled browser.");
-      const bound = new AbortController();
-      let settled = false;
-      const waiting = direct
-        .reserve(bound.signal, { ownerId: f.ownerId, profileId: f.profile.id })
-        .then(
-          (reservation) => reservation.release(),
-          (error: unknown) => error,
-        )
-        .finally(() => {
-          settled = true;
-        });
-      // The account keeps naming nothing ready: the call waits through it.
+      const waiting = await newestOperation(f);
       const reads = f.reads.length;
       await vi.waitFor(() => expect(f.reads.length).toBeGreaterThan(reads + 2), {
         timeout: 30_000,
       });
-      expect(settled).toBe(false);
-      // Its own bound runs out, as a deadline does.
-      bound.abort(new DOMException("The operation timed out.", "TimeoutError"));
-      expect(await waiting).toMatchObject({
-        message: "The pooled browser did not wake in time. Nothing was sent.",
-        next: "Nothing was sent. It is safe to call again.",
-      });
-    } finally {
-      await f.close();
-    }
-  }, 120_000);
-
-  it("re-checks a connected agent's access at hand-off when the next target serves a call that waited", async () => {
-    const f = await wiredPooledHome("gap-grant", { chromium: true });
-    const page = await servedPage();
-    try {
-      const agent = await f.mcpAgent();
-      const use = () =>
-        agent.call("browser_use", { profileId: f.profile.id, reason: "Read", code: page.code });
-      expect((await use()).isError).toBeFalsy();
-      await intoTheGap(f);
-      const before = (await newestOperation(f))?.id;
-      const call = use();
-      await vi.waitFor(async () => expect((await newestOperation(f))?.id).not.toBe(before), {
-        timeout: 10_000,
-      });
-      // The person cuts the grant while the call waits through the gap.
-      await new AgentConnectionStore(f.host.store.database).update(f.ownerId, {
-        connectionId: agent.id,
-        expectedRevision: 1,
-        grant: { scope: "selected", tasks: false, resources: [] },
-      });
+      // The account names B: the waiting call is refused as A is retired, saying it may call again.
       f.place({ status: "ready", target: (await f.startB()).target });
       const result = await call;
       expect(result.isError).toBe(true);
       expect(result.structuredContent).toMatchObject({
-        error: { code: "access_changed", message: "The person changed this agent's access." },
+        status: "refused",
+        error: {
+          code: "computer_offline",
+          message: "The pooled browser did not wake in time. Nothing was sent.",
+          next: "Nothing was sent. It is safe to call again.",
+        },
       });
-      // Refused before anything left for the browser.
-      expect(await newestOperation(f)).toMatchObject({ state: "refused", handedOffAt: null });
+      // Nothing of it was handed off, and it stays refused: never served, now or later.
+      const refused = () =>
+        f.host.store.database
+          .selectFrom("agentOperations")
+          .select(["state", "handedOffAt"])
+          .where("id", "=", waiting!.id)
+          .executeTakeFirstOrThrow();
+      expect(await refused()).toMatchObject({ state: "refused", handedOffAt: null });
+      // Calling again is served by B, as its next line says.
+      const again = await use();
+      expect(again.isError, JSON.stringify(again)).toBeFalsy();
+      expect(await f.slot()).toMatchObject({ term: 2, phase: "running" });
+      expect(await refused()).toMatchObject({ state: "refused", handedOffAt: null });
     } finally {
       await page.close();
       await f.close();

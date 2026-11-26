@@ -212,7 +212,7 @@ import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import type { BrowserAttachTicketSigner } from "./browser-ticket.js";
 import {
   BrowserPoolAttemptRefused,
-  BrowserPoolTargetOver,
+  BrowserPoolTargetReplaced,
   browserPoolWakeRefusal,
   type BrowserPoolGate,
   type BrowserPoolReservation,
@@ -1418,57 +1418,50 @@ export class BrowserService {
 
   pooledDirectBrowser(runnerId: RunnerId) {
     const found = this.#pool(runnerId);
-    // Between a retired target and its replacement's adoption, a call waits for the adoption.
-    if (!found && !this.#followsNextTarget(runnerId, undefined)) return undefined;
+    if (!found) return undefined;
     /** The coordinator this call waits on, and once admitted, the one that serves it. */
-    let pool: BrowserPoolCoordinator | undefined = found;
+    let pool: BrowserPoolCoordinator = found;
     return {
-      identity: () => {
-        if (!pool) throw new BrowserPoolTargetOver();
-        return pool.identity();
-      },
+      identity: () => pool.identity(),
       reserve: async (
         signal: AbortSignal,
         scope:
           | { readonly sessionId: BrowserSessionId }
           | { readonly ownerId: UserId; readonly profileId: BrowserProfileId },
       ) => {
+        let reservation: BrowserPoolReservation;
         for (;;) {
-          pool ??= await this.#nextPool(runnerId, undefined, signal);
-          const current = pool;
-          let reservation: BrowserPoolReservation | undefined;
           try {
-            if ("sessionId" in scope) return await current.gate.reserve(signal, scope);
-            reservation = await current.gate.reserve(signal);
-            if (current.reattaching()) {
-              const { runtimeId } = current.identity();
-              await this.#readyBrowserSessions(
-                scope.ownerId,
-                (row) =>
-                  row.profileId === scope.profileId &&
-                  row.runnerId === runnerId &&
-                  row.runtimeId === runtimeId,
-                {
-                  pool: current,
-                  signal: reservation.ended ? AbortSignal.any([signal, reservation.ended]) : signal,
-                },
-              );
-            }
-            return reservation;
+            reservation = await pool.gate.reserve(signal, "sessionId" in scope ? scope : undefined);
+            break;
           } catch (error) {
-            reservation?.release();
-            // A call on the profile has sent nothing yet: whatever made the target it waited
-            // for go over, it waits for this Home's next one within its own bound. A call on a
-            // session of that target ends with the session.
-            if (
-              "sessionId" in scope ||
-              signal.aborted ||
-              !this.#followsNextTarget(runnerId, current)
-            )
-              throw error;
-            pool = await this.#nextPool(runnerId, current, signal);
+            // A different target replaced the one this call waited for (a replaced pool host):
+            // nothing was sent, and a call on the profile waits for the new one within its own
+            // bound. A call on a session of the old target is refused: that session ended with it.
+            if (!(error instanceof BrowserPoolTargetReplaced) || "sessionId" in scope) throw error;
+            pool = await this.#replacementPool(runnerId, pool, signal);
           }
         }
+        if ("profileId" in scope && pool.reattaching()) {
+          const { runtimeId } = pool.identity();
+          try {
+            await this.#readyBrowserSessions(
+              scope.ownerId,
+              (row) =>
+                row.profileId === scope.profileId &&
+                row.runnerId === runnerId &&
+                row.runtimeId === runtimeId,
+              {
+                pool,
+                signal: reservation.ended ? AbortSignal.any([signal, reservation.ended]) : signal,
+              },
+            );
+          } catch (error) {
+            reservation.release();
+            throw error;
+          }
+        }
+        return reservation;
       },
       /**
        * The page's document: live, or while the browser is away the one last known. Null: its
@@ -1477,7 +1470,7 @@ export class BrowserService {
        */
       pageDocument: (sessionId: BrowserSessionId, tabId: TabId): string | null | undefined =>
         this.pageInventory(sessionId)?.records.get(tabId)?.documentId ??
-        (pool && (pool.gate.retiringOrAdopting || pool.reattaching(sessionId))
+        (pool.gate.retiringOrAdopting || pool.reattaching(sessionId)
           ? (pool.knownDocument(sessionId, tabId) ??
             (pool.reattaching(sessionId) ? null : undefined))
           : undefined),
@@ -1553,7 +1546,6 @@ export class BrowserService {
     if (this.#pools.has(runnerId))
       throw new Error("This pooled browser already has a coordinator.");
     this.#pools.set(runnerId, coordinator);
-    this.#replacing.delete(runnerId);
     this.#poolChanged();
     if (placement) this.#poolPlacements.set(runnerId, placement);
     else this.#poolPlacements.delete(runnerId);
@@ -1590,8 +1582,6 @@ export class BrowserService {
   async retirePool(runnerId: RunnerId, reason: string): Promise<void> {
     const coordinator = this.#pools.get(runnerId);
     if (!coordinator) return;
-    // Another target replaces this one: a call that has sent nothing waits for it.
-    if (reason === "browser-replaced") this.#replacing.add(runnerId);
     try {
       await coordinator.retire(reason);
     } finally {
@@ -1612,36 +1602,21 @@ export class BrowserService {
     previous.abort();
   }
 
-  /** Runners whose pooled target was retired for another, until that one is adopted. */
-  readonly #replacing = new Set<RunnerId>();
-
   /**
-   * Whether a call that has sent nothing, waiting for this Runner's pooled browser on `left` (or on
-   * none), may wait for the next target: the target it waited for is over (replaced, or answered
-   * gone) or no longer this Runner's, or a replacement is on its way. A removed device is not.
+   * The coordinator that replaced `replaced` for this Runner's pooled browser, once adopted. A
+   * caller refused because its target was replaced waits here, within its own bound, never past
+   * it: nothing was sent, so the new target may serve it.
    */
-  #followsNextTarget(runnerId: RunnerId, left: BrowserPoolCoordinator | undefined): boolean {
-    if (this.#closed) return false;
-    if (!left) return this.#replacing.has(runnerId) && !this.#pool(runnerId);
-    if (left.gate.phase === "released") return false;
-    return left.over !== undefined || this.#pool(runnerId) !== left;
-  }
-
-  /**
-   * This Runner's next pooled target, once adopted and serving: one that is not `left` and not
-   * over. A call that has sent nothing waits here within its own bound, never past it; its bound,
-   * a Stop, a Disconnect or the device switch (all on its signal) end the wait with their words.
-   */
-  async #nextPool(
+  async #replacementPool(
     runnerId: RunnerId,
-    left: BrowserPoolCoordinator | undefined,
+    replaced: BrowserPoolCoordinator,
     signal: AbortSignal,
   ): Promise<BrowserPoolCoordinator> {
     const bounded = AbortSignal.any([signal, this.#closing.signal]);
     for (;;) {
       if (bounded.aborted) throw browserPoolWakeRefusal(bounded);
       const next = this.#pool(runnerId);
-      if (next && next !== left && next.over === undefined) return next;
+      if (next && next !== replaced) return next;
       const changed = this.#poolsChanged.signal;
       await new Promise<void>((resolve) => {
         const done = () => {
@@ -2694,9 +2669,6 @@ export class BrowserService {
       // drains (so the stale hold is released and the caller waits at the gate once).
       for (;;) {
         const pool = candidateRunnerId ? this.#pool(candidateRunnerId) : undefined;
-        // Between a retired target and its replacement's adoption: the open waits for it.
-        if (candidateRunnerId && !pool && this.#followsNextTarget(candidateRunnerId, undefined))
-          throw new BrowserPoolTargetLeft(candidateRunnerId, undefined);
         if (!pool || !candidateRunnerId) break;
         const selector: BrowserPlacementSelector = { kind: "runner", runnerId: candidateRunnerId };
         const agentRecheck = agent
@@ -2716,103 +2688,86 @@ export class BrowserService {
           : undefined;
         onPoolWait?.(candidateRunnerId);
         let reservation: BrowserPoolReservation;
-        try {
-          if (agent && agentRecheck) {
-            reservation = await this.#withAgentPoolWaiter(
-              agent.agentBindingId,
-              candidateRunnerId,
-              wakeSignal,
-              agentRecheck,
-              async (agentSignal, waiterSignal) => {
-                const reserved = await this.#reserveAgentPoolWithWaiter(
-                  pool.gate,
-                  candidateRunnerId,
-                  undefined,
-                  agentSignal,
-                  waiterSignal,
-                  agentRecheck,
-                  { failOnRefusal: true },
-                );
-                onPoolWait?.(undefined);
-                heldPool = { target: pool, reservation: reserved };
-                if (reserved.waited) await agentRecheck();
+        if (agent && agentRecheck) {
+          reservation = await this.#withAgentPoolWaiter(
+            agent.agentBindingId,
+            candidateRunnerId,
+            wakeSignal,
+            agentRecheck,
+            async (agentSignal, waiterSignal) => {
+              const reserved = await this.#reserveAgentPoolWithWaiter(
+                pool.gate,
+                candidateRunnerId,
+                undefined,
+                agentSignal,
+                waiterSignal,
+                agentRecheck,
+                { failOnRefusal: true },
+              );
+              onPoolWait?.(undefined);
+              heldPool = { target: pool, reservation: reserved };
+              if (reserved.waited) await agentRecheck();
+              if (this.#targetResolver?.pendingAdmission?.(candidateRunnerId)) {
+                await this.#targetResolver
+                  .waitForTarget?.(candidateRunnerId, agentSignal)
+                  .catch(() => undefined);
+                if (waiterSignal.aborted) throw waiterSignal.reason;
+              } else if (!this.#resolveTarget(selector)) {
+                await pool.ensureRelayAttached(agentSignal).catch(() => undefined);
+                if (waiterSignal.aborted) throw waiterSignal.reason;
                 if (this.#targetResolver?.pendingAdmission?.(candidateRunnerId)) {
                   await this.#targetResolver
                     .waitForTarget?.(candidateRunnerId, agentSignal)
                     .catch(() => undefined);
                   if (waiterSignal.aborted) throw waiterSignal.reason;
-                } else if (!this.#resolveTarget(selector)) {
-                  await pool.ensureRelayAttached(agentSignal).catch(() => undefined);
-                  if (waiterSignal.aborted) throw waiterSignal.reason;
-                  if (this.#targetResolver?.pendingAdmission?.(candidateRunnerId)) {
-                    await this.#targetResolver
-                      .waitForTarget?.(candidateRunnerId, agentSignal)
-                      .catch(() => undefined);
-                    if (waiterSignal.aborted) throw waiterSignal.reason;
-                  }
                 }
-                if (!this.#resolveTarget(selector)) await agentRecheck();
-                if (!this.#resolveTarget(selector) && pool.gate.admits) {
-                  const pendingLosses = [...this.#brokers.values()].filter(
-                    (broker) =>
-                      broker.poolRunnerId === candidateRunnerId && broker.pendingChannelLoss,
+              }
+              if (!this.#resolveTarget(selector)) await agentRecheck();
+              if (!this.#resolveTarget(selector) && pool.gate.admits) {
+                const pendingLosses = [...this.#brokers.values()].filter(
+                  (broker) =>
+                    broker.poolRunnerId === candidateRunnerId && broker.pendingChannelLoss,
+                );
+                if (pendingLosses.length > 0) {
+                  await Promise.all(
+                    pendingLosses.map((broker) => broker.waitForChannelLoss(agentSignal)),
                   );
-                  if (pendingLosses.length > 0) {
-                    await Promise.all(
-                      pendingLosses.map((broker) => broker.waitForChannelLoss(agentSignal)),
-                    );
-                    if (waiterSignal.aborted) throw waiterSignal.reason;
-                  }
+                  if (waiterSignal.aborted) throw waiterSignal.reason;
                 }
-                return reserved;
-              },
-            );
-          } else {
-            reservation = await this.#reservePool(pool.gate, wakeSignal, undefined, {
-              failOnRefusal: true,
-            });
-            onPoolWait?.(undefined);
-            heldPool = { target: pool, reservation };
-            if (this.#targetResolver?.pendingAdmission?.(candidateRunnerId)) {
+              }
+              return reserved;
+            },
+          );
+        } else {
+          reservation = await this.#reservePool(pool.gate, wakeSignal, undefined, {
+            failOnRefusal: true,
+          });
+          onPoolWait?.(undefined);
+          heldPool = { target: pool, reservation };
+          if (this.#targetResolver?.pendingAdmission?.(candidateRunnerId)) {
+            await this.#targetResolver
+              .waitForTarget?.(candidateRunnerId, wakeSignal)
+              .catch(() => undefined);
+          } else if (!this.#resolveTarget(selector)) {
+            await pool.ensureRelayAttached(wakeSignal).catch(() => undefined);
+            if (this.#targetResolver?.pendingAdmission?.(candidateRunnerId))
               await this.#targetResolver
                 .waitForTarget?.(candidateRunnerId, wakeSignal)
                 .catch(() => undefined);
-            } else if (!this.#resolveTarget(selector)) {
-              await pool.ensureRelayAttached(wakeSignal).catch(() => undefined);
-              if (this.#targetResolver?.pendingAdmission?.(candidateRunnerId))
-                await this.#targetResolver
-                  .waitForTarget?.(candidateRunnerId, wakeSignal)
-                  .catch(() => undefined);
-            }
-            // If the Runner dropped and a pooled broker on it has already left OPEN while its
-            // channel-loss notification is still draining to the coordinator, wait for that loss to
-            // land so `pool.gate` reflects the reconnect before deciding unavailability.
-            if (!this.#resolveTarget(selector) && pool.gate.admits) {
-              const pendingLosses = [...this.#brokers.values()].filter(
-                (broker) => broker.poolRunnerId === candidateRunnerId && broker.pendingChannelLoss,
+          }
+          // If the Runner dropped and a pooled broker on it has already left OPEN while its
+          // channel-loss notification is still draining to the coordinator, wait for that loss to
+          // land so `pool.gate` reflects the reconnect before deciding unavailability.
+          if (!this.#resolveTarget(selector) && pool.gate.admits) {
+            const pendingLosses = [...this.#brokers.values()].filter(
+              (broker) => broker.poolRunnerId === candidateRunnerId && broker.pendingChannelLoss,
+            );
+            if (pendingLosses.length > 0) {
+              await Promise.all(
+                pendingLosses.map((broker) => broker.waitForChannelLoss(wakeSignal)),
               );
-              if (pendingLosses.length > 0) {
-                await Promise.all(
-                  pendingLosses.map((broker) => broker.waitForChannelLoss(wakeSignal)),
-                );
-              }
             }
           }
-        } catch (error) {
-          // The target this open waited for went over: it waits for this Home's next one.
-          if (
-            error instanceof BrowserPoolTargetOver &&
-            !(error instanceof BrowserPoolTargetLeft) &&
-            this.#followsNextTarget(candidateRunnerId, pool)
-          )
-            throw new BrowserPoolTargetLeft(candidateRunnerId, pool);
-          throw error;
-        }
-        // Its target went over while it waited for it to answer: the next one serves it.
-        if (!this.#resolveTarget(selector) && this.#followsNextTarget(candidateRunnerId, pool)) {
-          reservation.release();
-          heldPool = undefined;
-          throw new BrowserPoolTargetLeft(candidateRunnerId, pool);
         }
         if (
           !this.#resolveTarget(selector) &&
@@ -3138,30 +3093,16 @@ export class BrowserService {
           const attachPoolReservation = (
             target: BrowserPoolCoordinator,
             reservation: BrowserPoolReservation,
-            follows?: RunnerId,
           ) => {
             budget.cleanupPoolAbort?.();
             delete budget.cleanupPoolAbort;
             budget.pool = { target, reservation };
             const ended = reservation.ended;
             if (ended) {
-              const onEnded = () => {
-                // Its target went over before anything was admitted or requested: the open
-                // waits for this Home's next target instead of ending.
-                if (
-                  follows &&
-                  budget.follow &&
-                  !budget.admitted &&
-                  !budget.pageRequested &&
-                  this.#followsNextTarget(follows, target)
-                ) {
-                  budget.follow.abort(new BrowserPoolTargetLeft(follows, target));
-                  return;
-                }
+              const onEnded = () =>
                 budget.abort?.(
                   ended.reason ?? new BrowserPoolAdmissionClosed("This browser is restarting."),
                 );
-              };
               if (ended.aborted) onEnded();
               else {
                 ended.addEventListener("abort", onEnded, { once: true });
@@ -3196,11 +3137,7 @@ export class BrowserService {
               },
             );
             if (resolved.pool) {
-              attachPoolReservation(
-                resolved.pool.target,
-                resolved.pool.reservation,
-                resolved.placement.runnerId,
-              );
+              attachPoolReservation(resolved.pool.target, resolved.pool.reservation);
             }
             const { profileId, placement } = resolved;
             identityKey = resolved.identityKey;
@@ -3218,12 +3155,7 @@ export class BrowserService {
                     candidate.opener.userId === ownerId) &&
                 candidate.profileId === profileId &&
                 samePlacement(placement, placementOf(candidate)),
-              resolved.pool && {
-                pool: resolved.pool.target,
-                signal: budget.follow
-                  ? AbortSignal.any([budget.signal, budget.follow.signal])
-                  : budget.signal,
-              },
+              resolved.pool && { pool: resolved.pool.target, signal: budget.signal },
             );
             const candidates = sessions
               .filter((candidate) => this.#brokers.get(candidate.id)?.live)
@@ -3404,37 +3336,8 @@ export class BrowserService {
           }
           return binding;
         };
-        /**
-         * A selection whose pooled target went over before anything was admitted or requested
-         * waits for this Home's next target within the open's own bound, then selects again.
-         */
-        const selectFollowing = async () => {
-          for (;;) {
-            const follow = new AbortController();
-            budget.follow = follow;
-            try {
-              return await select();
-            } catch (error) {
-              const left =
-                error instanceof BrowserPoolTargetLeft
-                  ? error
-                  : follow.signal.reason instanceof BrowserPoolTargetLeft
-                    ? follow.signal.reason
-                    : undefined;
-              if (!left || budget.signal.aborted || budget.admitted || budget.pageRequested)
-                throw error;
-              budget.cleanupPoolAbort?.();
-              delete budget.cleanupPoolAbort;
-              budget.pool?.reservation.release();
-              delete budget.pool;
-              await this.#nextPool(left.runnerId, left.left, budget.signal);
-            } finally {
-              if (budget.follow === follow) delete budget.follow;
-            }
-          }
-        };
         const selectAndStart = async () => {
-          let binding = await selectFollowing();
+          let binding = await select();
           // Another open of this identity must see the admitted session ready
           // before selecting reuse. Different identities have independent lanes.
           if (pendingFinish) {
@@ -14174,8 +14077,6 @@ interface BrowserTabOpenBudget {
   pageRequested?: boolean;
   poolWaitingRunnerId?: RunnerId;
   cleanupPoolAbort?: () => void;
-  /** Aborted when the pooled target went over before anything was admitted: the open follows. */
-  follow?: AbortController;
   pool?: {
     target: BrowserPoolCoordinator;
     reservation: BrowserPoolReservation;
@@ -14188,20 +14089,6 @@ const browserOutcomeUnknownWords =
 /** Rule 4: a sign-in import whose command left the Host and whose reply was lost. */
 const browserSignInOutcomeUnknownWords =
   "The sign-in may have been applied. Check the page before trying again.";
-
-/**
- * A call's pooled target went over (or was retired for another) before it had sent anything: it
- * waits for this Runner's next target. Read by anyone else, it is the target-over refusal.
- */
-class BrowserPoolTargetLeft extends BrowserPoolTargetOver {
-  readonly runnerId: RunnerId;
-  readonly left: BrowserPoolCoordinator | undefined;
-  constructor(runnerId: RunnerId, left: BrowserPoolCoordinator | undefined) {
-    super();
-    this.runnerId = runnerId;
-    this.left = left;
-  }
-}
 
 class BrowserCdpRefusal extends OpensteerError {
   constructor(cause: OpensteerError) {

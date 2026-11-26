@@ -4,7 +4,7 @@ import { BrowserPoolAdmissionClosed } from "@opensteer/database";
 import {
   BrowserPoolAttemptRefused,
   BrowserPoolGate,
-  BrowserPoolTargetOver,
+  BrowserPoolTargetReplaced,
   browserPoolUnsentNext,
 } from "./browser-pool-gate.js";
 
@@ -315,18 +315,18 @@ it("tells the agent that nothing was sent and it may call again when a wait runs
     message: "This browser is not ready. Nothing was sent.",
     next: browserPoolUnsentNext,
   });
-  expect(over).toBeInstanceOf(BrowserPoolTargetOver);
+  expect(over).not.toBeInstanceOf(BrowserPoolTargetReplaced);
   expect(browserPoolUnsentNext).toBe("Nothing was sent. It is safe to call again.");
 });
 
-it("refuses a waiter of a target that goes over with one class a caller can follow, in the same words", async () => {
+it("refuses a waiter as replaced, never plainly over, when a different target replaces this one", async () => {
   const subject = new BrowserPoolGate();
   subject.set({ recovered: true, away: "waking", hold: null });
   const waiting = subject.reserve(new AbortController().signal);
-  subject.set({ hold: "over" });
+  subject.set({ hold: "over", replaced: true });
   const refused = await waiting.catch((error: unknown) => error);
-  // A caller that can find the Home's next target follows it; anyone else reads these words.
-  expect(refused).toBeInstanceOf(BrowserPoolTargetOver);
+  // The caller follows the replacement; anyone who does not reads the same words as before.
+  expect(refused).toBeInstanceOf(BrowserPoolTargetReplaced);
   expect(refused).toBeInstanceOf(BrowserPoolAdmissionClosed);
   expect(refused).toMatchObject({
     message: "This browser is not ready. Nothing was sent.",

@@ -1356,6 +1356,7 @@ export class BrowserPoolCoordinator {
             : this.#restartWanted
               ? "restart"
               : null,
+      replaced: this.#over === "browser-replaced",
     });
     // A park that failed after D ends where the browser settled.
     if (this.#parkSettling && slot?.phase === "parked") this.#settlePark("parked");
