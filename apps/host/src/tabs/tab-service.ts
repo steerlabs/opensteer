@@ -1116,6 +1116,28 @@ export class TabService implements TabServicePort {
   ) {
     return this.#row(actor, tabId);
   }
+  /** The app's current window, bound to this window tab in place of the one that ended. */
+  async #rebindWindow(
+    actor: TabActor & { kind: "person" },
+    row: TabRecord,
+    runnerId: RunnerId,
+  ): Promise<TabRecord | null> {
+    const current = await this.options.nativeTargets
+      .resolveWindow(actor.ownerId, runnerId, { bundleId: row.windowApp!.bundleId })
+      .catch((error: unknown) => {
+        // No window, the app gone or the computer away: the tab says its own window closed.
+        if (error instanceof OpensteerError) return null;
+        throw error;
+      });
+    if (!current || current.windowId === row.windowId) return null;
+    const next = { ...row, windowId: current.windowId, windowApp: current.app };
+    await this.options.authorize(actor, next, this.options.store.database);
+    return this.options.store.rebindWindow(actor.ownerId, row.id, row.generation, row.windowId!, {
+      windowId: current.windowId,
+      windowApp: current.app,
+      title: current.title || row.title,
+    });
+  }
   async #fence(actor: TabActor, row: TabRecord, viewer: TabViewer): Promise<void> {
     const current = await this.#row(actor, row.id);
     if (
@@ -1369,14 +1391,42 @@ export class TabService implements TabServicePort {
     tabId: TabId,
     key: string,
   ): Promise<{ tab: Tab; viewer: TabViewer }> {
-    const actor = { kind: "person", ownerId } as const,
-      row = await this.#row(actor, tabId);
+    const actor = { kind: "person", ownerId } as const;
+    let row = await this.#row(actor, tabId);
     await this.options.authorize(actor, row, this.options.store.database);
     let viewer: TabViewer;
     if (row.kind === "page") viewer = await this.options.pages.activate(ownerId, row, key);
     else if (row.kind === "app") {
       await this.options.apps.get(ownerId, row.appId!);
       viewer = { kind: "app", appId: row.appId! };
+    } else if (row.kind === "window") {
+      const runnerId = await this.options.devices.requireDeviceSelfRunnerId(row.computerId);
+      const open = (window: TabRecord, attempt: string) =>
+        this.options.nativeTargets.openOwnerView(
+          ownerId,
+          {
+            tabId,
+            tabGeneration: window.generation,
+            computerId: runnerId,
+            target: { kind: "app", app: window.windowApp!, windowId: window.windowId! },
+          },
+          attempt,
+        );
+      let view = await open(row, key);
+      // The app quit, or this Mac's Opensteer restarted, since the tab chose its window: the
+      // same tab shows the app's current window, if it has one, rather than the one that ended.
+      if (
+        view.state === "unavailable" &&
+        (view.unavailableReason === "window-closed" ||
+          view.unavailableReason === "window-identity-lost")
+      ) {
+        const rebound = await this.#rebindWindow(actor, row, runnerId);
+        if (rebound) {
+          row = rebound;
+          view = await open(rebound, `${key}:window:${rebound.windowId}`);
+        }
+      }
+      viewer = { kind: "window", view };
     } else {
       const view =
         row.kind === "phone" && this.options.deviceNativeTargets
@@ -1396,14 +1446,11 @@ export class TabService implements TabServicePort {
                 tabId,
                 tabGeneration: row.generation,
                 computerId: await this.options.devices.requireDeviceSelfRunnerId(row.computerId),
-                target:
-                  row.kind === "phone"
-                    ? { kind: "phone", display: "main" }
-                    : { kind: "app", app: row.windowApp!, windowId: row.windowId! },
+                target: { kind: "phone", display: "main" },
               },
               key,
             );
-      viewer = { kind: row.kind, view };
+      viewer = { kind: "phone", view };
     }
     this.changed(ownerId, [tabId]);
     const catalogBeforeGet = this.#catalogs.get(ownerId);

@@ -236,6 +236,91 @@ describe("tab projection and viewer admission", () => {
     expect(close).toHaveBeenCalledWith(ownerId, a.id, 1);
     f.service.dispose();
   });
+  it("opens the app's current window in the same tab when its own window is gone", async () => {
+    const a = row("window"),
+      f = fixture([a]);
+    const dead = a.windowId!,
+      next = WindowIdSchema.parse(`win_${randomUUID()}`);
+    const view = (windowId: typeof next, state: "ready" | "unavailable") =>
+      ({
+        viewId: "cvw_test",
+        generation: 1,
+        state,
+        unavailableReason: state === "ready" ? null : "window-closed",
+        target: { kind: "app", app: a.windowApp, windowId },
+      }) as unknown as ComputerView;
+    const opened: string[] = [];
+    f.native.openOwnerView = vi.fn(async (_owner, input) => {
+      const windowId = (input.target as { windowId: typeof next }).windowId;
+      opened.push(windowId);
+      return view(windowId, windowId === dead ? "unavailable" : "ready");
+    });
+    f.native.resolveWindow = vi.fn(async () => ({
+      windowId: next,
+      app: a.windowApp!,
+      appName: "Test",
+      bundleId: "test.app",
+      title: "After relaunch",
+    }));
+    const rebindWindow = vi.fn(
+      async (
+        _owner: unknown,
+        id: unknown,
+        generation: number,
+        from: unknown,
+        to: { windowId: typeof next; title: string },
+      ) => {
+        if (id !== a.id || generation !== a.generation || from !== a.windowId) return null;
+        a.windowId = to.windowId;
+        a.title = to.title;
+        return structuredClone(a);
+      },
+    );
+    (f.options.store as unknown as Record<string, unknown>).rebindWindow = rebindWindow;
+
+    const activated = await f.service.activate(ownerId, a.id, "open-again");
+
+    expect(f.native.resolveWindow).toHaveBeenCalledWith(ownerId, computerId, {
+      bundleId: "test.app",
+    });
+    expect(rebindWindow).toHaveBeenCalledWith(ownerId, a.id, 1, dead, {
+      windowId: next,
+      windowApp: a.windowApp,
+      title: "After relaunch",
+    });
+    expect(opened).toEqual([dead, next]);
+    expect(activated.viewer).toMatchObject({ kind: "window", view: { state: "ready" } });
+    expect(activated.tab.title).toBe("After relaunch");
+    f.service.dispose();
+  });
+  it("keeps a window tab whose app has no window unavailable, and rebinds nothing", async () => {
+    const a = row("window"),
+      f = fixture([a]);
+    f.native.openOwnerView = vi.fn(
+      async () =>
+        ({
+          viewId: "cvw_test",
+          generation: 1,
+          state: "unavailable",
+          unavailableReason: "window-closed",
+          target: { kind: "app", app: a.windowApp, windowId: a.windowId },
+        }) as unknown as ComputerView,
+    );
+    const { OpensteerError } = await import("@opensteer/core");
+    f.native.resolveWindow = vi.fn(async () => {
+      throw new OpensteerError({ code: "not_found", message: "Window closed" });
+    });
+    const rebindWindow = vi.fn();
+    (f.options.store as unknown as Record<string, unknown>).rebindWindow = rebindWindow;
+    const activated = await f.service.activate(ownerId, a.id, "open-again");
+    expect(rebindWindow).not.toHaveBeenCalled();
+    expect(f.native.openOwnerView).toHaveBeenCalledTimes(1);
+    expect(activated.viewer).toMatchObject({
+      kind: "window",
+      view: { state: "unavailable", unavailableReason: "window-closed" },
+    });
+    f.service.dispose();
+  });
   it("projects an ordered bounded prefix and refreshes changed tab state", async () => {
     const a = row(),
       b = row("window"),
