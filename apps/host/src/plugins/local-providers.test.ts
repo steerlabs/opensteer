@@ -704,3 +704,88 @@ it.each([
     expect(callTool).not.toHaveBeenCalled();
   },
 );
+
+it.each([
+  ["a Run", false],
+  ["a connected agent", true],
+] as const)(
+  "gives %s's call the listing's reason when the device's driver is not loaded, never the raw error",
+  async (_, connection) => {
+    const definition = deviceDefinitions.find((definition) => definition.id === "apple-calendar")!;
+    const callable = computerCallable("read", definition);
+    // The device reports the app cannot run (its apps stream has not attached).
+    const readiness = {
+      code: "INTEGRATION_UNAVAILABLE",
+      serverId: callable.server.id,
+      connectionId: callable.grant.connectionId,
+      requiredAccess: null,
+      detail: "Opensteer's integrations service is unavailable on Studio Mac.",
+    };
+    const store = {
+      listDiscoveryInventory: async () => [
+        {
+          installation: callable.installation,
+          servers: [callable.server],
+          accounts: [{ connectionId: callable.grant.connectionId }],
+          tools: [callable.tool],
+          readiness: { servers: [readiness], tools: [{ toolId: callable.tool.id, readiness }] },
+        },
+      ],
+      listCallableTools: async () => [callable],
+      grantedDeviceApprovals: async () => [],
+      getDeviceComputerConnectionForCall: async () => ({
+        deviceId: "dev_mac",
+        runnerName: "Studio Mac",
+        access: "read",
+      }),
+    };
+    const userId = createId("user");
+    const providers = new LocalProviders({
+      store,
+      devices: {
+        withAvailability: async (entries: unknown) => entries,
+        // Its driver is not loaded: the device check itself cannot answer.
+        localDeviceAccessBlocked: async () => {
+          throw new Error("Active self Runner not found");
+        },
+        localDiscoveryFacts: () => ({ connectionFor: store.getDeviceComputerConnectionForCall }),
+        callTool: async () => {
+          throw new Error("Unexpected send");
+        },
+      },
+      localServers: {},
+      authority: {
+        caller: () =>
+          connection
+            ? { kind: "connection", userId, connectionId: "connection", key: "connection:x" }
+            : { kind: "run", userId, thread: { id: createId("thread") } },
+        session: () =>
+          connection
+            ? { operation: { bindingId: "session:x", taskId: createId("thread") } }
+            : undefined,
+      },
+    } as unknown as ConstructorParameters<typeof LocalProviders>[0]);
+    const context = { caller: "test", mode: "automatic" as const };
+    const [provider] = await providers.providers(context);
+    expect(provider?.blocked?.message).toBe(
+      "Opensteer's integrations service is unavailable on Studio Mac.",
+    );
+    const called = await providers.call(
+      {
+        ...context,
+        execution: "execution",
+        plugin: provider!.id,
+        tool: callable.tool.name,
+        input: {},
+      },
+      AbortSignal.timeout(5000),
+      async () => {
+        throw new Error("Unexpected approval");
+      },
+    );
+    expect(called).toEqual({
+      kind: "blocked",
+      blocked: provider!.toolBlockers?.[callable.tool.name] ?? provider!.blocked,
+    });
+  },
+);

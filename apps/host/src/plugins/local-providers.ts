@@ -145,19 +145,10 @@ export class LocalProviders {
     );
     const [provider] = providers;
     if (!provider) throw failure("This local tool was removed or changed; search again.");
-    if (provider.blocked) {
-      const access =
-        provider.kind === "device-app" && provider.computer
-          ? await this.#options.devices.localDeviceAccessBlocked(
-              provider.computer.id,
-              caller.kind === "connection",
-            )
-          : undefined;
-      return {
-        kind: "blocked",
-        blocked: access ?? provider.toolBlockers[input.tool] ?? provider.blocked,
-      };
-    }
+    // What the listing said keeps it, from the same function and the same reads: the device's
+    // own refusal is already its app's and every operation's (#list), never asked again here.
+    if (provider.blocked)
+      return { kind: "blocked", blocked: provider.toolBlockers[input.tool] ?? provider.blocked };
     const tool = provider.tools.find(({ name }) => name === input.tool);
     const callable = callables.find(
       (candidate) =>
@@ -635,14 +626,31 @@ export class LocalProviders {
         );
     // A data app its device cannot serve now (its Apps switch off, offline, asleep, stopped) reads
     // as a call to it says it, for a connected agent and a Run alike, each in its own words: the
-    // device's own refusal first, for the app and each operation. One read per device.
+    // device's own refusal first, for the app and each operation. Once per device, from the
+    // device's switches and name the approval's row brought (facts.connectionFor, read for the
+    // listing anyway) and the Home's own state of it: no statement of its own (rule 7).
     const refusals = new Map<string, Promise<Blocked | undefined>>();
-    const deviceRefusal = (deviceId: DeviceId) => {
+    const deviceRefusal = (deviceId: DeviceId, connectionId: string | null) => {
       let refusal = refusals.get(deviceId);
       if (!refusal) {
-        refusal = this.#options.devices
-          .localDeviceAccessBlocked(deviceId, connected)
-          // A device the Home no longer knows is left to what the inventory says of it.
+        refusal = (async () => {
+          const row = connectionId
+            ? await facts.connectionFor(IntegrationConnectionIdSchema.parse(connectionId))
+            : null;
+          return this.#options.devices.localDeviceAccessBlocked(
+            deviceId,
+            connected,
+            row && row.deviceAccessPolicy !== undefined
+              ? {
+                  accessPolicy: row.deviceAccessPolicy,
+                  name: row.deviceName,
+                  removed: row.runnerRevoked,
+                }
+              : undefined,
+          );
+        })()
+          // A device the Home no longer knows, or whose driver is not loaded, is left to what the
+          // inventory says of it: the listing and the call alike.
           .catch(() => undefined);
         refusals.set(deviceId, refusal);
       }
@@ -653,7 +661,7 @@ export class LocalProviders {
       : await Promise.all(
           assessed.map(async (entry) => {
             if (entry.kind !== "device-app" || !entry.computer) return entry;
-            const device = await deviceRefusal(entry.computer.id);
+            const device = await deviceRefusal(entry.computer.id, entry.connectionId);
             return device
               ? {
                   ...entry,

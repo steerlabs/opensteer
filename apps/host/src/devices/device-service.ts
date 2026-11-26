@@ -127,7 +127,7 @@ import {
   type ComputerInventoryAuthority,
   type ComputerUseSessionAuthority,
 } from "../computer-use/computer-use-service.js";
-import { DeviceAccessRefusal } from "../administration/device-access.js";
+import { DeviceAccessRefusal, type KnownDevice } from "../administration/device-access.js";
 import type { DeviceDriverIdentity } from "@opensteer/core";
 import type { LocalServerService } from "../local-servers/local-server-service.js";
 import { deviceAccessBlocked } from "./target-blocked.js";
@@ -503,9 +503,9 @@ export class DeviceService {
   }
 
   /** Why this device refuses agents now, worded for a connected agent when `connection` is set. */
-  async localDeviceAccessBlocked(deviceId: DeviceId, connection = false) {
+  async localDeviceAccessBlocked(deviceId: DeviceId, connection = false, known?: KnownDevice) {
     try {
-      await this.#deviceApps.requireAgentAccess(deviceId);
+      await this.#deviceApps.requireAgentAccess(deviceId, known);
     } catch (error) {
       const blocked = deviceAccessBlocked(error, connection);
       if (!blocked) throw error;

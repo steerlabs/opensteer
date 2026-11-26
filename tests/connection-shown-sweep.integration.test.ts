@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { sql } from "kysely";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import pg from "pg";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentGrant } from "../packages/core/src/index.js";
 import { createHelperAppProvider } from "../apps/runner/src/index.js";
 import { localNamespace } from "../apps/host/src/plugins/provider-names.js";
@@ -719,4 +720,52 @@ integration("what a connection is shown", () => {
       expect(await w.waitingRequests()).toEqual([]);
     },
   );
+
+  /** Every statement this process sends while `action` runs. */
+  const statements = async (action: () => Promise<unknown>) => {
+    const sent: string[] = [];
+    const prototype: { query(...args: unknown[]): unknown } = pg.Client.prototype;
+    const query = prototype.query;
+    const spy = vi.spyOn(prototype, "query").mockImplementation(function (
+      this: pg.Client,
+      ...args: unknown[]
+    ) {
+      const first = args[0];
+      sent.push(
+        typeof first === "string"
+          ? first
+          : first && typeof first === "object" && "text" in first
+            ? String(first.text)
+            : "",
+      );
+      return Reflect.apply(query, this, args);
+    });
+    try {
+      await action();
+    } finally {
+      spy.mockRestore();
+    }
+    return sent;
+  };
+
+  it("lists a Run's data apps with no read of each device on the healthy path (rule 7)", async () => {
+    const w = await world();
+    const run = await dispatchCallerRun(w.host, w.caller, { key: "cost", title: "Plan" });
+    closers.unshift(() => run.complete());
+    const gateway = keep(await integrationGateway(run.integrationTools));
+    await grantAccess(w.host, gateway, {
+      access: "read-write",
+      connectionId: w.calendar,
+      integration: "apple-calendar",
+    });
+    // Warm, as a Run's first listing is.
+    await gateway.call("plugin_search", { query: "calendar" });
+    const sent = await statements(() => gateway.call("plugin_search", { query: "calendar" }));
+    console.info(`A Run's plugin_search sends ${sent.length} statements.`);
+    // The device's switch and name come with the approval's row the listing reads anyway; its
+    // state is the Home's own. No statement reads a device by itself.
+    expect(
+      sent.filter((sql) => /^select [^;]*from "devices" where "id" = \$1/su.test(sql)),
+    ).toEqual([]);
+  });
 });

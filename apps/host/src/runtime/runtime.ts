@@ -997,19 +997,31 @@ export async function createHostRuntime(
       recordRunnerOutdated: async (runner) => {
         await store.recordRunnerUpdateRequired({ ...runner, reason: "runner-outdated" });
       },
-      requireDeviceAgentAccess: async (deviceId) => {
-        const binding = deviceDrivers.binding(deviceId);
+      requireDeviceAgentAccess: async (deviceId, known) => {
+        // No driver loaded yet (an iPhone whose apps stream has not attached): the device's own
+        // switch still holds; whether it can serve now is what its apps' state says, in the
+        // listing and at the send, never a raw error here.
+        let binding: ReturnType<typeof deviceDrivers.binding> | undefined;
+        try {
+          binding = deviceDrivers.binding(deviceId);
+        } catch {
+          binding = undefined;
+        }
         await requireDeviceAccess(
           database,
           deviceId,
           "apps",
-          binding.role === "self"
-            ? runners.isRunnerConnected(binding.runnerId)
-            : computerApps.attached(deviceId),
-          {
-            asleep: runners.isRunnerAsleep(binding.runnerId),
-            stopped: runners.agentsStoppedSince(binding.runnerId) !== null,
-          },
+          !binding ||
+            (binding.role === "self"
+              ? runners.isRunnerConnected(binding.runnerId)
+              : computerApps.attached(deviceId)),
+          binding
+            ? {
+                asleep: runners.isRunnerAsleep(binding.runnerId),
+                stopped: runners.agentsStoppedSince(binding.runnerId) !== null,
+              }
+            : {},
+          known,
         );
       },
       onDeviceInputWithdrawn: (deviceId) => displayStreams?.withdrawOwnerInput(deviceId),

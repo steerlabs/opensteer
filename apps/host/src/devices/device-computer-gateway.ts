@@ -1,3 +1,4 @@
+import type { KnownDevice } from "../administration/device-access.js";
 import type { ComputerInventoryAuthority } from "../computer-use/computer-use-service.js";
 import {
   DeviceIdSchema,
@@ -135,7 +136,7 @@ export interface DeviceComputerAppsPort {
     definitionId: string,
   ): Promise<ReturnType<ComputerAppHub["reportsApp"]>>;
   compatibilityReason(deviceId: DeviceId): Promise<string | null>;
-  requireAgentAccess(deviceId: DeviceId): Promise<void>;
+  requireAgentAccess(deviceId: DeviceId, known?: KnownDevice): Promise<void>;
   agentSessionGuardsSupported(deviceId: DeviceId): Promise<boolean>;
   refuseOutdatedForAgentSession(deviceId: DeviceId, doing: string): Promise<string>;
 }
@@ -179,7 +180,7 @@ export function deviceComputerApps(
     attached: async (id) => hub.attached(id),
     reportsApp: async (id, definition) => hub.reportsApp(id, definition),
     compatibilityReason: async (id) => hub.compatibilityReason(id),
-    requireAgentAccess: async (id) => hub.requireDeviceAgentAccess(id),
+    requireAgentAccess: async (id, known) => hub.requireDeviceAgentAccess(id, known),
     agentSessionGuardsSupported: async (id) => hub.agentSessionGuardsSupported(id),
     refuseOutdatedForAgentSession: (id, doing) => hub.refuseOutdatedForAgentSession(id, doing),
   };
