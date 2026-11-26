@@ -78,8 +78,8 @@ export function ComputerAppPicker(props: {
             description={
               target.connection !== null
                 ? computerAppRunsOnPhone(presentation)
-                  ? `${props.definition.name} is already on. Change access in Settings → Computers → ${target.machine.name}.`
-                  : `${props.definition.name} is already on. To change access, open Opensteer on ${target.machine.name}, then Settings → Computers → ${target.machine.name}. Return here when you are done.`
+                  ? `${props.definition.name} is already on. Change access in Settings → Devices → ${target.machine.name}.`
+                  : `${props.definition.name} is already on. To change access, open Opensteer on ${target.machine.name}, then Settings → Devices → ${target.machine.name}. Return here when you are done.`
                 : target.machine.id === props.chosenId
                   ? `${computerAppStateLabel(target.state, target.machine.device?.platform)} · chosen`
                   : computerAppStateLabel(target.state, target.machine.device?.platform)
@@ -129,13 +129,13 @@ export function ComputerAppPicker(props: {
  * How a computer that can run the app joins this deployment. A Mac adds
  * itself from the desktop app and an Android phone from a computer it is
  * plugged into; an iPhone adds itself from Opensteer on it, which has no
- * desktop app or Add computer to point to.
+ * desktop app or Add a device to point to.
  */
 function addTargetSteps(presentation: IntegrationDefinitionSummaryView["computerApp"]): string {
   const platforms = presentation?.platforms ?? [];
   if (computerAppRunsOnPhone(presentation)) return addPhoneSteps("an Android phone");
   const target = computerAppPlatformTargetLabel(platforms);
   return platforms.includes("ios")
-    ? `Open Opensteer on ${target}, open this deployment, then add it in Settings → Computers.`
-    : `Open Opensteer on ${target} in the desktop app. Open this deployment, then Settings → Computers → Add computer and follow the steps.`;
+    ? `Open Opensteer on ${target}, open this deployment, then add it in Settings → Devices.`
+    : `Open Opensteer on ${target} in the desktop app. Open this deployment, then Settings → Devices → Add a device and follow the steps.`;
 }

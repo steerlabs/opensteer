@@ -135,7 +135,7 @@ describe("ComputerAppsSection", () => {
     expect(rowStatus(container)).toBe("Setup unfinished");
     expect(buttonTexts(container)).not.toContain("Send setup request");
     expect(rowNote(container)).toBe(
-      "Messages needs Full Disk Access. Complete setup on Mac mini. In the Opensteer desktop app there, open Settings → Computers → Mac mini.",
+      "Messages needs Full Disk Access. Complete setup on Mac mini. In the Opensteer desktop app there, open Settings → Devices → Mac mini.",
     );
     expect(button(container, "Manage")).not.toBeNull();
     expect(onRequestSetup).not.toHaveBeenCalled();
@@ -151,7 +151,7 @@ describe("ComputerAppsSection", () => {
     expect(rowStatus(container)).toBe("Can read · Sending needs setup");
     expect(buttonTexts(container)).not.toContain("Send setup request");
     expect(rowNote(container)).toBe(
-      "Messages needs Automation permission. Complete setup on Mac mini. In the Opensteer desktop app there, open Settings → Computers → Mac mini.",
+      "Messages needs Automation permission. Complete setup on Mac mini. In the Opensteer desktop app there, open Settings → Devices → Mac mini.",
     );
   });
 
@@ -394,6 +394,31 @@ describe("ComputerAppsSection", () => {
       definitionId: "apple-messages",
       remedy: "full-disk-access",
     });
+  });
+
+  it("lets this Mac turn off an approval whose setup is unfinished, as elsewhere", async () => {
+    // Real Mac: Calendar's row offered only Finish setup here, where the web offered Manage
+    // with Turn off Calendar.
+    const dispatch = dispatcher(async () => ({ type: "integration.disconnect" }));
+    const { container } = await mount({
+      connections: [connection("read")],
+      dispatch,
+      localApproval: localApproval(),
+      machine: machine({ apps: [readPermissionRequired()] }),
+    });
+
+    expect(rowStatus(container)).toBe("Setup unfinished");
+    expect(button(container, "Finish setup")).toBeDefined();
+    await click(button(container, "Manage"));
+    await click(button(container, "Turn off Messages"));
+    expect(container.textContent).toContain("removes your agents' access");
+    await click(button(container, "Turn off"));
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: connection("read").id,
+        type: "integration.disconnect",
+      }),
+    );
   });
 
   it("moves from ready reading to the Automation permission step for sending", async () => {
