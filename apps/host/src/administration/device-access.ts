@@ -101,5 +101,5 @@ export async function requireRunnerDeviceAccess(
       runner.name,
     );
   if (!deviceAccess(runner.accessPolicy)[capability])
-    throw new DeviceAccessRefusal("device-access-off", runner.id, capability);
+    throw new DeviceAccessRefusal("device-access-off", runner.id, capability, runner.name);
 }
