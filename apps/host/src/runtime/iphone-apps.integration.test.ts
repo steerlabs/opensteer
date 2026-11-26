@@ -792,6 +792,67 @@ integration.sequential("iPhone integrations Host contract", () => {
     expect(world.macCalls).toHaveLength(0);
   });
 
+  it.each([
+    ["removed device", "active"],
+    ["removed device", "needs-attention"],
+    ["blocked approval", "active"],
+    ["blocked approval", "needs-attention"],
+  ] as const)(
+    "keeps a %s's readiness out of an Everything connection's inventory, its server %s",
+    async (change, serverState) => {
+      const world = await calendarsTurnedOn("read-write");
+      const agent = keep(await connectAgent(host, { scope: "everything" }));
+      const { integrationServerId, deviceId } = await host.store.database
+        .selectFrom("integrationConnections")
+        .select(["integrationServerId", "deviceId"])
+        .where("id", "=", world.macCalendar as never)
+        .executeTakeFirstOrThrow();
+      if (change === "removed device")
+        await host.store.database
+          .updateTable("devices")
+          .set({ removedAt: new Date() })
+          .where("id", "=", deviceId!)
+          .execute();
+      else
+        await host.store.database
+          .updateTable("integrationConnections")
+          .set({ computerBlockedAt: new Date() })
+          .where("id", "=", world.macCalendar as never)
+          .execute();
+      if (serverState === "needs-attention")
+        await host.store.database
+          .updateTable("integrationServers")
+          .set({ status: "needs-attention", statusDetail: "Server needs attention on Studio Mac" })
+          .where("id", "=", integrationServerId!)
+          .execute();
+      // Nothing the one rule does not lend is in what the connection's listing is built from:
+      // not its account, not its tools, and no readiness the Home works out for it, which reads
+      // byte for byte as for an approval that never existed.
+      const inventory = await new IntegrationPlatformStore(
+        host.store.database,
+      ).listDiscoveryInventory({
+        ownerUserId: host.ownerId,
+        connectionId: agent.id,
+        includeTargetReadiness: true,
+      });
+      expect(JSON.stringify(inventory)).not.toContain(world.macCalendar);
+      expect(JSON.stringify(inventory)).toContain(world.phoneCalendar);
+      const inventedId = `con_${randomUUID()}`;
+      const readiness = (connectionId: string) =>
+        JSON.stringify(
+          inventory.flatMap((entry) =>
+            entry.servers.map((server) =>
+              entry.readiness.forTarget?.(server.id, {
+                access: "read",
+                connectionId: connectionId as never,
+              }),
+            ),
+          ),
+        ).replaceAll(connectionId, "ID");
+      expect(readiness(world.macCalendar)).toBe(readiness(inventedId));
+    },
+  );
+
   it("tells a connected agent holding a data app when the device's helper is not running, or the device is offline", async () => {
     const world = await calendarsTurnedOn();
     const agent = keep(await connectAgent(host, { scope: "everything" }));

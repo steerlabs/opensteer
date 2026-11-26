@@ -1374,6 +1374,8 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       connectionId === null ||
       !computerConnectionIds.has(connectionId) ||
       lentIds.has(connectionId);
+    // Its readiness too is worked out from those alone: none is said of an approval it is not lent.
+    const shownConnections = lentIds ? connections.filter(({ id }) => visible(id)) : connections;
     const grantedConnections =
       lineageGrant?.scope === "selected"
         ? await integrationConnectionGrantAccess(
@@ -1430,7 +1432,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
         ): IntegrationReadiness =>
           resolveIntegrationReadiness({
             connectionRequirement: server.connectionRequirement,
-            connections,
+            connections: shownConnections,
             hasAccess: hasInstallationAccess,
             runAccess: requesterAccess.runAccess,
             installationStatus: installation.status,
