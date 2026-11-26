@@ -1145,17 +1145,11 @@ export class TabService implements TabServicePort {
       return null;
     const next = { ...row, windowId: current.windowId, windowApp: current.app };
     await this.options.authorize(actor, next, this.options.store.database);
-    const rebound = await this.options.store.rebindWindow(
-      actor.ownerId,
-      row.id,
-      row.generation,
-      row.windowId!,
-      { windowId: current.windowId, windowApp: current.app, title: current.title || row.title },
-    );
-    if (rebound) return rebound;
-    // Another activation of this tab rebound it first: show the window it chose.
-    const now = await this.options.store.get(actor.ownerId, row.id);
-    return now && now.generation === row.generation && now.windowId !== row.windowId ? now : null;
+    return this.options.store.rebindWindow(actor.ownerId, row.id, row.generation, row.windowId!, {
+      windowId: current.windowId,
+      windowApp: current.app,
+      title: current.title || row.title,
+    });
   }
   async #fence(actor: TabActor, row: TabRecord, viewer: TabViewer): Promise<void> {
     const current = await this.#row(actor, row.id);

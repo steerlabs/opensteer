@@ -321,40 +321,6 @@ describe("tab projection and viewer admission", () => {
     expect(activated.tab.title).toBe("Sol 3 Moving Clock");
     f.service.dispose();
   });
-  it("opens the window another activation just rebound, when its own rebind loses the race", async () => {
-    const a = { ...row("window"), openedBy: "person" as const },
-      f = fixture([a]);
-    const dead = a.windowId!,
-      won = WindowIdSchema.parse(`win_${randomUUID()}`);
-    const opened: string[] = [];
-    f.native.openOwnerView = vi.fn(async (_owner, input) => {
-      const windowId = (input.target as { windowId: typeof won }).windowId;
-      opened.push(windowId);
-      return {
-        viewId: "cvw_test",
-        generation: 1,
-        state: windowId === dead ? "unavailable" : "ready",
-        unavailableReason: windowId === dead ? "window-closed" : null,
-        target: { kind: "app", app: a.windowApp, windowId },
-      } as unknown as ComputerView;
-    });
-    f.native.currentWindow = vi.fn(async () => ({
-      windowId: WindowIdSchema.parse(`win_${randomUUID()}`),
-      app: a.windowApp!,
-      appName: "Test",
-      bundleId: "test.app",
-      title: "Seen by this activation",
-    }));
-    // The other activation's write landed first: this guarded write finds the tab moved.
-    (f.options.store as unknown as Record<string, unknown>).rebindWindow = vi.fn(async () => {
-      a.windowId = won;
-      return null;
-    });
-    const activated = await f.service.activate(ownerId, a.id, "open-again");
-    expect(opened).toEqual([dead, won]);
-    expect(activated.viewer).toMatchObject({ kind: "window", view: { state: "ready" } });
-    f.service.dispose();
-  });
   it("never rebinds a task's window tab: its Run keeps the window it observed", async () => {
     // Review finding 9: an agent opened this window tab; the person clicks Open again after
     // the app quit and came back. A rebind would hand the Run's same tab id a window it never
