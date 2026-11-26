@@ -29,7 +29,7 @@ import {
   standardCdpMaxLivePerRunner,
 } from "./standard-cdp-transport.js";
 import type { DeviceId } from "@opensteer/core";
-import { authorizeTabTarget } from "../tabs/tab-authority.js";
+import { authorizeTabTarget, tabReadAuthority } from "../tabs/tab-authority.js";
 import type { PageTabsPort } from "../tabs/tab-service.js";
 import type { TabActor } from "../tabs/ports.js";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
@@ -4253,6 +4253,23 @@ export class BrowserService {
     return this.#occupants(ownerId, sessionId, tabId);
   }
 
+  /** Whether the tab authority the bind used still lets this script's task read its tab. */
+  async #scriptTabStillAllowed(
+    input: { readonly agentBindingId: string; readonly ownerId: UserId },
+    tabId: TabId,
+    threadId: ThreadId,
+  ): Promise<boolean> {
+    if (!this.#workspaceTabs || !(this.#repository instanceof OpensteerStore)) return true;
+    const row = await this.#workspaceTabs.get(input.ownerId, tabId);
+    if (!row) return false;
+    const actor = {
+      kind: "browser-binding",
+      authority: { agentBindingId: input.agentBindingId, ownerId: input.ownerId },
+      threadId,
+    } as const;
+    return (await tabReadAuthority(actor, this.#repository.database))(row);
+  }
+
   /** The saved session's record when the agent may reach it, live or not; otherwise null. */
   async agentReachableSavedSession(
     input: {
@@ -6770,6 +6787,13 @@ export class BrowserService {
     let scriptOpening: Promise<BrowserCdpResponse> | undefined;
     /** The page target of this script's own tab, as its bind (resumeTab) answered. */
     let scriptTargetId: string | undefined;
+    /**
+     * The connection's grant revision this script's tab was bound under. A command under another
+     * revision decides the tab again through the tab authority the bind used (rule 1); refused,
+     * the handle has ended and reads as a tab that does not exist (rule 5).
+     */
+    let scriptGrantRevision: number | null | undefined;
+    let scriptTabRefused = false;
     const nativeAttachment =
       this.#resolveTarget(placementOf(record))?.localProfileStorage?.engine === "android-webview"
         ? {
@@ -7195,9 +7219,26 @@ export class BrowserService {
         assertAttached(bindingWasEnded);
         let writeAccessGeneration = this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
         let canManageExtensions = false;
+        let grantRevision: number | null = null;
         const admitted = await this.#admitAgentBackend(input, "cdp", false, undefined, (facts) => {
           canManageExtensions = facts.manageExtensions;
+          grantRevision = facts.grantRevision;
         });
+        if (input.scriptTabId !== undefined && input.scriptThreadId !== undefined) {
+          const tabNotFound = () =>
+            new OpensteerError({ code: "not_found", message: "Tab not found." });
+          if (scriptTabRefused) throw tabNotFound();
+          if (scriptGrantRevision === undefined) scriptGrantRevision = grantRevision;
+          else if (grantRevision !== scriptGrantRevision) {
+            if (
+              !(await this.#scriptTabStillAllowed(input, input.scriptTabId, input.scriptThreadId))
+            ) {
+              scriptTabRefused = true;
+              throw tabNotFound();
+            }
+            scriptGrantRevision = grantRevision;
+          }
+        }
         if (admitted.record.id !== record.id)
           throw new BrowserCdpConnectionEnded(
             "This Run selected another browser. Bind the exact tab with Browser Harness openPage(tabId).",
@@ -7501,6 +7542,7 @@ export class BrowserService {
               if (
                 command.method === "Target.closeTarget" &&
                 input.scriptTabId !== undefined &&
+                input.scriptThreadId !== undefined &&
                 scriptTargetId !== undefined &&
                 command.parameters?.targetId === scriptTargetId &&
                 (response.result as { success?: unknown } | null)?.success !== false &&
@@ -7508,20 +7550,22 @@ export class BrowserService {
               ) {
                 const tabId = input.scriptTabId;
                 const tabs = this.#workspaceTabs;
-                // As the open of an agent's page is recorded: admitted with the command's own
-                // authority; recording it never fails the confirmed close.
+                const actor = {
+                  kind: "browser-binding",
+                  authority: { agentBindingId: input.agentBindingId, ownerId: input.ownerId },
+                  threadId: input.scriptThreadId,
+                } as const;
+                // Decided by the tab's own authority (rule 1), in the close's own transaction;
+                // recording it never fails the confirmed close.
                 try {
                   await tabs.close(
                     input.ownerId,
                     [tabId],
                     `cdp-close:${record.id}:${tabId}:${globalThis.crypto.randomUUID()}`,
-                    async (tx) => {
-                      await this.admitAgentBrowser(
-                        input,
-                        "read-write",
-                        [record],
-                        new OpensteerStore(tx),
-                      );
+                    async (tx, rows) => {
+                      const row = rows.find((candidate) => candidate.id === tabId);
+                      if (!row || !(await (await tabReadAuthority(actor, tx))(row)))
+                        throw new OpensteerError({ code: "not_found", message: "Tab not found." });
                     },
                     (row) =>
                       row.pageBinding?.sessionId === record.id &&

@@ -148,7 +148,7 @@ function tabTargetAuthority(
         .select("originConnectionId")
         .where("id", "=", ThreadIdSchema.parse(taskId))
         .executeTakeFirst()
-        .then((row) => row?.originConnectionId === lineage?.agentConnectionId);
+        .then((row) => Boolean(lineage && row?.originConnectionId === lineage.agentConnectionId));
       lineageTasks.set(taskId, held);
     }
     return held;
