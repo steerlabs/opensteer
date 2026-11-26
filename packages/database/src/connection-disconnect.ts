@@ -732,6 +732,21 @@ export async function latestConnectionUncertainty(
     (connection.lastActionUncertainAt && at <= connection.lastActionUncertainAt)
   )
     return;
+  // An operation keeps why it ended unconfirmed; only `contact-lost` is lost contact.
+  const operation =
+    latest.kind === "operation"
+      ? await database
+          .selectFrom("agentOperations")
+          .select([
+            "tool",
+            "ending",
+            sql<string>`target->>'name'`.as("target"),
+            sql<string | null>`target->'device'->>'name'`.as("device"),
+          ])
+          .where("id", "=", latest.id as AgentOperationId)
+          .executeTakeFirst()
+      : undefined;
+  const ending = operation?.ending ?? null;
   return {
     lastActionUncertainAt: at,
     lastActionUncertain: {
@@ -743,7 +758,9 @@ export async function latestConnectionUncertainty(
           ? "Contact with this device was lost before it confirmed that the connected agent's shell there had closed."
           : latest.kind === "notification"
             ? "A phone alert about this connected agent's work may have been sent; your Opensteer account did not confirm it."
-            : "Contact was lost before this action confirmed it had ended.",
+            : ending && ending !== "contact-lost"
+              ? null
+              : "Contact was lost before this action confirmed it had ended.",
       ...(latest.runnerId
         ? {
             device:
@@ -756,16 +773,13 @@ export async function latestConnectionUncertainty(
               )?.name ?? null,
           }
         : {}),
-      ...(latest.kind === "operation"
-        ? await database
-            .selectFrom("agentOperations")
-            .select([
-              "tool",
-              sql<string>`target->>'name'`.as("target"),
-              sql<string | null>`target->'device'->>'name'`.as("device"),
-            ])
-            .where("id", "=", latest.id as AgentOperationId)
-            .executeTakeFirst()
+      ...(operation
+        ? {
+            tool: operation.tool,
+            target: operation.target,
+            device: operation.device,
+            ...(ending ? { ending } : {}),
+          }
         : {}),
     },
   };

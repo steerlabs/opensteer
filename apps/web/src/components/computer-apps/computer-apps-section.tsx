@@ -662,7 +662,7 @@ function OverviewAction({
 }) {
   if (local) {
     const needsSetup = row.access === null || row.state.kind === "permission-required" || request;
-    return (
+    const primary = (
       <button
         className={`btn btn--small${needsSetup ? " btn--primary" : ""}`}
         disabled={pending || (Boolean(needsSetup) && !machineOnline)}
@@ -679,6 +679,22 @@ function OverviewAction({
               ? "Finish setup"
               : "Manage"}
       </button>
+    );
+    // An approval whose setup is unfinished can still be managed and turned off here, as it can
+    // from another device.
+    if (!needsSetup || row.access === null) return primary;
+    return (
+      <>
+        {primary}
+        <button
+          className="btn btn--ghost btn--small"
+          disabled={pending}
+          onClick={onManage}
+          type="button"
+        >
+          Manage
+        </button>
+      </>
     );
   }
 

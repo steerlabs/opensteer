@@ -404,6 +404,51 @@ describeStore("an external agent's direct work through sessions", (it) => {
     });
   }
 
+  it("publishes the task when a pooled call is refused before hand-off, so an open task stops saying Running", async ({
+    storeFixture,
+  }) => {
+    // Real Home: "This browser is not ready. Nothing was sent." was recorded, refused with no
+    // hand-off, while the person's open task kept the call as "Running…".
+    const { database } = storeFixture;
+    const f = await storeFixture.startRunFixture("pool-refused-published");
+    const identity = {
+      runnerId: f.runnerId,
+      runtimeId: "pooled-browser",
+      slotId: "slot",
+      instanceId: randomUUID(),
+      term: 1,
+      epoch: 1,
+    };
+    await installBrowserPoolSlot(database, identity);
+    const task = () =>
+      database
+        .selectFrom("agentOperations")
+        .innerJoin("agentSessions", "agentSessions.id", "agentOperations.sessionId")
+        .innerJoin("threads", "threads.id", "agentSessions.threadId")
+        .select(["agentOperations.state", "agentOperations.handedOffAt", "threads.revision"])
+        .where("agentOperations.tool", "=", "browser_use")
+        .executeTakeFirstOrThrow();
+    let before: bigint | undefined;
+    const s = await setUp(storeFixture, "pool-refused-published", {
+      run: f,
+      pooledBrowser: () => ({
+        identity: () => identity,
+        pageDocument: () => undefined,
+        reserve: async () => {
+          // What the person's page last read: the task while this call waits for its browser.
+          before = BigInt((await task()).revision);
+          throw new BrowserPoolAdmissionClosed("This browser is not ready. Nothing was sent.");
+        },
+      }),
+    });
+    const result = await s.call("browser_use", script);
+    expect(result).toMatchObject({ structuredContent: { status: "refused" } });
+    const after = await task();
+    expect(after).toMatchObject({ state: "refused", handedOffAt: null });
+    expect(before).toBeDefined();
+    expect(BigInt(after.revision)).toBeGreaterThan(before!);
+  });
+
   it("refuses a pooled send with nothing sent only for an admission or authority reason, and fails it for any other", async ({
     storeFixture,
   }) => {
@@ -3417,6 +3462,42 @@ describeStore("an external agent's direct work through sessions", (it) => {
         .where("id", "=", s.agent.id)
         .executeTakeFirstOrThrow(),
     ).toEqual({ lastActionUncertain: null });
+  });
+
+  it("keeps the cause of an action the person's Disconnect left unconfirmed, never calling it lost contact", async ({
+    storeFixture,
+  }) => {
+    // Real Mac: Disconnect during a Safari script; the connection then read "Contact was lost
+    // before this action confirmed it had ended." while the task said the person disconnected it.
+    const s = await setUp(storeFixture, "disconnect-uncertain-cause");
+    const held = s.holdNext();
+    const inFlight = s.direct("cut-short").then(
+      () => null,
+      () => null,
+    );
+    await held.started;
+    const disconnect = commands(storeFixture, s.f.userId, {
+      stopper: {
+        stop: async () => {},
+        stopDirectOperation: (attempt) => s.sessions.stopDirectOperation(attempt.id),
+      },
+      afterStop: (connectionId, reason) =>
+        s.sessions.closeConnection(connectionId, reason === "disconnect"),
+    });
+    await disconnect.revoke(s.agent.id);
+    await inFlight;
+    await s.sessions.drain();
+    await disconnect.effects.driveCleanups();
+    expect(
+      await storeFixture.database
+        .selectFrom("agentOperations")
+        .select(["outcome", "ending"])
+        .where("operationKey", "=", "cut-short")
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ outcome: "unknown", ending: "disconnected" });
+    const row = (await disconnect.list()).find(({ id }) => id === s.agent.id);
+    expect(row?.lastActionUncertain).toBe(true);
+    expect(row?.lastActionUncertainDetail).toMatchObject({ ending: "disconnected", reason: null });
   });
 
   it("settles a hand-off orphaned by a Home restart at once: Stopped, uncertain, and cleared by the person", async ({
