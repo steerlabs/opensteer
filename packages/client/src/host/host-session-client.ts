@@ -1622,6 +1622,9 @@ export class HttpHostClient {
         const thread = this.#threadState.reconcile(
           {
             ...detailSummary,
+            // The published revision: an open connected agent's task reads its activity again
+            // when it moves, as for an operation refused with nothing sent.
+            revision: row.revision,
             agentSessionId: row.agentSessionId ?? null,
             externalWork: row.externalWork ?? null,
             ...(row.thread ? { endedOrigin: row.endedOrigin ?? null } : {}),
