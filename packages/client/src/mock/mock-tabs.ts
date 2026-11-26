@@ -95,6 +95,11 @@ export class MockTabCatalog {
     this.#native.set(tab.tabId, tab);
     this.#place(tab.tabId, groupId ?? null, null);
   }
+  /** The app quit or closed this window, as the Host then reports its tab. */
+  closeWindow(tabId: TabId): void {
+    const native = this.#native.get(tabId);
+    if (native?.kind === "window") this.#native.set(tabId, { ...native, closedWindow: true });
+  }
   /** Seeds a group over tabs already listed, as a person would have arranged it. */
   group(name: string, color: TabGroup["color"], tabIds: readonly TabId[]): TabGroupId {
     const groupId = createId("tabGroup");

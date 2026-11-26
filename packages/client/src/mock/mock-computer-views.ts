@@ -219,6 +219,18 @@ export class MockComputerViews {
         }
       }
   }
+  /** The app's window closed: its views end as the Home ends them, with the reason. */
+  windowClosed(machineId: string, bundleId: string): void {
+    for (const machine of this.#snapshot().machines)
+      for (const view of machine.computerUse?.ownerViews ?? [])
+        if (
+          view.machineId === machineId &&
+          view.target.kind === "app" &&
+          view.target.app.bundleId === bundleId &&
+          (view.state === "ready" || view.state === "opening")
+        )
+          this.#put({ ...view, state: "unavailable", unavailableReason: "window-closed" });
+  }
   /** The person's view of an exact window or a phone, as activating its tab opens one. */
   open(
     machineId: string,

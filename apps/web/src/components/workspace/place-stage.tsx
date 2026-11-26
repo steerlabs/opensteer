@@ -241,9 +241,18 @@ function SelectedPlace({
       done.then(settled, settled);
     }
     const answered = pending;
+    // An activation this run began ends with its answer even when the run was left: a tab that
+    // turned unavailable on its way (its app quit) asks nothing more, and must not say Opening.
+    const ended = () =>
+      setActivation((current) =>
+        current?.tabId === placeKey && current.state === "activating" ? null : current,
+      );
     pending.done.then(
       () => {
-        if (cancelled) return;
+        if (cancelled) {
+          ended();
+          return;
+        }
         setActivation(null);
         setAsk({
           tabId: placeKey,
@@ -256,7 +265,8 @@ function SelectedPlace({
       },
       () => {
         // The tab's own fact; why the browser didn't start is never shown as raw text.
-        if (!cancelled)
+        if (cancelled) ended();
+        else
           setActivation({ tabId: placeKey, state: "failed", message: "This tab could not open." });
       },
     );

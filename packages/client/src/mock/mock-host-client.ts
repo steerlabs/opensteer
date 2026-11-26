@@ -4612,6 +4612,11 @@ export class MockHostClient implements HostClient {
     });
   }
 
+  /** The app quit or closed this window tab's window. */
+  closeWindowTab(tabId: TabId): void {
+    this.#state.closeWindowTab(tabId);
+  }
+
   /** TS10: the runtime put this tab to sleep, or woke it, as the Home then lists it. */
   setBrowserTabState(tabId: string, state: "live" | "suspended"): void {
     const snapshot = this.#state.getSnapshot();
@@ -8200,6 +8205,15 @@ class MockHostState {
         ),
       },
     });
+  }
+
+  /** The app quit or closed this window tab's window: its tab and views say so. */
+  closeWindowTab(tabId: TabId): void {
+    const tab = this.tabCatalog.native(tabId);
+    this.tabCatalog.closeWindow(tabId);
+    if (tab?.kind === "window" && tab.bundleId)
+      this.computerViews?.windowClosed(tab.computerId, tab.bundleId);
+    this.emit();
   }
 
   /** As the Host hears a computer go and come back: its status alone changes. */
