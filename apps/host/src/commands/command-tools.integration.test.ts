@@ -1504,6 +1504,18 @@ it("reports a failed plugin build to the person and the connected agent that ask
         ),
       },
     });
+    const receiptPreview = async (id: string) =>
+      (
+        await host.store.database
+          .selectFrom("transcriptItems")
+          .select("view")
+          .where("id", "=", `request:${id}`)
+          .where("visible", "=", true)
+          .executeTakeFirstOrThrow()
+      ).view.preview;
+    expect
+      .soft(await receiptPreview(requestId))
+      .toContain(`You approved this, but the plugin did not build: ${message}`);
     // If writing the Request's receipt was interrupted, the same approval reads what the
     // attempt recorded. It never sends another install.
     await host.store.database
@@ -1532,6 +1544,81 @@ it("reports a failed plugin build to the person and the connected agent that ask
       },
     });
     expect(await host.store.database.selectFrom("plugins").select("id").execute()).toEqual([]);
+    const askAgain = async (name: string) => {
+      const result = await client.callTool({
+        name: "opensteer_command",
+        arguments: {
+          command: {
+            type: "plugins.install",
+            source: { kind: "openapi", name, url: `https://example.test/${name}.json` },
+          },
+        },
+      });
+      expect(result.structuredContent).toMatchObject({ status: "pending" });
+      return RequestIdSchema.parse(
+        (result.structuredContent as { requestId?: unknown } | undefined)?.requestId,
+      );
+    };
+    const declinedId = await askAgain("Declined");
+    await testRpcData(
+      host.origin,
+      "commands.dispatch",
+      {
+        type: "request.respond",
+        idempotencyKey: randomUUID(),
+        requestId: declinedId,
+        expectedRevision: (await host.store.requests.revision(declinedId))!,
+        response: { kind: "form", answers: { decision: ["decline"] } },
+      },
+      { headers: host.ownerHeaders },
+    );
+    expect(install).toHaveBeenCalledTimes(1);
+    expect
+      .soft(await receiptPreview(declinedId))
+      .toBe("You declined this. Opensteer did not run it.");
+    const warnings = ["GET /orders — This operation cannot be exposed as a tool."];
+    install.mockResolvedValueOnce({
+      status: "installed",
+      plugin: { id: "petstore" },
+      version: { id: "v1" },
+      warnings,
+    } as never);
+    const installedId = await askAgain("Installed");
+    await testRpcData(
+      host.origin,
+      "commands.dispatch",
+      {
+        ...input,
+        idempotencyKey: randomUUID(),
+        requestId: installedId,
+        expectedRevision: (await host.store.requests.revision(installedId))!,
+      },
+      { headers: host.ownerHeaders },
+    );
+    const settled = await client.callTool({
+      name: "opensteer_state",
+      arguments: { area: "requests" },
+    });
+    expect(settled.structuredContent).toMatchObject({
+      view: {
+        requests: expect.arrayContaining([
+          {
+            request: expect.objectContaining({
+              id: declinedId,
+              status: "declined",
+              next: "The person declined. Do not ask again unless something changes.",
+            }),
+          },
+          {
+            request: expect.objectContaining({
+              id: installedId,
+              status: "approved-done",
+              warnings,
+            }),
+          },
+        ]),
+      },
+    });
   } finally {
     finish.resolve();
     install.mockRestore();

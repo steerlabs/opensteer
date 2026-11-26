@@ -41,6 +41,12 @@ test.skipIf(process.platform === "win32")(
     const directory = await realpath(await mkdtemp(join(tmpdir(), "opensteer-packaged-plugins-")));
     context.onTestFinished(() => rm(directory, { recursive: true, force: true }));
     const registry = await pluginFixtureRegistry(undefined, undefined, (request, response) => {
+      if (request.url === "/not-openapi" || request.url === "/missing-openapi") {
+        response.statusCode = request.url === "/not-openapi" ? 200 : 404;
+        response.setHeader("content-type", "text/html");
+        response.end("<h1>Not a specification</h1>");
+        return true;
+      }
       if (request.url === "/api/v3/openapi.json") {
         response.setHeader("content-type", "application/json");
         response.end(
@@ -225,6 +231,24 @@ test.skipIf(process.platform === "win32")(
     const called = await plugins.call({ calls: { path: tools.items[0]!.path, input: {} } }, caller);
     expect(JSON.stringify(called)).toContain("Fido");
     expect(registry.requests).toContain(`${registry.address}/api/v3/pets`);
+    for (const [path, message] of [
+      ["not-openapi", `The document at ${registry.origin} is not an OpenAPI document.`],
+      [
+        "missing-openapi",
+        `The OpenAPI document at ${registry.origin} could not be fetched (HTTP 404).`,
+      ],
+    ]) {
+      await expect(
+        plugins.install(
+          { kind: "openapi", name: path!, url: `${registry.origin}/${path}` },
+          caller,
+        ),
+      ).resolves.toMatchObject({
+        status: "build-error",
+        error: { code: "invalid-openapi", message },
+      });
+      expect((await plugins.search({ query: path }, caller)).items).toEqual([]);
+    }
     const health = await plugins.health({}, caller);
     expect(health.pid).toBe(started.pid);
     const children = pluginFixtureProcesses(health.pid);

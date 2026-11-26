@@ -1174,6 +1174,25 @@ export function requestOutcomeText(request: Request): string {
     return `Cancelled · ${request.cancellationReason}`;
   }
   if (request.status === "withdrawn") return "Withdrawn";
+  if (request.command) {
+    switch (commandAgentStatus(request)) {
+      case "declined":
+        return "You declined this. Opensteer did not run it.";
+      case "approved-running":
+        return "You approved this. Opensteer is still running it.";
+      case "approved-failed":
+        return (
+          commandRequestReportedFailure(request.command.outcome) ??
+          "You approved this, but the change did not happen."
+        );
+      case "approved-unknown": {
+        const outcome = request.command.outcome;
+        return outcome?.status === "unknown" && outcome.progress
+          ? outcome.progress.message
+          : "You approved this. Opensteer could not confirm what happened.";
+      }
+    }
+  }
   const settlement = requestSettlementLabel(request);
   if (settlement) return settlement;
   const prefix = request.status === "declined" ? "Declined" : "Fulfilled";

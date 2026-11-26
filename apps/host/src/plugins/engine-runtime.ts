@@ -971,26 +971,32 @@ export async function startEngine(
                       new PluginServiceError("invalid", disallowedOpenapiAddress),
                     );
                   const client = yield* safeHttpClient(defaultUrlPolicy);
-                  const response = yield* client
-                    .get(url)
-                    .pipe(
-                      Effect.mapError((error) =>
-                        error.cause instanceof DestinationRefused
-                          ? new PluginServiceError("invalid", disallowedOpenapiAddress)
-                          : error,
-                      ),
+                  const sourceError = (message: string) => ({
+                    status: "build-error" as const,
+                    error: { code: "invalid-openapi", message },
+                  });
+                  const fetched = yield* client.get(url).pipe(Effect.result);
+                  const document = `The OpenAPI document at ${url.origin}`;
+                  if (Result.isFailure(fetched))
+                    return sourceError(
+                      fetched.failure.cause instanceof DestinationRefused
+                        ? disallowedOpenapiAddress
+                        : `${document} could not be fetched.`,
                     );
-                  const imported = yield* openapiImport(
-                    input.name,
-                    url,
-                    yield* response.json,
-                    signal,
-                  );
-                  if ("error" in imported)
-                    return {
-                      status: "build-error" as const,
-                      error: { code: "invalid-openapi", message: imported.error },
-                    };
+                  const response = fetched.success;
+                  if (response.status < 200 || response.status >= 300)
+                    return sourceError(
+                      `${document} could not be fetched (HTTP ${response.status}).`,
+                    );
+                  const body = yield* response.json.pipe(Effect.result);
+                  if (Result.isFailure(body))
+                    return sourceError(
+                      body.failure.cause instanceof SyntaxError
+                        ? `The document at ${url.origin} is not an OpenAPI document.`
+                        : `${document} could not be read.`,
+                    );
+                  const imported = yield* openapiImport(input.name, url, body.success, signal);
+                  if ("error" in imported) return sourceError(imported.error);
                   files = imported.files;
                   warnings = imported.warnings;
                   name = input.name;

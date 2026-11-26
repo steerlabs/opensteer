@@ -24,7 +24,7 @@ import {
   type CommandRequestOrigin,
   type DatabaseSchema,
 } from "@opensteer/database";
-import type { HostApiCommand } from "@opensteer/protocol";
+import { PluginCommandResultSchema, type HostApiCommand } from "@opensteer/protocol";
 import { commandActivity } from "../../commands/activity.js";
 import {
   commandFamilies,
@@ -416,8 +416,8 @@ export class CommandTools {
         const grantBound = Boolean(connectionId);
         const subject = commandSubject(caller.key);
         // A command Request as an agent reads it: what it sent, the status and a confirmed
-        // failure of its own command. The card, notes and successful results can name things
-        // beyond its grant (rule 5).
+        // failure or import warnings of its own command. The card, notes and other successful
+        // results can name things beyond its grant (rule 5).
         const project = async (item: AgentReadRequest): Promise<AgentReadRequest | null> => {
           if (!item.request.command) return item;
           return withDatabaseTransaction(this.#database, async (transaction) => {
@@ -433,22 +433,36 @@ export class CommandTools {
               if (!command || !(await stillReaches(transaction, caller.userId, subject, command)))
                 return null;
             }
+            const own = !grantBound || part.proposer.connectionId === connectionId;
+            const status = commandAgentStatus({
+              status: row.status,
+              response: row.response as never,
+              command: part,
+            });
+            const install =
+              own && part.type === "plugins.install" && part.outcome?.status === "done"
+                ? PluginCommandResultSchema.safeParse(part.outcome.result).data
+                : undefined;
+            const warnings =
+              install?.type === "plugins.install" && install.result.status === "installed"
+                ? install.result.warnings
+                : undefined;
             return {
               request: {
                 id: row.id,
                 kind: "command",
-                status: commandAgentStatus({
-                  status: row.status,
-                  response: row.response as never,
-                  command: part,
-                }),
+                status,
                 type: part.type,
                 // What it sent: never what the Home added for the card.
                 command: Object.fromEntries(
                   Object.entries(part.command).filter(([key]) => !part.homeAdded?.includes(key)),
                 ),
                 reason: part.agentReason,
-                ...(!grantBound || part.proposer.connectionId === connectionId
+                ...(own && status === "declined"
+                  ? { next: "The person declined. Do not ask again unless something changes." }
+                  : {}),
+                ...(warnings?.length ? { warnings } : {}),
+                ...(own
                   ? part.outcome?.status === "failed" && part.outcome.result !== undefined
                     ? { message: part.outcome.message }
                     : part.outcome?.status === "unknown" && part.outcome.progress
@@ -497,7 +511,7 @@ export class CommandTools {
                   eb.or([
                     eb("status", "=", "pending"),
                     eb.and([
-                      eb("status", "=", "fulfilled"),
+                      eb("status", "in", ["fulfilled", "declined"]),
                       eb("command", "is not", null),
                       eb("resolvedAt", ">=", new Date(Date.now() - 86_400_000)),
                       ...(connectionId
