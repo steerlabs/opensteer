@@ -231,7 +231,7 @@ integration("device data apps as plugin tools", () => {
   });
 
   it("tells a Run each operation's own reason, never its task's read-only mode for a read", async () => {
-    const { host, helper, gateway, run } = await start({ messages: true });
+    const { host, helper, caller, gateway, run } = await start({ messages: true });
     helper.grants.contacts = "granted";
     helper.grants["full-disk-access"] = "granted";
     helper.grants.automation = "granted";
@@ -245,9 +245,9 @@ integration("device data apps as plugin tools", () => {
         "needs macOS full access",
       ),
     );
-    const answers = async () => ({
-      messages: (await pluginCall(gateway, queryMessages, {})).raw.structuredContent,
-      reminders: (await pluginCall(gateway, listReminders, {})).raw.structuredContent,
+    const answers = async (through = gateway) => ({
+      messages: (await pluginCall(through, queryMessages, {})).raw.structuredContent,
+      reminders: (await pluginCall(through, listReminders, {})).raw.structuredContent,
     });
     const expectOwnReasons = (seen: Awaited<ReturnType<typeof answers>>) => {
       const text = JSON.stringify(seen);
@@ -260,15 +260,37 @@ integration("device data apps as plugin tools", () => {
         "Reminders needs macOS full access to reminders for Opensteer Computer Use on Studio Mac.",
       );
     };
-    // At Full access, and the same once the task is supervised or accepts edits automatically.
+    // At Full access, and the same for a Run of the task once it is supervised or accepts edits
+    // automatically: a Run takes its task's mode when it starts, so each is a new Run of the task
+    // made in that mode, with the task's grants.
     expectOwnReasons(await answers());
+    let previous = run;
     for (const accessMode of ["approval-required", "auto-accept-edits"] as const) {
+      await previous.complete();
       await host.store.updateThreadAccessMode({
         threadId: run.threadId,
         requestedBy: host.ownerId,
         accessMode,
       });
-      expectOwnReasons(await answers());
+      const next = await dispatchCallerRun(host, caller, {
+        key: `device-plugins-${accessMode}`,
+        title: "Plan",
+        threadId: run.threadId,
+      });
+      previous = next;
+      closers.unshift(() => next.complete());
+      expect(
+        (
+          await host.store.database
+            .selectFrom("runs")
+            .select("accessMode")
+            .where("id", "=", next.runId as never)
+            .executeTakeFirstOrThrow()
+        ).accessMode,
+      ).toBe(accessMode);
+      const supervised = await integrationGateway(next.integrationTools);
+      closers.unshift(() => supervised.close());
+      expectOwnReasons(await answers(supervised));
     }
     expect(helper.invocations).toEqual([]);
   });
