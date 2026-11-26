@@ -190,7 +190,10 @@ describeStore("a connected agent's reads stay within their statement budgets", (
       counts[name] = (await statements(call)).length;
     }
     // Fixed per-call budgets:
-    // - discover: 22 (one live check per discover call; 27 before).
+    // - discover: 26 (one live check per discover call; 27 before; 22 until d15e89135, whose
+    //   tool listing for a connection reads what its grant covers of the person's device
+    //   approvals (grantedDeviceApprovals, 1) and reads its standing again after that lending
+    //   (resolveResourceAccess, 3), so a grant narrowed in between applies).
     // - childWaitSettled: 88 (settled first snapshot with status === "settled"; was 93 at
     //   457885706 before the R round, 89 after R1-R7, and 88 after P1 unified
     //   admitThreadExecution onto threadExecutionAdmitted).
@@ -199,7 +202,7 @@ describeStore("a connected agent's reads stay within their statement budgets", (
     // - taskRead: 28 (down from 33 at 457885706 after folding connectionRequests into
     //   recent/activity SQL and removing post-hoc visibleConnectionRequestIds).
     expect(counts).toEqual({
-      discover: 22,
+      discover: 26,
       childWaitSettled: 88,
       childWaitTimedOut: 88,
       taskRead: 28,
