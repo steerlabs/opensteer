@@ -97,7 +97,7 @@ integration("a connected agent's first use of a fresh Home", () => {
   const errorOf = (result: { readonly structuredContent?: Record<string, unknown> }) =>
     (result.structuredContent as { error?: { message: string; next: string | null } }).error;
 
-  it.each(["approval-required", "auto"] as const)(
+  it.each(["approval-required", "auto", "full-access"] as const)(
     "tells an Everything connection in %s that the Home has no profile yet, and lets it make one through the door",
     async (mode) => {
       expect(await profiles()).toEqual([]);
@@ -119,7 +119,9 @@ integration("a connected agent's first use of a fresh Home", () => {
         });
       }
 
-      // The person is asked, as for any change to the Home below Full access.
+      // The person is asked at every mode, Full access included: the rule answers `now` at Full
+      // access, but making a profile is a command whose handler does not yet admit an agent
+      // itself (`step: "B"` in command-table.ts), and admitCommand asks for every such command.
       const asking = agent.call("opensteer_command", create);
       await waitForCondition(async () => (await waitingCommands()).length > 0, 30_000);
       const [request, ...more] = await waitingCommands();
