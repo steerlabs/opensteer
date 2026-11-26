@@ -235,6 +235,8 @@ const HostEnvironmentSchema = z.object({
     z.literal("root-maintenance").optional(),
   ),
   OPENSTEER_PORTAL_ORIGIN: optionalUrl,
+  /** V8's old space for the plugin engine, sized by a Cloud Computer's Home for its container. */
+  OPENSTEER_PLUGIN_ENGINE_OLD_SPACE_MB: optionalPositiveInteger,
   OPENSTEER_CANONICAL_ORIGIN: z.url(),
   OPENSTEER_RUNTIME_ORIGIN: optionalUrl,
   OPENSTEER_SIGNUP_POLICY: z.enum(["closed", "invite-only", "open"]).default("invite-only"),
@@ -346,6 +348,8 @@ export interface HostConfig {
    * navigation metadata rather than trust material, so any Deployment may
    * declare one and an absent value simply leaves the link unrendered. */
   readonly portalOrigin?: URL;
+  /** V8's old space for the plugin engine in MiB; unset, the engine keeps its own 1,024. */
+  readonly pluginEngineOldSpaceMb?: number;
   /** Pinned trust root for Account-signed Personal link/session grants. It is
    * separate from an Account adoption bundle because a Personal Host keeps
    * its own canonical authority. */
@@ -697,6 +701,9 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
       : {}),
     ...(parsed.OPENSTEER_MACHINE_STATUS ? { machineStatus: parsed.OPENSTEER_MACHINE_STATUS } : {}),
     ...(portalOrigin ? { portalOrigin } : {}),
+    ...(parsed.OPENSTEER_PLUGIN_ENGINE_OLD_SPACE_MB
+      ? { pluginEngineOldSpaceMb: parsed.OPENSTEER_PLUGIN_ENGINE_OLD_SPACE_MB }
+      : {}),
     exposure,
     ...(parsed.OPENSTEER_TRUSTED_PROXY === undefined
       ? {}

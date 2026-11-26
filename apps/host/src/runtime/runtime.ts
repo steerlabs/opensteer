@@ -1541,6 +1541,7 @@ export async function createHostRuntime(
     let lastEngineStatus: string | undefined;
     pluginService = new PluginService({
       databaseUrl: config.databaseUrl,
+      ...(config.pluginEngineOldSpaceMb ? { engineOldSpaceMb: config.pluginEngineOldSpaceMb } : {}),
       dataDirectory,
       owner: "personal",
       agentWorkStopped: hostingComputerStopped,

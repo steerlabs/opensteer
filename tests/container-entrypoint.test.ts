@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -5,6 +6,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   expandSecretFiles,
+  findExecutable,
+  handOver,
+  nodeServiceArguments,
   immutablePackageManifestPath,
   immutableReleaseRecordPath,
   rejectRuntimeInjectionEnvironment,
@@ -168,6 +172,73 @@ describe("container entrypoint", () => {
       );
     },
   );
+
+  it("hands the process over to the service: the same process ID, no wrapper left behind", () => {
+    const entrypoint = join(import.meta.dirname, "../deploy/container/opensteer-entrypoint.mjs");
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `const { handOver } = await import(${JSON.stringify(entrypoint)});
+         process.stdout.write(process.pid + "\\n");
+         handOver("sh", ["-c", 'echo "$$ $SERVICE"; exit 7'], { PATH: process.env.PATH, SERVICE: "started" });`,
+      ],
+      { encoding: "utf8" },
+    );
+    const [before, after] = result.stdout.trim().split("\n");
+    // The service runs as this process: its exit is the container's, and tini signals it directly.
+    expect(after).toBe(`${before} started`);
+    expect(result.status).toBe(7);
+  });
+
+  it("names a service it cannot find instead of handing over to nothing", () => {
+    const calls: unknown[] = [];
+    expect(() =>
+      handOver("no-such-opensteer-service", [], { PATH: "/usr/bin:/bin" }, (...call) => {
+        calls.push(call);
+        throw new Error("handed over");
+      }),
+    ).toThrow("Could not start Opensteer: no-such-opensteer-service was not found.");
+    expect(calls).toEqual([]);
+    expect(findExecutable("sh", "relative:/bin:/usr/bin")).toMatch(/^\/(usr\/)?bin\/sh$/u);
+    expect(findExecutable("sh", "relative")).toBe(undefined);
+  });
+
+  it.each(["@opensteer/host", "@opensteer/runner", "@opensteer/channel-runtime"])(
+    "starts %s's Node with a small young generation and the old space its Home sized",
+    (service) => {
+      const environment: Record<string, string> = { OPENSTEER_NODE_OLD_SPACE_MB: "642" };
+      expect(nodeServiceArguments(service, "node", ["dist/main.js"], environment)).toEqual([
+        "--max-semi-space-size=4",
+        "--max-old-space-size=642",
+        "dist/main.js",
+      ]);
+      // The size goes no further than this Node's flags.
+      expect(environment).toEqual({});
+      // A Home that sizes nothing (a self-hosted one) still gets the small young generation.
+      expect(nodeServiceArguments(service, "node", ["dist/main.js"], {})).toEqual([
+        "--max-semi-space-size=4",
+        "dist/main.js",
+      ]);
+      expect(() =>
+        nodeServiceArguments(service, "node", [], { OPENSTEER_NODE_OLD_SPACE_MB: "642 --inspect" }),
+      ).toThrow("OPENSTEER_NODE_OLD_SPACE_MB must be a number of MiB.");
+    },
+  );
+
+  it("leaves another image's command as it was", () => {
+    for (const [service, command] of [
+      ["@opensteer/control-plane", "node"],
+      ["@opensteer/browser-runtime", "node"],
+      ["@opensteer/host", "sh"],
+    ] as const)
+      expect(
+        nodeServiceArguments(service, command, ["dist/main.js"], {
+          OPENSTEER_NODE_OLD_SPACE_MB: "64",
+        }),
+      ).toEqual(["dist/main.js"]);
+  });
 
   it("loads file-backed environment values without passing the file variable", async () => {
     const directory = join(tmpdir(), `opensteer-entrypoint-${randomUUID()}`);

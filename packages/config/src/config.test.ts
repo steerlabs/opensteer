@@ -642,6 +642,20 @@ describe("configuration", () => {
     ).toEqual(new URL("https://portal.example.test"));
   });
 
+  it("takes the plugin engine's old space a Cloud Computer's Home sized, and none when unset", () => {
+    expect(
+      parseHostConfig({ ...hostEnvironment, OPENSTEER_PLUGIN_ENGINE_OLD_SPACE_MB: "711" })
+        .pluginEngineOldSpaceMb,
+    ).toBe(711);
+    expect(
+      parseHostConfig({ ...hostEnvironment, OPENSTEER_PLUGIN_ENGINE_OLD_SPACE_MB: "" })
+        .pluginEngineOldSpaceMb,
+    ).toBe(undefined);
+    expect(() =>
+      parseHostConfig({ ...hostEnvironment, OPENSTEER_PLUGIN_ENGINE_OLD_SPACE_MB: "-1" }),
+    ).toThrow(/OPENSTEER_PLUGIN_ENGINE_OLD_SPACE_MB/u);
+  });
+
   it("requires normalized HTTP origins for canonical and runtime identity", () => {
     for (const [name, value] of [
       ["OPENSTEER_CANONICAL_ORIGIN", "https://host.example/path"],

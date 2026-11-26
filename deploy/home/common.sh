@@ -102,7 +102,10 @@ clamp() { if (($1 < $2)); then echo "$2"; elif (($1 > $3)); then echo "$3"; else
 # oom_score_adj in compose.browser-pool.yaml). CPU limits are each service's ceiling of CPU time,
 # not a reservation: none is above the machine's CPU count, and the Runner may use them all. The
 # Runner runs as many Runs at once as fit at run_allowance MiB each beside every ordinary peak, at
-# least one; the Host holds the next one back.
+# least one; the Host holds the next one back. Each Node process's V8 old space is three quarters
+# of the room its container has for it while the container's other processes are at their
+# ordinary peaks, so V8 collects before the kernel kills; the rest is its young generation, code
+# and buffers.
 home_limits() {
   local memory=$1 cpus=$2 reserve budget ordinary postgres host gateway channel agents runs two
   # Ordinary peaks (MiB), measured on a scratch e2-medium Cloud Computer (3,908 MiB) on Nov 25,
@@ -112,7 +115,7 @@ home_limits() {
   local host_peak=460
   # Its plugin engine and that engine's workerd, in the Host's container while a plugin call runs:
   # 553 to 559 and 126 to 127 at the engine's start.
-  local plugin_peak=680
+  local plugin_peak=680 workerd_peak=128
   local postgres_peak=110 channel_peak=100 gateway_peak=20
   # The Runner's own process and its supervisor: 131 MiB at rest, 152 at a Run's peak.
   local runner_itself=192
@@ -154,7 +157,14 @@ home_limits() {
   # room (warmEngineIdleCap), and none here, where the room is the others' and the page cache's.
   agents=$(clamp "$agents" 0 $((runner_itself + (runs + 1) * run_allowance - 1)))
   two=$(clamp 2 1 "$cpus")
+  local heap_host=$(((host - plugin_peak) * 3 / 4))
+  local heap_engine=$(((host - host_peak - workerd_peak) * 3 / 4))
+  local heap_runner=$(((agents - runs * run_allowance) * 3 / 4))
+  local heap_channel=$((channel * 3 / 4))
   printf '%s\n' \
+    "OPENSTEER_HOME_HEAP_HOST=$heap_host" "OPENSTEER_HOME_HEAP_PLUGIN_ENGINE=$heap_engine" \
+    "OPENSTEER_HOME_HEAP_RUNNER=$heap_runner" "OPENSTEER_HOME_HEAP_CHANNEL=$heap_channel" \
+    "OPENSTEER_HOME_PG_SHARED_BUFFERS=$((postgres / 4))MB" \
     "OPENSTEER_HOME_LIMIT_POSTGRES_CPUS=$two" "OPENSTEER_HOME_LIMIT_POSTGRES_MEMORY=${postgres}m" \
     "OPENSTEER_HOME_LIMIT_HOST_CPUS=$two" "OPENSTEER_HOME_LIMIT_HOST_MEMORY=${host}m" \
     "OPENSTEER_HOME_LIMIT_GATEWAY_CPUS=1" "OPENSTEER_HOME_LIMIT_GATEWAY_MEMORY=${gateway}m" \
@@ -170,7 +180,8 @@ home_limits_unused() {
   for name in POSTGRES HOST GATEWAY RUNNER CHANNEL; do
     printf '%s\n' "OPENSTEER_HOME_LIMIT_${name}_CPUS=1" "OPENSTEER_HOME_LIMIT_${name}_MEMORY=64m"
   done
-  printf '%s\n' "OPENSTEER_HOME_LIMIT_RUNNER_RUNS=1"
+  printf '%s\n' "OPENSTEER_HOME_LIMIT_RUNNER_RUNS=1" "OPENSTEER_HOME_HEAP_HOST=64" \
+    "OPENSTEER_HOME_HEAP_PLUGIN_ENGINE=64" "OPENSTEER_HOME_HEAP_RUNNER=64" "OPENSTEER_HOME_HEAP_CHANNEL=64"
 }
 
 publish_file() {
