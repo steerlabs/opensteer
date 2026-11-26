@@ -14,6 +14,7 @@ import {
   tabAgentLine,
   tabNeedsYouParts,
   taskActivityKey,
+  threadAgentPage,
   threadInDirectory,
   type OperationGlyph,
   type OperationRequestView,
@@ -77,6 +78,7 @@ export function TaskOriginLine({ parts }: { readonly parts: readonly SentencePar
 /** Watch a session in its existing task view, or focus its Request when reviewing it there. */
 export function useOpenSessionTask() {
   const workspace = useOptionalWorkspace();
+  const shell = useOptionalShell();
   const navigate = useNavigate();
   return (
     threadId: string,
@@ -86,7 +88,16 @@ export function useOpenSessionTask() {
     } | null,
   ) => {
     const id = waiting?.presentation?.threadId ?? waiting?.request.originatingThreadId ?? threadId;
-    if (workspace) {
+    // Watch on a task whose agent is working in a browser tab: that tab's live picture, beside
+    // the task. The person's click, never the agent's move: nothing else changes their tab.
+    const page =
+      workspace && shell && !waiting ? threadAgentPage(shell.hostClient.getSnapshot(), id) : null;
+    if (workspace && page) {
+      workspace.nav.showPlaceWithConversation(
+        { kind: "tab", tabId: page.tabId },
+        workspace.nav.threadPath(id),
+      );
+    } else if (workspace) {
       workspace.nav.openConversation(
         workspace.nav.threadPath(id),
         waiting ? { focusRequest: waiting.request.id } : undefined,

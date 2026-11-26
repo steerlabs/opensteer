@@ -53,6 +53,26 @@ export function threadAgentPlace(
 }
 
 /**
+ * The page tab a task's agent used last, for the person's Watch: of the pages the task holds that
+ * can be shown now, the one that changed most recently. Holding is the Host's word.
+ */
+export function threadAgentPage(
+  source: Pick<HostSnapshot, "tabs">,
+  threadId: string,
+): BrowserTabDestination | null {
+  let best: Tab | null = null;
+  for (const tab of source.tabs.rows.values())
+    if (
+      tab.kind === "page" &&
+      tab.state !== "unavailable" &&
+      tab.usedBy.some((holder) => holder.taskId === threadId) &&
+      (best === null || tab.updatedAt > best.updatedAt)
+    )
+      best = tab;
+  return best && { tabId: best.tabId };
+}
+
+/**
  * The page a Request is about, or null: the tab the Request names, while the tab list still
  * holds it; when it names none, the asking task's page, only while the task holds exactly
  * one. Never the most recent of several, which may be another site altogether.
