@@ -8019,6 +8019,7 @@ class MockHostState {
     // The working agent uses a tab of its own; the waiting one, a tab the person shares.
     const placed: Readonly<Record<string, string>> =
       options.livePanel === "one" ||
+      options.livePanel === "cloud-tab" ||
       options.livePanel === "long-one" ||
       options.livePanel === "long-place" ||
       options.livePanel === "one-history"
@@ -8056,11 +8057,20 @@ class MockHostState {
       };
     });
     const seededIds = new Set(seed.threads.map(({ id }) => id));
+    // The agent's tab is in the pooled browser of the computer the Home runs on, running.
+    const cloudTab = browserSessions.find((session) =>
+      session.catalog?.tabs.some(({ id }) => id === "mock-tab-1-0"),
+    );
+    const pooled =
+      options.livePanel === "cloud-tab" && cloudTab?.placement.kind === "runner"
+        ? [mockBrowserPoolReport("awake", cloudTab.placement.runnerId, "mock-tab-1-0")]
+        : undefined;
     this.update({
       ...this.snapshot,
       threads: [...this.snapshot.threads.filter(({ id }) => !seededIds.has(id)), ...seed.threads],
       requests: { ...this.snapshot.requests, ...seed.requests } as typeof this.snapshot.requests,
       browserSessions,
+      ...(pooled ? { browserPools: pooled } : {}),
     });
   }
 

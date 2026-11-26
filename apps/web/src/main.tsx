@@ -164,7 +164,9 @@ async function renderOpensteer(): Promise<void> {
               const agentFixtures = agents ? mockConnectedAgents(agents) : null;
               const client = new MockHostClient({
                 ...(cloudScene ? { portalOrigin: "https://app.opensteer.example" } : {}),
-                ...(mockHome === "server" || mockHome === "cloud"
+                ...(mockHome === "server" ||
+                mockHome === "cloud" ||
+                search.get("mock-agent-work") === "cloud-tab"
                   ? { exposure: "networked" as const }
                   : {}),
                 ...agentFixtures,
