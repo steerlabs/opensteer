@@ -315,3 +315,42 @@ it("X1: retries when a member vanishes in each of the first three passes and pro
     killSpy.mockRestore();
   }
 });
+
+/*
+ * By design, not a fault to fix in the scanner. A process of the Run that dies between this scan's
+ * read of its stat (still running) and of its environ (refused: Linux has cleared its address
+ * space) cannot be told from a live process the Runner may not read. A point-in-time reading of
+ * /proc cannot prove absence against such races, and every rule that turns "unreadable" into
+ * "ended" adds a way to be falsely clean. So the execution is unverifiable: its warm engine is not
+ * kept (the next Run starts cold, with a launch directory of its own), and a Stop at that moment
+ * says it could not be confirmed. Both are the conservative answer; a falsely confirmed end is
+ * the one this code must never give.
+ */
+it("answers unverifiable when a Run's process dies between its stat and its environ reads", async () => {
+  vi.useFakeTimers();
+  const containment = new ExecutionContainment({
+    bootId: "boot",
+    dataDirectory: "/data",
+    platform: "linux",
+  });
+  let statReads = 0;
+  vi.mocked(readdirSync).mockImplementation(() => ["1201", "1202"] as never);
+  vi.mocked(readFileSync).mockImplementation((path) => {
+    const target = String(path);
+    if (target === "/proc/1201/stat")
+      return `1201 (run-engine) S ${process.pid} ${Array(17).fill(0).join(" ")} 901` as never;
+    if (target === "/proc/1201/environ")
+      return `${executionScopeVariable}=${containment.scope("run")}\0` as never;
+    if (target === "/proc/1202/stat") {
+      statReads += 1;
+      // Running when read; it exits before its environ is read, and would be a zombie by now.
+      return `1202 (ssh) ${statReads === 1 ? "S" : "Z"} 1201 ${Array(17).fill(0).join(" ")} 902` as never;
+    }
+    if (target === "/proc/1202/environ")
+      throw Object.assign(new Error("Permission denied"), { code: "EACCES" });
+    throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+  });
+  await expect(containment.liveRoots("run")).resolves.toBe("unverifiable");
+  // The scan does not look a second time to turn the refusal into "ended".
+  expect(statReads).toBe(1);
+});
