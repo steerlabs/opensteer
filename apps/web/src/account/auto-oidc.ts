@@ -7,6 +7,8 @@ export interface AutoOidcOptions {
   readonly hasNativeOAuthQuery: boolean;
   readonly recentAttempt: boolean;
   readonly setupInProgress: boolean;
+  /** The person signed this browser out: they choose when to sign in again. */
+  readonly signedOut?: boolean;
 }
 
 export function shouldAutoStartOidc(config: IdentityConfig, options: AutoOidcOptions): boolean {
@@ -18,6 +20,7 @@ export function shouldAutoStartOidc(config: IdentityConfig, options: AutoOidcOpt
     !options.hasAuthorizationError &&
     !options.hasNativeOAuthQuery &&
     !options.recentAttempt &&
-    !options.setupInProgress
+    !options.setupInProgress &&
+    options.signedOut !== true
   );
 }

@@ -50,6 +50,7 @@ import { ToastProvider } from "./components/toast.js";
 import { DesktopUpdateFeedback } from "./components/desktop-update-button.js";
 import { outcomeWords, runAction } from "./components/use-action.js";
 import { shouldAutoStartOidc } from "./account/auto-oidc.js";
+import { forgetSignedOutHere, signedOutHere } from "./account/signed-out-here.js";
 import { PluginSignInCompletion } from "./components/plugin-sign-in-completion.js";
 import {
   pluginAuthorizationCompletionPath,
@@ -199,6 +200,7 @@ export function App({
       hasNativeOAuthQuery: nativeOAuthQuery !== null,
       recentAttempt: autoOidcSuppressed,
       setupInProgress: setupAdmission !== "absent",
+      signedOut: signedOutHere(),
     })
       ? snapshot.identityConfig.oidcProviders[0]
       : undefined;
@@ -231,6 +233,7 @@ export function App({
 
   useEffect(() => {
     if (snapshot.session !== "authenticated") return;
+    forgetSignedOutHere();
     autoOidcStarted.current = false;
     if (clearAutoOidcAttempt()) setAutoOidcSuppressed(false);
   }, [snapshot.session]);

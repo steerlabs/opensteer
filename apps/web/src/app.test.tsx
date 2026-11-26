@@ -166,6 +166,23 @@ describe("App automatic OIDC sign-in", () => {
     expect(browser.assign).not.toHaveBeenCalled();
   });
 
+  it("never signs a browser the person signed out back in by itself, even after a reload", async () => {
+    // Real Home: Devices → Sign out this device, confirmed; the reload started the account sign-in
+    // by itself, the still-signed-in Opensteer account answered it, and the workspace came back.
+    const browser = installWindow(undefined, { "opensteer.signed-out-here": "1" });
+    const client = createClient();
+    const beginOidcSignIn = spyOnBeginOidc(client);
+
+    const markup = renderApp(client);
+    await runEffectsTwice();
+
+    expect(markup).toContain("Welcome back");
+    expect(markup).toContain("Continue with Opensteer account");
+    expect(markup).not.toContain("Signing you in…");
+    expect(beginOidcSignIn).not.toHaveBeenCalled();
+    expect(browser.assign).not.toHaveBeenCalled();
+  });
+
   it("falls back to manual sign-in with the error when the automatic attempt rejects", async () => {
     const browser = installWindow();
     const client = createClient();
@@ -349,11 +366,17 @@ async function runEffectsTwice(): Promise<void> {
   await Promise.resolve();
 }
 
-function installWindow(marker?: string) {
+function installWindow(marker?: string, kept: Record<string, string> = {}) {
   const values = new Map<string, string>();
   if (marker !== undefined) values.set("opensteer.oidc.auto-attempt", marker);
+  const local = new Map(Object.entries(kept));
   const assign = vi.fn();
   vi.stubGlobal("window", {
+    localStorage: {
+      getItem: (key: string) => local.get(key) ?? null,
+      removeItem: (key: string) => local.delete(key),
+      setItem: (key: string, value: string) => local.set(key, value),
+    },
     history: { replaceState: vi.fn() },
     location: {
       assign,
@@ -368,5 +391,5 @@ function installWindow(marker?: string) {
       setItem: (key: string, value: string) => values.set(key, value),
     },
   });
-  return { assign, values };
+  return { assign, local, values };
 }
