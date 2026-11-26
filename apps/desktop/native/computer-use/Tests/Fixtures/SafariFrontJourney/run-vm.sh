@@ -22,6 +22,9 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT INT TERM
+# The image's screen-capture approval is renewed past this job, so macOS's reminder prompt
+# does not take the front app in the middle of a case (as test-macos-journeys.sh does).
+bash ../../scripts/test-vm/screen-capture-approval.sh
 sw_vers > "$out/guest-macos.txt"
 git rev-parse HEAD > "$out/checkout.txt" 2>/dev/null || echo unknown > "$out/checkout.txt"
 ls "$HOME/Library/Logs/DiagnosticReports" > "$out/diagnostic-reports-before.txt" 2>/dev/null || true

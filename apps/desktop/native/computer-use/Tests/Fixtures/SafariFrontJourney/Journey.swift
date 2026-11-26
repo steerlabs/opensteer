@@ -174,7 +174,10 @@ enum PersonInput {
     return try (envelope["result"] as? [String: Any]).unwrap(method + " result")
   }
   /// The connection drops: the helper hears it closed, as its server reports a dropped socket.
+  private var dropped = false
   func drop() {
+    guard !dropped else { return }
+    dropped = true
     helper.connectionClosed(connection)
     connection.close()
     Darwin.close(client)
@@ -433,6 +436,7 @@ final class FrontSampler {
 
   func frontCase(_ caseOut: URL) async throws -> [String: Any] {
     let wire = try AgentWire(helper: helper)
+    defer { wire.drop() }
     let agent = Agent(wire: wire, identity: safariIdentity)
     try await agent.open(title: "Sol fixture")
     try await makeFront(front, at: point("field"))
@@ -460,9 +464,8 @@ final class FrontSampler {
     let scrollAt = try agent.index(role: "link", containing: "Open fixture page")
     calls.append(try await call(agent, "scroll", caseOut, sampler: sampler, snapshot: true,
       [["type": "scroll", "target": ["index": scrollAt], "direction": "down", "amount": 3]]))
-    calls.append(try await call(agent, "menu-new-tab", caseOut, sampler: sampler, [["type": "key", "keys": "cmd+t"]]))
-    await sleepSeconds(1)
-    calls.append(try await call(agent, "menu-close-tab", caseOut, sampler: sampler, [["type": "key", "keys": "cmd+w"]]))
+    // The menu action: View → Reload Page, which opens no window.
+    calls.append(try await call(agent, "menu-reload", caseOut, sampler: sampler, [["type": "key", "keys": "cmd+r"]]))
     await sleepSeconds(0.5)
     let samples = sampler.stop()
     wire.drop()
@@ -484,6 +487,7 @@ final class FrontSampler {
 
   func stopCase(_ caseOut: URL) async throws -> [String: Any] {
     let wire = try AgentWire(helper: helper)
+    defer { wire.drop() }
     let agent = Agent(wire: wire, identity: safariIdentity)
     try await agent.open(title: "Sol fixture")
     try await agent.observe()
@@ -531,6 +535,7 @@ final class FrontSampler {
 
   func typingCase(_ caseOut: URL) async throws -> [String: Any] {
     let wire = try AgentWire(helper: helper)
+    defer { wire.drop() }
     let agent = Agent(wire: wire, identity: safariIdentity)
     try await agent.open(title: "Sol fixture")
     try await agent.observe()
@@ -576,6 +581,7 @@ final class FrontSampler {
     await sleepSeconds(0.5)
     try await makeFront(textEdit, at: CGPoint(x: 200, y: 300))
     let wire = try AgentWire(helper: helper)
+    defer { wire.drop() }
     let agent = Agent(wire: wire, identity: safariIdentity)
     try await agent.open(title: "Sol fixture")
     let cycle = "abcdefghijlnoprstuvwxyz"
@@ -598,7 +604,7 @@ final class FrontSampler {
       calls.append(try await call(agent, "click-then-type-\(round)", caseOut, sampler: sampler, shots: false, snapshot: true, [["type": "click", "target": ["index": field]], ["type": "type", "text": "m"]]))
       try await agent.observe()
       calls.append(try await call(agent, "scroll-\(round)", caseOut, sampler: sampler, shots: false, snapshot: true, [["type": "scroll", "target": ["index": link], "direction": "down", "amount": 2]]))
-      calls.append(try await call(agent, "menu-\(round)", caseOut, sampler: sampler, shots: round == 5, [["type": "key", "keys": "cmd+t"], ["type": "key", "keys": "cmd+w"]]))
+      calls.append(try await call(agent, "menu-\(round)", caseOut, sampler: sampler, shots: round == 5, [["type": "key", "keys": "cmd+r"]]))
     }
     while person.isRunning { await sleepSeconds(0.05) }
     await sleepSeconds(1)
@@ -629,6 +635,7 @@ final class FrontSampler {
 
   func choiceCase(_ caseOut: URL) async throws -> [String: Any] {
     let wire = try AgentWire(helper: helper)
+    defer { wire.drop() }
     let agent = Agent(wire: wire, identity: safariIdentity)
     try await agent.open(title: "Sol fixture")
     try await agent.observe()
@@ -668,6 +675,7 @@ final class FrontSampler {
     let before = Set((try? FileManager.default.contentsOfDirectory(atPath: reports.path)) ?? [])
     let pid = getpid()
     let wire = try AgentWire(helper: helper)
+    defer { wire.drop() }
     let agent = Agent(wire: wire, identity: safariIdentity)
     try await agent.open(title: "Sol fixture")
     try await agent.observe()
@@ -721,6 +729,7 @@ final class FrontSampler {
   func overlayCase(_ caseOut: URL) async throws -> [String: Any] {
     // Idle: the act has returned when the connection drops.
     let idleWire = try AgentWire(helper: helper)
+    defer { idleWire.drop() }
     let idle = Agent(wire: idleWire, identity: safariIdentity)
     try await idle.open(title: "Sol fixture")
     try await idle.observe()
@@ -731,6 +740,7 @@ final class FrontSampler {
     await screenshot(caseOut, "idle-drop")
     // In flight: dropped while a long act is going out.
     let busyWire = try AgentWire(helper: helper)
+    defer { busyWire.drop() }
     let busy = Agent(wire: busyWire, identity: safariIdentity)
     try await busy.open(title: "Sol fixture")
     try await busy.observe()
