@@ -95,7 +95,15 @@ enum PersonInput {
 
 /// Apps this journey opened, quit by their own handles.
 @MainActor enum Owned {
-  static var apps: [NSRunningApplication] = []
+  static var apps: [NSRunningApplication] = [] {
+    didSet {
+      // Written at each launch: after a crash the runner stops these by PID.
+      let pids = apps.map { String($0.processIdentifier) }.joined(separator: "\n") + "\n"
+      if let dir = ProcessInfo.processInfo.environment["OPENSTEER_SAFARI_FRONT_OWNED"] {
+        try? Data(pids.utf8).write(to: URL(fileURLWithPath: dir))
+      }
+    }
+  }
   static func stop(out: URL) async {
     var rows: [[String: Any]] = []
     for app in apps {
@@ -363,7 +371,10 @@ final class FrontSampler {
     Owned.apps.append(safari)
     try await waitForWindow(pid: safari.processIdentifier, title: "Sol fixture", seconds: 30)
     try placeSafari()
-    front = try await NSWorkspace.shared.openApplication(at: frontApp, configuration: configuration)
+    let frontConfiguration = NSWorkspace.OpenConfiguration()
+    frontConfiguration.activates = false
+    frontConfiguration.createsNewApplicationInstance = true
+    front = try await NSWorkspace.shared.openApplication(at: frontApp, configuration: frontConfiguration)
     Owned.apps.append(front)
     let ready = frontLog.deletingLastPathComponent().appendingPathComponent("front-ready.json")
     for _ in 0..<200 where !FileManager.default.fileExists(atPath: ready.path) { await sleepSeconds(0.05) }
@@ -520,7 +531,7 @@ final class FrontSampler {
       let at = (row["at"] as! NSNumber).int64Value
       let isSafari = (row["front"] as! NSNumber).int32Value == safari.processIdentifier
       if isSafari, since == nil { since = at }
-      if !isSafari, let start = since { episodes.append(["from": start, "ms": at - start]); since = nil }
+      if !isSafari, let start = since { episodes.append(["from": start, "ms": Int(at - start)]); since = nil }
     }
     if let start = since { episodes.append(["from": start, "ms": -1, "open": true]) }
     return episodes
@@ -566,7 +577,7 @@ final class FrontSampler {
     wire.drop()
     let frontPID = front.processIdentifier
     let episodes = safariEpisodes(samples)
-    let lateEpisodes = episodes.filter { ($0["ms"] as! Int64) > 300 || $0["open"] as? Bool == true }
+    let lateEpisodes = episodes.filter { ($0["ms"] as? Int ?? 0) > 300 || $0["open"] as? Bool == true }
     let callsMet = calls.filter { $0.frontAfter == frontPID && !$0.safariAbove }.count
     try JSONSerialization.data(withJSONObject: samples).write(to: caseOut.appendingPathComponent("front-samples.json"))
     return [

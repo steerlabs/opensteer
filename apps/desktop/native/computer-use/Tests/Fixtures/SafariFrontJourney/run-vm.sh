@@ -86,8 +86,16 @@ run_journey() {
   OPENSTEER_SAFARI_FRONT_BUILD="$name" \
   OPENSTEER_SAFARI_FRONT_CASES="$cases" \
   OPENSTEER_SAFARI_FRONT_DEADLINE="$deadline" \
+  OPENSTEER_SAFARI_FRONT_OWNED="$dir/owned-pids.txt" \
     "$binary" "$dir" && status=0 || status=$?
   echo "$status" > "$dir/exit-code.txt"
+  # A journey that ended without quitting its apps: they are stopped here by their PIDs.
+  if [[ -f "$dir/owned-pids.txt" ]]; then
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && kill "$pid" 2>/dev/null && echo "stopped leftover app $pid" || true
+    done < "$dir/owned-pids.txt"
+    sleep 2
+  fi
   echo "$name finished with $status at $((SECONDS - began)) s"
 }
 # The suite has 30 minutes: the churn case stops early, and says so, past this.
