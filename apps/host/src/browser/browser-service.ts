@@ -2084,8 +2084,13 @@ export class BrowserService {
     };
   }
 
-  /** Only people create profiles; every device of theirs learns of it, not just the one that asked. */
+  /**
+   * A profile the person makes, or an agent the rule lets make one at once (its identity admitted
+   * again where the profile is written); every device of theirs learns of it, not just the one
+   * that asked.
+   */
   async createProfile(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly homeRunnerId?: RunnerId | null;
     readonly name: string;
     readonly ownerId: UserId;
@@ -2093,7 +2098,11 @@ export class BrowserService {
     /** `engine-sign-in` keeps it out of every connected agent's grant. */
     readonly purpose?: "person" | "engine-sign-in";
   }): Promise<BrowserProfile> {
-    if (!input.homeRunnerId && this.#repository instanceof OpensteerStore) {
+    if (
+      !input.administration &&
+      !input.homeRunnerId &&
+      this.#repository instanceof OpensteerStore
+    ) {
       const previous = await this.#repository.database
         .selectFrom("commands")
         .select("payload")

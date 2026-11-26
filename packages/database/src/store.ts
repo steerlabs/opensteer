@@ -655,6 +655,7 @@ export class OpensteerStore {
     return runnerStore.touchRunnerConnectionForAttach(this.#database, input);
   }
   async createBrowserProfile(input: {
+    readonly administration?: AdministrationCommandIdentity | undefined;
     readonly homeRunnerId?: RunnerId | null;
     readonly idempotencyKey: string;
     readonly name: string;

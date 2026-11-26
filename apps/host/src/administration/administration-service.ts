@@ -12,6 +12,7 @@ import { z } from "zod";
 import {
   EnvironmentIdSchema,
   OpensteerError,
+  raisedBeforeEffect,
   DeviceIdSchema,
   type AuthSessionId,
   type EnvironmentId,
@@ -79,6 +80,7 @@ const coreTypes = [
   "iphone.screen.attach",
   "iphone.screen.detach",
   "machine.access.session.stop",
+  "browser.profile.create",
   "browser.profile.rename",
   "browser.profile.delete",
   "browser.history.remove",
@@ -186,7 +188,12 @@ export class AdministrationService {
     if (administration) {
       if (command.type.startsWith("harness.") && "environmentId" in command)
         await this.admitHarnessManagement(actor, command.environmentId);
-      const replay = await this.dependencies.store.replayAdministrationCommand(administration);
+      // A read, under the agent's admission again: a refusal here comes before anything happened.
+      const replay = await this.dependencies.store
+        .replayAdministrationCommand(administration)
+        .catch((error: unknown) => {
+          throw error instanceof Error ? raisedBeforeEffect(error) : error;
+        });
       if (replay?.output) return hostApi["commands.dispatch"].success.parse(replay.output);
       if (replay && command.type === "machine.access.session.stop")
         return hostApi["commands.dispatch"].success.parse({
@@ -269,7 +276,10 @@ export class AdministrationService {
               deletion: PendingBrowserProfileDeletionSchema.optional(),
             })
             .parse(result);
-        if (command.type === "browser.profile.rename") {
+        if (
+          command.type === "browser.profile.rename" ||
+          command.type === "browser.profile.create"
+        ) {
           const { purpose, ...profile } = BrowserProfileSchema.extend({
             purpose: z.enum(["person", "engine-sign-in"]).optional(),
           }).parse(result);
@@ -624,6 +634,19 @@ export class AdministrationService {
           type: command.type,
         };
       }
+      case "browser.profile.create":
+        return {
+          profile: await dependencies.browser.createProfile({
+            administration,
+            ...(command.input.homeRunnerId !== undefined
+              ? { homeRunnerId: command.input.homeRunnerId }
+              : {}),
+            name: command.input.name,
+            idempotencyKey: command.idempotencyKey,
+            ownerId: userId,
+          }),
+          type: command.type,
+        };
       case "browser.profile.rename":
         return {
           profile: await dependencies.browser.renameProfile({

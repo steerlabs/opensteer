@@ -4,6 +4,7 @@ import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { startBrowserRuntime } from "../browser/browser-runtime.test-support.js";
 import { connectAgent } from "../runtime/connected-agent.test-support.js";
+import { openRealtime } from "../runtime/machine-access-protocol.test-support.js";
 import {
   connectCallerMachine,
   startPrivateMachineHost,
@@ -102,9 +103,6 @@ integration("a connected agent's first use of a fresh Home", () => {
     async (mode) => {
       expect(await profiles()).toEqual([]);
       const agent = await agentWith({ scope: "everything" }, mode);
-      const create = {
-        command: { type: "browser.profile.create", input: { name: "Agent browser" } },
-      };
 
       const discovered = (await agent.call("discover", {})).structuredContent;
       expect(discovered).toMatchObject({ items: [] });
@@ -169,6 +167,136 @@ integration("a connected agent's first use of a fresh Home", () => {
       });
     },
   );
+
+  const create = { command: { type: "browser.profile.create", input: { name: "Agent browser" } } };
+  /** The commands the Home recorded as made by this connection: its evidence of what it did. */
+  const recordedBy = async (connectionId: string) =>
+    (
+      await host.store.database
+        .selectFrom("commands")
+        .select(["type", "authoritySource", "requestedBy", "status"])
+        .where("type", "=", "browser.profile.create")
+        .execute()
+    ).filter(
+      ({ authoritySource }) =>
+        (authoritySource as { callerKey?: string }).callerKey === `connection:${connectionId}`,
+    );
+
+  it("makes the profile at once for an Everything connection at Full access: the person's, attributed to the connection, on the person's screens", async () => {
+    // The person's screen, interested in their profiles, as every client of theirs is.
+    const realtime = await openRealtime(host, host.ownerHeaders, ["browser-profile"]);
+    after.push(() => realtime.close());
+    const agent = await agentWith({ scope: "everything" }, "full-access");
+    const seen = realtime.messages.length;
+
+    const made = (await agent.call("opensteer_command", create)).structuredContent;
+    expect(made, JSON.stringify(made)).toMatchObject({ status: "done" });
+    // Nobody was asked: the person gave this when they chose Everything at Full access.
+    expect(await waitingCommands()).toEqual([]);
+    const [profile, ...more] = await profiles();
+    expect(more).toEqual([]);
+    expect(profile).toMatchObject({ name: "Agent browser" });
+    // The person's profile, made by this connection: the Home's record names it.
+    expect(await recordedBy(agent.id)).toEqual([
+      {
+        type: "browser.profile.create",
+        authoritySource: {
+          kind: "mcp",
+          callerKind: "connection",
+          callerKey: `connection:${agent.id}`,
+        },
+        requestedBy: host.ownerId,
+        status: "succeeded",
+      },
+    ]);
+    // The person's screens are told, without a reload.
+    await waitForCondition(
+      async () =>
+        realtime.messages
+          .slice(seen)
+          .some((message) => JSON.stringify(message).includes("browser-profile")),
+      10_000,
+    );
+    // And its browser works there at once.
+    const used = (await agent.call("browser_use", { code: "return 1" })).structuredContent;
+    expect(used, JSON.stringify(used)).toMatchObject({
+      status: "completed",
+      profileId: profile!.id,
+    });
+  });
+
+  it("still asks the person when a selected connection at Full access makes a profile", async () => {
+    const agent = await agentWith(
+      {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "chrome-tabs", sourceId: `bsr_${randomUUID()}` as never }],
+      },
+      "full-access",
+    );
+    const asking = agent.call("opensteer_command", create);
+    after.push(() => asking);
+    await waitForCondition(async () => (await waitingCommands()).length > 0, 30_000);
+    expect(await profiles()).toEqual([]);
+    expect(await recordedBy(agent.id)).toEqual([]);
+  });
+
+  it("leaves no profile, or one with its record, when the person disconnects the agent as it makes one", async () => {
+    const disconnect = (connectionId: string) =>
+      testRpcData(
+        host.origin,
+        "commands.dispatch",
+        { type: "connection.revoke", connectionId, idempotencyKey: randomUUID() },
+        { headers: host.ownerHeaders },
+      );
+    // The person's Disconnect before the call, once the door has begun the command (its attempt
+    // is written before anything is done), and after the command has answered.
+    for (const when of ["before", "begun", "after"] as const) {
+      const agent = await agentWith({ scope: "everything" }, "full-access");
+      if (when === "before") await disconnect(agent.id);
+      let settled = false;
+      const making = agent
+        .call("opensteer_command", create)
+        .then((result) => result.structuredContent)
+        .catch((error: unknown) => ({ error: String(error) }))
+        .finally(() => {
+          settled = true;
+        });
+      if (when === "begun") {
+        await waitForCondition(
+          async () =>
+            settled ||
+            (
+              await host.store.database
+                .selectFrom("commandAttempts")
+                .select("id")
+                .where("connectionId", "=", agent.id)
+                .execute()
+            ).length > 0,
+          10_000,
+        );
+        await disconnect(agent.id);
+      }
+      const answer = await making;
+      if (when === "after") await disconnect(agent.id);
+      const made = await profiles();
+      const recorded = await recordedBy(agent.id);
+      const seen = JSON.stringify({ when, answer, made, recorded });
+      // Never half: a profile always has the record of who made it, and a record its profile.
+      expect(made.length, seen).toBe(recorded.length);
+      expect(made.length, seen).toBeLessThanOrEqual(1);
+      if ((answer as { status?: string }).status === "done") expect(made, seen).toHaveLength(1);
+      // What did not happen is never said to be what may have happened (rule 4).
+      if (made.length === 0)
+        expect((answer as { error?: { code?: string } }).error?.code, seen).not.toBe(
+          "outcome_unknown",
+        );
+      // Disconnected first, nothing is made; made first, it stays the person's, with its record.
+      if (when === "before") expect(made, seen).toEqual([]);
+      if (when === "after") expect(made, seen).toHaveLength(1);
+      await host.store.database.deleteFrom("browserProfiles").execute();
+    }
+  });
 
   it("keeps a selected connection's answers about what it was not given as they are", async () => {
     // A selected grant naming a paired Chrome that is not here: it holds the browser tools.

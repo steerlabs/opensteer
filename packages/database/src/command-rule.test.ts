@@ -391,8 +391,9 @@ describe("the command rule, generated from the table", () => {
       c: nowInStepA("c"),
       d: nowInStepA("d"),
       // b is 19, not the data file's first 22: creating (D1), changing (D0a), or removing secrets
-      // on (B1, destroy) an automation needs Full access.
-    }).toEqual({ a: 52, b: 19, c: 47, d: 24 });
+      // on (B1, destroy) an automation needs Full access. a and c each count making a browser
+      // profile, whose handler admits an agent itself; d is still asked (a new thing, D1).
+    }).toEqual({ a: 53, b: 19, c: 48, d: 24 });
   });
 });
 
