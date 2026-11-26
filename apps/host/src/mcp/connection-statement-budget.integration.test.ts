@@ -6,24 +6,36 @@ import { expect, vi } from "vitest";
 import { ThreadWaitService } from "../threads/thread-wait.js";
 import { connection, createTask, queuedRun, serveMcp } from "./connection-caller.test-support.js";
 
-/** Every statement this process sends while `action` runs. */
-async function statements(action: () => Promise<unknown>): Promise<string[]> {
+/**
+ * Every statement this process sends while `action` runs. With `hold`, a statement matching
+ * `hold.statement` is sent only once one matching `hold.until` has been sent: one concurrent
+ * branch made late, as a slower machine may run it.
+ */
+async function statements(
+  action: () => Promise<unknown>,
+  hold?: { readonly statement: RegExp; readonly until: RegExp },
+): Promise<string[]> {
   const sent: string[] = [];
+  const reached = Promise.withResolvers<void>();
   const prototype: { query(...args: unknown[]): unknown } = pg.Client.prototype;
   const query = prototype.query;
+  const text = (first: unknown) =>
+    typeof first === "string"
+      ? first
+      : first && typeof first === "object" && "text" in first && typeof first.text === "string"
+        ? first.text
+        : "<unknown>";
   const spy = vi.spyOn(prototype, "query").mockImplementation(function (
     this: pg.Client,
     ...args: unknown[]
   ) {
-    const first = args[0];
-    sent.push(
-      typeof first === "string"
-        ? first
-        : first && typeof first === "object" && "text" in first && typeof first.text === "string"
-          ? first.text
-          : "<unknown>",
-    );
-    return Reflect.apply(query, this, args);
+    const sql = text(args[0]);
+    const send = () => {
+      sent.push(sql);
+      if (hold?.until.test(sql)) reached.resolve();
+      return Reflect.apply(query, this, args);
+    };
+    return hold?.statement.test(sql) ? reached.promise.then(send) : send();
   });
   try {
     await action();
@@ -32,6 +44,10 @@ async function statements(action: () => Promise<unknown>): Promise<string[]> {
   }
   return sent;
 }
+
+/** The rule's read of what a connection's grant covers of the person's device approvals. */
+const lendingStatement =
+  /from "integration_connections" inner join "integration_servers".*inner join "devices"/su;
 
 describeStore("a connected agent's reads stay within their statement budgets", (it) => {
   it("discovers, waits on a child task and reads a task in a fixed number of statements", async ({
@@ -188,22 +204,40 @@ describeStore("a connected agent's reads stay within their statement budgets", (
         expect((warm.structuredContent as { status?: string }).status).toBe("timed_out");
       if (name === "taskRead")
         for (const id of requestIds) expect(JSON.stringify(warm.structuredContent)).toContain(id);
-      listed[name] = await statements(call);
+      // discover's owner Requests are read beside its tool listing (gatherComputerAccess): that
+      // read is sent only after the listing's lending, as a slower machine may send it.
+      listed[name] = await statements(
+        call,
+        name === "discover"
+          ? {
+              statement: /from "requests" inner join "integration_request_details"/u,
+              until: lendingStatement,
+            }
+          : undefined,
+      );
       counts[name] = listed[name].length;
     }
     // After the lending reads what the grant covers of the person's device approvals, where the
     // connection stands is read again in exactly one statement when nothing moved: the
     // connection's own row, and no second admission (owner and Home reads) behind it.
+    // discover's branches run concurrently (its root lists, and gatherComputerAccess reads the
+    // owner's Requests beside the tool listing), so what is pinned is what it sends, never where
+    // another branch's statement lands: the re-read follows the lending in its own chain, and the
+    // whole call reads the connection's row 4 times beside 5 owner checks and 4 Home reads. The
+    // re-read is the one row read with no owner or Home read of its own: without it the row is
+    // read 3 times; a second admission would add a row, an owner and a Home read.
     const discovered = listed.discover!;
-    const lending = discovered.findIndex((sql) =>
-      /from "integration_connections" inner join "integration_servers".*inner join "devices"/su.test(
-        sql,
-      ),
-    );
+    const lending = discovered.findIndex((sql) => lendingStatement.test(sql));
     expect(lending).toBeGreaterThan(0);
-    expect(discovered[lending + 1]).toMatch(/^select "id", "label", "grant", "grant_revision"/u);
-    expect(discovered[lending + 1]).toMatch(/from "agent_connections"/u);
-    expect(discovered[lending + 2]).not.toMatch(/from "agent_connections"/u);
+    const standing =
+      /^select "id", "label", "grant", "grant_revision"[\s\S]*from "agent_connections"/u;
+    expect(discovered.slice(lending + 1).some((sql) => standing.test(sql))).toBe(true);
+    const sent = (shape: RegExp) => discovered.filter((sql) => shape.test(sql)).length;
+    expect({
+      standing: sent(standing),
+      owner: sent(/^select "deployments"\."deployment_shape"/u),
+      home: sent(/^select "host_computer"\."id" as "hosting_computer_id"/u),
+    }).toEqual({ standing: 4, owner: 5, home: 4 });
     // Fixed per-call budgets:
     // - discover: 24 (one live check per discover call; 27 before; 22 until d15e89135, whose
     //   tool listing for a connection reads what its grant covers of the person's device
