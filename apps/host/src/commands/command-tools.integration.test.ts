@@ -29,6 +29,7 @@ import {
 import { registeredHostRoutes } from "../server.js";
 import { hostInternalRoutePaths } from "../server/internal-routes.js";
 import { injectRpcRequest, testRpcData } from "../server/test-host-api-request.js";
+import { seedDeviceApproval } from "../mcp/device-approvals.test-support.js";
 
 /**
  * The three tools (A5) on a real Home: what a caller may change is listed from the one rule,
@@ -294,19 +295,53 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
       ).machines.map(({ id }) => id);
     const everyDevice = await devicesSeen(full);
     expect(everyDevice.length).toBeGreaterThan(0);
-    const appHolder = await connect({
-      scope: "selected",
-      tasks: false,
-      resources: [
-        {
-          kind: "computer-app",
-          approvalId: `con_${randomUUID()}`,
-          deviceId: everyDevice[0]!,
-          app: { kind: "mac-app", bundleId: "com.apple.Notes", teamId: null },
-        },
-      ],
-    } as unknown as AgentGrant);
-    expect(await devicesSeen(appHolder.client)).toEqual([everyDevice[0]]);
+    // The devices of what the one rule lends the grant now: an approval held shows its device;
+    // one blocked, one removed and made again as a new row, and one never made show none, byte
+    // for byte alike.
+    const mac = everyDevice[0]!;
+    const [heldApp, blockedApp, staleApp, renewedApp] = [0, 1, 2, 3].map(
+      () => `con_${randomUUID()}`,
+    );
+    const approve = (
+      id: string,
+      name: string,
+      bundleId: string,
+      more: { status?: "revoked"; blockedAt?: Date } = {},
+    ) =>
+      seedDeviceApproval(host.store.database, {
+        id,
+        ownerUserId: host.ownerId,
+        deviceId: mac,
+        name,
+        app: { bundleId, displayName: name },
+        ...more,
+      });
+    await approve(heldApp!, "Notes", "com.apple.Notes");
+    await approve(blockedApp!, "Mail", "com.apple.mail", { blockedAt: new Date() });
+    await approve(staleApp!, "Safari", "com.apple.Safari", { status: "revoked" });
+    await approve(renewedApp!, "Safari", "com.apple.Safari");
+    const devicesState = async (approvalId: string, bundleId: string) => {
+      const holder = await connect({
+        scope: "selected",
+        tasks: false,
+        resources: [
+          {
+            kind: "computer-app",
+            approvalId,
+            deviceId: mac,
+            app: { kind: "mac-app", bundleId, teamId: null },
+          },
+        ],
+      } as unknown as AgentGrant);
+      return JSON.stringify(
+        (await call(holder.client, "opensteer_state", { area: "devices" })).structuredContent,
+      );
+    };
+    expect(await devicesState(heldApp!, "com.apple.Notes")).toContain(mac);
+    const never = await devicesState(`con_${randomUUID()}`, "com.apple.mail");
+    expect(never).not.toContain(mac);
+    expect(await devicesState(blockedApp!, "com.apple.mail")).toBe(never);
+    expect(await devicesState(staleApp!, "com.apple.Safari")).toBe(never);
     // Engine accounts as the person's own snapshot reads them, with the work location their
     // commands name, and none of the source fields the person typed (ruling 3).
     const engines = await call(full, "opensteer_state", { area: "engines" });

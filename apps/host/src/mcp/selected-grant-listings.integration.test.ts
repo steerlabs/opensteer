@@ -41,6 +41,7 @@ import { PluginAuthority } from "../plugins/plugin-authority.js";
 import type { ConnectionCaller } from "./agent-caller.js";
 import { connection, expectUnknownTool, serveMcp } from "./connection-caller.test-support.js";
 import { AdministrationToolHandlers } from "./handlers/administration.js";
+import { seedDevice, seedDeviceApproval } from "./device-approvals.test-support.js";
 import { localServerToolHandlers } from "./handlers/local-servers.js";
 
 /** What a connection holding `grant` is, as the caller resolver builds it. */
@@ -132,6 +133,26 @@ describeStore("a selected grant's listings show only what it names", (it) => {
         updatedAt: new Date().toISOString(),
       }),
     );
+    // The approvals the grant names, as the Home stores them: what the one rule lends.
+    for (const [deviceId, name, kind] of [
+      [granted!, "Granted Mac", "computer"],
+      [phone!, "Granted iPhone", "phone"],
+    ] as const)
+      await seedDevice(storeFixture.database, { id: deviceId, ownerUserId: f.userId, name, kind });
+    await seedDeviceApproval(storeFixture.database, {
+      id: notes!,
+      ownerUserId: f.userId,
+      deviceId: granted!,
+      name: "Notes",
+      app: { bundleId: "com.apple.Notes", displayName: "Notes" },
+    });
+    await seedDeviceApproval(storeFixture.database, {
+      id: screen!,
+      ownerUserId: f.userId,
+      deviceId: phone!,
+      name: "Granted iPhone",
+      definitionId: "iphone-screen",
+    });
     const url = await serveMcp(storeFixture, {
       discoverSources: {
         tabs: { project: async () => ({ tabs: windows, layout: { revision: 0, items: [] } }) },
@@ -218,6 +239,112 @@ describeStore("a selected grant's listings show only what it names", (it) => {
     expect(foreign.structuredContent).toMatchObject({ error: { code: "not_found", next: null } });
   });
 
+  it("discover: an approval blocked, or made again as a new row, reads exactly as one never made", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("listing-blocked-approvals");
+    const mac = DeviceIdSchema.parse(createId("device"));
+    const [held, blocked, stale, renewed] = [0, 1, 2, 3].map(() =>
+      createIntegrationId("connection"),
+    );
+    await seedDevice(storeFixture.database, { id: mac, ownerUserId: f.userId, name: "Studio Mac" });
+    const approve = (
+      id: string,
+      name: string,
+      bundleId: string,
+      more: { status?: "revoked"; blockedAt?: Date } = {},
+    ) =>
+      seedDeviceApproval(storeFixture.database, {
+        id,
+        ownerUserId: f.userId,
+        deviceId: mac,
+        name,
+        app: { bundleId, displayName: name },
+        ...more,
+      });
+    await approve(held!, "Notes", "com.apple.Notes");
+    // The person blocked Mail; Safari's approval was removed and made again, a new row.
+    await approve(blocked!, "Mail", "com.apple.mail", { blockedAt: new Date() });
+    await approve(stale!, "Safari", "com.apple.Safari", { status: "revoked" });
+    await approve(renewed!, "Safari", "com.apple.Safari");
+    const app = (connectionId: string, name: string, bundleId: string) => ({
+      connectionId,
+      name,
+      bundleId,
+      teamId: null,
+      access: "read-write",
+    });
+    // The person's whole inventory, as the Home lists it to them: Mail blocked, Safari's new row.
+    const url = await serveMcp(storeFixture, {
+      computerApps: {
+        computerUseInventory: async () => ({
+          machines: [
+            {
+              deviceId: mac,
+              definitionId: "macos-app",
+              name: "Studio Mac",
+              state: "ready",
+              appApproval: "ask",
+              apps: [
+                app(held!, "Notes", "com.apple.Notes"),
+                app(blocked!, "Mail", "com.apple.mail"),
+                app(renewed!, "Safari", "com.apple.Safari"),
+              ],
+            },
+          ],
+          phones: [],
+        }),
+        installedComputerApps: (async () => ({ apps: [], total: 0 })) as never,
+      },
+    });
+    const named = (approvalId: string, bundleId: string) => ({
+      kind: "computer-app" as const,
+      approvalId,
+      deviceId: mac,
+      app: { kind: "mac-app" as const, bundleId, teamId: null },
+    });
+    const agent = (resources: AgentGrant extends infer G ? G : never) =>
+      connection(storeFixture.store, url, {
+        userId: f.userId,
+        accessMode: "full-access",
+        grant: resources,
+      });
+    const [inventedMail, inventedSafari] = [0, 1].map(() => createIntegrationId("connection"));
+    const selected = (mail: string, safari: string): AgentGrant => ({
+      scope: "selected",
+      tasks: false,
+      resources: [
+        named(held!, "com.apple.Notes"),
+        named(mail, "com.apple.mail"),
+        named(safari, "com.apple.Safari"),
+      ],
+    });
+    /** Discover's root, by device and by app, with the two named ids written as X and Y. */
+    const read = async (grant: AgentGrant, mail: string, safari: string) => {
+      const { client } = await agent(grant);
+      const discover = (args: Record<string, unknown>) =>
+        client.callTool({ name: "discover", arguments: args });
+      const seen = [
+        await discover({}),
+        await discover({ id: mac }),
+        await discover({ id: mail }),
+        await discover({ id: safari }),
+      ];
+      return JSON.stringify(seen).replaceAll(mail, "X").replaceAll(safari, "Y");
+    };
+    const shown = await read(selected(blocked!, stale!), blocked!, stale!);
+    expect(shown).toBe(
+      await read(selected(inventedMail!, inventedSafari!), inventedMail!, inventedSafari!),
+    );
+    expect(shown).toContain("Notes");
+    expect(shown).not.toMatch(/Mail|Safari/u);
+    // Everything: the blocked approval is not there at all; what the rule lends is.
+    const everything = await read({ scope: "everything" }, blocked!, renewed!);
+    expect(everything).not.toContain("Mail");
+    expect(everything).toContain("Notes");
+    expect(everything).toContain("Safari");
+  });
+
   it("computer_list and browser_profile_list: only granted Devices and profiles, no shells or sign-in sites", async ({
     storeFixture,
   }) => {
@@ -286,6 +413,13 @@ describeStore("a selected grant's listings show only what it names", (it) => {
         removedAt: null,
       })
       .execute();
+    await seedDeviceApproval(storeFixture.database, {
+      id: screenApproval,
+      ownerUserId: f.userId,
+      deviceId: phoneId,
+      name: "Shared iPhone",
+      definitionId: "iphone-screen",
+    });
     await storeFixture.database
       .insertInto("deviceDrivers")
       .values({

@@ -1745,6 +1745,18 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     );
   }
 
+  /**
+   * What a requester under a connection's grant is shown of the person's device approvals: the
+   * grant, and what the one rule lends it now (`grantedDeviceApprovals`). Null for the person's
+   * own work and their own agents, which read nothing more.
+   */
+  async requesterShown(input: IntegrationRequester) {
+    const grant = await this.requesterGrant(input);
+    return grant
+      ? { grant, approvals: await grantedDeviceApprovals(this.database, input.ownerUserId, grant) }
+      : null;
+  }
+
   /** The external agent grant a requester works under; null for the person's own work. */
   async requesterGrant(input: IntegrationRequester) {
     if (!input.agentBindingId && !input.connectionId && !input.threadId) return null;

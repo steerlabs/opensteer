@@ -842,6 +842,8 @@ export function authorizeTarget(
 /** One approval on the person's devices (an app, a phone screen, a data app), as a grant covers it. */
 export interface GrantedDeviceApproval {
   readonly id: IntegrationConnectionId;
+  /** The device it is on. */
+  readonly deviceId: string;
   readonly displayName: string;
   readonly installationId: IntegrationInstallationId;
   readonly createdAt: Date;
@@ -916,6 +918,7 @@ export async function grantedDeviceApprovals(
       ? [
           {
             id: row.id,
+            deviceId: row.deviceId!,
             displayName: row.displayName,
             installationId: row.installationId,
             createdAt: row.createdAt,

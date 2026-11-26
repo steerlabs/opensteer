@@ -799,6 +799,7 @@ function withMacs(
           },
           store: {
             requesterGrant: async () => null,
+            requesterShown: async () => null,
             listDeviceComputerAppSetupRequests: async () => [],
             integrationRequests: { listPendingIntegrationAccessRequests: async () => [] },
           },

@@ -191,25 +191,36 @@ describeStore("a connected agent's reads stay within their statement budgets", (
       listed[name] = await statements(call);
       counts[name] = listed[name].length;
     }
-    // After the lending reads what the grant covers of the person's device approvals, where the
-    // connection stands is read again in exactly one statement when nothing moved: the
-    // connection's own row, and no second admission (owner and Home reads) behind it.
+    // The tool listing's lending reads what the grant covers of the person's device approvals,
+    // and where the connection stands is then read again in one statement when nothing moved: the
+    // connection's own row. Discover reads the same lending once more for its computer inventory
+    // (the one rule as its source). Its paths run side by side, so their statements interleave:
+    // what is pinned is that both lendings and the one-statement re-read are there, and the exact
+    // count below, which a second admission (owner and Home reads) would raise.
     const discovered = listed.discover!;
-    const lending = discovered.findIndex((sql) =>
-      /from "integration_connections" inner join "integration_servers".*inner join "devices"/su.test(
-        sql,
+    expect(
+      discovered.filter((sql) =>
+        /from "integration_connections" inner join "integration_servers".*inner join "devices"/su.test(
+          sql,
+        ),
       ),
-    );
-    expect(lending).toBeGreaterThan(0);
-    expect(discovered[lending + 1]).toMatch(/^select "id", "label", "grant", "grant_revision"/u);
-    expect(discovered[lending + 1]).toMatch(/from "agent_connections"/u);
-    expect(discovered[lending + 2]).not.toMatch(/from "agent_connections"/u);
+    ).toHaveLength(2);
+    expect(
+      discovered.some(
+        (sql) =>
+          sql.startsWith('select "id", "label", "grant", "grant_revision"') &&
+          /from "agent_connections"/u.test(sql),
+      ),
+    ).toBe(true);
     // Fixed per-call budgets:
-    // - discover: 24 (one live check per discover call; 27 before; 22 until d15e89135, whose
+    // - discover: 25 (one live check per discover call; 27 before; 22 until d15e89135, whose
     //   tool listing for a connection reads what its grant covers of the person's device
     //   approvals (grantedDeviceApprovals, 1) and reads where the connection stands again after
     //   that lending (connectionStandsAsAdmitted, 1: admitted again in full only if its grant,
-    //   mode, consent or state moved), so a grant narrowed in between applies).
+    //   mode, consent or state moved), so a grant narrowed in between applies; 24 until
+    //   what-a-connection-is-shown, whose computer inventory starts from what the one rule
+    //   lends (grantedDeviceApprovals, 1), where it filtered the person's whole inventory by
+    //   the grant's names and so listed a blocked approval). Your own agents read none of it.
     // - childWaitSettled: 88 (settled first snapshot with status === "settled"; was 93 at
     //   457885706 before the R round, 89 after R1-R7, and 88 after P1 unified
     //   admitThreadExecution onto threadExecutionAdmitted).
@@ -218,7 +229,7 @@ describeStore("a connected agent's reads stay within their statement budgets", (
     // - taskRead: 28 (down from 33 at 457885706 after folding connectionRequests into
     //   recent/activity SQL and removing post-hoc visibleConnectionRequestIds).
     expect(counts).toEqual({
-      discover: 24,
+      discover: 25,
       childWaitSettled: 88,
       childWaitTimedOut: 88,
       taskRead: 28,

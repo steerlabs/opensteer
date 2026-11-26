@@ -1,8 +1,6 @@
 import type { CallableIntegrationTool, IntegrationRequester } from "@opensteer/database";
 import {
-  agentGrantAccess,
   OpensteerError,
-  type AgentGrantTarget,
   type Blocked,
   type RunId,
   type DeviceId,
@@ -30,7 +28,7 @@ export async function gatherComputerAccess(
     | "computerToolEnabled"
     | "computerUseVersion"
   > & {
-    readonly store: Pick<DeviceService["store"], "requesterGrant">;
+    readonly store: Pick<DeviceService["store"], "requesterShown">;
   },
   input: IntegrationRequester & {
     readonly runId?: RunId;
@@ -54,22 +52,20 @@ export async function gatherComputerAccess(
       platform.store.integrationRequests.listPendingIntegrationAccessRequests(input.ownerUserId),
       run ? platform.computerToolEnabled(run) : hasRun,
     ]);
-  const grant = await platform.store.requesterGrant(input);
-  // A selected grant learns only the Devices, apps and phone screens it names: the inventory is
-  // scoped before anything is projected, and the person's pending setup is none of its business.
+  // Under a connection's grant, an approval on the person's devices is shown only as the one rule
+  // lends it now (`grantedDeviceApprovals`): one blocked, on a removed device, made again as a new
+  // row, or outside the grant is not there at all. A selected grant learns only the Devices it
+  // names apps of, and the person's pending setup is none of its business.
+  const shown = await platform.store.requesterShown(input);
+  const grant = shown?.grant ?? null;
   const selected = grant?.scope === "selected" ? grant : null;
-  const holds = (target: AgentGrantTarget) => selected && agentGrantAccess(selected, target);
-  const machines = selected
+  const lent = shown && new Set(shown.approvals.map(({ id }) => id.toLowerCase()));
+  const lends = (approvalId: string | null | undefined) =>
+    !lent || (approvalId !== null && approvalId !== undefined && lent.has(approvalId.toLowerCase()));
+  const machines = lent
     ? ownerInventory.machines.flatMap((machine) => {
-        const apps = machine.apps.filter((app) =>
-          holds({
-            kind: "computer-app",
-            deviceId: machine.deviceId,
-            approvalId: app.connectionId,
-            app: { kind: "mac-app", bundleId: app.bundleId, teamId: app.teamId },
-          }),
-        );
-        return apps.length ? [{ ...machine, apps }] : [];
+        const apps = machine.apps.filter((app) => lends(app.connectionId));
+        return apps.length || !selected ? [{ ...machine, apps }] : [];
       })
     : ownerInventory.machines;
   const grantedMacs = new Set(
@@ -77,7 +73,7 @@ export async function gatherComputerAccess(
       .filter((machine) => machine.apps.some((app) => app.status === "approved"))
       .map((machine) => machine.deviceId),
   );
-  const inventory = selected
+  const inventory = lent
     ? {
         ...ownerInventory,
         machines,
@@ -85,19 +81,13 @@ export async function gatherComputerAccess(
           ownerInventory.phones
             .filter((phone) => {
               const approvalId = phone.connectionId ?? phone.connection?.connectionId;
-              return (
-                approvalId &&
-                isPhoneDisplayDefinitionId(phone.definitionId) &&
-                holds({
-                  kind: "computer-app",
-                  deviceId: phone.deviceId,
-                  approvalId,
-                  app: { kind: "phone-screen", definitionId: phone.definitionId },
-                })
-              );
+              // A phone no approval is made for yet stays for a grant of everything, as its Mac.
+              return approvalId
+                ? isPhoneDisplayDefinitionId(phone.definitionId) && lends(approvalId)
+                : !selected;
             })
             .map(async ({ setup, ...phone }) => {
-              if (setup?.location !== "driver-mac")
+              if (!selected || setup?.location !== "driver-mac")
                 return { ...phone, ...(setup ? { setup } : {}) };
               const deviceId = grantedMacs.size
                 ? await platform.store

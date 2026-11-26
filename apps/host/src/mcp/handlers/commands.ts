@@ -17,6 +17,7 @@ import {
   commandRule,
   commandSubject,
   connectionRequests,
+  grantedDeviceApprovals,
   requestFromRow,
   stillReaches,
   storedProposal,
@@ -387,10 +388,11 @@ export class CommandTools {
         const machines = (view.machines ?? []) as readonly { readonly id: string }[];
         if (scope !== "selected" || grant?.scope !== "selected")
           return { area: input.area, view: { machines } };
-        // A selected grant sees the devices of the apps it was given, as its tools do.
+        // A selected grant sees the devices of what the one rule lends it now, as its tools do:
+        // an approval blocked, on a removed device, or made again as a new row is no device of it.
         const devices = new Set<string>(
-          grant.resources.flatMap((resource) =>
-            resource.kind === "computer-app" ? [resource.deviceId as string] : [],
+          (await grantedDeviceApprovals(this.#database, caller.userId, grant)).map(
+            ({ deviceId }) => deviceId,
           ),
         );
         return {

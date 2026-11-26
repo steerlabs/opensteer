@@ -92,6 +92,7 @@ export class IntegrationPlatformStore {
   readonly getToolSchemas: IntegrationGrantStore["getToolSchemas"];
   readonly listCallableTools: IntegrationGrantStore["listCallableTools"];
   readonly requesterGrant: IntegrationGrantStore["requesterGrant"];
+  readonly requesterShown: IntegrationGrantStore["requesterShown"];
   readonly settings: PluginSettingsStore;
   readonly plugins: PluginStore;
 
@@ -241,5 +242,6 @@ export class IntegrationPlatformStore {
     this.getToolSchemas = this.grants.getToolSchemas.bind(this.grants);
     this.listCallableTools = this.grants.listCallableTools.bind(this.grants);
     this.requesterGrant = this.grants.requesterGrant.bind(this.grants);
+    this.requesterShown = this.grants.requesterShown.bind(this.grants);
   }
 }
