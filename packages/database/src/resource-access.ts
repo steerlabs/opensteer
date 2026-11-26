@@ -846,6 +846,8 @@ export interface GrantedDeviceApproval {
   readonly deviceId: string;
   readonly displayName: string;
   readonly installationId: IntegrationInstallationId;
+  /** The device app it approved (a data app's, `macos-app` for a Mac app, a phone screen's). */
+  readonly definitionId: string | null;
   readonly createdAt: Date;
   /** What the grant names it as: a `computer-app`, or a data app's `device-account` plugin. */
   readonly target: AgentGrantTarget;
@@ -928,6 +930,7 @@ export async function grantedDeviceApprovals(
             deviceId: row.deviceId!,
             displayName: row.displayName,
             installationId: row.installationId,
+            definitionId: row.integrationDefinitionId,
             createdAt: row.createdAt,
             target,
             access,

@@ -196,7 +196,12 @@ integration("what a connection is shown", () => {
     const computer = keep(
       await connectComputerAppMachine(
         host,
-        [createHelperAppProvider("apple-calendar", helper.port)],
+        // Reminders is on the Mac too, never approved, its macOS permission not given: what an
+        // agent holding something else there must learn nothing of.
+        [
+          createHelperAppProvider("apple-calendar", helper.port),
+          createHelperAppProvider("apple-reminders", helper.port),
+        ],
         { statusIntervalMs: 200 },
       ),
     );
@@ -873,4 +878,225 @@ integration("what a connection is shown", () => {
     expect(w.helper.invocations).toEqual([]);
     expect(await w.waitingRequests()).toEqual([]);
   });
+
+  /**
+   * A selected grant naming exactly one thing learns of the person's devices and apps only what
+   * that one thing needs: every reply of every tool it is listed carries none of the ids, names,
+   * definition ids, detail sentences or states of anything else the fixture holds, nor the parts
+   * of a device's record that are about what it does not hold. A forbidden string the call itself
+   * sent (an id it named) is its echo, not a leak.
+   */
+  const reminders = [
+    "apple-reminders",
+    "list_reminder_lists",
+    "Reminders needs macOS full access to reminders",
+  ];
+  /** The parts of a device's record no single held thing needs. */
+  const deviceRecord = [
+    '"drivers"',
+    '"capabilities"',
+    '"modules"',
+    '"allowedModules"',
+    '"enrollmentId"',
+    '"fullDiskAccess"',
+    '"screenRecording"',
+    '"accessibility"',
+    '"runtimeVersion"',
+    '"selfRunnerId"',
+  ];
+  const holdings: readonly [
+    string,
+    (w: World) => { readonly grant: AgentGrant; readonly forbidden: readonly string[] },
+  ][] = [
+    [
+      "one Mac app",
+      (w) => ({
+        grant: {
+          scope: "selected",
+          tasks: false,
+          resources: [
+            {
+              kind: "computer-app",
+              approvalId: w.notes,
+              deviceId: w.mac,
+              app: { kind: "mac-app", bundleId: notesBundle, teamId: null },
+            },
+          ],
+        } as AgentGrant,
+        forbidden: [
+          w.calendar,
+          namespaceOf(w.calendar),
+          "apple-calendar",
+          "Calendar on Studio Mac",
+          "list_calendars",
+          w.profileId,
+          w.callerDevice,
+          ...reminders,
+          ...deviceRecord,
+        ],
+      }),
+    ],
+    [
+      "one data app, for reading",
+      (w) => ({
+        grant: {
+          scope: "selected",
+          tasks: false,
+          resources: [
+            {
+              kind: "plugin",
+              target: { kind: "device-account", integrationConnectionId: w.calendar },
+              access: "read",
+            },
+          ],
+        } as AgentGrant,
+        forbidden: [
+          w.notes,
+          notesBundle,
+          appId(w.mac, notesBundle),
+          "macos-app",
+          w.profileId,
+          w.callerDevice,
+          ...reminders,
+          ...deviceRecord,
+        ],
+      }),
+    ],
+    [
+      "one browser profile",
+      (w) => ({
+        grant: {
+          scope: "selected",
+          tasks: false,
+          resources: [{ kind: "browser-profile", profileId: w.profileId }],
+        } as AgentGrant,
+        forbidden: [
+          w.calendar,
+          namespaceOf(w.calendar),
+          "apple-calendar",
+          "Calendar on Studio Mac",
+          w.notes,
+          notesBundle,
+          appId(w.mac, notesBundle),
+          "macos-app",
+          w.mac,
+          "Studio Mac",
+          w.callerDevice,
+          ...reminders,
+          ...deviceRecord,
+        ],
+      }),
+    ],
+  ];
+  /** Every string an argument carries, at any depth. */
+  const sent = (value: unknown): string[] =>
+    typeof value === "string"
+      ? [value]
+      : Array.isArray(value)
+        ? value.flatMap(sent)
+        : value && typeof value === "object"
+          ? Object.values(value).flatMap(sent)
+          : [];
+
+  it.each(holdings)(
+    "shows a grant of %s nothing of anything else on the person's devices, in any reply of any tool",
+    async (_, holding) => {
+      const w = await world();
+      w.helper.answer = () => ({ calendars: [], events: [] }) as never;
+      // Reminders reports its permission missing before the sweep reads anything.
+      await waitForCondition(async () =>
+        JSON.stringify(
+          (
+            await (
+              await connectAgent(w.host, { scope: "everything" })
+            ).call("opensteer_state", {
+              area: "devices",
+            })
+          ).structuredContent,
+        ).includes("Reminders needs macOS full access"),
+      );
+      const { grant, forbidden } = holding(w);
+      const everything = keep(await connectAgent(w.host, { scope: "everything" }));
+      const agent = keep(await connectAgent(w.host, grant));
+      // Every id the fixtures know, as an Everything connection is shown them.
+      const ids = new Set<string>([w.calendar, w.notes, w.mac, w.callerDevice, w.profileId]);
+      const root = (await everything.call("discover", {})).structuredContent as {
+        items: { id: string }[];
+      };
+      for (const { id } of root.items) {
+        ids.add(id);
+        const detail = (await everything.call("discover", { id })).structuredContent as {
+          items?: { id: string }[];
+        };
+        for (const item of detail.items ?? []) ids.add(item.id);
+      }
+      const tools = await agent.tools();
+      const schemas = new Map(tools.map((tool) => [tool.name, tool]));
+      const values: Value[] = [...ids];
+      const paths: Value[] = [
+        ...values.filter((id) => typeof id === "string" && id.startsWith("tools")),
+        ...calendarTools.flatMap((tool) => pathForms(namespaceOf(w.calendar), tool)),
+      ];
+      const calls: [string, Args][] = [];
+      for (const name of [...schemas.keys(), ...retired]) {
+        const plain = sweep[name]?.(
+          name.startsWith("plugin_") || name === "discover" ? paths.concat(values) : values,
+        ) ?? [{}];
+        for (const args of plain) calls.push([name, args]);
+        const properties = Object.keys(
+          (schemas.get(name)?.inputSchema as { properties?: Record<string, unknown> } | undefined)
+            ?.properties ?? {},
+        ).filter((property) => !notAnId.has(property));
+        for (const property of properties)
+          for (const id of values) calls.push([name, { ...plain[0], [property]: id }]);
+      }
+      const startsTheProfile = ([name, args]: [string, Args]) =>
+        name === "browser_connect" &&
+        (args.profileId === w.profileId || (args.profileId === undefined && !args.tabId));
+      const leaks: string[] = [];
+      const swept = calls.filter((call) => !startsTheProfile(call));
+      for (let start = 0; start < swept.length; start += 16)
+        await Promise.all(
+          swept.slice(start, start + 16).map(async ([name, args]) => {
+            const resolved = resolve(args, {}) as Args;
+            const text = JSON.stringify(await reply(agent, name, resolved));
+            const echoed = sent(resolved);
+            for (const word of forbidden)
+              if (text.includes(word) && !echoed.some((value) => value.includes(word)))
+                leaks.push(
+                  `${name} ${JSON.stringify(resolved).slice(0, 160)}: ${word} in …${text.slice(
+                    Math.max(0, text.indexOf(word) - 120),
+                    text.indexOf(word) + 120,
+                  )}`,
+                );
+          }),
+        );
+      expect([...new Set(leaks)]).toEqual([]);
+      // What it holds it still learns: the device a Mac app is on, online, its Apps switch, and
+      // whether computer use is ready there.
+      if (
+        grant.scope === "selected" &&
+        grant.resources.some(({ kind }) => kind === "computer-app")
+      ) {
+        const devices = (await agent.call("opensteer_state", { area: "devices" }))
+          .structuredContent as { view: { machines: Record<string, unknown>[] } };
+        expect(devices.view.machines).toMatchObject([
+          {
+            id: w.mac,
+            name: "Studio Mac",
+            status: "online",
+            access: { policy: { apps: true } },
+            computerUse: { state: expect.any(String) },
+          },
+        ]);
+        // Of its apps, only the Mac-app state (this Mac reports none: it runs no computer use).
+        expect(
+          (devices.view.machines[0]!.apps as { definitionId: string }[]).filter(
+            ({ definitionId }) => definitionId !== "macos-app",
+          ),
+        ).toEqual([]);
+      }
+      expect(await w.waitingRequests()).toEqual([]);
+    },
+  );
 });

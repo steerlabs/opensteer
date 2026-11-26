@@ -66,3 +66,38 @@ export function lentDevice(lent: LentNow | null): (deviceId: string) => boolean 
 export function lentRequester(lent: LentNow | null): { readonly lent?: IntegrationRequesterLent } {
   return lent ? { lent: { grant: lent.grant, approvals: lent.approvals } } : {};
 }
+
+/**
+ * A device as a selected grant reads it: what the approvals it holds there need, and nothing of
+ * the apps, data stores, permissions or capabilities it does not hold (rule 5). Its name, whether
+ * it is online, its Apps switch, and the state of each app it holds; for a Mac app, whether
+ * computer use is ready there; for a phone screen, the screen's own state.
+ */
+export function lentMachineView(
+  machine: { readonly id: string } & Record<string, unknown>,
+  held: readonly Pick<GrantedDeviceApproval, "definitionId" | "target">[],
+): Record<string, unknown> {
+  const definitions = new Set(held.flatMap(({ definitionId }) => definitionId ?? []));
+  const app = (kind: "mac-app" | "phone-screen") =>
+    held.some(({ target }) => target.kind === "computer-app" && target.app.kind === kind);
+  const access = machine.access as { readonly policy?: { readonly apps?: unknown } } | undefined;
+  const computerUse = machine.computerUse as
+    { readonly state?: unknown; readonly detail?: unknown } | undefined;
+  const apps = Array.isArray(machine.apps)
+    ? (machine.apps as readonly { readonly definitionId?: unknown }[]).filter(
+        ({ definitionId }) => typeof definitionId === "string" && definitions.has(definitionId),
+      )
+    : [];
+  return {
+    id: machine.id,
+    name: machine.name,
+    kind: machine.kind,
+    status: machine.status,
+    access: { policy: { apps: access?.policy?.apps ?? null } },
+    apps,
+    ...(app("mac-app") && computerUse
+      ? { computerUse: { state: computerUse.state ?? null, detail: computerUse.detail ?? null } }
+      : {}),
+    ...(app("phone-screen") ? { phoneDisplay: machine.phoneDisplay ?? null } : {}),
+  };
+}
