@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { sql } from "kysely";
-import pg from "pg";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { AgentGrant } from "../packages/core/src/index.js";
 import { createHelperAppProvider } from "../apps/runner/src/index.js";
 import { localNamespace } from "../apps/host/src/plugins/provider-names.js";
@@ -16,6 +15,7 @@ import {
   setComputerApp,
 } from "../apps/host/src/runtime/computer-apps.test-support.js";
 import { testRpcData } from "../apps/host/src/server/test-host-api-request.js";
+import { statementsSent } from "../apps/host/src/runtime/statements.test-support.js";
 import {
   connectCallerMachine,
   createMachineAccessDatabase,
@@ -744,32 +744,7 @@ integration("what a connection is shown", () => {
     },
   );
 
-  /** Every statement this process sends while `action` runs. */
-  const statements = async (action: () => Promise<unknown>) => {
-    const sent: string[] = [];
-    const prototype: { query(...args: unknown[]): unknown } = pg.Client.prototype;
-    const query = prototype.query;
-    const spy = vi.spyOn(prototype, "query").mockImplementation(function (
-      this: pg.Client,
-      ...args: unknown[]
-    ) {
-      const first = args[0];
-      sent.push(
-        typeof first === "string"
-          ? first
-          : first && typeof first === "object" && "text" in first
-            ? String(first.text)
-            : "",
-      );
-      return Reflect.apply(query, this, args);
-    });
-    try {
-      await action();
-    } finally {
-      spy.mockRestore();
-    }
-    return sent;
-  };
+  const statements = statementsSent;
 
   it("lists a Run's data apps with no read of each device on the healthy path (rule 7)", async () => {
     const w = await world();
