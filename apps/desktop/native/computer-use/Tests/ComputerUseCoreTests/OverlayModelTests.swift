@@ -492,7 +492,8 @@ final class OverlayModelTests: XCTestCase {
     // next, working view of Safari until the person dismissed it.
     let watched = OverlayModel.Session(
       id: "view", threadTitle: nil, apps: [notes], ownerInput: true)
-    for (name, live) in [("a person's view", watched), ("an agent between calls", session("a", "Plan the trip", [notes]))] {
+    let between = session("a", "Plan the trip", [notes])
+    for (name, live) in [("a person's view", watched), ("an agent between calls", between)] {
       var model = OverlayModel()
       model.update(sessions: [live], ending: .ended, at: at(0))
       model.workStarted(app: notes.key, at: at(0.2))
