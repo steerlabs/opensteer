@@ -1,4 +1,4 @@
-import { readTaskActivity } from "../host/agent-work.js";
+import { readTaskActivity, taskActivityKey } from "../host/agent-work.js";
 import type { ChatScreenHost } from "../host/chat-screen-host.js";
 import type { HostSnapshot, ThreadSummary, WaitingRequestView } from "../host/client.js";
 import { connectedAgentsNow } from "../host/connected-agents-now.js";
@@ -36,9 +36,8 @@ function sameTasks(a: readonly ThreadSummary[], b: readonly ThreadSummary[]) {
       const next = b[index]!;
       return (
         task.id === next.id &&
-        task.status === next.status &&
         task.externalWork === next.externalWork &&
-        task.updatedAt === next.updatedAt
+        taskActivityKey(task) === taskActivityKey(next)
       );
     })
   );

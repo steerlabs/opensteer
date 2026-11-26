@@ -5407,6 +5407,7 @@ function compactThread(
 ): ThreadSummary {
   return {
     id: row.id,
+    revision: row.revision,
     title: row.title,
     askedAt: row.askedAt,
     createdAt: row.askedAt,

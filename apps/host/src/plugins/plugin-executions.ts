@@ -139,7 +139,8 @@ export class PluginExecutions {
       .execute();
     for (const row of unsent) {
       if (this.#submissions.has(row.id)) continue;
-      const ended = await database.transaction().execute(async (tx) => {
+      // A personal mutation: ending its operation publishes that operation's task again.
+      const ended = await commitPersonalMutation(database, async (tx) => {
         // A direct plugin's scoped caller key ends with its operation id.
         const operationId = AgentOperationIdSchema.safeParse(
           row.caller.slice(row.caller.lastIndexOf(":") + 1),

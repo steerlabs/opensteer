@@ -29,6 +29,7 @@ import { cancelPending } from "./request-cancellation.js";
 import { senderUnlinkedFailure } from "./bridge-admission.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { publishThreadSummary } from "./thread-status.js";
+import { publishOperationTasks } from "./agent-session-store.js";
 import type { DatabaseSchema } from "./schema.js";
 import {
   chatEndReason,
@@ -789,21 +790,27 @@ export async function settleLineageRequests(
       .forNoKeyUpdate()
       .execute();
     if (linked.length)
-      await tx
-        .updateTable("agentOperations")
-        .set({
-          state: "refused",
-          outcome: "refused",
-          completedAt: now,
-          terminalEvidenceAt: now,
-          updatedAt: now,
-        })
-        .where(
-          "id",
-          "in",
-          linked.map(({ id }) => id),
-        )
-        .execute();
+      await publishOperationTasks(
+        tx,
+        (
+          await tx
+            .updateTable("agentOperations")
+            .set({
+              state: "refused",
+              outcome: "refused",
+              completedAt: now,
+              terminalEvidenceAt: now,
+              updatedAt: now,
+            })
+            .where(
+              "id",
+              "in",
+              linked.map(({ id }) => id),
+            )
+            .returning("sessionId")
+            .execute()
+        ).map(({ sessionId }) => sessionId),
+      );
     // A command ask closed by its connection's lost reach says nothing to that lineage (rule 5).
     const commandAsks = new Set(
       (

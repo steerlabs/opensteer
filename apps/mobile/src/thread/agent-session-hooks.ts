@@ -1,4 +1,5 @@
 import {
+  taskActivityKey,
   threadInDirectory,
   type HostClient,
   type HostSnapshot,
@@ -30,13 +31,7 @@ export function useSessionTask(
   threadId: string,
 ): SessionTaskView | null {
   const thread = useSessionThread(hostClient, threadId);
-  const operations = useTaskActivity(
-    hostClient,
-    threadId,
-    thread?.externalWork
-      ? `${thread.updatedAt}|${thread.status}|${thread.externalWork.status}`
-      : null,
-  );
+  const operations = useTaskActivity(hostClient, threadId, taskActivityKey(thread));
   return useMemo(
     () => (thread === null ? null : sessionTaskOf({ threads: [thread] }, threadId, operations)),
     [operations, thread, threadId],

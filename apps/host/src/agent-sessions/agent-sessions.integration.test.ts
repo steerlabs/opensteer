@@ -2441,6 +2441,108 @@ describeStore("an external agent's direct work through sessions", (it) => {
     });
   });
 
+  it("publishes the task again when one of its operations ends, however it ends", async ({
+    storeFixture,
+  }) => {
+    // An open task page reads its activity again when the Home publishes the task (its revision);
+    // an operation that ended without that kept showing "Running…" to the person watching.
+    const s = await setUp(storeFixture, "session-ending-published");
+    const { database } = storeFixture;
+    const revisionOf = async (threadId: string) =>
+      // A bigint column, read as text: compared as a number.
+      BigInt(
+        (
+          await database
+            .selectFrom("threads")
+            .select("revision")
+            .where("id", "=", threadId as never)
+            .executeTakeFirstOrThrow()
+        ).revision,
+      );
+    // The work ends only when the test says so, even after a Stop aborts it: what the person's
+    // page last read is the task as published before the operation's own row ends.
+    const running = (operationKey: string) => {
+      const entered = Promise.withResolvers<void>();
+      const end = Promise.withResolvers<void>();
+      const result = s.sessions.run({
+        ownerUserId: s.f.userId,
+        agentConnectionId: s.agent.id,
+        operationKey,
+        tool: "tab_open",
+        input: { target: page(profile), operationKey },
+        target: {
+          grant: { kind: "browser-profile", profileId: profile },
+          name: "Work",
+          device: null,
+        },
+        effect: "write",
+        calls: `tab_open ${operationKey}`,
+        execute: async () => {
+          entered.resolve();
+          await end.promise;
+        },
+      });
+      return { entered: entered.promise, end, result };
+    };
+    const taskOf = async (operationKey: string) =>
+      database
+        .selectFrom("agentOperations")
+        .innerJoin("agentSessions", "agentSessions.id", "agentOperations.sessionId")
+        .select(["agentOperations.id", "agentSessions.id as sessionId", "agentSessions.threadId"])
+        .where("agentOperations.operationKey", "=", operationKey)
+        .executeTakeFirstOrThrow();
+    const endings: Record<
+      string,
+      {
+        readonly before?: (task: Awaited<ReturnType<typeof taskOf>>) => Promise<void>;
+        readonly finish: (work: ReturnType<typeof running>) => void;
+      }
+    > = {
+      completed: { finish: (work) => work.end.resolve() },
+      failed: { finish: (work) => work.end.reject(new Error("The app was not there.")) },
+      unknown: { finish: (work) => work.end.reject(new OperationOutcomeUnknown()) },
+      stopped: {
+        before: async (task) => {
+          await s.sessions.stopSession({
+            ownerUserId: s.f.userId,
+            threadId: task.threadId,
+            sessionId: task.sessionId,
+          });
+        },
+        // Work the Stop interrupted cannot say what it did.
+        finish: (work) => work.end.reject(new OperationOutcomeUnknown()),
+      },
+    };
+    const outcomes: Record<string, unknown> = {};
+    for (const [ending, { before: first, finish }] of Object.entries(endings)) {
+      const key = `ending-${ending}`;
+      const work = running(key);
+      await work.entered;
+      const task = await taskOf(key);
+      await first?.(task);
+      const before = await revisionOf(task.threadId);
+      finish(work);
+      await work.result.catch(() => undefined);
+      const row = await database
+        .selectFrom("agentOperations")
+        .select(["outcome", "ending"])
+        .where("id", "=", task.id)
+        .executeTakeFirstOrThrow();
+      outcomes[ending] = {
+        outcome: row.outcome,
+        // Why it ended is in the same published write as how it ended.
+        ending: row.ending,
+        published: (await revisionOf(task.threadId)) > before,
+      };
+    }
+    expect(outcomes).toEqual({
+      completed: { outcome: "completed", ending: null, published: true },
+      failed: { outcome: "failed", ending: null, published: true },
+      unknown: { outcome: "unknown", ending: null, published: true },
+      stopped: { outcome: "unknown", ending: "stopped", published: true },
+    });
+  });
+
   it("ends a session using a withdrawn profile but keeps its operation outstanding until it returns", async ({
     storeFixture,
   }) => {

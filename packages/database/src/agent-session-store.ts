@@ -51,7 +51,7 @@ import {
 } from "./resource-access.js";
 import type { AgentOperationTable, AgentSessionTable, DatabaseSchema } from "./schema.js";
 import { jsonValue, principalIdForUser } from "./store-primitives.js";
-import { projectThreadState } from "./thread-status.js";
+import { projectThreadState, publishThreadSummary } from "./thread-status.js";
 
 type Tx = Transaction<DatabaseSchema>;
 export type AgentSessionRow = Selectable<AgentSessionTable>;
@@ -440,6 +440,10 @@ async function closeDirectRequests(
     .where("state", "=", "pending")
     .returningAll()
     .execute();
+  await publishOperationTasks(
+    tx,
+    operations.map(({ sessionId }) => sessionId),
+  );
   await cancelPending(tx, {
     reason: "authority-revoked",
     resolvedAt: now,
@@ -653,17 +657,27 @@ export async function decideAgentOperation(
   decision: AgentOperationWrittenDecision,
 ): Promise<AgentOperationRow> {
   const refusedDecision = decision.by === "refused";
-  const row = await reviewedOperationUpdate(database, reviewed, "admitted")
-    .set({
-      decision: jsonValue(decision),
-      state: refusedDecision ? "refused" : "approved",
-      ...(refusedDecision
-        ? { outcome: "refused", completedAt: new Date(), terminalEvidenceAt: new Date() }
-        : {}),
-      updatedAt: new Date(),
-    })
-    .returningAll()
-    .executeTakeFirst();
+  const decide = (writer: Kysely<DatabaseSchema>) =>
+    reviewedOperationUpdate(writer, reviewed, "admitted")
+      .set({
+        decision: jsonValue(decision),
+        state: refusedDecision ? "refused" : "approved",
+        ...(refusedDecision
+          ? { outcome: "refused", completedAt: new Date(), terminalEvidenceAt: new Date() }
+          : {}),
+        updatedAt: new Date(),
+      })
+      .returningAll()
+      .executeTakeFirst();
+  // A refusal is how the operation ends: its task is published with it. An approval is not an
+  // ending, and stays one plain write on the way to running it.
+  const row = refusedDecision
+    ? await commitPersonalMutation(database, async (tx) => {
+        const refused = await decide(tx);
+        if (refused) await publishOperationTasks(tx, [refused.sessionId]);
+        return refused;
+      })
+    : await decide(database);
   return row ?? (await readAgentOperation(database, reviewed.id));
 }
 
@@ -1001,6 +1015,7 @@ export async function respondToAgentOperation(
       )
       .returningAll()
       .executeTakeFirstOrThrow();
+    if (!allowed) await publishOperationTasks(tx, [decided.sessionId]);
     return { operation: decided, expired: false };
   });
 }
@@ -1056,12 +1071,12 @@ export async function handOffAgentOperation(
     )
       return null;
     pool?.signal.throwIfAborted();
-    return (
+    const handed =
       (await approvedOperationUpdate(tx, input.reviewed)
         .set({ state: "handed-off", handedOffAt: new Date(), updatedAt: new Date() })
         .returningAll()
-        .executeTakeFirst()) ?? null
-    );
+        .executeTakeFirst()) ?? null;
+    return handed;
   });
 }
 
@@ -1136,26 +1151,30 @@ export async function refuseUnsentAgentOperation(
     readonly reason: "authority" | "changed" | "stopped";
   } = { message: "The connected agent's access changed or ended.", reason: "authority" },
 ): Promise<void> {
-  const now = new Date();
-  await database
-    .updateTable("agentOperations")
-    .set({
-      state: "refused",
-      outcome: "refused",
-      terminalEvidenceAt: now,
-      completedAt: now,
-      updatedAt: now,
-      decision: jsonValue({
-        by: "refused",
-        reason: refusal.reason,
-        message: refusal.message,
-      } satisfies AgentOperationDecision),
-    })
-    .where("id", "=", id)
-    .where("grantRevision", "=", grantRevision)
-    .where("state", "in", ["admitted", "pending", "approved"])
-    .where("handedOffAt", "is", null)
-    .execute();
+  await commitPersonalMutation(database, async (tx) => {
+    const now = new Date();
+    const refused = await tx
+      .updateTable("agentOperations")
+      .set({
+        state: "refused",
+        outcome: "refused",
+        terminalEvidenceAt: now,
+        completedAt: now,
+        updatedAt: now,
+        decision: jsonValue({
+          by: "refused",
+          reason: refusal.reason,
+          message: refusal.message,
+        } satisfies AgentOperationDecision),
+      })
+      .where("id", "=", id)
+      .where("grantRevision", "=", grantRevision)
+      .where("state", "in", ["admitted", "pending", "approved"])
+      .where("handedOffAt", "is", null)
+      .returning("sessionId")
+      .executeTakeFirst();
+    if (refused) await publishOperationTasks(tx, [refused.sessionId]);
+  });
 }
 
 /**
@@ -1168,26 +1187,29 @@ export async function refuseUnsentHandedOffAgentOperation(
   message: string,
   reason: "authority" | "changed" | "stopped",
 ): Promise<boolean> {
-  const now = new Date();
-  const row = await database
-    .updateTable("agentOperations")
-    .set({
-      state: "refused",
-      outcome: "refused",
-      terminalEvidenceAt: now,
-      completedAt: now,
-      updatedAt: now,
-      decision: jsonValue({
-        by: "refused",
-        reason,
-        message,
-      } satisfies AgentOperationDecision),
-    })
-    .where("id", "=", id)
-    .where("state", "=", "handed-off")
-    .returning("id")
-    .executeTakeFirst();
-  return row !== undefined;
+  return commitPersonalMutation(database, async (tx) => {
+    const now = new Date();
+    const row = await tx
+      .updateTable("agentOperations")
+      .set({
+        state: "refused",
+        outcome: "refused",
+        terminalEvidenceAt: now,
+        completedAt: now,
+        updatedAt: now,
+        decision: jsonValue({
+          by: "refused",
+          reason,
+          message,
+        } satisfies AgentOperationDecision),
+      })
+      .where("id", "=", id)
+      .where("state", "=", "handed-off")
+      .returning("sessionId")
+      .executeTakeFirst();
+    if (row) await publishOperationTasks(tx, [row.sessionId]);
+    return row !== undefined;
+  });
 }
 
 /**
@@ -1203,24 +1225,46 @@ export async function settleAgentOperation(
   ending: AgentOperationEnding | null = null,
 ): Promise<AgentOperationRow | null> {
   const state: AgentOperationState = outcome;
-  return (
-    (await database
-      .updateTable("agentOperations")
-      .set({
-        state,
-        outcome,
-        completedAt: new Date(),
-        updatedAt: new Date(),
-        // The executor ran in this process and has returned: that is the end of the attempt.
-        terminalEvidenceAt: new Date(),
-        ...(outcome === "unknown" ? { contactLostAt: new Date(), ending } : {}),
-        resultSummary: summary ? jsonValue(summary) : null,
-      })
-      .where("id", "=", id)
-      .where("state", "=", "handed-off")
-      .returningAll()
-      .executeTakeFirst()) ?? null
-  );
+  return commitPersonalMutation(database, async (tx) => {
+    const settled =
+      (await tx
+        .updateTable("agentOperations")
+        .set({
+          state,
+          outcome,
+          completedAt: new Date(),
+          updatedAt: new Date(),
+          // The executor ran in this process and has returned: that is the end of the attempt.
+          terminalEvidenceAt: new Date(),
+          ...(outcome === "unknown" ? { contactLostAt: new Date(), ending } : {}),
+          resultSummary: summary ? jsonValue(summary) : null,
+        })
+        .where("id", "=", id)
+        .where("state", "=", "handed-off")
+        .returningAll()
+        .executeTakeFirst()) ?? null;
+    if (settled) await publishOperationTasks(tx, [settled.sessionId]);
+    return settled;
+  });
+}
+
+/**
+ * Publishes again the tasks these sessions work: a page showing a task reads its operations again
+ * when the Home publishes it, so every change to what an operation shows is published with it.
+ */
+export async function publishOperationTasks(
+  tx: Transaction<DatabaseSchema>,
+  sessionIds: readonly AgentSessionId[],
+): Promise<void> {
+  if (!sessionIds.length) return;
+  const tasks = await tx
+    .selectFrom("agentSessions")
+    .select("threadId")
+    .distinct()
+    .where("id", "in", [...new Set(sessionIds)])
+    .orderBy("threadId")
+    .execute();
+  for (const { threadId } of tasks) await publishThreadSummary(tx, threadId);
 }
 
 /** Handed-off operations no executor in this process can still finish: their outcome is unknown. */
@@ -1235,21 +1279,28 @@ export async function settleOrphanedAgentOperations(
     .execute();
   const orphans = rows.map(({ id }) => id).filter((id) => !live.has(id));
   if (!orphans.length) return 0;
-  const settled = await database
-    .updateTable("agentOperations")
-    .set({
-      state: "unknown",
-      outcome: "unknown",
-      completedAt: new Date(),
-      updatedAt: new Date(),
-      // The process that handed it off is gone, so it can do nothing more; its effect is unknown.
-      terminalEvidenceAt: new Date(),
-      contactLostAt: new Date(),
-    })
-    .where("id", "in", orphans)
-    .where("state", "=", "handed-off")
-    .execute();
-  return settled.reduce((sum, result) => sum + Number(result.numUpdatedRows), 0);
+  return commitPersonalMutation(database, async (tx) => {
+    const settled = await tx
+      .updateTable("agentOperations")
+      .set({
+        state: "unknown",
+        outcome: "unknown",
+        completedAt: new Date(),
+        updatedAt: new Date(),
+        // The process that handed it off is gone, so it can do nothing more; its effect is unknown.
+        terminalEvidenceAt: new Date(),
+        contactLostAt: new Date(),
+      })
+      .where("id", "in", orphans)
+      .where("state", "=", "handed-off")
+      .returning("sessionId")
+      .execute();
+    await publishOperationTasks(
+      tx,
+      settled.map(({ sessionId }) => sessionId),
+    );
+    return settled.length;
+  });
 }
 
 /** A connection's or a task's operations, newest first, paged by (createdAt, id). */

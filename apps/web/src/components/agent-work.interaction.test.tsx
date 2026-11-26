@@ -98,6 +98,22 @@ describe("a task a connected agent works itself", () => {
     }
   });
 
+  it("shows how an operation ended as soon as the Home publishes its task again", async () => {
+    // The Home publishes the task when one of its operations ends: only the task's revision moves,
+    // its status and times stay. The person watching must see the ending, never "Running…".
+    await mount(task(mockAgentWorkThreads.working), options);
+    const outcomes = () =>
+      [...document.querySelectorAll(".session-op__outcome")].map((chip) => chip.textContent);
+    await vi.waitFor(() => expect(outcomes()).toContain("Running…"));
+    const failedBefore = outcomes().filter((label) => label === "Failed").length;
+    const running = client
+      .agentActivity({ threadId: mockAgentWorkThreads.working })
+      .operations.find(({ outcome, state }) => outcome === null && state === "handed-off")!;
+    await act(async () => client.settleAgentOperation(running.id, "failed"));
+    await vi.waitFor(() => expect(outcomes()).not.toContain("Running…"));
+    expect(outcomes().filter((label) => label === "Failed")).toHaveLength(failedBefore + 1);
+  });
+
   it("shows its activity, has no composer, and Stop ends that agent's session", async () => {
     await mount(task(mockAgentWorkThreads.working), options);
     await vi.waitFor(() => expect(document.querySelector(".session-bar")).not.toBeNull());

@@ -5216,6 +5216,16 @@ export class MockHostClient implements HostClient {
     this.#state.mockAgentWork(options);
   }
 
+  /** Ends one of the preview's direct operations and publishes its task again, as the Home does. */
+  settleAgentOperation(id: string, outcome: "completed" | "failed" | "unknown"): void {
+    this.#state.settleAgentOperation(id, outcome);
+  }
+
+  /** The preview's direct operations, newest first, as the Home's activity reads page them. */
+  agentActivity(filter: { readonly threadId?: string; readonly connectionId?: string }) {
+    return this.#state.agentActivity(filter);
+  }
+
   /** A task their own agents can run under a connected agent's lineage. */
   mockStartedTask(originConnectionId: string, title = "Summarize my notes"): string {
     return this.#state.mockStartedTask(originConnectionId, title);
@@ -6287,6 +6297,31 @@ class MockHostState {
     };
   }
   #agentOperations: ReturnType<typeof mockAgentWork>["operations"] = [];
+
+  /**
+   * Ends one of the preview's direct operations as the Home does: its row settles and the task it
+   * belongs to is published again (its revision moves; its status and times stay as they are).
+   */
+  settleAgentOperation(id: string, outcome: "completed" | "failed" | "unknown"): void {
+    const at = this.now().toISOString();
+    const entry = this.#agentOperations.find(({ operation }) => operation.id === id);
+    if (!entry) throw new Error(`No mock operation ${id}.`);
+    this.#agentOperations = this.#agentOperations.map((row) =>
+      row === entry
+        ? { ...row, operation: { ...row.operation, state: outcome, outcome, completedAt: at } }
+        : row,
+    );
+    const taskId = entry.operation.taskId;
+    this.snapshot = {
+      ...this.snapshot,
+      threads: this.snapshot.threads.map((thread) =>
+        thread.id === taskId
+          ? { ...thread, revision: String(BigInt(thread.revision ?? "0") + 1n) }
+          : thread,
+      ),
+    };
+    this.emit();
+  }
 
   /** The preview's direct operations, newest first, as the Home's activity reads page them. */
   agentActivity(filter: { readonly threadId?: string; readonly connectionId?: string }) {

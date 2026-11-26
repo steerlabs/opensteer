@@ -13,6 +13,7 @@ import {
   sessionTaskView,
   tabAgentLine,
   tabNeedsYouParts,
+  taskActivityKey,
   threadInDirectory,
   type OperationGlyph,
   type OperationRequestView,
@@ -42,13 +43,7 @@ export function useSessionTask(hostClient: HostClient, threadId: string): Sessio
     hostClient,
     useCallback((current) => threadInDirectory(threadId, current), [threadId]),
   );
-  const operations = useTaskActivity(
-    hostClient,
-    threadId,
-    thread?.externalWork
-      ? `${thread.updatedAt}|${thread.status}|${thread.externalWork.status}`
-      : null,
-  );
+  const operations = useTaskActivity(hostClient, threadId, taskActivityKey(thread));
   if (!thread) return null;
   const slot = sessionSlotFromHome(thread.externalWork, operations);
   return sessionTaskView({

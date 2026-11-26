@@ -217,6 +217,11 @@ export function requestDecision(request: Pick<RequestView, "id" | "reviewedRevis
 }
 
 export interface ThreadSummary {
+  /**
+   * The Home's revision of this task's row: it moves whenever the Home publishes the task, as it
+   * does when one of a connected agent's operations on it starts or ends. Absent from older reads.
+   */
+  revision?: string | undefined;
   returnHint?: import("@opensteer/core").CompactionReturnHint | null | undefined;
   lastVisitedAt: string | null;
   latestRunCompletedAt: string | null;

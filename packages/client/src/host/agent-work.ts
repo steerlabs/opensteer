@@ -74,6 +74,22 @@ export function agentSessionSlot(
   return sessionSlotFromHome(threadInDirectory(threadId, snapshot)?.externalWork, operations);
 }
 
+/**
+ * When a connected agent's task reads its operations again: each time the Home publishes the task,
+ * which it does whenever one of them starts or ends (its revision moves while its status and times
+ * stay), and when the task or its session changes state. Null for a task no connected agent works.
+ * Every client reads a task's activity on this one key, so none waits on a later change to see an
+ * operation end.
+ */
+export function taskActivityKey(
+  thread:
+    Pick<ThreadSummary, "revision" | "updatedAt" | "status" | "externalWork"> | null | undefined,
+): string | null {
+  return thread?.externalWork
+    ? `${thread.revision ?? ""}|${thread.updatedAt}|${thread.status}|${thread.externalWork.status}`
+    : null;
+}
+
 /** A connected agent's task's operations, newest first, as `threads.activity` lists them. */
 export async function readTaskActivity(
   client: { readonly rpc: Pick<HostClient["rpc"], "threads.activity"> },
