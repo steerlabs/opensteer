@@ -67,6 +67,17 @@ export const agentWorkCopy = {
   "op.outcome.unknown": "Uncertain",
   "op.outcome.unknownDetail":
     "Opensteer lost contact before it heard back, so it can’t say whether this happened. Check before trying again.",
+  "op.outcome.notSent": "Not sent",
+  "op.ending.stopped":
+    "You stopped this while it ran. Part of it may have happened. Check before trying again.",
+  "op.ending.disconnected":
+    "You disconnected this agent while this ran. Part of it may have happened. Check before trying again.",
+  "op.ending.expired":
+    "Its access expired while this ran. Part of it may have happened. Check before trying again.",
+  "op.ending.narrowed":
+    "You changed its access while this ran. Part of it may have happened. Check before trying again.",
+  "op.ending.tab-closed":
+    "You closed this tab while it ran, so Opensteer can’t say whether this happened. Check before trying again.",
   "op.state.pending": "Waiting for you",
   "op.state.running": "Running…",
   "cmd.asked": "Waiting for you",

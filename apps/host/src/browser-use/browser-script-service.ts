@@ -20,7 +20,7 @@ type Services = {
     | "tabOccupants"
     | "browserBindingEnded"
   > &
-    Partial<Pick<BrowserService, "pooledScriptPageWitness">>;
+    Partial<Pick<BrowserService, "pooledScriptPageWitness" | "closedByPerson">>;
   store: Pick<OpensteerStore, "admitExecution">;
   tabs: Pick<TabService, "browserScriptPages" | "bindBrowserScript" | "open">;
   workerEntry?: URL;

@@ -380,8 +380,15 @@ export function connectionCommandEffects(options: {
     Parameters<import("@opensteer/database").OpensteerStore["driveConnectionCleanups"]>[0]
   >["stopper"];
   readonly onFailure: (error: unknown, connectionId?: string) => void;
-  /** After a lineage was stopped: abort this process's work for sessions that ended. */
-  readonly afterStop?: (connectionId: string, reason: "disconnect" | "narrowed") => Promise<void>;
+  /**
+   * After a lineage was stopped: abort this process's work for sessions that ended. `cause` is
+   * the cleanup's own reason, which the work it cuts reads (a Disconnect, an expiry, a narrowing).
+   */
+  readonly afterStop?: (
+    connectionId: string,
+    reason: "disconnect" | "narrowed",
+    cause: "revoked" | "expired" | "narrowed",
+  ) => Promise<void>;
 }): ConnectionCommandEffects & { readonly driveCleanups: () => Promise<void> } {
   const driveCleanups = async () => {
     const { failures } = await options.store.driveConnectionCleanups({
@@ -389,7 +396,7 @@ export function connectionCommandEffects(options: {
       onCleanup: async ({ connectionId, reason, minimumGrantRevision }) => {
         const narrowed = reason === "narrowed";
         await options.closeLineage(connectionId, narrowed ? minimumGrantRevision : undefined);
-        await options.afterStop?.(connectionId, narrowed ? "narrowed" : "disconnect");
+        await options.afterStop?.(connectionId, narrowed ? "narrowed" : "disconnect", reason);
       },
     });
     for (const error of failures) options.onFailure(error);

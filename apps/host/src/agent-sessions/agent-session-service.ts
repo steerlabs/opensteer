@@ -1,13 +1,18 @@
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
+  AgentOperationEndingSchema,
   OpensteerError,
   ToolBlockedError,
+  agentOperationEndingOf,
+  agentOperationEndingSentence,
+  agentOperationEndingWords,
   agentOperationHoldMs,
   refused,
   requestOperationCallsMaxLength,
   threadAccessModeAtMost,
   type AgentOperationDecision,
+  type AgentOperationEnding,
   type AgentOperationId,
   type AgentOperationTarget,
   type AgentSessionEndReason,
@@ -234,8 +239,7 @@ export type DirectOperationResult<Result> = { readonly replayed?: true } & (
 );
 
 export const pendingNext = `Call the same tool again with the same arguments and this operationId to wait up to ${agentOperationHoldMs / 1_000} seconds for the person. If it is still pending, call again, but not in a tight loop.`;
-export const unknownNext =
-  "The Home lost track of whether this took effect. Check the current state before doing anything else; never repeat it blindly.";
+export const unknownNext = agentOperationEndingSentence("contact-lost");
 export const scriptFailedNext =
   "Earlier steps may have taken effect. Check the current state before trying again.";
 
@@ -244,6 +248,46 @@ export function storedScriptError(summary: AgentOperationRow["resultSummary"]) {
 }
 const interruptedNext =
   "Part of it may have happened. Check the current state before doing anything else.";
+
+/** The cause of a connection's cleanup, as an operation it cut reads it. */
+export function connectionCleanupEnding(
+  reason: "revoked" | "expired" | "narrowed",
+): AgentOperationEnding {
+  return reason === "revoked" ? "disconnected" : reason;
+}
+
+/**
+ * The abort a cause sends to work in flight. The agent reads its message; the operation's record
+ * keeps the cause (`details.ending`). Without a known cause, the access ended.
+ */
+function endedBy(ending: AgentOperationEnding | null): OpensteerError {
+  return new OpensteerError({
+    code: "forbidden",
+    reason: ending === "stopped" ? "agent-session-stopped" : "authority-changed",
+    message: ending
+      ? agentOperationEndingWords[ending].message
+      : "The connected agent's access to this work ended.",
+    ...(ending ? { details: { ending } } : {}),
+  });
+}
+
+/** The cause an abort carries, if any. */
+function endingOfAbort(error: OpensteerError): AgentOperationEnding | null {
+  return AgentOperationEndingSchema.safeParse(error.details?.ending).data ?? null;
+}
+
+/** What the agent reads for an operation whose outcome is unknown, by its recorded cause. */
+function unknownWords(ending: AgentOperationEnding | null | undefined): string {
+  return agentOperationEndingSentence(ending ?? "contact-lost");
+}
+
+const sessionEnding: Readonly<Record<AgentSessionEndReason, AgentOperationEnding | null>> = {
+  stopped: "stopped",
+  revoked: "disconnected",
+  expired: "expired",
+  narrowed: "narrowed",
+  idle: null,
+};
 
 export function operationArgumentDigest(tool: string, input: unknown): string {
   const args =
@@ -455,26 +499,29 @@ export class AgentSessionService {
    * The Disconnect worker's stop for one handed-off operation: abort the signal its executor
    * holds. Its row settles, with terminal evidence, when the executor returns.
    */
-  async stopDirectOperation(operationId: AgentOperationId): Promise<void> {
-    this.#running.get(operationId)?.controller.abort(
-      new OpensteerError({
-        code: "forbidden",
-        reason: "authority-changed",
-        message: "The connected agent's access to this work ended.",
-      }),
-    );
+  async stopDirectOperation(
+    operationId: AgentOperationId,
+    /** Why it stops: the cleanup's cause, which the agent reads and the record keeps. */
+    ending: AgentOperationEnding | null = null,
+  ): Promise<void> {
+    this.#running.get(operationId)?.controller.abort(endedBy(ending));
   }
 
   async lowerTaskMode(taskId: ThreadId, mode: ThreadAccessMode): Promise<void> {
     for (const [id, attempt] of this.#running)
       if (attempt.taskId === taskId && !threadAccessModeAtMost(attempt.mode, mode))
-        await this.stopDirectOperation(id);
+        await this.stopDirectOperation(id, "narrowed");
   }
 
   /** After a connection change committed: abort work of sessions that ended, or all of them. */
-  async closeConnection(connectionId: string, all: boolean): Promise<void> {
+  async closeConnection(
+    connectionId: string,
+    all: boolean,
+    /** The change's cause: a Disconnect, an expiry or a narrowed grant. */
+    ending: AgentOperationEnding = all ? "disconnected" : "narrowed",
+  ): Promise<void> {
     for (const [id, attempt] of this.#running)
-      if (attempt.pooled?.connectionId === connectionId) await this.stopDirectOperation(id);
+      if (attempt.pooled?.connectionId === connectionId) await this.stopDirectOperation(id, ending);
     const live = [...this.#sessions].filter(([, entry]) => entry.connectionId === connectionId);
     if (!live.length) return;
     const ended = all
@@ -491,7 +538,7 @@ export class AgentSessionService {
             .where("status", "=", "ended")
             .execute()
         ).map(({ id }) => id);
-    for (const id of ended) this.#abort(id, "revoked");
+    for (const id of ended) this.#abort(id, ending);
   }
 
   async endIdle(now = Date.now()): Promise<void> {
@@ -510,19 +557,11 @@ export class AgentSessionService {
   }
 
   #ended(sessions: readonly { readonly id: AgentSessionId }[], reason: AgentSessionEndReason) {
-    for (const session of sessions) this.#abort(session.id, reason);
+    for (const session of sessions) this.#abort(session.id, sessionEnding[reason]);
   }
-  #abort(sessionId: AgentSessionId, reason: AgentSessionEndReason | "revoked") {
-    const message =
-      reason === "stopped"
-        ? "The person stopped this work."
-        : "The connected agent's access to this work ended.";
-    const error = new OpensteerError({
-      code: "forbidden",
-      reason: reason === "stopped" ? "agent-session-stopped" : "authority-changed",
-      message,
-    });
-    this.#closeBinding(`session:${sessionId}`, message);
+  #abort(sessionId: AgentSessionId, ending: AgentOperationEnding | null) {
+    const error = endedBy(ending);
+    this.#closeBinding(`session:${sessionId}`, error.message);
     for (const attempt of this.#running.values())
       if (attempt.pooled?.sessionId === sessionId) attempt.controller.abort(error);
     const entry = this.#sessions.get(sessionId);
@@ -569,7 +608,7 @@ export class AgentSessionService {
             : { status: "failed", ...base, next: "It failed. Check the current state." };
         }
         case "unknown":
-          return { status: "unknown", ...base, next: unknownNext };
+          return { status: "unknown", ...base, next: unknownWords(row.ending) };
         case "refused":
           throw new AgentOperationFailure(agentOperationRefusal(row.decision), {
             ...base,
@@ -825,10 +864,16 @@ export class AgentSessionService {
         const current = await readAgentOperation(this.#store.database, row.id).catch(
           () => undefined,
         );
+        // Recorded with the cause the agent is told (a browser that was not ready is not an
+        // access change), or as an access change when it names none.
+        const ended =
+          signal.aborted && signal.reason instanceof OpensteerError ? signal.reason : null;
+        const refusal = unsentRefusal(error, ended);
         await refuseUnsentAgentOperation(
           this.#store.database,
           row.id,
           current?.grantRevision ?? row.grantRevision,
+          ...(refusal ? [{ message: refusal.message, reason: refusal.reason }] : []),
         );
       }
       throw error;
@@ -1002,7 +1047,21 @@ export class AgentSessionService {
           error instanceof OperationOutcomeUnknown || signal.aborted || outstanding > 0
             ? "unknown"
             : "failed";
-        const settled = await settleAgentOperation(this.#store.database, row.id, outcome, null);
+        // Why it ended, where the Home knows it: the abort's cause (the person's Stop or
+        // Disconnect, an expiry, a narrowed grant), or the cause the work's own words name (a tab
+        // the person closed). The agent and the person's activity both read it.
+        const ending = ended
+          ? endingOfAbort(ended)
+          : error instanceof OperationOutcomeUnknown
+            ? agentOperationEndingOf(error.message)
+            : null;
+        const settled = await settleAgentOperation(
+          this.#store.database,
+          row.id,
+          outcome,
+          null,
+          ending,
+        );
         // Work that the person, a Disconnect or a narrowed grant ended: the agent hears why. What
         // it had already done is uncertain; the record says so and the next step repeats it.
         if (ended)
@@ -1015,7 +1074,7 @@ export class AgentSessionService {
             { ...base, status: "unknown" },
           );
         if (!settled || outcome === "unknown")
-          return { status: "unknown", ...base, next: unknownNext };
+          return { status: "unknown", ...base, next: unknownWords(settled ? ending : null) };
         throw new AgentOperationFailure(error, { ...base, status: "failed" });
       }
       let summary: Readonly<Record<string, unknown>> | null = null;

@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import { discover } from "@opensteer/agent-tools/discover";
 import { presentPluginToolResult } from "../plugins/local-tool-results.js";
 import { productToolOutput } from "./tool-output.js";
@@ -110,6 +111,14 @@ function parseToolInput(tool: AgentTool, caller: AgentCaller, value: unknown) {
 
 const maximumSessions = 256;
 const sessionIdleLifetimeMs = 30 * 60 * 1_000;
+/**
+ * How long a call that was running when its session's authority ended has to answer on its own.
+ * The change that ended it (a Disconnect, a narrowed grant) also stops the work the call runs,
+ * here in this process, which then returns its result at once. A call still open after this (a
+ * wait nothing stops) is ended with a refusal it can read; one that still does not answer is cut.
+ */
+const retiringCallGraceMs = 2_000;
+const retiringRefusalGraceMs = 1_000;
 const maximumTimerMs = 2_147_483_647;
 interface McpSession {
   readonly responses: Set<ServerResponse>;
@@ -130,6 +139,10 @@ export class OpensteerMcpService {
   readonly #runtimeOrigin: URL;
   readonly #sessions = new Map<string, McpSession>();
   readonly #activeSessions = new Set<McpSession>();
+  /** Sessions whose authority ended, closing once the calls they were answering have answered. */
+  readonly #retiring = new Set<McpSession>();
+  /** Each response's own stop: what a retiring session ends a call that did not answer with. */
+  readonly #calls = new WeakMap<ServerResponse, AbortController>();
   readonly #reservations = new Map<string, number>();
   readonly #detachObserve: (() => void) | undefined;
   readonly options: {
@@ -199,6 +212,7 @@ export class OpensteerMcpService {
     // Before anything waits: a close missed here would leave this response open forever.
     const disconnected = new AbortController();
     response.once("close", () => disconnected.abort(new Error("MCP client disconnected")));
+    this.#calls.set(response, disconnected);
     const ended = responseEnded(response);
     let authorization: AgentCaller;
     try {
@@ -307,8 +321,9 @@ export class OpensteerMcpService {
   async close(): Promise<void> {
     this.#detachObserve?.();
     clearInterval(this.#sweepTimer);
-    const sessions = [...this.#activeSessions];
+    const sessions = [...this.#activeSessions, ...this.#retiring];
     this.#activeSessions.clear();
+    this.#retiring.clear();
     this.#sessions.clear();
     await Promise.allSettled(
       sessions.map(async (session) => {
@@ -1107,9 +1122,45 @@ export class OpensteerMcpService {
         .map((session) => this.#closeSession(session)),
     );
   }
+  /**
+   * A session whose authority ended takes nothing new at once (its credential no longer
+   * authenticates, and it is no longer found). A call it was answering ends as what it is: the
+   * same change stops the work that call runs, whose result reaches the agent as a result, never
+   * as a cut connection; then the session closes. Streams carry no call's answer and end now.
+   */
   async #closeSession(session: McpSession) {
     this.#activeSessions.delete(session);
     for (const [id, held] of this.#sessions) if (held === session) this.#sessions.delete(id);
+    this.#retiring.add(session);
+    for (const response of session.responses)
+      if (response.req?.method !== "POST") response.destroy();
+    void this.#retire(session).catch(() => undefined);
+  }
+  async #retire(session: McpSession) {
+    const answered = async (ms: number) => {
+      const open = [...session.responses].map((response) =>
+        response.writableFinished || response.destroyed ? undefined : once(response, "close"),
+      );
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        Promise.allSettled(open),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, ms);
+          timer.unref();
+        }),
+      ]);
+      clearTimeout(timer);
+    };
+    await answered(retiringCallGraceMs);
+    if (!this.#retiring.has(session)) return;
+    const ended = new OpensteerError({
+      code: "forbidden",
+      reason: "authority-changed",
+      message: "This connected agent's access ended.",
+    });
+    for (const response of session.responses) this.#calls.get(response)?.abort(ended);
+    if (session.responses.size) await answered(retiringRefusalGraceMs);
+    if (!this.#retiring.delete(session)) return;
     for (const response of session.responses) response.destroy();
     await session.server.close();
   }

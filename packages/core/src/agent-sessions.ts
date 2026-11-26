@@ -13,6 +13,7 @@ import {
   ThreadIdSchema,
 } from "./ids.js";
 import { ThreadAccessModeSchema } from "./models.js";
+import { AgentOperationEndingSchema } from "./agent-operation-endings.js";
 
 export const AgentSessionStatusSchema = z.enum(["active", "ended"]);
 export type AgentSessionStatus = z.infer<typeof AgentSessionStatusSchema>;
@@ -130,6 +131,8 @@ export const AgentOperationViewSchema = z.object({
   state: AgentOperationStateSchema,
   decision: AgentOperationDecisionViewSchema.nullable(),
   outcome: AgentOperationOutcomeSchema.nullable(),
+  /** Why an operation whose outcome is unknown ended, where the Home knows it. */
+  ending: AgentOperationEndingSchema.nullable().optional(),
   requestId: RequestIdSchema.nullable(),
   createdAt: z.iso.datetime({ offset: true }),
   handedOffAt: z.iso.datetime({ offset: true }).nullable(),

@@ -83,6 +83,11 @@ export interface PageTabsPort {
   bind(claims: RunToolScope, row: TabRecord): Promise<PageAgentBinding>;
   bindBrowserScript?(actor: BrowserBindingTabActor, row: TabRecord): Promise<PageAgentBinding>;
   closeViewers(ownerId: UserId, row: TabRecord, closePage?: boolean): Promise<void>;
+  /**
+   * The person closed this page tab: work using its page learns that cause when the page ends
+   * under it (said, never acted on: the close itself is `closeViewers`).
+   */
+  personClosed?(row: TabRecord): void;
 }
 export interface TabComputerFact {
   readonly name: string;
@@ -1184,6 +1189,8 @@ export class TabService implements TabServicePort {
       const ending = cleanup
         .filter(({ row }) => result.tabIds.includes(row.id))
         .map(async ({ row, closePage }) => {
+          if (row.kind === "page" && actor.kind === "person")
+            this.options.pages.personClosed?.(row);
           if (row.kind === "page") await this.options.pages.closeViewers(ownerId, row, closePage);
           else if (row.kind === "phone" || row.kind === "window")
             await this.options.nativeTargets.closeOwnerViews(ownerId, row.id, row.generation);
@@ -1258,6 +1265,8 @@ export class TabService implements TabServicePort {
       const ending = cleanup
         .filter(({ row }) => result.tabIds.includes(row.id))
         .map(async ({ row, closePage }) => {
+          if (row.kind === "page" && actor.kind === "person")
+            this.options.pages.personClosed?.(row);
           if (row.kind === "page")
             await this.options.pages.closeViewers(owner(actor), row, closePage);
           else if (row.kind === "phone" || row.kind === "window")

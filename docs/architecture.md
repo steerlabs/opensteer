@@ -261,6 +261,14 @@ Each call is one reviewed **operation** of an **agent session**:
    mode or connection changed during the work), `not_found`,
    `computer_stopped`, `computer_asleep`, `computer_offline`, and `access_denied` for any other
    refusal.
+9. **An ending carries its cause.** Where the Home knows why work ended without a confirmed
+   outcome (the person's Stop or Disconnect, an expiry, a narrowed grant, a tab the person
+   closed), the operation records it (`agent_operations.ending`, words in
+   `packages/core/src/agent-operation-endings.ts`) and both the agent's result and the person's
+   activity say it; "lost contact" is said only when nothing else is known. A refusal's cause is
+   its decision: a browser that was not ready reads as nothing sent, not as access that changed.
+   Disconnect answers a call already in flight on its own request before its MCP session closes;
+   the evidence a Disconnect reads (`terminal_evidence_at`, `contact_lost_at`) does not change.
 
 A connected agent's operations appear in its task's **activity** (`threads.activity`,
 `connections.activity`). They are not transcript items: `packages/protocol/src/transcript.ts` has

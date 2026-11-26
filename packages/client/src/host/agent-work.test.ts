@@ -299,6 +299,75 @@ describe("one operation in a task's activity", () => {
   });
 });
 
+describe("why an operation ended, as the person reads it", () => {
+  const unknown = (ending?: AgentOperationView["ending"]): AgentOperationView => ({
+    ...slot("working").operations![3]!,
+    outcome: "unknown",
+    state: "unknown",
+    ...(ending === undefined ? {} : { ending }),
+  });
+
+  it("says the person's Stop ended it, never that contact was lost", () => {
+    const row = operationRow(unknown("stopped"));
+    expect(row.outcome).toEqual({ label: "Uncertain", tone: "warn" });
+    expect(row.detail).toBe(
+      "You stopped this while it ran. Part of it may have happened. Check before trying again.",
+    );
+    expect(row.detail).not.toMatch(/lost contact/u);
+  });
+
+  it("says the person's Disconnect, an expiry, a changed access and a closed tab, each as it was", () => {
+    expect(operationRow(unknown("disconnected")).detail).toBe(
+      "You disconnected this agent while this ran. Part of it may have happened. Check before trying again.",
+    );
+    expect(operationRow(unknown("expired")).detail).toMatch(
+      /^Its access expired while this ran\./u,
+    );
+    expect(operationRow(unknown("narrowed")).detail).toMatch(/^You changed its access/u);
+    expect(operationRow(unknown("tab-closed")).detail).toBe(
+      "You closed this tab while it ran, so Opensteer can’t say whether this happened. Check before trying again.",
+    );
+  });
+
+  it("says contact was lost only when it was, or when the Home knows no other cause", () => {
+    for (const ending of ["contact-lost", null, undefined] as const)
+      expect(operationRow(unknown(ending)).detail).toMatch(/^Opensteer lost contact/u);
+  });
+
+  it("says a browser that was not ready sent nothing, never that access changed", () => {
+    const row = operationRow({
+      ...slot("working").operations![3]!,
+      outcome: "refused",
+      state: "refused",
+      decision: {
+        by: "refused",
+        reason: "changed",
+        message: "This browser is not ready. Nothing was sent.",
+      },
+    });
+    expect(row).toMatchObject({
+      allowedBy: null,
+      outcome: { label: "Not sent", tone: "warn" },
+      detail: "This browser is not ready. Nothing was sent.",
+    });
+    // What the person reads of it (the row's mode is the task's, "full-access", not a word).
+    expect(JSON.stringify([row.allowedBy, row.outcome, row.detail])).not.toMatch(
+      /Not allowed|access/u,
+    );
+  });
+
+  it("says a work the person stopped before it was sent was stopped by them", () => {
+    expect(
+      operationRow({
+        ...slot("working").operations![3]!,
+        outcome: "refused",
+        state: "refused",
+        decision: { by: "refused", reason: "stopped", message: "The person stopped this work." },
+      }),
+    ).toMatchObject({ allowedBy: "Stopped by you", outcome: { label: "Stopped by you" } });
+  });
+});
+
 describe("a tab a connected agent uses", () => {
   const occupant = { threadId: mockAgentWorkThreads.working, title: "Find flights to Lisbon" };
   it("says who is using it and for which task, and both when the person shares it", () => {

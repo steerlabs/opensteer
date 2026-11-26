@@ -11,6 +11,7 @@ import {
   formatRequestOperationDetail,
   type AgentGrantTarget,
   type AgentOperationDecision,
+  type AgentOperationEnding,
   type AgentOperationId,
   type AgentOperationOutcome,
   type AgentOperationState,
@@ -1129,6 +1130,11 @@ export async function refuseUnsentAgentOperation(
   database: Kysely<DatabaseSchema>,
   id: AgentOperationId,
   grantRevision: number,
+  /** Why nothing was sent, as the agent was told it; an authority change when not given. */
+  refusal: {
+    readonly message: string;
+    readonly reason: "authority" | "changed" | "stopped";
+  } = { message: "The connected agent's access changed or ended.", reason: "authority" },
 ): Promise<void> {
   const now = new Date();
   await database
@@ -1141,8 +1147,8 @@ export async function refuseUnsentAgentOperation(
       updatedAt: now,
       decision: jsonValue({
         by: "refused",
-        reason: "authority",
-        message: "The connected agent's access changed or ended.",
+        reason: refusal.reason,
+        message: refusal.message,
       } satisfies AgentOperationDecision),
     })
     .where("id", "=", id)
@@ -1184,12 +1190,17 @@ export async function refuseUnsentHandedOffAgentOperation(
   return row !== undefined;
 }
 
-/** The terminal outcome of a handed-off operation; `unknown` is never retried. */
+/**
+ * The terminal outcome of a handed-off operation; `unknown` is never retried. An unknown one
+ * carries why it ended where the Home knows it (`ending`); the evidence a Disconnect reads
+ * (`terminalEvidenceAt`, `contactLostAt`) is the same whatever the cause.
+ */
 export async function settleAgentOperation(
   database: Kysely<DatabaseSchema>,
   id: AgentOperationId,
   outcome: Exclude<AgentOperationOutcome, "refused">,
   summary: Readonly<Record<string, unknown>> | null,
+  ending: AgentOperationEnding | null = null,
 ): Promise<AgentOperationRow | null> {
   const state: AgentOperationState = outcome;
   return (
@@ -1202,7 +1213,7 @@ export async function settleAgentOperation(
         updatedAt: new Date(),
         // The executor ran in this process and has returned: that is the end of the attempt.
         terminalEvidenceAt: new Date(),
-        ...(outcome === "unknown" ? { contactLostAt: new Date() } : {}),
+        ...(outcome === "unknown" ? { contactLostAt: new Date(), ending } : {}),
         resultSummary: summary ? jsonValue(summary) : null,
       })
       .where("id", "=", id)
@@ -1286,6 +1297,7 @@ export async function listAgentOperations(
       state: row.state,
       decision: row.decision,
       outcome: row.outcome,
+      ending: row.ending,
       requestId: row.requestId,
       createdAt: row.createdAt.toISOString(),
       handedOffAt: row.handedOffAt?.toISOString() ?? null,

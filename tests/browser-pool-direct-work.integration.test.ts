@@ -8,6 +8,8 @@ import { AgentSessionService } from "../apps/host/src/agent-sessions/agent-sessi
 import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
 import { BrowserScriptService } from "../apps/host/src/browser-use/browser-script-service.js";
 import { TabService } from "../apps/host/src/tabs/tab-service.js";
+import { operationRow } from "../packages/client/src/host/agent-work.js";
+import { listAgentOperations } from "../packages/database/src/agent-session-store.js";
 import { tabReadAuthority } from "../apps/host/src/tabs/tab-authority.js";
 import { AgentConnectionStore } from "../packages/database/src/agent-connection-store.js";
 import type { AgentGrant } from "../packages/core/src/index.js";
@@ -1780,6 +1782,78 @@ it("ends the page of every tab the person closes while a connected agent's handl
     expect(lines[4]).toBe("fresh:Held");
     expect(lines[5]).not.toContain(mineId);
     expect(lines[5]).not.toContain(own.id);
+  } finally {
+    await j.close();
+    site.close();
+  }
+});
+
+it("tells the agent and the person that the person closed the tab a call was using: its outcome unknown, its cause said", async () => {
+  const hits: string[] = [];
+  const site = createServer((request, response) => {
+    hits.push(request.url ?? "/");
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end("<!doctype html><title>Held</title><p>held</p>");
+  });
+  site.listen(0, "127.0.0.1");
+  await once(site, "listening");
+  const origin = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
+  const j = await journey("direct-person-close-mid-call", { profile: true });
+  try {
+    const home = await j.startHome();
+    await home.service.start({ ownerId: j.task.userId, profileId: j.profile!.id });
+    const work = await directWork(j, () => home);
+    const held = await work.use(
+      `globalThis.mine = await newPage(${JSON.stringify(`${origin}/held`)}); return mine.tabId;`,
+    );
+    expect(held.isError, text(held)).not.toBe(true);
+    const mineId = /(?:tab|surface)_[A-Za-z0-9-]+/u.exec(text(held))?.[0];
+    if (!mineId) throw new Error(`The script returned no tab: ${text(held)}`);
+    // The agent's script uses the page, waits, and uses it again: the person closes the tab
+    // between the two, as the tester did.
+    const running = work.use(
+      `await mine.goto(${JSON.stringify(`${origin}/started`)}); await mine.waitForTimeout(4000); return await mine.title();`,
+    );
+    await vi.waitFor(() => expect(hits).toContain("/started"), { timeout: 15_000 });
+    const tabs = new TabService({
+      store: j.tabs,
+      pages: home.service.pageTabs,
+      nativeTargets: { onTargetAcquired: () => () => undefined },
+      authorizeMembership: async () => undefined,
+      onError: (error: unknown) => {
+        throw error;
+      },
+    } as never);
+    const closed = await tabs.close(
+      { kind: "person", ownerId: j.task.userId },
+      [mineId as TabRecord["id"]],
+      "person-close-mid-call",
+    );
+    expect(closed.failed).toEqual([]);
+    // Rule 4: a command was in flight, so its effect is unknown; the Home knows why, and says so.
+    const result = await running;
+    expect(result.structuredContent, text(result)).toMatchObject({
+      status: "unknown",
+      next: "The person closed this tab while the command ran; whether it took effect is unknown. Open the page again if you still need it.",
+    });
+    expect(text(result)).not.toContain("lost track");
+    const operation = await j.database
+      .selectFrom("agentOperations")
+      .select(["id", "state", "outcome", "ending"])
+      .orderBy("createdAt", "desc")
+      .executeTakeFirstOrThrow();
+    expect(operation).toMatchObject({ state: "unknown", outcome: "unknown", ending: "tab-closed" });
+    // The person's activity reads the same cause.
+    const [listed] = (
+      await listAgentOperations(j.database, {
+        userId: j.task.userId,
+        connectionId: work.agent.id,
+        limit: 1,
+      })
+    ).operations;
+    expect(operationRow(listed!).detail).toBe(
+      "You closed this tab while it ran, so Opensteer can’t say whether this happened. Check before trying again.",
+    );
   } finally {
     await j.close();
     site.close();

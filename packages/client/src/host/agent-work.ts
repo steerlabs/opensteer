@@ -256,13 +256,19 @@ export function operationRow(operation: AgentOperationView): OperationRow {
     : base;
   const action = plainSentence(actionParts, { quoteNames: false });
   const decision = operation.decision;
+  // A refusal says why by its decision: the person's no, their Stop, an access change, or a
+  // browser or page that changed or was not ready (nothing was sent: not a question of access).
   const allowedBy =
     decision === null
       ? null
       : decision.by === "refused"
         ? decision.reason === "person"
           ? workWords("op.refused.person")
-          : workWords("op.refused.other", { message: decision.message })
+          : decision.reason === "stopped"
+            ? workWords("work.stopped")
+            : decision.reason === "changed"
+              ? null
+              : workWords("op.refused.other", { message: decision.message })
         : workWords(`op.by.${decision.by}`);
   const outcome = operationOutcome(operation);
   return {
@@ -273,9 +279,30 @@ export function operationRow(operation: AgentOperationView): OperationRow {
     actionParts,
     allowedBy,
     outcome,
-    detail: operation.outcome === "unknown" ? workWords("op.outcome.unknownDetail") : null,
+    detail: operationDetail(operation),
     at: operationTime(operation),
   };
+}
+
+/**
+ * The plain statement an ending needs: an unknown outcome by its cause where the Home knows it
+ * (the person's Stop or Disconnect, an expiry, a changed access, a tab the person closed), "lost
+ * contact" only when nothing else is known; and what a refusal for an unready or changed browser
+ * did (nothing was sent).
+ */
+function operationDetail(operation: AgentOperationView): string | null {
+  if (operation.outcome === "unknown")
+    return !operation.ending || operation.ending === "contact-lost"
+      ? workWords("op.outcome.unknownDetail")
+      : workWords(`op.ending.${operation.ending}`);
+  const decision = operation.decision;
+  if (
+    operation.outcome === "refused" &&
+    decision?.by === "refused" &&
+    decision.reason === "changed"
+  )
+    return decision.message;
+  return null;
 }
 
 export function operationTime(operation: AgentOperationView): string {
@@ -288,10 +315,16 @@ function operationOutcome(operation: AgentOperationView): OperationRow["outcome"
       return { label: workWords("op.outcome.completed"), tone: "ok" };
     case "failed":
       return { label: workWords("op.outcome.failed"), tone: "bad" };
-    case "refused":
-      return operation.decision?.by === "refused" && operation.decision.reason === "person"
+    case "refused": {
+      const reason = operation.decision?.by === "refused" ? operation.decision.reason : null;
+      return reason === "person"
         ? { label: workWords("op.refused.person"), tone: "muted" }
-        : { label: workWords("op.outcome.refused"), tone: "bad" };
+        : reason === "stopped"
+          ? { label: workWords("work.stopped"), tone: "muted" }
+          : reason === "changed"
+            ? { label: workWords("op.outcome.notSent"), tone: "warn" }
+            : { label: workWords("op.outcome.refused"), tone: "bad" };
+    }
     case "unknown":
       return { label: workWords("op.outcome.unknown"), tone: "warn" };
     case null:

@@ -63,7 +63,10 @@ import {
 import { TabToolHandlers } from "../mcp/handlers/tabs.js";
 import { BrowserScriptConfinement, BrowserToolHandlers } from "../mcp/handlers/browser.js";
 import { BrowserScriptService } from "../browser-use/browser-script-service.js";
-import { AgentSessionService } from "../agent-sessions/agent-session-service.js";
+import {
+  AgentSessionService,
+  connectionCleanupEnding,
+} from "../agent-sessions/agent-session-service.js";
 import { createTranscriptFileServices } from "../threads/transcript-files.js";
 import { TranscriptFileAccess } from "../threads/transcript-file-access.js";
 import {
@@ -3668,7 +3671,8 @@ export async function createHostRuntime(
         await agentTools.closeLineage(connectionId, minimumGrantRevision);
       },
       stopper: {
-        stopDirectOperation: (attempt) => agentSessions.stopDirectOperation(attempt.id),
+        stopDirectOperation: (attempt, cleanup) =>
+          agentSessions.stopDirectOperation(attempt.id, connectionCleanupEnding(cleanup.reason)),
         async stop(attempt, cleanup) {
           if (attempt.kind === "shared-chrome") {
             await chromeTabs.stopAttempt(attempt.id);
@@ -3757,8 +3761,12 @@ export async function createHostRuntime(
       },
       onFailure: (error, connectionId) =>
         app.log.warn({ err: error, connectionId }, "A connected agent's work did not stop"),
-      afterStop: (connectionId, reason) =>
-        agentSessions.closeConnection(connectionId, reason === "disconnect"),
+      afterStop: (connectionId, reason, cause) =>
+        agentSessions.closeConnection(
+          connectionId,
+          reason === "disconnect",
+          connectionCleanupEnding(cause),
+        ),
     });
     const driveConnectionCleanups = () =>
       connectionEffects.driveCleanups().finally(() => connectionMaintenance?.wake());

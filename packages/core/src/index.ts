@@ -35,6 +35,7 @@ export * from "./person-show.js";
 export * from "./resource-access.js";
 export * from "./agent-grants.js";
 export * from "./agent-sessions.js";
+export * from "./agent-operation-endings.js";
 
 export * from "./background-models.js";
 

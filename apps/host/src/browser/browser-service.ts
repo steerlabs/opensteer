@@ -997,6 +997,8 @@ export class BrowserService {
    */
   readonly #pendingPageCloses = new Map<BrowserSessionId, Map<BrowserSurfaceId, PageEnding>>();
   readonly #brokers = new Map<BrowserSessionId, HostedBrowserBroker>();
+  /** Pages the person closed lately ("session surface" → when): why work using one ended. */
+  readonly #closedByPerson = new Map<string, number>();
   readonly #sessionAccessChecks = new Map<string, Promise<boolean>>();
   readonly #personUseGroups = new Map<
     BrowserSessionId,
@@ -1492,6 +1494,11 @@ export class BrowserService {
       tab: JSON.stringify([tab.profileId, tab.generation, tab.pageBinding.lineageId]),
       page: JSON.stringify([tab.profileId, tab.generation, tab.pageBinding.lineageId, documentId]),
     };
+  }
+
+  /** Whether the person closed this page lately: the cause an agent's work on it reads. */
+  closedByPerson(sessionId: string, surfaceId: string): boolean {
+    return this.#closedByPerson.has(`${sessionId} ${surfaceId}`);
   }
 
   async pooledScriptPageWitness(ownerId: UserId, sessionId: BrowserSessionId, tabId: TabId) {
@@ -4879,6 +4886,16 @@ export class BrowserService {
           message: "This tab is in use by another task.",
         });
       return this.#bindWorkspacePage(actor.authority, row, actor.signal, actor.browserSend);
+    },
+    personClosed: (row) => {
+      const binding = row.pageBinding;
+      if (!binding) return;
+      // Kept long enough for work that holds the page to meet its end; a few hundred at most.
+      const now = Date.now();
+      for (const [key, at] of this.#closedByPerson)
+        if (now - at > 10 * 60_000 || this.#closedByPerson.size >= 512)
+          this.#closedByPerson.delete(key);
+      this.#closedByPerson.set(`${binding.sessionId} ${binding.surfaceId}`, now);
     },
     closeViewers: async (ownerId, row, closePage) => {
       const binding = row.pageBinding;

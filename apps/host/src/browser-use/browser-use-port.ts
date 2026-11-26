@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { answerTooLargeMessage, boundedJsonSize } from "@opensteer/browser-runtime-core";
-import { OpensteerError, refused, TabIdSchema, type ThreadId } from "@opensteer/core";
+import {
+  OpensteerError,
+  agentOperationEndingSentence,
+  refused,
+  TabIdSchema,
+  type ThreadId,
+} from "@opensteer/core";
 import {
   BrowserCdpCommandSchema,
   browserScriptScreenshotMaxBytes,
@@ -68,9 +74,12 @@ const ended = () =>
     "The browser page attachment has ended.",
     "Use pages() and openPage(tabId) to bind an available tab.",
   );
-const endedAfterSubmit = () =>
+/** An attachment that ended after a command was sent; the person's close of its tab, said so. */
+const endedAfterSubmit = (closedByPerson = false) =>
   new OperationOutcomeUnknown(
-    "The browser page attachment ended after a command was sent. Check the page before trying again.",
+    closedByPerson
+      ? agentOperationEndingSentence("tab-closed")
+      : "The browser page attachment ended after a command was sent. Check the page before trying again.",
   );
 
 function logAttachmentEnded(detail: {
@@ -100,6 +109,8 @@ function translate(
     readonly method?: string;
     readonly browserSend?: PooledBrowserSend;
     readonly onEnded?: () => void;
+    /** Whether the person closed this page: the cause of its end. */
+    readonly closedByPerson?: (sessionId: string, tabId: string) => boolean;
   },
 ): never {
   if (error instanceof BrowserCdpConnectionEnded) {
@@ -112,7 +123,12 @@ function translate(
       ...(afterSubmit ? { afterSubmit } : {}),
     });
     context?.onEnded?.();
-    throw afterSubmit ? endedAfterSubmit() : ended();
+    const byPerson = Boolean(
+      context?.sessionId &&
+      context.tabId &&
+      context.closedByPerson?.(context.sessionId, context.tabId),
+    );
+    throw afterSubmit ? endedAfterSubmit(byPerson) : ended();
   }
   // A7: the browser's answer arrived over its limit: the command ran, and it fails with the
   // runtime's words (its size, the limit, what to ask for instead).
@@ -131,8 +147,10 @@ export function createBrowserUsePort({
   authority: CdpAuthority;
   tabs: BrowserUseTabAccess;
   browser: Pick<BrowserService, "attachCdpForAgent"> &
-    Partial<Pick<BrowserService, "pooledScriptPageWitness">>;
+    Partial<Pick<BrowserService, "pooledScriptPageWitness" | "closedByPerson">>;
 }): BrowserUsePort<Target> {
+  const closedByPerson = (sessionId: string, tabId: string) =>
+    browser.closedByPerson?.(sessionId, tabId) === true;
   async function bind(
     { binding, threadId }: AdmittedPage,
     call: BrowserUseCall,
@@ -208,7 +226,9 @@ export function createBrowserUsePort({
       const page = resumed.parse(pageReply);
       root = page.targetId;
       if (closed || detached.has(root))
-        throw call.browserSend?.hasSubmitted?.() ? endedAfterSubmit() : ended();
+        throw call.browserSend?.hasSubmitted?.()
+          ? endedAfterSubmit(closedByPerson(binding.sessionId, binding.tabId))
+          : ended();
       const channelReply = await (
         await relay.dispatch(
           {
@@ -221,7 +241,9 @@ export function createBrowserUsePort({
       checkReply(channelReply, call);
       const channel = attached.parse(channelReply);
       if (closed || detached.has(channel.sessionId))
-        throw call.browserSend?.hasSubmitted?.() ? endedAfterSubmit() : ended();
+        throw call.browserSend?.hasSubmitted?.()
+          ? endedAfterSubmit(closedByPerson(binding.sessionId, binding.tabId))
+          : ended();
       const fields = browserTargetSchema.parse({ ...page, ...channel, tabId: binding.tabId });
       checkReply({ ...fields, handle: "0000000000000000" }, call);
       const attachedRelay = relay;
@@ -249,6 +271,7 @@ export function createBrowserUsePort({
     } catch (error) {
       close();
       translate(error, {
+        closedByPerson,
         tabId: binding.tabId,
         sessionId: binding.sessionId,
         ...(call.browserSend ? { browserSend: call.browserSend } : {}),
@@ -314,7 +337,7 @@ export function createBrowserUsePort({
           reason: "rebind-witness-mismatch",
           ...(afterSubmit ? { afterSubmit } : {}),
         });
-        throw afterSubmit ? endedAfterSubmit() : ended();
+        throw afterSubmit ? endedAfterSubmit(closedByPerson(relay.session.id, tabId)) : ended();
       }
       try {
         const admitted = await tabs.bind(tabId, call.signal, call.browserSend);
@@ -325,11 +348,12 @@ export function createBrowserUsePort({
             reason: admitted.binding.reloaded ? "rebind-reloaded" : "rebind-session-changed",
             ...(afterSubmit ? { afterSubmit } : {}),
           });
-          throw afterSubmit ? endedAfterSubmit() : ended();
+          throw afterSubmit ? endedAfterSubmit(closedByPerson(relay.session.id, tabId)) : ended();
         }
         return await bind(admitted, call, pooledWitness);
       } catch (error) {
         translate(error, {
+          closedByPerson,
           tabId,
           sessionId: relay.session.id,
           ...(call.browserSend ? { browserSend: call.browserSend } : {}),
@@ -347,7 +371,9 @@ export function createBrowserUsePort({
           reason: "target-closed",
           ...(afterSubmit ? { afterSubmit } : {}),
         });
-        throw afterSubmit ? endedAfterSubmit() : ended();
+        throw afterSubmit
+          ? endedAfterSubmit(closedByPerson(target.relay.session.id, target.tabId))
+          : ended();
       }
       const parsed = BrowserCdpCommandSchema.safeParse({
         method,
@@ -394,6 +420,7 @@ export function createBrowserUsePort({
             );
         }
         translate(error, {
+          closedByPerson,
           tabId: target.tabId,
           sessionId: target.relay.session.id,
           method,

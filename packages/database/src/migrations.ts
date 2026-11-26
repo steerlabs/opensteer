@@ -913,6 +913,18 @@ export function migrationProvider(options?: {
                   );
                 },
               },
+              "0123_agent_operation_endings": {
+                /**
+                 * Why a connected agent's operation ended without a confirmed outcome, where the
+                 * Home knows it (the person's Stop or Disconnect, an expiry, a narrowed grant, a tab
+                 * the person closed). Earlier rows have none and read as before.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`alter table agent_operations add column ending text
+                    check (ending in ('stopped', 'disconnected', 'expired', 'narrowed',
+                      'tab-closed', 'contact-lost'))`.execute(database);
+                },
+              },
             }
           : {}),
       };

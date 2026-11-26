@@ -804,7 +804,11 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       expect(await refusedOrDisconnected(stillWaiting.result)).toBe(true);
       expect((await host.store.requests.get(stillWaiting.requestId))?.status).toBe("cancelled");
       expect((await host.store.requests.get(waitingLogin.requestId))?.status).toBe("cancelled");
-      await expect(refusedOrDisconnected(waitingLogin.result)).resolves.toBe(true);
+      // The call waiting for the person is answered with its own ending, on its own request,
+      // never cut: no sign-in was given.
+      expect(await waitingLogin.result).toMatchObject({
+        structuredContent: { loginStatus: "unavailable" },
+      });
       const approvals = authority.commands.filter(({ type }) => type === "login.approve").length;
       expect(
         await testRpcData(

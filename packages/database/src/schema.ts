@@ -2,6 +2,7 @@ import type {
   AgentGrant,
   AgentOperationDecision,
   AgentOperationId,
+  AgentOperationEnding,
   AgentOperationOutcome,
   AgentOperationState,
   AgentOperationTarget,
@@ -2057,6 +2058,8 @@ export interface AgentOperationTable {
   contactLostAt: Generated<Date | null>;
   completedAt: Date | null;
   outcome: AgentOperationOutcome | null;
+  /** Why an unknown outcome ended, where the Home knows it: what the person and the agent read. */
+  ending: Generated<AgentOperationEnding | null>;
   resultSummary: JsonColumn<Readonly<Record<string, unknown>>> | null;
   createdAt: Generated<Date>;
   updatedAt: Generated<Date>;

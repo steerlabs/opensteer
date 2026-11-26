@@ -794,9 +794,15 @@ describe("Opensteer MCP spine", () => {
       expect((await send()).status).toBe(503);
       const caller = f.callers.get("connection")!;
       f.callers.delete("connection");
-      const ended = Promise.allSettled(pending);
+      const ended = Promise.all(pending);
       f.change();
-      expect((await ended).every((result) => result.status === "rejected")).toBe(true);
+      // Each call the revocation ended is answered with a refusal it can read, never cut.
+      for (const response of await ended) {
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as { result?: { isError?: boolean } };
+        expect(body.result?.isError).toBe(true);
+        expect(JSON.stringify(body.result)).toContain("This connected agent's access ended.");
+      }
       f.callers.set("connection", caller);
       for (const resolve of finish) resolve();
       const client = await connect(f.url, "connection");

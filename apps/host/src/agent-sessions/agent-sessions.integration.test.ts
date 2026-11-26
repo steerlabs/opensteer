@@ -15,7 +15,12 @@ import {
   type RequestId,
   type ThreadAccessMode,
 } from "@opensteer/core";
-import { connectedAgentsNow, sessionSlotFromHome, sessionTaskView } from "@opensteer/client/host";
+import {
+  connectedAgentsNow,
+  operationRow,
+  sessionSlotFromHome,
+  sessionTaskView,
+} from "@opensteer/client/host";
 import {
   AgentConnectionStore,
   BrowserPoolAdmissionClosed,
@@ -52,7 +57,11 @@ import {
   lastService,
 } from "../mcp/connection-caller.test-support.js";
 import type { TabServicePort } from "../tabs/ports.js";
-import { AgentSessionService, OperationOutcomeUnknown } from "./agent-session-service.js";
+import {
+  AgentSessionService,
+  OperationOutcomeUnknown,
+  connectionCleanupEnding,
+} from "./agent-session-service.js";
 import { createPersonalReads } from "../server/personal-reads.js";
 
 type Fixture = Awaited<ReturnType<typeof createStoreFixture>>;
@@ -2133,14 +2142,164 @@ describeStore("an external agent's direct work through sessions", (it) => {
       expect(
         await database
           .selectFrom("agentOperations")
-          .select(["state", "outcome"])
+          .select(["state", "outcome", "ending"])
           .where("id", "=", receipt.id)
           .executeTakeFirstOrThrow(),
-      ).toEqual({ state: "unknown", outcome: "unknown" });
+      ).toEqual({ state: "unknown", outcome: "unknown", ending: "stopped" });
+      // The person's activity says their Stop ended it, never that contact was lost.
+      const [listed] = (
+        await listAgentOperations(database, {
+          userId: s.f.userId,
+          threadId: receipt.threadId,
+          limit: 1,
+        })
+      ).operations;
+      expect(listed).toMatchObject({ id: receipt.id, outcome: "unknown", ending: "stopped" });
+      expect(operationRow(listed!).detail).toBe(
+        "You stopped this while it ran. Part of it may have happened. Check before trying again.",
+      );
     } finally {
       held.release();
       await running.catch(() => undefined);
     }
+  });
+
+  it("answers the call Disconnect cut through MCP with its result: unknown, because the person disconnected; then refuses what comes next", async ({
+    storeFixture,
+  }) => {
+    const { database } = storeFixture;
+    const s = await setUp(storeFixture, "disconnect-answers");
+    const held = s.holdNext();
+    const running = s.call("browser_use", { ...script, operationKey: "cut-by-disconnect" });
+    try {
+      await held.started;
+      // As the runtime wires it: the cleanup's own cause reaches the work it cuts.
+      const disconnect = commands(storeFixture, s.f.userId, {
+        stopper: {
+          stop: async () => {},
+          stopDirectOperation: (attempt, cleanup) =>
+            s.sessions.stopDirectOperation(attempt.id, connectionCleanupEnding(cleanup.reason)),
+        },
+        afterStop: (connectionId, reason, cause) =>
+          s.sessions.closeConnection(
+            connectionId,
+            reason === "disconnect",
+            connectionCleanupEnding(cause),
+          ),
+      });
+      await disconnect.revoke(s.agent.id);
+      // The call in flight is answered on its own request, never cut as a broken connection.
+      const result = await running;
+      const operationId = (result.structuredContent as { operationId: never }).operationId;
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: {
+          status: "unknown",
+          error: {
+            code: "access_changed",
+            message: "The person disconnected this agent.",
+            next: "Part of it may have happened. Check the current state before doing anything else.",
+          },
+        },
+      });
+      // The Disconnect's evidence is as it was: an unknown outcome, ended, contact lost.
+      const row = await database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome", "ending", "terminalEvidenceAt", "contactLostAt"])
+        .where("id", "=", operationId)
+        .executeTakeFirstOrThrow();
+      expect(row).toEqual({
+        state: "unknown",
+        outcome: "unknown",
+        ending: "disconnected",
+        terminalEvidenceAt: expect.any(Date),
+        contactLostAt: expect.any(Date),
+      });
+      const [listed] = (
+        await listAgentOperations(database, {
+          userId: s.f.userId,
+          connectionId: s.agent.id,
+          limit: 1,
+        })
+      ).operations;
+      expect(operationRow(listed!).detail).toBe(
+        "You disconnected this agent while this ran. Part of it may have happened. Check before trying again.",
+      );
+      // Anything new from that connection is refused: its credential ended with the Disconnect.
+      await expect(
+        s.call("browser_use", { ...script, operationKey: "after" }),
+      ).rejects.toMatchObject({
+        code: 401,
+      });
+    } finally {
+      held.release();
+      await running.catch(() => undefined);
+    }
+  });
+
+  it("records a browser that was not ready as nothing sent, for the agent and the person, never as access that changed", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("pool-not-ready");
+    const identity = {
+      runnerId: f.runnerId,
+      runtimeId: "pooled-browser",
+      slotId: "slot",
+      instanceId: randomUUID(),
+      term: 1,
+      epoch: 1,
+    };
+    await installBrowserPoolSlot(storeFixture.database, identity);
+    const s = await setUp(storeFixture, "pool-not-ready", {
+      run: f,
+      pooledBrowser: () => ({
+        identity: () => identity,
+        pageDocument: () => undefined,
+        // The gate's own refusal of a browser it could not get ready.
+        reserve: async () => {
+          throw new BrowserPoolAdmissionClosed("This browser is not ready. Nothing was sent.");
+        },
+      }),
+    });
+    const result = await s.call("browser_use", script);
+    expect(result, JSON.stringify(result.content)).toMatchObject({
+      isError: true,
+      structuredContent: {
+        status: "refused",
+        error: {
+          code: "computer_offline",
+          message: "This browser is not ready. Nothing was sent.",
+        },
+      },
+    });
+    const operationId = (result.structuredContent as { operationId: never }).operationId;
+    expect(
+      await storeFixture.database
+        .selectFrom("agentOperations")
+        .select(["state", "decision", "handedOffAt"])
+        .where("id", "=", operationId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({
+      state: "refused",
+      decision: {
+        by: "refused",
+        reason: "changed",
+        message: "This browser is not ready. Nothing was sent.",
+      },
+      handedOffAt: null,
+    });
+    const [listed] = (
+      await listAgentOperations(storeFixture.database, {
+        userId: s.f.userId,
+        connectionId: s.agent.id,
+        limit: 1,
+      })
+    ).operations;
+    expect(operationRow(listed!)).toMatchObject({
+      allowedBy: null,
+      outcome: { label: "Not sent" },
+      detail: "This browser is not ready. Nothing was sent.",
+    });
   });
 
   it("ends a session using a withdrawn profile but keeps its operation outstanding until it returns", async ({
@@ -2534,8 +2693,8 @@ describeStore("an external agent's direct work through sessions", (it) => {
         s.sessions.closeConnection(connectionId, reason === "disconnect"),
     });
     await disconnect.revoke(s.agent.id);
-    // Disconnect closed the agent's MCP session, so its in-flight call gets no answer; the
-    // executor saw its signal abort and could not confirm the effect.
+    // The executor saw its signal abort and could not confirm the effect. (Through MCP, the call
+    // is answered with that result before the session closes: the case after "Stop" below.)
     await inFlight;
     await s.sessions.drain();
     const operation = await database

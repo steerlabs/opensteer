@@ -1,5 +1,5 @@
 import { DeviceAccessRefusal } from "../../administration/device-access.js";
-import { utf8Prefix, OpensteerError } from "@opensteer/core";
+import { agentOperationEndingOf, utf8Prefix, OpensteerError } from "@opensteer/core";
 import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { delay } from "@opensteer/shared/delay";
 import type { z } from "zod";
@@ -59,6 +59,8 @@ interface Call<Request> {
   mutationsInFlight: number;
   operationsInFlight: number;
   abandoned: "outcome-unknown" | "operation-pending" | undefined;
+  /** An unknown outcome's own words when they name its cause (a tab the person closed). */
+  abandonedBecause?: string;
   requests: number;
   requestBytes: number;
   replyBytes: number;
@@ -421,7 +423,7 @@ export class ReplService<Request extends AnyReplRequest> {
             : [],
       };
       if (call.context.reportUnknownEffects && failure.code === "outcome-unknown")
-        call.abandoned = "outcome-unknown";
+        this.#abandon(call, failure.message);
       if ("content" in record && Array.isArray(record.content)) {
         const parsed = ReplReplySchema.shape.content.safeParse(record.content);
         if (parsed.success)
@@ -580,7 +582,7 @@ export class ReplService<Request extends AnyReplRequest> {
     } catch (error) {
       if (call.cancellation.signal.aborted && error === call.cancellation.signal.reason) return;
       const failure = this.#events!.error(error);
-      if (failure.code === "outcome-unknown") call.abandoned = "outcome-unknown";
+      if (failure.code === "outcome-unknown") this.#abandon(call, failure.message);
       if (this.#contexts.get(call.key)?.call === call && !call.cancellation.signal.aborted)
         this.#post({ type: "reply", ...address, error: boundedReplFailure(failure) });
     }
@@ -618,6 +620,12 @@ export class ReplService<Request extends AnyReplRequest> {
     );
     return true;
   }
+  /** The call's outcome is unknown; its first cause the Home can name is kept to be said. */
+  #abandon(call: Call<Request>, message: string): void {
+    call.abandoned = "outcome-unknown";
+    if (call.abandonedBecause === undefined && agentOperationEndingOf(message))
+      call.abandonedBecause = message;
+  }
   #finish(call: Call<Request>, error?: ReplFailure, reset = true): void {
     const resident = this.#contexts.get(call.key);
     if (resident?.call !== call) return;
@@ -625,6 +633,7 @@ export class ReplService<Request extends AnyReplRequest> {
       error = {
         code: "outcome-unknown",
         message:
+          call.abandonedBecause ??
           "A browser action did not confirm its outcome. Observe the page before deciding what to do next.",
         performed: [],
       };
