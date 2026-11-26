@@ -475,9 +475,13 @@ final class FrontSampler {
     return process
   }
   func makeFront(_ app: NSRunningApplication, at: CGPoint) async throws {
-    try await personClick(at)
-    for _ in 0..<40 where PrivateAPI.focusPID(front: true) != app.processIdentifier { await sleepSeconds(0.05) }
-    try require(PrivateAPI.focusPID(front: true) == app.processIdentifier, "\(app.localizedName ?? "app") did not come to the front")
+    for _ in 0..<2 where PrivateAPI.focusPID(front: true) != app.processIdentifier {
+      try await personClick(at)
+      for _ in 0..<40 where PrivateAPI.focusPID(front: true) != app.processIdentifier { await sleepSeconds(0.05) }
+    }
+    if PrivateAPI.focusPID(front: true) != app.processIdentifier { await screenshot(out, "front-refused") }
+    try require(PrivateAPI.focusPID(front: true) == app.processIdentifier,
+      "\(app.localizedName ?? "app") did not come to the front; front is \(PrivateAPI.focusPID(front: true) ?? 0)")
   }
   func screenshot(_ caseOut: URL, _ name: String) async {
     screenshots += 1
@@ -751,11 +755,13 @@ final class FrontSampler {
     let frame = try KeyWindow.currentFrame(KeyWindow.windowID(of: safariWindow()).unwrap("Safari window id")).unwrap("Safari frame")
     var frontAfterClick: [Int] = []
     var errors = 0
+    var errorMessages: [String] = []
     for step in 1...12 {
       let receipt = try await agent.act([["type": "type", "text": "q"]])
-      if receipt["error"] != nil { errors += 1 }
+      if let error = receipt["error"], !(error is NSNull) { errors += 1; errorMessages.append(String(describing: error).prefix(160).description) }
       if step == 3 {
-        try await personClick(CGPoint(x: frame.maxX - 120, y: frame.midY + 120))
+        // Safari's toolbar: the window comes forward and the page keeps its field's focus.
+        try await personClick(CGPoint(x: frame.maxX - 330, y: frame.minY + 30))
         await sleepSeconds(0.5)
         frontAfterClick.append(Int(PrivateAPI.focusPID(front: true) ?? 0))
         await screenshot(caseOut, "after-choice-click")
@@ -771,6 +777,7 @@ final class FrontSampler {
     return [
       "met": frontAfterClick.allSatisfy { $0 == safariPID } && errors == 0,
       "frontAfterClickThenAtEndThenOneSecondLater": frontAfterClick, "safariPID": safariPID, "agentErrors": errors,
+      "agentErrorMessages": errorMessages,
     ]
   }
 
@@ -797,7 +804,7 @@ final class FrontSampler {
       if wallMs() > deadline { stoppedEarly = true; break }
       for _ in 0..<64 {
         let receipt = try await agent.act([["type": "key", "keys": "q"]])
-        if let error = receipt["error"] { errors[String(describing: error).prefix(120).description, default: 0] += 1 }
+        if let error = receipt["error"], !(error is NSNull) { errors[String(describing: error).prefix(120).description, default: 0] += 1 }
         acts += 1
       }
       await sleepSeconds(0.2)
