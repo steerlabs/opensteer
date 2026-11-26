@@ -1020,7 +1020,12 @@ async function proveChromeShares(
         input: {},
         operationKey: "denied-list",
       }),
-    ).toEqual({ items: [], nextCursor: null });
+      // Nothing here for it, said without naming the paired Chrome it was not given (6739f759e).
+    ).toEqual({
+      items: [],
+      nextCursor: null,
+      next: "Nothing shared with you is here yet. What else you can use is the person's to decide.",
+    });
     const deniedRead = (id: string) =>
       discover({
         caller: denied.caller,

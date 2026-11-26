@@ -4250,7 +4250,7 @@ it("enforces authority on dismissBrowserPoolUnconfirmedSession: outside grant is
       accessMode: "approval-required",
       grant: {
         scope: "selected",
-        tasks: false,
+        tasks: true,
         resources: [{ kind: "browser-profile", profileId: profileA.id }],
       },
       resource: "https://x2.test/mcp",
@@ -4290,12 +4290,15 @@ it("enforces authority on dismissBrowserPoolUnconfirmedSession: outside grant is
       message: (nonExistentErr as Error).message,
     });
 
-    // Read-only grant on the session's profile is forbidden (Rule 1).
+    // Read-only work on the session's profile is forbidden (Rule 1): work delegated by a
+    // connection in approval-required runs at its mode's ceiling. (A connection acting itself is
+    // offered and may attempt a write, its mode deciding only whether the person is asked, in
+    // AgentSessionService.run(): efa32b59a.)
     await expect(
       dismissBrowserPoolUnconfirmedSession(j.database, {
         ownerId: j.task.userId,
         sessionId,
-        subject: { kind: "connection", agentConnectionId: readOnlyGrant.id },
+        subject: { kind: "connection", agentConnectionId: readOnlyGrant.id, delegated: true },
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
 
