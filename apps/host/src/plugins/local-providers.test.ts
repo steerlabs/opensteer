@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
-import { createId, ToolBlockedError } from "@opensteer/core";
+import { createId, DeviceIdSchema, ToolBlockedError } from "@opensteer/core";
+import { DeviceAccessRefusal } from "../administration/device-access.js";
 import { resolveIntegrationReadiness } from "@opensteer/integration-core/readiness";
 import { deviceDefinitions } from "@opensteer/integration-catalog/devices";
 import { isComputerAppDefinition } from "@opensteer/integration-core/computer-app";
@@ -502,4 +503,88 @@ it("lists a server awaiting its approved launch as blocked, and refuses its call
     ),
   ).toEqual({ kind: "blocked", blocked: waiting });
   expect(callTool).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["a connected agent", true],
+  ["a task of the person's", false],
+] as const)("words the apps switch turned off mid-call for %s", async (_, connection) => {
+  const definition = deviceDefinitions.find((definition) => definition.id === "apple-calendar")!;
+  const callable = computerCallable("read", definition);
+  const readiness = {
+    code: "READY",
+    serverId: callable.server.id,
+    connectionId: callable.grant.connectionId,
+    requiredAccess: null,
+    detail: null,
+  };
+  const store = {
+    listDiscoveryInventory: async () => [
+      {
+        installation: callable.installation,
+        servers: [callable.server],
+        accounts: [{ connectionId: callable.grant.connectionId }],
+        tools: [callable.tool],
+        readiness: { servers: [readiness], tools: [{ toolId: callable.tool.id, readiness }] },
+      },
+    ],
+    listCallableTools: async () => [callable],
+    getDeviceComputerConnectionForCall: async () => ({
+      deviceId: "dev_mac",
+      runnerName: "Studio Mac",
+      access: "read",
+    }),
+  };
+  const userId = createId("user");
+  const providers = new LocalProviders({
+    store,
+    devices: {
+      withAvailability: async (entries: unknown) => entries,
+      localDiscoveryFacts: () => ({ connectionFor: store.getDeviceComputerConnectionForCall }),
+      // The person turns the Mac's apps off after the call was admitted, before it is sent.
+      callTool: async () => {
+        throw new DeviceAccessRefusal(
+          "device-access-off",
+          DeviceIdSchema.parse(createId("runner")),
+          "apps",
+          "Studio Mac",
+        );
+      },
+    },
+    localServers: {},
+    authority: {
+      caller: () =>
+        connection
+          ? { kind: "connection", userId, connectionId: "connection", key: "connection:x" }
+          : { kind: "run", userId, thread: { id: createId("thread") } },
+      session: () =>
+        connection
+          ? { operation: { bindingId: "session:x", taskId: createId("thread") } }
+          : undefined,
+    },
+  } as unknown as ConstructorParameters<typeof LocalProviders>[0]);
+  const context = { caller: "test", mode: "automatic" as const };
+  const [provider] = await providers.providers(context);
+  const called = await providers.call(
+    {
+      ...context,
+      execution: "execution",
+      plugin: provider!.id,
+      tool: callable.tool.name,
+      input: {},
+    },
+    AbortSignal.timeout(5000),
+    async () => {
+      throw new Error("Unexpected approval");
+    },
+  );
+  expect(called).toMatchObject({
+    kind: "blocked",
+    blocked: {
+      message: connection
+        ? "Apps access is off on Studio Mac. The person can turn it on in Opensteer."
+        : "apps is off. Use computer_access_request if needed.",
+    },
+  });
+  if (connection) expect(JSON.stringify(called)).not.toContain("computer_access_request");
 });

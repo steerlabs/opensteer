@@ -1,4 +1,8 @@
 import { integrationAccessCeilingForRun } from "@opensteer/integration-core/effective-grants";
+import type {
+  IntegrationConnectionId,
+  IntegrationInstallationId,
+} from "@opensteer/integration-core/ids";
 import { assertPersonalOwner } from "./private-resource-owner.js";
 import type { ThisHomeAddressSet } from "@opensteer/shared/homeAddress";
 import {
@@ -46,6 +50,7 @@ import {
 import { sql, type Kysely, type RawBuilder } from "kysely";
 import type { BridgeSenders, DatabaseSchema } from "./schema.js";
 import { connectionState } from "./connection-liveness.js";
+import { integrationConnectionGrantTarget } from "./agent-grant-targets.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { readerSees, type TaskReader } from "./task-reader.js";
 
@@ -805,6 +810,94 @@ export function authorizeTarget(
   return execution.actor === "person" || execution.actor === "native" ? "read-write" : null;
 }
 
+/** One approval on the person's devices (an app, a phone screen, a data app), as a grant covers it. */
+export interface GrantedDeviceApproval {
+  readonly id: IntegrationConnectionId;
+  readonly displayName: string;
+  readonly installationId: IntegrationInstallationId;
+  readonly createdAt: Date;
+  /** What the grant names it as: a `computer-app`, or a data app's `device-account` plugin. */
+  readonly target: AgentGrantTarget;
+  /** The access the connection has to it: the approval's own, within what the grant allows. */
+  readonly access: ResourceAccessLevel;
+}
+
+/**
+ * What a connected agent's grant covers of what the person approved on their devices: a Mac app,
+ * a phone screen, or a data app (Calendar on a Mac, Photos on an iPhone). A grant of `everything`
+ * covers every such approval; a selected grant covers those it names (an app or a phone screen by
+ * its approval row, device and app; a data app as its device account, at the access the grant
+ * gives it). Either covers an approval only while it stands (connected, not blocked, its device not
+ * removed) and only at the approval's own access.
+ *
+ * This is the connection's whole answer for these approvals, at listing, admission and execution
+ * alike: the grants the person's own tasks hold on the same rows are not a term of it, neither to
+ * widen nor to narrow it, and a connected agent cannot ask for them. Ownership, the mode and the
+ * device's switch are still the admission's (`admitExecution`) and the device's to decide.
+ */
+export async function grantedDeviceApprovals(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  grant: AgentGrant,
+): Promise<readonly GrantedDeviceApproval[]> {
+  const named =
+    grant.scope === "selected"
+      ? [
+          ...new Set(
+            grant.resources.flatMap((resource) =>
+              resource.kind === "computer-app"
+                ? [resource.approvalId]
+                : resource.kind === "plugin" && resource.target.kind === "device-account"
+                  ? [resource.target.integrationConnectionId.toLowerCase()]
+                  : [],
+            ),
+          ),
+        ]
+      : null;
+  if (named?.length === 0) return [];
+  let query = database
+    .selectFrom("integrationConnections")
+    .innerJoin(
+      "integrationServers",
+      "integrationServers.id",
+      "integrationConnections.integrationServerId",
+    )
+    .innerJoin("devices", "devices.id", "integrationConnections.deviceId")
+    .select([
+      "integrationConnections.id",
+      "integrationConnections.displayName",
+      "integrationConnections.createdAt",
+      "integrationConnections.deviceId",
+      "integrationConnections.computerApp",
+      "integrationConnections.computerAccess",
+      "integrationConnections.integrationDefinitionId",
+      "integrationServers.installationId",
+    ])
+    .where("integrationConnections.ownerUserId", "=", ownerUserId)
+    .where("integrationConnections.connectionKind", "=", "computer")
+    .where("integrationConnections.status", "=", "connected")
+    .where("integrationConnections.computerBlockedAt", "is", null)
+    .where("integrationConnections.computerAccess", "is not", null)
+    .where("devices.removedAt", "is", null);
+  if (named) query = query.where(sql<string>`lower(integration_connections.id)`, "in", named);
+  return (await query.execute()).flatMap((row) => {
+    const target = integrationConnectionGrantTarget(row);
+    const access = intersectResourceAccess(agentGrantAccess(grant, target), row.computerAccess);
+    return access
+      ? [
+          {
+            id: row.id,
+            displayName: row.displayName,
+            installationId: row.installationId,
+            createdAt: row.createdAt,
+            target,
+            access,
+          },
+        ]
+      : [];
+  });
+}
+
 /**
  * May this admitted execution know of a browser page at this address? Two rules, one answer:
  * - A page on an extension's address does not exist to a connection's work (its own sessions and
@@ -946,9 +1039,23 @@ export function executionAccess(
   return intersectResourceAccess(explicitAccess, executionAccessCeiling(execution));
 }
 
+/**
+ * What an execution may be offered and may attempt, before its grant and the target's approval.
+ *
+ * A connected agent acting itself (its session, or the connection before it has opened one) gets
+ * "read-write": every effect it attempts is one operation of `AgentSessionService.run()`, which
+ * admits it, asks the person when the connection's mode says so, and decides it before hand-off
+ * (and its changes to the Home go through the command door, which does the same). So its mode
+ * decides only whether the person is asked, never whether a write exists; what it may reach is its
+ * grant's and the approval's to say. Your own agents' Runs, and work delegated by a connection,
+ * act without being asked effect by effect, so their mode is their ceiling.
+ */
 function executionAccessCeiling(execution: Pick<ExecutionAuthority, "mode" | "subject">) {
-  // The session pipeline already decides each effect before hand-off.
-  if (execution.subject.kind === "binding" && execution.subject.bindingId.startsWith("session:"))
+  const { subject } = execution;
+  if (
+    (subject.kind === "binding" && subject.bindingId.startsWith("session:")) ||
+    (subject.kind === "connection" && !subject.delegated)
+  )
     return "read-write";
   return integrationAccessCeilingForRun(execution.mode);
 }

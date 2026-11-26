@@ -502,11 +502,12 @@ export class DeviceService {
     return this.#store;
   }
 
-  async localDeviceAccessBlocked(deviceId: DeviceId) {
+  /** Why this device refuses agents now, worded for a connected agent when `connection` is set. */
+  async localDeviceAccessBlocked(deviceId: DeviceId, connection = false) {
     try {
       await this.#deviceApps.requireAgentAccess(deviceId);
     } catch (error) {
-      const blocked = deviceAccessBlocked(error);
+      const blocked = deviceAccessBlocked(error, connection);
       if (!blocked) throw error;
       return blocked;
     }
@@ -869,7 +870,11 @@ export class DeviceService {
         )
           throw new IntegrationAuthorizationRequiredError(callable);
         if (caller.session) await this.#assertSessionComputer(caller.session, connection);
-        const blocked = await this.localDeviceAccessBlocked(connection.deviceId);
+        // A connected agent's own call (its session's script or its plugin call) reads its words.
+        const blocked = await this.localDeviceAccessBlocked(
+          connection.deviceId,
+          caller.session !== undefined || caller.agentBindingId.startsWith("session:"),
+        );
         if (blocked) throw new ToolBlockedError(blocked);
         if (
           definition.id === computerUseDefinitionId &&
@@ -2003,7 +2008,8 @@ export class DeviceService {
     session: ComputerSessionCaller | undefined,
     read: (authority: ComputerInventoryAuthority) => Promise<Result>,
   ): Promise<Result> {
-    const blocked = await this.localDeviceAccessBlocked(deviceId);
+    // Only a connected agent's direct work reads a device's inventory here.
+    const blocked = await this.localDeviceAccessBlocked(deviceId, true);
     if (blocked) throw new ToolBlockedError(blocked);
     const driver =
       session?.driver ??
@@ -2046,11 +2052,10 @@ export class DeviceService {
             agentBindingId: caller.bindingId,
           });
           if (grant?.scope !== "everything") notThisSessionsTarget();
-          const blocked = await this.localDeviceAccessBlocked(deviceId);
-          if (blocked) throw new ToolBlockedError(blocked);
           await caller.recheck();
         }
-        await this.#deviceApps.requireAgentAccess(deviceId);
+        const blocked = await this.localDeviceAccessBlocked(deviceId, true);
+        if (blocked) throw new ToolBlockedError(blocked);
         signal.throwIfAborted();
       },
     };
@@ -2166,7 +2171,7 @@ export class DeviceService {
     const work = this.#beginConnectedComputerWork(session.deviceId, session.driver, signal);
     try {
       const result = await this.computerRepl.execute(
-        { runId: key, generation: 0, reportUnknownEffects: true },
+        { runId: key, generation: 0, reportUnknownEffects: true, connectedAgent: true },
         code,
         work.signal,
         (request) => this.#invokeComputerRepl(caller, request),

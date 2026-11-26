@@ -156,6 +156,76 @@ describe("Host-projected phone displays", () => {
   });
 });
 
+describe("Host-projected Macs", () => {
+  const ready = { state: "ready", reason: null };
+  const on = { ...ready, supported: true, enabled: true, configurable: true };
+  /**
+   * A Mac added to a Home, as the Home projects it. A Mac running the Opensteer app reports it
+   * and is a "computer"; one whose Runner was connected without the app is classed by its form:
+   * "server" when it reports that form (a managed Runner), else "unknown". The Home says itself
+   * whether it can stream the Mac's windows.
+   */
+  function addedMac(kind: "computer" | "server" | "unknown", form: "server" | "laptop" | null) {
+    return DeviceMachineSummarySchema.parse({
+      ...machine({}),
+      kind,
+      device: { platform: "macos", form },
+      access: null,
+      detail: null,
+      enrollmentId: null,
+      expiresAt: null,
+      lastSeenAt: null,
+      allowedModules: ["browser", "integrations"],
+      modules: {},
+      ownership: "mine",
+      revocable: true,
+      selfRunnerId: mac,
+      drivers: [],
+      capabilities: { browser: on, files: on, apps: on },
+      phoneDisplay: null,
+      computerUse: report("ready", { displayStreamSupported: true }),
+    });
+  }
+
+  it.each([
+    ["a Mac running the Opensteer app", "computer", null],
+    ["a Mac connected without the app in a server form", "server", "server"],
+    ["a MacBook connected without the app", "unknown", "laptop"],
+  ] as const)("gives %s added to the Home its live picture and its apps", (_, kind, form) => {
+    const added = addedMac(kind, form);
+    expect(canWatchComputer(added)).toBe(true);
+    expect(
+      computerUseView({
+        hostConnected: true,
+        connections: [],
+        definitions: [gui()],
+        machine: added,
+      }),
+    ).not.toBeNull();
+    // The Home's word decides: a Mac it cannot stream has no live picture.
+    expect(
+      canWatchComputer({
+        ...added,
+        computerUse: report("ready", { displayStreamSupported: false }),
+      }),
+    ).toBe(false);
+  });
+
+  it("never reads a phone without its screen, or a Linux server, as a Mac", () => {
+    const linux = {
+      ...addedMac("server", "server"),
+      device: { platform: "linux", form: "server" },
+    };
+    expect(canWatchComputer(linux as MachineSummary)).toBe(false);
+    const iphone = {
+      ...addedMac("unknown", "laptop"),
+      kind: "phone",
+      device: { platform: "ios", form: "phone" },
+    };
+    expect(canWatchComputer(iphone as MachineSummary)).toBe(false);
+  });
+});
+
 describe("Agent Phone identity", () => {
   it.each(["online", "offline", "needs-update"] as const)(
     "does not offer whole-phone use for an Opensteer phone that is %s",

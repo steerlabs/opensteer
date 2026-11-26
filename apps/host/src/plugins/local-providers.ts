@@ -143,7 +143,10 @@ export class LocalProviders {
     if (provider.blocked) {
       const access =
         provider.kind === "device-app" && provider.computer
-          ? await this.#options.devices.localDeviceAccessBlocked(provider.computer.id)
+          ? await this.#options.devices.localDeviceAccessBlocked(
+              provider.computer.id,
+              caller.kind === "connection",
+            )
           : undefined;
       return { kind: "blocked", blocked: access ?? provider.blocked };
     }
@@ -220,7 +223,7 @@ export class LocalProviders {
           : await this.#options.localServers.callTool(callable, input.input, toolCaller, signal);
     } catch (error) {
       if (error instanceof PluginServiceError && error.code === "tool") throw error;
-      const access = deviceAccessBlocked(error);
+      const access = deviceAccessBlocked(error, caller.kind === "connection");
       if (access) return { kind: "blocked", blocked: access };
       const refusal = agentToolFailure(error, tool.readOnly ? "read" : "write");
       if (refusal.code === internalToolFailureCode) throw error;

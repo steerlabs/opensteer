@@ -9,6 +9,8 @@ export class DeviceAccessRefusal extends OpensteerError {
     "device-access-off" | "device-asleep" | "device-offline" | "device-stopped";
   readonly machineId: DeviceId;
   readonly capability: DeviceCapability;
+  /** The device's name, when the refusal knows it. */
+  readonly machineName: string | undefined;
   constructor(
     reason: "device-access-off" | "device-asleep" | "device-offline" | "device-stopped",
     machineId: DeviceId,
@@ -34,6 +36,7 @@ export class DeviceAccessRefusal extends OpensteerError {
     this.reason = reason;
     this.machineId = machineId;
     this.capability = capability;
+    this.machineName = machineName;
   }
 }
 export async function requireDeviceAccess(
@@ -61,7 +64,7 @@ export async function requireDeviceAccess(
       runner.name,
     );
   if (!deviceAccess(runner.accessPolicy)[capability])
-    throw new DeviceAccessRefusal("device-access-off", machineId, capability);
+    throw new DeviceAccessRefusal("device-access-off", machineId, capability, runner.name);
 }
 
 /**
@@ -98,5 +101,5 @@ export async function requireRunnerDeviceAccess(
       runner.name,
     );
   if (!deviceAccess(runner.accessPolicy)[capability])
-    throw new DeviceAccessRefusal("device-access-off", runner.id, capability);
+    throw new DeviceAccessRefusal("device-access-off", runner.id, capability, runner.name);
 }
