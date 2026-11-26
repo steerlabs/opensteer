@@ -424,7 +424,12 @@ Home updates from the account's feed only.
 
 A managed Home takes a release's installer only from its account's release-feed answer, `recipe:
 {url, sha256}`, pinned in the account's own release config, never from a manifest, and does not
-update without it. A bring-your-own Home takes it from the manifest its owner gives `update`,
+update without it. Its release is one thing all the same: the feed's manifest names the installer
+its images were published with, `"recipe": {"url": …, "sha256": …}`, and the Home updates only
+when that `sha256` is the one its account pins. Until both name the same installer (one half
+published, the other not yet, in either order), it changes nothing and restarts nothing, as for a
+version mismatch below; the account's pin stays the one fetched. A same-images update of the
+recipe alone is taken only when both name the new installer. A bring-your-own Home takes it from the manifest its owner gives `update`,
 `"recipe": {"url": "https://…/opensteer-home-installer.sh", "sha256": "…"}`; a manifest without
 one keeps the running release's files with the new images and says the recipe was not updated.
 The installer's `version` must equal the manifest's version: until both are published the update
