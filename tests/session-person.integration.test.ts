@@ -341,11 +341,11 @@ async function startSessionPersonFixture() {
       owner,
       pending,
       close,
+      /** The pages open in the Home's own Chromium. */
+      chromiumPages: () => chromiumBrowser?.context.pages() ?? [],
       setLoseOpenReply: (value: { url: string; requestId?: string; observed: boolean }) => {
         loseOpenReply = value;
       },
-      /** The pages of the Home's own Chromium now. */
-      chromiumPages: () => chromiumBrowser?.context.pages() ?? [],
       dispose,
     };
   } catch (error) {
@@ -1311,3 +1311,67 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     }
   },
 );
+||||||| parent of 35c3eba03 (Close a tab's page whoever opened it, as a regular browser does, and end its session with its last page at once)
+it("ends the page of a tab the person closes on the Home's own browser runtime, with its session's last page the session, and loads the address again on reopen", async () => {
+  const fixture = await startSessionPersonFixture();
+  try {
+    const { host, profile, site } = fixture;
+    const actor = { kind: "person" as const, ownerId: host.ownerId };
+    const opened = await host.runtime.tabs.open(
+      actor,
+      { kind: "page", url: `${site.origin}/?person-close`, profileId: profile.id },
+      "person-open",
+    );
+    const tabId = opened.tab.tabId;
+    const page = await vi.waitFor(
+      () => {
+        const found = fixture
+          .chromiumPages()
+          .find((candidate) => candidate.url().includes("person-close"));
+        if (!found) throw new Error("The person's tab has no page in Chromium yet.");
+        return found;
+      },
+      { timeout: 15_000 },
+    );
+    expect((await host.runtime.tabs.close(actor, [tabId], "person-close")).closed).toEqual([tabId]);
+    // On a Home's own runtime the close's first attempt is awaited before tabs.close returns
+    // (browser-service's #queuePhysicalPageClose resolves after it): the page is gone by then.
+    await vi.waitFor(() => expect(page.isClosed()).toBe(true), { timeout: 2_000 });
+    // It was the session's last page: as in a regular browser, nothing of it is left running.
+    const { pageBinding } = await host.store.database
+      .selectFrom("personalTabs")
+      .select("pageBinding")
+      .where("id", "=", tabId)
+      .executeTakeFirstOrThrow();
+    const sessionId = (pageBinding as { sessionId: string } | null)?.sessionId;
+    if (!sessionId) throw new Error("The closed tab names no session.");
+    await vi.waitFor(
+      async () =>
+        expect(
+          (
+            await host.store.database
+              .selectFrom("browserSessions")
+              .select("state")
+              .where("id", "=", sessionId as never)
+              .executeTakeFirstOrThrow()
+          ).state,
+        ).toBe("closed"),
+      { timeout: 2_000 },
+    );
+    expect(fixture.chromiumPages().filter((open) => !open.isClosed())).toEqual([]);
+    // Reopened, the tab loads its address again, as the web app's reopen and activate do.
+    await host.runtime.tabs.reopen(actor, tabId, "person-reopen");
+    await host.runtime.tabs.activate(host.ownerId, tabId, "person-reactivate");
+    await vi.waitFor(
+      () =>
+        expect(
+          fixture
+            .chromiumPages()
+            .some((open) => !open.isClosed() && open.url().includes("person-close")),
+        ).toBe(true),
+      { timeout: 15_000 },
+    );
+  } finally {
+    await fixture.dispose();
+  }
+});

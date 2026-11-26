@@ -1658,7 +1658,7 @@ it("lets a connected agent reach the page-handle limit with pages its scripts le
   }
 });
 
-it("lets the person close any tab a connected agent's handle still holds, page and all, and the agent's handle ends", async () => {
+it("ends the page of every tab the person closes while a connected agent's handle holds it: the handle ends in plain words and the agent opens a new page", async () => {
   const site = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "text/html" });
     response.end("<!doctype html><title>Held</title><p>held</p>");
@@ -1700,21 +1700,37 @@ it("lets the person close any tab a connected agent's handle still holds, page a
     );
     expect(result.failed).toEqual([]);
     expect([...result.closed].sort()).toEqual([mineId, own.id].sort());
-    // The agent's page itself closes. (A person's own tab's page does not close on this route
-    // even when no agent holds it: that is not an agent's hold, and is not decided here.)
+    // Each page closes, the agent's and the person's own alike: closing a tab ends its page,
+    // whoever opened it and whatever holds it.
     await vi.waitFor(
-      () => expect(home.service.tabStateOf(session.id, mineId as never)).toBeUndefined(),
+      () => {
+        expect(home.service.tabStateOf(session.id, mineId as never)).toBeUndefined();
+        expect(home.service.tabStateOf(session.id, own.id)).toBeUndefined();
+      },
       { timeout: 10_000 },
     );
-    // The agent's handles end as a closed page: an ordinary error its script can catch.
+    // The agent's handles end as a closed page's do: an ordinary error its script catches, in
+    // plain words, the next use and every one after it; and the agent goes on in a new page.
     const after = await work.use(
-      `const ended = []; for (const page of [mine, theirs]) { try { await page.title(); } catch (error) { ended.push(error.code); } } return { ended, listed: (await pages()).map((page) => page.tabId) };`,
+      `const out = []; for (const page of [mine, theirs]) for (let use = 0; use < 2; use++) { try { await page.title(); out.push("ran"); } catch (error) { out.push(error.code + ": " + error.message); } } const fresh = await newPage(${JSON.stringify(`${origin}/again`)}); out.push("fresh:" + await fresh.title()); out.push("listed:" + JSON.stringify((await pages()).map((page) => page.tabId))); return out;`,
     );
     expect(after.isError, text(after)).not.toBe(true);
-    expect(text(after)).not.toContain(mineId);
-    expect(text(after)).not.toContain(own.id);
-    // Each ends as an ended page attachment, which the script caught like any other error.
-    expect(text(after)).toContain(String.raw`\"ended\":[\"conflict\",\"conflict\"]`);
+    const lines = JSON.parse(
+      (after.content as { type: string; text: string }[]).find(({ type }) => type === "text")!.text,
+    ) as string[];
+    expect(lines, text(after)).toHaveLength(6);
+    for (const first of [lines[0], lines[2]])
+      expect(first).toMatch(
+        /^conflict: (?:page\.\w+\(\): )?The browser page attachment has ended\.$/u,
+      );
+    // A later use reads as a narrowed-away handle's later use does: nothing of it is left.
+    for (const later of [lines[1], lines[3]])
+      expect(later).toMatch(
+        /This page handle has ended\. Bind the tab again with openPage\(tabId\)\./u,
+      );
+    expect(lines[4]).toBe("fresh:Held");
+    expect(lines[5]).not.toContain(mineId);
+    expect(lines[5]).not.toContain(own.id);
   } finally {
     await j.close();
     site.close();

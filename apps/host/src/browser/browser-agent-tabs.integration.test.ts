@@ -6,6 +6,7 @@ import {
   FakePage,
 } from "@opensteer/browser-runtime-core/test-support";
 import { TabStore, type DatabaseSchema } from "@opensteer/database";
+import { TabService } from "../tabs/tab-service.js";
 import {
   createStoreFixture,
   personalBrowserRepository,
@@ -73,7 +74,7 @@ class RuntimeConnection extends EventEmitter implements BrowserRuntimeConnection
 }
 const integration = describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL);
 integration("page tab adapter", () => {
-  it("binds live pages as they are, the runtime saying it woke nothing, and restores an ended session once without changing membership", async () => {
+  it("binds live pages as they are, ends a closed tab's page and loads it again on reopen, and restores an ended session once without changing membership", async () => {
     const fixture = await createStoreFixture(),
       f = await fixture.startRunFixture("page-tabs");
     const root = await mkdtemp(join(tmpdir(), "opensteer-tab-runtime-"));
@@ -242,7 +243,21 @@ integration("page tab adapter", () => {
     const sibling = (await tabs.get(f.userId, siblingWrite.id))!;
     expect(sibling.pageBinding?.sessionId).toBe(first.sessionId);
     const oldRow = row;
-    await tabs.close(f.userId, [row.id], "close-held");
+    // The person closes the tab the Run holds, by the person's route: as in a regular browser, its
+    // page ends, whoever opened it and whatever holds it.
+    const personTabs = new TabService({
+      store: tabs,
+      pages: browser.pageTabs,
+      nativeTargets: { onTargetAcquired: () => () => undefined },
+      authorizeMembership: async () => undefined,
+      onError: (error: unknown) => {
+        throw error;
+      },
+    } as never);
+    expect(
+      (await personTabs.close({ kind: "person", ownerId: f.userId }, [row.id], "close-held"))
+        .closed,
+    ).toEqual([row.id]);
     await expect(
       viewer.handle(
         Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: row.id, frames: false })),
@@ -252,15 +267,28 @@ integration("page tab adapter", () => {
     expect(
       await browser.signInTarget({ ownerId: f.userId, tabId: row.id, sessionId: first.sessionId }),
     ).toBeNull();
-    expect(connections.flatMap((connection) => connection.commands)).not.toContain(
+    expect(connections.flatMap((connection) => connection.commands)).toContain(
       "Opensteer.closeTab",
     );
+    expect(
+      [...browser.pageInventory(first.sessionId)!.records.values()].some(
+        (page) => page.url === "https://example.com/saved",
+      ),
+    ).toBe(false);
+    // Reopening loads the address again: a new page, the same tab.
     await tabs.reopen(f.userId, row.id, "reopen");
+    row = (await tabs.get(f.userId, row.id))!;
+    const reopened = await withTimeout(browser.bindPage(claims, row), 3000, {
+      timeoutError: () => new Error("The reopened tab did not load again"),
+    });
+    expect(reopened).toMatchObject({ tabId: row.id, reloaded: true });
+    // Its old page is gone, so it loads in a session of its own; the sibling stays in the first.
+    expect(reopened.sessionId).not.toBe(first.sessionId);
     row = (await tabs.get(f.userId, row.id))!;
     let nextViewerOpen = true;
     const nextViewer = await browser.attach(
       f.userId,
-      first.sessionId,
+      reopened.sessionId,
       {
         id: "next-viewer",
         isOpen: () => nextViewerOpen,
@@ -280,13 +308,14 @@ integration("page tab adapter", () => {
     expect(nextViewerOpen).toBe(true);
     viewer.close();
     nextViewer.close();
+    await browser.stop(f.userId, reopened.sessionId);
     await browser.stop(f.userId, first.sessionId);
     expect(await tabs.get(f.userId, row.id)).toMatchObject({ id: row.id, generation: 3 });
     const restored = await withTimeout(browser.bindPage(claims, row), 3000, {
       timeoutError: () => new Error("Page restoration did not complete"),
     });
     expect(restored.tabId).toBe(row.id);
-    expect(restored.sessionId).not.toBe(first.sessionId);
+    expect([first.sessionId, reopened.sessionId]).not.toContain(restored.sessionId);
     expect(restored.reloaded).toBe(true);
     expect((await browser.bindPage(claims, (await tabs.get(f.userId, row.id))!)).reloaded).toBe(
       false,
@@ -295,7 +324,8 @@ integration("page tab adapter", () => {
       .context as FakeContext;
     const siblingRestored = await browser.bindPage(claims, sibling);
     expect(siblingRestored.sessionId).not.toBe(restored.sessionId);
-    expect(connections).toHaveLength(3);
+    // The first session, the reopened tab's, and one restore for each tab.
+    expect(connections).toHaveLength(4);
     const context = restoredContext;
     const opener = context.pages()[0] as FakePage;
     opener.navigate("https://example.com/after-sibling", "A after sibling restoration");

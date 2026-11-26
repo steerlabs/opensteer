@@ -3752,8 +3752,23 @@ export class BrowserService {
         signal,
         admission,
       );
-      z.object({ outcome: z.enum(["tab-closed", "session-closed"]) }).parse(result.result);
+      const { outcome } = z
+        .object({ outcome: z.enum(["tab-closed", "session-closed"]) })
+        .parse(result.result);
       relay.confirmedClosed();
+      // It was the session's last page: the guest, under the fence this close was admitted
+      // under, answered that it ended the session (V1's runtime-ended). As in a regular browser
+      // nothing of it is left running: it closes with that answer at once, an ordinary end, and
+      // no reattach looks for it or notes it as lost.
+      if (outcome === "session-closed") {
+        pool.endedByAnswer(sessionId);
+        await this.#transitionBrowserSession({
+          sessionId,
+          state: "closed",
+          evidence: { kind: "runtime-ended" },
+          target: { slotId: identity.slotId, term: identity.term },
+        });
+      }
     } finally {
       if (tracked) await tracked.close();
       else reservation.release();

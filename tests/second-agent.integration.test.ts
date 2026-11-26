@@ -287,6 +287,7 @@ integration("a second agent on the person's computer", () => {
   let profileB: { readonly id: BrowserProfileId; readonly name: string };
   let a: Agent;
   let b: Agent;
+  /** A page of the person's own, open in B's profile. */
   let signInTargetB: string;
   const engines = new Map<
     BrowserProfileId,
@@ -574,17 +575,55 @@ integration("a second agent on the person's computer", () => {
     deviceName = homeOfProfile.name;
     await signIn(profileA.id, alice);
     await signIn(profileB.id, bob);
-    const engine = engines.get(profileB.id)!;
-    signInTargetB = await home.observe(
-      async () => {
-        const { targetInfos } = (await engine.cdp.send("Target.getTargets")) as {
+    const signedInEngine = engines.get(profileB.id)!;
+    /** The pages of profile B's browser now: its session after the sign-in may be a new one. */
+    const targets = async (engine = engines.get(profileB.id)!) =>
+      (
+        (await engine.cdp.send("Target.getTargets")) as {
           targetInfos: { targetId: string; url: string }[];
-        };
-        return targetInfos.find(({ url }) => url === new URL("/account", siteOrigin).href)
-          ?.targetId;
+        }
+      ).targetInfos;
+    // As in a regular browser, the person's closed sign-in tab leaves no page behind: it was the
+    // profile's only tab, so its browser session ended with it.
+    await home.observe(
+      async () => {
+        try {
+          return (await targets(signedInEngine)).some(
+            ({ url }) => url === new URL("/account", siteOrigin).href,
+          )
+            ? undefined
+            : true;
+        } catch (error) {
+          if (error instanceof Error && /closed/iu.test(error.message)) return true;
+          throw error;
+        }
       },
       within(10_000),
-      "The person's closed sign-in page was not retained in Chromium",
+      "The person's closed sign-in page is still open in Chromium",
+    );
+    // A page of the person's own, open in B's profile: what B's connection must never reach.
+    ok(
+      await home.api["commands.dispatch"]({
+        type: "tab.open",
+        idempotencyKey: randomUUID(),
+        target: {
+          kind: "page",
+          profileId: profileB.id,
+          url: new URL("/account?person-page", siteOrigin).href,
+        },
+      }),
+    );
+    signInTargetB = await home.observe(
+      async () => {
+        try {
+          return (await targets()).find(({ url }) => url.endsWith("/account?person-page"))
+            ?.targetId;
+        } catch {
+          return undefined;
+        }
+      },
+      within(10_000),
+      "The person's own page in B's profile did not open in Chromium",
     );
     a = await connectAgent("Agent A", "Research Agent", "approval-required", profileA.id);
     b = await connectAgent("Agent B", "Shopping Agent", "full-access", profileB.id);

@@ -1287,3 +1287,86 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     }
   },
 );
+
+/** A connected agent's session, off the pool, with everything. */
+async function connectedAgent(home: Awaited<ReturnType<typeof browserUseHome>>) {
+  const { database, first } = home;
+  const connections = new AgentConnectionStore(database);
+  const direct = await connections.create({
+    userId: first.userId,
+    label: "Direct",
+    clientName: "Fixture",
+    accessMode: "full-access",
+    resource: "http://localhost/mcp",
+    expiresAt: new Date(Date.now() + 60_000),
+    grant: AgentGrantSchema.parse({ scope: "everything" }),
+  });
+  expect(await connections.activate(direct.id, randomUUID())).toBe(true);
+  const { session } = await beginAgentSession(database, {
+    userId: first.userId,
+    agentConnectionId: direct.id,
+  });
+  return { authority: { agentBindingId: `session:${session.id}`, ownerId: first.userId } };
+}
+
+it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
+  "ends the page of every tab the person closes off the pool while a connected agent's handle holds it: the handle ends in plain words and the agent opens a new page",
+  async () => {
+    const home = await browserUseHome();
+    const { scripts, tabs, browser, origin, first, profile, text } = home;
+    const { authority } = await connectedAgent(home);
+    const { tab: person } = await tabs.open(
+      { kind: "person", ownerId: first.userId },
+      { kind: "page", profileId: profile.id, url: `${origin}/person` },
+      "person-tab",
+    );
+    const runAgent = (code: string) =>
+      scripts.runBrowserScript({ authority, contextKey: "person-close", code });
+    const held = JSON.parse(
+      text(
+        await runAgent(
+          `globalThis.theirs = await openPage(${JSON.stringify(person.tabId)}); globalThis.mine = await newPage(${JSON.stringify(`${origin}/mine`)}, { profileId: ${JSON.stringify(profile.id)} }); return mine.tabId;`,
+        ),
+      ),
+    ) as string;
+    const rows = await Promise.all(
+      [person.tabId, held].map((tabId) => home.tabStore.get(first.userId, tabId as never)),
+    );
+    // The person closes both, by the route the web app's close-all calls.
+    const result = await tabs.close(
+      { kind: "person", ownerId: first.userId },
+      [person.tabId, held as never],
+      "person-close-all",
+    );
+    expect(result.failed).toEqual([]);
+    // Each page closes, the agent's and the person's own alike.
+    for (const row of rows)
+      await vi.waitFor(
+        () =>
+          expect(
+            browser.tabStateOf(row!.pageBinding!.sessionId, row!.pageBinding!.surfaceId),
+          ).toBeUndefined(),
+        { timeout: 10_000 },
+      );
+    const lines = JSON.parse(
+      text(
+        await runAgent(
+          `const out = []; for (const page of [mine, theirs]) for (let use = 0; use < 2; use++) { try { await page.title(); out.push("ran"); } catch (error) { out.push(error.code + ": " + error.message); } } const fresh = await newPage(${JSON.stringify(`${origin}/again`)}, { profileId: ${JSON.stringify(profile.id)} }); out.push("fresh:" + await fresh.title()); return out;`,
+        ),
+      ),
+    ) as string[];
+    expect(lines).toHaveLength(5);
+    // Off the pool a handle is retired as soon as its page's end reaches it, so its first use
+    // reads the ended handle's sentence, or the ended attachment's if it went out first.
+    for (const first of [lines[0], lines[2]])
+      expect(first).toMatch(
+        /^(?:conflict: (?:page\.\w+\(\): )?The browser page attachment has ended\.|page-ended: (?:page\.\w+\(\): )?This page handle has ended\. Bind the tab again with openPage\(tabId\)\.)$/u,
+      );
+    // A later use reads as a narrowed-away handle's later use does: nothing of it is left.
+    for (const later of [lines[1], lines[3]])
+      expect(later).toMatch(
+        /This page handle has ended\. Bind the tab again with openPage\(tabId\)\./u,
+      );
+    expect(lines[4]).toBe("fresh:Home browser fixture");
+  },
+);

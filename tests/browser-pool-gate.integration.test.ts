@@ -39,11 +39,14 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { sql } from "kysely";
 import { expect, it, vi } from "vitest";
 import { createId } from "../packages/core/src/index.js";
 import { KeyedMutationQueue } from "../packages/shared/src/mutationQueue.js";
+import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import { BrowserPoolGate } from "../apps/host/src/browser/browser-pool-gate.js";
 import { PooledBrowserRelay } from "../apps/host/src/browser/browser-pool-relay.js";
 import {
@@ -2166,6 +2169,81 @@ it("holds the gate until an awake physical close has a matching terminal receipt
     expect(j.controller.effects).toEqual(["start"]);
   } finally {
     await j.close();
+  }
+});
+
+it("ends the page of a tab the person closes, by the route the web app's close calls, with its session's last page the session at once, and loads the address again on reopen", async () => {
+  const site = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end("<!doctype html><title>Reopen me</title>");
+  });
+  site.listen(0, "127.0.0.1");
+  await once(site, "listening");
+  const address = `http://127.0.0.1:${(site.address() as AddressInfo).port}/reopen-me`;
+  const j = await journey("person-close-page");
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(
+      j.task.userId,
+      j.command("person-close"),
+    );
+    const page = await j.draft();
+    await page.cdp.send("Page.navigate", { url: address });
+    await vi.waitFor(
+      async () => {
+        await home.service.flushPendingTabDescriptors();
+        expect((await j.tabs.get(j.task.userId, tabId))?.url).toBe(address);
+      },
+      { timeout: 10_000 },
+    );
+    const closed = Promise.withResolvers<void>();
+    page.page.onClose(() => closed.resolve());
+    expect((await j.tabs.get(j.task.userId, tabId))?.openedBy).toBe("person");
+    const tabs = new TabService({
+      store: j.tabs,
+      pages: home.service.pageTabs,
+      nativeTargets: { onTargetAcquired: () => () => undefined },
+      authorizeMembership: async () => undefined,
+      onError: (error: unknown) => {
+        throw error;
+      },
+    } as never);
+    expect(
+      (await tabs.close({ kind: "person", ownerId: j.task.userId }, [tabId], "person-close"))
+        .closed,
+    ).toEqual([tabId]);
+    // A pooled page's close is one bounded attempt (browserOpenWorkMs, 18 s, in browser-service);
+    // the page is gone within it, not only its row.
+    await withTimeout(closed.promise, 18_000, {
+      timeoutError: () => new Error("The closed tab's page is still open in the pooled browser."),
+    });
+    // It was the session's last page: as in a regular browser, nothing of it is left running.
+    // The guest answered the Home's own close that it ended the session; the session ends with
+    // that answer, an ordinary end, not one a reattach finds later and notes as lost.
+    await vi.waitFor(async () => expect((await j.row(sessionId))?.state).toBe("closed"), {
+      timeout: 2_000,
+    });
+    expect(home.coordinator.reattaching(sessionId)).toBe(false);
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toEqual([]);
+    // Reopened, the tab loads its address again, as the web app's reopen and activate do.
+    await j.tabs.reopen(j.task.userId, tabId, "person-reopen");
+    const reopened = await j.tabs.get(j.task.userId, tabId);
+    expect(reopened?.closedAt).toBeNull();
+    expect(
+      await home.service.pageTabs.activate(j.task.userId, reopened!, "person-reactivate"),
+    ).toMatchObject({ kind: "page", surfaceId: tabId });
+    await vi.waitFor(
+      () =>
+        expect(
+          (j.launched()?.context.pages() ?? []).some(
+            (open) => !open.isClosed() && open.url() === address,
+          ),
+        ).toBe(true),
+      { timeout: 18_000 },
+    );
+  } finally {
+    await j.close();
+    site.close();
   }
 });
 
