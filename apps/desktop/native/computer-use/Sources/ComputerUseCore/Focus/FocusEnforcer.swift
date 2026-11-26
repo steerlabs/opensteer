@@ -139,9 +139,12 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
   /// keeps believing it is active. `prepared` hears, before any input, whether
   /// it came forward only while the screen was held, so the person never saw it.
   ///
-  /// The input goes out after that, with nothing redirected or sent back:
-  /// the person's keys and clicks go wherever they naturally go, and nothing
-  /// the person does stops or fails the input once it has started.
+  /// While the person has another app in front (any app, Opensteer included),
+  /// the act keeps that app's round from preparation to after the input: a key
+  /// the person types that would reach the app goes to their app, and an app
+  /// the input brings forward is sent back (`agentGuard`). Nothing the person
+  /// does stops or fails the input once it has started; a person who clicks
+  /// into the app chooses it, and it stays.
   ///
   /// Keys and menu commands go to the app's key window, whichever window
   /// their events name: with `keys`, an app that believes it is active with
@@ -175,14 +178,10 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
     let front = PrivateAPI.focusPID(front: true)
     if switching, front == pid { throw Self.personsWindow }
     func ready() throws { try gate(check, switching: switching) }
-    var unseen = false
-    if preparing, let front, front != pid,
-      let original = NSRunningApplication(processIdentifier: front)
-    {
-      unseen = try await safelyEnforce(
-        window, switching: switching, resigning: keyWindow, target: target, original: original,
-        finalCheck: finalCheck, check: check, gate: ready)
-    } else {
+    let plan = Self.agentGuard(front: front, target: pid, preparing: preparing)
+    guard let person = plan.original,
+      let original = NSRunningApplication(processIdentifier: person)
+    else {
       if preparing {
         try await enforce(
           window, switching: switching, resigning: keyWindow, finalCheck: finalCheck, gate: ready)
@@ -190,18 +189,86 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
         if switching, let target { try await requireKey(target, gate: ready) }
       }
       try ready()
+      prepared(false)
+      return try await deliver {
+        try self.proceed()
+        try deliveryCheck()
+      }
+    }
+    // One round for the whole act: the person's keys meant for the app go to their own app,
+    // and the app is sent back if the input brings it forward. A person who clicks into the
+    // app chooses it (`relinquish`): it then stays, and their keys reach it.
+    let round = try Round(target: pid, original: original)
+    suppression.withLock { $0 = round.suppress }
+    personRound.withLock { $0 = round }
+    defer {
+      personRound.withLock { $0 = nil }
+      suppression.withLock { $0 = nil }
+      round.end()
+    }
+    var unseen = false
+    if plan.holdsScreen {
+      unseen = try await safelyEnforce(
+        window, switching: switching, resigning: keyWindow, target: target, round: round,
+        finalCheck: finalCheck, check: check, gate: ready)
+    } else {
+      try ready()
     }
     prepared(unseen)
-    return try await deliver {
-      try self.proceed()
-      try deliveryCheck()
+    round.begin()
+    let result: Result
+    do {
+      result = try await deliver {
+        try self.proceed()
+        try deliveryCheck()
+      }
+    } catch {
+      if plan.watchesAfterInput { await putBack(round) }
+      throw error
+    }
+    if plan.watchesAfterInput { await putBack(round) }
+    return result
+  }
+
+  /// After an agent's input: the person's app is put back if the input brought the app forward.
+  /// The input is out, so nothing here fails it; an app left in front is still reported as the
+  /// app coming forward on input (`WindowMonitor`).
+  private func putBack(
+    _ round: Round, isolation: isolated (any Actor)? = #isolation
+  ) async {
+    do {
+      _ = try await round.settle(check: {}, enforcement: nil, afterInput: true)
+    } catch {
+      Log.focus.notice(
+        "After the input, app \(self.pid, privacy: .public) was not settled behind the person's app.")
     }
   }
 
+  /// How one agent act guards the person's front app.
+  struct AgentGuard: Equatable {
+    /// The app kept in front, and given the person's keys meant for the target, for the act:
+    /// whichever app the person has in front. None when the target itself is in front.
+    let original: pid_t?
+    /// Screen updates are held while the target is prepared.
+    let holdsScreen: Bool
+    /// After the input, the target coming forward is watched for and the person's app is put back.
+    let watchesAfterInput: Bool
+  }
+
+  /// Every act while the person has another app in front is guarded from preparation to after
+  /// its input: an app already prepared (it believes it is active) is guarded too, and an app
+  /// that comes forward on the input is sent back, whichever app the person had in front.
+  static func agentGuard(front: pid_t?, target: pid_t, preparing: Bool) -> AgentGuard {
+    let original = front == target ? nil : front
+    return AgentGuard(
+      original: original, holdsScreen: preparing && original != nil,
+      watchesAfterInput: original != nil)
+  }
+
   /// Remote person input protects each bounded burst through its delivery and
-  /// watches for an input-caused activation afterwards. Agent delivery above
-  /// deliberately ends that protection before input starts. The shared gate
-  /// keeps either lane's preparation from overlapping the other lane's burst.
+  /// watches for an input-caused activation afterwards, as agent input above
+  /// does. The shared gate keeps either lane's preparation from overlapping the
+  /// other lane's burst.
   func guardedPerson<Result>(
     isolation: isolated (any Actor)? = #isolation,
     window: AXUIElement?, prepare: Bool, keys: Bool,
@@ -320,21 +387,15 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
     return (result, unseen)
   }
 
-  /// Preparing the app while the person's app is in front: the round's taps,
-  /// its notice suppression and the screen hold last until the app is
-  /// prepared and the person's app is back, and end before any input.
+  /// Preparing the app while the person's app is in front, inside the act's
+  /// round: the screen hold lasts until the app is prepared and the person's
+  /// app is back, and ends before any input.
   private func safelyEnforce(
     _ window: AXUIElement?, switching: Bool, resigning: CGWindowID?, target: CGWindowID?,
-    isolation: isolated (any Actor)? = #isolation,
-    original: NSRunningApplication, finalCheck: @escaping @Sendable () throws -> Void,
+    round: Round, isolation: isolated (any Actor)? = #isolation,
+    finalCheck: @escaping @Sendable () throws -> Void,
     check: () throws -> Void, gate: () throws -> Void
   ) async throws -> Bool {
-    let round = try Round(target: pid, original: original)
-    suppression.withLock { $0 = round.suppress }
-    defer {
-      suppression.withLock { $0 = nil }
-      round.end()
-    }
     guard let release = PrivateAPI.holdScreenUpdates() else { throw Self.unguarded }
     defer { release() }
     do {
@@ -610,8 +671,8 @@ final class FocusEnforcer: FocusGuard, @unchecked Sendable {
     .failed, "This app did not settle in the background in time, so nothing was sent.")
 }
 
-/// Preparation protects both lanes. Agent input ends this round before
-/// delivery; person bursts keep it until their after-input watch completes.
+/// One act's protection of the person's front app, in both lanes: from
+/// preparation through the input to its after-input watch.
 private final class Round: @unchecked Sendable {
   private struct Seen {
     var realActivationObserved = false
