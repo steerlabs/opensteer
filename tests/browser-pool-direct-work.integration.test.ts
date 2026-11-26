@@ -353,6 +353,55 @@ it("keeps a connected agent's pooled browser_use page attachment alive across mu
     expect(text(second)).toContain(`${origin}/?r=linked`);
     expect(text(second)).toContain("Step 2");
 
+    // Read the reported large DOM, plus a shorter answer whose JSON escapes put it over budget.
+    const largeRead = await work.use(`
+      const demo = await openPage(${JSON.stringify(createdTab.id)});
+      const form = await newPage(${JSON.stringify(origin + "/?r=form")});
+      print({ two: await Promise.all([demo.title(), form.title()]) });
+      await demo.evaluate(() => {
+        const content = document.createElement("div");
+        content.hidden = true;
+        content.textContent = "x".repeat(600 * 1024);
+        document.body.append(content);
+        const link = document.createElement("a");
+        link.id = "large-popup";
+        link.textContent = "Open test popup";
+        link.href = "/popup";
+        link.target = "_blank";
+        document.body.prepend(link);
+      });
+      print({ htmlCharacters: await demo.evaluate(() => document.documentElement.outerHTML.length) });
+      try {
+        print({ unexpectedLargeLength: (await demo.evaluate(() => document.documentElement.outerHTML)).length });
+      } catch (error) {
+        print({ largeReadError: error.message });
+      }
+      try {
+        await demo.evaluate(() => String.fromCharCode(34).repeat(300 * 1024));
+        print({ unexpectedEscapedSuccess: true });
+      } catch (error) {
+        print({ escapedReadError: error.message });
+      }
+      print({ continued: await demo.title() });
+      await demo.locator("#large-popup").click();
+      await demo.waitForTimeout(2000);
+      print({ afterPopup: await pages() });
+    `);
+    expect(largeRead.structuredContent, text(largeRead)).toMatchObject({
+      status: "completed",
+    });
+    expect(text(largeRead)).toMatch(/answer is 60[0-9] KiB, over the 432 KiB limit/u);
+    expect(text(largeRead)).toMatch(/escapedReadError.*over the 432 KiB limit/u);
+    expect(text(largeRead)).toMatch(/afterPopup.*\/popup/u);
+    const uncaught = await work.use(
+      `const demo = await openPage(${JSON.stringify(createdTab.id)});
+       return await demo.evaluate(() => document.documentElement.outerHTML);`,
+    );
+    expect(uncaught.structuredContent, text(uncaught)).toMatchObject({
+      status: "failed",
+      error: { message: expect.stringMatching(/answer is 60[0-9] KiB, over the 432 KiB limit/u) },
+    });
+
     // 2b. Tab-targeted browser_use({ tabId, code }) also stays attached across its own goto.
     const tabTargeted = await work.useTab(
       `const t = await openPage(${JSON.stringify(createdTab.id)}); await t.goto(${JSON.stringify(`${origin}/?r=tab-nav`)}); return await t.title();`,

@@ -27,6 +27,7 @@ import type { RunnerModuleStream } from "./module-connection.js";
 
 /** How long a pool guest's runtime may take to answer the Home's close of a channel. */
 const pooledCloseReceiptMs = 5_000;
+const maxRelayTextEnvelopeBytes = 1_024 * 1_024;
 
 interface ActiveChannel {
   capability: BrowserCapabilityReference;
@@ -449,7 +450,7 @@ export class BrowserModuleRelay {
           message,
           type: "browser.server-message" as const,
         };
-        if (Buffer.byteLength(JSON.stringify(envelope)) > 1024 * 1024) {
+        if (Buffer.byteLength(JSON.stringify(envelope)) > maxRelayTextEnvelopeBytes) {
           void this.#failChannel(
             channelId,
             channel,

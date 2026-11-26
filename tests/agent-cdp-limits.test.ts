@@ -6,6 +6,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";
+import { computerReplLimits } from "../apps/host/src/computer-use/computer-repl/messages.js";
+import { boundedJsonSize } from "../packages/browser-core/src/bounded-json.js";
 import { agentCdpMessageMaxBytes } from "../packages/browser-core/src/standard-cdp-limits.js";
 import { agentToolPayloadMaxSerializedBytes } from "../packages/protocol/src/common.js";
 
@@ -31,6 +33,7 @@ it("holds an agent's CDP answer to an agent tool payload's own ceiling, 432 KiB"
 it.each([
   // From the browser outwards, then from the Host to a Run's harness.
   ["apps/host/src/browser/managed-pool-home.ts", "maxPooledGuestTextFrameBytes"],
+  ["packages/runner-client/src/browser-relay.ts", "maxRelayTextEnvelopeBytes"],
   ["apps/host/src/browser/browser-service.ts", "maxBrowserTextBytes"],
   ["apps/host/src/browser/trigger-cdp-bridge.ts", "maximumCdpMessageBytes"],
   ["apps/runner/src/browser/browser-cdp-relay.ts", "maximumFrameBytes"],
@@ -38,4 +41,39 @@ it.each([
 ])("carries more than the router ever passes at %s (%s)", (file, name) => {
   // An answer the router passes, with room for the frame around it.
   expect(stated(file, name)).toBeGreaterThanOrEqual(agentCdpMessageMaxBytes + 64 * 1_024);
+});
+
+it("measures an escaped CDP answer on the wire before it can reach a socket's limit", () => {
+  const budget = { maxBytes: agentCdpMessageMaxBytes, maxDepth: 16, maxEntries: 128 };
+  const result = { result: { type: "string", value: "" } };
+  const emptyBytes = Buffer.byteLength(JSON.stringify(result));
+  result.result.value = '"'.repeat(Math.floor((budget.maxBytes - emptyBytes) / 2));
+  const measured = Buffer.byteLength(JSON.stringify(result));
+  expect(measured).toBeGreaterThan(budget.maxBytes - 2);
+  expect(boundedJsonSize(result, budget)).toBe(measured);
+  const message = { type: "cdp.result", requestId: "f".repeat(36), result };
+  const relay = {
+    type: "browser.server-message",
+    runnerId: "rnr_" + "f".repeat(36),
+    auxiliaryStreamId: "rax_" + "f".repeat(36),
+    module: "browser",
+    channelId: "bch_" + "f".repeat(36),
+    capability: {
+      runtimeId: "browser-main",
+      capabilityGeneration: 1,
+      capabilityLeaseId: "bcl_" + "f".repeat(36),
+    },
+    message,
+  };
+  const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+  expect(bytes(message)).toBeLessThan(
+    stated("apps/host/src/browser/managed-pool-home.ts", "maxPooledGuestTextFrameBytes"),
+  );
+  expect(bytes(relay)).toBeLessThan(
+    stated("packages/runner-client/src/browser-relay.ts", "maxRelayTextEnvelopeBytes"),
+  );
+  // The REPL can carry JSON as a string. Allow room even for this second round of escaping.
+  expect(bytes({ result: JSON.stringify(message) })).toBeLessThan(computerReplLimits.bridgeBytes);
+  result.result.value += '"';
+  expect(boundedJsonSize(result, budget)).toBeUndefined();
 });
