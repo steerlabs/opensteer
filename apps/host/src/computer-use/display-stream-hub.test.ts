@@ -964,12 +964,11 @@ describe("phone display Host sockets", () => {
     await viewer.roundTrip();
     await f.state("live", 2);
     await viewer.roundTrip();
-    expect(viewer.json()).toContainEqual({
-      type: "display.input.result",
-      sequence: 0,
-      outcome: "stale",
-      reason: "stale",
-    });
+    // The paste went to the phone and its receipt will not come: unknown, never stale (rule 4).
+    // The viewer ends it as unknown on the new generation.
+    expect(
+      viewer.json().filter((m) => m.type === "display.input.result" && m.sequence === 0),
+    ).toEqual([]);
     viewer.send({
       type: "display.input",
 
@@ -2895,6 +2894,35 @@ describe("phone display Host sockets", () => {
 });
 
 describe("Mac owner input over authenticated display sockets", () => {
+  it("never answers a forwarded paste stale when the window hides before its receipt (rule 4)", async () => {
+    // Review finding 7: the paste reached the Mac; its receipt will not come. The viewer
+    // ends it as unknown on the state change, never as "The field changed. Try again."
+    const f = await fixture(true, { mac: true, macOwnerInput: true, macHelperInput: true });
+    const viewer = await f.macViewer(true);
+    const data = await f.phone();
+    data.socket.send(f.frame(1, true));
+    await viewer.received(() => viewer.media().length === 1);
+    viewer.send({
+      type: "display.input",
+      geometry: 1,
+      sequence: 4,
+      events: [{ kind: "paste", text: "hello", contextId: "00000000-0000-4000-8000-000000000001" }],
+    });
+    await viewer.roundTrip();
+    expect(f.sent.filter((m) => m.type === "host.integrations.mac-owner.input")).toHaveLength(1);
+    await f.state("protected", 1, "target-unavailable");
+    await viewer.roundTrip();
+    expect(
+      viewer.json().filter((m) => m.type === "display.input.result" && m.sequence === 4),
+    ).toEqual([]);
+    expect(
+      viewer
+        .json()
+        .filter((m) => m.type === "display.state")
+        .at(-1),
+    ).toMatchObject({ state: "protected" });
+  });
+
   it("re-resolves the same binding after readiness loss and ignores a legacy Take over", async () => {
     const negotiation = { mac: true, macOwnerInput: true, macHelperInput: true };
     const f = await fixture(true, negotiation);

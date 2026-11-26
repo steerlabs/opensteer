@@ -984,16 +984,12 @@ export class DisplayStreamHub {
     if (current.generation !== next.generation || next.state !== "live") {
       for (const viewer of stream.viewers) viewer.recoverySample = null;
       this.#resetInput(stream);
+      // Every pending batch already went to the producer, and its receipt will not come: what
+      // it did is unknown (rule 4), never stale. The viewer ends it as unknown on this state,
+      // which takes its input away. Only a copy, which changes nothing, hears it was refused.
       for (const pending of stream.pending.values()) {
         if (!stream.viewers.has(pending.viewer)) continue;
-        if (pending.result)
-          this.#json(pending.viewer.socket, {
-            type: "display.input.result",
-            sequence: pending.sequence,
-            outcome: "stale",
-            reason: "stale",
-          });
-        if (pending.copy)
+        if (pending.copy && !pending.cut)
           this.#json(pending.viewer.socket, {
             type: "display.clipboard",
             sequence: pending.sequence,
