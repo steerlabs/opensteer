@@ -103,6 +103,10 @@ describe("computer REPL worker boundary", () => {
       const context = { runId: runId(), generation: 1, reportUnknownEffects: true as const };
       const help = output(await service.execute(context, "help()", undefined, invoke));
       expect(help).toMatch(/await target.*Window:.*Phone:.*installedApps/su);
+      // A scroll's amount is said with its unit and its range.
+      expect(help).toContain(
+        "scroll's amount is how many steps it scrolls (three lines each in a Mac app, one swipe each on a phone), a whole number from 1 to 20.",
+      );
       expect(invoke).not.toHaveBeenCalled();
       const refusal = await service.execute(context, 'await tab("another tab")', undefined, invoke);
       expect(output(refusal)).toContain(
