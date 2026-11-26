@@ -532,6 +532,7 @@ it.each([
       },
     ],
     listCallableTools: async () => [callable],
+    grantedDeviceApprovals: async () => [],
     getDeviceComputerConnectionForCall: async () => ({
       deviceId: "dev_mac",
       runnerName: "Studio Mac",

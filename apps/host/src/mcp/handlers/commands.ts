@@ -56,6 +56,7 @@ import {
 import { callerLineage, type AgentCaller } from "../agent-caller.js";
 import { operationId } from "../operations.js";
 import type { AdministrationToolHandlers } from "./administration.js";
+import { lentDevice, lentNow } from "../lent-now.js";
 import type { ToolCall } from "./types.js";
 
 type Answer = "now" | "ask" | "now or ask";
@@ -390,15 +391,12 @@ export class CommandTools {
           return { area: input.area, view: { machines } };
         // A selected grant sees the devices of what the one rule lends it now, as its tools do:
         // an approval blocked, on a removed device, or made again as a new row is no device of it.
-        const devices = new Set<string>(
-          (await grantedDeviceApprovals(this.#database, caller.userId, grant)).map(
-            ({ deviceId }) => deviceId,
+        const shown = lentDevice(
+          await lentNow(caller, (owner, lineageGrant) =>
+            grantedDeviceApprovals(this.#database, owner, lineageGrant),
           ),
         );
-        return {
-          area: input.area,
-          view: { machines: machines.filter(({ id }) => devices.has(id)) },
-        };
+        return { area: input.area, view: { machines: machines.filter(({ id }) => shown(id)) } };
       }
       case "engines": {
         if (scope === "selected") throw notFound();

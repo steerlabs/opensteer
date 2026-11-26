@@ -26,6 +26,7 @@ import { isRecord } from "@opensteer/shared/isRecord";
 import {
   connectionStandsAsAdmitted,
   grantedDeviceApprovals,
+  type GrantedDeviceApproval,
   resolveResourceAccess,
   type AgentConnectionAuthority,
   type ResourceAccessInput,
@@ -87,6 +88,7 @@ import {
   type ThreadId,
   type UserId,
   type RunnerId,
+  type AgentGrant,
 } from "@opensteer/core";
 import { type Kysely, type Selectable, type Transaction, sql } from "kysely";
 import type {
@@ -144,6 +146,11 @@ export interface IntegrationToolSchemas {
  */
 export type IntegrationRequester = {
   readonly ownerUserId: UserId;
+  /**
+   * What the one rule lends this requester's connection lineage now, read once for the call by
+   * its caller (`grantedDeviceApprovals`, with the grant it read it for). Absent: read here.
+   */
+  readonly lent?: IntegrationRequesterLent;
 } & (
   | { readonly threadId: ThreadId; readonly connectionId?: never; readonly agentBindingId?: never }
   /** The exact execution: a Run, trigger or Watch binding, never another Run on its task. */
@@ -160,6 +167,12 @@ export type IntegrationRequester = {
       readonly agentBindingId?: never;
     }
 );
+
+/** What a connection's lineage is lent of the person's device approvals, with its grant. */
+export interface IntegrationRequesterLent {
+  readonly grant: AgentGrant;
+  readonly approvals: readonly GrantedDeviceApproval[];
+}
 
 /** The requester as the resolver names it; `connectionId` here is the external agent's. */
 function requesterSubject(input: IntegrationRequester): ResourceAccessInput {
@@ -1353,7 +1366,12 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       connections.flatMap(({ connectionKind, id }) => (connectionKind === "computer" ? [id] : [])),
     );
     const lent = requesterConnection
-      ? await lentApprovalGrants(this.database, input.ownerUserId, requesterConnection)
+      ? await lentApprovalGrants(
+          this.database,
+          input.ownerUserId,
+          requesterConnection,
+          input.lent?.approvals,
+        )
       : null;
     const activeGrants = lent
       ? [
@@ -1750,7 +1768,13 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
    * grant, and what the one rule lends it now (`grantedDeviceApprovals`). Null for the person's
    * own work and their own agents, which read nothing more.
    */
-  async requesterShown(input: IntegrationRequester) {
+  /** What the one rule lends a connection's grant of the person's device approvals now. */
+  grantedDeviceApprovals(ownerUserId: UserId, grant: AgentGrant) {
+    return grantedDeviceApprovals(this.database, ownerUserId, grant);
+  }
+
+  async requesterShown(input: IntegrationRequester): Promise<IntegrationRequesterLent | null> {
+    if (input.lent) return input.lent;
     const grant = await this.requesterGrant(input);
     return grant
       ? { grant, approvals: await grantedDeviceApprovals(this.database, input.ownerUserId, grant) }
@@ -1887,7 +1911,12 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     input: IntegrationRequester,
     connection: AgentConnectionAuthority,
   ): Promise<readonly CallableIntegrationTool[]> {
-    const grants = await lentApprovalGrants(this.database, input.ownerUserId, connection);
+    const grants = await lentApprovalGrants(
+      this.database,
+      input.ownerUserId,
+      connection,
+      input.lent?.approvals,
+    );
     return grants.length ? this.resolveCallableTools(input, grants) : [];
   }
 
@@ -2562,8 +2591,10 @@ async function lentApprovalGrants(
   database: Kysely<DatabaseSchema>,
   ownerUserId: UserId,
   connection: AgentConnectionAuthority,
+  /** What the caller already read of the rule for this call. */
+  lent?: readonly GrantedDeviceApproval[],
 ): Promise<IntegrationGrant[]> {
-  return (await grantedDeviceApprovals(database, ownerUserId, connection.grant)).map(
+  return (lent ?? (await grantedDeviceApprovals(database, ownerUserId, connection.grant))).map(
     (approval) => ({
       access: approval.access,
       alias: outsideName(approval.displayName, 80) || "App",

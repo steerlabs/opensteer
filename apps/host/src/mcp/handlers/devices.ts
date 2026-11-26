@@ -41,6 +41,7 @@ import {
   unknownPhone,
 } from "../../devices/computer-use-discovery.js";
 import type { ToolCall } from "./types.js";
+import { lentNow, lentRequester } from "../lent-now.js";
 import { operationId, requireRun } from "../operations.js";
 
 type DeviceToolDevices = Pick<
@@ -185,11 +186,20 @@ export class DeviceToolHandlers {
     const caller = call.caller;
     if (caller.kind === "connection")
       await this.#devices.store.connectionDiscoveryScope(caller.userId, caller.connectionId);
+    // What the one rule lends the caller's connection lineage now, read once for the call.
+    const lent = await lentNow(caller, (owner, grant) =>
+      this.#devices.store.grantedDeviceApprovals(owner, grant),
+    );
     const requester: IntegrationRequester & { readonly direct?: true } =
       caller.kind === "connection"
         ? // A connected agent drives what it holds itself, through computer_use.
-          { ownerUserId: caller.userId, connectionId: caller.connectionId, direct: true }
-        : { ownerUserId: caller.userId, agentBindingId: caller.key };
+          {
+            ownerUserId: caller.userId,
+            connectionId: caller.connectionId,
+            direct: true,
+            ...lentRequester(lent),
+          }
+        : { ownerUserId: caller.userId, agentBindingId: caller.key, ...lentRequester(lent) };
     const run = caller.kind === "run" ? caller.claims : null;
     const { computerId, query, limit } = call.input;
     const offset = call.input.cursor ?? 0;

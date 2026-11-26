@@ -93,6 +93,7 @@ export class IntegrationPlatformStore {
   readonly listCallableTools: IntegrationGrantStore["listCallableTools"];
   readonly requesterGrant: IntegrationGrantStore["requesterGrant"];
   readonly requesterShown: IntegrationGrantStore["requesterShown"];
+  readonly grantedDeviceApprovals: IntegrationGrantStore["grantedDeviceApprovals"];
   readonly settings: PluginSettingsStore;
   readonly plugins: PluginStore;
 
@@ -243,5 +244,6 @@ export class IntegrationPlatformStore {
     this.listCallableTools = this.grants.listCallableTools.bind(this.grants);
     this.requesterGrant = this.grants.requesterGrant.bind(this.grants);
     this.requesterShown = this.grants.requesterShown.bind(this.grants);
+    this.grantedDeviceApprovals = this.grants.grantedDeviceApprovals.bind(this.grants);
   }
 }

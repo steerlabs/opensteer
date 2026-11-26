@@ -1,3 +1,4 @@
+import { lentNow, lentRequester } from "../mcp/lent-now.js";
 import {
   deviceAppBlocked,
   deviceAppUnavailable,
@@ -406,13 +407,22 @@ export class LocalProviders {
       caller.kind === "run" || (caller.kind === "program" && caller.program.kind === "trigger");
     // A connected agent has no task to ask for access from: it is told only what the person does.
     const connected = caller.kind === "connection";
+    // What the one rule lends this caller's connection lineage now, read once for the call.
+    const lent =
+      caller.kind === "owner"
+        ? null
+        : await lentNow(caller, (owner, grant) => store.grantedDeviceApprovals(owner, grant));
     const requester: IntegrationRequester =
       caller.kind === "owner"
         ? { ownerUserId: caller.userId, kind: "person" }
         : caller.kind === "connection" && !bindingId
-          ? { ownerUserId: caller.userId, connectionId: caller.connectionId }
+          ? { ownerUserId: caller.userId, connectionId: caller.connectionId, ...lentRequester(lent) }
           : // The exact execution, so its own lineage and mode decide, never another Run's.
-            { ownerUserId: caller.userId, agentBindingId: bindingId ?? caller.key };
+            {
+              ownerUserId: caller.userId,
+              agentBindingId: bindingId ?? caller.key,
+              ...lentRequester(lent),
+            };
     const facts = this.#options.devices.localDiscoveryFacts(requester.ownerUserId);
     const [inventory, callables] = await Promise.all([
       store
