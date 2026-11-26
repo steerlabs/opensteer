@@ -220,6 +220,11 @@ function scriptOutput(
  * standard CDP endpoint for stock clients (`browser_connect`). Both act only in a browser profile
  * the grant holds, on that profile's home Device, as one reviewed operation of the agent's task.
  */
+/** The command, as an agent sends it, that makes the Home's first browser profile. */
+export const createProfileCommand = JSON.stringify({
+  command: { type: "browser.profile.create", input: { name: "<a name>" } },
+});
+
 export class BrowserToolHandlers {
   readonly #ports: BrowserToolPorts;
   constructor(ports: BrowserToolPorts) {
@@ -234,7 +239,7 @@ export class BrowserToolHandlers {
         "bad_request",
         `Browser scripts can contain at most ${requestOperationCallsMaxLength.toLocaleString("en-US")} characters.`,
       );
-    const target = await this.#target(connection, { tabId, profileId });
+    const target = await this.#target(connection, { tabId, profileId }, "browser_use");
     const pooled = await this.#pooledTarget(connection, target);
     const outcome = await requireDirectWork(this.#ports.sessions).run({
       ownerUserId: connection.userId,
@@ -286,7 +291,7 @@ export class BrowserToolHandlers {
   async browser_connect({ caller, input, operationKey }: ToolCall<"browser_connect">) {
     const connection = requireConnection(caller);
     const { tabId, profileId, taskId, reason } = input;
-    const target = await this.#target(connection, { tabId, profileId });
+    const target = await this.#target(connection, { tabId, profileId }, "browser_connect");
     const pooled = await this.#pooledTarget(connection, target);
     const where = target.operation.device ? ` on ${target.operation.device.name}` : "";
     const outcome = await requireDirectWork(this.#ports.sessions).run({
@@ -491,6 +496,7 @@ export class BrowserToolHandlers {
   async #target(
     caller: ConnectionCaller,
     place: { readonly tabId?: string | undefined; readonly profileId?: string | undefined },
+    tool: "browser_use" | "browser_connect",
   ): Promise<BrowserTarget> {
     const profiles = (await this.#ports.profiles(caller.userId)).filter(
       (profile) =>
@@ -543,6 +549,15 @@ export class BrowserToolHandlers {
     } else if (profiles.length === 1) {
       profile = profiles[0];
     } else if (profiles.length === 0) {
+      // Shared everything, and there is none: the Home has no profile yet, and the agent can make
+      // one through the Home's door (the person is asked as for any change to the Home). A
+      // selected grant that names none is answered as before.
+      if (caller.grant.scope === "everything")
+        throw refused(
+          "conflict",
+          "This Home has no browser profile yet.",
+          `Create one with opensteer_command ${createProfileCommand}, then call ${tool} again.`,
+        );
       throw refused(
         "forbidden",
         "No browser profile is shared with this connected agent.",

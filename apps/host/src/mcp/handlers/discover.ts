@@ -27,6 +27,7 @@ import { z } from "zod";
 import { AgentOperationFailure } from "../../agent-sessions/agent-session-service.js";
 import type { BrowserSourceService } from "../../browser/browser-source-service.js";
 import { localToolPath } from "../../plugins/provider-names.js";
+import { createProfileCommand } from "./browser.js";
 import type { TabService } from "../../tabs/tab-service.js";
 import type { AgentCaller, ConnectionCaller } from "../agent-caller.js";
 import { productToolOutput } from "../tool-output.js";
@@ -543,16 +544,27 @@ export function discoverHandler(
         ...(plugins?.cursor ? { plugins: plugins.cursor } : {}),
         ...(tasks?.cursor ? { tasks: tasks.cursor } : {}),
       };
+      const items = [
+        ...all.slice(start, end),
+        ...(plugins?.items.filter((entry) => matches(entry.name)) ?? []),
+        ...(tasks?.items ?? []),
+      ];
+      // Nothing at all, asked for nothing in particular: say what is true and what can be done.
+      const empty =
+        position === undefined && !query && items.length === 0 && !plugins?.pluginsUnavailable;
+      const everything = (await currentCaller()).grant.scope === "everything";
       return {
-        items: [
-          ...all.slice(start, end),
-          ...(plugins?.items.filter((entry) => matches(entry.name)) ?? []),
-          ...(tasks?.items ?? []),
-        ],
+        items,
         nextCursor: Object.keys(following).length ? next(following) : null,
         ...(plugins?.pluginsUnavailable
           ? { next: "Installed plugins are currently unavailable." }
-          : {}),
+          : empty
+            ? {
+                next: everything
+                  ? `This Home has nothing set up yet. To browse, create a browser profile with opensteer_command ${createProfileCommand}; opensteer_commands lists what else you can set up.`
+                  : "Nothing shared with you is here yet. What else you can use is the person's to decide.",
+              }
+            : {}),
       };
     }
 

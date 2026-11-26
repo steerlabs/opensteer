@@ -316,8 +316,13 @@ describe("discover before registration", () => {
         resources: [{ kind: "chrome-tabs", sourceId: chromeId }],
       },
     };
+    // Nothing to list says so, naming nothing the selected grant does not hold.
     const empty = await fixture(false).read({}, chromeOnly);
-    expect(empty).toEqual({ items: [], nextCursor: null });
+    expect(empty).toEqual({
+      items: [],
+      nextCursor: null,
+      next: "Nothing shared with you is here yet. What else you can use is the person's to decide.",
+    });
   });
 
   it("keeps a paired Chrome source reachable by ID even when it has no visible tabs", async () => {
