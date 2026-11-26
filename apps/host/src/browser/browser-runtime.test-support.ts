@@ -509,13 +509,30 @@ export async function startBrowserRuntime(
           const stream = streams.get(message.channelId);
           const rows = [...(stream?.rows.values() ?? [])];
           let result: Record<string, unknown> | undefined;
-          if (command.method === "Opensteer.openTab") {
+          // As a real runtime answers the fence before a durable close: nothing is published.
+          if (command.method === "Opensteer.fenceTab")
+            send({
+              type: "browser.server-message",
+              capability: message.capability,
+              channelId: message.channelId,
+              message: { type: "cdp.result", requestId: message.message.requestId, result: {} },
+            });
+          else if (command.method === "Opensteer.openTab") {
             const tabId =
               typeof parameters.surfaceId === "string"
                 ? parameters.surfaceId
                 : `surface_${randomUUID()}`;
             rows.push(
               BrowserTabRecordSchema.parse({
+                // A session whose every tab has closed opens one as a first tab.
+                documentId: "document-integration",
+                geometryRevision: options.agentActions ? 1 : 0,
+                loading: false,
+                navigationFailed: false,
+                canGoBack: false,
+                canGoForward: false,
+                sizedByAgent: false,
+                icon: null,
                 ...rows[0],
                 id: tabId,
                 state: "live",

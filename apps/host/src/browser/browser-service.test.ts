@@ -9013,7 +9013,13 @@ it.each([
           command.parameters?.surfaceId === row.id
         );
       });
-    // The page that started for it is closed, in one attempt the refusal waits for.
+    // The page that started for it is fenced and closed, in one attempt the refusal waits for.
+    await vi.waitFor(() => expect(sent(browserHostMethods.fenceTab)).toHaveLength(1));
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: sent(browserHostMethods.fenceTab)[0]!.requestId,
+      result: {},
+    });
     await vi.waitFor(() => expect(sent(browserHostMethods.closeTab)).toHaveLength(1));
     runtime.sendServer({
       type: "cdp.result",

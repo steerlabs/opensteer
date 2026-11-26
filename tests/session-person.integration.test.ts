@@ -341,11 +341,11 @@ async function startSessionPersonFixture() {
       owner,
       pending,
       close,
+      /** The pages open in the Home's own Chromium. */
+      chromiumPages: () => chromiumBrowser?.context.pages() ?? [],
       setLoseOpenReply: (value: { url: string; requestId?: string; observed: boolean }) => {
         loseOpenReply = value;
       },
-      /** The pages of the Home's own Chromium now. */
-      chromiumPages: () => chromiumBrowser?.context.pages() ?? [],
       dispose,
     };
   } catch (error) {
@@ -1311,3 +1311,151 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     }
   },
 );
+
+it("ends the page of a tab the person closes on the Home's own browser runtime, with its session's last page the session, and loads the address again on reopen", async () => {
+  const fixture = await startSessionPersonFixture();
+  try {
+    const { host, profile, site } = fixture;
+    const actor = { kind: "person" as const, ownerId: host.ownerId };
+    const opened = await host.runtime.tabs.open(
+      actor,
+      { kind: "page", url: `${site.origin}/?person-close`, profileId: profile.id },
+      "person-open",
+    );
+    const tabId = opened.tab.tabId;
+    const page = await vi.waitFor(
+      () => {
+        const found = fixture
+          .chromiumPages()
+          .find((candidate) => candidate.url().includes("person-close"));
+        if (!found) throw new Error("The person's tab has no page in Chromium yet.");
+        return found;
+      },
+      { timeout: 15_000 },
+    );
+    // The session the page runs in: the close lets go of it in its own commit.
+    const { pageBinding } = await host.store.database
+      .selectFrom("personalTabs")
+      .select("pageBinding")
+      .where("id", "=", tabId)
+      .executeTakeFirstOrThrow();
+    const sessionId = (pageBinding as { sessionId: string } | null)?.sessionId;
+    if (!sessionId) throw new Error("The open tab names no session.");
+    expect((await host.runtime.tabs.close(actor, [tabId], "person-close")).closed).toEqual([tabId]);
+    // On a Home's own runtime the close's first attempt is awaited before tabs.close returns
+    // (browser-service's #queuePhysicalPageClose resolves after it): the page is gone by then.
+    await vi.waitFor(() => expect(page.isClosed()).toBe(true), { timeout: 2_000 });
+    // The closed tab let go of its page.
+    expect(
+      (
+        await host.store.database
+          .selectFrom("personalTabs")
+          .select("pageBinding")
+          .where("id", "=", tabId)
+          .executeTakeFirstOrThrow()
+      ).pageBinding,
+    ).toBeNull();
+    // It was the session's last page: as in a regular browser, nothing of it is left running.
+    await vi.waitFor(
+      async () =>
+        expect(
+          (
+            await host.store.database
+              .selectFrom("browserSessions")
+              .select("state")
+              .where("id", "=", sessionId as never)
+              .executeTakeFirstOrThrow()
+          ).state,
+        ).toBe("closed"),
+      { timeout: 2_000 },
+    );
+    expect(fixture.chromiumPages().filter((open) => !open.isClosed())).toEqual([]);
+    // Reopened, the tab loads its address again, as the web app's reopen and activate do.
+    await host.runtime.tabs.reopen(actor, tabId, "person-reopen");
+    await host.runtime.tabs.activate(host.ownerId, tabId, "person-reactivate");
+    await vi.waitFor(
+      () =>
+        expect(
+          fixture
+            .chromiumPages()
+            .some((open) => !open.isClosed() && open.url().includes("person-close")),
+        ).toBe(true),
+      { timeout: 15_000 },
+    );
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+it("never reuses a closed tab's page on the Home's own runtime: a reopen while the close is under way loads the address again in a page of its own", async () => {
+  const fixture = await startSessionPersonFixture();
+  const pages = fixture.host.runtime.browser.pageTabs;
+  const closeViewers = pages.closeViewers;
+  try {
+    const { host, profile, site } = fixture;
+    const actor = { kind: "person" as const, ownerId: host.ownerId };
+    const opened = await host.runtime.tabs.open(
+      actor,
+      { kind: "page", url: `${site.origin}/?reopen-gap`, profileId: profile.id },
+      "gap-open",
+    );
+    const tabId = opened.tab.tabId;
+    const first = await vi.waitFor(
+      () => {
+        const found = fixture.chromiumPages().find((open) => open.url().includes("reopen-gap"));
+        if (!found) throw new Error("The person's tab has no page in Chromium yet.");
+        return found;
+      },
+      { timeout: 15_000 },
+    );
+    // The tab keeps the page's address: the reopen loads it again.
+    await vi.waitFor(
+      async () => {
+        await host.runtime.browser.flushPendingTabDescriptors();
+        const { url } = await host.store.database
+          .selectFrom("personalTabs")
+          .select("url")
+          .where("id", "=", tabId)
+          .executeTakeFirstOrThrow();
+        expect(url).toContain("reopen-gap");
+      },
+      { timeout: 10_000 },
+    );
+    // The close has committed; its page step waits while the person reopens the tab.
+    const reached = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    pages.closeViewers = async (...args) => {
+      reached.resolve();
+      await release.promise;
+      return closeViewers.apply(pages, args);
+    };
+    const closing = host.runtime.tabs.close(actor, [tabId], "gap-close");
+    await reached.promise;
+    await host.runtime.tabs.reopen(actor, tabId, "gap-reopen");
+    await host.runtime.tabs.activate(host.ownerId, tabId, "gap-activate");
+    // A page of its own loads the address again; the closed tab's page is not reused.
+    const second = await vi.waitFor(
+      () => {
+        const found = fixture
+          .chromiumPages()
+          .find((open) => open !== first && !open.isClosed() && open.url().includes("reopen-gap"));
+        if (!found) throw new Error("The reopened tab has no page of its own.");
+        return found;
+      },
+      { timeout: 15_000 },
+    );
+    release.resolve();
+    expect((await closing).closed).toEqual([tabId]);
+    await vi.waitFor(() => expect(first.isClosed()).toBe(true), { timeout: 5_000 });
+    expect(second.isClosed()).toBe(false);
+    const row = await host.store.database
+      .selectFrom("personalTabs")
+      .select(["closedAt"])
+      .where("id", "=", tabId)
+      .executeTakeFirstOrThrow();
+    expect(row.closedAt).toBeNull();
+  } finally {
+    pages.closeViewers = closeViewers;
+    await fixture.dispose();
+  }
+});

@@ -668,7 +668,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
 );
 
 it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
-  "closes the direct-work page and preserves the Run page when their tabs share a connection lineage",
+  "closes the page of every tab the person closes, the direct-work page and the Run page alike, when their tabs share a connection lineage",
   async ({ signal }) => {
     const { first, database, store, tabs, browser, clients, homeUrl, origin, engines } =
       await startRelayFixture(true, signal);
@@ -843,13 +843,13 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         await root.detach();
       }
 
-      const ended = directPage.waitForEvent("close", { timeout: 0 });
+      // Closing a tab ends its page, whoever opened it: the Run's page ends with its tab too.
+      const ended = [directPage, runPage].map((page) => page.waitForEvent("close", { timeout: 0 }));
       const outcome = await service.close(owner, [direct.id, run.id], "close-same-lineage");
       expect(outcome.failed).toEqual([]);
       expect(outcome.closed).toHaveLength(2);
       expect(outcome.closed).toEqual(expect.arrayContaining([direct.id, run.id]));
-      await ended;
-      expect(await runPage.evaluate(() => location.pathname)).toBe("/run");
+      await Promise.all(ended);
     } finally {
       service.dispose();
     }

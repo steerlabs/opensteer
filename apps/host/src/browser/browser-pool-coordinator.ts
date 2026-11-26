@@ -301,6 +301,8 @@ export class BrowserPoolCoordinator {
     BrowserSessionId,
     { readonly since: number; readonly documents?: ReadonlyMap<string, string> }
   >();
+  /** Sessions the guest ended in answer to the Home's own close: none of them is ever lost. */
+  readonly #endedByAnswer = new Set<BrowserSessionId>();
   #recovered = false;
   readonly #recovering = Promise.withResolvers<void>();
   readonly #releasedForGood = Promise.withResolvers<void>();
@@ -861,9 +863,26 @@ export class BrowserPoolCoordinator {
     return sessionId === undefined ? this.#lost.size > 0 : this.#lost.has(sessionId);
   }
 
+  /**
+   * The guest answered the Home's own close of a session's last page that it ended the session
+   * (V1's runtime-ended): the session closes with that answer. Its channel's end is not a loss,
+   * and no reattach looks for it, whichever of the two the Home hears first.
+   */
+  endedByAnswer(sessionId: BrowserSessionId): void {
+    this.#endedByAnswer.add(sessionId);
+    if (this.#endedByAnswer.size > 1_024)
+      this.#endedByAnswer.delete(this.#endedByAnswer.values().next().value!);
+    if (this.#lost.delete(sessionId)) this.#publish(this.#slot);
+  }
+
+  /** The session's ordinary close could not be written: loss recovery may see it again. */
+  forgetEndedByAnswer(sessionId: BrowserSessionId): void {
+    if (this.#endedByAnswer.delete(sessionId)) this.#kick();
+  }
+
   /** A pooled session's Runner channel was lost: the loop reattaches it inside its window. */
   channelLost(sessionId: BrowserSessionId, documents?: ReadonlyMap<string, string>): void {
-    if (this.#closed) return;
+    if (this.#closed || this.#endedByAnswer.has(sessionId)) return;
     // A close during reattach replaces the entry so that attempt cannot delete it. The
     // session's window still runs from its first loss, until an attempt brings it back.
     const previous = this.#lost.get(sessionId);
@@ -1364,7 +1383,9 @@ export class BrowserPoolCoordinator {
   /** Ready sessions of this runtime with no channel here; each one's window starts when seen. */
   async #withoutChannel(): Promise<BrowserSessionId[]> {
     const scanned = new Map(this.#lost);
-    const found = [...((await this.#adopter?.withoutChannel(this.#own)) ?? [])];
+    const found = ((await this.#adopter?.withoutChannel(this.#own)) ?? []).filter(
+      (sessionId) => !this.#endedByAnswer.has(sessionId),
+    );
     const now = Date.now();
     for (const sessionId of found)
       if (!this.#lost.has(sessionId)) this.#lost.set(sessionId, { since: now });

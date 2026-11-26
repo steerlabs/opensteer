@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32, deflateSync } from "node:zlib";
+import { sql } from "kysely";
 import { expect } from "vitest";
 import { ownChild } from "../apps/host/src/agents/owned-child.test-support.js";
 import { type VerticalStack } from "../apps/host/src/agents/vertical-stack.test-support.js";
@@ -103,8 +104,24 @@ export async function agentJourney(
       ),
     )
     .execute();
-  const sessionFor = (tabId: string) =>
-    tabs.find((tab) => tab.id === tabId)!.pageBinding!.lineageId;
+  // The lineage each tab's page ran in. An open row names it; a row the agent closed let go of
+  // its page in the close's commit, so its lineage is read from where it is still true: the
+  // session its open chose (the durable record of that open), and that session's lineage.
+  const opens = await stack.host.store.database
+    .selectFrom("browserTabOpens")
+    .innerJoin("browserSessions", (join) =>
+      join.on(sql<string>`browser_sessions.id`, "=", sql<string>`binding->>'chosenSessionId'`),
+    )
+    .select([sql<string>`binding->'outcome'->>'tabId'`.as("tabId"), "browserSessions.tabGroupId"])
+    .execute();
+  const sessionFor = (tabId: string) => {
+    const row = tabs.find((tab) => tab.id === tabId);
+    if (!row) throw new Error(`No tab row for ${tabId}.`);
+    if (row.pageBinding) return row.pageBinding.lineageId;
+    const opened = opens.find((open) => open.tabId === tabId);
+    if (!opened) throw new Error(`The closed tab ${tabId} has no recorded open.`);
+    return opened.tabGroupId;
+  };
   expect(sessionFor(tabA)).not.toBe(sessionFor(tabB));
   expect(sessionFor(report.profileSibling)).toBe(sessionFor(tabB));
   expect(sessionFor(report.guestReuse.second)).toBe(sessionFor(tabA));

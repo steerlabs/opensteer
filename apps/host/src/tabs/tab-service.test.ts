@@ -123,7 +123,7 @@ function fixture(rows: TabRecord[]) {
   };
 }
 describe("tab projection and viewer admission", () => {
-  it("requests a physical close only for direct work and keeps a Run's page in the same lineage", async () => {
+  it("requests the physical close of every closed tab's page, a Run's in the same lineage too", async () => {
     const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
     const page = (id: typeof taskId): TabRecord => ({
       ...row(),
@@ -138,25 +138,11 @@ describe("tab projection and viewer admission", () => {
     const direct = page(taskId),
       run = page(hiddenTask);
     const f = fixture([direct, run]);
-    const originConnectionId = randomUUID();
     const closes = vi.spyOn(f.options.pages, "closeViewers");
-    const selectFrom = vi.fn(() => {
-      const where = vi.fn((_column: string, _op: string, value: string) => {
-        return {
-          where: () => ({
-            executeTakeFirst: async () => ({
-              originConnectionId,
-              worker: value === taskId ? "external" : "native",
-            }),
-          }),
-        };
-      });
-      return { select: () => ({ where }) };
-    });
     f.options.store.close = async (_owner, ids, _key, authorize, include) => {
       const rows = [direct, run];
       const layout: TabLayout = { revision: 2, items: [] };
-      await authorize?.({ selectFrom } as unknown as Parameters<TabAuthorization>[0], rows, layout);
+      await authorize?.({} as unknown as Parameters<TabAuthorization>[0], rows, layout);
       const closed = rows.filter((row) => ids.includes(row.id) && (!include || include(row)));
       for (const row of closed) row.closedAt = new Date();
       return { tabIds: closed.map(({ id }) => id), layout };
@@ -168,7 +154,7 @@ describe("tab projection and viewer admission", () => {
       });
       expect(closes.mock.calls).toEqual([
         [ownerId, direct, true],
-        [ownerId, run, false],
+        [ownerId, run, true],
       ]);
     } finally {
       f.service.dispose();

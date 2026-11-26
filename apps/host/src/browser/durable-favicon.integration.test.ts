@@ -267,7 +267,7 @@ integration("Durable tab icons", () => {
     };
     await new TabStore(host.store.database).open(initialWrite, "history-member");
     await host.runtime.browser.pageTabs.admitted!(initialWrite);
-    const sessionId = opened.sessionId;
+    let sessionId = opened.sessionId;
     const initialNavigation = runtime.lastClaims()?.initialNavigation;
     expect(initialNavigation).toMatchObject({ url: "https://amazon.com/" });
     expect(runtime.receivedCommands().some((command) => command.type === "cdp.command")).toBe(
@@ -538,11 +538,15 @@ integration("Durable tab icons", () => {
     await sendSurfaces([surface(opened.tabId, "https://latest.example/", "latest")]);
     const saved = new TabStore(host.store.database);
     await saved.reopen(host.ownerId, opened.tabId, "history-reopen");
-    await host.runtime.browser.pageTabs.activate(
+    // The closed tab let go of its page: reopened, it loads in a page of its own, in a new session.
+    const reopened = await host.runtime.browser.pageTabs.activate(
       host.ownerId,
       (await saved.get(host.ownerId, opened.tabId))!,
       "history-view",
     );
+    if (reopened.kind !== "page") throw new Error("The reopened tab has no page.");
+    expect(reopened.sessionId).not.toBe(sessionId);
+    sessionId = reopened.sessionId;
     viewer.close();
     await closed(viewer);
     viewer = new WebSocket(

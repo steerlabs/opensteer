@@ -53,7 +53,10 @@ it("counts every write of a session row, raw SQL included, file by file", () => 
 it("counts every call of the writers that may close a session, file by file", () => {
   // The general transition: its type excludes `closed`.
   expect(counts(/\btransitionBrowserSession\(/gu)).toEqual({
-    "apps/host/src/browser/browser-service.ts": 15,
+    // 16: #sessionEndedByAnswer closes a pooled session whose last page the Home's own close
+    // ended, through the pool's writer, with runtime-ended evidence about the target that close
+    // was admitted under (V1); the direct close and the close at a wake both use it.
+    "apps/host/src/browser/browser-service.ts": 16,
     // A Stop's `closing` in stopBrowserPoolSession.
     "packages/database/src/browser-pool-store.ts": 1,
     "packages/database/src/browser-session-store.ts": 1,

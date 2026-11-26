@@ -1160,21 +1160,10 @@ export class TabService implements TabServicePort {
             if (expectedGeneration !== undefined && row.generation !== expectedGeneration)
               conflict();
             await this.options.authorizeMembership(actor, tx);
-            const task =
-              row.pageBinding && row.openedBy && row.openedBy !== "person"
-                ? await tx
-                    .selectFrom("threads")
-                    .select(["originConnectionId", "worker"])
-                    .where("id", "=", row.openedBy.taskId)
-                    .where("createdBy", "=", ownerId)
-                    .executeTakeFirst()
-                : undefined;
             permitted.add(tabId);
-            if (!row.closedAt)
-              cleanup.push({
-                row,
-                closePage: Boolean(task?.originConnectionId && task.worker === "external"),
-              });
+            // A closed tab ends its page, whoever opened it and whatever holds it: the person
+            // is told it closed, so nothing of it may go on running in the browser.
+            if (!row.closedAt) cleanup.push({ row, closePage: true });
           } catch (error) {
             if (expectedGeneration !== undefined) throw error;
             failed.push({
@@ -1240,20 +1229,9 @@ export class TabService implements TabServicePort {
         for (const tabId of item.group.tabIds) {
           const row = rows.find((row) => row.id === tabId);
           if (!row || row.ownerId !== owner(actor) || denied.has(row.id)) continue;
-          const task =
-            row.pageBinding && row.openedBy && row.openedBy !== "person"
-              ? await tx
-                  .selectFrom("threads")
-                  .select(["originConnectionId", "worker"])
-                  .where("id", "=", row.openedBy.taskId)
-                  .where("createdBy", "=", owner(actor))
-                  .executeTakeFirst()
-              : undefined;
           permitted.add(tabId);
-          cleanup.push({
-            row,
-            closePage: Boolean(task?.originConnectionId && task.worker === "external"),
-          });
+          // As a close of each: the member's page ends with it.
+          cleanup.push({ row, closePage: true });
         }
       }, readmit),
       (row) => permitted.has(row.id),

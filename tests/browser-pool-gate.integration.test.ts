@@ -39,11 +39,14 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { sql } from "kysely";
 import { expect, it, vi } from "vitest";
 import { createId } from "../packages/core/src/index.js";
 import { KeyedMutationQueue } from "../packages/shared/src/mutationQueue.js";
+import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import { BrowserPoolGate } from "../apps/host/src/browser/browser-pool-gate.js";
 import { PooledBrowserRelay } from "../apps/host/src/browser/browser-pool-relay.js";
 import {
@@ -82,6 +85,8 @@ import {
 } from "./browser-pool-journey.test-support.js";
 import { BrowserPoolUnanswered } from "../apps/host/src/browser/browser-pool-controller.js";
 import { BrowserPoolAgentSlotDeleted } from "../packages/browser-runtime-core/src/browser-pool-agent-wire.js";
+import { SurfaceLedger } from "../packages/browser-runtime-core/src/browser/surface-ledger.js";
+import { BrowserRuntimeError } from "../packages/browser-runtime-core/src/errors.js";
 import type { BrowserSessionId } from "../packages/core/src/index.js";
 import { removeDevice } from "../apps/host/src/administration/device-removal.js";
 import {
@@ -2166,6 +2171,81 @@ it("holds the gate until an awake physical close has a matching terminal receipt
     expect(j.controller.effects).toEqual(["start"]);
   } finally {
     await j.close();
+  }
+});
+
+it("ends the page of a tab the person closes, by the route the web app's close calls, with its session's last page the session at once, and loads the address again on reopen", async () => {
+  const site = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end("<!doctype html><title>Reopen me</title>");
+  });
+  site.listen(0, "127.0.0.1");
+  await once(site, "listening");
+  const address = `http://127.0.0.1:${(site.address() as AddressInfo).port}/reopen-me`;
+  const j = await journey("person-close-page");
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(
+      j.task.userId,
+      j.command("person-close"),
+    );
+    const page = await j.draft();
+    await page.cdp.send("Page.navigate", { url: address });
+    await vi.waitFor(
+      async () => {
+        await home.service.flushPendingTabDescriptors();
+        expect((await j.tabs.get(j.task.userId, tabId))?.url).toBe(address);
+      },
+      { timeout: 10_000 },
+    );
+    const closed = Promise.withResolvers<void>();
+    page.page.onClose(() => closed.resolve());
+    expect((await j.tabs.get(j.task.userId, tabId))?.openedBy).toBe("person");
+    const tabs = new TabService({
+      store: j.tabs,
+      pages: home.service.pageTabs,
+      nativeTargets: { onTargetAcquired: () => () => undefined },
+      authorizeMembership: async () => undefined,
+      onError: (error: unknown) => {
+        throw error;
+      },
+    } as never);
+    expect(
+      (await tabs.close({ kind: "person", ownerId: j.task.userId }, [tabId], "person-close"))
+        .closed,
+    ).toEqual([tabId]);
+    // A pooled page's close is one bounded attempt (browserOpenWorkMs, 18 s, in browser-service);
+    // the page is gone within it, not only its row.
+    await withTimeout(closed.promise, 18_000, {
+      timeoutError: () => new Error("The closed tab's page is still open in the pooled browser."),
+    });
+    // It was the session's last page: as in a regular browser, nothing of it is left running.
+    // The guest answered the Home's own close that it ended the session; the session ends with
+    // that answer, an ordinary end, not one a reattach finds later and notes as lost.
+    await vi.waitFor(async () => expect((await j.row(sessionId))?.state).toBe("closed"), {
+      timeout: 2_000,
+    });
+    expect(home.coordinator.reattaching(sessionId)).toBe(false);
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toEqual([]);
+    // Reopened, the tab loads its address again, as the web app's reopen and activate do.
+    await j.tabs.reopen(j.task.userId, tabId, "person-reopen");
+    const reopened = await j.tabs.get(j.task.userId, tabId);
+    expect(reopened?.closedAt).toBeNull();
+    expect(
+      await home.service.pageTabs.activate(j.task.userId, reopened!, "person-reactivate"),
+    ).toMatchObject({ kind: "page", surfaceId: tabId });
+    await vi.waitFor(
+      () =>
+        expect(
+          (j.launched()?.context.pages() ?? []).some(
+            (open) => !open.isClosed() && open.url() === address,
+          ),
+        ).toBe(true),
+      { timeout: 18_000 },
+    );
+  } finally {
+    await j.close();
+    site.close();
   }
 });
 
@@ -5222,5 +5302,414 @@ it("V8 & V9 (Sol Round 6): tab_open hides ungranted profiles with identical read
   } finally {
     tabs?.dispose();
     await j.close();
+  }
+});
+
+/** A person's page tab on the pool, at an address of its own, and the web app's close route. */
+async function personPage(name: string, options: { profile?: boolean } = {}) {
+  const site = createServer((request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(`<!doctype html><title>${request.url}</title>`);
+  });
+  site.listen(0, "127.0.0.1");
+  await once(site, "listening");
+  const origin = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
+  const address = `${origin}/person-page`;
+  const j = await journey(name, options.profile ? { profile: true } : {});
+  const home = await j.startHome();
+  const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command(name));
+  const page = await j.draft();
+  await page.cdp.send("Page.navigate", { url: address });
+  await vi.waitFor(
+    async () => {
+      await home.service.flushPendingTabDescriptors();
+      expect((await j.tabs.get(j.task.userId, tabId))?.url).toBe(address);
+    },
+    { timeout: 10_000 },
+  );
+  const tabs = new TabService({
+    store: j.tabs,
+    pages: home.service.pageTabs,
+    nativeTargets: { onTargetAcquired: () => () => undefined },
+    authorizeMembership: async () => undefined,
+    onError: (error: unknown) => {
+      throw error;
+    },
+  } as never);
+  const person = { kind: "person", ownerId: j.task.userId } as const;
+  /** Resolves once the page has closed. */
+  const ended = (open: { onClose(listener: () => void): void }) => {
+    const closed = Promise.withResolvers<void>();
+    open.onClose(() => closed.resolve());
+    return closed.promise;
+  };
+  const within = (closed: Promise<void>, what: string) =>
+    withTimeout(closed, 18_000, { timeoutError: () => new Error(`${what} is still open.`) });
+  /** Holds the next pooled attempt before its frames (its relay), until released. */
+  const holdNextRelay = (during?: () => Promise<void>) => {
+    const reached = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const open = PooledBrowserRelay.open.bind(PooledBrowserRelay);
+    let armed = true;
+    const spy = vi.spyOn(PooledBrowserRelay, "open").mockImplementation(async (...args) => {
+      if (armed) {
+        armed = false;
+        reached.resolve();
+        await during?.();
+        await release.promise;
+      }
+      return open(...args);
+    });
+    return {
+      reached: reached.promise,
+      release: () => release.resolve(),
+      restore: () => spy.mockRestore(),
+    };
+  };
+  const dispose = async () => {
+    await j.close();
+    site.close();
+  };
+  return {
+    site,
+    origin,
+    address,
+    j,
+    home,
+    sessionId,
+    tabId,
+    page,
+    tabs,
+    person,
+    ended,
+    within,
+    holdNextRelay,
+    dispose,
+  };
+}
+
+it("ends a closed tab's pooled page whatever it shows: a navigation while the close is under way does not keep it", async () => {
+  const t = await personPage("person-close-navigates");
+  try {
+    const closed = t.ended(t.page.page);
+    // The close's attempt waits before its frames while the tab moves to another document.
+    const before = t.home.service.pageInventory(t.sessionId)?.records.get(t.tabId)?.documentId;
+    const held = t.holdNextRelay(async () => {
+      await t.page.cdp.send("Page.navigate", { url: `${t.origin}/moved` });
+      await vi.waitFor(
+        () =>
+          expect(
+            t.home.service.pageInventory(t.sessionId)?.records.get(t.tabId)?.documentId,
+          ).not.toBe(before),
+        { timeout: 10_000 },
+      );
+    });
+    try {
+      expect((await t.tabs.close(t.person, [t.tabId], "close-navigates")).closed).toEqual([
+        t.tabId,
+      ]);
+      held.release();
+      await t.within(closed, "The closed tab's page");
+    } finally {
+      held.release();
+      held.restore();
+    }
+  } finally {
+    await t.dispose();
+  }
+});
+
+it("never reuses a closed tab's pooled page: close, reopen and close again end both pages", async () => {
+  const t = await personPage("person-close-reopen-close");
+  try {
+    const firstEnded = t.ended(t.page.page);
+    // The first page's close waits before its frames: the tab is reopened meanwhile.
+    const held = t.holdNextRelay();
+    try {
+      await t.tabs.close(t.person, [t.tabId], "first-close");
+      await held.reached;
+      await t.j.tabs.reopen(t.j.task.userId, t.tabId, "reopen");
+      const reopened = await t.j.tabs.get(t.j.task.userId, t.tabId);
+      const viewer = await t.home.service.pageTabs.activate(
+        t.j.task.userId,
+        reopened!,
+        "reactivate",
+      );
+      // A page of its own, in a session of its own, loading the address again.
+      expect(viewer).toMatchObject({ kind: "page", surfaceId: t.tabId });
+      expect(viewer.kind === "page" && viewer.sessionId).not.toBe(t.sessionId);
+      const second = await vi.waitFor(
+        () => {
+          const found = (t.j.launched()?.context.pages() ?? []).find(
+            (open) => open !== t.page.page && !open.isClosed() && open.url() === t.address,
+          );
+          if (!found) throw new Error("The reopened tab has no page of its own yet.");
+          return found;
+        },
+        { timeout: 18_000 },
+      );
+      const secondEnded = t.ended(second);
+      expect(t.page.page.isClosed()).toBe(false);
+      await t.tabs.close(t.person, [t.tabId], "second-close");
+      held.release();
+      await t.within(firstEnded, "The first page");
+      await t.within(secondEnded, "The reopened tab's page");
+    } finally {
+      held.release();
+      held.restore();
+    }
+  } finally {
+    await t.dispose();
+  }
+});
+
+it("holds a Run's harness off a page that is ending in its session, and the page is gone to it after", async () => {
+  const t = await personPage("person-close-harness");
+  try {
+    const run = {
+      agentBindingId: `run:${t.j.task.runId}`,
+      ownerId: t.j.task.userId,
+      environmentId: t.j.task.environmentId,
+      threadId: t.j.task.threadId,
+    };
+    // A Run's own page beside the person's, in the person's session, with the Run's harness on it.
+    const relay = await t.home.service.attachCdpForAgent(
+      { ...run, sessionId: t.sessionId },
+      () => {},
+    );
+    try {
+      const closed = t.ended(t.page.page);
+      const held = t.holdNextRelay();
+      try {
+        await t.tabs.close(t.person, [t.tabId], "close-under-harness");
+        await held.reached;
+        // Nothing of the harness reaches the session while the closed tab's page is not fenced.
+        let settled = false;
+        const asked = relay.request({ method: "Target.getTargets" }).finally(() => {
+          settled = true;
+        });
+        await expect(
+          vi.waitFor(
+            () => {
+              if (!settled) throw new Error("Not settled.");
+            },
+            { timeout: 500 },
+          ),
+        ).rejects.toThrow("Not settled.");
+        held.release();
+        await t.within(closed, "The closed tab's page");
+        const targets = (await asked.catch(() => ({ targetInfos: [] }))) as {
+          targetInfos: { targetId: string }[];
+        };
+        expect(targets.targetInfos.map(({ targetId }) => targetId)).not.toContain(t.page.targetId);
+      } finally {
+        held.release();
+        held.restore();
+      }
+    } finally {
+      relay.close();
+    }
+  } finally {
+    await t.dispose();
+  }
+});
+
+it("writes a pooled session's ordinary close again when its first write fails, so it can park and is not left ready", async () => {
+  const t = await personPage("person-close-write-fails");
+  try {
+    // The first write that closes a session fails, once.
+    await sql`create sequence person_close_write_failure`.execute(t.j.database);
+    await sql`
+      create function person_close_write_failure() returns trigger language plpgsql as $$
+      begin
+        if new.state = 'closed' and old.state <> 'closed'
+          and nextval('person_close_write_failure') = 1 then
+          raise exception 'Injected failure of the ordinary close write';
+        end if;
+        return new;
+      end $$`.execute(t.j.database);
+    await sql`
+      create trigger person_close_write_failure before update on browser_sessions
+      for each row execute function person_close_write_failure()`.execute(t.j.database);
+    const closed = t.ended(t.page.page);
+    await t.tabs.close(t.person, [t.tabId], "close-write-fails");
+    await t.within(closed, "The closed tab's page");
+    await vi.waitFor(async () => expect((await t.j.row(t.sessionId))?.state).toBe("closed"), {
+      timeout: 10_000,
+    });
+    expect(t.home.coordinator.reattaching(t.sessionId)).toBe(false);
+    expect(await listBrowserPoolDocumentLosses(t.j.database, t.j.task.userId, t.tabId)).toEqual([]);
+    await vi.waitFor(() => expect(t.home.coordinator.gate.held).toBe(0));
+    expect(await t.home.coordinator.tryPark()).toBe("parked");
+  } finally {
+    await t.dispose();
+  }
+});
+
+it("closes, at the wake, a parked session whose last tab the person closed: an ordinary close, no loss", async () => {
+  const t = await personPage("person-close-parked");
+  try {
+    await vi.waitFor(() => expect(t.home.coordinator.gate.held).toBe(0));
+    expect(await t.home.coordinator.tryPark()).toBe("parked");
+    // Closed while parked: its page closes at the next wake.
+    expect((await t.tabs.close(t.person, [t.tabId], "close-parked")).closed).toEqual([t.tabId]);
+    await t.home.service.openTab(t.j.task.userId, t.j.command("wake"));
+    await vi.waitFor(async () => expect((await t.j.row(t.sessionId))?.state).toBe("closed"), {
+      timeout: 18_000,
+    });
+    expect(await listBrowserPoolDocumentLosses(t.j.database, t.j.task.userId, t.tabId)).toEqual([]);
+  } finally {
+    await t.dispose();
+  }
+});
+
+it("ends, after a Home restart, the page of a tab closed just before it: the one-tab session closes as an ordinary close", async () => {
+  const t = await personPage("person-close-restart");
+  try {
+    const closed = t.ended(t.page.page);
+    // The close commits; the Home goes before its page step runs.
+    const pages = t.home.service.pageTabs;
+    pages.closeViewers = async () => {};
+    expect((await t.tabs.close(t.person, [t.tabId], "close-before-restart")).closed).toEqual([
+      t.tabId,
+    ]);
+    expect(t.page.page.isClosed()).toBe(false);
+    const home = await t.j.restartHome(t.home);
+    try {
+      // The reattach learns the session's pages: the page no open row binds ends.
+      await t.within(closed, "The closed tab's page");
+      await vi.waitFor(async () => expect((await t.j.row(t.sessionId))?.state).toBe("closed"), {
+        timeout: 18_000,
+      });
+      expect(home.coordinator.reattaching(t.sessionId)).toBe(false);
+      expect(await listBrowserPoolDocumentLosses(t.j.database, t.j.task.userId, t.tabId)).toEqual(
+        [],
+      );
+    } finally {
+      await home.service.close();
+      home.coordinator.close();
+    }
+  } finally {
+    await t.dispose();
+  }
+});
+
+it("loads a tab closed and reopened while parked in a new page at the wake, and ends the old one", async () => {
+  const t = await personPage("person-close-parked-reopen");
+  try {
+    await vi.waitFor(() => expect(t.home.coordinator.gate.held).toBe(0));
+    expect(await t.home.coordinator.tryPark()).toBe("parked");
+    const oldEnded = t.ended(t.page.page);
+    expect((await t.tabs.close(t.person, [t.tabId], "close-parked")).closed).toEqual([t.tabId]);
+    await t.j.tabs.reopen(t.j.task.userId, t.tabId, "reopen-parked");
+    const reopened = await t.j.tabs.get(t.j.task.userId, t.tabId);
+    // The close let go of the page: the reopened tab has none to find.
+    expect(reopened?.pageBinding).toBeNull();
+    const viewer = await t.home.service.pageTabs.activate(t.j.task.userId, reopened!, "wake");
+    expect(viewer.kind === "page" && viewer.sessionId).not.toBe(t.sessionId);
+    const fresh = await vi.waitFor(
+      () => {
+        const found = (t.j.launched()?.context.pages() ?? []).find(
+          (open) => open !== t.page.page && !open.isClosed() && open.url() === t.address,
+        );
+        if (!found) throw new Error("The reopened tab has no page of its own yet.");
+        return found;
+      },
+      { timeout: 18_000 },
+    );
+    expect(fresh.isClosed()).toBe(false);
+    await t.within(oldEnded, "The closed tab's old page");
+    await vi.waitFor(async () => expect((await t.j.row(t.sessionId))?.state).toBe("closed"), {
+      timeout: 18_000,
+    });
+  } finally {
+    await t.dispose();
+  }
+});
+
+it("stops the immediate close of a page that never confirms after its bounded attempts: the guest parks, no relay is left", async () => {
+  const t = await personPage("person-close-refused");
+  const close = SurfaceLedger.prototype.closeDurableSurface;
+  let attempts = 0;
+  const refuse = vi
+    .spyOn(SurfaceLedger.prototype, "closeDurableSurface")
+    .mockImplementation(async function (this: SurfaceLedger, id) {
+      if (id !== t.tabId) return close.call(this, id);
+      attempts++;
+      throw new BrowserRuntimeError("conflict", "This tab is still closing.");
+    });
+  try {
+    await t.tabs.close(t.person, [t.tabId], "close-refused");
+    await vi.waitFor(() => expect(attempts).toBe(3), { timeout: 18_000 });
+    // No fourth: an unbounded close would send it after its next backoff (2 s).
+    await expect(
+      vi.waitFor(
+        () => {
+          if (attempts < 4) throw new Error("No fourth attempt.");
+        },
+        { timeout: 4_000 },
+      ),
+    ).rejects.toThrow("No fourth attempt.");
+    // Nothing retries after them: the gate is let go, the guest parks, and every attempt's relay
+    // row was settled by its answer.
+    await vi.waitFor(() => expect(t.home.coordinator.gate.held).toBe(0), { timeout: 10_000 });
+    expect(await t.home.coordinator.tryPark()).toBe("parked");
+    expect(attempts).toBe(3);
+    expect(await t.j.database.selectFrom("browserPoolRelays").select("id").execute()).toEqual([]);
+  } finally {
+    refuse.mockRestore();
+    await t.dispose();
+  }
+});
+
+it("waits for a closing tab's fence outside the Runner's lane: another command on the computer goes on, and a Stop ends the wait at once", async () => {
+  const t = await personPage("person-close-fence-lane", { profile: true });
+  try {
+    const run = {
+      agentBindingId: `run:${t.j.task.runId}`,
+      ownerId: t.j.task.userId,
+      environmentId: t.j.task.environmentId,
+      threadId: t.j.task.threadId,
+    };
+    // Another browser session on the same computer: the profile's.
+    const { session: other } = await t.home.service.start({
+      ownerId: t.j.task.userId,
+      profileId: t.j.profile!.id,
+    });
+    expect(other.id).not.toBe(t.sessionId);
+    const waiting = await t.home.service.attachCdpForAgent(
+      { ...run, sessionId: t.sessionId },
+      () => {},
+    );
+    const elsewhere = await t.home.service.attachCdpForAgent(
+      { ...run, sessionId: other.id },
+      () => {},
+    );
+    // The closed tab's fence never comes.
+    const held = t.holdNextRelay();
+    try {
+      await t.tabs.close(t.person, [t.tabId], "close-never-fenced");
+      await held.reached;
+      const blocked = waiting.request({ method: "Target.getTargets" });
+      blocked.catch(() => undefined);
+      // The same computer's other session is not held behind that wait.
+      await withTimeout(elsewhere.request({ method: "Target.getTargets" }), 5_000, {
+        timeoutError: () => new Error("A command on the computer waited for another's fence."),
+      });
+      // The task's Stop ends the waiting command at once, not at the fence's 15 s bound.
+      await t.home.service.detachAgentSessionsForBinding(run.agentBindingId);
+      await expect(
+        withTimeout(blocked, 2_000, {
+          timeoutError: () => new Error("The Stop did not end the fence wait."),
+        }),
+      ).rejects.toThrow(/ended/u);
+    } finally {
+      held.release();
+      held.restore();
+      waiting.close();
+      elsewhere.close();
+    }
+  } finally {
+    await t.dispose();
   }
 });
