@@ -1689,7 +1689,10 @@ export class DeviceService {
       notThisSessionsTarget();
     const driver = await this.#sessionDeviceDriver(placement, true);
     const bundleId = computer?.app?.bundleId;
-    const recordedName = placement.recordedAppName
+    // The name the person approved the app under: the alias a grant recorded, else the name the
+    // approval itself stored (an app added from its device page has no grant). Never what the
+    // agent sent; the identifier stays beside it.
+    const recordedName = (placement.recordedAppName ?? computer?.app?.displayName)
       ?.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "")
       .trim();
     const appName = recordedName

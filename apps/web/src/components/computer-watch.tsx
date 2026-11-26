@@ -70,6 +70,7 @@ export function ComputerWatchView({
   machineId,
   machines,
   sessionId,
+  stop: taskStop,
   trailing = null,
   visible,
   hiddenReason,
@@ -88,6 +89,11 @@ export function ComputerWatchView({
   machineId: string | null;
   machines: readonly MachineSummary[];
   sessionId: string;
+  /**
+   * The Stop in the row, in place of this session's own: in a task's pane, the task's Stop, so
+   * the person sees one Stop with one meaning.
+   */
+  stop?: ReactNode;
   /** Last in the row: the conversation's button while it is put away. */
   trailing?: ReactNode;
   /**
@@ -229,7 +235,11 @@ export function ComputerWatchView({
           <span className="computer-watch__state">{status.words}</span>
         ) : null}
         <span className="computer-watch__spacer" />
-        {live ? (
+        {taskStop !== undefined ? (
+          live ? (
+            taskStop
+          ) : null
+        ) : live ? (
           <ComputerStopButton
             hostClient={hostClient}
             hostConnected={hostConnected}

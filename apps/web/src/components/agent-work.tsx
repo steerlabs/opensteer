@@ -14,6 +14,7 @@ import {
   tabAgentLine,
   tabNeedsYouParts,
   taskActivityKey,
+  threadAgentPage,
   threadInDirectory,
   type OperationGlyph,
   type OperationRequestView,
@@ -34,6 +35,7 @@ import { useOptionalShell, useShell } from "./app-shell.js";
 import { Icon, type IconName } from "./icon.js";
 import { SentenceText } from "../ui/address-text.js";
 import { AgentMark } from "./settings/agent-mark.js";
+import { taskAppWatch } from "./workspace/task-app-watch.js";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 import { actionLine, requestAnswer, useAction } from "./use-action.js";
 
@@ -77,6 +79,7 @@ export function TaskOriginLine({ parts }: { readonly parts: readonly SentencePar
 /** Watch a session in its existing task view, or focus its Request when reviewing it there. */
 export function useOpenSessionTask() {
   const workspace = useOptionalWorkspace();
+  const shell = useOptionalShell();
   const navigate = useNavigate();
   return (
     threadId: string,
@@ -86,11 +89,30 @@ export function useOpenSessionTask() {
     } | null,
   ) => {
     const id = waiting?.presentation?.threadId ?? waiting?.request.originatingThreadId ?? threadId;
-    if (workspace) {
-      workspace.nav.openConversation(
+    // Watch lands where the task's agent is working, by the person's click only. A Mac app it is
+    // acting in right now comes first: that is the only "used last" the Home says (a tab's
+    // change time is any change to the row; a Mac session tells its acting apps, not when).
+    // Then its browser page, then a Mac app it holds, then the task alone.
+    const snapshot = workspace ? shell?.hostClient.getSnapshot() : undefined;
+    const app = snapshot
+      ? taskAppWatch({
+          hostConnected: snapshot.connection === "connected",
+          machines: snapshot.machines,
+          threadId: id,
+        })
+      : null;
+    // Review opens the Request it is about; only Watch lands on a page.
+    const page = snapshot && !waiting ? threadAgentPage(snapshot, id) : null;
+    if (workspace && page && !app?.acting) {
+      workspace.nav.showPlaceWithConversation(
+        { kind: "tab", tabId: page.tabId },
         workspace.nav.threadPath(id),
-        waiting ? { focusRequest: waiting.request.id } : undefined,
       );
+    } else if (workspace) {
+      workspace.nav.openConversation(workspace.nav.threadPath(id), {
+        ...(waiting ? { focusRequest: waiting.request.id } : {}),
+        ...(app ? { watch: true } : {}),
+      });
     } else {
       void navigate(`/tasks/${encodeURIComponent(id)}`);
     }

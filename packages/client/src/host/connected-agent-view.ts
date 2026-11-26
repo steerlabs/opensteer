@@ -582,11 +582,16 @@ export function connectedAgentDetail(
   const legacy = !options.grantsAvailable || connection.grant === undefined;
   const identity = row.identity;
   const live = row.phase === "active" ? (options.live ?? null) : null;
+  // The cause the Home kept for that action; lost contact only when that is what happened.
+  const ending = connection.lastActionUncertainDetail?.ending;
   const uncertainDetailParts = row.uncertain
     ? [
-        ...agentSentence("disconnect.uncertain.detailGeneric", {
-          agent: { name: identity.label },
-        }),
+        ...agentSentence(
+          ending && ending !== "contact-lost"
+            ? `disconnect.uncertain.detail.${ending}`
+            : "disconnect.uncertain.detailGeneric",
+          { agent: { name: identity.label } },
+        ),
         ...recordedUncertainty(connection.lastActionUncertainDetail),
       ]
     : null;

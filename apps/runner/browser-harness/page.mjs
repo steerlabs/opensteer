@@ -13,6 +13,7 @@ let nextOperation = 0;
 
 class RetryError extends Error {}
 class MissingElementError extends RetryError {}
+class ActionabilityError extends RetryError {}
 class DeadlineError extends Error {}
 export class CdpProtocolError extends Error {}
 
@@ -88,6 +89,7 @@ class Operation {
     this.label = label;
     this.timeout = timeout;
     this.deadline = performance.now() + timeout;
+    this.retryCutoff = this.deadline - Math.min(RELEASE_GRACE, timeout / 5);
     this.group = `opensteer-op-${++nextOperation}`;
     // After input or an agent's own page function runs, a retry could repeat its effect.
     this.committed = false;
@@ -95,7 +97,7 @@ class Operation {
     // Commands this action left unanswered past its time, each with how long it may still answer.
     this.unanswered = [];
     this.attempt = 0;
-    this.reason = undefined;
+    this.retryError = undefined;
     this.names = [];
     this.evidence = { hostTimedSampling: true, samples: 0 };
   }
@@ -163,6 +165,14 @@ class Operation {
   }
 
   async call(objectId, command, data = {}, objects = [], byValue = true) {
+    // A retry may have spent the remaining time finding the element again. Keep its last
+    // confirmed blocker instead of starting another geometry command in the reply reserve.
+    if (
+      command === "geometry" &&
+      this.retryError instanceof ActionabilityError &&
+      performance.now() >= this.retryCutoff
+    )
+      throw new DeadlineError("deadline exceeded");
     const response = await this.command("Runtime.callFunctionOn", {
       objectId,
       objectGroup: this.group,
@@ -173,7 +183,10 @@ class Operation {
       userGesture: true,
     });
     const value = evaluationResult(response);
-    if (value?.retry) throw new RetryError(value.retry);
+    if (value?.retry)
+      throw command === "geometry"
+        ? new ActionabilityError(value.retry)
+        : new RetryError(value.retry);
     return byValue ? value : response.result?.objectId;
   }
 
@@ -400,13 +413,13 @@ class Operation {
             !(error instanceof CdpProtocolError && (await this.documentLost()))
           )
             throw error;
-          this.reason = error.message;
+          this.retryError = error;
           const delay = BACKOFF[Math.min(this.attempt++, BACKOFF.length - 1)];
-          // A confirmed miss can end before the deadline so its object-group
-          // release is acknowledged while the script is still running.
+          // Keep the end of the budget for replies and cleanup after an answered miss or
+          // hit test. An already sent command still gets the full original deadline.
           if (
-            error instanceof MissingElementError &&
-            performance.now() + delay + Math.min(RELEASE_GRACE, this.timeout / 5) >= this.deadline
+            (error instanceof MissingElementError || error instanceof ActionabilityError) &&
+            performance.now() + delay >= this.retryCutoff
           )
             throw new DeadlineError("deadline exceeded");
           await this.pause(delay);
@@ -419,7 +432,7 @@ class Operation {
       }
       const reason =
         error instanceof DeadlineError
-          ? [this.reason, this.waitingFor].filter(Boolean).join("; ") ||
+          ? [this.retryError?.message, this.waitingFor].filter(Boolean).join("; ") ||
             "browser operation did not finish"
           : error.message;
       const failed = new Error(
@@ -755,7 +768,7 @@ export function createPage(environment) {
     const second = await geometry(operation, element, options);
     if (Object.keys(first.box).some((key) => first.box[key] !== second.box[key]))
       throw new RetryError("element is not stable");
-    operation.reason = undefined;
+    operation.retryError = undefined;
     return second;
   };
   const evaluate = async (operation, objectId, fn, arg, locator, commit = false) => {

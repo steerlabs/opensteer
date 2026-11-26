@@ -6898,6 +6898,29 @@ integration.sequential("Computer use for a connected agent, through its session"
     }
   });
 
+  it("names an app approved from its device page by the name it was approved under, with its identifier", async () => {
+    // Real Mac: Safari added from the Mac's own page (no personal grant, so no recorded alias);
+    // the Request asked "Let 'Sol tester 7' use com.apple.Safari on Managed's Virtual Machine?".
+    const s = await connectedAgent("approval-required", { target: "mac" });
+    try {
+      await database
+        .updateTable("integrationGrants")
+        .set({ revokedAt: new Date() })
+        .where("ownerUserId", "=", s.world.owner.userId)
+        .where("connectionId", "=", s.approvalId)
+        .executeTakeFirstOrThrow();
+      const pending = await s.call({ code: "await (await (await target).window()).type('Hello')" });
+      expect(pending.status).toBe("pending");
+      expect(await s.world.store.requests.get(pending.requestId as RequestId)).toMatchObject({
+        presentation: {
+          title: `Let “\u2068Test agent\u2069” use ${apps.notes.displayName} (${apps.notes.bundleId}) on ${mac}?`,
+        },
+      });
+    } finally {
+      await s.world.close();
+    }
+  });
+
   it("shows the recorded Mac app name on one line, capped at 60 characters", async () => {
     const s = await connectedAgent("approval-required", { target: "mac" });
     try {

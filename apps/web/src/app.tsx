@@ -49,7 +49,12 @@ import { SetupPage } from "./components/first-run/setup-page.js";
 import { ToastProvider } from "./components/toast.js";
 import { DesktopUpdateFeedback } from "./components/desktop-update-button.js";
 import { outcomeWords, runAction } from "./components/use-action.js";
-import { shouldAutoStartOidc } from "./account/auto-oidc.js";
+import { sessionEndedHere, shouldAutoStartOidc } from "./account/auto-oidc.js";
+import {
+  forgetSignedOutHere,
+  rememberSignedOutHere,
+  signedOutHere,
+} from "./account/signed-out-here.js";
 import { PluginSignInCompletion } from "./components/plugin-sign-in-completion.js";
 import {
   pluginAuthorizationCompletionPath,
@@ -190,6 +195,13 @@ export function App({
   const [setupExchangeAttempt, setSetupExchangeAttempt] = useState(0);
   const [setupExchangeError, setSetupExchangeError] = useState<string | null>(null);
   const recoveryRoute = window.location.pathname === "/recover";
+  // Whether this page has been signed in: a session the Home ends under it stays signed out.
+  const wasSignedIn = useRef(false);
+  if (snapshot.session === "authenticated") wasSignedIn.current = true;
+  const endedHere = sessionEndedHere(wasSignedIn.current, snapshot.session);
+  useEffect(() => {
+    if (endedHere) rememberSignedOutHere();
+  }, [endedHere]);
   const autoOidcProvider =
     snapshot.session === "authentication-required" &&
     snapshot.identityConfig &&
@@ -199,6 +211,7 @@ export function App({
       hasNativeOAuthQuery: nativeOAuthQuery !== null,
       recentAttempt: autoOidcSuppressed,
       setupInProgress: setupAdmission !== "absent",
+      signedOut: endedHere || signedOutHere(),
     })
       ? snapshot.identityConfig.oidcProviders[0]
       : undefined;
@@ -231,6 +244,7 @@ export function App({
 
   useEffect(() => {
     if (snapshot.session !== "authenticated") return;
+    forgetSignedOutHere();
     autoOidcStarted.current = false;
     if (clearAutoOidcAttempt()) setAutoOidcSuppressed(false);
   }, [snapshot.session]);

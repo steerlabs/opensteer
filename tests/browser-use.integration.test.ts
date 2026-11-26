@@ -537,8 +537,14 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       text(
         await run(`
       await page.getByRole("button", { name: "Open popup" }).click();
-      const { targetInfos } = await page.cdp("Target.getTargets");
-      const popup = targetInfos.find(({url}) => url.endsWith("/popup"));
+      // The click returns once it is dispatched: the popup opens after it, and is a tab (its
+      // surface) only once the Home has registered it. Until then Chrome may list it bare.
+      let popup;
+      while (!popup?.surfaceId) {
+        const { targetInfos } = await page.cdp("Target.getTargets");
+        popup = targetInfos.find(({url}) => url.endsWith("/popup"));
+        if (!popup?.surfaceId) await page.waitForTimeout(100);
+      }
       globalThis.popupPage = await openPage(popup.surfaceId);
       await popupPage.locator("h1").waitFor();
       print(await popupPage.locator("h1").innerText());

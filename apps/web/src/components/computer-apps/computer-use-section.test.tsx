@@ -57,7 +57,7 @@ describe("ComputerUseBlock", () => {
     expect(container.querySelectorAll(".computer-use__grant--done")).toHaveLength(1);
     expect(button(container, "Set up on this Mac")).toBeNull();
     expect(container.textContent).toContain(
-      "Set up from Studio. In the Opensteer desktop app there, open Settings → Computers → Studio.",
+      "Set up from Studio. In the Opensteer desktop app there, open Settings → Devices → Studio.",
     );
   });
 

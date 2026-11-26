@@ -40,17 +40,30 @@ export function recordTestDatabaseSetup(task: TestContext["task"], started: numb
     );
 }
 
-/** Register before starting async work, so timeout also owns partial startup. */
-export async function ownTestDatabaseProducer<Value extends { close(): Promise<void> }>(
-  url: string,
-  start: () => Promise<Value>,
-): Promise<Value> {
+/**
+ * What a producer's overrunning close was still doing, for the containment error: the step its
+ * own `closing()` names, and this process's open resources by kind.
+ */
+function overrunningClose(closing: string | undefined): string {
+  const kinds: Record<string, number> = {};
+  for (const kind of process.getActiveResourcesInfo()) kinds[kind] = (kinds[kind] ?? 0) + 1;
+  return `${closing ? `: its close is still in ${closing}` : ""}; open resources ${JSON.stringify(kinds)}`;
+}
+
+/**
+ * Register before starting async work, so timeout also owns partial startup. A producer whose
+ * close runs in steps may say which one it is in (`closing`): an overrunning close names it.
+ */
+export async function ownTestDatabaseProducer<
+  Value extends { close(): Promise<void>; closing?(): string | undefined },
+>(url: string, start: () => Promise<Value>): Promise<Value> {
   const context = TestRunner.getCurrentTest()?.context;
   ownTestDatabaseFile(context);
   context?.signal.throwIfAborted();
   const owner = producers.get(url);
   if (owner?.closed) throw new Error("Database fixture is already closed");
-  const starting = start();
+  let started: Value | undefined;
+  const starting = start().then((value) => (started = value));
   let stopping: Promise<void> | undefined;
   const stop = () =>
     (stopping ??= starting.then(
@@ -61,7 +74,10 @@ export async function ownTestDatabaseProducer<Value extends { close(): Promise<v
   context?.onTestFinished(async () => {
     try {
       await withTimeout(stop(), 10_000, {
-        timeoutError: () => new Error("Database producer startup/shutdown did not finish"),
+        timeoutError: () =>
+          new Error(
+            `Database producer startup/shutdown did not finish${overrunningClose(started?.closing?.())}`,
+          ),
       });
     } catch (error) {
       failDatabaseContainment(error);

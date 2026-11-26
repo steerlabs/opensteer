@@ -920,7 +920,7 @@ export class OpensteerMcpService {
             (status === "failed" || status === "unknown") &&
             tool.output === ComputerUseOutputSchema
           ) {
-            const error = storedScriptError(row.resultSummary);
+            const error = storedScriptError(row);
             if (error) {
               const grant = row.target.grant;
               return endedScriptOutput(

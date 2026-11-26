@@ -126,7 +126,7 @@ export function computerUseSetUpFrom(machineName: string): string {
  * macOS panels, so the instruction names the app rather than a URL.
  */
 export function computerUseSetUpFromSteps(machineName: string): string {
-  return `In the Opensteer desktop app there, open Settings → Computers → ${machineName}.`;
+  return `In the Opensteer desktop app there, open Settings → Devices → ${machineName}.`;
 }
 
 /** A blocked app requires another owner approval. */
@@ -710,7 +710,7 @@ export function phoneUseTone(view: PhoneUseView): ComputerUseTone {
  * is set up over USB from a computer, never from itself.
  */
 export function addPhoneSteps(phone: string): string {
-  return `Plug ${phone} into a computer, open Opensteer there and choose Add a phone in Settings → Computers.`;
+  return `Plug ${phone} into a computer, open Opensteer there, and in Settings → Devices choose Add a device, then Add a phone.`;
 }
 
 /** No phone in this deployment can be used by agents yet. */

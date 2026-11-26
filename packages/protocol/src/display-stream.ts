@@ -538,6 +538,8 @@ export const DisplayClientDiagnosticSchema = z.strictObject({
     "retry-scheduled",
     "retry-cancelled",
     "protocol-violation",
+    /** The Host said the stream changed state or reason: one line per change. */
+    "display-state",
   ]),
   reason: z
     .enum([
@@ -602,6 +604,10 @@ export const DisplayClientDiagnosticSchema = z.strictObject({
     ])
     .optional(),
   connection: z.number().int().nonnegative().optional(),
+  displayState: z.enum([...DisplayStreamStateSchema.options, "unsupported"]).optional(),
+  displayReason: DisplayStreamReasonSchema.optional(),
+  /** A frame had reached this socket when the state came. */
+  framed: z.boolean().optional(),
   previousSequence: z.number().int().min(-1).optional(),
   incomingSequence: z.number().int().nonnegative().optional(),
   previousGeneration: z.number().int().nonnegative().optional(),

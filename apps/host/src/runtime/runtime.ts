@@ -513,6 +513,12 @@ export interface HostRuntimeOptions {
     readonly maxDelayMs?: number;
     readonly idleParkMs?: number | null;
     readonly statusEveryMs?: number;
+    /** Each controller call's own deadline (10 s). */
+    readonly callTimeoutMs?: number;
+    /** How long calls may go unanswered before the target is suspected (two minutes). */
+    readonly unansweredMs?: number;
+    /** The target service's clock. */
+    readonly now?: () => Date;
     readonly onWake?: (
       trace: import("../browser/browser-pool-coordinator.js").BrowserPoolWakeTrace,
     ) => void;

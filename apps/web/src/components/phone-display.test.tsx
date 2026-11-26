@@ -16,7 +16,11 @@ import {
 import { LivePlace } from "./workspace/viewfinder.js";
 import { RunPlacePictureScope, useDisplayDecoding } from "./workspace/run-place-picture.js";
 import type { WebSocketClient } from "@opensteer/client/host";
-import type { MachineSummary } from "@opensteer/protocol";
+import {
+  displayFirstFrameTimeoutMs,
+  displayViewerCloseCodes,
+  type MachineSummary,
+} from "@opensteer/protocol";
 
 /*
  * Ways the live phone Watch can fail in a page, each answered below:
@@ -113,6 +117,7 @@ vi.mock("./workspace/workspace-context.js", () => ({
 vi.mock("./workspace/tab-closer.js", () => ({ useTabCloser: () => () => undefined }));
 const { ComputerWatchView } = await import("./computer-watch.js");
 const { OwnerView } = await import("./workspace/owner-view.js");
+const { passingWindowWordsMs } = await import("./phone-display.js");
 const { PhoneControlBar } = await import("./phone-display.js");
 
 /** Opens a window or phone tab the way a person does and answers this device's view of it. */
@@ -944,7 +949,7 @@ describe("negotiated phone viewer wire", () => {
   });
 });
 
-async function macOwner() {
+async function macOwner({ pictured = true }: { readonly pictured?: boolean } = {}) {
   const approved = (await client.listApprovedComputerApps()).find(
     (app) => app.target.kind === "app",
   );
@@ -974,8 +979,26 @@ async function macOwner() {
       />,
     ),
   );
-  await until(() => decoder.outputs.length > 0);
+  if (pictured) await until(() => decoder.outputs.length > 0);
+  else await until(() => sockets.length > 0 && decoder.configs.length > 0);
 }
+/** The words under the Mac window's picture, and whether it offers Open again. */
+function macStatus() {
+  return {
+    words: document.querySelector(".owner-view [role='status']")?.textContent ?? "",
+    openAgain: [...document.querySelectorAll("button")].some(
+      (candidate) => candidate.textContent === "Open again",
+    ),
+  };
+}
+const passingWindowState = {
+  type: "display.state",
+  state: "protected",
+  reason: "target-unavailable",
+  generation: 1,
+  width: 0,
+  height: 0,
+} as const;
 async function negotiatedMacOwner() {
   await macOwner();
   expect(document.querySelector(".owner-view__view-only")?.textContent).toBe("View only");
@@ -998,6 +1021,75 @@ async function negotiatedMacOwner() {
   return document.querySelector<HTMLTextAreaElement>("textarea.remote-keyboard-input")!;
 }
 describe("Mac owner viewer", () => {
+  it("says it is waiting for the window, with no Open again, while the Mac's capture has not started", async () => {
+    decoder.blocked = true;
+    await macOwner({ pictured: false });
+    act(() => sockets[0]!.deliver(passingWindowState));
+    expect(macStatus()).toEqual({ words: "Waiting for the window…", openAgain: false });
+    expect(document.body.textContent).not.toContain("has no open window");
+    // Past the Home's own first-picture bound, the words are what they were before.
+    act(() => sockets[0]!.deliver({ ...passingWindowState, state: "starting", reason: undefined }));
+    vi.useFakeTimers();
+    try {
+      act(() => sockets[0]!.deliver(passingWindowState));
+      expect(macStatus().words).toBe("Waiting for the window…");
+      await act(async () => vi.advanceTimersByTimeAsync(displayFirstFrameTimeoutMs));
+      expect(macStatus().words).toContain("has no open window");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the last picture through a passing pause of the Mac's capture, and says it waits only past a bound", async () => {
+    await macOwner();
+    expect(shown()).toBe(true);
+    vi.useFakeTimers();
+    try {
+      act(() => sockets[0]!.deliver({ ...passingWindowState, generation: 2 }));
+      // The picture stays, with nothing over it: a pause this short is not worth a word.
+      expect(shown()).toBe(true);
+      expect(macStatus()).toEqual({ words: "", openAgain: false });
+      await act(async () => vi.advanceTimersByTimeAsync(passingWindowWordsMs - 1));
+      expect(macStatus().words).toBe("");
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+      // Past the bound it says so, over the same picture, with no Open again.
+      expect(shown()).toBe(true);
+      expect(macStatus().words).toMatch(/^Waiting for .+…$/u);
+      expect(macStatus().openAgain).toBe(false);
+      act(() =>
+        sockets[0]!.deliver({
+          type: "display.state",
+          state: "live",
+          generation: 2,
+          width: 360,
+          height: 780,
+        }),
+      );
+      expect(macStatus().words).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still says a closed window has no open window, and offers Open again", async () => {
+    await macOwner();
+    const socket = vi.mocked(client.connectComputerDisplay).mock.results.at(-1)!
+      .value as WebSocketClient;
+    act(() =>
+      sockets[0]!.deliver({
+        type: "display.state",
+        state: "failed",
+        reason: "window-closed",
+        generation: 1,
+        width: 0,
+        height: 0,
+      }),
+    );
+    act(() => socket.close(displayViewerCloseCodes.ended, "Window capture failed"));
+    await until(() => macStatus().openAgain);
+    expect(macStatus().words).toContain("has no open window");
+  });
+
   it("reopens the same Mac tab after a restart and replaces Reconnecting with fresh pixels", async () => {
     const approved = (await client.listApprovedComputerApps()).find(
       (app) => app.target.kind === "app",

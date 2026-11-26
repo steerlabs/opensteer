@@ -5209,6 +5209,20 @@ export class MockHostClient implements HostClient {
     this.#state.mockDeviceStates();
   }
 
+  /**
+   * The preview's Notes session on the Mac mini, held by another task instead, with the apps
+   * given (in the order it took them) and the ones it acted in last.
+   */
+  mockComputerUseSessionTask(
+    threadId: string,
+    options: {
+      readonly apps?: readonly ComputerAppIdentity[];
+      readonly actingAppKeys?: readonly string[];
+    } = {},
+  ): void {
+    this.#state.mockComputerUseSessionTask(threadId, options);
+  }
+
   /** Connected agents working tasks themselves, in each state, with a tab each uses. */
   mockAgentWork(
     options: {
@@ -8078,6 +8092,38 @@ class MockHostState {
     };
     this.update({ ...this.snapshot, threads: [...this.snapshot.threads, task] });
     return id;
+  }
+
+  mockComputerUseSessionTask(
+    threadId: string,
+    options: {
+      readonly apps?: readonly ComputerAppIdentity[];
+      readonly actingAppKeys?: readonly string[];
+    },
+  ): void {
+    this.update({
+      ...this.snapshot,
+      machines: this.snapshot.machines.map((machine) =>
+        machine.computerUse
+          ? {
+              ...machine,
+              computerUse: {
+                ...machine.computerUse,
+                sessions: machine.computerUse.sessions.map((session) =>
+                  session.sessionId === mockComputerUseSession.sessionId
+                    ? {
+                        ...session,
+                        threadId: ThreadIdSchema.parse(threadId),
+                        apps: [...(options.apps ?? session.apps)],
+                        actingAppKeys: [...(options.actingAppKeys ?? session.actingAppKeys)],
+                      }
+                    : session,
+                ),
+              },
+            }
+          : machine,
+      ),
+    });
   }
 
   mockDeviceStates(): void {
