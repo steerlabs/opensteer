@@ -1,5 +1,9 @@
 import { StreamedContextMenu } from "./browser/streamed-context-menu.js";
-import type { DisplayClientDiagnostic, PhoneDisplayView } from "@opensteer/protocol";
+import {
+  displayFirstFrameTimeoutMs,
+  type DisplayClientDiagnostic,
+  type PhoneDisplayView,
+} from "@opensteer/protocol";
 import { reportDisplayDiagnostic, displayDiagnosticSource } from "../display-diagnostics.js";
 import {
   useCallback,
@@ -356,6 +360,24 @@ export function useComputerDisplay({
     const timer = setTimeout(() => setStartingSlow(true), 5_000);
     return () => clearTimeout(timer);
   }, [enabled, awaiting]);
+  // The Mac's capture holding back its first picture of a window that is there (it re-reads the
+  // window while an agent's call runs, or after one changed it) is waiting, not a closed window.
+  // A closed window ends the stream with its own reason. Past the Home's own first-picture bound
+  // the words are the stream's again.
+  const passing =
+    macWindow &&
+    media.shown === null &&
+    display.connection === "open" &&
+    display.display?.state === "protected" &&
+    display.display.reason === "target-unavailable";
+  const [passingExpired, setPassingExpired] = useState(false);
+  useEffect(() => {
+    setPassingExpired(false);
+    if (!passing) return;
+    const timer = setTimeout(() => setPassingExpired(true), displayFirstFrameTimeoutMs);
+    return () => clearTimeout(timer);
+  }, [passing]);
+  const waitingForWindow = passing && !passingExpired;
   const shown = media.stale && startingSlow ? null : media.shown;
   const geometry =
     shown &&
@@ -373,12 +395,15 @@ export function useComputerDisplay({
     ...status,
     viewportEnabled: macWindow,
     reason:
-      shown !== null && display.connection !== "closed" && status.reason === "display-failed"
+      waitingForWindow ||
+      (shown !== null && display.connection !== "closed" && status.reason === "display-failed")
         ? null
         : status.reason,
-    startingWords: startingSlow
-      ? "macOS is taking longer to start sharing this window."
-      : "Starting window sharing…",
+    startingWords: waitingForWindow
+      ? "Waiting for the window…"
+      : startingSlow
+        ? "macOS is taking longer to start sharing this window."
+        : "Starting window sharing…",
     picture: shown,
     snapshot: display,
     generation: streamGeneration,
