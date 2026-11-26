@@ -18,6 +18,9 @@ export function deviceRefusalSentence(
   if (error.reason === "device-access-off")
     return `${deviceCapabilityLabel[error.capability]} access is off on ${error.machineName ?? "this device"}. The person can turn it on in Opensteer.`;
   if (error.reason === "device-offline") return `${error.machineName ?? "This device"} is offline.`;
+  if (error.reason === "device-asleep") return `${error.machineName ?? "This device"} is asleep.`;
+  if (error.reason === "device-stopped")
+    return `Agents are stopped on ${error.machineName ?? "this device"}.`;
   return null;
 }
 
@@ -49,7 +52,11 @@ export function deviceAccessBlocked(error: unknown, connection = false): Blocked
         next:
           error.reason === "device-offline"
             ? "The person can bring it online; other work can continue."
-            : "Continue without this device.",
+            : error.reason === "device-asleep"
+              ? "It can be used again once it wakes; other work can continue."
+              : error.reason === "device-stopped"
+                ? "The person can resume agents there; other work can continue."
+                : "Continue without this device.",
       }
     : { code, message, next: next ?? "Continue without this device." };
 }
