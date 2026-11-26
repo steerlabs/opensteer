@@ -459,7 +459,16 @@ export const operations = {
   resolveTools: {
     input: z.strictObject({ paths: z.array(id).min(1).max(100) }),
     output: z.array(
-      z.strictObject({ plugin: id, name: id, version: id, readOnly: z.boolean() }).nullable(),
+      z
+        .strictObject({
+          plugin: id,
+          name: id,
+          version: id,
+          readOnly: z.boolean(),
+          /** There, but kept from running now: what keeps it, in the Home's words. */
+          blocked: BlockedSchema.optional(),
+        })
+        .nullable(),
     ),
   },
   call: {

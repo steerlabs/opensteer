@@ -2164,6 +2164,11 @@ export const describeCatalog = (backend: McpBackend<Error>, input: typeof Descri
     Effect.map(({ value }) => value),
   );
 
+/**
+ * The tool each path names, by this engine's own parser and escaping, or null where none is. A
+ * tool that is there but cannot run now comes with what keeps it (its own marker, else its app's),
+ * so its caller can say why without reading the path a second way.
+ */
 export const resolveCatalogTools = (backend: McpBackend<Error>, paths: readonly string[]) =>
   readCatalog(backend, (discovered) =>
     discovered.described(paths.map(canonical)).pipe(
@@ -2171,14 +2176,17 @@ export const resolveCatalogTools = (backend: McpBackend<Error>, paths: readonly 
         const byPath = new Map(entries.map((entry) => [entry.path, entry]));
         return paths.map((path) => {
           const entry = byPath.get(canonical(path));
-          return !entry || withheld(entry.tool, entry.target)
-            ? null
-            : {
-                plugin: entry.target.id,
-                name: entry.target.app,
-                version: entry.target.version,
-                readOnly: entry.tool.readOnly === true,
-              };
+          if (!entry) return null;
+          const blocked = withheld(entry.tool, entry.target)
+            ? (entry.tool.blocked ?? entry.target.blocked)
+            : undefined;
+          return {
+            plugin: entry.target.id,
+            name: entry.target.app,
+            version: entry.target.version,
+            readOnly: entry.tool.readOnly === true,
+            ...(blocked === undefined ? {} : { blocked }),
+          };
         });
       }),
     ),

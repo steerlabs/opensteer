@@ -110,19 +110,22 @@ export function compositeBackend(
   /**
    * A tool that cannot be called now is listed as it is, with one marker saying why, which the
    * engine shows wherever discovery lists it: plugin_search, plugin_describe and a program's own
-   * tools.search alike. What keeps its whole app (the person's Off, or what keeps a local
-   * provider) is said once, on the app (see listApps); a tool carries only what keeps it alone
-   * (Read-only for a write, one operation's own blocker).
+   * tools.search alike, and with which it resolves a call to it. What keeps its whole app (the
+   * person's Off, or what keeps a local provider) is said once, on the app (see listApps); a tool
+   * carries only what keeps it alone (Read-only for a write, one operation's own blocker), also
+   * while its app is kept for another reason: a call is about that one operation.
    */
   const projectTool = (
     tool: Tool,
     access: "all" | "read-only" | "off" | undefined,
     local?: PluginHostProvider,
   ): McpTool => {
-    if (access === "off" || local?.blocked) return tool;
+    if (access === "off") return tool;
     const blocked =
       pluginAccessBlocked(access, tool.readOnly !== true) ?? local?.toolBlockers?.[tool.name];
-    return blocked ? { ...tool, blocked } : tool;
+    return blocked && !(local?.blocked && canonicalJson(blocked) === canonicalJson(local.blocked))
+      ? { ...tool, blocked }
+      : tool;
   };
 
   const permissionFor = (

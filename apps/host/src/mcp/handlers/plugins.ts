@@ -1,4 +1,3 @@
-import { canonicalToolPath } from "@opensteer/plugin-engine-mcp";
 import { pluginCaller, pluginGrantTarget } from "../../plugins/plugin-authority.js";
 import { pluginTargetBlocked } from "../../plugins/target-blocked.js";
 import { requestResult } from "../request-result.js";
@@ -332,32 +331,26 @@ export class PluginToolHandlers {
       const paths = (Array.isArray(input.calls) ? input.calls : [input.calls]).map(
         ({ path }) => path,
       );
+      // The engine alone reads which tool each path names, with its own parser and escaping; a
+      // tool that is there but blocked comes with its reason.
       const resolved = await o.service.resolveTools({ paths }, context, signal);
+      // A blocked tool this call's own grant holds (its level, the person's plugin setting, read
+      // against write, for the tool the engine named) says why: never that it does not exist,
+      // and never a Request for what cannot run. One it does not hold, or one the grant does not
+      // reach (`access_required`), reads exactly as absent, as anything outside a grant.
+      for (const entry of resolved)
+        if (
+          entry?.blocked &&
+          entry.blocked.code !== "access_required" &&
+          (await holds(entry.plugin, !entry.readOnly))
+        )
+          throw new ToolBlockedError(entry.blocked);
       const first = resolved[0];
-      if (!first || resolved.length !== paths.length || resolved.some((entry) => !entry)) {
-        // A tool of a local provider this connection holds, there but blocked (a data app the
-        // person approved for reading only, a macOS permission its device has not been given),
-        // says why before anything is asked: never that it does not exist, and never a Request
-        // for what cannot run. The reason is the tool's own, or its whole app's when nothing of
-        // it can run. What the grant does not reach (`access_required`, or a change it does not
-        // allow) reads as absent, as anything outside a grant.
-        const shown = (await o.localProviders?.providers(context)) ?? [];
-        for (const path of paths)
-          for (const provider of shown) {
-            // The path as the engine reads it, in dot or bracket form alike.
-            const namespace = `${localNamespace(provider.slug, provider.id)}.`;
-            const canonical = canonicalToolPath(path);
-            if (!canonical.startsWith(namespace)) continue;
-            const name = canonical.slice(namespace.length);
-            const tool = provider.tools.find((entry) => entry.name === name);
-            const blocked = tool && (provider.toolBlockers?.[name] ?? provider.blocked);
-            if (
-              blocked &&
-              blocked.code !== "access_required" &&
-              (await holds(provider.id, tool.readOnly !== true))
-            )
-              throw new ToolBlockedError(blocked);
-          }
+      if (
+        !first ||
+        resolved.length !== paths.length ||
+        resolved.some((entry) => !entry || entry.blocked)
+      ) {
         throw unavailable();
       }
       if (
