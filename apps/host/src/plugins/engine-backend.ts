@@ -26,7 +26,7 @@ import { UserFacingError } from "@opensteer/plugin-engine-utils/user-facing-erro
 import type { ElicitationHandler } from "apps/contracts";
 import { CurrentMcpExecution, type McpBackend, type McpTool } from "@opensteer/plugin-engine-mcp";
 import { GrantId, restrictMcpBackend, type Grant } from "@opensteer/plugin-engine-mcp-auth";
-import { pluginAccessBlocked } from "./target-blocked.js";
+import { pluginAccessBlocked, pluginToolReason } from "./target-blocked.js";
 import type { engineAccounts } from "./engine-accounts.js";
 import {
   JsonSchema,
@@ -93,6 +93,10 @@ export interface EngineHostCallbacks {
 export const accountSelectionDigest = (accounts: unknown) =>
   createHash("sha256").update(canonicalJson(accounts)).digest("hex");
 
+function sameBlocked(left: Blocked, right: Blocked) {
+  return left.code === right.code && left.message === right.message && left.next === right.next;
+}
+
 export function compositeBackend(
   engine: PluginEngine,
   accounts: ReturnType<typeof engineAccounts>,
@@ -118,11 +122,23 @@ export function compositeBackend(
     tool: Tool,
     access: "all" | "read-only" | "off" | undefined,
     local?: PluginHostProvider,
+    /** Apps a connection's grant holds for reading only. */
+    readOnlyGrant?: readonly string[],
   ): McpTool => {
-    if (access === "off" || local?.blocked) return tool;
-    const blocked =
-      pluginAccessBlocked(access, tool.readOnly !== true) ?? local?.toolBlockers?.[tool.name];
-    return blocked ? { ...tool, blocked } : tool;
+    // The one order a call reads too (pluginToolReason). A write a connection's grant does not
+    // hold is marked so every listing leaves it out; what keeps the whole app (the person's Off,
+    // what keeps a local provider) is said once, on the app: a tool carries only a reason of its
+    // own, other than its app's.
+    const write = tool.readOnly !== true;
+    const blocked = pluginToolReason({
+      tool: tool.name,
+      write,
+      outsideGrant: write && readOnlyGrant?.includes(tool.app) === true,
+      setting: access,
+      ...(local ? { local } : {}),
+    });
+    const appLine = access === "off" ? pluginAccessBlocked(access, write) : local?.blocked;
+    return blocked && !(appLine && sameBlocked(blocked, appLine)) ? { ...tool, blocked } : tool;
   };
 
   const permissionFor = (
@@ -277,20 +293,20 @@ export function compositeBackend(
       }),
     listTools: (input, options) =>
       Effect.gen(function* () {
-        const { grants } = yield* checked("listTools", input.app);
+        const { grants, readOnlyGrant } = yield* checked("listTools", input.app);
         const access = grants?.[input.app];
         const local = yield* provider(input.app);
         if (local)
           return {
             version: version(local),
             accounts: { app: {}, user: {} },
-            items: hostTools(local).map((tool) => projectTool(tool, access, local)),
+            items: hostTools(local).map((tool) => projectTool(tool, access, local, readOnlyGrant)),
             routers: [],
           };
         const page = yield* listCloud(input, options, publishedOnly || access === "off");
         return {
           ...page,
-          items: page.items.map((tool) => projectTool(tool, access)),
+          items: page.items.map((tool) => projectTool(tool, access, undefined, readOnlyGrant)),
         };
       }),
     searchableTools: (input, options) =>
@@ -319,7 +335,7 @@ export function compositeBackend(
       }),
     searchTools: (input) =>
       Effect.gen(function* () {
-        const { grants } = yield* checked("searchTools");
+        const { grants, readOnlyGrant } = yield* checked("searchTools");
         const providers = input.targets.some(({ app }) => isLocalProviderId(app))
           ? yield* host.providers()
           : [];
@@ -341,7 +357,9 @@ export function compositeBackend(
             entry.id,
             {
               name: entry.name,
-              tools: hostTools(entry).map((tool) => projectTool(tool, grants?.[entry.id], entry)),
+              tools: hostTools(entry).map((tool) =>
+                projectTool(tool, grants?.[entry.id], entry, readOnlyGrant),
+              ),
             },
           ]),
         );
@@ -349,13 +367,13 @@ export function compositeBackend(
           hostCatalog.set(app, {
             name: namespaces.get(app) ?? app,
             // The person may have changed this plugin's access since the listing was kept.
-            tools: tools.map((tool) => projectTool(tool, grants?.[app])),
+            tools: tools.map((tool) => projectTool(tool, grants?.[app], undefined, readOnlyGrant)),
           });
         const local = searchHost(input, hostCatalog);
         const all = [
           ...remote.items.map((item) => ({
             ...item,
-            tool: projectTool(item.tool, grants?.[item.tool.app]),
+            tool: projectTool(item.tool, grants?.[item.tool.app], undefined, readOnlyGrant),
             target: remoteTargets[item.target]!.index,
             also: item.also.map((index) => remoteTargets[index]!.index),
           })),
@@ -372,10 +390,21 @@ export function compositeBackend(
         const permission = yield* permissionFor("callTool", input.app, input.tool, {
           version: input.version,
         });
-        const blocked = pluginAccessBlocked(permission.grants?.[input.app], input.kind !== "query");
+        const local = yield* provider(input.app);
+        const listed = local
+          ? hostTools(local).find((tool) => tool.name === input.tool)
+          : undefined;
+        const write = listed ? listed.readOnly !== true : input.kind !== "query";
+        // The order its listing said it in (pluginToolReason).
+        const blocked = pluginToolReason({
+          tool: input.tool,
+          write,
+          outsideGrant: write && permission.readOnlyGrant?.includes(input.app) === true,
+          setting: permission.grants?.[input.app],
+          ...(local ? { local } : {}),
+        });
         if (blocked) return yield* refused(blocked);
         if (!permission.allowed) return yield* Effect.fail(forbidden());
-        const local = yield* provider(input.app);
         if (local) {
           const current = hostTools(local).find((tool) => tool.name === input.tool);
           if (

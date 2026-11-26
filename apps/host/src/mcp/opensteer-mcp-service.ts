@@ -51,6 +51,7 @@ import {
   admitExecution,
   connectionAfterChange,
   findAgentOperation,
+  grantedDeviceApprovals,
   lineageAllowsPersonalContext,
   reachesTarget,
   type OpensteerStore,
@@ -75,7 +76,7 @@ import type { SavedLoginService } from "../browser/saved-logins.js";
 import type { PluginExecutions } from "../plugins/plugin-executions.js";
 import { mcpToolCallId } from "./call-id.js";
 import { agentToolFailure, internalToolFailureCode } from "./agent-tool-failure.js";
-import { deviceVisibleTo } from "../devices/device-visibility.js";
+import { lentDevice, lentNow } from "./lent-now.js";
 import { mcpResourceMetadataPath } from "./connections/connection-oauth.js";
 import {
   AgentCallerResolver,
@@ -743,7 +744,7 @@ export class OpensteerMcpService {
       if (typeof result === "string") return { content: [{ type: "text" as const, text: result }] };
       if (tool?.output === ComputerUseOutputSchema) {
         const script = ComputerUseOutputSchema.parse(result);
-        const { status, taskId, operationId, next } = script.structuredContent ?? {};
+        const { status, taskId, operationId, next, ending } = script.structuredContent ?? {};
         if (
           currentCaller.kind !== "connection" ||
           typeof status !== "string" ||
@@ -756,6 +757,7 @@ export class OpensteerMcpService {
           taskId,
           operationId,
           ...(typeof next === "string" ? { next } : {}),
+          ...(typeof ending === "string" ? { ending } : {}),
         };
         return {
           ...script,
@@ -810,7 +812,10 @@ export class OpensteerMcpService {
       const failure = agentToolFailure(
         error instanceof AgentOperationFailure ? error.cause : error,
         access,
-        failureCaller ? deviceVisibleTo(callerLineage(failureCaller)?.grant) : () => false,
+        // Only a device's own refusal names a Device; nothing is read for any other failure.
+        failureCaller && namesDevice(error instanceof AgentOperationFailure ? error.cause : error)
+          ? await this.#visibleDevices(failureCaller)
+          : () => false,
         // Under a connection's grant: the connection, or a Run in its lineage (AD11).
         failureCaller ? callerLineage(failureCaller) !== null : false,
       );
@@ -900,7 +905,11 @@ export class OpensteerMcpService {
         key = row.operationKey;
         identity.keyed?.(key);
         resume = row;
-        const base = { taskId: row.taskId, operationId: row.id };
+        const base = {
+          taskId: row.taskId,
+          operationId: row.id,
+          ...(row.ending ? { ending: row.ending } : {}),
+        };
         if (row.state === "refused")
           throw new AgentOperationFailure(agentOperationRefusal(row.decision, row.ending), {
             ...base,
@@ -964,6 +973,7 @@ export class OpensteerMcpService {
             ...(name === "plugin_resume" && plugin?.status === "pending"
               ? {}
               : { operationId: base.operationId }),
+            ...(row.ending ? { ending: row.ending } : {}),
             status: plugin?.status ?? status,
             ...(answer !== undefined ? { answer } : {}),
             ...(status === "completed"
@@ -1115,6 +1125,19 @@ export class OpensteerMcpService {
     if (!(await this.#toolsFor(caller)).some((spec) => spec.name === name))
       throw caller.kind === "connection" ? unknownTool() : unavailableTool(caller, name);
   }
+  /**
+   * The person's Devices a failure may name to this caller: of what its connection lineage is lent
+   * now. Without the Home's database to read the rule, a selected grant learns of none.
+   */
+  async #visibleDevices(caller: AgentCaller): Promise<(deviceId: string) => boolean> {
+    const database = this.options.store.database;
+    if (database)
+      return lentDevice(
+        await lentNow(caller, (owner, grant) => grantedDeviceApprovals(database, owner, grant)),
+      );
+    return callerLineage(caller)?.grant.scope === "selected" ? () => false : () => true;
+  }
+
   async #toolsFor(caller: AgentCaller) {
     const offered = toolsFor({
       ...caller,
@@ -1485,4 +1508,15 @@ async function abortableToolResult<T>(work: Promise<T>, signal: AbortSignal): Pr
   } finally {
     signal.removeEventListener("abort", abort);
   }
+}
+
+/** A device's own refusal (its switch, offline, asleep, stopped), which may name the Device. */
+function namesDevice(error: unknown): boolean {
+  return (
+    error instanceof OpensteerError &&
+    (error.reason === "device-access-off" ||
+      error.reason === "device-offline" ||
+      error.reason === "device-asleep" ||
+      error.reason === "device-stopped")
+  );
 }

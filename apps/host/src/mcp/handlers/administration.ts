@@ -1,10 +1,10 @@
 import { projectMachines } from "../../runtime/machines.js";
-import { deviceAccessStates } from "@opensteer/database";
+import { deviceAccessStates, grantedDeviceApprovals } from "@opensteer/database";
+import { lentNow } from "../lent-now.js";
 import type { z } from "zod";
 import {
   OpensteerError,
   agentGrantAllows,
-  type AgentGrant,
   type DeviceId,
   formatReferenceLink,
   DeviceIdSchema,
@@ -21,28 +21,6 @@ import type { ToolCall, AgentToolHandlers } from "./types.js";
 type AdministrationToolName = "computer_list" | "browser_profile_list";
 export type AdministrationHandlers = Pick<AgentToolHandlers, AdministrationToolName>;
 
-function liveGrantedApps(
-  grant: Extract<AgentGrant, { scope: "selected" }>,
-  connections: Awaited<
-    ReturnType<
-      AdministrationService["dependencies"]["integrations"]["devices"]["deviceConnections"]
-    >
-  >,
-) {
-  return grant.resources.flatMap((resource) =>
-    resource.kind === "computer-app" &&
-    connections.some(
-      (entry) =>
-        entry.id === resource.approvalId &&
-        entry.status !== "revoked" &&
-        entry.computer?.deviceId === resource.deviceId &&
-        !entry.computer.blockedAt,
-    )
-      ? [resource]
-      : [],
-  );
-}
-
 export class AdministrationToolHandlers {
   readonly service: AdministrationService;
   readonly canExecute: (environmentId: EnvironmentId) => boolean;
@@ -52,6 +30,11 @@ export class AdministrationToolHandlers {
   ) {
     this.service = service;
     this.canExecute = canExecute;
+  }
+  /** What the caller's connection lineage is lent now, read once for the call. */
+  #lent(caller: AgentCaller) {
+    const database = this.service.dependencies.store.database;
+    return lentNow(caller, (owner, grant) => grantedDeviceApprovals(database, owner, grant));
   }
   /** The person's name and what a new task starts with: opensteer_state's settings area. */
   async settingsView(caller: AgentCaller) {
@@ -83,17 +66,15 @@ export class AdministrationToolHandlers {
       computerIds(store, caller.userId),
       this.service.dependencies.integrations.devices.deviceConnections(caller.userId),
     ]);
-    // A selected grant sees only the Devices where an app or phone screen it names is still
-    // approved, scoped before anything is projected; a stale approval names no Device.
-    const grant = callerLineage(caller)?.grant;
-    const grantedResources =
-      grant?.scope === "selected" ? liveGrantedApps(grant, connections) : null;
-    const grantedDevices = grantedResources
-      ? new Set(grantedResources.map((resource) => resource.deviceId))
-      : null;
+    // A selected grant sees only the Devices of what the one rule lends it now, scoped before
+    // anything is projected: an approval blocked, revoked, made again as a new row or whose
+    // signer changed names no Device.
+    const lent = await this.#lent(caller);
+    const selectedLent = lent?.grant.scope === "selected" ? lent : null;
+    const grantedDevices = selectedLent ? selectedLent.deviceIds : null;
     const grantedPhones = new Set(
-      (grantedResources ?? []).flatMap((resource) =>
-        resource.app.kind === "phone-screen" ? [resource.deviceId] : [],
+      (selectedLent?.approvals ?? []).flatMap(({ deviceId, target }) =>
+        target.kind === "computer-app" && target.app.kind === "phone-screen" ? [deviceId] : [],
       ),
     );
     let scoped = page;
@@ -308,19 +289,16 @@ export class AdministrationToolHandlers {
   }
   async browser_profile_list({ caller }: ToolCall<"browser_profile_list">) {
     await this.service.actor(caller);
-    const { browser, browserSources, integrations, store } = this.service.dependencies;
+    const { browser, browserSources, store } = this.service.dependencies;
     const grant = callerLineage(caller)?.grant;
     const selected = grant?.scope === "selected" ? grant : null;
-    const [allProfiles, sources, connections] = await Promise.all([
+    const [allProfiles, sources, lent] = await Promise.all([
       browser.listAgentProfiles(caller.userId),
       selected ? null : browserSources.listState({ ownerId: caller.userId }),
-      selected && selected.resources.some((resource) => resource.kind === "computer-app")
-        ? integrations.devices.deviceConnections(caller.userId)
-        : [],
+      selected ? this.#lent(caller) : null,
     ]);
-    const grantedDevices = selected
-      ? new Set(liveGrantedApps(selected, connections).map((resource) => resource.deviceId))
-      : null;
+    // A profile's home is named only on a Device of what the one rule lends a selected grant now.
+    const grantedDevices = selected ? (lent?.deviceIds ?? new Set<string>()) : null;
     const profiles = selected
       ? allProfiles.filter((profile) =>
           agentGrantAllows(selected, { kind: "browser-profile", profileId: profile.id }, "read"),

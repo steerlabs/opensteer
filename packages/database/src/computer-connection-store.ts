@@ -799,6 +799,8 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
     readonly deviceProfile: "iphone" | null;
     readonly runnerRevoked: boolean;
     readonly runnerUpdateRequired: boolean;
+    /** The device's switches, read with it, so a listing reads no device again. */
+    readonly deviceAccessPolicy?: unknown;
   } | null> {
     const row = await this.database
       .selectFrom("integrationConnections")
@@ -818,6 +820,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
         "runners.deviceProfile",
         "runners.updateRequired",
         "devices.removedAt as runnerRevokedAt",
+        "devices.accessPolicy as deviceAccessPolicy",
       ])
       .$if(input.includeRecordedAppName === true, (query) =>
         query.select((eb) =>
@@ -848,6 +851,7 @@ export class ComputerConnectionStore extends IntegrationPlatformStoreBase {
       deviceProfile: row.deviceProfile,
       runnerRevoked: row.runnerRevokedAt !== null,
       runnerUpdateRequired: row.updateRequired !== null,
+      deviceAccessPolicy: row.deviceAccessPolicy,
     };
   }
 }

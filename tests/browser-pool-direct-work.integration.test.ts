@@ -10,6 +10,7 @@ import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-tick
 import { BrowserScriptService } from "../apps/host/src/browser-use/browser-script-service.js";
 import { TabService } from "../apps/host/src/tabs/tab-service.js";
 import { operationRow } from "../packages/client/src/host/agent-work.js";
+import { threadAgentPage } from "../packages/client/src/host/agent-place-links.js";
 import { listAgentOperations } from "../packages/database/src/agent-session-store.js";
 import { tabReadAuthority } from "../apps/host/src/tabs/tab-authority.js";
 import { AgentConnectionStore } from "../packages/database/src/agent-connection-store.js";
@@ -23,7 +24,12 @@ import {
   connection,
   serveMcp,
 } from "../apps/host/src/mcp/connection-caller.test-support.js";
-import { OpensteerError, type RequestId, type ThreadId } from "../packages/core/src/index.js";
+import {
+  OpensteerError,
+  TabSchema,
+  type RequestId,
+  type ThreadId,
+} from "../packages/core/src/index.js";
 import { type TabRecord } from "../packages/database/src/index.js";
 import { listBrowserPoolDocumentLosses } from "./browser-pool-journey.test-support.js";
 import { TabSleeper } from "../packages/browser-runtime-core/src/browser/tab-sleeper.js";
@@ -202,6 +208,13 @@ async function directWork(
   };
 }
 
+/** The tab row the Home keeps for `tabId`. */
+const row = async (j: Journey, tabId: string) => {
+  const tab = await j.tabs.get(j.task.userId, tabId as TabRecord["id"]);
+  if (!tab) throw new Error("No such tab.");
+  return tab;
+};
+
 const text = (result: Awaited<ReturnType<Awaited<ReturnType<typeof directWork>>["use"]>>) =>
   JSON.stringify(result.content);
 
@@ -240,6 +253,72 @@ it("makes a tab a pooled browser_use script binds the agent's at the bind, befor
     );
   } finally {
     spy.mockRestore();
+    await j.close();
+  }
+});
+
+it("names a connected agent's task as the holder of the tab its script binds, so the person's Watch lands on it", async () => {
+  // Tester run 12: a connected agent's script working in a tab of the pooled browser; the
+  // person's Watch found no page of its task (threadAgentPage) and stayed on the launcher.
+  const j = await journey("direct-script-holder", { profile: true });
+  try {
+    const home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const [tab] = await home.service.savedPages(j.task.userId, session.id);
+    if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
+    await j.draft();
+    const work = await directWork(j, () => home);
+    // The agent's script binds the person's tab and keeps working in it.
+    let done = false;
+    const working = work
+      .useTab(
+        `const page = await openPage(${JSON.stringify(tab.id)}); await page.js("document.title"); await page.waitForTimeout(4000); return 1;`,
+        tab.id,
+      )
+      .finally(() => {
+        done = true;
+      });
+    const { threadId } = await vi.waitFor(
+      () =>
+        j.database
+          .selectFrom("agentSessions")
+          .select("threadId")
+          .where("userId", "=", j.task.userId)
+          .executeTakeFirstOrThrow(),
+      { timeout: 10_000 },
+    );
+    // While it works, the Home names its task as the tab's holder, and Watch picks that tab.
+    await vi.waitFor(
+      async () => {
+        expect(done).toBe(false);
+        const state = await home.service.pageTabs.state!(j.task.userId, await row(j, tab.id));
+        expect(state.usedBy).toEqual([{ taskId: threadId }]);
+      },
+      { timeout: 4_000 },
+    );
+    const listed = TabSchema.parse({
+      tabId: tab.id,
+      kind: "page",
+      title: "Draft",
+      computer: { computerId: j.task.runnerId, name: "Main computer" },
+      groupId: null,
+      state: "open",
+      usedBy: [{ taskId: threadId }],
+      openedBy: "person",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      url: "https://example.test/",
+      profile: { profileId: j.profile!.id, name: "Work" },
+    });
+    expect(
+      threadAgentPage({ tabs: { rows: new Map([[tab.id, listed]]) } } as never, threadId),
+    ).toEqual({ tabId: tab.id });
+    const result = await working;
+    expect(result.isError, text(result)).not.toBe(true);
+  } finally {
     await j.close();
   }
 });

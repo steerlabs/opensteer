@@ -57,6 +57,9 @@ function connectionOf(connections: readonly AgentConnection[], label: string): S
 
 export const mockAgentWorkLiveScenes = [
   "one",
+  // As "one", on a Home reached as a Cloud Computer: the agent's tab is in that computer's own
+  // pooled browser, the shape tester run 12 found Watch missing.
+  "cloud-tab",
   "three",
   "needs-you",
   "long-panel",
@@ -133,7 +136,8 @@ export function mockAgentWork(input: {
   const longSoloPlace = livePanel === "long-place";
   const history = livePanel === "history" || livePanel === "one-history";
   const liveShopping = livePanel && livePanel !== "history";
-  const solo = livePanel === "one" || longSolo || longSoloPlace || history;
+  const solo =
+    livePanel === "one" || livePanel === "cloud-tab" || longSolo || longSoloPlace || history;
   const longAgent = { ...grok, label: "Grok research assistant for the entire household" };
   const longPlace = "Household shopping and weekly groceries shared with family";
   const workingAgent = liveWaiting ? grok : claude;

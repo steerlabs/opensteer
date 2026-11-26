@@ -39,18 +39,29 @@ export class DeviceAccessRefusal extends OpensteerError {
     this.machineName = machineName;
   }
 }
+/** A device's switches and name, as a read the caller already made of it gives them. */
+export interface KnownDevice {
+  readonly accessPolicy: unknown;
+  readonly name: string;
+  readonly removed: boolean;
+}
+
 export async function requireDeviceAccess(
   database: Kysely<DatabaseSchema>,
   machineId: DeviceId,
   capability: DeviceCapability,
   online: boolean,
   options: { readonly asleep?: boolean; readonly stopped?: boolean } = {},
+  /** What a listing already read of the device: no statement is sent for it again. */
+  known?: KnownDevice,
 ): Promise<void> {
-  const runner = await database
-    .selectFrom("devices")
-    .select(["accessPolicy", "name", "removedAt"])
-    .where("id", "=", machineId)
-    .executeTakeFirst();
+  const runner = known
+    ? { accessPolicy: known.accessPolicy, name: known.name, removedAt: known.removed ? 0 : null }
+    : await database
+        .selectFrom("devices")
+        .select(["accessPolicy", "name", "removedAt"])
+        .where("id", "=", machineId)
+        .executeTakeFirst();
   if (!runner || runner.removedAt)
     throw new OpensteerError({ code: "not_found", message: "Active computer not found" });
   // The person's Stop on the computer itself holds whether or not it is connected.
@@ -63,7 +74,7 @@ export async function requireDeviceAccess(
       capability,
       runner.name,
     );
-  if (!deviceAccess(runner.accessPolicy)[capability])
+  if (!deviceAccess(runner.accessPolicy as Parameters<typeof deviceAccess>[0])[capability])
     throw new DeviceAccessRefusal("device-access-off", machineId, capability, runner.name);
 }
 

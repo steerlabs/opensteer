@@ -1,4 +1,4 @@
-import { pluginCaller, pluginGrantTarget } from "../../plugins/plugin-authority.js";
+import { grantHolds, pluginCaller, pluginGrantTarget } from "../../plugins/plugin-authority.js";
 import { pluginTargetBlocked } from "../../plugins/target-blocked.js";
 import { requestResult } from "../request-result.js";
 import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
@@ -44,6 +44,7 @@ import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { delay } from "@opensteer/shared/delay";
 import { directResult, requireDirectWork } from "./direct.js";
 import type { AgentSessionService } from "../../agent-sessions/agent-session-service.js";
+import { forgetLent } from "../lent-now.js";
 
 const owner = { caller: "personal", mode: "automatic" } as const;
 
@@ -94,6 +95,8 @@ export class PluginToolHandlers {
     const context = this.options.authority.admit(caller);
     const settings = await this.options.settings.settings(caller.userId);
     // Local providers are listed independently of the installed plugin engine.
+    // It may read the grant itself: it only decides whether to ask the engine for installed
+    // plugins, and names no device and no approval.
     const listInstalled =
       caller.kind !== "connection" ||
       caller.grant.scope === "everything" ||
@@ -246,7 +249,20 @@ export class PluginToolHandlers {
         | readonly { app: string; name: string; reason: string; blocked?: Blocked | undefined }[]
         | undefined;
     },
-  >(context: PluginCaller, result: T) {
+  >(context: PluginCaller, found: T) {
+    // Under a connection's grant, what the grant does not hold (`access_required`: a write it
+    // holds for reading only, an app it does not reach) is not there: plugin_call reads it as
+    // absent, and so does every listing.
+    const caller = this.options.authority.caller(context.caller);
+    const result =
+      caller && callerLineage(caller) && "items" in found && Array.isArray(found.items)
+        ? {
+            ...found,
+            items: (found.items as { blocked?: Blocked }[]).filter(
+              ({ blocked }) => blocked?.code !== "access_required",
+            ),
+          }
+        : found;
     const unavailable = result.unavailableApps;
     if (!unavailable?.length) return result;
     const remoteIds = [...new Set(unavailable.filter((e) => !e.blocked).map((e) => e.app))];
@@ -289,6 +305,10 @@ export class PluginToolHandlers {
       });
     const { taskId, reason } = call.input;
     const signal = call.signal;
+    // What this connection's grant lets it do in an app: a tool it does not hold reads as absent.
+    // The person's own setting for an app the grant holds is said, as its listing says it
+    // (pluginToolReason).
+    const holds = async (plugin: string, write: boolean) => grantHolds(caller.grant, plugin, write);
     let target: { plugin: string; name: string; version: string; readOnly: boolean };
     let tool: "plugin_call" | "plugin_execute" | "plugin_resume";
     let input: { calls: PluginInput<"call">["calls"] } | { code: string } | { executionId: string };
@@ -318,27 +338,26 @@ export class PluginToolHandlers {
       const paths = (Array.isArray(input.calls) ? input.calls : [input.calls]).map(
         ({ path }) => path,
       );
+      // The engine alone reads which tool each path names, with its own parser and escaping; a
+      // tool that is there but blocked comes with its reason.
       const resolved = await o.service.resolveTools({ paths }, context, signal);
+      // A blocked tool this call's own grant holds (its level, the person's plugin setting, read
+      // against write, for the tool the engine named) says why: never that it does not exist,
+      // and never a Request for what cannot run. One it does not hold, or one the grant does not
+      // reach (`access_required`), reads exactly as absent, as anything outside a grant.
+      for (const entry of resolved)
+        if (
+          entry?.blocked &&
+          entry.blocked.code !== "access_required" &&
+          (await holds(entry.plugin, !entry.readOnly))
+        )
+          throw new ToolBlockedError(entry.blocked);
       const first = resolved[0];
-      if (!first || resolved.length !== paths.length || resolved.some((entry) => !entry)) {
-        // A tool of a local provider this connection is shown, there but blocked (a data app the
-        // person approved for reading only, its device's apps off), says why before anything is
-        // asked: never that it does not exist, and never a Request for what cannot run. One its
-        // grant does not reach (`access_required`) reads as absent, as anything outside a grant.
-        const shown = (await o.localProviders?.providers(context)) ?? [];
-        for (const path of paths)
-          for (const provider of shown) {
-            const prefix = `${localToolPath(localNamespace(provider.slug, provider.id))}.`;
-            const blocked = path.startsWith(prefix)
-              ? provider.toolBlockers?.[path.slice(prefix.length)]
-              : undefined;
-            if (blocked && blocked.code !== "access_required")
-              throw new OpensteerError({
-                code: "forbidden",
-                message: blocked.message,
-                ...(blocked.next ? { next: blocked.next } : {}),
-              });
-          }
+      if (
+        !first ||
+        resolved.length !== paths.length ||
+        resolved.some((entry) => !entry || entry.blocked)
+      ) {
         throw unavailable();
       }
       if (
@@ -350,6 +369,10 @@ export class PluginToolHandlers {
         });
       target = { ...first, readOnly: resolved.every((entry) => entry?.readOnly) };
     } else if ("code" in call.input) {
+      // A program is not refused before it runs for a blocked tool inside it: its Request, when
+      // the mode asks one, is for running the program, whose calls are known only as it runs. A
+      // blocked tool it calls fails with its own reason, from the same function as plugin_call's,
+      // without reaching the device.
       tool = "plugin_execute";
       input = { code: call.input.code };
       calls = input.code;
@@ -411,17 +434,7 @@ export class PluginToolHandlers {
         message: `Use at most ${requestOperationCallsMaxLength.toLocaleString("en-US")} characters per connected plugin operation.`,
       });
     const grant = { kind: "plugin", target: pluginGrantTarget(target.plugin) } as const;
-    const access = agentGrantAccess(caller.grant, grant);
-    if (!access || ((!target.readOnly || continuationWrites) && access !== "read-write"))
-      throw unavailable();
-    const currentAccess = (await o.settings.settings(caller.userId)).find(
-      ({ pluginId }) => pluginId === target.plugin,
-    )?.access;
-    if (
-      currentAccess === "off" ||
-      ((!target.readOnly || continuationWrites) && currentAccess === "read-only")
-    )
-      throw unavailable();
+    if (!(await holds(target.plugin, !target.readOnly || continuationWrites))) throw unavailable();
     if (continuation) {
       const { taskId } = continuation;
       let { row } = continuation;
@@ -467,6 +480,17 @@ export class PluginToolHandlers {
       calls,
       execute: async (operation) => {
         await operation.recheck();
+        // It waited for the person: what is lent is read again, not kept from before the wait, and
+        // an app that is no longer there reads as one that never was (rule 5), before anything runs.
+        if (operation.requestId) {
+          forgetLent(caller);
+          if (
+            !(await providers()).some(
+              (item) => item.id === target.plugin && item.version === target.version,
+            )
+          )
+            throw unavailable();
+        }
         if (continuationMode && !threadAccessModeAtMost(continuationMode, operation.mode))
           throw unavailable();
         if ("executionId" in input)
@@ -485,7 +509,13 @@ export class PluginToolHandlers {
               input,
               operation.signal,
             ),
-          { operation, plugin: target.plugin, version: target.version, write: !target.readOnly },
+          {
+            operation,
+            plugin: target.plugin,
+            version: target.version,
+            write: !target.readOnly,
+            program: "code" in input,
+          },
         );
       },
       summarize: (result) => ({ executionId: result.executionId, status: result.status }),

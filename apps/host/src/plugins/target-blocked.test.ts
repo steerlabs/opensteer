@@ -56,8 +56,12 @@ it.each([{ dataApp: "Calendar", computerId: "dev_mac" }, { server: "Issues" }])(
     );
     expect(localTargetBlocked(readiness, "Local", target, false)).toMatchObject({
       code: "access_required",
-      next: expect.stringMatching(/^Ask the owner .*Opensteer/),
+      next: expect.stringMatching(/^Ask the person .*Opensteer/),
     });
+    // A connected agent has no task to ask for access from, and is never told to.
+    expect(localTargetBlocked(readiness, "Local", target, false, true)?.next).not.toMatch(
+      /task|owner/u,
+    );
     const readOnly = localTargetBlocked(
       { ...readiness, code: "READ_ONLY_TASK", requiredAccess: null },
       "Local",

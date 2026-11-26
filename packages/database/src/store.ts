@@ -1009,18 +1009,31 @@ export class OpensteerStore {
       const cleanup = await claimConnectionCleanup(this.#database, connectionId);
       if (!cleanup) continue;
       const { userId, token, reason } = cleanup;
+      const sessionStops: Promise<void>[] = [];
       try {
         const attempts = outstandingAttempts(
           await connectionAttempts(this.#database, connectionId),
         );
         for (const attempt of attempts) {
           if (attempt.kind !== "session") continue;
-          await step(() =>
+          const end = () =>
             commitPersonalMutation(this.#database, async (tx) => {
               if (await renewConnectionCleanupClaim(tx, cleanup))
                 await endAgentSessions(tx, { userId, sessionIds: [attempt.id], reason });
-            }),
-          );
+            });
+          const stopSession = options.stopper?.stopAgentSession;
+          if (attempt.handedOff && stopSession) {
+            // Close the device without holding database locks or making the rest of the
+            // connection wait for its receipt. The session stays in the set until it answers.
+            sessionStops.push(
+              step(async () => {
+                if (!(await renewConnectionCleanupClaim(this.#database, cleanup))) return;
+                await stopSession(attempt, cleanup, end);
+              }),
+            );
+          } else {
+            await step(end);
+          }
         }
         // A narrowing closes a command ask its lineage made only where its standing no longer
         // reaches it, by the same function the grant edit uses; nothing is said to the lineage.
@@ -1036,9 +1049,8 @@ export class OpensteerStore {
                 });
             }),
           );
-        if (attempts.length || cleanup.pending) {
-          if (options.onCleanup) await step(() => options.onCleanup!(cleanup));
-        }
+        if ((attempts.length || cleanup.pending) && options.onCleanup)
+          await step(() => options.onCleanup!(cleanup));
         for (const attempt of attempts) {
           if (attempt.kind === "session") continue;
           if (!(await renewConnectionCleanupClaim(this.#database, cleanup))) break;
@@ -1168,8 +1180,10 @@ export class OpensteerStore {
               break;
           }
         }
+        await Promise.all(sessionStops);
         if (await completeCleanupIfSettled(this.#database, cleanup)) settled.push(connectionId);
       } finally {
+        await Promise.all(sessionStops);
         await releaseConnectionCleanupClaim(this.#database, connectionId, token);
       }
     }

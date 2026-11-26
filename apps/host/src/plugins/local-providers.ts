@@ -1,5 +1,7 @@
+import { forgetLent, lentNow, lentRequester } from "../mcp/lent-now.js";
 import {
   deviceAppBlocked,
+  deviceAppUnavailable,
   deviceAccessBlocked,
   localTargetBlocked,
 } from "../devices/target-blocked.js";
@@ -61,7 +63,14 @@ type Located = PluginHostProvider & {
   readonly transport: "computer" | "runner";
   /** What app_access_request names this provider by: a data app's name or a server's. */
   readonly requestName: string;
+  /** The app's own title, without its device. */
+  readonly title: string;
   readonly waitingForLaunchApproval?: true;
+  /**
+   * What a local server's own state on its computer keeps it from (waiting for the person's
+   * approval, stopped, failed): its app's line and every operation's reason, from this one value.
+   */
+  readonly launchBlocked?: Blocked;
   readonly blocked?: Blocked;
   readonly toolBlockers: Readonly<Record<string, Blocked>>;
 };
@@ -101,7 +110,9 @@ export class LocalProviders {
         connectionId: _c,
         transport: _t,
         requestName: _r,
+        title: _title,
         waitingForLaunchApproval: _approval,
+        launchBlocked: _launch,
         toolBlockers,
         ...provider
       }) => (Object.keys(toolBlockers).length ? { ...provider, toolBlockers } : provider),
@@ -133,6 +144,9 @@ export class LocalProviders {
     const session = this.#options.authority.session?.(input.caller);
     if (!caller || (caller.kind === "connection" && !session))
       throw failure("Local tools are called only from a task or its programs.");
+    // Each call a program makes is its own listing: what is lent is read again, never kept from
+    // the program's earlier calls (lentNow).
+    if (session?.program || caller.kind === "program") forgetLent(caller);
     const { providers, callables } = await this.#list(
       caller,
       input.plugin,
@@ -140,16 +154,10 @@ export class LocalProviders {
     );
     const [provider] = providers;
     if (!provider) throw failure("This local tool was removed or changed; search again.");
-    if (provider.blocked) {
-      const access =
-        provider.kind === "device-app" && provider.computer
-          ? await this.#options.devices.localDeviceAccessBlocked(
-              provider.computer.id,
-              caller.kind === "connection",
-            )
-          : undefined;
-      return { kind: "blocked", blocked: access ?? provider.blocked };
-    }
+    // What the listing said keeps it, from the same function and the same reads: the device's
+    // own refusal is already its app's and every operation's (#list), never asked again here.
+    if (provider.blocked)
+      return { kind: "blocked", blocked: provider.toolBlockers[input.tool] ?? provider.blocked };
     const tool = provider.tools.find(({ name }) => name === input.tool);
     const callable = callables.find(
       (candidate) =>
@@ -312,8 +320,10 @@ export class LocalProviders {
     readOnlyConnections: ReadonlyMap<string, boolean>,
     canAsk: boolean,
     lookup: "discover" | "plugin_search",
+    connection: boolean,
   ): Located {
-    if (provider.blocked) return provider;
+    // Every operation that cannot run carries its own reason, whether or not anything else of its
+    // app can: a call is about that one operation (a read is never refused for a write's reason).
     const entry = inventory.find((entry) => entry.installation.id === provider.installationId);
     const stateFor = (tool: string) => {
       const row = entry?.tools.find(
@@ -351,6 +361,8 @@ export class LocalProviders {
         provider.kind === "device-app" && provider.computer
           ? deviceAppBlocked(state, {
               name: provider.name,
+              app: provider.title,
+              device: provider.computer.name,
               dataApp: provider.requestName,
               computerId: provider.computer.id,
               readOnlyGrant:
@@ -359,15 +371,27 @@ export class LocalProviders {
                 readOnlyConnections.get(provider.connectionId) === true,
               operation: tool.name,
               canAsk,
+              connection,
             })
-          : localTargetBlocked(state, provider.name, { server: provider.requestName }, canAsk);
+          : // A local server's own state on its computer keeps each operation as it keeps the app,
+            // in the same words and code (its app's line says it once).
+            (provider.launchBlocked ??
+            localTargetBlocked(
+              state,
+              provider.name,
+              { server: provider.requestName },
+              canAsk,
+              connection,
+            ));
       return [
         tool.name,
-        blocked ?? {
-          code: "unavailable",
-          message: `${provider.name} has no usable ${tool.name} operation.`,
-          next: `Use ${lookup} for current tools; continue other work.`,
-        },
+        blocked ??
+          // An operation with no state of its own is kept by what keeps its app.
+          provider.blocked ?? {
+            code: "unavailable",
+            message: `${provider.name} has no usable ${tool.name} operation.`,
+            next: `Use ${lookup} for current tools; continue other work.`,
+          },
       ] as const;
     });
     return { ...provider, toolBlockers: Object.fromEntries(blockers) };
@@ -384,13 +408,28 @@ export class LocalProviders {
     const store = this.#options.store;
     const canAsk =
       caller.kind === "run" || (caller.kind === "program" && caller.program.kind === "trigger");
+    // A connected agent has no task to ask for access from: it is told only what the person does.
+    const connected = caller.kind === "connection";
+    // What the one rule lends this caller's connection lineage now, read once for the call.
+    const lent =
+      caller.kind === "owner"
+        ? null
+        : await lentNow(caller, (owner, grant) => store.grantedDeviceApprovals(owner, grant));
     const requester: IntegrationRequester =
       caller.kind === "owner"
         ? { ownerUserId: caller.userId, kind: "person" }
         : caller.kind === "connection" && !bindingId
-          ? { ownerUserId: caller.userId, connectionId: caller.connectionId }
+          ? {
+              ownerUserId: caller.userId,
+              connectionId: caller.connectionId,
+              ...lentRequester(lent),
+            }
           : // The exact execution, so its own lineage and mode decide, never another Run's.
-            { ownerUserId: caller.userId, agentBindingId: bindingId ?? caller.key };
+            {
+              ownerUserId: caller.userId,
+              agentBindingId: bindingId ?? caller.key,
+              ...lentRequester(lent),
+            };
     const facts = this.#options.devices.localDiscoveryFacts(requester.ownerUserId);
     const [inventory, callables] = await Promise.all([
       store
@@ -402,7 +441,9 @@ export class LocalProviders {
         .then((entries) =>
           this.#options.devices.withAvailability(
             entries,
-            { ...requester, ownerView: metadataOnly, offlineAtCall: !metadataOnly },
+            // A device that is only unreachable is left to the call, which says it is offline;
+            // a connected agent is told so in its listing too (reachable false, the device's words).
+            { ...requester, ownerView: metadataOnly, offlineAtCall: !metadataOnly && !connected },
             facts,
           ),
         ),
@@ -441,7 +482,10 @@ export class LocalProviders {
                 : [],
             );
             const ready = states.some(({ code }) => code === "READY");
-            const state = states.find(({ code }) => code !== "READY");
+            // When nothing can run, the app's one line (what discover and a listing say of the
+            // whole app) is its most basic reason; a call is about one operation and says that
+            // operation's own (`#withToolBlockers`).
+            const state = appReason(states);
             if (!ready && !state) continue;
             const connection = await facts.connectionFor(account.connectionId);
             if (!connection) continue;
@@ -461,17 +505,26 @@ export class LocalProviders {
                 connectionId: account.connectionId,
                 transport: "computer",
                 requestName: dataAppName(definition),
+                title: entry.installation.title,
                 blocked: ready
                   ? undefined
-                  : localTargetBlocked(
-                      state,
-                      definition.id,
-                      {
-                        dataApp: dataAppName(definition),
-                        computerId: connection.deviceId,
-                      },
-                      canAsk,
-                    ),
+                  : state?.code === "INTEGRATION_UNAVAILABLE" && state.detail
+                    ? // What the device reports, as discover and the device's state read it.
+                      deviceAppUnavailable({
+                        detail: state.detail,
+                        app: entry.installation.title,
+                        device: connection.runnerName,
+                      })
+                    : localTargetBlocked(
+                        state,
+                        `${entry.installation.title} on ${connection.runnerName}`,
+                        {
+                          dataApp: dataAppName(definition),
+                          computerId: connection.deviceId,
+                        },
+                        canAsk,
+                        connected,
+                      ),
                 unavailable: ready
                   ? undefined
                   : (state?.detail ??
@@ -532,9 +585,11 @@ export class LocalProviders {
               connectionId: null,
               transport: "runner",
               requestName: serverName,
+              title: entry.installation.title,
               ...(launchStatus?.state === "waiting"
                 ? { waitingForLaunchApproval: true as const }
                 : {}),
+              ...(launchStatus?.blocked ? { launchBlocked: launchStatus.blocked } : {}),
               blocked:
                 launchStatus?.blocked ??
                 localTargetBlocked(
@@ -544,6 +599,7 @@ export class LocalProviders {
                     server: serverName,
                   },
                   canAsk,
+                  connected,
                 ) ??
                 (!runnerId
                   ? {
@@ -578,9 +634,57 @@ export class LocalProviders {
             readOnlyConnections,
             canAsk,
             caller.kind === "connection" ? "discover" : "plugin_search",
+            connected,
           ),
         );
-    const providers = assessed
+    // A data app its device cannot serve now (its Apps switch off, offline, asleep, stopped) reads
+    // as a call to it says it, for a connected agent and a Run alike, each in its own words: the
+    // device's own refusal first, for the app and each operation. Once per device, from the
+    // device's switches and name the approval's row brought (facts.connectionFor, read for the
+    // listing anyway) and the Home's own state of it: no statement of its own (rule 7).
+    const refusals = new Map<string, Promise<Blocked | undefined>>();
+    const deviceRefusal = (deviceId: DeviceId, connectionId: string | null) => {
+      let refusal = refusals.get(deviceId);
+      if (!refusal) {
+        refusal = (async () => {
+          const row = connectionId
+            ? await facts.connectionFor(IntegrationConnectionIdSchema.parse(connectionId))
+            : null;
+          return this.#options.devices.localDeviceAccessBlocked(
+            deviceId,
+            connected,
+            row && row.deviceAccessPolicy !== undefined
+              ? {
+                  accessPolicy: row.deviceAccessPolicy,
+                  name: row.deviceName,
+                  removed: row.runnerRevoked,
+                }
+              : undefined,
+          );
+        })()
+          // A device the Home no longer knows, or whose driver is not loaded, is left to what the
+          // inventory says of it: the listing and the call alike.
+          .catch(() => undefined);
+        refusals.set(deviceId, refusal);
+      }
+      return refusal;
+    };
+    const shown = metadataOnly
+      ? assessed
+      : await Promise.all(
+          assessed.map(async (entry) => {
+            if (entry.kind !== "device-app" || !entry.computer) return entry;
+            const device = await deviceRefusal(entry.computer.id, entry.connectionId);
+            return device
+              ? {
+                  ...entry,
+                  blocked: device,
+                  toolBlockers: Object.fromEntries(entry.tools.map(({ name }) => [name, device])),
+                }
+              : entry;
+          }),
+        );
+    const providers = shown
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((entry) => ({ ...entry, slug: localNamespace(entry.slug, entry.id) }))
       .map((entry) => ({
@@ -594,6 +698,28 @@ export class LocalProviders {
       }));
     return { providers, callables };
   }
+}
+
+/**
+ * The order an app's one line takes its reason in, when none of its operations can run: what the
+ * device reports first, then the person's setup, then the grant, and the task's mode last. A task's
+ * read-only mode or a missing grant is never said in front of what keeps the device itself.
+ */
+const appReasonOrder = [
+  "INTEGRATION_UNAVAILABLE",
+  "USER_AUTHORIZATION_REQUIRED",
+  "REAUTHORIZATION_REQUIRED",
+  "ACCESS_GRANT_REQUIRED",
+  "READ_ONLY_TASK",
+] as const;
+function appReason<State extends { readonly code: string }>(
+  states: readonly State[],
+): State | undefined {
+  for (const code of appReasonOrder) {
+    const found = states.find((state) => state.code === code);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 function providerTarget(id: string) {
@@ -622,8 +748,10 @@ function provider(input: {
   connectionId: string | null;
   transport: "computer" | "runner";
   requestName: string;
+  title: string;
   unavailable: string | undefined;
   waitingForLaunchApproval?: true;
+  launchBlocked?: Blocked;
   blocked?: Blocked | undefined;
   tools: PluginHostProvider["tools"];
 }): Located {
@@ -646,9 +774,11 @@ function provider(input: {
     connectionId: input.connectionId,
     transport: input.transport,
     requestName: input.requestName,
+    title: input.title,
     ...(input.phoneAddedAt ? { phoneAddedAt: input.phoneAddedAt } : {}),
     ...(input.unavailable ? { ownerUnavailable: input.unavailable } : {}),
     ...(input.waitingForLaunchApproval ? { waitingForLaunchApproval: true as const } : {}),
+    ...(input.launchBlocked ? { launchBlocked: input.launchBlocked } : {}),
     ...(input.blocked
       ? { blocked: input.blocked }
       : input.unavailable

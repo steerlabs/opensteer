@@ -217,33 +217,36 @@ describeStore("a connected agent's reads stay within their statement budgets", (
       );
       counts[name] = listed[name].length;
     }
-    // After the lending reads what the grant covers of the person's device approvals, where the
-    // connection stands is read again in exactly one statement when nothing moved: the
-    // connection's own row, and no second admission (owner and Home reads) behind it.
-    // discover's branches run concurrently (its root lists, and gatherComputerAccess reads the
-    // owner's Requests beside the tool listing), so what is pinned is what it sends, never where
-    // another branch's statement lands: the re-read follows the lending in its own chain, and the
-    // whole call reads the connection's row 4 times beside 5 owner checks and 4 Home reads. The
-    // re-read is the one row read with no owner or Home read of its own: without it the row is
-    // read 3 times; a second admission would add a row, an owner and a Home read.
+    // What the grant is lent of the person's device approvals is read once per call (`lentNow`),
+    // and every path of discover (its tool listing, its inventory, its computer inventory) takes
+    // it from there; where the connection stands is then read again in exactly one statement when
+    // nothing moved: the connection's own row. discover's branches run concurrently (its root
+    // lists, and gatherComputerAccess reads the owner's Requests beside the tool listing, held
+    // above until after the lending as a slower machine may send it), so what is pinned is what
+    // it sends, never where a statement lands: one lending, and the connection's row read
+    // 3 times beside 4 owner checks and 3 Home reads. The re-read is the one row
+    // read with no owner or Home read of its own: without it the row is read 2 times; a
+    // second admission would add a row, an owner and a Home read.
     const discovered = listed.discover!;
-    const lending = discovered.findIndex((sql) => lendingStatement.test(sql));
-    expect(lending).toBeGreaterThan(0);
-    const standing =
-      /^select "id", "label", "grant", "grant_revision"[\s\S]*from "agent_connections"/u;
-    expect(discovered.slice(lending + 1).some((sql) => standing.test(sql))).toBe(true);
     const sent = (shape: RegExp) => discovered.filter((sql) => shape.test(sql)).length;
     expect({
-      standing: sent(standing),
+      lending: sent(lendingStatement),
+      standing: sent(
+        /^select "id", "label", "grant", "grant_revision"[\s\S]*from "agent_connections"/u,
+      ),
       owner: sent(/^select "deployments"\."deployment_shape"/u),
       home: sent(/^select "host_computer"\."id" as "hosting_computer_id"/u),
-    }).toEqual({ standing: 4, owner: 5, home: 4 });
+    }).toEqual({ lending: 1, standing: 3, owner: 4, home: 3 });
     // Fixed per-call budgets:
-    // - discover: 24 (one live check per discover call; 27 before; 22 until d15e89135, whose
+    // - discover: 21 (one live check per discover call; 27 before; 22 until d15e89135, whose
     //   tool listing for a connection reads what its grant covers of the person's device
-    //   approvals (grantedDeviceApprovals, 1) and reads where the connection stands again after
-    //   that lending (connectionStandsAsAdmitted, 1: admitted again in full only if its grant,
-    //   mode, consent or state moved), so a grant narrowed in between applies).
+    //   approvals and reads where the connection stands again after that lending
+    //   (connectionStandsAsAdmitted, 1: admitted again in full only if its grant, mode, consent
+    //   or state moved), so a grant narrowed in between applies; 24, then 25 while discover's
+    //   tool listing, its inventory and its computer inventory each read the lending
+    //   (grantedDeviceApprovals) and the computer inventory read the grant again; 21 since
+    //   what-a-connection-is-shown reads the lending once per call (lentNow) and every path takes
+    //   it and the grant from there). Your own agents read none of it.
     // - childWaitSettled: 88 (settled first snapshot with status === "settled"; was 93 at
     //   457885706 before the R round, 89 after R1-R7, and 88 after P1 unified
     //   admitThreadExecution onto threadExecutionAdmitted).
@@ -252,7 +255,7 @@ describeStore("a connected agent's reads stay within their statement budgets", (
     // - taskRead: 28 (down from 33 at 457885706 after folding connectionRequests into
     //   recent/activity SQL and removing post-hoc visibleConnectionRequestIds).
     expect(counts).toEqual({
-      discover: 24,
+      discover: 21,
       childWaitSettled: 88,
       childWaitTimedOut: 88,
       taskRead: 28,

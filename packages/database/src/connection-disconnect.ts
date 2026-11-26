@@ -103,6 +103,11 @@ export interface ConnectionAttemptStopper {
     attempt: ConnectionAttempt<"operation", AgentOperationId>,
     cleanup: ConnectionCleanup,
   ): Promise<void>;
+  stopAgentSession?(
+    attempt: ConnectionAttempt<"session", AgentSessionId>,
+    cleanup: ConnectionCleanup,
+    settle: () => Promise<void>,
+  ): Promise<void>;
 }
 
 export function connectionStopId(attempt: LineageAttempt): CommandId {
@@ -326,7 +331,11 @@ export async function connectionAttempts(
       where (m.terminal_evidence_at is null or m.contact_lost_at is not null)
         and ${belowFloor("m.admitted_grant_revision", "m.admitted_access_mode")}
       union all
-      select 'session', s.id, null, s.thread_id, null, null, null, false, null, null, null
+      -- A computer-use session can still hold a device after its last operation settled.
+      select 'session', s.id, null, s.thread_id, null, null, null, exists (
+        select 1 from agent_operations o
+        where o.session_id = s.id and o.tool = 'computer_use' and o.handed_off_at is not null
+      ), null, null, null
       from agent_sessions s join floor f on f.id = s.connection_id
       where s.status = 'active' and (f.disconnected or f.cleanup_reason = 'narrowed')
       union all

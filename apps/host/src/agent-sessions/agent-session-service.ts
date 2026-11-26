@@ -140,6 +140,7 @@ export interface DirectOperationContext {
   /** The pooled command queue calls this at the wire boundary. */
   readonly browserSend?: PooledBrowserSend;
   readonly computerSubmitted?: () => void;
+  readonly computerStopped?: () => never;
 }
 
 export interface PooledBrowserSend {
@@ -325,13 +326,14 @@ export function operationArgumentDigest(tool: string, input: unknown): string {
 
 export class AgentSessionService {
   readonly #store: OpensteerStore;
-  readonly #closeBinding: (bindingId: string, reason: string) => void;
+  readonly #closeBinding: (bindingId: string, reason: string) => void | Promise<void>;
   readonly #onError: (error: unknown) => void;
   /** One controller per session with work in this process; aborted when the session ends. */
   readonly #sessions = new Map<
     AgentSessionId,
     { readonly controller: AbortController; readonly connectionId: string; work: number }
   >();
+  readonly #closingSessions = new Map<AgentSessionId, AbortSignal>();
   /** Operations executing or waiting on pooled admission, joined by concurrent resumes. */
   readonly #running = new Map<
     AgentOperationId,
@@ -352,7 +354,7 @@ export class AgentSessionService {
   constructor(options: {
     readonly store: OpensteerStore;
     /** Closes what holds a binding open elsewhere, such as a standard CDP attachment. */
-    readonly closeBinding?: (bindingId: string, reason: string) => void;
+    readonly closeBinding?: (bindingId: string, reason: string) => void | Promise<void>;
     readonly onError?: (error: unknown) => void;
     /** How long a call waits for the person's decision before it returns pending. */
     readonly holdMs?: number;
@@ -537,6 +539,24 @@ export class AgentSessionService {
         await this.stopDirectOperation(id, "narrowed");
   }
 
+  /** The Disconnect set includes idle device holds, even without a live executor. */
+  async stopAgentSession(
+    sessionId: AgentSessionId,
+    ending: AgentOperationEnding,
+    settle: () => Promise<void>,
+  ): Promise<void> {
+    // The row remains active until the device answers. Cut new execution on this binding
+    // during that wait, including a new call using a different target in a narrowed grant.
+    const stopped = AbortSignal.abort(endedBy(ending));
+    this.#closingSessions.set(sessionId, stopped);
+    try {
+      await this.#abort(sessionId, ending);
+      await settle();
+    } finally {
+      if (this.#closingSessions.get(sessionId) === stopped) this.#closingSessions.delete(sessionId);
+    }
+  }
+
   /** After a connection change committed: abort work of sessions that ended, or all of them. */
   async closeConnection(
     connectionId: string,
@@ -562,7 +582,7 @@ export class AgentSessionService {
             .where("status", "=", "ended")
             .execute()
         ).map(({ id }) => id);
-    for (const id of ended) this.#abort(id, ending);
+    await Promise.all(ended.map((id) => this.#abort(id, ending)));
   }
 
   async endIdle(now = Date.now()): Promise<void> {
@@ -581,17 +601,17 @@ export class AgentSessionService {
   }
 
   #ended(sessions: readonly { readonly id: AgentSessionId }[], reason: AgentSessionEndReason) {
-    for (const session of sessions) this.#abort(session.id, sessionEnding[reason]);
+    for (const session of sessions)
+      void this.#abort(session.id, sessionEnding[reason]).catch(this.#onError);
   }
-  #abort(sessionId: AgentSessionId, ending: AgentOperationEnding | null) {
+  async #abort(sessionId: AgentSessionId, ending: AgentOperationEnding | null): Promise<void> {
     const error = endedBy(ending);
-    this.#closeBinding(`session:${sessionId}`, error.message);
     for (const attempt of this.#running.values())
       if (attempt.pooled?.sessionId === sessionId) attempt.controller.abort(error);
     const entry = this.#sessions.get(sessionId);
-    if (!entry) return;
-    this.#sessions.delete(sessionId);
-    entry.controller.abort(error);
+    entry?.controller.abort(error);
+    await this.#closeBinding(`session:${sessionId}`, error.message);
+    if (this.#sessions.get(sessionId) === entry) this.#sessions.delete(sessionId);
   }
 
   /** Why a recheck was refused, from what it read: the session's end, else the connection's. */
@@ -656,6 +676,7 @@ export class AgentSessionService {
           throw new AgentOperationFailure(agentOperationRefusal(row.decision, row.ending), {
             ...base,
             status: "refused",
+            ...(row.ending ? { ending: row.ending } : {}),
           });
         case "handed-off": {
           const running = this.#running.get(row.id);
@@ -991,9 +1012,11 @@ export class AgentSessionService {
     this.#sessions.set(row.sessionId, entry);
     entry.work++;
     const deadline = pooled?.deadline ?? Date.now() + (operation.timeoutMs ?? this.#executionMs);
+    const closing = this.#closingSessions.get(row.sessionId);
     const signal = AbortSignal.any([
       entry.controller.signal,
       stop,
+      ...(closing ? [closing] : []),
       ...(!pooled ? [AbortSignal.timeout(deadline - Date.now())] : []),
     ]);
     const base = { taskId, operationId: row.id };
@@ -1006,6 +1029,7 @@ export class AgentSessionService {
         throw new AgentOperationFailure(agentOperationRefusal(current.decision, current.ending), {
           ...base,
           status: "refused",
+          ...(current.ending ? { ending: current.ending } : {}),
         });
       if (current.state === "completed")
         return { ...base, status: "completed", summary: current.resultSummary };
@@ -1056,7 +1080,7 @@ export class AgentSessionService {
       let result: Result;
       let scriptError: ReplFailure | undefined;
       try {
-        if (pooled) signal.throwIfAborted();
+        if (pooled || closing) signal.throwIfAborted();
         result = await operation.execute({
           sessionId: row.sessionId,
           taskId,
@@ -1074,6 +1098,8 @@ export class AgentSessionService {
                 computerSubmitted: () => {
                   submitted++;
                 },
+                computerStopped: () =>
+                  endAuthority(agentOperationEndingWords.stopped.message, "stopped"),
               }
             : {}),
           ...(pooled
@@ -1160,7 +1186,7 @@ export class AgentSessionService {
                   ? stoppedBeforeSendNext
                   : refusedBeforeSendNext,
             },
-            { ...base, status: "refused" },
+            { ...base, status: "refused", ...(ending ? { ending } : {}) },
           );
         const outcome =
           ended || error instanceof OperationOutcomeUnknown || signal.aborted || outstanding > 0
@@ -1183,7 +1209,7 @@ export class AgentSessionService {
               message: ended.message,
               next: ending ? agentOperationEndingWords[ending].next : interruptedNext,
             },
-            { ...base, status: "unknown" },
+            { ...base, status: "unknown", ...(ending ? { ending } : {}) },
           );
         if (outcome === "unknown")
           return { status: "unknown", ...base, next: unknownOperationNext(ending) };

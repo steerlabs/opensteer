@@ -118,9 +118,18 @@ integration("a connected agent's first use of a fresh Home", () => {
         });
       }
 
-      // The person is asked, as for any change to the Home below Full access.
-      const asking = agent.call("opensteer_command", create);
-      await waitForCondition(async () => (await waitingCommands()).length > 0, 30_000);
+      // The person is asked, as for any change to the Home below Full access (at Full access the
+      // profile is made at once: the case below). Made without asking ends the wait at once.
+      let asked: string | undefined;
+      const asking = agent.call("opensteer_command", create).then((answer) => {
+        asked = (answer.structuredContent as { status?: string } | undefined)?.status;
+        return answer;
+      });
+      await waitForCondition(
+        async () => asked === "done" || (await waitingCommands()).length > 0,
+        30_000,
+      );
+      expect(asked, "the profile was made without asking the person").not.toBe("done");
       const [request, ...more] = await waitingCommands();
       expect(more).toEqual([]);
       expect(await profiles()).toEqual([]);

@@ -58,7 +58,7 @@ integration("device data apps as plugin tools", () => {
     for (const close of closers.splice(0)) await close().catch(() => undefined);
   }, 60_000);
 
-  async function start() {
+  async function start(options: { readonly messages?: true } = {}) {
     const host = await startMachineAccessWireHost(databaseUrl, {
       remoteAccess: true,
       manualRunner: true,
@@ -83,6 +83,7 @@ integration("device data apps as plugin tools", () => {
       [
         createHelperAppProvider("apple-calendar", helper.port),
         createHelperAppProvider("apple-reminders", helper.port),
+        ...(options.messages ? [createHelperAppProvider("apple-messages", helper.port)] : []),
       ],
       { statusIntervalMs: 200 },
     );
@@ -103,6 +104,17 @@ integration("device data apps as plugin tools", () => {
       "apple-reminders",
     );
     const reminders = await setComputerApp(host, computer, remindersSetup, remindersSetup.id);
+    // Messages, approved on the Mac and never granted to the task below.
+    if (options.messages) {
+      const messagesSetup = await requestComputerAppSetup(
+        host,
+        computer.runnerId,
+        "read-write",
+        "messages-write",
+        "apple-messages",
+      );
+      await setComputerApp(host, computer, messagesSetup, messagesSetup.id);
+    }
     const run = await dispatchCallerRun(host, caller, { key: "device-plugins", title: "Plan" });
     closers.unshift(() => run.complete());
     const gateway = await integrationGateway(run.integrationTools);
@@ -216,6 +228,71 @@ integration("device data apps as plugin tools", () => {
       send.mockRestore();
       await pending;
     }
+  });
+
+  it("tells a Run each operation's own reason, never its task's read-only mode for a read", async () => {
+    const { host, helper, caller, gateway, run } = await start({ messages: true });
+    helper.grants.contacts = "granted";
+    helper.grants["full-disk-access"] = "granted";
+    helper.grants.automation = "granted";
+    const queryMessages = await pluginPath(gateway, "query_messages", "query_messages");
+    const listReminders = await pluginPath(gateway, "list_reminders", "list_reminders");
+    // macOS no longer lets the helper read reminders: the Mac reports it within its interval.
+    // Reminders is granted to this task for changes too, so its write operations are listed.
+    helper.grants.reminders = "requestable";
+    await waitForCondition(async () =>
+      JSON.stringify(await gateway.call("plugin_search", { query: "list_reminders" })).includes(
+        "needs macOS full access",
+      ),
+    );
+    const answers = async (through = gateway) => ({
+      messages: (await pluginCall(through, queryMessages, {})).raw.structuredContent,
+      reminders: (await pluginCall(through, listReminders, {})).raw.structuredContent,
+    });
+    const expectOwnReasons = (seen: Awaited<ReturnType<typeof answers>>) => {
+      const text = JSON.stringify(seen);
+      expect(text).not.toContain("This task runs read-only.");
+      // Messages was never granted to this task: its read asks for the grant.
+      expect(JSON.stringify(seen.messages), text).toContain('"code":"access_required"');
+      expect(JSON.stringify(seen.messages), text).toContain("app_access_request");
+      // Reminders is granted: what keeps its read is the Mac's missing permission.
+      expect(JSON.stringify(seen.reminders), text).toContain(
+        "Reminders needs macOS full access to reminders for Opensteer Computer Use on Studio Mac.",
+      );
+    };
+    // At Full access, and the same for a Run of the task once it is supervised or accepts edits
+    // automatically: a Run takes its task's mode when it starts, so each is a new Run of the task
+    // made in that mode, with the task's grants.
+    expectOwnReasons(await answers());
+    let previous = run;
+    for (const accessMode of ["approval-required", "auto-accept-edits"] as const) {
+      await previous.complete();
+      await host.store.updateThreadAccessMode({
+        threadId: run.threadId,
+        requestedBy: host.ownerId,
+        accessMode,
+      });
+      const next = await dispatchCallerRun(host, caller, {
+        key: `device-plugins-${accessMode}`,
+        title: "Plan",
+        threadId: run.threadId,
+      });
+      previous = next;
+      closers.unshift(() => next.complete());
+      expect(
+        (
+          await host.store.database
+            .selectFrom("runs")
+            .select("accessMode")
+            .where("id", "=", next.runId as never)
+            .executeTakeFirstOrThrow()
+        ).accessMode,
+      ).toBe(accessMode);
+      const supervised = await integrationGateway(next.integrationTools);
+      closers.unshift(() => supervised.close());
+      expectOwnReasons(await answers(supervised));
+    }
+    expect(helper.invocations).toEqual([]);
   });
 
   it("finds, describes and calls device tools, mixes them with a cloud plugin, and refuses what approvals do not allow", async () => {
@@ -493,10 +570,10 @@ return { found, described, refused };`,
     });
     expect(helper.invocations).toHaveLength(sent + 1);
 
-    // Offline: its tools stay listed as they are, the call says it is offline, and nothing is
-    // rerouted.
+    // Offline: the task's listing says what the call says, in the task's own words, once on the
+    // app; the call says it is offline and nothing is rerouted.
     await computer.close();
-    // The person's Plugins screen says it is offline; an agent's listing does not.
+    // The person's Plugins screen says it is offline.
     await waitForCondition(async () => {
       const owned = await testRpcData(
         host.origin,
@@ -506,38 +583,33 @@ return { found, described, refused };`,
       );
       return JSON.stringify(owned.local).includes("Studio Mac is offline");
     }, 30_000);
-    const offlineSearch = await gateway.call("plugin_search", {
-      namespace: localNamespace("calendar-studio-mac", `app_device_${calendar.connection.id}`),
-    });
-    expect(offlineSearch).toMatchObject({
-      items: expect.arrayContaining([expect.objectContaining({ path: listEvents })]),
-      unavailableApps: [],
-    });
-    expect(JSON.stringify(offlineSearch)).not.toContain("offline");
-    // Its writes keep their own read-only marker; nothing marks the reads or the namespace.
-    expect(
-      (offlineSearch.items as { path: string; blocked?: unknown }[]).find(
-        ({ path }) => path === listEvents,
-      ),
-    ).not.toHaveProperty("blocked");
-    expect(offlineSearch.namespaces).toEqual([
-      expect.not.objectContaining({ blocked: expect.anything() }),
-    ]);
     sent = helper.invocations.length;
     const offline = await pluginCall(gateway, listEvents, {
       end: "2026-10-07",
       start: "2026-10-01",
     });
+    const offlineError = {
+      code: "computer_offline",
+      message: "Device is offline. Do not request access.",
+      next: `computerId=${computer.runnerId}, access=apps. Continue without it and tell the person what the message says.`,
+    };
     expect(offline.raw).toMatchObject({
       isError: true,
-      structuredContent: {
-        error: {
-          code: "computer_offline",
-          message: "Device is offline. Do not request access.",
-          next: `computerId=${computer.runnerId}, access=apps. Continue without it and tell the person what the message says.`,
-        },
-      },
+      structuredContent: { error: offlineError },
     });
+    const offlineSearch = await gateway.call("plugin_search", {
+      namespace: localNamespace("calendar-studio-mac", `app_device_${calendar.connection.id}`),
+    });
+    expect(offlineSearch).toMatchObject({
+      items: expect.arrayContaining([expect.objectContaining({ path: listEvents })]),
+      namespaces: [expect.objectContaining({ blocked: offlineError })],
+    });
+    // Said once, on the app: its tools carry no marker of their own.
+    expect(
+      (offlineSearch.items as { path: string; blocked?: unknown }[]).filter(
+        ({ blocked }) => blocked !== undefined,
+      ),
+    ).toEqual([]);
     expect(helper.invocations).toHaveLength(sent);
   }, 240_000);
 
