@@ -150,6 +150,7 @@ import {
   type PluginExecutionTarget,
   type PluginOperation,
   type PluginCallback,
+  type PluginHostProvider,
 } from "./engine-protocol.js";
 import { z } from "zod";
 import {
@@ -1425,7 +1426,15 @@ export async function startEngine(
             );
             if (operation === "resolveTools")
               return yield* resolveCatalogTools(
-                discovery,
+                // A call is about one operation: each tool of a local provider carries its own
+                // reason here, its app's when it has none, where a listing says the app's once.
+                backend(
+                  context,
+                  undefined,
+                  false,
+                  () => Effect.map(providers, (listed) => listed.map(eachToolSaysWhy)),
+                  permission.connected,
+                ),
                 operations.resolveTools.input.parse(raw).paths,
               );
             const result =
@@ -2010,4 +2019,16 @@ export async function startEngine(
     await close();
     throw error;
   }
+}
+
+/** A local provider as a call to one of its tools reads it: every tool with its own reason. */
+function eachToolSaysWhy(provider: PluginHostProvider): PluginHostProvider {
+  if (!provider.blocked) return provider;
+  const { blocked, ...rest } = provider;
+  return {
+    ...rest,
+    toolBlockers: Object.fromEntries(
+      provider.tools.map(({ name }) => [name, provider.toolBlockers?.[name] ?? blocked]),
+    ),
+  };
 }
