@@ -156,6 +156,75 @@ describe("Host-projected phone displays", () => {
   });
 });
 
+describe("Host-projected Macs", () => {
+  const ready = { state: "ready", reason: null };
+  const on = { ...ready, supported: true, enabled: true, configurable: true };
+  /**
+   * A Mac added to a Home, as the Home projects it. Only phones report
+   * `app: "opensteer"`, so the Home classes such a Mac by its form: a Mac in a
+   * VM ("Apple Virtual Machine") is a "server", a MacBook is "unknown". The
+   * Home says itself whether it can stream the Mac's windows.
+   */
+  function addedMac(kind: "server" | "unknown", form: "server" | "laptop") {
+    return DeviceMachineSummarySchema.parse({
+      ...machine({}),
+      kind,
+      device: { platform: "macos", form },
+      access: null,
+      detail: null,
+      enrollmentId: null,
+      expiresAt: null,
+      lastSeenAt: null,
+      allowedModules: ["browser", "integrations"],
+      modules: {},
+      ownership: "mine",
+      revocable: true,
+      selfRunnerId: mac,
+      drivers: [],
+      capabilities: { browser: on, files: on, apps: on },
+      phoneDisplay: null,
+      computerUse: report("ready", { displayStreamSupported: true }),
+    });
+  }
+
+  it.each([
+    ["a Mac in a VM", "server", "server"],
+    ["a MacBook", "unknown", "laptop"],
+  ] as const)("gives %s added to the Home its live picture and its apps", (_, kind, form) => {
+    const added = addedMac(kind, form);
+    expect(canWatchComputer(added)).toBe(true);
+    expect(
+      computerUseView({
+        hostConnected: true,
+        connections: [],
+        definitions: [gui()],
+        machine: added,
+      }),
+    ).not.toBeNull();
+    // The Home's word decides: a Mac it cannot stream has no live picture.
+    expect(
+      canWatchComputer({
+        ...added,
+        computerUse: report("ready", { displayStreamSupported: false }),
+      }),
+    ).toBe(false);
+  });
+
+  it("never reads a phone without its screen, or a Linux server, as a Mac", () => {
+    const linux = {
+      ...addedMac("server", "server"),
+      device: { platform: "linux", form: "server" },
+    };
+    expect(canWatchComputer(linux as MachineSummary)).toBe(false);
+    const iphone = {
+      ...addedMac("unknown", "laptop"),
+      kind: "phone",
+      device: { platform: "ios", form: "phone" },
+    };
+    expect(canWatchComputer(iphone as MachineSummary)).toBe(false);
+  });
+});
+
 describe("Agent Phone identity", () => {
   it.each(["online", "offline", "needs-update"] as const)(
     "does not offer whole-phone use for an Opensteer phone that is %s",

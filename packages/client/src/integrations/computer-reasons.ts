@@ -2,13 +2,17 @@ import { phoneScreenUnavailableWords } from "./phone-screen.js";
 import { deviceReasonLabel } from "../host/device-projection.js";
 import type { MachineSummary } from "@opensteer/protocol";
 
-/** Whether the Host reports a live display for this computer's task sessions. */
+/**
+ * Whether the Host reports a live display for this computer's task sessions. A Mac is known by
+ * its platform, never by the kind the Home classed it as: a Mac added to a Home is "unknown",
+ * or "server" when it runs in a VM, and its picture is the Home's to report.
+ */
 export function canWatchComputer(machine: MachineSummary): boolean {
   if (machine.capabilities)
     return machine.phoneDisplay
       ? ["phone", "agent-phone"].includes(machine.kind ?? "unknown") &&
           machine.phoneDisplay.view.state === "ready"
-      : (machine.kind === "home" || machine.kind === "computer") &&
+      : machine.device?.platform === "macos" &&
           machine.computerUse?.displayStreamSupported === true;
   return machine.status === "online" && machine.computerUse?.displayStreamSupported === true;
 }

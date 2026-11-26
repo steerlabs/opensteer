@@ -261,7 +261,10 @@ export function computerUseView(input: {
   if (!definition) return null;
   const { machine } = input;
   if (machine.phoneDisplay) return null;
-  if (machine.capabilities && (!machine.capabilities.apps.supported || machine.kind === "unknown"))
+  if (
+    machine.capabilities &&
+    (!machine.capabilities.apps.supported || machine.device?.platform !== "macos")
+  )
     return null;
   const report = machine.computerUse ?? null;
   // A disconnected Runner cannot have a confirmed live session. Keep its

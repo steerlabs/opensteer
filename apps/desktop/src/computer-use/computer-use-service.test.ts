@@ -644,6 +644,32 @@ describe.skipIf(!onMac)("the helper connection's lifetime", () => {
     await vi.waitFor(() => expect(harness.helper.connections()).toBe(0), { timeout: 2_000 });
   });
 
+  // Failure: an agent's computer_use call on a Mac whose helper connection idled (or whose
+  // helper quit) is refused, or answered from the last report instead of the helper.
+  it.each([false, true])(
+    "connects the helper for an agent's call after the connection idles (helper quit: %s)",
+    async (quit) => {
+      const harness = await lifetimeHarness({ idleDisconnectMs: 30 });
+      await harness.probe();
+      await vi.waitFor(() => expect(harness.helper.connections()).toBe(0), { timeout: 2_000 });
+      if (quit) await harness.helper.stop();
+      const hellos = harness.helper.methods.filter((method) => method === "hello").length;
+
+      await expect(harness.observe()).resolves.toMatchObject({
+        observation: { snapshot: "obs-1" },
+      });
+
+      expect(harness.helper.methods.filter((method) => method === "hello")).toHaveLength(
+        hellos + 1,
+      );
+      expect(harness.helper.methods.slice(-2)).toEqual(["session.open", "session.observe"]);
+      expect(harness.helper.commands.filter((command) => command === "/usr/bin/open")).toHaveLength(
+        quit ? 1 : 0,
+      );
+      await harness.close();
+    },
+  );
+
   it("holds the connection while any session is open, however long it is idle", async () => {
     const harness = await lifetimeHarness({ idleDisconnectMs: 30 });
     await harness.observe();
