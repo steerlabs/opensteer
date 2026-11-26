@@ -723,15 +723,12 @@ test("connected plugin discovery and calls enforce the selected installation and
   const found = await call(reader, "discover", { id: "tools.fixture" });
   const items = found.items as { id: string; input?: string }[];
   expect(items.find(({ id }) => id === "tools.fixture.read")).toHaveProperty("input");
-  expect(items.find(({ id }) => id === "tools.fixture.reviewed")).toEqual({
-    kind: "tool",
-    name: "tools.fixture.reviewed",
-    untrusted: true,
-    use: { tool: "discover", argument: "id", value: "tools.fixture" },
-    id: "tools.fixture.reviewed",
-    description: expect.any(String),
-    blocked: expect.objectContaining({ code: "access_denied" }),
-  });
+  // A write the read grant does not hold is outside it: left out of the listing, and asked by id
+  // it reads exactly like a tool that does not exist.
+  expect(items.find(({ id }) => id === "tools.fixture.reviewed")).toBeUndefined();
+  expect(
+    JSON.stringify(await call(reader, "discover", { id: "tools.fixture.reviewed" }, true)),
+  ).toBe(JSON.stringify(await call(reader, "discover", { id: "tools.fixture.missing" }, true)));
   const before = effects;
   await expect(call(reader, "plugin_call", writeCall)).rejects.toMatchObject({
     message: "Plugin tool is unavailable to this caller.",

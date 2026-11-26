@@ -100,6 +100,10 @@ const outsideGrant: Blocked = {
   next: "Continue with the tools you can use.",
 };
 
+function sameBlocked(left: Blocked, right: Blocked) {
+  return left.code === right.code && left.message === right.message && left.next === right.next;
+}
+
 export function compositeBackend(
   engine: PluginEngine,
   accounts: ReturnType<typeof engineAccounts>,
@@ -132,7 +136,12 @@ export function compositeBackend(
     // it out and a call reads it as absent, never with the person's own Read-only words.
     if (tool.readOnly !== true && readOnlyGrant?.includes(tool.app))
       return { ...tool, blocked: outsideGrant };
-    if (access === "off" || local?.blocked) return tool;
+    if (access === "off") return tool;
+    // An operation kept for a reason of its own, other than its app's, says it: the call does.
+    if (local?.blocked) {
+      const own = local.toolBlockers?.[tool.name];
+      return own && !sameBlocked(own, local.blocked) ? { ...tool, blocked: own } : tool;
+    }
     const blocked =
       pluginAccessBlocked(access, tool.readOnly !== true) ?? local?.toolBlockers?.[tool.name];
     return blocked ? { ...tool, blocked } : tool;

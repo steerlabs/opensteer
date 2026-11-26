@@ -918,9 +918,15 @@ integration.sequential("iPhone integrations Host contract", () => {
     expect(helperDown.failure, JSON.stringify(helperDown.raw)).toBe(
       "Opensteer's integrations service is unavailable on Studio Mac.",
     );
-    expect(await discoverReasons(agent, world.macPath("list_events"))).toEqual(
-      saysEverywhere((helperDown.raw.structuredContent as { error: unknown }).error),
-    );
+    // Its reads say the device's reason; its changes, which this read-only approval does not
+    // allow, say that, as their call does.
+    const change = await agentPluginCall(agent, world.macPath("create_event"), dentist);
+    expect(change.failure).toBe("Calendar on Studio Mac allows reading only.");
+    const helperReason = (helperDown.raw.structuredContent as { error: unknown }).error;
+    expect(await discoverReasons(agent, world.macPath("list_events"))).toEqual({
+      ...saysEverywhere(helperReason),
+      tools: [helperReason, (change.raw.structuredContent as { error: unknown }).error],
+    });
     await world.mac.close();
     // Discover lists it as there and not reachable now, as the call says it.
     await waitForCondition(async () => {
@@ -1833,7 +1839,8 @@ integration.sequential("iPhone integrations Host contract", () => {
       ),
     );
     await phone.disconnectStream();
-    // Unreachable, its tools stay listed as they are; the call says why.
+    // Online with its apps' stream down: its tools stay listed, and the listing says why in the
+    // words the call says it.
     const away = await gateway.call("plugin_search", { namespace: phoneNamespace });
     expect(away).toMatchObject({
       items: expect.arrayContaining([
@@ -1841,7 +1848,14 @@ integration.sequential("iPhone integrations Host contract", () => {
       ]),
       unavailableApps: [],
     });
-    expect(JSON.stringify(away)).not.toContain("blocked");
+    const awayCall = (await pluginCall(gateway, `${phoneCalendar}.list_calendars`, {})).raw
+      .structuredContent as {
+      result?: { execution?: { value?: { error?: unknown } } };
+      error?: unknown;
+    };
+    expect(
+      (away.namespaces as { blocked?: unknown }[]).find(({ blocked }) => blocked)?.blocked,
+    ).toEqual(awayCall.result?.execution?.value?.error ?? awayCall.error);
     await phone.reconnect();
     // Give the other Mac signed write approval and a live Workspace grant.
     // Losing the phone still cannot route to it.

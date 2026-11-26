@@ -1,10 +1,5 @@
 import type { CallableIntegrationTool, IntegrationRequester } from "@opensteer/database";
-import {
-  OpensteerError,
-  type Blocked,
-  type RunId,
-  type DeviceId,
-} from "@opensteer/core";
+import { OpensteerError, type Blocked, type RunId, type DeviceId } from "@opensteer/core";
 import { computerAppIdentityKey } from "@opensteer/integration-core";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import type { RunCapabilityClaims } from "../agents/run-capability.js";
@@ -61,7 +56,8 @@ export async function gatherComputerAccess(
   const selected = grant?.scope === "selected" ? grant : null;
   const lent = shown && new Set(shown.approvals.map(({ id }) => id.toLowerCase()));
   const lends = (approvalId: string | null | undefined) =>
-    !lent || (approvalId !== null && approvalId !== undefined && lent.has(approvalId.toLowerCase()));
+    !lent ||
+    (approvalId !== null && approvalId !== undefined && lent.has(approvalId.toLowerCase()));
   const machines = lent
     ? ownerInventory.machines.flatMap((machine) => {
         const apps = machine.apps.filter((app) => lends(app.connectionId));

@@ -545,8 +545,10 @@ export class DeviceService {
   /**
    * An inventory as an agent should read it: each tool of an app, a phone or
    * a server a computer runs that is there but cannot be used now says why.
-   * With `offlineAtCall`, a device or computer that is only unreachable is
-   * left to the call, which says it is offline; its tools stay listed.
+   * With `offlineAtCall`, a device or computer that is offline is left to the
+   * device's own refusal, which the listing and the call both say; one that is
+   * online but cannot serve its apps (its helper or integrations service is not
+   * running) says so here, as its call does.
    */
   async withAvailability<Entry extends DiscoveryInventoryEntry>(
     inventory: readonly Entry[],
@@ -638,10 +640,9 @@ export class DeviceService {
             connection.deviceId,
             definitionId,
           );
-          const reachable = runnerConnected && attached;
           if (
             input.offlineAtCall &&
-            !reachable &&
+            !runnerConnected &&
             !isPhoneDisplayDefinitionId(definitionId) &&
             !(connection.deviceProfile === "iphone" && connection.runnerUpdateRequired)
           )
@@ -667,7 +668,10 @@ export class DeviceService {
               ? connection.runnerUpdateRequired
                 ? `Update Opensteer on ${connection.runnerName} to use its apps.`
                 : runnerConnected
-                  ? `Apps aren’t connected. Reopen Opensteer on ${connection.runnerName}.`
+                  ? input.ownerView
+                    ? `Apps aren’t connected. Reopen Opensteer on ${connection.runnerName}.`
+                    : // To an agent, in the words its call says it (`callTool`, offline).
+                      iphoneAppsUnavailableDetail(connection.runnerName)
                   : `${connection.runnerName} is offline. Open Opensteer there, and update if prompted.`
               : computerAppAvailabilityDetail({
                   // A Computer use account is one app, which is what comes back.

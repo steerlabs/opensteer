@@ -47,6 +47,8 @@ export async function connectAgent(
         readonly content?: readonly { readonly type: string; readonly text?: string }[];
         readonly structuredContent?: Record<string, unknown>;
       },
+    /** The connection's tool list, as its client is sent it. */
+    tools: async () => (await client.listTools()).tools,
     close: async () => {
       await client.close().catch(() => undefined);
     },

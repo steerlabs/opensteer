@@ -14,7 +14,10 @@ export async function seedDevice(
     readonly removedAt?: Date | null;
   },
 ) {
-  const deployment = await database.selectFrom("deployments").select("id").executeTakeFirstOrThrow();
+  const deployment = await database
+    .selectFrom("deployments")
+    .select("id")
+    .executeTakeFirstOrThrow();
   const phone = input.kind === "phone";
   await database
     .insertInto("devices")
@@ -78,7 +81,7 @@ export async function seedDeviceApproval(
       id: serverId,
       installationId,
       name: "device",
-      transport: sql`'{"type":"in-process"}'::jsonb`,
+      transport: sql`${JSON.stringify({ type: "computer", definitionId })}::jsonb`,
       connectionRequirement: sql`${JSON.stringify({ kind: "computer", definitionId })}::jsonb`,
       status: "active",
       toolGeneration: 1,
@@ -94,9 +97,7 @@ export async function seedDeviceApproval(
       connectionKind: "computer",
       computerAccess: "read-write",
       computerBlockedAt: input.blockedAt ?? null,
-      computerApp: input.app
-        ? sql`${JSON.stringify({ ...input.app, teamId: null })}::jsonb`
-        : null,
+      computerApp: input.app ? sql`${JSON.stringify({ ...input.app, teamId: null })}::jsonb` : null,
       computerAppKey: input.app ? input.app.bundleId.toLowerCase() : null,
       provider: definitionId,
       integrationDefinitionId: definitionId,
