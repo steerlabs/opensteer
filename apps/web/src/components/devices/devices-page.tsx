@@ -1,5 +1,5 @@
 import { useUnreadableResources } from "@opensteer/client/react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import type { MachineSummary, OtherDevice } from "@opensteer/protocol";
 import {
@@ -55,14 +55,27 @@ export function DevicesSection() {
   const [adding, setAdding] = useState(false);
   const [signingOut, setSigningOut] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** The device whose sign-out did not happen: its confirmation says so, not the page behind it. */
+  const [failedSignOut, setFailedSignOut] = useState<string | null>(null);
+  // One read each for the page's life, read again when the machines change: a re-read keeps the
+  // rows it showed, so a row's open confirmation (Sign out this device?) is never taken away.
   const sessions = useSettingsRead(
     () => hostClient.rpc["sessions.list"]({}).then(unwrapRpcResult),
-    `devices-sessions:${snapshot.machineRevision}`,
+    "devices-sessions",
   );
   const overview = useSettingsRead(
     () => hostClient.rpc["devices.overview.get"]({}).then(unwrapRpcResult),
-    `devices-overview:${snapshot.machineRevision}`,
+    "devices-overview",
   );
+  const reread = useRef({ revision: snapshot.machineRevision, sessions, overview });
+  reread.current.sessions = sessions;
+  reread.current.overview = overview;
+  useEffect(() => {
+    if (reread.current.revision === snapshot.machineRevision) return;
+    reread.current.revision = snapshot.machineRevision;
+    void reread.current.sessions.reload();
+    void reread.current.overview.reload();
+  }, [snapshot.machineRevision]);
   const homeName = snapshot.machines.find(hostsDeployment)?.name ?? "Home";
   const view = devicesScreen({
     machines: snapshot.machines,
@@ -79,6 +92,7 @@ export function DevicesSection() {
     if (signingOut) return;
     setSigningOut(row.session.id);
     setError(null);
+    setFailedSignOut(null);
     void act(
       hostClient,
       { label: "sign out this device", done: "signed out", happened: "this device was signed out" },
@@ -97,7 +111,14 @@ export function DevicesSection() {
         sessions.reload();
         toast.success(`${row.label} is signed out.`);
       })
-      .catch((reason: unknown) => setError(failureWords(reason)))
+      .catch((reason: unknown) => {
+        // Only an action that did not happen, or whose answer was lost, is said; a confirmed
+        // sign-out is never called a failure.
+        const words = failureWords(reason);
+        if (!words) return;
+        setFailedSignOut(row.session.id);
+        setError(words);
+      })
       .finally(() => setSigningOut(null));
   }
 
@@ -170,6 +191,7 @@ export function DevicesSection() {
                   </span>
                   <span className="card__row-actions">
                     <SettingsSignOut
+                      error={failedSignOut === row.session.id ? error : null}
                       label={`Sign out ${title}`}
                       onConfirm={() => signOut(row)}
                       pending={signingOut !== null}
@@ -182,7 +204,9 @@ export function DevicesSection() {
           </ul>
         </section>
       ) : null}
-      <SettingsError message={error ?? sessions.error ?? overview.error} />
+      <SettingsError
+        message={(failedSignOut === null ? error : null) ?? sessions.error ?? overview.error}
+      />
       {otherDevices.length > 0 ? <OtherDevices devices={otherDevices} /> : null}
       {adding ? <AddDeviceDialog homeName={homeName} onClose={() => setAdding(false)} /> : null}
     </>
