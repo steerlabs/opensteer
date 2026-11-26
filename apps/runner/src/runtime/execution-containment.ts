@@ -670,6 +670,18 @@ export async function listLinuxProcesses(
   return last;
 }
 
+/** A process's state as /proc reads it now: its stat's state letter, or gone. */
+function linuxProcState(procRoot: string, entry: string): string | "gone" | null {
+  try {
+    const stat = readFileSync(`${procRoot}/${entry}/stat`, "latin1");
+    const close = stat.lastIndexOf(")");
+    return close < 0 ? null : (stat.slice(close + 2).split(" ")[0] ?? null);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    return code === "ENOENT" || code === "ESRCH" ? "gone" : null;
+  }
+}
+
 async function scanLinuxProcOnce(
   variable: string,
   procRoot: string,
@@ -781,6 +793,26 @@ async function scanLinuxProcOnce(
         continue;
       }
       if (code === "EACCES" || code === "EPERM") {
+        // The process may have died between the two reads: its stat said it was running, and
+        // Linux cleared its address space before environ was read. A second look tells a dying
+        // process (a zombie, or gone) from a live one this Runner cannot read; only the live one
+        // is unknowable. Without it a command that happens to be exiting under the scan, such as
+        // an SSH command cut as its Run ends, makes a clean execution unverifiable.
+        const now = linuxProcState(procRoot, entry);
+        if (now === "gone") {
+          vanishedPids.add(pid);
+          continue;
+        }
+        if (now === "Z" || now === "X") {
+          found.push({
+            identity: `${pid}@${startTime}`,
+            pid,
+            ppid,
+            processGroupId,
+            scope: null,
+          });
+          continue;
+        }
         // Record the entry unreadable with its parent and process group so
         // membership and ancestry decide whether it can belong to this scope.
         found.push({

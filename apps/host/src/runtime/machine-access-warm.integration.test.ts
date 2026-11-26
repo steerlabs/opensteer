@@ -417,7 +417,10 @@ integration("Warm engines with machine access", () => {
       expect(await probeEcho(completedWork.port)).toBe("no-listener");
 
       const next = await active.heldRun("Next question");
+      // Codex serves every session from one shared process, so the pid alone cannot show the
+      // engine was kept: no second launch was set up, and the Run's attempt started warm.
       expect(next.enginePid).toBe(completed.enginePid);
+      expect(active.probes, "the next Run set up a launch of its own").toHaveLength(1);
       expect(next.launch?.launchDirectory).toBe(kept.launchDirectory);
       expect(await probeEcho(completedWork.port)).toBe("no-listener");
       expect(await runShim(kept, "ssh", ["example-mac", "echo clean"])).toMatchObject({
@@ -447,6 +450,7 @@ integration("Warm engines with machine access", () => {
       expect(await probeEcho(stopWork.port)).toBe("no-listener");
       await settled(active.stack, next.runId);
       expect((await runRow(active.stack, next.runId)).status).toBe("interrupted");
+      expect(await engineStart(active.stack, next.runId)).toBe("warm");
       const stopped = (await active.sessions()).filter((session) => session.runId === next.runId);
       expect(stopped.length).toBeGreaterThanOrEqual(2);
       expect(stopped.every((session) => session.state === "ended")).toBe(true);

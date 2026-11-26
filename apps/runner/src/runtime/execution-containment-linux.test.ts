@@ -315,3 +315,70 @@ it("X1: retries when a member vanishes in each of the first three passes and pro
     killSpy.mockRestore();
   }
 });
+
+/*
+ * A process that exits between the scan's two reads of it: its stat still said it was running,
+ * and by the time its environ is read Linux has cleared its address space (EACCES or ESRCH, as a
+ * zombie's does). It is dying, not a live process the Runner cannot read. Counting it as one made
+ * a warm engine's reuse "unverifiable" whenever a Run's cut SSH command or forward happened to be
+ * exiting under the keep check, so the next Run started a new engine and launch directory.
+ */
+it.each([
+  ["a zombie", "Z"],
+  ["gone", null],
+] as const)(
+  "counts a child that dies between its stat and its environ as dying, not unreadable (%s on the second look)",
+  async (_name, after) => {
+    const containment = new ExecutionContainment({
+      bootId: "boot",
+      dataDirectory: "/data",
+      platform: "linux",
+    });
+    // The engine (601) is a member of "run"; its SSH command (602) is exiting as the scan reads it.
+    let statReads = 0;
+    vi.mocked(readdirSync).mockImplementation(
+      () => (after === null && statReads > 1 ? ["601"] : ["601", "602"]) as never,
+    );
+    vi.mocked(readFileSync).mockImplementation((path) => {
+      const target = String(path);
+      if (target === "/proc/601/stat")
+        return `601 (run-engine) S ${process.pid} ${Array(17).fill(0).join(" ")} 301` as never;
+      if (target === "/proc/601/environ")
+        return `${executionScopeVariable}=${containment.scope("run")}\0` as never;
+      if (target === "/proc/602/stat") {
+        statReads += 1;
+        // Running when first read; on any later look, already a zombie or gone.
+        if (statReads === 1) return `602 (ssh) S 601 ${Array(17).fill(0).join(" ")} 302` as never;
+        if (after === null) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        return `602 (ssh) ${after} 601 ${Array(17).fill(0).join(" ")} 302` as never;
+      }
+      if (target === "/proc/602/environ")
+        throw Object.assign(new Error("Permission denied"), { code: "EACCES" });
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+    // One tree, the engine's: the dying command is not a second root, nor unknowable.
+    await expect(containment.liveRoots("run")).resolves.toBe(1);
+  },
+);
+
+it("still counts a child it cannot read as unverifiable when a second look finds it alive", async () => {
+  const containment = new ExecutionContainment({
+    bootId: "boot",
+    dataDirectory: "/data",
+    platform: "linux",
+  });
+  vi.mocked(readdirSync).mockImplementation(() => ["701", "702"] as never);
+  vi.mocked(readFileSync).mockImplementation((path) => {
+    const target = String(path);
+    if (target === "/proc/701/stat")
+      return `701 (run-engine) S ${process.pid} ${Array(17).fill(0).join(" ")} 401` as never;
+    if (target === "/proc/701/environ")
+      return `${executionScopeVariable}=${containment.scope("run")}\0` as never;
+    if (target === "/proc/702/stat")
+      return `702 (run-setuid) S 701 ${Array(17).fill(0).join(" ")} 402` as never;
+    if (target === "/proc/702/environ")
+      throw Object.assign(new Error("Permission denied"), { code: "EACCES" });
+    throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+  });
+  await expect(containment.liveRoots("run")).resolves.toBe("unverifiable");
+});
