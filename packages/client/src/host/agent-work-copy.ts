@@ -68,6 +68,10 @@ export const agentWorkCopy = {
   "op.outcome.unknownDetail":
     "Opensteer lost contact before it heard back, so it can’t say whether this happened. Check before trying again.",
   "op.outcome.notSent": "Not sent",
+  "op.unsent.stopped": "You stopped this before anything was sent.",
+  "op.unsent.disconnected": "You disconnected this agent before anything was sent.",
+  "op.unsent.expired": "Its access expired before anything was sent.",
+  "op.unsent.narrowed": "You changed its access before anything was sent.",
   "op.ending.stopped":
     "You stopped this while it ran. Part of it may have happened. Check before trying again.",
   "op.ending.disconnected":

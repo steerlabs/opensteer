@@ -32,9 +32,11 @@ import {
   type AgentTool,
 } from "@opensteer/agent-tools";
 import {
+  AgentOperationIdSchema,
   OpensteerError,
   ToolBlockedError,
   ThreadIdSchema,
+  agentOperationEndingOf,
   agentOperationEndingWords,
   type Thread,
   requestHoldLimitMs,
@@ -133,16 +135,49 @@ interface McpCall {
   ended?: OpensteerError;
 }
 
-/** Whether a tool's result is an ending: a stopped operation's unknown, or a refusal. */
-function isEnding(result: unknown): boolean {
-  if (typeof result !== "object" || result === null) return false;
-  const { isError, structuredContent } = result as {
-    readonly isError?: unknown;
-    readonly structuredContent?: { readonly status?: unknown };
-  };
-  return (
-    structuredContent?.status === "unknown" ||
-    (isError === true && structuredContent?.status === "refused")
+/** Write only the receipt and the Home's own words once a call's authority has ended. */
+function resultAfterAccessEnded(
+  result: Awaited<ReturnType<OpensteerMcpService["callToolResult"]>>,
+  ended: OpensteerError,
+) {
+  const receipt = result.structuredContent;
+  if (result.isError === true && receipt?.status === "refused") return result;
+  if (receipt?.status !== "unknown") return endedResult(ended);
+
+  const taskId = ThreadIdSchema.safeParse(receipt.taskId).data;
+  const operationId = AgentOperationIdSchema.safeParse(receipt.operationId).data;
+  const identity = { status: "unknown" as const, taskId, operationId };
+  const ending =
+    "next" in receipt && typeof receipt.next === "string"
+      ? agentOperationEndingOf(receipt.next)
+      : null;
+  if (ending) return agentToolRecordResult({ ...identity, next: unknownOperationNext(ending) });
+
+  const error = z
+    .object({ code: z.string(), message: z.string(), next: z.string() })
+    .safeParse(receipt.error).data;
+  if (
+    error &&
+    Object.values(agentOperationEndingWords).some(
+      ({ message, next }) => error.message === message && error.next === next,
+    )
+  )
+    return agentToolFailureResult(
+      {
+        ...error,
+        code: error.code === "stopped_by_person" ? "stopped_by_person" : "access_changed",
+      },
+      undefined,
+      identity,
+    );
+  return agentToolFailureResult(
+    {
+      code: "access_changed",
+      message: ended.message,
+      next: "Part of it may have happened. Check the current state before doing anything else.",
+    },
+    undefined,
+    identity,
   );
 }
 const maximumTimerMs = 2_147_483_647;
@@ -566,7 +601,7 @@ export class OpensteerMcpService {
         // The one place a result is written: once the session's authority has ended, only an
         // ending goes out (a stopped operation's unknown, or a refusal), never a result. A
         // result that completed in the meantime stays true in its operation's record.
-        return call?.ended && !isEnding(result) ? endedResult(call.ended) : result;
+        return call?.ended ? resultAfterAccessEnded(result, call.ended) : result;
       });
     }
     // A grant may imply no tools at all; the list is still served, empty.
@@ -803,7 +838,7 @@ export class OpensteerMcpService {
         resume = row;
         const base = { taskId: row.taskId, operationId: row.id };
         if (row.state === "refused")
-          throw new AgentOperationFailure(agentOperationRefusal(row.decision), {
+          throw new AgentOperationFailure(agentOperationRefusal(row.decision, row.ending), {
             ...base,
             status: "refused",
           });
@@ -876,7 +911,7 @@ export class OpensteerMcpService {
                   next:
                     status !== "unknown"
                       ? "It failed. Check the current state."
-                      : name === "computer_use" && row.effect === "read"
+                      : name === "computer_use" && row.effect === "read" && !row.ending
                         ? "Opensteer lost the result of this read, which could not send input to the device."
                         : unknownOperationNext(row.ending),
                 }),

@@ -266,7 +266,7 @@ export function operationRow(operation: AgentOperationView): OperationRow {
           ? workWords("op.refused.person")
           : decision.reason === "stopped"
             ? workWords("work.stopped")
-            : decision.reason === "changed"
+            : decision.reason === "changed" || operation.ending
               ? null
               : workWords("op.refused.other", { message: decision.message })
         : workWords(`op.by.${decision.by}`);
@@ -296,12 +296,13 @@ function operationDetail(operation: AgentOperationView): string | null {
       ? workWords("op.outcome.unknownDetail")
       : workWords(`op.ending.${operation.ending}`);
   const decision = operation.decision;
-  if (
-    operation.outcome === "refused" &&
-    decision?.by === "refused" &&
-    decision.reason === "changed"
-  )
-    return decision.message;
+  if (operation.outcome === "refused" && decision?.by === "refused") {
+    if (decision.reason === "stopped") return workWords("op.unsent.stopped");
+    const { ending } = operation;
+    if (ending === "disconnected" || ending === "expired" || ending === "narrowed")
+      return workWords(`op.unsent.${ending}`);
+    if (decision.reason === "changed") return decision.message;
+  }
   return null;
 }
 
@@ -321,7 +322,7 @@ function operationOutcome(operation: AgentOperationView): OperationRow["outcome"
         ? { label: workWords("op.refused.person"), tone: "muted" }
         : reason === "stopped"
           ? { label: workWords("work.stopped"), tone: "muted" }
-          : reason === "changed"
+          : reason === "changed" || operation.ending
             ? { label: workWords("op.outcome.notSent"), tone: "warn" }
             : { label: workWords("op.outcome.refused"), tone: "bad" };
     }

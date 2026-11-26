@@ -139,6 +139,7 @@ export interface DirectOperationContext {
   recheck(): Promise<void>;
   /** The pooled command queue calls this at the wire boundary. */
   readonly browserSend?: PooledBrowserSend;
+  readonly computerSubmitted?: () => void;
 }
 
 export interface PooledBrowserSend {
@@ -642,7 +643,7 @@ export class AgentSessionService {
           };
         }
         case "refused":
-          throw new AgentOperationFailure(agentOperationRefusal(row.decision), {
+          throw new AgentOperationFailure(agentOperationRefusal(row.decision, row.ending), {
             ...base,
             status: "refused",
           });
@@ -909,7 +910,15 @@ export class AgentSessionService {
           this.#store.database,
           row.id,
           current?.grantRevision ?? row.grantRevision,
-          ...(refusal ? [{ message: refusal.message, reason: refusal.reason }] : []),
+          ...(refusal
+            ? [
+                {
+                  message: refusal.message,
+                  reason: refusal.reason,
+                  ending: ended && endingOfAbort(ended),
+                },
+              ]
+            : []),
         );
       }
       throw error;
@@ -980,6 +989,28 @@ export class AgentSessionService {
     const base = { taskId, operationId: row.id };
     let outstanding = 0;
     let submitted = 0;
+    const tracksSends = pooled !== undefined || operation.tool === "computer_use";
+    const recorded = async (): Promise<DirectOperationResult<Result>> => {
+      const current = await readAgentOperation(this.#store.database, row.id);
+      if (current.state === "refused")
+        throw new AgentOperationFailure(agentOperationRefusal(current.decision, current.ending), {
+          ...base,
+          status: "refused",
+        });
+      if (current.state === "completed")
+        return { ...base, status: "completed", summary: current.resultSummary };
+      const scriptError = storedScriptError(current.resultSummary);
+      return {
+        ...base,
+        ...(current.state === "failed"
+          ? {
+              status: "failed" as const,
+              next: scriptError ? scriptFailedNext : "It failed. Check the current state.",
+            }
+          : { status: "unknown" as const, next: unknownOperationNext(current.ending) }),
+        ...(scriptError ? { scriptError } : {}),
+      };
+    };
     // A restart that can wait no longer records this operation's outcome itself, as a lost
     // channel does: unknown when a command left, refused when none did. Both writes apply only
     // to a row still handed off, so the work's own later outcome cannot overwrite it.
@@ -993,22 +1024,27 @@ export class AgentSessionService {
         );
       else await settleAgentOperation(this.#store.database, row.id, "unknown", null);
     });
+    let authorityEnded: OpensteerError | undefined;
+    const endAuthority = (message: string, ending: AgentOperationEnding | null): never => {
+      if (!operation.scriptFailure) throw new OperationOutcomeUnknown(message, ending);
+      authorityEnded ??= endedBy(ending);
+      throw authorityEnded;
+    };
     const recheck = async () => {
       signal.throwIfAborted();
+      if (authorityEnded) throw authorityEnded;
       const live = await this.#admit(operation, bindingId).catch(async (error: unknown) => {
         if (error instanceof OpensteerError)
-          throw new OperationOutcomeUnknown(error.message, await this.#refusedBy(row));
+          endAuthority(error.message, await this.#refusedBy(row));
         throw error;
       });
       if (live.agentConnection!.grantRevision !== row.grantRevision || live.mode !== row.mode)
-        throw new OperationOutcomeUnknown(
-          "The connected agent's access changed during this work.",
-          "narrowed",
-        );
+        endAuthority("The connected agent's access changed during this work.", "narrowed");
       signal.throwIfAborted();
     };
     try {
       let result: Result;
+      let scriptError: ReplFailure | undefined;
       try {
         if (pooled) signal.throwIfAborted();
         result = await operation.execute({
@@ -1023,6 +1059,13 @@ export class AgentSessionService {
           signal,
           deadline,
           recheck,
+          ...(operation.tool === "computer_use"
+            ? {
+                computerSubmitted: () => {
+                  submitted++;
+                },
+              }
+            : {}),
           ...(pooled
             ? {
                 browserSend: {
@@ -1053,15 +1096,40 @@ export class AgentSessionService {
               }
             : {}),
         });
+        // The REPL can return normally even when a script caught a failed authority check.
+        // A cut never releases buffered output, and an unsent refusal never becomes unknown.
+        if (authorityEnded) throw authorityEnded;
+        if (operation.scriptFailure && signal.reason instanceof OpensteerError)
+          signal.throwIfAborted();
+        scriptError = operation.scriptFailure?.(result);
+        if (tracksSends && submitted === 0) {
+          signal.throwIfAborted();
+          if (scriptError?.code === "outcome-unknown")
+            throw new BrowserPoolAdmissionClosed("The script ended before sending a command.");
+        }
       } catch (error) {
         const ended =
-          signal.aborted && signal.reason instanceof OpensteerError ? signal.reason : null;
-        // A pooled send that admission or authority refused before any command reached the
+          signal.aborted && signal.reason instanceof OpensteerError
+            ? signal.reason
+            : (authorityEnded ?? null);
+        const ending =
+          (ended && endingOfAbort(ended)) ??
+          (error instanceof OperationOutcomeUnknown
+            ? (error.ending ?? agentOperationEndingOf(error.message))
+            : null);
+        // A tracked send that admission or authority refused before any command reached the
         // wire (a cut, a recheck, a closed gate, a page or a runtime that changed): nothing left
         // the Home, so it is refused with its own reason. Any other error is the work's own.
         const refusal =
-          pooled && submitted === 0 && (ended || !signal.aborted)
-            ? unsentRefusal(error, ended)
+          tracksSends && submitted === 0
+            ? (unsentRefusal(error, ended) ??
+              (signal.aborted
+                ? {
+                    code: "timeout",
+                    reason: "changed" as const,
+                    message: "The script ended before sending a command.",
+                  }
+                : undefined))
             : undefined;
         if (
           refusal &&
@@ -1070,6 +1138,7 @@ export class AgentSessionService {
             row.id,
             refusal.message,
             refusal.reason,
+            ending,
           ))
         )
           throw new ToolBlockedError(
@@ -1078,23 +1147,15 @@ export class AgentSessionService {
               message: refusal.message,
               next:
                 refusal.code === "stopped_by_person"
-                  ? "Nothing was sent. Stop this task and ask the person before starting again."
-                  : "Nothing was sent. Check the current state before trying again.",
+                  ? stoppedBeforeSendNext
+                  : refusedBeforeSendNext,
             },
             { ...base, status: "refused" },
           );
         const outcome =
-          error instanceof OperationOutcomeUnknown || signal.aborted || outstanding > 0
+          ended || error instanceof OperationOutcomeUnknown || signal.aborted || outstanding > 0
             ? "unknown"
             : "failed";
-        // Why it ended, where the Home knows it: the abort's cause (the person's Stop or
-        // Disconnect, an expiry, a narrowed grant), or the cause the work's own words name (a tab
-        // the person closed). The agent and the person's activity both read it.
-        const ending = ended
-          ? endingOfAbort(ended)
-          : error instanceof OperationOutcomeUnknown
-            ? (error.ending ?? agentOperationEndingOf(error.message))
-            : null;
         const settled = await settleAgentOperation(
           this.#store.database,
           row.id,
@@ -1102,6 +1163,7 @@ export class AgentSessionService {
           null,
           ending,
         );
+        if (!settled) return recorded();
         // Work that the person, a Disconnect or a narrowed grant ended: the agent hears why. What
         // it had already done is uncertain; the record says so and the next step repeats it.
         if (ended)
@@ -1109,16 +1171,12 @@ export class AgentSessionService {
             {
               code: unsentRefusal(null, ended)?.code ?? "access_denied",
               message: ended.message,
-              next: interruptedNext,
+              next: ending ? agentOperationEndingWords[ending].next : interruptedNext,
             },
             { ...base, status: "unknown" },
           );
-        if (!settled || outcome === "unknown")
-          return {
-            status: "unknown",
-            ...base,
-            next: unknownOperationNext(settled ? ending : null),
-          };
+        if (outcome === "unknown")
+          return { status: "unknown", ...base, next: unknownOperationNext(ending) };
         throw new AgentOperationFailure(error, { ...base, status: "failed" });
       }
       let summary: Readonly<Record<string, unknown>> | null = null;
@@ -1127,7 +1185,6 @@ export class AgentSessionService {
       } catch (error) {
         this.#onError(error);
       }
-      const scriptError = operation.scriptFailure?.(result);
       if (
         outstanding > 0 ||
         scriptError?.code === "outcome-unknown" ||
@@ -1136,13 +1193,14 @@ export class AgentSessionService {
         // A command was submitted and never answered: its effect is unknown.
         const uncertainty = scriptError?.code === "outcome-unknown" ? scriptError : undefined;
         const ending = agentOperationEndingOf(uncertainty?.message) ?? "contact-lost";
-        await settleAgentOperation(
+        const settled = await settleAgentOperation(
           this.#store.database,
           row.id,
           "unknown",
           uncertainty ? { ...summary, scriptError: uncertainty } : summary,
           ending,
         );
+        if (!settled) return recorded();
         return {
           status: "unknown",
           ...base,
@@ -1157,7 +1215,7 @@ export class AgentSessionService {
         scriptError ? "failed" : "completed",
         scriptError ? { ...summary, scriptError } : summary,
       );
-      if (!settled) return { status: "unknown", ...base, next: unknownNext };
+      if (!settled) return recorded();
       if (scriptError)
         return { status: "failed", ...base, result, scriptError, next: scriptFailedNext };
       return { status: "completed", ...base, result, summary };
@@ -1194,7 +1252,14 @@ export async function withAgentOperationReceipt<Result>(
   }
 }
 
-export function agentOperationRefusal(decision: AgentOperationDecision | null): OpensteerError {
+const stoppedBeforeSendNext =
+  "Nothing was sent. Stop this task and ask the person before starting again.";
+const refusedBeforeSendNext = "Nothing was sent. Check the current state before trying again.";
+
+export function agentOperationRefusal(
+  decision: AgentOperationDecision | null,
+  ending?: AgentOperationEnding | null,
+): OpensteerError {
   if (decision?.by === "refused")
     return new OpensteerError({
       code: "forbidden",
@@ -1205,6 +1270,11 @@ export function agentOperationRefusal(decision: AgentOperationDecision | null): 
             ? "agent-session-stopped"
             : "authority-changed",
       message: decision.message,
+      ...(decision.reason === "stopped"
+        ? { next: stoppedBeforeSendNext }
+        : decision.reason === "changed" || ending
+          ? { next: refusedBeforeSendNext }
+          : {}),
     });
   return new OpensteerError({ code: "forbidden", message: "This operation was refused." });
 }
@@ -1223,7 +1293,7 @@ export function assertOperationArguments(
 }
 
 /**
- * An admission or authority refusal of a pooled send, with the code a connected agent acts on
+ * An admission or authority refusal before a tracked send, with the code a connected agent acts on
  * (`docs/architecture.md`) and the decision's reason. Anything else is not a refusal.
  */
 function unsentRefusal(

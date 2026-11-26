@@ -251,6 +251,7 @@ export interface ComputerUseSendInput {
   readonly threadTitle: string | null;
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
+  readonly submitted?: () => void;
 }
 
 export interface ComputerUseSend {
@@ -1909,6 +1910,8 @@ export class ComputerAppHub {
       route,
       settle: finish,
     });
+    // From this point a frame may reach the device, even if submission loses its reply.
+    input.submitted?.();
     const submission = await this.#submit(entry, {
       ...entry.stream.fence,
       module: "integrations",

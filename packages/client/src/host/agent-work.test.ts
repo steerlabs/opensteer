@@ -364,7 +364,11 @@ describe("why an operation ended, as the person reads it", () => {
         state: "refused",
         decision: { by: "refused", reason: "stopped", message: "The person stopped this work." },
       }),
-    ).toMatchObject({ allowedBy: "Stopped by you", outcome: { label: "Stopped by you" } });
+    ).toMatchObject({
+      allowedBy: "Stopped by you",
+      outcome: { label: "Stopped by you" },
+      detail: "You stopped this before anything was sent.",
+    });
   });
 });
 

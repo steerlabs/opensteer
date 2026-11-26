@@ -163,6 +163,7 @@ export class DeviceToolHandlers {
               generation: named.generation,
               readOnly,
               recheck: context.recheck,
+              ...(context.computerSubmitted ? { submitted: context.computerSubmitted } : {}),
             },
             code,
             context.signal,

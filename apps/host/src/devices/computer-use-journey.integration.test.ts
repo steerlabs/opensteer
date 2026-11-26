@@ -5961,6 +5961,7 @@ integration.sequential("Computer use for a connected agent, through its session"
         .select([
           "state",
           "outcome",
+          "ending",
           "target",
           "targetGeneration",
           "calls",
@@ -6520,6 +6521,79 @@ integration.sequential("Computer use for a connected agent, through its session"
       await s.world.close();
     }
   });
+
+  it.each([false, true])(
+    "keeps computer REPL output private after an authority cut (sent: %s)",
+    async (sent) => {
+      const s = await connectedAgent("full-access");
+      const gate = Promise.withResolvers<void>();
+      const bump = () =>
+        s.world.store.database
+          .updateTable("agentConnections")
+          .set({ grantRevision: sql`grant_revision + 1` })
+          .where("id", "=", s.record.id)
+          .execute();
+      const devices = s.world.platform.devices;
+      const run = devices.runSessionComputerCode.bind(devices);
+      try {
+        if (sent) {
+          expect(
+            await s.call({ code: 'globalThis.p = await phone("Pixel 8"); await p.observe()' }),
+          ).toMatchObject({ status: "completed" });
+        } else {
+          vi.spyOn(devices, "runSessionComputerCode").mockImplementationOnce(
+            (session, code, signal) => {
+              let checks = 0;
+              return run(
+                {
+                  ...session,
+                  recheck: async () => {
+                    if (++checks === 2) await bump();
+                    await session.recheck();
+                  },
+                },
+                code,
+                signal,
+              );
+            },
+          );
+        }
+        s.fake.gate = gate.promise;
+        const inFlight = s.call(
+          {
+            code: sent
+              ? 'print("private-before-cut"); await p.tap(1); try { await phones(); } catch {} print("private-after-cut");'
+              : 'print("private-before-cut"); try { await phones(); } catch {} print("private-after-cut");',
+          },
+          "authority-cut",
+        );
+        const refused = expect(inFlight).rejects.toMatchObject({
+          blocked: {
+            code: "access_changed",
+            next: expect.stringContaining(
+              sent ? "Part of it may have happened." : "Nothing was sent.",
+            ),
+          },
+          message: "The person changed this agent's access.",
+        });
+        if (sent) {
+          await Promise.race([s.fake.reached("act"), inFlight]);
+          await bump();
+          gate.resolve();
+        }
+        await refused;
+        expect(s.fake.received("act")).toBe(Number(sent));
+        expect(await s.operation("authority-cut")).toMatchObject({
+          state: sent ? "unknown" : "refused",
+          ending: "narrowed",
+          resultSummary: null,
+        });
+      } finally {
+        gate.resolve();
+        await s.world.close();
+      }
+    },
+  );
 
   it("explains an orphaned computer read without suggesting that it sent input", async () => {
     const s = await connectedAgent("full-access");
