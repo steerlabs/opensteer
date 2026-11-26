@@ -369,6 +369,30 @@ integration("what a connection is shown", () => {
       },
     ],
     [
+      "the device belongs to someone else",
+      async (w) => {
+        const other = `usr_${randomUUID()}`;
+        await w.host.store.database
+          .insertInto("users")
+          .values({
+            id: other,
+            displayName: "Other",
+            email: `other-${other}@invalid.test`,
+            emailVerified: true,
+          } as never)
+          .execute();
+        await w.host.store.database
+          .updateTable("devices")
+          .set({ ownerUserId: other } as never)
+          .where("id", "=", w.mac as never)
+          .execute();
+        return {
+          naming: { calendar: w.calendar, notes: { id: w.notes, device: w.mac } },
+          known: [],
+        };
+      },
+    ],
+    [
       "the approval is blocked",
       async (w) => {
         await w.host.store.database

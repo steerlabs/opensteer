@@ -1,7 +1,13 @@
 import { createId } from "@opensteer/core";
 import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
-import { admitExecution, authorizeTarget, bindingAgentConnectionId } from "./resource-access.js";
+import {
+  admitExecution,
+  authorizeTarget,
+  bindingAgentConnectionId,
+  grantedDeviceApprovals,
+} from "./resource-access.js";
+import { seedDevice, seedDeviceApproval } from "./device-approvals.test-support.js";
 import { describeStore } from "./store.integration.test-support.js";
 
 const refused = { code: "forbidden", message: "Task authority is no longer available" };
@@ -90,5 +96,44 @@ describeStore("an execution resolves to a known owner, an agent connection, or n
     expect(
       authorizeTarget({ actor: "unknown" as never, agentConnection: null }, profile),
     ).toBeNull();
+  });
+
+  it("lends no approval on a device someone else owns, though the approval row names the person", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("device-owner");
+    const { database } = storeFixture;
+    const deviceId = createId("device");
+    await seedDevice(database, { id: deviceId, ownerUserId: f.userId, name: "Studio Mac" });
+    const approvalId = `con_${crypto.randomUUID()}`;
+    await seedDeviceApproval(database, {
+      id: approvalId,
+      ownerUserId: f.userId,
+      deviceId,
+      name: "Notes",
+      app: { bundleId: "com.apple.notes", displayName: "Notes" },
+    });
+    const lent = async () =>
+      (await grantedDeviceApprovals(database, f.userId, { scope: "everything" })).map(
+        ({ id }) => id,
+      );
+    expect(await lent()).toContain(approvalId);
+    // The device now belongs to another person: nothing on it is the person's to lend.
+    const other = createId("user");
+    await database
+      .insertInto("users")
+      .values({
+        id: other,
+        displayName: "Other",
+        email: "other-owner@invalid.test",
+        emailVerified: true,
+      })
+      .execute();
+    await database
+      .updateTable("devices")
+      .set({ ownerUserId: other })
+      .where("id", "=", deviceId as never)
+      .execute();
+    expect(await lent()).not.toContain(approvalId);
   });
 });

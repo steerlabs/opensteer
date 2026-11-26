@@ -909,7 +909,14 @@ export async function grantedDeviceApprovals(
     .where("integrationConnections.status", "=", "connected")
     .where("integrationConnections.computerBlockedAt", "is", null)
     .where("integrationConnections.computerAccess", "is not", null)
-    .where("devices.removedAt", "is", null);
+    .where("devices.removedAt", "is", null)
+    // The device is the person's, as their device list reads it: their own, or the Home's.
+    .where((eb) =>
+      eb.or([
+        eb("devices.ownerUserId", "=", ownerUserId),
+        eb("devices.ownerKind", "=", "deployment"),
+      ]),
+    );
   if (named) query = query.where(sql<string>`lower(integration_connections.id)`, "in", named);
   return (await query.execute()).flatMap((row) => {
     const target = integrationConnectionGrantTarget(row);
