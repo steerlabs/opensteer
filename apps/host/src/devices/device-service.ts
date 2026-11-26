@@ -604,9 +604,12 @@ export class DeviceService {
           operation?: string,
         ) => {
           // The owner can fix a disconnected device before agents request access.
-          // A task still sees its outstanding authorization requirement first.
+          // A task still sees its outstanding authorization requirement first. What keeps a
+          // device's app (a permission missing, its helper not running) comes before the task's
+          // read-only mode (pluginToolReason's order).
           if (
             readiness.code !== "READY" &&
+            !(readiness.code === "READ_ONLY_TASK" && computerServers.has(readiness.serverId)) &&
             !(
               input.ownerView &&
               readiness.code === "ACCESS_GRANT_REQUIRED" &&

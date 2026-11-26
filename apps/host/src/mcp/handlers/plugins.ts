@@ -305,15 +305,10 @@ export class PluginToolHandlers {
       });
     const { taskId, reason } = call.input;
     const signal = call.signal;
-    // What this connection's grant and the person's plugin setting let it do in an app: the one
-    // gate every call here passes, whether the app can be reached now or not.
-    const holds = async (plugin: string, write: boolean) => {
-      if (!grantHolds(caller.grant, plugin, write)) return false;
-      const setting = (await o.settings.settings(caller.userId)).find(
-        ({ pluginId }) => pluginId === plugin,
-      )?.access;
-      return setting !== "off" && !(write && setting === "read-only");
-    };
+    // What this connection's grant lets it do in an app: a tool it does not hold reads as absent.
+    // The person's own setting for an app the grant holds is said, as its listing says it
+    // (pluginToolReason).
+    const holds = async (plugin: string, write: boolean) => grantHolds(caller.grant, plugin, write);
     let target: { plugin: string; name: string; version: string; readOnly: boolean };
     let tool: "plugin_call" | "plugin_execute" | "plugin_resume";
     let input: { calls: PluginInput<"call">["calls"] } | { code: string } | { executionId: string };

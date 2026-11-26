@@ -26,7 +26,7 @@ import { UserFacingError } from "@opensteer/plugin-engine-utils/user-facing-erro
 import type { ElicitationHandler } from "apps/contracts";
 import { CurrentMcpExecution, type McpBackend, type McpTool } from "@opensteer/plugin-engine-mcp";
 import { GrantId, restrictMcpBackend, type Grant } from "@opensteer/plugin-engine-mcp-auth";
-import { pluginAccessBlocked } from "./target-blocked.js";
+import { pluginAccessBlocked, pluginToolReason } from "./target-blocked.js";
 import type { engineAccounts } from "./engine-accounts.js";
 import {
   JsonSchema,
@@ -93,13 +93,6 @@ export interface EngineHostCallbacks {
 export const accountSelectionDigest = (accounts: unknown) =>
   createHash("sha256").update(canonicalJson(accounts)).digest("hex");
 
-/** A tool outside a connection's grant: read as absent wherever it is listed or called. */
-const outsideGrant: Blocked = {
-  code: "access_required",
-  message: "Plugin tool is unavailable to this caller.",
-  next: "Continue with the tools you can use.",
-};
-
 function sameBlocked(left: Blocked, right: Blocked) {
   return left.code === right.code && left.message === right.message && left.next === right.next;
 }
@@ -132,19 +125,20 @@ export function compositeBackend(
     /** Apps a connection's grant holds for reading only. */
     readOnlyGrant?: readonly string[],
   ): McpTool => {
-    // A write a connection's grant does not hold is outside it: marked so every listing leaves
-    // it out and a call reads it as absent, never with the person's own Read-only words.
-    if (tool.readOnly !== true && readOnlyGrant?.includes(tool.app))
-      return { ...tool, blocked: outsideGrant };
-    if (access === "off") return tool;
-    // An operation kept for a reason of its own, other than its app's, says it: the call does.
-    if (local?.blocked) {
-      const own = local.toolBlockers?.[tool.name];
-      return own && !sameBlocked(own, local.blocked) ? { ...tool, blocked: own } : tool;
-    }
-    const blocked =
-      pluginAccessBlocked(access, tool.readOnly !== true) ?? local?.toolBlockers?.[tool.name];
-    return blocked ? { ...tool, blocked } : tool;
+    // The one order a call reads too (pluginToolReason). A write a connection's grant does not
+    // hold is marked so every listing leaves it out; what keeps the whole app (the person's Off,
+    // what keeps a local provider) is said once, on the app: a tool carries only a reason of its
+    // own, other than its app's.
+    const write = tool.readOnly !== true;
+    const blocked = pluginToolReason({
+      tool: tool.name,
+      write,
+      outsideGrant: write && readOnlyGrant?.includes(tool.app) === true,
+      setting: access,
+      ...(local ? { local } : {}),
+    });
+    const appLine = access === "off" ? pluginAccessBlocked(access, write) : local?.blocked;
+    return blocked && !(appLine && sameBlocked(blocked, appLine)) ? { ...tool, blocked } : tool;
   };
 
   const permissionFor = (
@@ -396,10 +390,21 @@ export function compositeBackend(
         const permission = yield* permissionFor("callTool", input.app, input.tool, {
           version: input.version,
         });
-        const blocked = pluginAccessBlocked(permission.grants?.[input.app], input.kind !== "query");
+        const local = yield* provider(input.app);
+        const listed = local
+          ? hostTools(local).find((tool) => tool.name === input.tool)
+          : undefined;
+        const write = listed ? listed.readOnly !== true : input.kind !== "query";
+        // The order its listing said it in (pluginToolReason).
+        const blocked = pluginToolReason({
+          tool: input.tool,
+          write,
+          outsideGrant: write && permission.readOnlyGrant?.includes(input.app) === true,
+          setting: permission.grants?.[input.app],
+          ...(local ? { local } : {}),
+        });
         if (blocked) return yield* refused(blocked);
         if (!permission.allowed) return yield* Effect.fail(forbidden());
-        const local = yield* provider(input.app);
         if (local) {
           const current = hostTools(local).find((tool) => tool.name === input.tool);
           if (

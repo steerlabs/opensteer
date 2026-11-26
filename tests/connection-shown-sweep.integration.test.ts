@@ -611,6 +611,19 @@ integration("what a connection is shown", () => {
       ?.execution;
     return execution?.value?.error ?? result?.error;
   };
+  /** The person's own setting for an app in Plugins: everything, Read-only or Off. */
+  const setPluginAccess = (w: World, access: "all" | "read-only" | "off") =>
+    testRpcData(
+      w.host.origin,
+      "commands.dispatch",
+      {
+        type: "plugins.access.set",
+        idempotencyKey: randomUUID(),
+        pluginId: `app_device_${w.calendar}`,
+        access,
+      },
+      { headers: w.host.ownerHeaders },
+    );
   const states: readonly [string, (world: World) => Promise<void>][] = [
     [
       "the device's Apps switch is off",
@@ -633,6 +646,15 @@ integration("what a connection is shown", () => {
       },
     ],
     ["the helper is not running", (w) => w.computer.disconnectModule()],
+    // The person's setting comes before what keeps the device: a change says Read-only, a read
+    // says the permission, in the listing and the call alike.
+    [
+      "the person set it Read-only, and a macOS permission is missing",
+      async (w) => {
+        await setPluginAccess(w, "read-only");
+        w.helper.grants.calendars = "requestable";
+      },
+    ],
   ];
 
   it.each(states)(
@@ -839,5 +861,41 @@ integration("what a connection is shown", () => {
     });
     expect(JSON.stringify(reply), JSON.stringify(reply)).toContain(removedOrChanged);
     expect(w.helper.invocations).toHaveLength(1);
+  });
+
+  it("says the person's Read-only setting for a change, in the listing and the call, to a connected agent and a Run", async () => {
+    const w = await world();
+    const agent = keep(await connectAgent(w.host, grantOf(w.profileId, { calendar: w.calendar })));
+    const run = await dispatchCallerRun(w.host, w.caller, { key: "setting", title: "Plan" });
+    closers.unshift(() => run.complete());
+    const gateway = keep(await integrationGateway(run.integrationTools));
+    await grantAccess(w.host, gateway, {
+      access: "read-write",
+      connectionId: w.calendar,
+      integration: "apple-calendar",
+    });
+    await setPluginAccess(w, "read-only");
+    const path = pathForms(namespaceOf(w.calendar), "create_event")[0]!;
+    const readOnly = {
+      code: "access_denied",
+      message: "This plugin is set to Read-only.",
+      next: "The person can change this plugin’s access in Plugins. Continue with the tools you can use.",
+    };
+    const page = (
+      await agent.call("discover", { id: `tools[${JSON.stringify(namespaceOf(w.calendar))}]` })
+    ).structuredContent as { items?: { id: string; blocked?: unknown }[] };
+    expect(page.items?.find(({ id }) => id === path)?.blocked).toEqual(readOnly);
+    expect(callError(await agent.call("plugin_call", { calls: { path, input: dentist } }))).toEqual(
+      readOnly,
+    );
+    const search = (await gateway.call("plugin_search", { query: "create_event" })) as {
+      items: { path: string; blocked?: unknown }[];
+    };
+    expect(search.items.find((item) => item.path === path)?.blocked).toEqual(readOnly);
+    expect(
+      callError(await gateway.callRaw("plugin_call", { calls: { path, input: dentist } })),
+    ).toEqual(readOnly);
+    expect(w.helper.invocations).toEqual([]);
+    expect(await w.waitingRequests()).toEqual([]);
   });
 });

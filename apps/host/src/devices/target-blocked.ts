@@ -103,8 +103,12 @@ export function deviceAppBlocked(
     input.canAsk,
     input.connection,
   );
-  // The person approved this data app for reading only: that is the true reason, whoever asks.
-  if (blocked?.code === "access_required" && input.readOnlyGrant)
+  // The person approved this data app for reading only: that is the true reason, whoever asks,
+  // before the task's own read-only mode.
+  if (
+    (blocked?.code === "access_required" || blocked?.code === "read_only_task") &&
+    input.readOnlyGrant
+  )
     return {
       code: "access_denied",
       message: `${input.name} allows reading only.`,

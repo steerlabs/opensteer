@@ -204,12 +204,12 @@ it.each([false, true])(
     // The reason is said once, in the tool's blocker; its description stays its own.
     for (const tool of provider?.tools ?? [])
       expect(tool.description).not.toMatch(/Blocked|ceiling/u);
-    expect(provider?.toolBlockers).toMatchObject({
-      create_event: {
-        code: "read_only_task",
-        next: expect.stringContaining("task's access mode"),
-      },
-    });
+    // A data app approved for reading only says so before the task's own read-only mode
+    // (pluginToolReason's order); a local server, which has no approval, says the task's.
+    const change = server
+      ? { code: "read_only_task", next: expect.stringContaining("task's access mode") }
+      : { code: "access_denied", message: expect.stringContaining("allows reading only") };
+    expect(provider?.toolBlockers).toMatchObject({ create_event: change });
     expect(provider?.toolBlockers).not.toHaveProperty(read.name);
     await expect(
       providers.call(
@@ -227,7 +227,9 @@ it.each([false, true])(
       ),
     ).resolves.toMatchObject({
       kind: "blocked",
-      blocked: { code: "read_only_task", next: expect.stringContaining("task's ceiling") },
+      blocked: server
+        ? { code: "read_only_task", next: expect.stringContaining("task's ceiling") }
+        : change,
     });
   },
 );
