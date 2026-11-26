@@ -52,6 +52,8 @@ async function directWork(
     readonly grant?: AgentGrant;
     /** Runs after a script's bind decided its tab and bound the page, inside the call. */
     readonly afterBind?: () => Promise<void>;
+    /** Each call's own bound (two minutes). */
+    readonly executionMs?: number;
   } = {},
 ) {
   let tabChange: ((tab: TabRecord) => TabRecord | Promise<TabRecord>) | undefined;
@@ -90,7 +92,11 @@ async function directWork(
       return { kind: tab.kind, profile: tab.profileId ? { profileId: tab.profileId } : null };
     },
   };
-  const sessions = new AgentSessionService({ store: j.store, holdMs: 0 });
+  const sessions = new AgentSessionService({
+    store: j.store,
+    holdMs: 0,
+    ...(options.executionMs ? { executionMs: options.executionMs } : {}),
+  });
   const confinement = new BrowserScriptConfinement();
   const scripts = new BrowserScriptService({
     browser: home().service,
@@ -819,7 +825,7 @@ it("restarts only once a command in flight has its recorded outcome, and once pe
 });
 
 /** A connected agent that already used the profile, with the browser parked afterwards. */
-async function parkedAfterWork(key: string) {
+async function parkedAfterWork(key: string, options: { readonly executionMs?: number } = {}) {
   const j = await journey(key, { profile: true });
   const home = await j.startHome();
   const { session } = await home.service.start({
@@ -829,7 +835,7 @@ async function parkedAfterWork(key: string) {
   const [tab] = await home.service.savedPages(j.task.userId, session.id);
   if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
   const page = await j.draft();
-  const work = await directWork(j, () => home);
+  const work = await directWork(j, () => home, options);
   const read = `return await page.js("document.querySelector('input').value")`;
   const first = await work.use(
     `globalThis.page = await openPage(${JSON.stringify(tab.id)}); ${read}`,
@@ -2661,5 +2667,156 @@ it("loads a tab the person closed and reopened when the agent opens it first, on
     expect((await j.tabs.get(j.task.userId, own.id))?.pageBinding?.sessionId).not.toBe(session.id);
   } finally {
     await held.close();
+  }
+});
+
+/** What an agent reads back over MCP for a refusal: the receipt's error, as structured content. */
+const refusalOf = (result: Awaited<ReturnType<Awaited<ReturnType<typeof directWork>>["use"]>>) =>
+  (result.structuredContent as { error?: { message?: string; next?: string } } | undefined)?.error;
+
+it("tells the agent over MCP that nothing was sent and it may call again when its wake bound runs out", async () => {
+  const p = await parkedAfterWork("wake-bound-next", { executionMs: 1_500 });
+  try {
+    const resume = holdResume(p.j.controller);
+    const call = p.work.use(p.read);
+    await before(resume.seen, call, "The parked call");
+    const result = await call;
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ status: "refused" });
+    expect(refusalOf(result)).toMatchObject({
+      message: "The pooled browser did not wake in time. Nothing was sent.",
+      next: "Nothing was sent. It is safe to call again.",
+    });
+    resume.allow();
+  } finally {
+    await p.j.close();
+  }
+});
+
+/** Retires the Home's only target for another not yet adopted: the gap of a replaced host. */
+const retireForReplacement = (p: Awaited<ReturnType<typeof parkedAfterWork>>) =>
+  p.home.service.retirePool(p.j.task.runnerId, "browser-replaced");
+
+/** The call's operation, newest first. */
+const latestOperation = (p: Awaited<ReturnType<typeof parkedAfterWork>>) =>
+  p.j.database
+    .selectFrom("agentOperations")
+    .select(["state", "sessionId", "handedOffAt"])
+    .orderBy("createdAt", "desc")
+    .executeTakeFirstOrThrow();
+
+it("refuses at once, over MCP with its next line, a call on a session of a target retired while it waited", async () => {
+  const p = await parkedAfterWork("retired-session-next");
+  try {
+    const resume = holdResume(p.j.controller);
+    // Its tab is a page of the retired target's session: the call ends with that session.
+    const call = p.work.useTab(p.read, p.tab.id);
+    await before(resume.seen, call, "The tab-targeted call");
+    await retireForReplacement(p);
+    const result = await call;
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ status: "refused" });
+    expect(refusalOf(result)).toMatchObject({
+      message: "This browser is not ready. Nothing was sent.",
+      next: "Nothing was sent. It is safe to call again.",
+    });
+    resume.allow();
+  } finally {
+    await p.j.close();
+  }
+});
+
+it("ends a call waiting through a replaced host's gap at once with the person's Stop, in its words", async () => {
+  const p = await parkedAfterWork("gap-stop");
+  try {
+    const resume = holdResume(p.j.controller);
+    let settled = false;
+    const call = p.work.use(p.read).finally(() => {
+      settled = true;
+    });
+    await before(resume.seen, call, "The profile call");
+    await retireForReplacement(p);
+    // It follows: no next target yet, so it waits, nothing handed off.
+    expect(await latestOperation(p)).toMatchObject({ handedOffAt: null });
+    expect(settled).toBe(false);
+    await p.work.sessions.stopSession({
+      ownerUserId: p.j.task.userId,
+      sessionId: (await latestOperation(p)).sessionId,
+      threadId: p.taskId,
+    });
+    const result = await call;
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("stopped");
+    expect(text(result)).not.toContain("did not wake in time");
+    resume.allow();
+  } finally {
+    await p.j.close();
+  }
+});
+
+it("ends a call waiting through a replaced host's gap at once with the person's Disconnect", async () => {
+  const p = await parkedAfterWork("gap-disconnect");
+  try {
+    const resume = holdResume(p.j.controller);
+    let settled = false;
+    const call = p.work
+      .use(p.read)
+      .catch((error: unknown) => error)
+      .finally(() => {
+        settled = true;
+      });
+    await before(resume.seen, call, "The profile call");
+    await retireForReplacement(p);
+    expect(await latestOperation(p)).toMatchObject({ handedOffAt: null });
+    expect(settled).toBe(false);
+    await p.connection.revoke(p.work.agent.id);
+    await p.j.store.driveConnectionCleanups();
+    // Its end, never a wake refusal at its bound: Disconnect ends the wait itself.
+    expect(JSON.stringify(await call)).not.toContain("did not wake in time");
+    const [row] = (await p.connection.list()).filter(({ id }) => id === p.work.agent.id);
+    expect(row).toMatchObject({ state: "stopped" });
+    resume.allow();
+  } finally {
+    await p.j.close();
+  }
+});
+
+it("today: settles unknown, and never replays, a command already sent when its target is retired for another", async () => {
+  const j = await journey("retired-in-flight", { profile: true });
+  try {
+    const home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const [tab] = await home.service.savedPages(j.task.userId, session.id);
+    if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
+    const page = await j.draft();
+    const work = await directWork(j, () => home);
+    const bound = await work.use(`globalThis.page = await openPage(${JSON.stringify(tab.id)});`);
+    expect(bound.isError, text(bound)).not.toBe(true);
+    const sent = async () =>
+      (
+        await page.cdp.send<{ result: { value?: number } }>("Runtime.evaluate", {
+          expression: "window.__sent ?? 0",
+          returnByValue: true,
+        })
+      ).result.value;
+    const hanging = work.use(
+      `return await page.js("(window.__sent = (window.__sent ?? 0) + 1, new Promise(() => {}))")`,
+    );
+    await vi.waitFor(async () => expect(await sent()).toBe(1));
+    const operations = () =>
+      j.database.selectFrom("agentOperations").select(["id", "state", "outcome"]).execute();
+    const before = (await operations()).length;
+    await home.service.retirePool(j.task.runnerId, "browser-replaced");
+    // Sent to the retired target: unknown, recorded once, and never carried anywhere else.
+    expect((await hanging).structuredContent).toMatchObject({ status: "unknown" });
+    const after = await operations();
+    expect(after.length).toBe(before);
+    expect(after.filter(({ state }) => state === "unknown")).toHaveLength(1);
+    expect(after.filter(({ state }) => state === "handed-off")).toHaveLength(0);
+  } finally {
+    await j.close();
   }
 });

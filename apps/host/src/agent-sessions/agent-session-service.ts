@@ -345,6 +345,7 @@ export class AgentSessionService {
   >();
   readonly #decisions = new EventEmitter();
   readonly #holdMs: number;
+  readonly #executionMs: number;
   readonly #sweeper: DeadlineDrain;
   #sweeping = false;
 
@@ -355,9 +356,12 @@ export class AgentSessionService {
     readonly onError?: (error: unknown) => void;
     /** How long a call waits for the person's decision before it returns pending. */
     readonly holdMs?: number;
+    /** An operation's own bound when it names none (two minutes; tests shorten it). */
+    readonly executionMs?: number;
   }) {
     this.#store = options.store;
     this.#holdMs = options.holdMs ?? agentOperationHoldMs;
+    this.#executionMs = options.executionMs ?? defaultExecutionMs;
     this.#closeBinding = options.closeBinding ?? (() => {});
     this.#onError = options.onError ?? (() => {});
     this.#decisions.setMaxListeners(0);
@@ -821,7 +825,7 @@ export class AgentSessionService {
     stop: AbortSignal,
   ): Promise<DirectOperationResult<Result>> {
     const bindingId = `session:${row.sessionId}` as const;
-    const deadline = Date.now() + (operation.timeoutMs ?? defaultExecutionMs);
+    const deadline = Date.now() + (operation.timeoutMs ?? this.#executionMs);
     const signal = AbortSignal.any([stop, AbortSignal.timeout(Math.max(0, deadline - Date.now()))]);
     let reservation: BrowserPoolReservation | undefined;
     let handed: AgentOperationRow | null = null;
@@ -986,7 +990,7 @@ export class AgentSessionService {
     };
     this.#sessions.set(row.sessionId, entry);
     entry.work++;
-    const deadline = pooled?.deadline ?? Date.now() + (operation.timeoutMs ?? defaultExecutionMs);
+    const deadline = pooled?.deadline ?? Date.now() + (operation.timeoutMs ?? this.#executionMs);
     const signal = AbortSignal.any([
       entry.controller.signal,
       stop,
