@@ -82,6 +82,42 @@ describe("viewer clipboard gesture ownership", () => {
     ]);
     clipboard.dispose();
   });
+  it("says nothing about the clipboard for Space or Return that copied nothing, and asks once one did", async () => {
+    // Headless Chromium on a real Mac app, no clipboard permission: typing letters, spaces and
+    // Backspace showed "Allow clipboard access…, then copy again." once per space.
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal(
+        "ClipboardItem",
+        class {
+          constructor(_data: unknown) {}
+        },
+      );
+      vi.stubGlobal("navigator", {
+        clipboard: {
+          write: vi.fn(async () => {
+            throw new DOMException("Write permission denied.", "NotAllowedError");
+          }),
+        },
+      });
+      const errors: string[] = [];
+      const clipboard = new ViewerClipboard((message) => errors.push(message));
+      for (let space = 0; space < 3; space++) {
+        clipboard.armActivation();
+        await vi.advanceTimersByTimeAsync(600);
+      }
+      expect(errors).toEqual([]);
+      // A Return that pressed the page's own Copy button did copy: then the person is asked.
+      clipboard.armActivation();
+      await clipboard.written([text("copied by the page")]);
+      expect(errors).toEqual([
+        "Allow clipboard access for this page in your browser, then copy again.",
+      ]);
+      clipboard.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("matches the latest forwarded activation and writes later attributed data directly", async () => {
     const native = vi.fn(async () => undefined);
     const clipboard = new ViewerClipboard(() => undefined, native);
