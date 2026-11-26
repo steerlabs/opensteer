@@ -145,6 +145,10 @@ const allowed: Readonly<Record<string, { readonly count: number; readonly reason
   },
   "apps/web/src/components/image-actions.tsx": { count: 1, reason: reasons.local },
   "apps/web/src/components/plugins/plugins-area.tsx": { count: 2, reason: reasons.pluginBuild },
+  "apps/web/src/components/remote-editing/remote-editing-proxy.tsx": {
+    count: 1,
+    reason: reasons.local,
+  },
   "apps/web/src/components/thread-card-use-action.tsx": { count: 1, reason: reasons.answer },
   "apps/web/src/components/thread-password-sign-in-action.tsx": {
     count: 1,
