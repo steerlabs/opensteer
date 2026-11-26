@@ -1,4 +1,4 @@
-import { isRaisedBeforeEffect, OpensteerError } from "@opensteer/core";
+import { isRaisedBeforeEffect, OpensteerError, type CommandRequestOutcome } from "@opensteer/core";
 import {
   beginCommandAttempt,
   settleCommandAttempt,
@@ -7,6 +7,9 @@ import {
   type DatabaseSchema,
 } from "@opensteer/database";
 import { commandEffect, type CommandRow } from "@opensteer/protocol/command-table";
+import { PluginCommandResultSchema } from "@opensteer/protocol";
+import { BrowserSignInOutcomeSchema } from "@opensteer/protocol/browser-sources";
+import { isRecord } from "@opensteer/shared/isRecord";
 import type { Kysely } from "kysely";
 
 /** Where a command's attempt is recorded and settled. */
@@ -15,29 +18,85 @@ export interface CommandAttempts {
     input: CommandAttemptInput,
     readmit?: (transaction: Kysely<DatabaseSchema>) => Promise<void>,
   ): Promise<CommandAttemptBegin>;
-  settle(id: string, state: "done" | "failed" | "unknown"): Promise<void>;
+  settle(
+    id: string,
+    state: "done" | "failed" | "unknown",
+    outcome?: CommandRequestOutcome,
+  ): Promise<void>;
 }
 
 export function commandAttempts(database: Kysely<DatabaseSchema>): CommandAttempts {
   return {
     begin: (input, readmit) => beginCommandAttempt(database, input, readmit),
-    settle: (id, state) => settleCommandAttempt(database, id, state),
+    settle: (id, state, outcome) => settleCommandAttempt(database, id, state, outcome),
   };
 }
 
 export type CommandEffectOutcome<T> =
-  | { readonly status: "done"; readonly output: T }
-  /** Nothing happened: refused where it was raised, before anything was sent. */
-  | { readonly status: "failed"; readonly error: unknown }
+  | { readonly status: "done"; readonly output: T; readonly receipt?: DoneReceipt }
+  /** The handler confirmed it did not take effect, or it refused before effect. */
+  | { readonly status: "failed"; readonly error: unknown; readonly receipt?: FailedReceipt }
   /** It may have happened: never failed, never completed, never retried by the Home. */
   | { readonly status: "unknown"; readonly error: unknown };
+
+type DoneReceipt = Extract<CommandRequestOutcome, { status: "done" }>;
+type FailedReceipt = Extract<CommandRequestOutcome, { status: "failed" }> & {
+  readonly code: OpensteerError["code"];
+};
+
+/**
+ * A handler may return evidence of what happened. Persist only those explicit, bounded receipts.
+ * A nested status alone is insufficient evidence of failure, and arbitrary outputs may contain
+ * the person's secrets. A build error guarantees no plugin version became active.
+ */
+function commandResultReceipt(
+  type: string,
+  output: unknown,
+): DoneReceipt | FailedReceipt | undefined {
+  if (!isRecord(output) || output.type !== type) return undefined;
+  if (type === "machine.access.update" && output.outcome === "conflict")
+    return {
+      status: "failed",
+      code: "conflict",
+      message: "The device's access settings changed before this command ran.",
+      result: { type, outcome: "conflict" },
+    };
+  if (type === "browser.session.sign-in" || type === "browser.sign-in.respond") {
+    // The transfer path throws when it lost the response after sending the cookies. Its
+    // returned problems say no copy took effect. Omit the source name from the receipt.
+    const answer = BrowserSignInOutcomeSchema.safeParse(output.outcome).data;
+    if (answer?.status === "problem")
+      return {
+        status: "failed",
+        code: "conflict",
+        message: "The Chrome sign-in was not copied.",
+        result: { type, outcome: { status: answer.status, problem: answer.problem } },
+      };
+  }
+  if (type !== "plugins.install") return undefined;
+  const command = PluginCommandResultSchema.safeParse(output).data;
+  if (command?.type !== "plugins.install") return undefined;
+  const { result } = command;
+  if (result.status === "build-error")
+    return {
+      status: "failed",
+      code: "bad_request",
+      message: `The plugin did not build: ${result.message}`.slice(0, 2_000),
+      result: { type, result },
+    };
+  const { status, pluginId, versionId } = result;
+  return {
+    status: "done",
+    result: { type, result: { status, pluginId, versionId } },
+  };
+}
 
 /**
  * The one way a command acts, whoever asked and whether it runs now or after the person approved
  * it (G4). One with an effect outside the database is recorded first, in the same transaction as
  * its last admission (G3, `readmit`), and in the asking connection's Disconnect set; then it acts;
- * then it settles: done, failed only when the error was raised before the effect (or the Home's
- * own refusal inside a database-only command's one transaction), and otherwise unknown. A refusal
+ * then it settles. A failed command has either the handler's explicit evidence, a refusal raised
+ * before the effect, or the Home's refusal in a database-only command's transaction. A refusal
  * at the last admission records nothing and is thrown as it is. The same key again (K1) is
  * unknown without acting while its attempt runs or once it may have happened; done, the handler's
  * own lookup replays it.
@@ -81,7 +140,10 @@ export async function runCommandEffect<T>(input: {
   // the row stays `running` until the Home's startup recovery settles it `unknown`: still true to
   // rule 4 (it may have happened, and nothing runs it again), and to rule 3 (a Disconnect waiting
   // on it shows no end until there is evidence). No retry loop.
-  const settle = async (state: "done" | "failed" | "unknown") => {
+  const settle = async (
+    state: "done" | "failed" | "unknown",
+    receipt?: DoneReceipt | FailedReceipt,
+  ) => {
     if (!id || !input.attempts) return;
     const attempts = input.attempts;
     const warn = (error: unknown) =>
@@ -91,10 +153,10 @@ export async function runCommandEffect<T>(input: {
         error: error instanceof Error ? error.message : String(error),
       });
     try {
-      await attempts.settle(id, state);
+      await attempts.settle(id, state, receipt);
     } catch (error) {
       warn(error);
-      (input.later ?? laterBy(30_000))(() => attempts.settle(id, state).catch(warn));
+      (input.later ?? laterBy(30_000))(() => attempts.settle(id, state, receipt).catch(warn));
     }
   };
   let output: T;
@@ -105,6 +167,15 @@ export async function runCommandEffect<T>(input: {
     await settle(failed ? "failed" : "unknown");
     return failed ? { status: "failed", error } : { status: "unknown", error };
   }
-  await settle("done");
-  return { status: "done", output };
+  const receipt = commandResultReceipt(input.attempt.type, output);
+  if (receipt?.status === "failed") {
+    await settle("failed", receipt);
+    return {
+      status: "failed",
+      error: new OpensteerError({ code: receipt.code, message: receipt.message }),
+      receipt,
+    };
+  }
+  await settle("done", receipt);
+  return { status: "done", output, ...(receipt ? { receipt } : {}) };
 }

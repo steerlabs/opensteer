@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { UserId } from "@opensteer/core";
+import type { CommandRequestOutcome, UserId } from "@opensteer/core";
 import type { Kysely } from "kysely";
 import { withDatabaseTransaction } from "./connection.js";
 import type { DatabaseSchema } from "./schema.js";
-import { idempotencyConflict } from "./store-primitives.js";
+import { idempotencyConflict, jsonValue } from "./store-primitives.js";
 
 /**
  * A command with an effect outside the database is recorded before it acts and settled after
@@ -79,10 +79,11 @@ export async function settleCommandAttempt(
   database: Kysely<DatabaseSchema>,
   id: string,
   state: "done" | "failed" | "unknown",
+  outcome?: CommandRequestOutcome,
 ): Promise<void> {
   await database
     .updateTable("commandAttempts")
-    .set({ state, settledAt: new Date() })
+    .set({ state, settledAt: new Date(), ...(outcome ? { outcome: jsonValue(outcome) } : {}) })
     .where("id", "=", id)
     .where("state", "=", "running")
     .execute();

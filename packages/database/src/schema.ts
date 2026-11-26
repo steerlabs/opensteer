@@ -7,6 +7,7 @@ import type {
   AgentOperationTarget,
   AgentSessionEndReason,
   AgentSessionId,
+  CommandRequestOutcome,
   DeviceId,
   DeviceKind,
   DevicePlatform,
@@ -1104,6 +1105,7 @@ export interface CommandAttemptTable {
   state: Generated<"running" | "done" | "failed" | "unknown">;
   startedAt: Generated<Date>;
   settledAt: Date | null;
+  outcome: Generated<CommandRequestOutcome | null>;
 }
 export interface RequestTable {
   revision: Generated<string>;

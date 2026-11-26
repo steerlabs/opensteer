@@ -605,7 +605,9 @@ export class CommandRequestService {
           await this.#store.closeRefusedApproval(input.requestId);
           throw proposerGone();
         }
-        if (effect.status === "done") {
+        if ("receipt" in effect && effect.receipt) {
+          outcome = effect.receipt;
+        } else if (effect.status === "done") {
           // What a proposer reads of a person's command: everything for your own agents' Runs;
           // under a connection's grant only that it ran (rule 5).
           let result: unknown = null;

@@ -78,6 +78,59 @@ describe("the one way a command acts (G4)", () => {
     expect(states.size).toBe(0);
   });
 
+  it("keeps an install receipt with the effect, including the version that became active", async () => {
+    const { attempts } = recorded();
+    const settle = vi.spyOn(attempts, "settle");
+    const output = {
+      type: "plugins.install",
+      result: { status: "installed", pluginId: "pets", versionId: "v1", warnings: ["A warning"] },
+    };
+    const effect = await runCommandEffect({
+      row: outside,
+      attempts,
+      attempt: { ...attempt, type: output.type },
+      act: async () => output,
+    });
+    const receipt = {
+      status: "done",
+      result: {
+        type: "plugins.install",
+        result: { status: "installed", pluginId: "pets", versionId: "v1" },
+      },
+    };
+    expect(effect).toEqual({ status: "done", output, receipt });
+    expect(settle).toHaveBeenCalledExactlyOnceWith("cat_1", "done", receipt);
+  });
+
+  it.each([
+    [
+      { type: "machine.access.update", outcome: "conflict" },
+      "The device's access settings changed before this command ran.",
+    ],
+    [
+      {
+        type: "browser.session.sign-in",
+        outcome: {
+          status: "problem",
+          problem: "chrome-offline",
+          site: "https://example.test",
+          sourceName: "Private",
+        },
+      },
+      "The Chrome sign-in was not copied.",
+    ],
+  ])("settles a confirmed returned refusal for $type as failed", async (output, message) => {
+    const { attempts, states } = recorded();
+    const effect = await runCommandEffect({
+      row: outside,
+      attempts,
+      attempt: { ...attempt, type: output.type },
+      act: async () => output,
+    });
+    expect(effect).toMatchObject({ status: "failed", receipt: { message } });
+    expect([...states.values()]).toEqual(["failed"]);
+  });
+
   it("records no attempt for a database-only command, whose own refusal is a failure", async () => {
     const { attempts, states } = recorded();
     const refused = await runCommandEffect({

@@ -906,6 +906,13 @@ export function migrationProvider(options?: {
                   `.execute(database);
                 },
               },
+              "0122_command_attempt_outcomes": {
+                async up(database: Kysely<unknown>) {
+                  await sql`alter table command_attempts add column outcome jsonb`.execute(
+                    database,
+                  );
+                },
+              },
             }
           : {}),
       };

@@ -6,7 +6,12 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import type { AgentGrant, ThreadAccessMode, ThreadId } from "@opensteer/core";
+import {
+  RequestIdSchema,
+  type AgentGrant,
+  type ThreadAccessMode,
+  type ThreadId,
+} from "@opensteer/core";
 import { AgentConnectionStore, admitCommand } from "@opensteer/database";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { expect, it, vi } from "vitest";
@@ -1403,6 +1408,135 @@ const doorRoutes = new Map<string, DoorRoute>([
     { kind: "not a Home command", why: "the bytes of a file a Run moves between computers" },
   ],
 ]);
+
+it("reports a failed plugin build to the person and the connected agent that asked", async () => {
+  const database = await cloneTestDatabase("host");
+  const client = new Client({ name: "plugin-install", version: "1" });
+  const host = await startPrivateMachineHost(database.url, { logger: false });
+  const building = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  const message = "The OpenAPI document contains no supported operations.";
+  const install = vi.spyOn(host.runtime.plugins, "install").mockImplementation(async () => {
+    building.resolve();
+    await finish.promise;
+    return { status: "build-error", error: { message } };
+  });
+  try {
+    const url = new URL(mcpResourcePath, host.origin);
+    const connections = new AgentConnectionStore(host.store.database);
+    const connection = await connections.create({
+      userId: host.ownerId,
+      label: "Plugin installer",
+      clientName: "Plugin installer",
+      accessMode: "approval-required",
+      resource: url.href,
+      expiresAt: new Date(Date.now() + 60_000),
+      grant: { scope: "everything" },
+    });
+    const token = `${connectionCredentialPrefix}${randomBytes(32).toString("base64url")}`;
+    expect(await connections.activate(connection.id, credentialHash(token))).toBe(true);
+    await client.connect(
+      new StreamableHTTPClientTransport(url, {
+        requestInit: { headers: { authorization: `Bearer ${token}` } },
+      }) as unknown as Transport,
+    );
+    const asked = await client.callTool({
+      name: "opensteer_command",
+      arguments: {
+        command: {
+          type: "plugins.install",
+          source: { kind: "openapi", name: "Petstore", url: "https://example.test/openapi.json" },
+        },
+      },
+    });
+    expect(asked.isError, JSON.stringify(asked.content)).not.toBe(true);
+    expect(asked.structuredContent).toMatchObject({
+      status: "pending",
+      requestId: expect.any(String),
+    });
+    expect(install).not.toHaveBeenCalled();
+    const requestId = RequestIdSchema.parse(
+      (asked.structuredContent as { requestId?: unknown } | undefined)?.requestId,
+    );
+    const input = {
+      type: "request.command.approve",
+      idempotencyKey: randomUUID(),
+      requestId,
+      expectedRevision: (await host.store.requests.revision(requestId))!,
+    } as const;
+    const approve = () =>
+      testRpcData(host.origin, "commands.dispatch", input, { headers: host.ownerHeaders });
+    const approval = approve();
+    void approval.catch(() => undefined);
+    try {
+      await Promise.race([building.promise, approval]);
+      expect(install).toHaveBeenCalledTimes(1);
+      expect.soft(await host.store.requests.get(requestId)).toMatchObject({
+        status: "fulfilled",
+        command: { outcome: { status: "running" } },
+        presentation: { detail: expect.stringContaining("it is being done") },
+      });
+    } finally {
+      finish.resolve();
+    }
+    const outcome = {
+      status: "failed",
+      message: `The plugin did not build: ${message}`,
+      result: { type: "plugins.install", result: { status: "build-error", message } },
+    };
+    expect(await approval).toMatchObject({ outcome });
+    const attempt = await host.store.database
+      .selectFrom("commandAttempts")
+      .selectAll()
+      .where("callerKey", "=", `request:${requestId}`)
+      .executeTakeFirstOrThrow();
+    expect(attempt).toMatchObject({ state: "failed", outcome });
+    expect(await host.store.requests.get(requestId)).toMatchObject({
+      status: "fulfilled",
+      command: { outcome },
+      presentation: {
+        title: expect.stringMatching(/^Did not happen/u),
+        detail: expect.stringContaining(
+          `You approved this, but the plugin did not build: ${message}`,
+        ),
+      },
+    });
+    // If writing the Request's receipt was interrupted, the same approval reads what the
+    // attempt recorded. It never sends another install.
+    await host.store.database
+      .updateTable("requests")
+      .set({ command: sql`jsonb_set(command, '{outcome}', '{"status":"running"}')` })
+      .where("id", "=", requestId)
+      .execute();
+    expect(await approve()).toMatchObject({ outcome });
+    expect(install).toHaveBeenCalledTimes(1);
+    const seen = await client.callTool({
+      name: "opensteer_state",
+      arguments: { area: "requests" },
+    });
+    expect(seen.isError, JSON.stringify(seen.content)).not.toBe(true);
+    expect(seen.structuredContent).toMatchObject({
+      view: {
+        requests: expect.arrayContaining([
+          {
+            request: expect.objectContaining({
+              id: requestId,
+              status: "approved-failed",
+              message: outcome.message,
+            }),
+          },
+        ]),
+      },
+    });
+    expect(await host.store.database.selectFrom("plugins").select("id").execute()).toEqual([]);
+  } finally {
+    finish.resolve();
+    install.mockRestore();
+    await client.close();
+    await host.close();
+    await database.drop();
+  }
+});
 
 it("keeps the plugin engine idle when a connected agent discovers an empty inventory", async () => {
   const database = await cloneTestDatabase("host");

@@ -415,9 +415,9 @@ export class CommandTools {
         // the caller reads a command Request only while it still reaches what it governs now.
         const grantBound = Boolean(connectionId);
         const subject = commandSubject(caller.key);
-        // A command Request as an agent reads it: what was sent and a value-free status, never
-        // the Home's sentence, card or notes (rule 5); its reach checked in the transaction that
-        // reads the row.
+        // A command Request as an agent reads it: what it sent, the status and a confirmed
+        // failure of its own command. The card, notes and successful results can name things
+        // beyond its grant (rule 5).
         const project = async (item: AgentReadRequest): Promise<AgentReadRequest | null> => {
           if (!item.request.command) return item;
           return withDatabaseTransaction(this.#database, async (transaction) => {
@@ -448,6 +448,11 @@ export class CommandTools {
                   Object.entries(part.command).filter(([key]) => !part.homeAdded?.includes(key)),
                 ),
                 reason: part.agentReason,
+                ...(part.outcome?.status === "failed" &&
+                part.outcome.result !== undefined &&
+                (!grantBound || part.proposer.connectionId === connectionId)
+                  ? { message: part.outcome.message }
+                  : {}),
               },
             } as unknown as AgentReadRequest;
           });
@@ -486,8 +491,21 @@ export class CommandTools {
                 .selectFrom("requests")
                 .select("id")
                 .where("id", "in", mine as RequestId[])
-                .where("status", "=", "pending")
-                .orderBy("createdAt", "desc")
+                .where((eb) =>
+                  eb.or([
+                    eb("status", "=", "pending"),
+                    eb.and([
+                      eb("status", "=", "fulfilled"),
+                      eb("command", "is not", null),
+                      eb("resolvedAt", ">=", new Date(Date.now() - 86_400_000)),
+                      ...(connectionId
+                        ? [sql<boolean>`command->'proposer'->>'connectionId' = ${connectionId}`]
+                        : []),
+                    ]),
+                  ]),
+                )
+                .orderBy(sql<boolean>`status = 'pending'`, "desc")
+                .orderBy(sql<Date>`coalesce(resolved_at, created_at)`, "desc")
                 .orderBy("id", "desc")
                 .limit(stateRequestsLimit)
                 .execute()

@@ -287,6 +287,13 @@ export async function dispatchCommand(
     return { status: "pending", requestId: answers.id, reason: ask.reason, existing: true };
   if (answers || !door.propose) return ask;
   const proposed = await door.propose(actor, command, ask, admission.face);
+  if (
+    proposed.status === "answered" &&
+    proposed.outcome.status === "done" &&
+    proposed.outcome.result !== undefined &&
+    holder.scope !== null
+  )
+    return { ...proposed, outcome: { status: "done", result: { type: command.type } } };
   return proposed.status === "pending" ? { ...proposed, reason: ask.reason } : proposed;
 }
 

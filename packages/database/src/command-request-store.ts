@@ -1,6 +1,7 @@
 import { commandNotFoundMessage } from "./resource-access.js";
 import {
   commandAgentStatus,
+  commandRequestReportedFailure,
   commandRequestAnswers,
   CommandRequestPartSchema,
   createId,
@@ -85,6 +86,8 @@ export function commandRequestState(row: {
   }
 }
 
+const approvalRunningWords = "You approved this, and it is being done.";
+
 /** The card's words once the person has answered, so every app reads what happened. */
 export function settledPresentation(
   presentation: RequestPresentation,
@@ -92,26 +95,27 @@ export function settledPresentation(
   outcome: CommandRequestOutcome,
 ): RequestPresentation {
   const sentence = part.sentence ?? part.summary;
-  const changed = "";
   const [title, said] =
     outcome.status === "done"
-      ? ["Done", `You approved this, and it was done.${changed}`]
+      ? ["Done", "You approved this, and it was done."]
       : outcome.status === "failed"
         ? [
             "Did not happen",
-            `You approved this, but the Home refused it, so nothing changed.${changed}`,
+            commandRequestReportedFailure(outcome) ??
+              "You approved this, but the Home refused it, so nothing changed.",
           ]
         : outcome.status === "unknown"
           ? [
               "May have happened",
-              `You approved this, but the Home could not tell whether it finished. It may have happened: check before doing it again. The Home will not run it again.${changed}`,
+              "You approved this, but the Home could not tell whether it finished. It may have happened: check before doing it again. The Home will not run it again.",
             ]
-          : ["Approved", `You approved this, and it is being done.${changed}`];
-  const rest = presentation.detail?.split("\n\n");
+          : ["Approved", approvalRunningWords];
+  const rest = presentation.detail?.split("\n\n") ?? [];
+  if (rest[0] === approvalRunningWords) rest.shift();
   return {
     ...presentation,
     title: `${title}: ${sentence}`.slice(0, 240),
-    detail: [said, ...(rest ?? [])].join("\n\n").slice(0, 16_000),
+    detail: [said, ...rest].join("\n\n").slice(0, 16_000),
   };
 }
 
@@ -333,8 +337,8 @@ export class CommandRequestStore {
 
   /**
    * An approval left running with no effect in flight (its receipt was lost): its outcome is read
-   * from the attempt the effect recorded: done if that says done, otherwise unknown (it may have
-   * happened). Only the record is written again; the effect never runs again.
+   * from the attempt the effect recorded. Only the record is written again; the effect never runs
+   * again.
    */
   async reconcileRunning(requestId: RequestId): Promise<Request | null> {
     const row = await this.#database
@@ -347,14 +351,15 @@ export class CommandRequestStore {
     if (part.outcome?.status !== "running") return null;
     const attempt = await this.#database
       .selectFrom("commandAttempts")
-      .select("state")
+      .select(["state", "outcome"])
       .where("requestedBy", "=", row.requestedBy)
       .where("callerKey", "=", `request:${requestId}`)
       .where("idempotencyKey", "=", `command-request:${requestId}`)
+      .orderBy("startedAt", "desc")
       .executeTakeFirst();
     return this.settle(
       requestId,
-      attempt?.state === "done" ? { status: "done" } : { status: "unknown" },
+      attempt?.outcome ?? (attempt?.state === "done" ? { status: "done" } : { status: "unknown" }),
     );
   }
 
@@ -391,6 +396,11 @@ export class CommandRequestStore {
           response: null,
           responseCommandId: null,
           settlementProvenance: null,
+          presentation: jsonValue({
+            ...row.presentation,
+            title: part.summary,
+            detail: row.presentation.detail?.replace(`${approvalRunningWords}\n\n`, ""),
+          }),
           command: partValue({
             ...part,
             outcome: {
@@ -720,6 +730,9 @@ export class CommandRequestStore {
           resolvedAt: now,
           resolvedBy: input.resolvedBy,
           response: jsonValue({ kind: "external", value: { decision: "fulfilled" } }),
+          presentation: jsonValue(
+            settledPresentation(row.presentation, part, { status: "running" }),
+          ),
           settlementProvenance: await readRequestSettlementProvenance(
             transaction,
             input.resolvedBy,

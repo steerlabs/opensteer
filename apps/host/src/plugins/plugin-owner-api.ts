@@ -1078,6 +1078,18 @@ export class PluginOwnerApi {
           ),
         );
         if (result.status === "build-error") {
+          const stage = z
+            .enum(["source", "dependencies", "compile", "declaration", "retain", "migrate"])
+            .safeParse(result.error.stage).data;
+          const imported = result.error.code === "invalid-openapi";
+          // The detailed diagnostic can quote source text. Keep it in the approved receipt,
+          // and log only the engine's known stage and a fixed sentence.
+          console.warn("Plugin install failed", {
+            stage: imported ? "openapi-import" : (stage ?? "build"),
+            message: imported
+              ? "The OpenAPI document did not compile."
+              : "The plugin did not build.",
+          });
           const message = z.object({ message: z.string() }).safeParse(result.error).data?.message;
           return {
             type: command.type,
