@@ -3286,6 +3286,42 @@ describeStore("an external agent's direct work through sessions", (it) => {
     ).toEqual({ lastActionUncertain: null });
   });
 
+  it("keeps the cause of an action the person's Disconnect left unconfirmed, never calling it lost contact", async ({
+    storeFixture,
+  }) => {
+    // Real Mac: Disconnect during a Safari script; the connection then read "Contact was lost
+    // before this action confirmed it had ended." while the task said the person disconnected it.
+    const s = await setUp(storeFixture, "disconnect-uncertain-cause");
+    const held = s.holdNext();
+    const inFlight = s.direct("cut-short").then(
+      () => null,
+      () => null,
+    );
+    await held.started;
+    const disconnect = commands(storeFixture, s.f.userId, {
+      stopper: {
+        stop: async () => {},
+        stopDirectOperation: (attempt) => s.sessions.stopDirectOperation(attempt.id),
+      },
+      afterStop: (connectionId, reason) =>
+        s.sessions.closeConnection(connectionId, reason === "disconnect"),
+    });
+    await disconnect.revoke(s.agent.id);
+    await inFlight;
+    await s.sessions.drain();
+    await disconnect.effects.driveCleanups();
+    expect(
+      await storeFixture.database
+        .selectFrom("agentOperations")
+        .select(["outcome", "ending"])
+        .where("operationKey", "=", "cut-short")
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ outcome: "unknown", ending: "disconnected" });
+    const row = (await disconnect.list()).find(({ id }) => id === s.agent.id);
+    expect(row?.lastActionUncertain).toBe(true);
+    expect(row?.lastActionUncertainDetail).toMatchObject({ ending: "disconnected", reason: null });
+  });
+
   it("settles a hand-off orphaned by a Home restart at once: Stopped, uncertain, and cleared by the person", async ({
     storeFixture,
   }) => {
