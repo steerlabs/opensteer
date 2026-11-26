@@ -24,6 +24,7 @@ import {
 import { replaceSecrets, type LocalMcpSecretsUpdate } from "./local-mcp-server-store.js";
 import { isRecord } from "@opensteer/shared/isRecord";
 import {
+  connectionStandsAsAdmitted,
   grantedDeviceApprovals,
   resolveResourceAccess,
   type AgentConnectionAuthority,
@@ -1763,7 +1764,11 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
           : null;
       // Where the connection stands is read again after everything it judges was read, and only
       // that reading decides: a grant narrowed while the lending was read applies to this answer.
-      const authority = connection ? await resolveResourceAccess(this.database, subject) : lending;
+      // In one statement when nothing moved; admitted again in full when something did.
+      const authority =
+        !connection || (await connectionStandsAsAdmitted(this.database, lending.execution))
+          ? lending
+          : await resolveResourceAccess(this.database, subject);
       const grant = authority.execution.agentConnection?.grant;
       return tools.flatMap((tool) => {
         const write = integrationToolEffect(tool.tool.annotations) !== "read";

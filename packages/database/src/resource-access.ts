@@ -230,6 +230,40 @@ async function readConnectionStanding(
 }
 
 /**
+ * Whether a connection still stands exactly as an admission read it, in the one statement of its
+ * standing: live, with the same grant revision, mode, consent and sender rule. Only the subjects
+ * whose authority is that row alone (the connection acting itself, or its session) may keep an
+ * earlier admission on this; anything else is admitted again.
+ */
+export async function connectionStandsAsAdmitted(
+  database: Kysely<DatabaseSchema>,
+  execution: Pick<ExecutionAuthority, "agentConnection" | "ownerUserId" | "subject">,
+): Promise<boolean> {
+  const { agentConnection: admitted, subject } = execution;
+  if (
+    !admitted ||
+    !(
+      (subject.kind === "connection" && !subject.delegated) ||
+      (subject.kind === "binding" && subject.bindingId.startsWith("session:"))
+    )
+  )
+    return false;
+  const read = await readConnectionStanding(
+    database,
+    execution.ownerUserId,
+    admitted.agentConnectionId,
+    false,
+  );
+  return (
+    read?.state === "live" &&
+    read.connection.grantRevision === admitted.grantRevision &&
+    read.connection.accessMode === admitted.accessMode &&
+    read.connection.consentVersion === admitted.consentVersion &&
+    (read.connection.bridgeSenders ?? null) === (admitted.bridgeSenders ?? null)
+  );
+}
+
+/**
  * The refusal for work whose connection is a chat that is only waiting (its account paused or
  * needing attention), from the same read that found it not live: the caller holds the work
  * rather than refuse it, and never asks a second time.

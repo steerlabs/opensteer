@@ -178,6 +178,7 @@ describeStore("a connected agent's reads stay within their statement budgets", (
         }),
     };
     const counts: Record<string, number> = {};
+    const listed: Record<string, string[]> = {};
     for (const [name, call] of Object.entries(calls)) {
       const warm = await call();
       expect(warm.isError, JSON.stringify(warm.content)).not.toBe(true);
@@ -187,13 +188,28 @@ describeStore("a connected agent's reads stay within their statement budgets", (
         expect((warm.structuredContent as { status?: string }).status).toBe("timed_out");
       if (name === "taskRead")
         for (const id of requestIds) expect(JSON.stringify(warm.structuredContent)).toContain(id);
-      counts[name] = (await statements(call)).length;
+      listed[name] = await statements(call);
+      counts[name] = listed[name].length;
     }
+    // After the lending reads what the grant covers of the person's device approvals, where the
+    // connection stands is read again in exactly one statement when nothing moved: the
+    // connection's own row, and no second admission (owner and Home reads) behind it.
+    const discovered = listed.discover!;
+    const lending = discovered.findIndex((sql) =>
+      /from "integration_connections" inner join "integration_servers".*inner join "devices"/su.test(
+        sql,
+      ),
+    );
+    expect(lending).toBeGreaterThan(0);
+    expect(discovered[lending + 1]).toMatch(/^select "id", "label", "grant", "grant_revision"/u);
+    expect(discovered[lending + 1]).toMatch(/from "agent_connections"/u);
+    expect(discovered[lending + 2]).not.toMatch(/from "agent_connections"/u);
     // Fixed per-call budgets:
-    // - discover: 26 (one live check per discover call; 27 before; 22 until d15e89135, whose
+    // - discover: 24 (one live check per discover call; 27 before; 22 until d15e89135, whose
     //   tool listing for a connection reads what its grant covers of the person's device
-    //   approvals (grantedDeviceApprovals, 1) and reads its standing again after that lending
-    //   (resolveResourceAccess, 3), so a grant narrowed in between applies).
+    //   approvals (grantedDeviceApprovals, 1) and reads where the connection stands again after
+    //   that lending (connectionStandsAsAdmitted, 1: admitted again in full only if its grant,
+    //   mode, consent or state moved), so a grant narrowed in between applies).
     // - childWaitSettled: 88 (settled first snapshot with status === "settled"; was 93 at
     //   457885706 before the R round, 89 after R1-R7, and 88 after P1 unified
     //   admitThreadExecution onto threadExecutionAdmitted).
@@ -202,7 +218,7 @@ describeStore("a connected agent's reads stay within their statement budgets", (
     // - taskRead: 28 (down from 33 at 457885706 after folding connectionRequests into
     //   recent/activity SQL and removing post-hoc visibleConnectionRequestIds).
     expect(counts).toEqual({
-      discover: 26,
+      discover: 24,
       childWaitSettled: 88,
       childWaitTimedOut: 88,
       taskRead: 28,
