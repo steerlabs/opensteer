@@ -34,6 +34,7 @@ import { useOptionalShell, useShell } from "./app-shell.js";
 import { Icon, type IconName } from "./icon.js";
 import { SentenceText } from "../ui/address-text.js";
 import { AgentMark } from "./settings/agent-mark.js";
+import { taskAppWatch } from "./workspace/task-app-watch.js";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 import { actionLine, requestAnswer, useAction } from "./use-action.js";
 
@@ -77,6 +78,7 @@ export function TaskOriginLine({ parts }: { readonly parts: readonly SentencePar
 /** Watch a session in its existing task view, or focus its Request when reviewing it there. */
 export function useOpenSessionTask() {
   const workspace = useOptionalWorkspace();
+  const shell = useOptionalShell();
   const navigate = useNavigate();
   return (
     threadId: string,
@@ -87,10 +89,19 @@ export function useOpenSessionTask() {
   ) => {
     const id = waiting?.presentation?.threadId ?? waiting?.request.originatingThreadId ?? threadId;
     if (workspace) {
-      workspace.nav.openConversation(
-        workspace.nav.threadPath(id),
-        waiting ? { focusRequest: waiting.request.id } : undefined,
-      );
+      // A task whose agent is using a Mac app opens on that app's picture, in the middle.
+      const snapshot = shell?.hostClient.getSnapshot();
+      const watch =
+        !!snapshot &&
+        taskAppWatch({
+          hostConnected: snapshot.connection === "connected",
+          machines: snapshot.machines,
+          threadId: id,
+        }) !== null;
+      workspace.nav.openConversation(workspace.nav.threadPath(id), {
+        ...(waiting ? { focusRequest: waiting.request.id } : {}),
+        ...(watch ? { watch } : {}),
+      });
     } else {
       void navigate(`/tasks/${encodeURIComponent(id)}`);
     }
