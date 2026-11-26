@@ -2907,12 +2907,15 @@ describeStore("an external agent's direct work through sessions", (it) => {
       grant: granted,
     });
     const early = await s.call("browser_use", { ...args, operationId: pending.operationId });
+    // Its target is outside the grant now: the operation reads exactly as one that does not
+    // exist (rule 5), nothing of its row, and it is neither refused nor run by the read.
+    expect(early).toEqual(
+      await s.call("browser_use", { ...args, operationId: createId("agentOperation") }),
+    );
     expect(early).toMatchObject({
       isError: true,
-      structuredContent: { taskId: pending.taskId, operationId: pending.operationId },
+      structuredContent: { error: { code: "not_found", message: "Operation is unavailable." } },
     });
-    expect(errorText(early)).toMatch(/not shared with this connected agent/);
-    expect(early.structuredContent).not.toHaveProperty("status");
     expect(
       await database
         .selectFrom("agentOperations")

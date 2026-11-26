@@ -808,8 +808,12 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       // ending only: whichever comes first, the wait's own wake or the stop, the session's
       // authority has ended, so no result is written, and nothing of a sign-in.
       const ended = await waitingLogin.result;
-      expect(ended.isError, JSON.stringify(ended.content)).toBe(true);
-      expect(JSON.stringify(ended)).not.toMatch(/loginRef|"completed"|password/u);
+      // Its receipt alone, in either order: completed (its result withheld) when its own wake came
+      // first, unknown or refused when the stop did; never a result, and nothing of a sign-in.
+      expect(["completed", "unknown", "refused"]).toContain(
+        (ended.structuredContent as { status?: string }).status,
+      );
+      expect(JSON.stringify(ended)).not.toMatch(/loginRef|loginStatus|summary|password/iu);
       const approvals = authority.commands.filter(({ type }) => type === "login.approve").length;
       expect(
         await testRpcData(
