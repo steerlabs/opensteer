@@ -138,7 +138,8 @@ function tabTargetAuthority(
 ) {
   const selected = lineage?.grant.scope === "selected" ? lineage : null;
   const lineageTasks = new Map<string, Promise<boolean>>();
-  // A selected grant sees only tabs its own lineage's tasks opened.
+  // A task of this same connection (its lineage): what a selected grant sees, and what a
+  // connection's browser script may reach across its own direct-work tasks.
   const inLineage = (taskId: string) => {
     let held = lineageTasks.get(taskId);
     if (!held) {
@@ -147,7 +148,7 @@ function tabTargetAuthority(
         .select("originConnectionId")
         .where("id", "=", ThreadIdSchema.parse(taskId))
         .executeTakeFirst()
-        .then((row) => row?.originConnectionId === selected?.agentConnectionId);
+        .then((row) => Boolean(lineage && row?.originConnectionId === lineage.agentConnectionId));
       lineageTasks.set(taskId, held);
     }
     return held;
@@ -226,11 +227,15 @@ function tabTargetAuthority(
       if (!(await allowed)) return false;
     }
     if (actor.kind === "person") return true;
+    // A browser script reaches the tabs its own task opened, and a connection's, the tabs any of
+    // its own tasks opened: its agent session ends idle and the next call runs in a new task,
+    // and the tabs it left are still its own.
     if (
       actor.kind === "browser-binding" &&
       "id" in target &&
       target.openedBy !== "person" &&
-      target.openedBy?.taskId !== actor.threadId
+      target.openedBy?.taskId !== actor.threadId &&
+      !(lineage && target.openedBy && (await inLineage(target.openedBy.taskId)))
     )
       return false;
     if (selected) {

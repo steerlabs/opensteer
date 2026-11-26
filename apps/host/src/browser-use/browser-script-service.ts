@@ -132,6 +132,8 @@ export class BrowserScriptService {
     BrowserUsePort<ManagedTarget> | { shared: true; value: BrowserUsePort<SharedTarget> }
   >();
   readonly #repl: BrowserReplService<Target>;
+  /** The connection's grant revision each context last ran under (null: no connection). */
+  readonly #revisions = new Map<string, number | null>();
   #closed = false;
 
   constructor(services: Services) {
@@ -207,10 +209,11 @@ export class BrowserScriptService {
     const { agentBindingId, ownerId } = authority;
     if (authority.expiresAt !== undefined && authority.expiresAt <= Date.now())
       throw refused("forbidden", "Browser authority expired.");
-    await this.#services.store.admitExecution({
+    const execution = await this.#services.store.admitExecution({
       ownerUserId: ownerId,
       subject: { kind: "binding", bindingId: agentBindingId },
     });
+    const grantRevision = execution.agentConnection?.grantRevision ?? null;
     const callSignal =
       authority.expiresAt === undefined
         ? signal
@@ -260,6 +263,17 @@ export class BrowserScriptService {
       }
       binding.contexts.add(key);
     }
+    // No handle survives a grant change, and nothing is kept to decide later: a context that
+    // last ran under another revision of its connection's grant is disposed before this call, as
+    // ten idle minutes dispose it (its handles, events, globals; the tabs stay open). This call
+    // runs in a fresh one, where pages() and openPage decide every tab again. The revision is
+    // the one this call's admission read. A call still running in it is refused below as busy,
+    // and the context is decided again at the next call.
+    if (!this.#repl.busy(key)) {
+      if (this.#revisions.has(key) && this.#revisions.get(key) !== grantRevision)
+        this.#repl.disposeContext(key);
+      this.#revisions.set(key, grantRevision);
+    }
     return this.#repl.execute(
       key,
       code,
@@ -278,6 +292,7 @@ export class BrowserScriptService {
       for (const key of binding.contexts) {
         this.#repl.disposeContext(key);
         this.#ports.delete(key);
+        this.#revisions.delete(key);
       }
     }
     await this.#services.browser.detachAgentSessionsForBinding(agentBindingId);
@@ -288,6 +303,7 @@ export class BrowserScriptService {
     for (const binding of this.#bindings.values()) binding.lifetime.abort();
     this.#bindings.clear();
     this.#ports.clear();
+    this.#revisions.clear();
     await this.#repl.close();
   }
 }

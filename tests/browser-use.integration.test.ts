@@ -1246,3 +1246,44 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     }
   },
 );
+
+it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
+  "never closes the row itself of a page a Run closed when its task was lowered to read-only before the close was confirmed",
+  async () => {
+    const { database, first, tabStore, origin, profile, run, text, faults } =
+      await browserUseHome();
+    let lowered = false;
+    faults.beforeClientCommand = async (command) => {
+      if (command.method !== "Target.closeTarget" || lowered) return;
+      lowered = true;
+      // The close was admitted and sent; the person lowers the task before the browser answers.
+      await database
+        .updateTable("runs")
+        .set({ accessMode: "approval-required" })
+        .where("id", "=", first.runId)
+        .execute();
+    };
+    try {
+      const closed = await run(
+        `const page = await newPage(${JSON.stringify(`${origin}/done`)}, { profileId: ${JSON.stringify(profile.id)} }); const id = page.tabId; await page.close(); return id;`,
+      );
+      const tabId = JSON.parse(text(closed)) as string;
+      expect(lowered).toBe(true);
+      // The row close needs the access the close itself needed: lacking it, the Home's own close
+      // of the row never happens. The page's absence is the shadow inventory's to report, as for
+      // a page that goes by itself: its `physical-close`, whenever that report comes.
+      const closes = (
+        await database
+          .selectFrom("commands")
+          .select("idempotencyKey")
+          .where("idempotencyKey", "like", `%${tabId}%`)
+          .execute()
+      ).map(({ idempotencyKey }) => idempotencyKey);
+      expect(closes.filter((key) => key.startsWith("cdp-close:"))).toEqual([]);
+      if ((await tabStore.get(first.userId, tabId as never, true))?.closedAt)
+        expect(closes.some((key) => key.startsWith("physical-close:"))).toBe(true);
+    } finally {
+      faults.beforeClientCommand = undefined;
+    }
+  },
+);

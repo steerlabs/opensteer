@@ -265,6 +265,11 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
     this.#repl.resetGeneration(contextKey, 0);
   }
 
+  /** Whether a call runs in the context now. */
+  busy(contextKey: string): boolean {
+    return this.#repl.busy(contextKey, 0);
+  }
+
   close(): Promise<void> {
     return this.#repl.close();
   }

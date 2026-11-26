@@ -30,7 +30,7 @@ import {
   standardCdpMaxLivePerRunner,
 } from "./standard-cdp-transport.js";
 import type { DeviceId } from "@opensteer/core";
-import { authorizeTabTarget } from "../tabs/tab-authority.js";
+import { authorizeTabTarget, tabReadAuthority } from "../tabs/tab-authority.js";
 import type { PageTabsPort } from "../tabs/tab-service.js";
 import type { TabActor } from "../tabs/ports.js";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
@@ -6830,6 +6830,8 @@ export class BrowserService {
       });
     const scriptAttachmentId = input.scriptTabId ? randomUUID() : undefined;
     let scriptOpening: Promise<BrowserCdpResponse> | undefined;
+    /** The page target of this script's own tab, as its bind (resumeTab) answered. */
+    let scriptTargetId: string | undefined;
     const nativeAttachment =
       this.#resolveTarget(placementOf(record))?.localProfileStorage?.engine === "android-webview"
         ? {
@@ -7544,6 +7546,56 @@ export class BrowserService {
                       await this.#restoreHoldings(record.id);
                     })
                     .catch(this.#onError);
+                }
+              }
+              if (
+                command.method === browserHostMethods.resumeTab &&
+                input.scriptTabId !== undefined
+              ) {
+                const bound = z
+                  .object({ surfaceId: z.literal(input.scriptTabId), targetId: z.string() })
+                  .safeParse(response.result);
+                if (bound.success) scriptTargetId = bound.data.targetId;
+              }
+              // The Home's own command closed this script's own page and the browser confirmed
+              // it: the tab the person sees closes in the same command, never left with no page
+              // behind it. (A page that goes away by itself is not this Home's evidence.)
+              if (
+                command.method === "Target.closeTarget" &&
+                input.scriptTabId !== undefined &&
+                input.scriptThreadId !== undefined &&
+                scriptTargetId !== undefined &&
+                command.parameters?.targetId === scriptTargetId &&
+                (response.result as { success?: unknown } | null)?.success !== false &&
+                this.#workspaceTabs
+              ) {
+                const tabId = input.scriptTabId;
+                const tabs = this.#workspaceTabs;
+                const actor = {
+                  kind: "browser-binding",
+                  authority: { agentBindingId: input.agentBindingId, ownerId: input.ownerId },
+                  threadId: input.scriptThreadId,
+                } as const;
+                // Decided by the tab's own authority (rule 1), in the close's own transaction, with
+                // the access the close command needed; lacking it, the row stays and the page's
+                // absence is the shadow inventory's to report. Recording it never fails the close.
+                try {
+                  await tabs.close(
+                    input.ownerId,
+                    [tabId],
+                    `cdp-close:${record.id}:${tabId}:${globalThis.crypto.randomUUID()}`,
+                    async (tx, rows) => {
+                      const row = rows.find((candidate) => candidate.id === tabId);
+                      if (!row || !(await (await tabReadAuthority(actor, tx))(row, "read-write")))
+                        throw new OpensteerError({ code: "not_found", message: "Tab not found." });
+                    },
+                    (row) =>
+                      row.pageBinding?.sessionId === record.id &&
+                      row.pageBinding.surfaceId === tabId,
+                  );
+                  this.#onTabsChanged(input.ownerId, [tabId]);
+                } catch (error) {
+                  this.#onError(error);
                 }
               }
               if (pool && input.scriptTabId && !attachmentClosed) {
