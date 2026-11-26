@@ -293,33 +293,6 @@ describe("tab projection and viewer admission", () => {
     expect(activated.tab.title).toBe("After relaunch");
     f.service.dispose();
   });
-  it("names a window tab for the window its opened view shows", async () => {
-    const a = row("window"),
-      f = fixture([a]);
-    f.native.openOwnerView = vi.fn(
-      async () =>
-        ({
-          viewId: "cvw_test",
-          generation: 1,
-          state: "ready",
-          unavailableReason: null,
-          target: { kind: "app", app: a.windowApp, windowId: a.windowId },
-          window: { windowId: a.windowId, title: "Sol 3 Moving Clock" },
-        }) as unknown as ComputerView,
-    );
-    const retitleWindow = vi.fn(
-      async (_owner: unknown, id: unknown, windowId: unknown, title: string) => {
-        if (id !== a.id || windowId !== a.windowId || title === a.title) return false;
-        a.title = title;
-        return true;
-      },
-    );
-    (f.options.store as unknown as Record<string, unknown>).retitleWindow = retitleWindow;
-    const activated = await f.service.activate(ownerId, a.id, "open");
-    expect(retitleWindow).toHaveBeenCalledWith(ownerId, a.id, a.windowId, "Sol 3 Moving Clock");
-    expect(activated.tab.title).toBe("Sol 3 Moving Clock");
-    f.service.dispose();
-  });
   it("keeps a window tab whose app has no window unavailable, and rebinds nothing", async () => {
     const a = row("window"),
       f = fixture([a]);

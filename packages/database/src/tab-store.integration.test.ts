@@ -588,11 +588,6 @@ integration("workspace tabs", () => {
       title: "After relaunch",
     });
     expect(await tabs.get(ownerId, window.id)).toMatchObject({ windowId: next });
-    // The window's own title follows only while the tab holds that window.
-    expect(await tabs.retitleWindow(ownerId, window.id, dead, "Old window")).toBe(false);
-    expect(await tabs.retitleWindow(ownerId, window.id, next, "After relaunch")).toBe(false);
-    expect(await tabs.retitleWindow(ownerId, window.id, next, "Page two")).toBe(true);
-    expect(await tabs.get(ownerId, window.id)).toMatchObject({ title: "Page two" });
   });
   it("removes open and closed app records inside the app deletion transaction without disturbing other kinds", async () => {
     const { tabs, database, ownerId, write } = await fixture();

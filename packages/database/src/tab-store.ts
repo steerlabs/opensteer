@@ -1004,29 +1004,6 @@ export class TabStore {
       return await this.get(ownerId, tabId, false, tx);
     });
   }
-  /** A window tab takes the title its window has now, while it still holds that window. */
-  async retitleWindow(
-    ownerId: UserId,
-    tabId: TabId,
-    windowId: WindowId,
-    title: string,
-  ): Promise<boolean> {
-    const named = title.slice(0, 1024);
-    return commitPersonalMutation(this.database, async (tx, mutation) => {
-      await this.#lock(tx, ownerId, [], [tabId]);
-      const row = await this.get(ownerId, tabId, false, tx);
-      if (!row || row.kind !== "window" || row.windowId !== windowId || row.title === named)
-        return false;
-      await tx
-        .updateTable("personalTabs")
-        .set({ title: named, updatedAt: new Date() })
-        .where("id", "=", tabId)
-        .execute(databaseOperationOptions());
-      mutation.bumpResource("tab");
-      mutation.changeTabs([tabId]);
-      return true;
-    });
-  }
   async updatePage(
     ownerId: UserId,
     tabId: TabId,

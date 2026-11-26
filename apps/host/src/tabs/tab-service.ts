@@ -1426,12 +1426,6 @@ export class TabService implements TabServicePort {
           view = await open(rebound, `${key}:window:${rebound.windowId}`);
         }
       }
-      // The tab is named for the window its picture shows, as the Mac names it now.
-      const title = view.state === "ready" ? view.window?.title : undefined;
-      if (title && title !== row.title)
-        await this.options.store
-          .retitleWindow(ownerId, tabId, row.windowId!, title)
-          .catch((error: unknown) => this.options.onError(error));
       viewer = { kind: "window", view };
     } else {
       const view =
