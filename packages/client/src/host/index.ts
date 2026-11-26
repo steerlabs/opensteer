@@ -1,4 +1,5 @@
 export * from "./access-modes.js";
+export * from "./window-tab-again.js";
 export * from "./assignment-presentation.js";
 export * from "./attachment-stage.js";
 export * from "./agent-activity-model.js";

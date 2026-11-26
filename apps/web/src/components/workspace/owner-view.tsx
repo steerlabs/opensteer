@@ -2,6 +2,8 @@ import { act, failureWords, refusalReason } from "../use-action.js";
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { DeviceIdSchema, type BrowserSurfaceId } from "@opensteer/core";
 import {
+  openWindowTabAgain,
+  opensWindowAgain,
   type HostClient,
   type HostSnapshot,
   type NativeViewerSource,
@@ -150,13 +152,22 @@ export function OwnerView({
       mounted.current = false;
     };
   }, []);
+  // The person's own window tab whose window is gone opens its app afresh, in this tab's place,
+  // as New tab would; every other view opens its tab again.
+  const freshWindow = place !== null && opensWindowAgain(place.tab, readiness);
   const reopen = async () => {
     setReopening(true);
     try {
       await act(
         hostClient,
         { label: "reopen this", done: "reopened", happened: "this reopened" },
-        onReopen,
+        freshWindow && place
+          ? async () => {
+              await openWindowTabAgain(hostClient, place.tab, (tabId) =>
+                nav.beginPlaceOperation({ replace: true })({ kind: "tab", tabId }),
+              );
+            }
+          : onReopen,
       );
     } catch (error) {
       const reason = refusalReason(error);
@@ -230,7 +241,7 @@ export function OwnerView({
 
   const computer = ownerViewComputerReadiness(machine, phone);
   const chooseWindow =
-    appIdentity !== null && ownerViewRecovery(readiness, phone) === "choose-window";
+    !freshWindow && appIdentity !== null && ownerViewRecovery(readiness, phone) === "choose-window";
   // A view whose own open ended (the Mac did not answer, its window closed) can be opened
   // again whatever the computer's readiness says; the Home answers that open with its reason.
   const reopenEligible =
