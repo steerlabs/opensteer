@@ -5804,6 +5804,11 @@ integration.sequential("Computer use for a connected agent, through its session"
       appLabel?: string;
       computerReplTime?: DeviceServicesTestOptions["computerReplTime"];
       releasedMac?: boolean;
+      /**
+       * The app was approved the way the person adds one from the device page: their own
+       * request for the app, answered on the Mac, with no task asking for it.
+       */
+      personApproved?: boolean;
     } = {},
   ) {
     const stoppedDevices = new Set<DeviceId>();
@@ -5818,15 +5823,26 @@ integration.sequential("Computer use for a connected agent, through its session"
     });
     const onMac = options.target === "mac";
     const definitionId = onMac ? "macos-app" : "android-phone";
-    const asked = await (
-      await world.gateway(await world.startRun("Ask for device access"))
-    ).call("app_access_request", {
-      computerId: onMac ? world.macId : world.phoneId,
-      ...(onMac ? { app: "Notes" } : {}),
-      access: options.access ?? "read-write",
-      reason: onMac ? "Use Notes" : "Use the phone",
-    });
-    expect(asked.isError).toBeUndefined();
+    if (options.personApproved && onMac)
+      await world.platform.devices.computerAppApprovals.requestComputerAppSetup({
+        access: options.access ?? "read-write",
+        actorUserId: world.owner.userId,
+        app: apps.notes,
+        definitionId,
+        kind: "app",
+        runnerId: world.macId,
+      });
+    else {
+      const asked = await (
+        await world.gateway(await world.startRun("Ask for device access"))
+      ).call("app_access_request", {
+        computerId: onMac ? world.macId : world.phoneId,
+        ...(onMac ? { app: "Notes" } : {}),
+        access: options.access ?? "read-write",
+        reason: onMac ? "Use Notes" : "Use the phone",
+      });
+      expect(asked.isError).toBeUndefined();
+    }
     const setup = (await world.persistence.listComputerAppSetupRequests(world.owner.userId)).find(
       (request) => request.definitionId === definitionId,
     );
@@ -6063,6 +6079,54 @@ integration.sequential("Computer use for a connected agent, through its session"
       const bind = s.world.fakeMac.frames.find(({ operation }) => operation === "bind");
       expect(bind?.params).toMatchObject({ windowId: null });
       expect(bind?.params).not.toHaveProperty("noLaunch");
+    } finally {
+      await s.world.close();
+    }
+  });
+
+  it("lets a connected agent use an app the person approved from the device page and shared with it", async () => {
+    // As the person does it: Add app on the Mac's page, Allow, then a selected grant naming the
+    // app at the connection's consent. No task of theirs ever asked for the app.
+    const s = await connectedAgent("full-access", { target: "mac", personApproved: true });
+    try {
+      const listed = await s.apps({ query: "Notes" });
+      expect(JSON.stringify(listed)).toContain("Notes");
+      const read = await s.call(
+        {
+          code: 'const w = await (await app("Notes")).window(); print(await w.observe())',
+          readOnly: true,
+        },
+        "person-approved-read",
+      );
+      expect(read, JSON.stringify(read)).toMatchObject({ status: "completed" });
+      expect(s.world.fakeMac.frames.some(({ operation }) => operation === "bind")).toBe(true);
+    } finally {
+      await s.world.close();
+    }
+  });
+
+  it("holds a connected agent to the access the person approved an app with, shared from the device page", async () => {
+    const s = await connectedAgent("full-access", {
+      target: "mac",
+      personApproved: true,
+      access: "read",
+    });
+    try {
+      const read = await s.call(
+        {
+          code: 'const w = await (await app("Notes")).window(); print(await w.observe())',
+          readOnly: true,
+        },
+        "person-approved-read-only",
+      );
+      expect(read, JSON.stringify(read)).toMatchObject({ status: "completed" });
+      await expect(
+        s.call(
+          { code: 'const w = await (await app("Notes")).window(); await w.key("cmd+a")' },
+          "person-approved-act",
+        ),
+      ).rejects.toThrow("This target allows observation only. Use readOnly: true.");
+      expect(s.world.fakeMac.frames.some(({ operation }) => operation === "act")).toBe(false);
     } finally {
       await s.world.close();
     }
