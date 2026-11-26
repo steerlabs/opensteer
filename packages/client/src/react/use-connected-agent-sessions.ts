@@ -1,5 +1,5 @@
 import { readTaskActivity, taskActivityKey } from "../host/agent-work.js";
-import { namesMacApp, shownOperations } from "../host/approved-app-names.js";
+import { shownOperations } from "../host/approved-app-names.js";
 import { useApprovedAppNames } from "./use-approved-app-names.js";
 import type { ChatScreenHost } from "../host/chat-screen-host.js";
 import type { HostSnapshot, ThreadSummary, WaitingRequestView } from "../host/client.js";
@@ -130,10 +130,7 @@ export function useConnectedAgentWork(
   // What each agent is working in, as the person sees it: a Mac app by the name they approved.
   const names = useApprovedAppNames(
     hostClient,
-    activity !== undefined &&
-      [...activity.values()].some((operations) =>
-        operations.some(({ target }) => namesMacApp(target)),
-      ),
+    activity ? [...activity.values()].flat().map(({ target }) => target) : [],
   );
   const view = useMemo(
     () =>

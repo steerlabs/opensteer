@@ -14,6 +14,14 @@ function appKey(deviceId: string, bundleId: string): string {
   return `${deviceId}\n${bundleId.toLowerCase()}`;
 }
 
+/** The key an approved name is held under for a Mac app target; null for any other target. */
+export function approvedAppKey(target: Pick<AgentOperationTarget, "grant">): string | null {
+  const { grant } = target;
+  return grant.kind === "computer-app" && grant.app.kind === "mac-app"
+    ? appKey(grant.deviceId, grant.app.bundleId)
+    : null;
+}
+
 /** The approved Mac apps' names, from `integration.computer.apps.approved`. */
 export function approvedAppNames(apps: readonly ApprovedComputerApp[]): ApprovedAppNames {
   const names = new Map<string, string>();

@@ -10,7 +10,7 @@ import {
 } from "../host/connected-agent-view.js";
 import { unwrapRpcResult } from "../host/host-session-client.js";
 import { useHostSelector } from "./use-host-snapshot.js";
-import { namesMacApp, shownOperations } from "../host/approved-app-names.js";
+import { shownOperations } from "../host/approved-app-names.js";
 import { useApprovedAppNames } from "./use-approved-app-names.js";
 import { connectedAgentsClient, type ConnectedAgentsSnapshot } from "../host/connected-agents.js";
 import {
@@ -195,7 +195,7 @@ export function useConnectedAgentActivity(
   // The person reads Recent activity: a Mac app there goes by the name they approved.
   const names = useApprovedAppNames(
     client,
-    current?.page?.operations.some(({ target }) => namesMacApp(target)) ?? false,
+    current?.page?.operations.map(({ target }) => target) ?? [],
   );
   return useMemo(
     () =>
@@ -235,10 +235,7 @@ export function useTaskActivity(
       ? result.operations
       : undefined;
   // The person watches this task: a Mac app in its activity goes by the name they approved.
-  const names = useApprovedAppNames(
-    client,
-    operations?.some(({ target }) => namesMacApp(target)) ?? false,
-  );
+  const names = useApprovedAppNames(client, operations?.map(({ target }) => target) ?? []);
   return useMemo(
     () => (operations ? shownOperations(operations, names) : undefined),
     [operations, names],
