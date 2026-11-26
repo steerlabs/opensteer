@@ -66,6 +66,11 @@ type Located = PluginHostProvider & {
   /** The app's own title, without its device. */
   readonly title: string;
   readonly waitingForLaunchApproval?: true;
+  /**
+   * What a local server's own state on its computer keeps it from (waiting for the person's
+   * approval, stopped, failed): its app's line and every operation's reason, from this one value.
+   */
+  readonly launchBlocked?: Blocked;
   readonly blocked?: Blocked;
   readonly toolBlockers: Readonly<Record<string, Blocked>>;
 };
@@ -107,6 +112,7 @@ export class LocalProviders {
         requestName: _r,
         title: _title,
         waitingForLaunchApproval: _approval,
+        launchBlocked: _launch,
         toolBlockers,
         ...provider
       }) => (Object.keys(toolBlockers).length ? { ...provider, toolBlockers } : provider),
@@ -367,13 +373,16 @@ export class LocalProviders {
               canAsk,
               connection,
             })
-          : localTargetBlocked(
+          : // A local server's own state on its computer keeps each operation as it keeps the app,
+            // in the same words and code (its app's line says it once).
+            (provider.launchBlocked ??
+            localTargetBlocked(
               state,
               provider.name,
               { server: provider.requestName },
               canAsk,
               connection,
-            );
+            ));
       return [
         tool.name,
         blocked ??
@@ -580,6 +589,7 @@ export class LocalProviders {
               ...(launchStatus?.state === "waiting"
                 ? { waitingForLaunchApproval: true as const }
                 : {}),
+              ...(launchStatus?.blocked ? { launchBlocked: launchStatus.blocked } : {}),
               blocked:
                 launchStatus?.blocked ??
                 localTargetBlocked(
@@ -741,6 +751,7 @@ function provider(input: {
   title: string;
   unavailable: string | undefined;
   waitingForLaunchApproval?: true;
+  launchBlocked?: Blocked;
   blocked?: Blocked | undefined;
   tools: PluginHostProvider["tools"];
 }): Located {
@@ -767,6 +778,7 @@ function provider(input: {
     ...(input.phoneAddedAt ? { phoneAddedAt: input.phoneAddedAt } : {}),
     ...(input.unavailable ? { ownerUnavailable: input.unavailable } : {}),
     ...(input.waitingForLaunchApproval ? { waitingForLaunchApproval: true as const } : {}),
+    ...(input.launchBlocked ? { launchBlocked: input.launchBlocked } : {}),
     ...(input.blocked
       ? { blocked: input.blocked }
       : input.unavailable
