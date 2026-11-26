@@ -6626,7 +6626,7 @@ integration.sequential("Computer use for a connected agent, through its session"
       expect(lending).toBeGreaterThan(0);
       const reread = across.sent.findIndex(
         (sql, index) =>
-          index > lending && /^select "id", "label", "grant", "grant_revision"/u.test(sql),
+          index > lending && sql.startsWith('select "id", "label", "grant", "grant_revision"'),
       );
       expect(reread).toBeGreaterThan(lending);
       expect(across.sent[reread + 1]).toMatch(/from "deployments"/u);
