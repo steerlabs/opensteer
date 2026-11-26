@@ -471,6 +471,8 @@ final class OverlayModelTests: XCTestCase {
   func testConnectionLostStaysUntilDismissed() {
     var model = OverlayModel()
     model.update(sessions: [session("a", "Plan the trip", [notes])], ending: .ended, at: at(0))
+    // An action was under way when the connection dropped: no one can say whether it happened.
+    model.workStarted(app: notes.key, at: at(0.5))
     model.update(sessions: [], ending: .connectionLost, at: at(1))
     let lost = OverlayModel.Pill(
       status: "Connection lost · last action unconfirmed",
@@ -482,6 +484,25 @@ final class OverlayModelTests: XCTestCase {
     XCTAssertNil(model.nextChange(after: at(1)))
     model.dismiss()
     XCTAssertNil(pill(model, 3_600))
+  }
+
+  func testAConnectionThatDropsWithNothingUnderWayOnlySaysComputerUseEnded() {
+    // Real Mac: Safari quit from the Dock while the person watched and had typed into it earlier;
+    // nothing was being sent, yet "Connection lost · last action unconfirmed" stayed over the
+    // next, working view of Safari until the person dismissed it.
+    let watched = OverlayModel.Session(
+      id: "view", threadTitle: nil, apps: [notes], ownerInput: true)
+    for (name, live) in [("a person's view", watched), ("an agent between calls", session("a", "Plan the trip", [notes]))] {
+      var model = OverlayModel()
+      model.update(sessions: [live], ending: .ended, at: at(0))
+      model.workStarted(app: notes.key, at: at(0.2))
+      model.workEnded(app: notes.key, at: at(0.4))
+      model.update(sessions: [], ending: .connectionLost, at: at(1))
+      XCTAssertEqual(pill(model, 1)?.status, "Computer use ended", name)
+      XCTAssertEqual(pill(model, 1)?.controls, OverlayModel.Pill.Controls.none, name)
+      XCTAssertEqual(model.nextChange(after: at(1)), at(3), name)
+      XCTAssertNil(pill(model, 3), name)
+    }
   }
 
   func testDismissOnlyClearsConnectionLost() {

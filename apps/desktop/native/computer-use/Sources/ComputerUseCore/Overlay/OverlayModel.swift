@@ -64,7 +64,8 @@ struct OverlayModel {
     case ended
     /// The person pressed `Stop`.
     case stopped
-    /// The connection that opened them dropped.
+    /// The connection that opened them dropped. Said as lost only when an
+    /// action was under way in a session that went away; otherwise they ended.
     case connectionLost
   }
 
@@ -201,6 +202,9 @@ struct OverlayModel {
     workStartedAt = workStartedAt.filter { sameOwner.contains($0.key) }
     workEndedAt = workEndedAt.filter { sameOwner.contains($0.key) }
     typing = typing.intersection(sameOwner)
+    // Only an action still under way when its session went away can have an outcome no one
+    // confirmed; a dropped connection with nothing in flight lost nothing.
+    let unconfirmed = inFlight.keys.contains { !sameOwner.contains($0) }
     // Work already under way may still return before the stopped notice, even
     // if the runtime sends another empty session update in the meantime.
     if !(next.isEmpty && (ending == .stopped || notice == .stopping)) {
@@ -228,7 +232,7 @@ struct OverlayModel {
     case .ended:
       notice = .ended(until: now + Self.noticeDuration)
     case .connectionLost:
-      notice = .connectionLost
+      notice = unconfirmed ? .connectionLost : .ended(until: now + Self.noticeDuration)
     }
   }
 
