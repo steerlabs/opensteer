@@ -570,10 +570,10 @@ return { found, described, refused };`,
     });
     expect(helper.invocations).toHaveLength(sent + 1);
 
-    // Offline: its tools stay listed as they are, the call says it is offline, and nothing is
-    // rerouted.
+    // Offline: the task's listing says what the call says, in the task's own words, once on the
+    // app; the call says it is offline and nothing is rerouted.
     await computer.close();
-    // The person's Plugins screen says it is offline; an agent's listing does not.
+    // The person's Plugins screen says it is offline.
     await waitForCondition(async () => {
       const owned = await testRpcData(
         host.origin,
@@ -583,38 +583,33 @@ return { found, described, refused };`,
       );
       return JSON.stringify(owned.local).includes("Studio Mac is offline");
     }, 30_000);
-    const offlineSearch = await gateway.call("plugin_search", {
-      namespace: localNamespace("calendar-studio-mac", `app_device_${calendar.connection.id}`),
-    });
-    expect(offlineSearch).toMatchObject({
-      items: expect.arrayContaining([expect.objectContaining({ path: listEvents })]),
-      unavailableApps: [],
-    });
-    expect(JSON.stringify(offlineSearch)).not.toContain("offline");
-    // Its writes keep their own read-only marker; nothing marks the reads or the namespace.
-    expect(
-      (offlineSearch.items as { path: string; blocked?: unknown }[]).find(
-        ({ path }) => path === listEvents,
-      ),
-    ).not.toHaveProperty("blocked");
-    expect(offlineSearch.namespaces).toEqual([
-      expect.not.objectContaining({ blocked: expect.anything() }),
-    ]);
     sent = helper.invocations.length;
     const offline = await pluginCall(gateway, listEvents, {
       end: "2026-10-07",
       start: "2026-10-01",
     });
+    const offlineError = {
+      code: "computer_offline",
+      message: "Device is offline. Do not request access.",
+      next: `computerId=${computer.runnerId}, access=apps. Continue without it and tell the person what the message says.`,
+    };
     expect(offline.raw).toMatchObject({
       isError: true,
-      structuredContent: {
-        error: {
-          code: "computer_offline",
-          message: "Device is offline. Do not request access.",
-          next: `computerId=${computer.runnerId}, access=apps. Continue without it and tell the person what the message says.`,
-        },
-      },
+      structuredContent: { error: offlineError },
     });
+    const offlineSearch = await gateway.call("plugin_search", {
+      namespace: localNamespace("calendar-studio-mac", `app_device_${calendar.connection.id}`),
+    });
+    expect(offlineSearch).toMatchObject({
+      items: expect.arrayContaining([expect.objectContaining({ path: listEvents })]),
+      namespaces: [expect.objectContaining({ blocked: offlineError })],
+    });
+    // Said once, on the app: its tools carry no marker of their own.
+    expect(
+      (offlineSearch.items as { path: string; blocked?: unknown }[]).filter(
+        ({ blocked }) => blocked !== undefined,
+      ),
+    ).toEqual([]);
     expect(helper.invocations).toHaveLength(sent);
   }, 240_000);
 

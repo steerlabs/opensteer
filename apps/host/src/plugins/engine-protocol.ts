@@ -544,6 +544,8 @@ export const AuthorizationResultSchema = z.strictObject({
   grants: z.record(z.string(), z.enum(["all", "read-only", "off"])).optional(),
   /** For a connection's selected grant: the only apps it may learn exist. */
   visible: z.array(z.string()).optional(),
+  /** Apps a connection's grant holds for reading only: their writes read as absent. */
+  readOnlyGrant: z.array(z.string()).optional(),
   pinnedVersion: id.optional(),
   connected: z.literal(true).optional(),
 });

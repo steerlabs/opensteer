@@ -44,6 +44,7 @@ it.each([false, true])(
       store,
       devices: {
         withAvailability: async (entries: unknown) => entries,
+        localDeviceAccessBlocked: async () => undefined,
         localDiscoveryFacts: () => ({ connectionFor: store.getDeviceComputerConnectionForCall }),
         callTool: async () => {
           failed = true;
@@ -181,6 +182,7 @@ it.each([false, true])(
       store,
       devices: {
         withAvailability: async (entries: unknown) => entries,
+        localDeviceAccessBlocked: async () => undefined,
         localDiscoveryFacts: () => ({
           connectionFor: store.getDeviceComputerConnectionForCall,
           localServers: store.localMcp.list,
@@ -266,6 +268,7 @@ it.each([
     },
     devices: {
       withAvailability: async (entries: unknown) => entries,
+      localDeviceAccessBlocked: async () => undefined,
       localDiscoveryFacts: () => ({ localServers: async () => [] }),
     },
     localServers: { callTool: async () => mcp },
@@ -326,6 +329,7 @@ it.each([
       },
       devices: {
         withAvailability: async (entries: unknown) => entries,
+        localDeviceAccessBlocked: async () => undefined,
         localDiscoveryFacts: () => ({ localServers: async () => [] }),
       },
     } as unknown as ConstructorParameters<typeof LocalProviders>[0]);
@@ -466,6 +470,7 @@ it("lists a server awaiting its approved launch as blocked, and refuses its call
     },
     devices: {
       withAvailability: async (entries: unknown) => entries,
+      localDeviceAccessBlocked: async () => undefined,
       localDiscoveryFacts: () => ({
         localServers: async () => [
           {
@@ -544,6 +549,7 @@ it.each([
     store,
     devices: {
       withAvailability: async (entries: unknown) => entries,
+      localDeviceAccessBlocked: async () => undefined,
       localDiscoveryFacts: () => ({ connectionFor: store.getDeviceComputerConnectionForCall }),
       // The person turns the Mac's apps off after the call was admitted, before it is sent.
       callTool: async () => {

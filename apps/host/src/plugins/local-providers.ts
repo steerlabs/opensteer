@@ -416,7 +416,11 @@ export class LocalProviders {
       caller.kind === "owner"
         ? { ownerUserId: caller.userId, kind: "person" }
         : caller.kind === "connection" && !bindingId
-          ? { ownerUserId: caller.userId, connectionId: caller.connectionId, ...lentRequester(lent) }
+          ? {
+              ownerUserId: caller.userId,
+              connectionId: caller.connectionId,
+              ...lentRequester(lent),
+            }
           : // The exact execution, so its own lineage and mode decide, never another Run's.
             {
               ownerUserId: caller.userId,
@@ -629,16 +633,27 @@ export class LocalProviders {
             connected,
           ),
         );
-    // A connected agent reads a data app its device cannot serve now (offline, its switch off) as
-    // a call to it says it: the device's own refusal first, for the app and each operation alike.
-    const shown = connected
-      ? await Promise.all(
+    // A data app its device cannot serve now (its Apps switch off, offline, asleep, stopped) reads
+    // as a call to it says it, for a connected agent and a Run alike, each in its own words: the
+    // device's own refusal first, for the app and each operation. One read per device.
+    const refusals = new Map<string, Promise<Blocked | undefined>>();
+    const deviceRefusal = (deviceId: DeviceId) => {
+      let refusal = refusals.get(deviceId);
+      if (!refusal) {
+        refusal = this.#options.devices
+          .localDeviceAccessBlocked(deviceId, connected)
+          // A device the Home no longer knows is left to what the inventory says of it.
+          .catch(() => undefined);
+        refusals.set(deviceId, refusal);
+      }
+      return refusal;
+    };
+    const shown = metadataOnly
+      ? assessed
+      : await Promise.all(
           assessed.map(async (entry) => {
-            if (!entry.blocked || entry.kind !== "device-app" || !entry.computer) return entry;
-            const device = await this.#options.devices.localDeviceAccessBlocked(
-              entry.computer.id,
-              true,
-            );
+            if (entry.kind !== "device-app" || !entry.computer) return entry;
+            const device = await deviceRefusal(entry.computer.id);
             return device
               ? {
                   ...entry,
@@ -647,8 +662,7 @@ export class LocalProviders {
                 }
               : entry;
           }),
-        )
-      : assessed;
+        );
     const providers = shown
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((entry) => ({ ...entry, slug: localNamespace(entry.slug, entry.id) }))

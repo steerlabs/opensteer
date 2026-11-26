@@ -93,6 +93,13 @@ export interface EngineHostCallbacks {
 export const accountSelectionDigest = (accounts: unknown) =>
   createHash("sha256").update(canonicalJson(accounts)).digest("hex");
 
+/** A tool outside a connection's grant: read as absent wherever it is listed or called. */
+const outsideGrant: Blocked = {
+  code: "access_required",
+  message: "Plugin tool is unavailable to this caller.",
+  next: "Continue with the tools you can use.",
+};
+
 export function compositeBackend(
   engine: PluginEngine,
   accounts: ReturnType<typeof engineAccounts>,
@@ -118,7 +125,13 @@ export function compositeBackend(
     tool: Tool,
     access: "all" | "read-only" | "off" | undefined,
     local?: PluginHostProvider,
+    /** Apps a connection's grant holds for reading only. */
+    readOnlyGrant?: readonly string[],
   ): McpTool => {
+    // A write a connection's grant does not hold is outside it: marked so every listing leaves
+    // it out and a call reads it as absent, never with the person's own Read-only words.
+    if (tool.readOnly !== true && readOnlyGrant?.includes(tool.app))
+      return { ...tool, blocked: outsideGrant };
     if (access === "off" || local?.blocked) return tool;
     const blocked =
       pluginAccessBlocked(access, tool.readOnly !== true) ?? local?.toolBlockers?.[tool.name];
@@ -277,20 +290,20 @@ export function compositeBackend(
       }),
     listTools: (input, options) =>
       Effect.gen(function* () {
-        const { grants } = yield* checked("listTools", input.app);
+        const { grants, readOnlyGrant } = yield* checked("listTools", input.app);
         const access = grants?.[input.app];
         const local = yield* provider(input.app);
         if (local)
           return {
             version: version(local),
             accounts: { app: {}, user: {} },
-            items: hostTools(local).map((tool) => projectTool(tool, access, local)),
+            items: hostTools(local).map((tool) => projectTool(tool, access, local, readOnlyGrant)),
             routers: [],
           };
         const page = yield* listCloud(input, options, publishedOnly || access === "off");
         return {
           ...page,
-          items: page.items.map((tool) => projectTool(tool, access)),
+          items: page.items.map((tool) => projectTool(tool, access, undefined, readOnlyGrant)),
         };
       }),
     searchableTools: (input, options) =>
@@ -319,7 +332,7 @@ export function compositeBackend(
       }),
     searchTools: (input) =>
       Effect.gen(function* () {
-        const { grants } = yield* checked("searchTools");
+        const { grants, readOnlyGrant } = yield* checked("searchTools");
         const providers = input.targets.some(({ app }) => isLocalProviderId(app))
           ? yield* host.providers()
           : [];
@@ -341,7 +354,9 @@ export function compositeBackend(
             entry.id,
             {
               name: entry.name,
-              tools: hostTools(entry).map((tool) => projectTool(tool, grants?.[entry.id], entry)),
+              tools: hostTools(entry).map((tool) =>
+                projectTool(tool, grants?.[entry.id], entry, readOnlyGrant),
+              ),
             },
           ]),
         );
@@ -349,13 +364,13 @@ export function compositeBackend(
           hostCatalog.set(app, {
             name: namespaces.get(app) ?? app,
             // The person may have changed this plugin's access since the listing was kept.
-            tools: tools.map((tool) => projectTool(tool, grants?.[app])),
+            tools: tools.map((tool) => projectTool(tool, grants?.[app], undefined, readOnlyGrant)),
           });
         const local = searchHost(input, hostCatalog);
         const all = [
           ...remote.items.map((item) => ({
             ...item,
-            tool: projectTool(item.tool, grants?.[item.tool.app]),
+            tool: projectTool(item.tool, grants?.[item.tool.app], undefined, readOnlyGrant),
             target: remoteTargets[item.target]!.index,
             also: item.also.map((index) => remoteTargets[index]!.index),
           })),

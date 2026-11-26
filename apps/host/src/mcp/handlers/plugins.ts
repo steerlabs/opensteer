@@ -1,4 +1,4 @@
-import { pluginCaller, pluginGrantTarget } from "../../plugins/plugin-authority.js";
+import { grantHolds, pluginCaller, pluginGrantTarget } from "../../plugins/plugin-authority.js";
 import { pluginTargetBlocked } from "../../plugins/target-blocked.js";
 import { requestResult } from "../request-result.js";
 import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
@@ -248,7 +248,20 @@ export class PluginToolHandlers {
         | readonly { app: string; name: string; reason: string; blocked?: Blocked | undefined }[]
         | undefined;
     },
-  >(context: PluginCaller, result: T) {
+  >(context: PluginCaller, found: T) {
+    // Under a connection's grant, what the grant does not hold (`access_required`: a write it
+    // holds for reading only, an app it does not reach) is not there: plugin_call reads it as
+    // absent, and so does every listing.
+    const caller = this.options.authority.caller(context.caller);
+    const result =
+      caller && callerLineage(caller) && "items" in found && Array.isArray(found.items)
+        ? {
+            ...found,
+            items: (found.items as { blocked?: Blocked }[]).filter(
+              ({ blocked }) => blocked?.code !== "access_required",
+            ),
+          }
+        : found;
     const unavailable = result.unavailableApps;
     if (!unavailable?.length) return result;
     const remoteIds = [...new Set(unavailable.filter((e) => !e.blocked).map((e) => e.app))];
@@ -294,11 +307,7 @@ export class PluginToolHandlers {
     // What this connection's grant and the person's plugin setting let it do in an app: the one
     // gate every call here passes, whether the app can be reached now or not.
     const holds = async (plugin: string, write: boolean) => {
-      const access = agentGrantAccess(caller.grant, {
-        kind: "plugin",
-        target: pluginGrantTarget(plugin),
-      });
-      if (!access || (write && access !== "read-write")) return false;
+      if (!grantHolds(caller.grant, plugin, write)) return false;
       const setting = (await o.settings.settings(caller.userId)).find(
         ({ pluginId }) => pluginId === plugin,
       )?.access;
@@ -364,6 +373,10 @@ export class PluginToolHandlers {
         });
       target = { ...first, readOnly: resolved.every((entry) => entry?.readOnly) };
     } else if ("code" in call.input) {
+      // A program is not refused before it runs for a blocked tool inside it: its Request, when
+      // the mode asks one, is for running the program, whose calls are known only as it runs. A
+      // blocked tool it calls fails with its own reason, from the same function as plugin_call's,
+      // without reaching the device.
       tool = "plugin_execute";
       input = { code: call.input.code };
       calls = input.code;

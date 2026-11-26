@@ -7,6 +7,7 @@ import { pluginOwnerId } from "./engine-protocol.js";
 import {
   OpensteerError,
   agentGrantAccess,
+  type AgentGrant,
   type AgentGrantPluginTarget,
   type UserId,
   type ThreadAccessMode,
@@ -342,6 +343,14 @@ export class PluginAuthority {
       }
       grants = await ceiling.grants(grants);
     }
+    // The apps a connection's grant holds for reading only: a write there is outside the grant,
+    // and reads exactly as absent, never as the person's Read-only setting.
+    const lineage = ceiling ? callerLineage(caller) : null;
+    const readOnlyGrant = lineage
+      ? Object.keys(grants).filter(
+          (id) => grantHolds(lineage.grant, id, false) && !grantHolds(lineage.grant, id, true),
+        )
+      : [];
     if (caller.kind === "program" && input.operation !== "cancel") {
       const triggers = new TriggerStore(store.database);
       try {
@@ -421,6 +430,7 @@ export class PluginAuthority {
     return {
       allowed: true,
       grants,
+      ...(readOnlyGrant.length ? { readOnlyGrant } : {}),
       ...(caller.kind === "connection" ? { connected: true } : {}),
       ...(session
         ? { visible: [session.plugin], pinnedVersion: session.version }
@@ -478,6 +488,15 @@ function stoppedComputer(): OpensteerError {
 }
 
 /** The grant identity of an engine app id: a local server, a device account, or a plugin. */
+/**
+ * Whether a connection's grant holds an app for this use (a read, or a write): the one check
+ * plugin_call admits a call by and every listing leaves out what it does not hold by.
+ */
+export function grantHolds(grant: AgentGrant, plugin: string, write: boolean): boolean {
+  const access = agentGrantAccess(grant, { kind: "plugin", target: pluginGrantTarget(plugin) });
+  return access !== null && (!write || access === "read-write");
+}
+
 export function pluginGrantTarget(plugin: string): AgentGrantPluginTarget {
   if (plugin.startsWith("app_server_"))
     return { kind: "local-server", serverId: plugin.slice("app_server_".length) };
