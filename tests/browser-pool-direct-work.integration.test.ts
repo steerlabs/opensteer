@@ -516,9 +516,16 @@ it("keeps a session whose unanswered command was settled unknown when the Runner
     // The Runner comes back inside the window: the same page is reattached and usable, and the
     // command is never sent again.
     w.j.runnerUp();
-    await vi.waitFor(() => expect(w.home.coordinator.gate.phase).toBe("open"), {
-      timeout: 10_000,
-    });
+    // The gate opens once the Runner is reachable; this session is back when its own reattach
+    // is (a call meanwhile waits for it, per session). Read on the gate alone, the pages were
+    // read before the reattach had them (workbench-1, 1 run in 3 to 11).
+    await vi.waitFor(
+      () => {
+        expect(w.home.coordinator.gate.phase).toBe("open");
+        expect(w.home.coordinator.reattaching(w.session.id)).toBe(false);
+      },
+      { timeout: 10_000 },
+    );
     expect((await w.j.row(w.session.id))?.state).toBe("ready");
     expect(w.home.service.pageInventory(w.session.id)?.records.get(w.tab.id)?.documentId).toBe(
       w.document,
