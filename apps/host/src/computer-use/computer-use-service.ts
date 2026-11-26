@@ -275,6 +275,7 @@ export interface ComputerUseSessionAuthority {
   /** Throws a `forbidden` refusal once the session ended or no longer reaches this target. */
   readonly assertActive: () => Promise<void>;
   readonly assertDispatch?: () => Promise<void>;
+  readonly submitted?: () => void;
   readonly driver?: DeviceDriverIdentity;
 }
 
@@ -359,6 +360,7 @@ export interface ComputerInventoryAuthority {
   readonly assertCurrent: () => Promise<void>;
   readonly signal: AbortSignal;
   readonly driver?: DeviceDriverIdentity;
+  readonly submitted?: () => void;
 }
 
 export interface ComputerUseServiceOptions {
@@ -1051,6 +1053,7 @@ export class ComputerUseService {
           route: session.route,
           sessionId: session.sessionId,
           signal: AbortSignal.any([session.cancellation.signal, ...(signal ? [signal] : [])]),
+          ...(connected?.submitted ? { submitted: connected.submitted } : {}),
           threadTitle: session.threadTitle,
           timeoutMs,
         });
@@ -1640,7 +1643,7 @@ export class ComputerUseService {
     if (!this.#holds(session)) return false;
     this.#forget(session);
     // Do not wait for an admission turn from inside the turn releasing it.
-    void this.#deliverClose(session);
+    void this.#deliverClose(session, agentSessionAuthority(authority)?.submitted);
     return true;
   }
 
@@ -1666,9 +1669,9 @@ export class ComputerUseService {
    * lease ends. A Mac that went offline ended its sessions with its
    * connection, so there is nothing left to tell it.
    */
-  async #deliverClose(session: Session): Promise<void> {
+  async #deliverClose(session: Session, submitted?: () => void): Promise<void> {
     try {
-      await this.#close(session);
+      await this.#close(session, submitted);
       this.#undeliveredCloses.delete(session);
     } catch (error) {
       if (error instanceof ComputerUseError && error.code === "offline") {
@@ -1691,7 +1694,7 @@ export class ComputerUseService {
    * a Run that ends while its first call is still in flight has a session the
    * helper may already hold, and nothing else would ever take it down.
    */
-  async #close(session: Session): Promise<void> {
+  async #close(session: Session, submitted?: () => void): Promise<void> {
     if (
       !session.dispatched ||
       this.#removedDevices.has(session.deviceId) ||
@@ -1709,6 +1712,7 @@ export class ComputerUseService {
       route: session.route,
       sessionId: session.sessionId,
       timeoutMs: closeTimeoutMs,
+      ...(submitted ? { submitted } : {}),
     });
     if (outcome.kind === "error" && outcome.code !== "no-session") {
       throw new ComputerUseError(outcome.code, outcome.message, outcome.retryable);
@@ -2176,6 +2180,7 @@ export class ComputerUseService {
         runnerId: input.deviceId,
         route,
         ...(authority ? { signal: authority.signal } : {}),
+        ...(authority?.submitted ? { submitted: authority.submitted } : {}),
         sessionId: input.sessionId ?? mintComputerUseSessionId(),
         threadTitle: null,
         timeoutMs: input.timeoutMs,

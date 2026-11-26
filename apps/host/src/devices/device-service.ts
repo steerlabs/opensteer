@@ -223,6 +223,7 @@ export interface ComputerSessionCaller {
   readonly readOnly: boolean;
   /** Re-admits the operation's session and target; called before every command. */
   readonly recheck: () => Promise<void>;
+  readonly submitted?: () => void;
 }
 
 /**
@@ -1811,6 +1812,7 @@ export class DeviceService {
       threadId: session.taskId,
       ...(session.driver ? { driver: session.driver } : {}),
       assertDispatch: () => this.#assertSessionComputer(session),
+      ...(session.submitted ? { submitted: session.submitted } : {}),
       // The resolver refuses an ended session; each callback checks its exact target itself.
       assertActive: async () => {
         const tools = await this.listCallableTools({
@@ -2032,6 +2034,7 @@ export class DeviceService {
     return {
       signal,
       ...(driver ? { driver } : {}),
+      ...(session?.submitted ? { submitted: session.submitted } : {}),
       admit: (send) => this.#deviceApps.withAdmission(deviceId, send),
       assertCurrent: async () => {
         signal.throwIfAborted();

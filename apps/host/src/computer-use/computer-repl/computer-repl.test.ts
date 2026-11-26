@@ -50,6 +50,44 @@ function setup(invoke?: ConstructorParameters<typeof ComputerReplService>[0]["in
   };
 }
 describe("computer REPL worker boundary", () => {
+  it("keeps a connected agent's prints on both sides of a caught lost device reply", async () => {
+    const window = {
+      ref: "w",
+      windowId: "win_00000000-0000-4000-8000-000000000007",
+      title: "Doc",
+    };
+    const context = { runId: runId(), generation: 1, reportUnknownEffects: true as const };
+    const result = await service.execute(
+      context,
+      `const w = await (await target).window();
+       await w.observe();
+       print("before click");
+       try { await w.click(1); } catch {}
+       print("observed again", (await w.observe()).tree);`,
+      undefined,
+      async ({ operation }) => {
+        if (operation === "apps")
+          return { value: [{ id: "notes", name: "Notes", computer: "Mac" }] };
+        if (operation === "bind") return { value: { window } };
+        if (operation === "observe")
+          return {
+            value: { observation: { snapshot: "s", window, tree: "[1] Save", screenshot: null } },
+          };
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "outcome-unknown",
+          message: "The device disconnected before it acknowledged the click.",
+        });
+      },
+    );
+    expect(result.structuredContent).toMatchObject({
+      error: { code: "outcome-unknown", method: "click" },
+    });
+    expect(output(result)).toBe(
+      "before click\nobserved again [1] Save\nclick: outcome-unknown: The device disconnected before it acknowledged the click.",
+    );
+  });
+
   it("gives a connection help and the bound app or phone without acquiring it by name", async () => {
     for (const app of [true, false]) {
       const invoke = vi.fn<ConstructorParameters<typeof ComputerReplService>[0]["invoke"]>(

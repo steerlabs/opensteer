@@ -69,6 +69,11 @@ export const ReplFailureSchema = z.object({
   capability: DeviceRefusalContextSchema.shape.capability.optional(),
   code: z.string(),
   cdpCode: z.number().int().optional(),
+  method: z
+    .string()
+    .max(256)
+    .regex(/^[a-zA-Z][a-zA-Z0-9.]*$/u)
+    .optional(),
   message: z.string(),
   next: z.string().nullable().optional(),
   performed: z.array(z.string()).default([]),
@@ -81,6 +86,7 @@ export function boundedReplFailure(error: ReplFailure): ReplFailure {
     ...(error.capability ? { capability: error.capability } : {}),
     code: utf8Prefix(error.code.slice(0, 128), 128),
     ...(error.cdpCode === undefined ? {} : { cdpCode: error.cdpCode }),
+    ...(error.method === undefined ? {} : { method: error.method }),
     message: utf8Prefix(error.message.slice(0, 8192), 8192),
     ...(error.next ? { next: utf8Prefix(error.next.slice(0, 2000), 2000) } : {}),
     performed: error.performed.slice(0, 160).map((receipt) => utf8Prefix(receipt, 2048)),

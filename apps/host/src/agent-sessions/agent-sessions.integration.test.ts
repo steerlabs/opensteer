@@ -494,6 +494,133 @@ describeStore("an external agent's direct work through sessions", (it) => {
     expect(gate.held).toBe(0);
   });
 
+  for (const [sent, cause] of [
+    [false, "narrowed"],
+    [true, "narrowed"],
+    [false, "stopped"],
+  ] as const)
+    it(`keeps pooled REPL output private after an authority cut (sent: ${sent}, ${cause})`, async ({
+      storeFixture,
+    }) => {
+      const f = await storeFixture.startRunFixture(`pool-repl-cut-${sent}`);
+      const identity = {
+        runnerId: f.runnerId,
+        runtimeId: "pooled-browser",
+        slotId: "slot",
+        instanceId: randomUUID(),
+        term: 1,
+        epoch: 1,
+      };
+      await installBrowserPoolSlot(storeFixture.database, identity);
+      const gate = new BrowserPoolGate();
+      gate.set({ recovered: true, away: null, hold: null });
+      const s = await setUp(storeFixture, `pool-repl-cut-${sent}`, {
+        run: f,
+        pooledBrowser: () => ({
+          identity: () => identity,
+          pageDocument: () => undefined,
+          reserve: (signal) => gate.reserve(signal),
+        }),
+      });
+      let sends = 0;
+      let requests = 0;
+      const unexpected = async () => {
+        throw new Error("Unexpected browser command");
+      };
+      const repl = new BrowserReplService({
+        port: {
+          listPages: async () => {
+            sends++;
+            return [];
+          },
+          openPage: unexpected,
+          newPage: unexpected,
+          command: unexpected,
+          subscribe: () => () => {},
+        },
+      });
+      try {
+        s.runBrowserScript.mockImplementation(({ code, signal, recheck, browserSend }) =>
+          repl.execute(
+            "cut",
+            code,
+            signal,
+            "cut",
+            async () => {
+              if (++requests === (sent ? 2 : 1)) {
+                if (cause === "stopped") {
+                  const active = await storeFixture.database
+                    .selectFrom("agentSessions")
+                    .select(["id", "threadId"])
+                    .where("connectionId", "=", s.agent.id)
+                    .executeTakeFirstOrThrow();
+                  await s.sessions.stopSession({
+                    ownerUserId: s.f.userId,
+                    threadId: active.threadId,
+                    sessionId: active.id,
+                  });
+                } else {
+                  await storeFixture.database
+                    .updateTable("agentConnections")
+                    .set({ grantRevision: sql`grant_revision + 1` })
+                    .where("id", "=", s.agent.id)
+                    .execute();
+                }
+              }
+              await recheck!();
+              if (sent) {
+                browserSend!.submitted();
+                browserSend!.acknowledged();
+              }
+            },
+            browserSend,
+          ),
+        );
+        const result = await s.call("browser_use", {
+          ...script,
+          code: 'print("private-before-cut"); await pages(); try { await pages(); } catch {} print("private-after-cut");',
+        });
+        expect(result, JSON.stringify(result.content)).toMatchObject({
+          isError: true,
+          structuredContent: {
+            status: sent ? "unknown" : "refused",
+            error: {
+              code: cause === "stopped" ? "stopped_by_person" : "access_changed",
+              message:
+                cause === "stopped"
+                  ? "The person stopped this work."
+                  : "The person changed this agent's access.",
+              next: expect.stringContaining(
+                sent
+                  ? "Part of it may have happened."
+                  : cause === "stopped"
+                    ? "Nothing was sent. Stop this task and ask the person before starting again."
+                    : "Nothing was sent.",
+              ),
+            },
+          },
+        });
+        expect(JSON.stringify(result.content)).not.toContain("private-before-cut");
+        expect(JSON.stringify(result.content)).not.toContain("private-after-cut");
+        expect(sends).toBe(Number(sent));
+        expect(
+          await storeFixture.database
+            .selectFrom("agentOperations")
+            .select(["state", "outcome", "ending", "contactLostAt", "resultSummary"])
+            .where("tool", "=", "browser_use")
+            .executeTakeFirstOrThrow(),
+        ).toMatchObject({
+          state: sent ? "unknown" : "refused",
+          outcome: sent ? "unknown" : "refused",
+          ending: cause,
+          resultSummary: null,
+          ...(!sent ? { contactLostAt: null } : {}),
+        });
+      } finally {
+        await repl.close();
+      }
+    });
+
   for (const sent of [true, false])
     it(`gives a pooled script that ignores a restart its recorded outcome, ${sent ? "unknown after a send" : "refused with nothing sent"}`, async ({
       storeFixture,
@@ -552,7 +679,9 @@ describeStore("an external agent's direct work through sessions", (it) => {
       );
       // The script returns later: what was recorded stands.
       hang.resolve();
-      expect((await call).structuredContent).toMatchObject({ status: "unknown" });
+      expect((await call).structuredContent).toMatchObject({
+        status: sent ? "unknown" : "refused",
+      });
       expect(await operation()).toMatchObject({ state: sent ? "unknown" : "refused" });
       gate.set({ hold: null });
       expect(gate.held).toBe(0);
@@ -1516,11 +1645,19 @@ describeStore("an external agent's direct work through sessions", (it) => {
       s.runBrowserScript.mockImplementation(({ code, signal }) =>
         repl.execute("failure", code, signal),
       );
-      const args = { ...script, code: 'throw new Error("Browser script failed here")' };
+      const args = {
+        ...script,
+        code: 'print("prior output"); throw new Error("Browser script failed here")',
+      };
       const first = await s.call("browser_use", args);
       const receipt = first.structuredContent as Record<string, unknown>;
       expect(first).toMatchObject({
         isError: true,
+        content: [
+          { type: "text", text: "prior output" },
+          { type: "text", text: "failed: Browser script failed here" },
+          { type: "text", text: expect.stringContaining("Receipt:") },
+        ],
         structuredContent: {
           taskId: expect.any(String),
           operationId: expect.any(String),
@@ -2301,37 +2438,60 @@ describeStore("an external agent's direct work through sessions", (it) => {
       expect(JSON.stringify(result)).not.toContain("Work");
     });
 
-  it("writes the refusal, not the result, of a direct operation that completes after Disconnect; its record keeps the truth", async ({
-    storeFixture,
-  }) => {
-    const s = await setUp(storeFixture, "completes-in-window");
-    const held = s.holdNext();
-    const running = s.call("browser_use", { ...script, operationKey: "completes-in-window" });
-    try {
-      await held.started;
-      // Disconnect closes the agent's MCP session before its stop reaches the work: the work
-      // completes in between (here, with no stop at all).
-      const disconnect = commands(storeFixture, s.f.userId);
-      await disconnect.revoke(s.agent.id);
-      held.release();
-      const result = await running;
-      expect(result).toMatchObject({
-        isError: true,
-        structuredContent: { error: { message: "This connected agent's access ended." } },
-      });
-      expect(JSON.stringify(result.content)).not.toContain("done");
-      expect(
-        await storeFixture.database
-          .selectFrom("agentOperations")
-          .select(["state", "outcome"])
-          .where("operationKey", "=", "completes-in-window")
-          .executeTakeFirstOrThrow(),
-      ).toEqual({ state: "completed", outcome: "completed" });
-    } finally {
-      held.release();
-      await running.catch(() => undefined);
-    }
-  });
+  for (const state of ["completed", "unknown"] as const)
+    it(`writes only the ending of a ${state} script that returns after Disconnect`, async ({
+      storeFixture,
+    }) => {
+      const s = await setUp(storeFixture, "completes-in-window");
+      const held = s.holdNext();
+      if (state === "unknown") {
+        const execute = s.runBrowserScript.getMockImplementation()!;
+        s.runBrowserScript.mockImplementationOnce(async (input) => {
+          await execute(input);
+          return {
+            content: [{ type: "text", text: "private-script-output" }],
+            isError: true,
+            structuredContent: {
+              error: { code: "outcome-unknown", message: "private-reply", performed: [] },
+            },
+          };
+        });
+      }
+      const running = s.call("browser_use", { ...script, operationKey: "completes-in-window" });
+      try {
+        await held.started;
+        // Disconnect closes the agent's MCP session before its stop reaches the work: the work
+        // completes in between (here, with no stop at all).
+        const disconnect = commands(storeFixture, s.f.userId);
+        await disconnect.revoke(s.agent.id);
+        held.release();
+        const result = await running;
+        expect(result).toMatchObject(
+          state === "completed"
+            ? {
+                isError: true,
+                structuredContent: { error: { message: "This connected agent's access ended." } },
+              }
+            : {
+                structuredContent: {
+                  status: "unknown",
+                  next: expect.stringContaining("The Home lost track"),
+                },
+              },
+        );
+        expect(JSON.stringify(result)).not.toMatch(/private-script-output|private-reply|"done"/u);
+        expect(
+          await storeFixture.database
+            .selectFrom("agentOperations")
+            .select(["state", "outcome"])
+            .where("operationKey", "=", "completes-in-window")
+            .executeTakeFirstOrThrow(),
+        ).toEqual({ state, outcome: state });
+      } finally {
+        held.release();
+        await running.catch(() => undefined);
+      }
+    });
 
   it("records the cause a recheck read when the Disconnect reached the database before its stop", async ({
     storeFixture,

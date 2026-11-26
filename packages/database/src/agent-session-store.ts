@@ -1149,6 +1149,7 @@ export async function refuseUnsentAgentOperation(
   refusal: {
     readonly message: string;
     readonly reason: "authority" | "changed" | "stopped";
+    readonly ending?: AgentOperationEnding | null;
   } = { message: "The connected agent's access changed or ended.", reason: "authority" },
 ): Promise<void> {
   await commitPersonalMutation(database, async (tx) => {
@@ -1158,6 +1159,7 @@ export async function refuseUnsentAgentOperation(
       .set({
         state: "refused",
         outcome: "refused",
+        ending: refusal.ending ?? null,
         terminalEvidenceAt: now,
         completedAt: now,
         updatedAt: now,
@@ -1178,7 +1180,7 @@ export async function refuseUnsentAgentOperation(
 }
 
 /**
- * A pooled browser operation that was handed off but whose every command was refused before it
+ * An operation that was handed off but whose every command was refused before it
  * reached the wire: nothing happened, so it is refused, not failed or unknown.
  */
 export async function refuseUnsentHandedOffAgentOperation(
@@ -1186,6 +1188,7 @@ export async function refuseUnsentHandedOffAgentOperation(
   id: AgentOperationId,
   message: string,
   reason: "authority" | "changed" | "stopped",
+  ending: AgentOperationEnding | null = null,
 ): Promise<boolean> {
   return commitPersonalMutation(database, async (tx) => {
     const now = new Date();
@@ -1194,6 +1197,7 @@ export async function refuseUnsentHandedOffAgentOperation(
       .set({
         state: "refused",
         outcome: "refused",
+        ending,
         terminalEvidenceAt: now,
         completedAt: now,
         updatedAt: now,

@@ -131,7 +131,7 @@ export const AgentOperationViewSchema = z.object({
   state: AgentOperationStateSchema,
   decision: AgentOperationDecisionViewSchema.nullable(),
   outcome: AgentOperationOutcomeSchema.nullable(),
-  /** Why an operation whose outcome is unknown ended, where the Home knows it. */
+  /** The known cause of an interruption, whether or not anything was sent. */
   ending: AgentOperationEndingSchema.nullable().optional(),
   requestId: RequestIdSchema.nullable(),
   createdAt: z.iso.datetime({ offset: true }),

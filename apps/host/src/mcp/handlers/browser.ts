@@ -26,7 +26,7 @@ import type { CdpAuthority } from "../../browser/standard-cdp-tickets.js";
 import type { BrowserBindingTabActor, TabServicePort } from "../../tabs/ports.js";
 import type { TabService } from "../../tabs/tab-service.js";
 import type { ConnectionCaller } from "../agent-caller.js";
-import { browserEffect, failedScriptOutput, requireDirectWork, scriptFailure } from "./direct.js";
+import { browserEffect, endedScriptOutput, requireDirectWork, scriptFailure } from "./direct.js";
 import type { ToolCall } from "./types.js";
 
 /** How long one reviewed attachment may hold full control of a profile. */
@@ -176,8 +176,8 @@ function scriptOutput(
   readonly structuredContent: Readonly<Record<string, unknown>>;
 } {
   const { status, taskId, operationId } = outcome;
-  if (outcome.status === "failed" && outcome.scriptError)
-    return failedScriptOutput(
+  if ((outcome.status === "failed" || outcome.status === "unknown") && outcome.scriptError)
+    return endedScriptOutput(
       {
         status: outcome.status,
         taskId,
@@ -207,7 +207,10 @@ function scriptOutput(
         };
   const extra = outcome.status === "pending" ? { requestId: outcome.requestId } : {};
   return {
-    content: [{ type: "text", text: outcome.next }],
+    content: [
+      ...(outcome.status === "unknown" ? (outcome.result?.content ?? []) : []),
+      { type: "text", text: outcome.next },
+    ],
     structuredContent: { ...receipt, ...extra, next: outcome.next },
   };
 }
@@ -266,9 +269,8 @@ export class BrowserToolHandlers {
           target.profileId === null
             ? await runScript()
             : await this.#ports.confinement.run(context.bindingId, target.profileId, runScript);
-        if (context.signal.aborted) throw interrupted(context);
-        const failure = result.structuredContent?.error;
-        if (failure?.code === "outcome-unknown") throw new OperationOutcomeUnknown(failure.message);
+        if (context.signal.aborted && context.signal.reason instanceof OpensteerError)
+          throw interrupted(context);
         return result;
       },
       scriptFailure,

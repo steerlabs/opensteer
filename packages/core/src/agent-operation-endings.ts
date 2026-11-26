@@ -3,8 +3,8 @@ import { z } from "zod";
 /**
  * Why a connected agent's operation ended without a confirmed outcome, where the Home knows it.
  * The record carries the cause; the agent's result and the person's activity both read it, each
- * in its own words, and "lost contact" is said only when contact was lost. A refusal's cause is
- * its decision (`AgentOperationDecision`), not one of these.
+ * in its own words. A refusal keeps its decision and can also carry the cause that stopped it
+ * before anything was sent.
  */
 export const AgentOperationEndingSchema = z.enum([
   /** The person stopped the task. */

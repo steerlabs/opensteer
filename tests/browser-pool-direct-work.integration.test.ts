@@ -395,6 +395,11 @@ it("keeps a connected agent's pooled browser_use page attachment alive across mu
     expect(text(largeRead)).toMatch(/answer is 60[0-9] KiB, over the 432 KiB limit/u);
     expect(text(largeRead)).toMatch(/escapedReadError.*over the 432 KiB limit/u);
     expect(text(largeRead)).toMatch(/afterPopup.*\/popup/u);
+    const { rows: popupRows } = await j.tabs.snapshot(j.task.userId);
+    expect(popupRows.find((row) => row.url === origin + "/popup")).toMatchObject({
+      openedBy: createdTab.openedBy,
+      openerTabId: createdTab.id,
+    });
     const uncaught = await work.use(
       `const demo = await openPage(${JSON.stringify(createdTab.id)});
        return await demo.evaluate(() => document.documentElement.outerHTML);`,
@@ -421,19 +426,38 @@ it("keeps a connected agent's pooled browser_use page attachment alive across mu
 
     // 4. Rule 4: if the attachment ends after a command was sent (e.g. target closes mid-script),
     // the operation settles as `unknown`, never `failed`.
-    const endedAfterSend = await work.use(
-      `await p.goto(${JSON.stringify(`${origin}/?r=3`)}); await p.close(); return await p.title();`,
-    );
+    const lostCode = `await p.goto(${JSON.stringify(`${origin}/?r=3`)}); print("before close"); await p.close();
+        try { await p.title(); } catch {}
+        const recovery = await newPage(${JSON.stringify(`${origin}/?r=recovered`)});
+        print("reopened", await recovery.title());`;
+    const endedAfterSend = await work.use(lostCode);
     expect(endedAfterSend.structuredContent, text(endedAfterSend)).toMatchObject({
       status: "unknown",
+      error: { code: "outcome-unknown", method: "Runtime.evaluate" },
     });
+    expect(text(endedAfterSend)).toContain("before close");
+    expect(text(endedAfterSend)).toContain("reopened Step recovered");
     expect(
       await j.database
         .selectFrom("agentOperations")
-        .select(["state", "outcome"])
+        .select(["state", "outcome", "resultSummary"])
         .orderBy("createdAt", "desc")
         .executeTakeFirstOrThrow(),
-    ).toEqual({ state: "unknown", outcome: "unknown" });
+    ).toMatchObject({
+      state: "unknown",
+      outcome: "unknown",
+      resultSummary: {
+        texts: expect.any(Number),
+        scriptError: { code: "outcome-unknown", method: "Runtime.evaluate" },
+      },
+    });
+    const operationId = (endedAfterSend.structuredContent as { operationId: string }).operationId;
+    const replay = await work.resume(lostCode, operationId);
+    expect(replay.structuredContent, text(replay)).toMatchObject({
+      status: "unknown",
+      operationId,
+      error: { code: "outcome-unknown", method: "Runtime.evaluate" },
+    });
   } finally {
     site.close();
     await j.close();
@@ -2181,6 +2205,47 @@ async function heldPersonTab(name: string, afterBind?: () => Promise<void>) {
   };
   return { site, origin, j, home, session, own, person, work, close };
 }
+
+it("clicks a target=_blank link in the person's pooled tab and reaches the popup under the same grant", async () => {
+  const { j, work, close, own, origin } = await heldPersonTab("person-popup-click");
+  try {
+    const result = await work.use(`
+      const page = await openPage(${JSON.stringify(own.id)});
+      await newPage(${JSON.stringify(origin + "/second")});
+      await page.evaluate((url) => {
+        const link = document.createElement("a");
+        link.id = "popup";
+        link.target = "_blank";
+        link.href = url;
+        link.textContent = "Open popup";
+        document.body.prepend(link);
+      }, ${JSON.stringify(origin + "/popup")});
+      print("before click");
+      await page.locator("#popup").click();
+      print("after click");
+      let popup;
+      for (let attempt = 0; !popup && attempt < 20; attempt++) {
+        popup = (await pages()).find((tab) => tab.url.endsWith("/popup"));
+        if (!popup) await page.waitForTimeout(100);
+      }
+      if (!popup) throw new Error("The popup was not listed.");
+      print({ popup: popup.tabId, title: await (await openPage(popup.tabId)).title() });
+    `);
+    expect(result.structuredContent, text(result)).toMatchObject({ status: "completed" });
+    expect(text(result)).toContain("before click");
+    expect(text(result)).toContain("after click");
+    const popup = (result.content as { type: string; text: string }[]).find(
+      ({ type, text }) => type === "text" && text.startsWith('{"popup":'),
+    );
+    expect(popup, text(result)).toBeDefined();
+    expect(await j.tabs.get(j.task.userId, JSON.parse(popup!.text).popup)).toMatchObject({
+      openedBy: "person",
+      openerTabId: own.id,
+    });
+  } finally {
+    await close();
+  }
+});
 
 /** The script's returned lines. */
 const lines = (result: Awaited<ReturnType<Awaited<ReturnType<typeof directWork>>["use"]>>) =>
