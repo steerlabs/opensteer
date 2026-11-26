@@ -255,13 +255,14 @@ describe("tab projection and viewer admission", () => {
       opened.push(windowId);
       return view(windowId, windowId === dead ? "unavailable" : "ready");
     });
-    f.native.resolveWindow = vi.fn(async () => ({
+    f.native.currentWindow = vi.fn(async () => ({
       windowId: next,
       app: a.windowApp!,
       appName: "Test",
       bundleId: "test.app",
       title: "After relaunch",
     }));
+    const byBundle = vi.spyOn(f.native, "resolveWindow");
     const rebindWindow = vi.fn(
       async (
         _owner: unknown,
@@ -280,9 +281,9 @@ describe("tab projection and viewer admission", () => {
 
     const activated = await f.service.activate(ownerId, a.id, "open-again");
 
-    expect(f.native.resolveWindow).toHaveBeenCalledWith(ownerId, computerId, {
-      bundleId: "test.app",
-    });
+    // Found from the app's own window list, never resolved by bundle (which launches the app).
+    expect(f.native.currentWindow).toHaveBeenCalledWith(ownerId, computerId, a.windowApp);
+    expect(byBundle).not.toHaveBeenCalled();
     expect(rebindWindow).toHaveBeenCalledWith(ownerId, a.id, 1, dead, {
       windowId: next,
       windowApp: a.windowApp,
@@ -320,6 +321,33 @@ describe("tab projection and viewer admission", () => {
     expect(activated.tab.title).toBe("Sol 3 Moving Clock");
     f.service.dispose();
   });
+  it("never moves a window tab to a window of another app", async () => {
+    const a = row("window"),
+      f = fixture([a]);
+    f.native.openOwnerView = vi.fn(
+      async () =>
+        ({
+          viewId: "cvw_test",
+          generation: 1,
+          state: "unavailable",
+          unavailableReason: "window-closed",
+          target: { kind: "app", app: a.windowApp, windowId: a.windowId },
+        }) as unknown as ComputerView,
+    );
+    f.native.currentWindow = vi.fn(async () => ({
+      windowId: WindowIdSchema.parse(`win_${randomUUID()}`),
+      app: { bundleId: "other.app", displayName: "Other", teamId: null },
+      appName: "Other",
+      bundleId: "other.app",
+      title: "Someone else's window",
+    }));
+    const rebindWindow = vi.fn();
+    (f.options.store as unknown as Record<string, unknown>).rebindWindow = rebindWindow;
+    await f.service.activate(ownerId, a.id, "open-again");
+    expect(rebindWindow).not.toHaveBeenCalled();
+    expect(f.native.openOwnerView).toHaveBeenCalledTimes(1);
+    f.service.dispose();
+  });
   it("keeps a window tab whose app has no window unavailable, and rebinds nothing", async () => {
     const a = row("window"),
       f = fixture([a]);
@@ -333,10 +361,8 @@ describe("tab projection and viewer admission", () => {
           target: { kind: "app", app: a.windowApp, windowId: a.windowId },
         }) as unknown as ComputerView,
     );
-    const { OpensteerError } = await import("@opensteer/core");
-    f.native.resolveWindow = vi.fn(async () => {
-      throw new OpensteerError({ code: "not_found", message: "Window closed" });
-    });
+    // The app quit: its window list is empty, and nothing launches it.
+    f.native.currentWindow = vi.fn(async () => null);
     const rebindWindow = vi.fn();
     (f.options.store as unknown as Record<string, unknown>).rebindWindow = rebindWindow;
     const activated = await f.service.activate(ownerId, a.id, "open-again");
