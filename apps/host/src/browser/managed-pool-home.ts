@@ -478,6 +478,8 @@ export async function startManagedBrowserPool(input: {
   readonly unansweredMs?: number;
   readonly firstDelayMs?: number;
   readonly maxDelayMs?: number;
+  /** The target service's clock (tests). */
+  readonly now?: () => Date;
   readonly account:
     | ManagedBrowserPoolAccount
     | {
@@ -890,6 +892,7 @@ export async function startManagedBrowserPool(input: {
       syncStatus();
     },
     ...(input.firstDelayMs !== undefined ? { firstDelayMs: input.firstDelayMs } : {}),
+    ...(input.now ? { now: input.now } : {}),
     ...(input.maxDelayMs !== undefined ? { maxDelayMs: input.maxDelayMs } : {}),
     ...(input.onError ? { onError: input.onError } : {}),
   });

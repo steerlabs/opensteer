@@ -4247,13 +4247,26 @@ async function replacedPoolHost(
     cleanups.push(() => hostB.close());
     expect(new URL(hostB.target.agentUrl).port).not.toBe(new URL(hostA.target.agentUrl).port);
     let placed = hostA.target;
-    /** When the account was asked for the target, and what it answered. */
-    const reads: { readonly at: number; readonly term: number }[] = [];
+    /** What the account answered, in order: the term of each read. */
+    const reads: { readonly term: number }[] = [];
+    /**
+     * What happened, in order: each controller call that went unanswered, and each account read
+     * with the term it answered. No wall-clock number is read from it.
+     */
+    const events: string[] = [];
     let onRead: ((target: ManagedBrowserPoolTarget) => void) | undefined;
     const answer = (): ManagedBrowserPoolTargetResponse => {
-      reads.push({ at: Date.now(), term: placed.term });
+      reads.push({ term: placed.term });
+      events.push(`read:${placed.term}`);
       onRead?.(placed);
       return { status: "ready", target: placed };
+    };
+    const unanswered = (error: unknown): boolean => {
+      for (let cause = error, depth = 0; cause instanceof Error && depth < 4; depth++) {
+        if (cause.name === "BrowserPoolUnanswered") return true;
+        cause = cause.cause;
+      }
+      return false;
     };
     const hub = new RunnerBrowserHub();
     cleanups.push(async () => hub.close());
@@ -4268,11 +4281,17 @@ async function replacedPoolHost(
       idleParkMs: 150,
       firstDelayMs: 30,
       maxDelayMs: 60,
-      // One controller call's own deadline (10 s on a Home): the test's clock for it.
-      callTimeoutMs: 400,
+      // One controller call's own deadline (10 s on a Home). An unanswered call's early read must
+      // start before the next call has also gone unanswered: one timeout and one retry gap apart.
+      callTimeoutMs: 1_000,
       ...(options.unansweredMs !== undefined ? { unansweredMs: options.unansweredMs } : {}),
+      // The target service's clock stands still: every read, the one that settled the target
+      // included, is "just now", so nothing here depends on how fast the machine is.
+      now: () => new Date(Date.parse("2026-11-26T16:26:42Z")),
       account: { register: async () => answer(), target: async () => answer() },
-      onError: () => {},
+      onError: (error) => {
+        if (unanswered(error)) events.push("unanswered");
+      },
     });
     cleanups.push(() => pool.close());
     const slot = () => readBrowserPoolSlot(host.store.database, runnerId);
@@ -4282,15 +4301,15 @@ async function replacedPoolHost(
       interval: 50,
     });
     const profileId = createId("browserProfile");
-    const call = (wakeBoundMs: number) => {
+    /** A call with the caller's own wake bound: its signal, aborted when the bound runs out. */
+    const call = (wakeBound: AbortSignal) => {
       const direct = host.browser.pooledDirectBrowser(runnerId);
       if (!direct) throw new Error("The Home has no pooled browser.");
-      const startedAt = Date.now();
       return {
         direct,
         reserved: direct
-          .reserve(AbortSignal.timeout(wakeBoundMs), { ownerId, profileId })
-          .then((reservation) => ({ reservation, ms: Date.now() - startedAt })),
+          .reserve(wakeBound, { ownerId, profileId })
+          .then((reservation) => ({ reservation })),
       };
     };
     /** A stops answering: every controller call to it waits for an answer that never comes. */
@@ -4309,6 +4328,7 @@ async function replacedPoolHost(
       call,
       silenceA,
       reads,
+      events,
       hostB,
       onRead: (hook: typeof onRead) => {
         onRead = hook;
@@ -4322,15 +4342,17 @@ async function replacedPoolHost(
 }
 
 describe("A replaced pool host is learned at the first unanswered call", () => {
-  it("serves the first browser call after a host replace on the new target after about one controller timeout, with no refusal", async () => {
+  it("serves the first browser call after a host replace on the new target after one unanswered call and one account read, with no refusal", async () => {
     const f = await replacedPoolHost("replaced-first", { accountAnswers: "replacement" });
     try {
-      const settledReads = f.reads.length;
       const suspect = vi.spyOn(f.pool.targets, "suspect");
+      // The target was settled by a read just now (the service's clock stands still).
       f.silenceA();
-      // The caller's own wake bound (two minutes for a connected agent's call; 30 s here).
-      const first = f.call(30_000);
-      const { reservation, ms } = await first.reserved;
+      const since = f.events.length;
+      // The caller's own wake bound (two minutes for a connected agent's call; 30 s here, inside
+      // the test's own bound). It only bounds a failure: nothing below reads a clock.
+      const first = f.call(AbortSignal.timeout(30_000));
+      const { reservation } = await first.reserved;
       try {
         // Admitted on B: the call's own port follows the target it was served by.
         expect(first.direct.identity()).toMatchObject({ slotId: f.hostB.slotId, term: 2 });
@@ -4338,13 +4360,13 @@ describe("A replaced pool host is learned at the first unanswered call", () => {
       } finally {
         reservation.release();
       }
-      // Learned by one read of the account at the first unanswered call, not by a suspicion.
+      // One unanswered call to A, then one read of the account, which named B: learned at the
+      // first unanswered call, not by a suspicion, and with no refusal.
+      expect(f.events.slice(since, since + 2)).toEqual(["unanswered", "read:2"]);
+      expect(f.events.slice(since).filter((event) => event.startsWith("read:"))).toEqual([
+        "read:2",
+      ]);
       expect(suspect).not.toHaveBeenCalled();
-      expect(f.reads.slice(settledReads).map(({ term }) => term)).toEqual([2]);
-      // About one controller timeout (A was asked first, and did not answer) and B's own start:
-      // far inside the wake bound.
-      expect(ms).toBeGreaterThanOrEqual(400);
-      expect(ms).toBeLessThan(10_000);
     } finally {
       await f.close();
     }
@@ -4356,10 +4378,11 @@ describe("A replaced pool host is learned at the first unanswered call", () => {
       f.silenceA();
       let second: ReturnType<typeof f.call> | undefined;
       // The second call begins as the account names B: the Home still holds A, and retires it next.
+      const since = f.events.length;
       f.onRead((target) => {
-        if (target.term === 2 && !second) second = f.call(30_000);
+        if (target.term === 2 && !second) second = f.call(AbortSignal.timeout(30_000));
       });
-      const first = f.call(30_000);
+      const first = f.call(AbortSignal.timeout(30_000));
       const one = await first.reserved;
       one.reservation.release();
       expect(second).toBeDefined();
@@ -4367,6 +4390,7 @@ describe("A replaced pool host is learned at the first unanswered call", () => {
       two.reservation.release();
       expect(second!.direct.identity()).toMatchObject({ slotId: f.hostB.slotId, term: 2 });
       expect(first.direct.identity()).toMatchObject({ term: 2 });
+      expect(f.events.slice(since, since + 2)).toEqual(["unanswered", "read:2"]);
     } finally {
       await f.close();
     }
@@ -4382,9 +4406,12 @@ describe("A replaced pool host is learned at the first unanswered call", () => {
       const settledReads = f.reads.length;
       const suspect = vi.spyOn(f.pool.targets, "suspect");
       f.silenceA();
-      const startedAt = Date.now();
-      const refused = await f.call(3_000).reserved.catch((error: unknown) => error);
-      const window = Date.now() - startedAt;
+      // The caller's wake bound runs out once the suspicion has fired, as a deadline does.
+      const wakeBound = new AbortController();
+      const waiting = f.call(wakeBound.signal).reserved.catch((error: unknown) => error);
+      await vi.waitFor(() => expect(suspect).toHaveBeenCalled(), { timeout: 30_000 });
+      wakeBound.abort(new DOMException("The operation timed out.", "TimeoutError"));
+      const refused = await waiting;
       expect(refused).toBeInstanceOf(BrowserPoolAdmissionClosed);
       expect(refused).toMatchObject({
         message: "The pooled browser did not wake in time. Nothing was sent.",
@@ -4393,11 +4420,8 @@ describe("A replaced pool host is learned at the first unanswered call", () => {
       // No switch: still A.
       expect(await f.slot()).toMatchObject({ term: 1 });
       expect(f.reads.slice(settledReads).every(({ term }) => term === 1)).toBe(true);
-      // The suspicion still fires when its bound has passed, and asks the account as before.
-      expect(suspect).toHaveBeenCalled();
       // Beyond the suspicion's own reads, the unanswered calls asked the account at most once per
-      // 10 s: once in this window.
-      expect(window).toBeLessThan(10_000);
+      // 10 s of the service's clock, which stands still here: once at most.
       expect(f.reads.length - settledReads).toBeLessThanOrEqual(suspect.mock.calls.length + 1);
     } finally {
       await f.close();
@@ -4416,7 +4440,7 @@ describe("A replaced pool host is learned at the first unanswered call", () => {
           timeout: 20_000,
           interval: 50,
         });
-        const { reservation } = await f.call(30_000).reserved;
+        const { reservation } = await f.call(AbortSignal.timeout(30_000)).reserved;
         reservation.release();
       }
       expect(await f.slot()).toMatchObject({ term: 1 });

@@ -12,7 +12,7 @@
  *   browser's calls have gone unanswered for long (`suspect`): paced, from 5 s doubling to five
  *   minutes; nothing while a ready target answers.
  * - A ready target's call that went unanswered or could not connect asks once, at once (`check`):
- *   one read at a time, its start at least 10 s after the last one's. It changes nothing, in
+ *   one read at a time, its start at least 10 s after the last early read's. It changes nothing, in
  *   memory or on disk, unless the account names a different ready target that is not older.
  * - For the same slot an older term is never saved or delivered, on any read: the account's answer
  *   that lags behind a replacement never retires the target that replaced it.
@@ -189,8 +189,11 @@ export class ManagedBrowserPoolTargetService {
   #newest: ManagedBrowserPoolTarget | undefined;
   /** A turn is reading the account now: an unanswered call's check asks nothing more. */
   #reading = false;
-  /** When the account was last asked. */
-  #readStartedAt: number | undefined;
+  /**
+   * When the last early read began. Early reads are paced against each other only: the loop's own
+   * reads (the one that settled the target included) never delay the first one.
+   */
+  #earlyReadStartedAt: number | undefined;
 
   constructor(options: ManagedBrowserPoolTargetServiceOptions) {
     this.#options = options;
@@ -216,15 +219,19 @@ export class ManagedBrowserPoolTargetService {
 
   /**
    * A call to the ready target in hand went unanswered or could not connect: its pool host may
-   * have been replaced. The account is asked once, now: one read at a time, and none that starts
-   * within 10 s of the last read's start. Only a different ready target that is not older is
+   * have been replaced. The account is asked once, now: one read at a time, and no early read that
+   * starts within 10 s of the last early read's start (the loop's own reads, the one that settled
+   * the target included, never delay it). Only a different ready target that is not older is
    * taken (saved, then delivered as any read's is); anything else (preparing, no answer, an
    * error, the same target) changes nothing, in memory or on disk. While the target is not
    * settled the loop is reading already, and this asks nothing more.
    */
   check(): void {
     if (this.#closed || !this.#settled || this.#reading) return;
-    if (this.#readStartedAt !== undefined && this.#now() - this.#readStartedAt < checkEveryMs)
+    if (
+      this.#earlyReadStartedAt !== undefined &&
+      this.#now() - this.#earlyReadStartedAt < checkEveryMs
+    )
       return;
     // Single flight from here: the loop's turn holds it until its read has ended.
     this.#reading = true;
@@ -233,11 +240,6 @@ export class ManagedBrowserPoolTargetService {
 
   #now(): number {
     return (this.#options.now?.() ?? new Date()).getTime();
-  }
-
-  /** The account is asked now: what paces the next early read. */
-  #asking(): void {
-    this.#readStartedAt = this.#now();
   }
 
   /** A ready target known to the Home: the newest of its slot is kept. */
@@ -341,7 +343,7 @@ export class ManagedBrowserPoolTargetService {
       // An early read changes nothing unless it names a different ready target that is not
       // older: the target saved stays exactly as it was for anything else.
       if (first?.attemptKeys || !sameKeys(first?.registeredKeys, mine)) return undefined;
-      this.#asking();
+      this.#earlyReadStartedAt = this.#now();
       const read = await account.target();
       if (
         read.status !== "ready" ||
@@ -356,7 +358,6 @@ export class ManagedBrowserPoolTargetService {
     // A registration whose answer did not come: what the account holds is read first, and only
     // then is it registered again (keys the account already has are a no-op there).
     if (first?.attemptKeys) {
-      this.#asking();
       const read = await account.target();
       await record.answer({
         response: this.#stale(read) ? keptAnswer(first) : read,
@@ -366,7 +367,6 @@ export class ManagedBrowserPoolTargetService {
     const row = await record.read();
     this.#knowSaved(row);
     if (!sameKeys(row?.registeredKeys, mine)) return this.#register(mine, row);
-    this.#asking();
     const read = await account.target();
     if (this.#stale(read)) return undefined;
     await record.answer({ response: read });
@@ -387,7 +387,6 @@ export class ManagedBrowserPoolTargetService {
     const issuedAt = this.#options.now?.() ?? new Date();
     // The attempt is durable before anything leaves the Home.
     await record.attempt(mine, issuedAt);
-    this.#asking();
     const response = await account.register(
       signedManagedBrowserPoolRegistration({
         cloudComputerId: this.#options.cloudComputerId,
