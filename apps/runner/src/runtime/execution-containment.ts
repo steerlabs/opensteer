@@ -640,8 +640,6 @@ export async function listLinuxProcesses(
 ): Promise<ProcessInventory> {
   const maxAttempts = 3;
   let previousVanished: ReadonlySet<number> | undefined;
-  // What the previous pass could not read, by identity.
-  let previousRefused: ReadonlyMap<string, ListedProcess> = new Map();
   let last: ProcessInventory = {
     processes: [],
     incomplete: true,
@@ -660,40 +658,14 @@ export async function listLinuxProcesses(
         }
       }
     }
-    // A process whose environ was refused may be a live one this Runner cannot read, or one that
-    // died between this pass's reads of it. Nothing here decides which: the pass is unsettled and
-    // /proc is read again, where a dying process is gone or a zombie at its first read. The same
-    // refusals on two passes in a row are live processes, and the answer stands.
-    // One the next listing leaves out is carried on as unreadable unless the kernel says no
-    // such process exists: under hidepid=2 a live process that turns non-dumpable disappears
-    // from the listing too, and a listing alone cannot tell that from an exit.
-    const listed = new Set(scan.processes.map(({ pid }) => pid));
-    const carried = [...previousRefused.values()].filter(
-      ({ pid }) => !listed.has(pid) && defaultProbeAlive(pid) !== "gone",
-    );
-    const processes = carried.length ? [...scan.processes, ...carried] : scan.processes;
-    const refused = new Map(
-      processes
-        .filter(
-          ({ identity, unreadable }) =>
-            unreadable === true &&
-            (scan.refused.has(identity) || carried.some((entry) => entry.identity === identity)),
-        )
-        .map((entry) => [entry.identity, entry]),
-    );
-    const refusedChanged =
-      refused.size > 0 &&
-      (refused.size !== previousRefused.size ||
-        [...refused.keys()].some((identity) => !previousRefused.has(identity)));
-    if (scan.vanishedPids.size === 0 && !refusedChanged) {
-      return { processes, incomplete: false };
+    if (scan.vanishedPids.size === 0) {
+      return { processes: scan.processes, incomplete: false };
     }
     previousVanished = scan.vanishedPids;
-    previousRefused = refused;
     // After retrying so any child forked before prior vanished PIDs exited is
     // captured in a fresh readdirSync, strictly disjoint exits on a busy host
     // do not poison containment unless a PID keeps vanishing or a member vanished.
-    last = { processes, incomplete: false, vanishedPids: scan.vanishedPids };
+    last = { processes: scan.processes, incomplete: false, vanishedPids: scan.vanishedPids };
   }
   return last;
 }
@@ -705,8 +677,6 @@ async function scanLinuxProcOnce(
   readonly processes: readonly ListedProcess[];
   readonly incomplete: boolean;
   readonly vanishedPids: ReadonlySet<number>;
-  /** Identities this pass could not read: a refused environ, or a zombie leader whose group runs. */
-  readonly refused: ReadonlySet<string>;
 }> {
   let entries: string[];
   try {
@@ -716,13 +686,11 @@ async function scanLinuxProcOnce(
       processes: [],
       incomplete: true,
       vanishedPids: new Set(),
-      refused: new Set(),
     };
   }
   const prefix = `${variable}=`;
   const found: ListedProcess[] = [];
   const vanishedPids = new Set<number>();
-  const refused = new Set<string>();
   let incomplete = false;
   let sliceStart = performance.now();
   // /proc entries are kernel-backed memory; yielding only when a slice reaches
@@ -785,29 +753,15 @@ async function scanLinuxProcOnce(
     // Linux kernel threads (kthreadd and its children) never belong to a user
     // execution and never expose a readable /proc/<pid>/environ.
     if (pid === 2 || ppid === 2) continue;
-    const identity = `${pid}@${startTime}`;
-    // An entry this pass cannot read: membership and ancestry decide whether it can belong to the
-    // scope, and the pass is unsettled, so /proc is read again before the answer stands.
-    const unreadable = () => {
-      refused.add(identity);
-      found.push({ identity, pid, ppid, processGroupId, scope: null, unreadable: true });
-    };
-    // A leader that ended its own thread is Z while its other threads may still run: it has
-    // ended only when every task of its group has, as far as this pass can tell.
-    const zombie = state === "Z" || state === "X";
-    const threadsLive = zombie && !threadGroupEnded(procRoot, entry);
     let environ = "";
     try {
       environ = readFileSync(`${procRoot}/${entry}/environ`, "latin1");
     } catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code;
-      if (threadsLive) {
-        unreadable();
-        continue;
-      }
       if (
         code === "ESRCH" ||
-        (zombie && (code === "ENOENT" || code === "EACCES" || code === "EPERM"))
+        ((state === "Z" || state === "X") &&
+          (code === "ENOENT" || code === "EACCES" || code === "EPERM"))
       ) {
         // Linux clears a dying/zombie process's mm_struct before its parent reaps
         // it, so /proc/<pid>/environ returns ESRCH or EACCES even for a direct child
@@ -827,20 +781,22 @@ async function scanLinuxProcOnce(
         continue;
       }
       if (code === "EACCES" || code === "EPERM") {
-        // A live process this Runner cannot read, or one that died between this pass's reads.
-        unreadable();
+        // Record the entry unreadable with its parent and process group so
+        // membership and ancestry decide whether it can belong to this scope.
+        found.push({
+          identity: `${pid}@${startTime}`,
+          pid,
+          ppid,
+          processGroupId,
+          scope: null,
+          unreadable: true,
+        });
         continue;
       }
       incomplete = true;
       continue;
     }
     const scope = environ.split("\0").find((value) => value.startsWith(prefix));
-    // A zombie leader's environment is gone with its own thread; one whose group still runs and
-    // shows no scope cannot be placed.
-    if (!scope && threadsLive) {
-      unreadable();
-      continue;
-    }
     found.push({
       identity: `${pid}@${startTime}`,
       pid,
@@ -849,33 +805,7 @@ async function scanLinuxProcOnce(
       scope: scope ? scope.slice(prefix.length) : null,
     });
   }
-  return { processes: found, incomplete, vanishedPids, refused };
-}
-
-/**
- * Whether every task of a zombie leader's thread group has ended: its task directory holds only
- * the leader, or every other task is Z or X. Anything this cannot read counts as running.
- */
-function threadGroupEnded(procRoot: string, entry: string): boolean {
-  let tasks: string[];
-  try {
-    tasks = readdirSync(`${procRoot}/${entry}/task`);
-  } catch {
-    return false;
-  }
-  for (const task of tasks) {
-    if (task === entry || !/^[1-9][0-9]*$/u.test(task)) continue;
-    let stat: string;
-    try {
-      stat = readFileSync(`${procRoot}/${entry}/task/${task}/stat`, "latin1");
-    } catch {
-      return false;
-    }
-    const close = stat.lastIndexOf(")");
-    const state = close < 0 ? undefined : stat.slice(close + 2).split(" ")[0];
-    if (state !== "Z" && state !== "X") return false;
-  }
-  return true;
+  return { processes: found, incomplete, vanishedPids };
 }
 
 /**

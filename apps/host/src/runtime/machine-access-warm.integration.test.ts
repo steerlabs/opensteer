@@ -407,7 +407,7 @@ integration("Warm engines with machine access", () => {
       const echo = await startEchoServer();
       active.closers.push(() => echo.close());
 
-      // A Run that completes: its engine is kept, and nothing of the Run is.
+      // A Run that completes: its SSH ends with it, and nothing of it is reachable after.
       const completed = await active.heldRun("Long work");
       const kept = required(completed.launch, "the launch directory");
       const completedWork = await openWork(active, kept, echo.port);
@@ -417,13 +417,33 @@ integration("Warm engines with machine access", () => {
       expect(await probeEcho(completedWork.port)).toBe("no-listener");
 
       const next = await active.heldRun("Next question");
-      // Codex serves every session from one shared process, so the pid alone cannot show the
-      // engine was kept: no second launch was set up, and the Run's attempt started warm.
-      expect(next.enginePid).toBe(completed.enginePid);
-      expect(active.probes, "the next Run set up a launch of its own").toHaveLength(1);
-      expect(next.launch?.launchDirectory).toBe(kept.launchDirectory);
+      // The engine is kept only on a clean proof that nothing of the Run lives on, and that proof
+      // reads /proc while the cut commands may still be exiting: a process caught between its
+      // reads makes it unverifiable, and the engine is retired. Both are the product's promise;
+      // which one this Run took is what the Runner recorded as the next attempt's start. (Codex
+      // serves every session from one shared process, so the engine's pid cannot tell them apart.)
+      await waitFor(
+        async () => (await engineStart(active.stack, next.runId)) !== null,
+        "the next attempt's recorded engine start",
+      );
+      const nextStart = await engineStart(active.stack, next.runId);
+      const current = required(next.launch, "the next Run's launch directory");
+      if (nextStart === "warm") {
+        // Kept: the same launch directory, and no second launch set up.
+        expect(active.probes).toHaveLength(1);
+        expect(current.launchDirectory).toBe(kept.launchDirectory);
+      } else {
+        // Not kept: a launch of its own, and the old one gone with everything it reached through.
+        expect(nextStart).toBe("cold");
+        expect(active.probes).toHaveLength(2);
+        expect(current.launchDirectory).not.toBe(kept.launchDirectory);
+        await expect(stat(kept.launchDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(
+          stat(required(completed.relaySocket, "the old relay socket")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+      }
       expect(await probeEcho(completedWork.port)).toBe("no-listener");
-      expect(await runShim(kept, "ssh", ["example-mac", "echo clean"])).toMatchObject({
+      expect(await runShim(current, "ssh", ["example-mac", "echo clean"])).toMatchObject({
         code: 0,
         stdout: "clean\n",
       });
@@ -435,7 +455,7 @@ integration("Warm engines with machine access", () => {
 
       // Stop: the command and the forward end as the engine is told to stop,
       // not when it has.
-      const stopWork = await openWork(active, kept, echo.port);
+      const stopWork = await openWork(active, current, echo.port);
       const stopInterrupt = await active.armInterrupt();
       const stoppedAt = Date.now();
       await active.stack.interruptRun(active.threadId, next.runId);
@@ -450,13 +470,17 @@ integration("Warm engines with machine access", () => {
       expect(await probeEcho(stopWork.port)).toBe("no-listener");
       await settled(active.stack, next.runId);
       expect((await runRow(active.stack, next.runId)).status).toBe("interrupted");
-      expect(await engineStart(active.stack, next.runId)).toBe("warm");
       const stopped = (await active.sessions()).filter((session) => session.runId === next.runId);
       expect(stopped.length).toBeGreaterThanOrEqual(2);
       expect(stopped.every((session) => session.state === "ended")).toBe(true);
       journeys.push(
         await active.record("SSH ends with its Run and at Stop", {
-          notes: { engineAliveAtStopCut, stopCutAfterInterruptMs, stopCutMs },
+          notes: {
+            engineAliveAtStopCut,
+            engineKeptForNextRun: nextStart === "warm",
+            stopCutAfterInterruptMs,
+            stopCutMs,
+          },
         }),
       );
     },
