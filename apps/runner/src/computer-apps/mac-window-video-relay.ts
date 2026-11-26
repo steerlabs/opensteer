@@ -16,7 +16,7 @@ import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
 import { WebSocket } from "ws";
 import type { ComputerUseHandler } from "./computer-use-handler.js";
 import { ComputerUseBridgeError } from "./computer-use-bridge-client.js";
-import { OrderedInputLane } from "./ordered-input-lane.js";
+import { inputBytes, OrderedInputLane, releaseOnly } from "./ordered-input-lane.js";
 
 type VideoOperation = Extract<
   HostIntegrationsOperation,
@@ -65,10 +65,18 @@ interface Entry {
 type OwnerInput = Extract<VideoOperation, { type: "host.integrations.mac-owner.input" }>;
 /**
  * The Home holds at most 128 unanswered batches a stream; a lane as deep never refuses what it
- * admitted, and the byte bound keeps a run of large pastes from growing without end.
+ * admitted, and the byte bound keeps a run of large pastes from growing without end. Releases
+ * have 32 batches and 64 KiB more: a person holds at most a few modifiers, keys and buttons at
+ * once, and each lets go in a small batch. A batch older than the client's own give-up (10 s),
+ * less a margin, is not sent: the person was already told to try again.
  */
-const ownerInputLaneBatches = 128;
-const ownerInputLaneBytes = 4 * 1_048_576;
+const ownerInputLane = {
+  maxBatches: 128,
+  maxBytes: 4 * 1_048_576,
+  maxReleaseBatches: 32,
+  maxReleaseBytes: 64 * 1_024,
+  maxAgeMs: 8_000,
+} as const;
 
 /** Binary media never enters the integrations or Desktop JSON request queues. */
 export class MacWindowVideoRelay {
@@ -225,9 +233,9 @@ export class MacWindowVideoRelay {
       else if (
         !entry.input.input({
           source: displaySourceKey(message.source),
-          bytes: JSON.stringify(message.events).length,
+          bytes: inputBytes(message.events),
           value: message,
-          release: message.events.some(releasesHeldInput),
+          release: releaseOnly(message.events),
         })
       )
         // A full lane refuses as the helper's own full lane does: nothing was sent.
@@ -443,8 +451,7 @@ export class MacWindowVideoRelay {
   #ownerInputLane(streamId: DisplayStreamId): OrderedInputLane<OwnerInput> {
     const entry = () => this.#streams.get(streamId);
     return new OrderedInputLane<OwnerInput>({
-      maxBatches: ownerInputLaneBatches,
-      maxBytes: ownerInputLaneBytes,
+      ...ownerInputLane,
       send: async (message) => {
         const result = await this.#computerUse
           .videoRequest(
@@ -543,13 +550,6 @@ export class MacWindowVideoRelay {
     this.#detachGrants();
     for (const entry of this.#streams.values()) this.#close(entry);
   }
-}
-
-/** As the Home's display hub decides it: a release always has room, so no press is stranded. */
-function releasesHeldInput(event: OwnerInput["events"][number]): boolean {
-  return event.kind === "pointer" || event.kind === "mouse"
-    ? event.phase === "up" || event.phase === "cancel"
-    : event.kind === "key" && event.action === "up";
 }
 
 function inputFailure(error: unknown): DisplayInputRefusal {
