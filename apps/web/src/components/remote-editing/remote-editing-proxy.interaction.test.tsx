@@ -289,6 +289,26 @@ describe("real shared proxy element", () => {
     expect(composes).toHaveLength(1);
     expect(composes[0]).toMatchObject({ composition: { text: "한글", before: "", after: "" } });
   });
+  it("says a refusal of input that never left in its own words, and only an unknown outcome as unconfirmed", async () => {
+    // Real Mac, 200 characters at once: the client refused the batches past its 128 unanswered;
+    // they never left, yet the person read "Couldn't confirm this change."
+    const { DisplayEditingRefusal } = await import("@opensteer/client/integrations");
+    const { container, element, wire } = setup();
+    wire.send.mockImplementationOnce(async () => {
+      throw new DisplayEditingRefusal("capacity", "This device is still catching up. Try again.");
+    });
+    input(element(), "a");
+    await act(async () => undefined);
+    expect(container.textContent).toContain("This device is still catching up. Try again.");
+    expect(container.textContent).not.toContain("Couldn’t confirm");
+    expect(container.textContent).not.toContain("Couldn't confirm");
+    wire.send.mockImplementationOnce(async () => {
+      throw new Error("The answer was lost.");
+    });
+    input(element(), "ab");
+    await act(async () => undefined);
+    expect(container.textContent).toMatch(/Couldn.t confirm this change/);
+  });
   it("uses remote caret and field hints, then replaces sensitive fields with a password proxy", () => {
     const { element, render } = setup();
     expect(element().style.left).toBe("120px");
