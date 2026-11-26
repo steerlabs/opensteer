@@ -45,7 +45,7 @@ async function databaseRecord() {
   return { record, read: () => record.read() };
 }
 
-async function fixture(account: ManagedBrowserPoolAccount, onTarget = vi.fn()) {
+async function fixture(account: ManagedBrowserPoolAccount, onTarget = vi.fn(), now?: () => Date) {
   const directory = await mkdtemp(join(tmpdir(), "opensteer-pool-target-"));
   directories.push(directory);
   const keys = await loadOrCreateManagedBrowserPoolKeys(directory);
@@ -60,6 +60,7 @@ async function fixture(account: ManagedBrowserPoolAccount, onTarget = vi.fn()) {
     onTarget,
     firstDelayMs: 40,
     maxDelayMs: 1_000,
+    ...(now ? { now } : {}),
   });
   services.push(service);
   return { service, memory, hostKey, onTarget };
@@ -145,4 +146,54 @@ it("asks a not-ready target again later and later, then nothing while ready, unt
   f.service.suspect();
   await vi.waitFor(() => expect(onTarget).toHaveBeenLastCalledWith(target(2)));
   expect(asked.length).toBe(settled + 1);
+});
+
+it("asks the account at once when a settled target's call goes unanswered, at most once per 10 s, and takes a new target as a suspicion does", async () => {
+  let clock = Date.parse("2026-11-26T16:26:52Z");
+  const asked: number[] = [];
+  let answer: ManagedBrowserPoolTargetResponse = { status: "ready", target: target(2) };
+  const account: ManagedBrowserPoolAccount = {
+    register: async () => answer,
+    target: async () => {
+      asked.push(clock);
+      return answer;
+    },
+  };
+  const onTarget = vi.fn();
+  const f = await fixture(account, onTarget, () => new Date(clock));
+  f.service.start();
+  await vi.waitFor(() => expect(onTarget).toHaveBeenCalledWith(target(2)));
+  const settled = asked.length;
+  // A call to the settled target went unanswered: the account is asked now, once. It names the
+  // same target: nothing changes, and the Home stays settled on it.
+  f.service.check();
+  await vi.waitFor(() => expect(asked.length).toBe(settled + 1));
+  // More unanswered calls inside the same 10 s ask nothing more.
+  clock += 9_999;
+  f.service.check();
+  f.service.check();
+  await f.memory.read();
+  expect(asked.length).toBe(settled + 1);
+  expect(onTarget).toHaveBeenCalledTimes(1);
+  // The account cannot be reached for one: nothing changes, and the target in hand stays.
+  answer = { status: "preparing" };
+  clock += 1;
+  f.service.check();
+  await vi.waitFor(() => expect(asked.length).toBe(settled + 2));
+  // The pool host was replaced: the next unanswered call, 10 s on, learns the new target (another
+  // address, the term one higher) and delivers it as any read does.
+  const replaced = {
+    ...target(3),
+    agentUrl: "http://10.40.0.11:7310",
+    relay: { ...target(3).relay, host: "10.40.0.11" },
+  };
+  answer = { status: "ready", target: replaced };
+  clock += 10_000;
+  f.service.check();
+  await vi.waitFor(() => expect(onTarget).toHaveBeenLastCalledWith(replaced));
+  expect(asked.length).toBe(settled + 3);
+  // Settled again: with no unanswered call, nothing is read.
+  clock += 60_000;
+  await f.memory.read();
+  expect(asked.length).toBe(settled + 3);
 });

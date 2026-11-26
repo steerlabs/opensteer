@@ -1,7 +1,12 @@
 import { expect, it, vi } from "vitest";
 import { OpensteerError } from "@opensteer/core";
 import { BrowserPoolAdmissionClosed } from "@opensteer/database";
-import { BrowserPoolAttemptRefused, BrowserPoolGate } from "./browser-pool-gate.js";
+import {
+  BrowserPoolAttemptRefused,
+  BrowserPoolGate,
+  BrowserPoolTargetReplaced,
+  browserPoolUnsentNext,
+} from "./browser-pool-gate.js";
 
 function gate() {
   const inD = Promise.withResolvers<void>();
@@ -289,4 +294,42 @@ it("ends failOnRefusal waiters at once on noteAttemptRefused while default waite
   expect(held.waited).toBe(true);
   held.release();
   expect(subject.demand).toBe(false);
+});
+
+it("tells the agent that nothing was sent and it may call again when a wait runs out or the target is over", async () => {
+  const subject = new BrowserPoolGate();
+  subject.set({ recovered: true, away: "parked", hold: null });
+  const deadline = new AbortController();
+  const waiting = subject.reserve(deadline.signal);
+  deadline.abort(new DOMException("The operation timed out.", "TimeoutError"));
+  const late = await waiting.catch((error: unknown) => error);
+  expect(late).toBeInstanceOf(BrowserPoolAdmissionClosed);
+  expect(late).toMatchObject({
+    message: "The pooled browser did not wake in time. Nothing was sent.",
+    next: browserPoolUnsentNext,
+  });
+  // A target over by its host's signed word: refused at once, with the same advice.
+  subject.set({ hold: "over" });
+  const over = await subject.reserve(new AbortController().signal).catch((error: unknown) => error);
+  expect(over).toMatchObject({
+    message: "This browser is not ready. Nothing was sent.",
+    next: browserPoolUnsentNext,
+  });
+  expect(over).not.toBeInstanceOf(BrowserPoolTargetReplaced);
+  expect(browserPoolUnsentNext).toBe("Nothing was sent. It is safe to call again.");
+});
+
+it("refuses a waiter as replaced, never plainly over, when a different target replaces this one", async () => {
+  const subject = new BrowserPoolGate();
+  subject.set({ recovered: true, away: "waking", hold: null });
+  const waiting = subject.reserve(new AbortController().signal);
+  subject.set({ hold: "over", replaced: true });
+  const refused = await waiting.catch((error: unknown) => error);
+  // The caller follows the replacement; anyone who does not reads the same words as before.
+  expect(refused).toBeInstanceOf(BrowserPoolTargetReplaced);
+  expect(refused).toBeInstanceOf(BrowserPoolAdmissionClosed);
+  expect(refused).toMatchObject({
+    message: "This browser is not ready. Nothing was sent.",
+    next: browserPoolUnsentNext,
+  });
 });

@@ -375,6 +375,7 @@ export function managedBrowserPoolCoordinator(input: {
   readonly target: ManagedBrowserPoolTarget;
   readonly keys: ManagedBrowserPoolHomeKeys;
   readonly onSuspect: (reason?: "over") => void;
+  readonly onUnanswered?: () => void;
   readonly onError?: (error: unknown) => void;
   readonly onDiscard?: (reason: string) => void;
   readonly onStateChanged?: () => void;
@@ -387,6 +388,7 @@ export function managedBrowserPoolCoordinator(input: {
   readonly unansweredRetryMaxMs?: number;
   readonly unreachableAfterMs?: number;
   readonly unansweredMs?: number;
+  readonly callTimeoutMs?: number;
   readonly relay?: BrowserPoolCoordinatorOptions["relay"];
   readonly onRunning?: (signal?: AbortSignal) => Promise<void>;
   readonly parts?: ReturnType<typeof managedBrowserPool>;
@@ -403,6 +405,7 @@ export function managedBrowserPoolCoordinator(input: {
     runtime: parts.runtime,
     controller: parts.controller,
     onSuspect: input.onSuspect,
+    ...(input.onUnanswered ? { onUnanswered: input.onUnanswered } : {}),
     ...(input.onError ? { onError: input.onError } : {}),
     ...(input.onDiscard ? { onDiscard: input.onDiscard } : {}),
     ...(input.onStateChanged ? { onStateChanged: input.onStateChanged } : {}),
@@ -421,6 +424,7 @@ export function managedBrowserPoolCoordinator(input: {
       ? { unreachableAfterMs: input.unreachableAfterMs }
       : {}),
     ...(input.unansweredMs !== undefined ? { unansweredMs: input.unansweredMs } : {}),
+    ...(input.callTimeoutMs !== undefined ? { callTimeoutMs: input.callTimeoutMs } : {}),
     ...(input.relay ? { relay: input.relay } : {}),
     ...(input.onRunning ? { onRunning: input.onRunning } : {}),
     ...(input.drain ? { drain: input.drain } : {}),
@@ -468,6 +472,10 @@ export async function startManagedBrowserPool(input: {
   readonly idleParkMs?: number | null;
   readonly statusEveryMs?: number;
   readonly postWakeStatusCheckMs?: number;
+  /** Each controller call's own deadline (10 s). */
+  readonly callTimeoutMs?: number;
+  /** How long calls may go unanswered before the target is suspected (two minutes). */
+  readonly unansweredMs?: number;
   readonly firstDelayMs?: number;
   readonly maxDelayMs?: number;
   readonly account:
@@ -737,6 +745,8 @@ export async function startManagedBrowserPool(input: {
       ...(input.postWakeStatusCheckMs !== undefined
         ? { postWakeStatusCheckMs: input.postWakeStatusCheckMs }
         : {}),
+      ...(input.callTimeoutMs !== undefined ? { callTimeoutMs: input.callTimeoutMs } : {}),
+      ...(input.unansweredMs !== undefined ? { unansweredMs: input.unansweredMs } : {}),
       ...(relay
         ? {
             relay: {
@@ -760,6 +770,9 @@ export async function startManagedBrowserPool(input: {
           }
         : {}),
       onSuspect: (reason) => targets.suspect(reason === "over" ? { over: true } : {}),
+      // An unanswered call asks the account at once (paced by the target service): a replaced pool
+      // host is learned by the same read and taken by the same reconciliation as a suspicion's.
+      onUnanswered: () => targets.check(),
       ...(input.onError ? { onError: input.onError } : {}),
     });
     const candidate: AppliedPool = {

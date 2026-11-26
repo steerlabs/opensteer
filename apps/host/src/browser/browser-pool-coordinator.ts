@@ -203,6 +203,12 @@ export interface BrowserPoolCoordinatorOptions {
    * (or been refused unsigned) for `unansweredMs`. The Home asks its account for its target.
    */
   readonly onSuspect?: (reason?: "over") => void;
+  /**
+   * A call to this target went unanswered (its own deadline) or could not connect: the Home may
+   * ask its account at once whether the target moved (a replaced pool host). Never called while
+   * calls are answered; the asker paces it.
+   */
+  readonly onUnanswered?: () => void;
   /** How long calls may go unanswered before the target is suspected (two minutes). */
   readonly unansweredMs?: number;
   /**
@@ -1154,6 +1160,9 @@ export class BrowserPoolCoordinator {
           if (!this.#over) this.#refused = undefined;
           const at = Date.now();
           this.#unknownSince ??= at;
+          // The account may already have placed this slot elsewhere: it is asked now, not only
+          // once the calls have gone unanswered for long (the suspicion above).
+          if (!this.#over) this.#options.onUnanswered?.();
           let wait = Math.min(
             (this.#options.retryMs ?? 100) * 2 ** Math.min(unanswered++, 16),
             this.#options.unansweredRetryMaxMs ?? unansweredRetryMaxMs,
@@ -1347,6 +1356,7 @@ export class BrowserPoolCoordinator {
             : this.#restartWanted
               ? "restart"
               : null,
+      replaced: this.#over === "browser-replaced",
     });
     // A park that failed after D ends where the browser settled.
     if (this.#parkSettling && slot?.phase === "parked") this.#settlePark("parked");

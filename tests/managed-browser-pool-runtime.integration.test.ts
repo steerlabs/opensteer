@@ -45,6 +45,7 @@ import { AgentConnectionStore, beginAgentSession } from "../packages/database/sr
 import {
   BrowserPoolAdmissionClosed,
   listBrowserPoolUnconfirmedClosings,
+  readBrowserPoolSlot,
   recordBrowserPoolTargetAnswer,
   stopBrowserPoolSession,
 } from "../packages/database/src/browser-pool-store.js";
@@ -4198,6 +4199,231 @@ describe("Managed browser pool review fixes (W1-W4, S2, S4-S7, idle holds)", () 
       await poolHost?.close();
       await database.drop();
       await rm(directory, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
+/**
+ * A pooled Home settled on target A whose pool host was replaced: the account now places the slot
+ * on another host, one term higher, and A never answers again. The Home was not told.
+ */
+async function replacedPoolHost(
+  key: string,
+  options: {
+    /** What the account answers once A stops answering: the new host, or A again. */
+    readonly accountAnswers: "replacement" | "same";
+    /** How long calls may go unanswered before the target is suspected (two minutes). */
+    readonly unansweredMs?: number;
+  },
+) {
+  const database = await cloneTestDatabase("host");
+  const directory = await mkdtemp(join(tmpdir(), `opensteer-pool-${key}-`));
+  const config = managedConfig(database.url, directory, await freePort(), { browserPool: false });
+  const cleanups: (() => Promise<unknown>)[] = [
+    () => rm(directory, { recursive: true, force: true }),
+    () => database.drop(),
+  ];
+  const close = async () => {
+    vi.restoreAllMocks();
+    for (const cleanup of cleanups.splice(0).reverse()) await cleanup().catch(() => undefined);
+  };
+  try {
+    const started = await ownTestDatabaseProducer(database.url, async () => {
+      const runtime = await createHostRuntime(config, { personalAccountGrantFetch: jwksFetch() });
+      if (runtime.kind !== "personal") throw new Error("Expected a Personal Home");
+      return { host: runtime, close: () => runtime.close() };
+    });
+    const host = started.host;
+    cleanups.push(() => host.close());
+    const { ownerId } = await claimHome(host);
+    const runnerId = await enrollMainRunner(host, config);
+    const keys = await loadOrCreateManagedBrowserPoolKeys(join(directory, "host"));
+    const slotId = `bps_${randomUUID()}`;
+    const registered = managedBrowserPoolRegistration(keys);
+    const hostA = await startLoopbackPoolHost({ directory, slotId, term: 1, registered });
+    cleanups.push(() => hostA.close());
+    // The slot on its new host: another address, the term one higher.
+    const hostB = await startLoopbackPoolHost({ directory, slotId, term: 2, registered });
+    cleanups.push(() => hostB.close());
+    expect(new URL(hostB.target.agentUrl).port).not.toBe(new URL(hostA.target.agentUrl).port);
+    let placed = hostA.target;
+    /** When the account was asked for the target, and what it answered. */
+    const reads: { readonly at: number; readonly term: number }[] = [];
+    let onRead: ((target: ManagedBrowserPoolTarget) => void) | undefined;
+    const answer = (): ManagedBrowserPoolTargetResponse => {
+      reads.push({ at: Date.now(), term: placed.term });
+      onRead?.(placed);
+      return { status: "ready", target: placed };
+    };
+    const hub = new RunnerBrowserHub();
+    cleanups.push(async () => hub.close());
+    const pool = await startManagedBrowserPool({
+      database: host.store.database,
+      dataDirectory: join(directory, "host"),
+      cloudComputerId,
+      runnerId,
+      hostKey: generateKeyPairSync("ed25519").privateKey,
+      browser: host.browser,
+      browserRelay: hub,
+      idleParkMs: 150,
+      firstDelayMs: 30,
+      maxDelayMs: 60,
+      // One controller call's own deadline (10 s on a Home): the test's clock for it.
+      callTimeoutMs: 400,
+      ...(options.unansweredMs !== undefined ? { unansweredMs: options.unansweredMs } : {}),
+      account: { register: async () => answer(), target: async () => answer() },
+      onError: () => {},
+    });
+    cleanups.push(() => pool.close());
+    const slot = () => readBrowserPoolSlot(host.store.database, runnerId);
+    // Settled on A: it answered, the guest ran, and with nobody holding it the browser parked.
+    await vi.waitFor(async () => expect(await slot()).toMatchObject({ term: 1, phase: "parked" }), {
+      timeout: 20_000,
+      interval: 50,
+    });
+    const profileId = createId("browserProfile");
+    const call = (wakeBoundMs: number) => {
+      const direct = host.browser.pooledDirectBrowser(runnerId);
+      if (!direct) throw new Error("The Home has no pooled browser.");
+      const startedAt = Date.now();
+      return {
+        direct,
+        reserved: direct
+          .reserve(AbortSignal.timeout(wakeBoundMs), { ownerId, profileId })
+          .then((reservation) => ({ reservation, ms: Date.now() - startedAt })),
+      };
+    };
+    /** A stops answering: every controller call to it waits for an answer that never comes. */
+    const silenceA = () => {
+      const silent = () => new Promise<never>(() => {});
+      const agent = hostA.currentAgent();
+      vi.spyOn(agent, "apply").mockImplementation(silent);
+      vi.spyOn(agent, "status").mockImplementation(silent);
+      vi.spyOn(agent, "result").mockImplementation(silent);
+      if (options.accountAnswers === "replacement") placed = hostB.target;
+    };
+    return {
+      host,
+      pool,
+      slot,
+      call,
+      silenceA,
+      reads,
+      hostB,
+      onRead: (hook: typeof onRead) => {
+        onRead = hook;
+      },
+      close,
+    };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
+describe("A replaced pool host is learned at the first unanswered call", () => {
+  it("serves the first browser call after a host replace on the new target after about one controller timeout, with no refusal", async () => {
+    const f = await replacedPoolHost("replaced-first", { accountAnswers: "replacement" });
+    try {
+      const settledReads = f.reads.length;
+      const suspect = vi.spyOn(f.pool.targets, "suspect");
+      f.silenceA();
+      // The caller's own wake bound (two minutes for a connected agent's call; 30 s here).
+      const first = f.call(30_000);
+      const { reservation, ms } = await first.reserved;
+      try {
+        // Admitted on B: the call's own port follows the target it was served by.
+        expect(first.direct.identity()).toMatchObject({ slotId: f.hostB.slotId, term: 2 });
+        expect(await f.slot()).toMatchObject({ term: 2, phase: "running" });
+      } finally {
+        reservation.release();
+      }
+      // Learned by one read of the account at the first unanswered call, not by a suspicion.
+      expect(suspect).not.toHaveBeenCalled();
+      expect(f.reads.slice(settledReads).map(({ term }) => term)).toEqual([2]);
+      // About one controller timeout (A was asked first, and did not answer) and B's own start:
+      // far inside the wake bound.
+      expect(ms).toBeGreaterThanOrEqual(400);
+      expect(ms).toBeLessThan(10_000);
+    } finally {
+      await f.close();
+    }
+  }, 60_000);
+
+  it("serves a second call that starts while the switch is under way, not refused as not ready", async () => {
+    const f = await replacedPoolHost("replaced-second", { accountAnswers: "replacement" });
+    try {
+      f.silenceA();
+      let second: ReturnType<typeof f.call> | undefined;
+      // The second call begins as the account names B: the Home still holds A, and retires it next.
+      f.onRead((target) => {
+        if (target.term === 2 && !second) second = f.call(30_000);
+      });
+      const first = f.call(30_000);
+      const one = await first.reserved;
+      one.reservation.release();
+      expect(second).toBeDefined();
+      const two = await second!.reserved;
+      two.reservation.release();
+      expect(second!.direct.identity()).toMatchObject({ slotId: f.hostB.slotId, term: 2 });
+      expect(first.direct.identity()).toMatchObject({ term: 2 });
+    } finally {
+      await f.close();
+    }
+  }, 60_000);
+
+  it("keeps the target in hand when the account names it again: reads at most once per 10 s, the suspicion fires as before, and the wake refusal says it is safe to call again", async () => {
+    const f = await replacedPoolHost("replaced-same", {
+      accountAnswers: "same",
+      // The two-minute suspicion, on the test's clock.
+      unansweredMs: 1_000,
+    });
+    try {
+      const settledReads = f.reads.length;
+      const suspect = vi.spyOn(f.pool.targets, "suspect");
+      f.silenceA();
+      const startedAt = Date.now();
+      const refused = await f.call(3_000).reserved.catch((error: unknown) => error);
+      const window = Date.now() - startedAt;
+      expect(refused).toBeInstanceOf(BrowserPoolAdmissionClosed);
+      expect(refused).toMatchObject({
+        message: "The pooled browser did not wake in time. Nothing was sent.",
+        next: "Nothing was sent. It is safe to call again.",
+      });
+      // No switch: still A.
+      expect(await f.slot()).toMatchObject({ term: 1 });
+      expect(f.reads.slice(settledReads).every(({ term }) => term === 1)).toBe(true);
+      // The suspicion still fires when its bound has passed, and asks the account as before.
+      expect(suspect).toHaveBeenCalled();
+      // Beyond the suspicion's own reads, the unanswered calls asked the account at most once per
+      // 10 s: once in this window.
+      expect(window).toBeLessThan(10_000);
+      expect(f.reads.length - settledReads).toBeLessThanOrEqual(suspect.mock.calls.length + 1);
+    } finally {
+      await f.close();
+    }
+  }, 60_000);
+
+  it("reads nothing more from the account while the target answers, over a run of calls", async () => {
+    const f = await replacedPoolHost("answering", { accountAnswers: "same" });
+    try {
+      const settledReads = f.reads.length;
+      // Not even a paced ask: no answered call asks the account at all.
+      const check = vi.spyOn(f.pool.targets, "check");
+      for (let index = 0; index < 3; index++) {
+        // Parked between calls: each call wakes it, through calls A answers.
+        await vi.waitFor(async () => expect(await f.slot()).toMatchObject({ phase: "parked" }), {
+          timeout: 20_000,
+          interval: 50,
+        });
+        const { reservation } = await f.call(30_000).reserved;
+        reservation.release();
+      }
+      expect(await f.slot()).toMatchObject({ term: 1 });
+      expect(check).not.toHaveBeenCalled();
+      expect(f.reads.length).toBe(settledReads);
+    } finally {
+      await f.close();
     }
   }, 60_000);
 });

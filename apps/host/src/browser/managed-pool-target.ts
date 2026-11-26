@@ -11,6 +11,8 @@
  * - The target is read at start, while none is ready, while the one it had is over, and when the
  *   browser's calls have gone unanswered for long (`suspect`): paced, from 5 s doubling to five
  *   minutes; nothing while a ready target answers.
+ * - A ready target's call that went unanswered or could not connect asks once, at once (`check`):
+ *   at most once per 10 s, and the target in hand stays unless the account names another.
  */
 import { sign, type KeyObject } from "node:crypto";
 import {
@@ -167,6 +169,9 @@ export interface ManagedBrowserPoolTargetServiceOptions {
   readonly maxDelayMs?: number;
 }
 
+/** How often unanswered calls to a ready target may ask the account (10 s). */
+const checkEveryMs = 10_000;
+
 export class ManagedBrowserPoolTargetService {
   readonly #options: ManagedBrowserPoolTargetServiceOptions;
   #closed = false;
@@ -177,6 +182,8 @@ export class ManagedBrowserPoolTargetService {
   #settled = false;
   /** The target that is over: the account is asked, paced, until it places a different one. */
   #over: string | undefined;
+  /** When an unanswered call last asked the account. */
+  #checkedAt: number | undefined;
 
   constructor(options: ManagedBrowserPoolTargetServiceOptions) {
     this.#options = options;
@@ -200,6 +207,20 @@ export class ManagedBrowserPoolTargetService {
     this.#kick();
   }
 
+  /**
+   * A call to the ready target in hand went unanswered or could not connect: its pool host may
+   * have been replaced. The account is asked once, now, at most once per 10 s; a different target
+   * is taken as any read's is, and the same one, or no answer, leaves the target in hand. While
+   * the target is not settled the loop is reading already, and this asks nothing more.
+   */
+  check(): void {
+    if (this.#closed || !this.#settled) return;
+    const at = (this.#options.now?.() ?? new Date()).getTime();
+    if (this.#checkedAt !== undefined && at - this.#checkedAt < checkEveryMs) return;
+    this.#checkedAt = at;
+    this.#kick();
+  }
+
   async close(): Promise<void> {
     this.#closed = true;
     this.#kick();
@@ -216,6 +237,9 @@ export class ManagedBrowserPoolTargetService {
     let failures = 0;
     while (!this.#closed) {
       const woken = this.#wake.signal;
+      // Settled and woken: an unanswered call's check. It counts toward no backoff, and leaves
+      // the target in hand settled whatever it reads.
+      const checking = this.#settled;
       try {
         const response = await this.#turn();
         // Compared canonically: the database gives back an object with its keys reordered.
@@ -237,11 +261,11 @@ export class ManagedBrowserPoolTargetService {
           this.#settled = true;
         } else {
           this.#options.onNotReady?.(response.status);
-          failures++;
+          if (!checking) failures++;
         }
       } catch (error) {
         this.#options.onError?.(error);
-        failures++;
+        if (!checking) failures++;
       }
       if (this.#closed) return;
       if (this.#settled) {
