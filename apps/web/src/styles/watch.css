@@ -149,6 +149,34 @@ button.computer-watch__picture {
   font-size: var(--text-sm);
 }
 
+/* A task's agent using a Mac app, in the middle: who and where under the picture, the apps it
+   holds to pick from, and the person's own view of the window to take over. */
+.task-app-watch {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-12);
+  border-top: 1px solid var(--line);
+  font-size: var(--text-sm);
+}
+
+.task-app-watch > p {
+  flex: 1 1 16rem;
+  min-width: 0;
+  margin: 0;
+}
+
+.task-app-watch__apps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
 /* The same view at the size of the window. */
 .watch-theater {
   position: fixed;

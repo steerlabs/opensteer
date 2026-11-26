@@ -1,5 +1,9 @@
 import { StreamedContextMenu } from "./browser/streamed-context-menu.js";
-import type { DisplayClientDiagnostic, PhoneDisplayView } from "@opensteer/protocol";
+import {
+  displayFirstFrameTimeoutMs,
+  type DisplayClientDiagnostic,
+  type PhoneDisplayView,
+} from "@opensteer/protocol";
 import { reportDisplayDiagnostic, displayDiagnosticSource } from "../display-diagnostics.js";
 import {
   useCallback,
@@ -47,6 +51,7 @@ import {
 } from "./phone-display-input.js";
 import {
   knownPhoneDisplayDecoding,
+  passingWindowPause,
   phoneDisplayDecoding,
   retainPhoneDisplayPicture,
   type PhoneDisplayPicture,
@@ -75,10 +80,17 @@ const noStore = {
   subscribe: () => () => undefined,
 };
 
+/** How long a passing pause of a Mac window's capture keeps its picture without a word. */
+export const passingWindowWordsMs = 2_000;
+
 /** One view's live display of a phone session, and its owner's hold on the phone. */
 export interface ComputerDisplayView {
   /** Why nothing current is shown, in the shared Watch words (`computerWatchStatus`). */
-  readonly reason: ReturnType<typeof computerDisplayStatus>["reason"] | "decoder-unsupported";
+  readonly reason:
+    | ReturnType<typeof computerDisplayStatus>["reason"]
+    | "decoder-unsupported"
+    /** A passing pause of a Mac window's capture outlasted its bound, over the kept picture. */
+    | "waiting";
   readonly retrying: boolean;
   /** A picture is shown that may lag the phone: the stream restarts, or awaits a keyframe. */
   readonly startingWords: string;
@@ -271,7 +283,7 @@ export function useComputerDisplay({
     const streams = sharedDisplayStreams(hostClient, reportDisplayDiagnostic);
     const target = { scope, source, editing: 1 as const };
     const current = streams.retain(target);
-    const shared = retainPhoneDisplayPicture(streams, target, decoding);
+    const shared = retainPhoneDisplayPicture(streams, target, decoding, macWindow);
     reportDisplayDiagnostic({
       transition: "retain",
       reason: "visible",
@@ -356,6 +368,25 @@ export function useComputerDisplay({
     const timer = setTimeout(() => setStartingSlow(true), 5_000);
     return () => clearTimeout(timer);
   }, [enabled, awaiting]);
+  // The Mac's capture holding back its pictures of a window that is there (it re-reads the window
+  // while an agent's call runs, or after one changed it) is waiting, not a closed window; a closed
+  // window ends the stream with its own reason. Before any picture it says it waits. Once one was
+  // shown, the picture stays and the words come only if the pause outlasts a short bound. Past the
+  // Home's own first-picture bound the words are the stream's again.
+  const passing = macWindow && display.connection === "open" && passingWindowPause(display.display);
+  const [passingFor, setPassingFor] = useState<"new" | "long" | "expired">("new");
+  useEffect(() => {
+    setPassingFor("new");
+    if (!passing) return;
+    const long = setTimeout(() => setPassingFor("long"), passingWindowWordsMs);
+    const expired = setTimeout(() => setPassingFor("expired"), displayFirstFrameTimeoutMs);
+    return () => {
+      clearTimeout(long);
+      clearTimeout(expired);
+    };
+  }, [passing]);
+  const waitingForWindow = passing && passingFor !== "expired" && media.shown === null;
+  const pictureKeptWaiting = passing && passingFor !== "expired" && media.shown !== null;
   const shown = media.stale && startingSlow ? null : media.shown;
   const geometry =
     shown &&
@@ -372,13 +403,19 @@ export function useComputerDisplay({
   return {
     ...status,
     viewportEnabled: macWindow,
-    reason:
-      shown !== null && display.connection !== "closed" && status.reason === "display-failed"
+    reason: pictureKeptWaiting
+      ? passingFor === "long"
+        ? "waiting"
+        : null
+      : waitingForWindow ||
+          (shown !== null && display.connection !== "closed" && status.reason === "display-failed")
         ? null
         : status.reason,
-    startingWords: startingSlow
-      ? "macOS is taking longer to start sharing this window."
-      : "Starting window sharing…",
+    startingWords: waitingForWindow
+      ? "Waiting for the window…"
+      : startingSlow
+        ? "macOS is taking longer to start sharing this window."
+        : "Starting window sharing…",
     picture: shown,
     snapshot: display,
     generation: streamGeneration,

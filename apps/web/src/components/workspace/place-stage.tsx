@@ -34,6 +34,7 @@ import { AppTab } from "./app-tab.js";
 import { useListedBrowserPresentations } from "./identity.js";
 import { OwnerView } from "./owner-view.js";
 import { StartPage } from "./start-page.js";
+import { TaskAppWatchPane } from "./task-app-watch.js";
 import {
   destinationPlaceKey,
   startPageLink,
@@ -146,6 +147,7 @@ function SelectedPlace({
   const toolbarRef = useToastToolbar();
   const presentations = useListedBrowserPresentations(hostClient);
   const pageVisible = usePageVisible();
+  const { pathname, state: entryState } = useLocation();
   const known = useRef(new Map<string, PlaceItem>());
   const placeKey = selection.kind === "place" ? destinationPlaceKey(selection.destination) : null;
   const live = usePlace(hostClient, placeKey) ?? null;
@@ -347,10 +349,35 @@ function SelectedPlace({
   }
   if (selection.kind === "talk") return null;
   if (selection.kind === "launcher") {
-    return (
+    const startPage = (
       <section aria-label="New tab" className="place place--launcher">
         <StartPageSlot hostClient={hostClient} leading={leading} trailing={trailing} />
       </section>
+    );
+    // A start page the person asked for (New tab) is one. Otherwise a task whose agent is using
+    // a Mac app shows that app where the launcher would be: Watch, the monitor button, a reload.
+    if (startPageOpening(entryState) !== "") return startPage;
+    const threadId = conversationAt(pathname);
+    const slot = threadId ? agentSessionSlot(directory.snapshot, threadId) : null;
+    return (
+      <TaskAppWatchPane
+        agentName={slot?.connection.label ?? null}
+        agentSessionId={slot?.status === "active" ? slot.sessionId : null}
+        fallback={startPage}
+        hostClient={hostClient}
+        hostConnected={hostConnected}
+        leading={leading}
+        onTakeOver={(target) => {
+          // Their own view of the same window, as a tab of theirs; a later choice supersedes it.
+          const show = nav.beginPlaceOperation({ replace: true });
+          void hostClient
+            .openTab(target)
+            .then((tab) => show({ kind: "tab", tabId: tab.tabId }), onReportError);
+        }}
+        threadId={threadId}
+        trailing={trailing}
+        visible={pageVisible}
+      />
     );
   }
   const { destination } = selection;
