@@ -54,6 +54,8 @@ interface Target extends BrowserUseTarget {
   closed: boolean;
   listen?: (event: RelayEvent) => void;
   onEnd?: () => void;
+  /** The operation (its script run's signal) that sent a command on this page, and when first. */
+  sentIn?: { readonly signal: AbortSignal; readonly at: number };
 }
 
 const resumed = z.object({ targetId: z.string(), dialog: browserTargetSchema.shape.dialog });
@@ -109,8 +111,8 @@ function translate(
     readonly method?: string;
     readonly browserSend?: PooledBrowserSend;
     readonly onEnded?: () => void;
-    /** Whether the person closed this page: the cause of its end. */
-    readonly closedByPerson?: (sessionId: string, tabId: string) => boolean;
+    /** Whether the person closed this page while this operation's command on it ran. */
+    readonly closedByPerson?: () => boolean;
   },
 ): never {
   if (error instanceof BrowserCdpConnectionEnded) {
@@ -123,12 +125,7 @@ function translate(
       ...(afterSubmit ? { afterSubmit } : {}),
     });
     context?.onEnded?.();
-    const byPerson = Boolean(
-      context?.sessionId &&
-      context.tabId &&
-      context.closedByPerson?.(context.sessionId, context.tabId),
-    );
-    throw afterSubmit ? endedAfterSubmit(byPerson) : ended();
+    throw afterSubmit ? endedAfterSubmit(context?.closedByPerson?.() === true) : ended();
   }
   // A7: the browser's answer arrived over its limit: the command ran, and it fails with the
   // runtime's words (its size, the limit, what to ask for instead).
@@ -149,8 +146,15 @@ export function createBrowserUsePort({
   browser: Pick<BrowserService, "attachCdpForAgent"> &
     Partial<Pick<BrowserService, "pooledScriptPageWitness" | "closedByPerson">>;
 }): BrowserUsePort<Target> {
-  const closedByPerson = (sessionId: string, tabId: string) =>
-    browser.closedByPerson?.(sessionId, tabId) === true;
+  /**
+   * Whether the person closed this page lately, at or after this operation first sent a command
+   * on it: only then is "the person closed this tab while the command ran" true. A page this
+   * operation never sent on, a close before the operation's command, and a page reopened since
+   * (its commands are sent after the close) never match.
+   */
+  const closedByPerson = (target: Target, call: BrowserUseCall) =>
+    target.sentIn?.signal === call.signal &&
+    browser.closedByPerson?.(target.relay.session.id, target.tabId, target.sentIn.at) === true;
   async function bind(
     { binding, threadId }: AdmittedPage,
     call: BrowserUseCall,
@@ -226,9 +230,7 @@ export function createBrowserUsePort({
       const page = resumed.parse(pageReply);
       root = page.targetId;
       if (closed || detached.has(root))
-        throw call.browserSend?.hasSubmitted?.()
-          ? endedAfterSubmit(closedByPerson(binding.sessionId, binding.tabId))
-          : ended();
+        throw call.browserSend?.hasSubmitted?.() ? endedAfterSubmit() : ended();
       const channelReply = await (
         await relay.dispatch(
           {
@@ -241,9 +243,7 @@ export function createBrowserUsePort({
       checkReply(channelReply, call);
       const channel = attached.parse(channelReply);
       if (closed || detached.has(channel.sessionId))
-        throw call.browserSend?.hasSubmitted?.()
-          ? endedAfterSubmit(closedByPerson(binding.sessionId, binding.tabId))
-          : ended();
+        throw call.browserSend?.hasSubmitted?.() ? endedAfterSubmit() : ended();
       const fields = browserTargetSchema.parse({ ...page, ...channel, tabId: binding.tabId });
       checkReply({ ...fields, handle: "0000000000000000" }, call);
       const attachedRelay = relay;
@@ -271,7 +271,6 @@ export function createBrowserUsePort({
     } catch (error) {
       close();
       translate(error, {
-        closedByPerson,
         tabId: binding.tabId,
         sessionId: binding.sessionId,
         ...(call.browserSend ? { browserSend: call.browserSend } : {}),
@@ -337,7 +336,7 @@ export function createBrowserUsePort({
           reason: "rebind-witness-mismatch",
           ...(afterSubmit ? { afterSubmit } : {}),
         });
-        throw afterSubmit ? endedAfterSubmit(closedByPerson(relay.session.id, tabId)) : ended();
+        throw afterSubmit ? endedAfterSubmit(closedByPerson(previous, call)) : ended();
       }
       try {
         const admitted = await tabs.bind(tabId, call.signal, call.browserSend);
@@ -348,12 +347,14 @@ export function createBrowserUsePort({
             reason: admitted.binding.reloaded ? "rebind-reloaded" : "rebind-session-changed",
             ...(afterSubmit ? { afterSubmit } : {}),
           });
-          throw afterSubmit ? endedAfterSubmit(closedByPerson(relay.session.id, tabId)) : ended();
+          throw afterSubmit ? endedAfterSubmit(closedByPerson(previous, call)) : ended();
         }
-        return await bind(admitted, call, pooledWitness);
+        const rebound = await bind(admitted, call, pooledWitness);
+        if (previous.sentIn) rebound.sentIn = previous.sentIn;
+        return rebound;
       } catch (error) {
         translate(error, {
-          closedByPerson,
+          closedByPerson: () => closedByPerson(previous, call),
           tabId,
           sessionId: relay.session.id,
           ...(call.browserSend ? { browserSend: call.browserSend } : {}),
@@ -371,9 +372,7 @@ export function createBrowserUsePort({
           reason: "target-closed",
           ...(afterSubmit ? { afterSubmit } : {}),
         });
-        throw afterSubmit
-          ? endedAfterSubmit(closedByPerson(target.relay.session.id, target.tabId))
-          : ended();
+        throw afterSubmit ? endedAfterSubmit(closedByPerson(target, call)) : ended();
       }
       const parsed = BrowserCdpCommandSchema.safeParse({
         method,
@@ -405,6 +404,8 @@ export function createBrowserUsePort({
               }
             : call;
         if (budget.maxImageBytes !== undefined && budget.maxImageBytes < 1) throw tooLarge();
+        if (target.sentIn?.signal !== call.signal)
+          target.sentIn = { signal: call.signal, at: Date.now() };
         const { result } = await target.relay.dispatch(parsed.data, budget);
         const value = await result;
         checkReply(value, call, method);
@@ -420,7 +421,7 @@ export function createBrowserUsePort({
             );
         }
         translate(error, {
-          closedByPerson,
+          closedByPerson: () => closedByPerson(target, call),
           tabId: target.tabId,
           sessionId: target.relay.session.id,
           method,

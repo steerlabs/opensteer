@@ -147,6 +147,12 @@ async function setUp(
     readonly browserConnect?: Pick<BrowserToolPorts, "issueTicket"> &
       Pick<BrowserToolPorts["tabs"], "open" | "bindBrowserScript">;
     readonly pooledBrowser?: BrowserToolPorts["pooledBrowser"];
+    /** What `discover` reads, where a test holds it open. */
+    readonly discoverSources?: Parameters<typeof serveMcp>[1] extends infer O
+      ? O extends { readonly discoverSources?: infer D }
+        ? D
+        : never
+      : never;
   } = {},
 ) {
   const f = options.run ?? (await storeFixture.startRunFixture(key));
@@ -179,6 +185,7 @@ async function setUp(
   };
   const home = { runnerId: createId("runner"), name: "Mac" };
   const url = await serveMcp(storeFixture, {
+    ...(options.discoverSources ? { discoverSources: options.discoverSources } : {}),
     browserProfiles: [{ id: profile, name: "Work", home: null }],
     tabHandlers: new TabToolHandlers(tabs, sessions),
     browser: new BrowserToolHandlers({
@@ -2158,6 +2165,13 @@ describeStore("an external agent's direct work through sessions", (it) => {
       expect(operationRow(listed!).detail).toBe(
         "You stopped this while it ran. Part of it may have happened. Check before trying again.",
       );
+      // A repeat of the same call reads the same cause as its live answer did.
+      const again = await s.call("browser_use", { ...script, operationKey: "stop-effect" });
+      expect(again.structuredContent).toMatchObject({
+        operationId: receipt.id,
+        status: "unknown",
+        next: "The person stopped this work. Part of it may have happened. Check the current state before doing anything else.",
+      });
     } finally {
       held.release();
       await running.catch(() => undefined);
@@ -2235,6 +2249,131 @@ describeStore("an external agent's direct work through sessions", (it) => {
       held.release();
       await running.catch(() => undefined);
     }
+  });
+
+  for (const cut of ["Disconnect", "a narrowed grant"] as const)
+    it(`writes no data on a read in flight when ${cut} ends the session: its refusal, at once`, async ({
+      storeFixture,
+    }) => {
+      const store = Promise.withResolvers<void>();
+      const reading = Promise.withResolvers<void>();
+      const s = await setUp(
+        storeFixture,
+        `read-in-flight-${cut === "Disconnect" ? "revoked" : "narrowed"}`,
+        {
+          discoverSources: {
+            tabs: {
+              // A slow store read, which answers inside the window the change opens.
+              project: async () => {
+                reading.resolve();
+                await store.promise;
+                return { tabs: [], layout: { revision: 0, items: [] } };
+              },
+            },
+          },
+        },
+      );
+      const discovered = s.call("discover", {});
+      await reading.promise;
+      const change = commands(storeFixture, s.f.userId, {
+        afterStop: (connectionId, reason, cause) =>
+          s.sessions.closeConnection(
+            connectionId,
+            reason === "disconnect",
+            connectionCleanupEnding(cause),
+          ),
+      });
+      const startedAt = Date.now();
+      if (cut === "Disconnect") await change.revoke(s.agent.id);
+      else
+        await change.update(s.agent.id, {
+          grant: { scope: "selected", tasks: false, resources: [] },
+        });
+      store.resolve();
+      const result = await discovered;
+      // The refusal, written at once (no wait for work the change stops: a read is none), and none
+      // of what the read found: not even the profile it would have listed.
+      expect(Date.now() - startedAt).toBeLessThan(1_500);
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: { error: { message: "This connected agent's access ended." } },
+      });
+      expect(JSON.stringify(result)).not.toContain("Work");
+    });
+
+  it("writes the refusal, not the result, of a direct operation that completes after Disconnect; its record keeps the truth", async ({
+    storeFixture,
+  }) => {
+    const s = await setUp(storeFixture, "completes-in-window");
+    const held = s.holdNext();
+    const running = s.call("browser_use", { ...script, operationKey: "completes-in-window" });
+    try {
+      await held.started;
+      // Disconnect closes the agent's MCP session before its stop reaches the work: the work
+      // completes in between (here, with no stop at all).
+      const disconnect = commands(storeFixture, s.f.userId);
+      await disconnect.revoke(s.agent.id);
+      held.release();
+      const result = await running;
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: { error: { message: "This connected agent's access ended." } },
+      });
+      expect(JSON.stringify(result.content)).not.toContain("done");
+      expect(
+        await storeFixture.database
+          .selectFrom("agentOperations")
+          .select(["state", "outcome"])
+          .where("operationKey", "=", "completes-in-window")
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ state: "completed", outcome: "completed" });
+    } finally {
+      held.release();
+      await running.catch(() => undefined);
+    }
+  });
+
+  it("records the cause a recheck read when the Disconnect reached the database before its stop", async ({
+    storeFixture,
+  }) => {
+    const s = await setUp(storeFixture, "recheck-cause");
+    const gate = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const running = s.sessions.run({
+      ownerUserId: s.f.userId,
+      agentConnectionId: s.agent.id,
+      operationKey: "recheck-cause",
+      tool: "tab_open",
+      input: { target: page(profile) },
+      target: {
+        grant: { kind: "browser-profile", profileId: profile },
+        name: "Work",
+        device: null,
+      },
+      effect: "write",
+      calls: `tab_open ${JSON.stringify({ target: page(profile) })}`,
+      execute: async ({ recheck }) => {
+        entered.resolve();
+        await gate.promise;
+        await recheck();
+        return {};
+      },
+    });
+    await entered.promise;
+    // The Disconnect commits; its stop has not reached this work when it checks again.
+    await commands(storeFixture, s.f.userId).revoke(s.agent.id);
+    gate.resolve();
+    expect(await running).toMatchObject({
+      status: "unknown",
+      next: "The person disconnected this agent. Part of it may have happened. Check the current state before doing anything else.",
+    });
+    expect(
+      await storeFixture.database
+        .selectFrom("agentOperations")
+        .select(["state", "ending"])
+        .where("operationKey", "=", "recheck-cause")
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ state: "unknown", ending: "disconnected" });
   });
 
   it("records a browser that was not ready as nothing sent, for the agent and the person, never as access that changed", async ({

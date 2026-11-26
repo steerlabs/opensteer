@@ -30,6 +30,7 @@ import {
   admitExecution,
   askForAgentOperation,
   beginAgentSession,
+  connectionEndReason,
   decideAgentOperation,
   type AgentOperationWrittenDecision,
   endAgentSessions,
@@ -156,7 +157,14 @@ export interface PooledDirectBrowser {
 }
 
 /** An executor's way to say it cannot tell whether its effect happened. */
-export class OperationOutcomeUnknown extends Error {}
+export class OperationOutcomeUnknown extends Error {
+  /** Why, where the Home knows it (the standing a recheck read); else its words may name it. */
+  readonly ending: AgentOperationEnding | null;
+  constructor(message?: string, ending: AgentOperationEnding | null = null) {
+    super(message);
+    this.ending = ending;
+  }
+}
 
 export class AgentOperationFailure extends Error {
   readonly receipt: ToolFailureReceipt;
@@ -276,8 +284,11 @@ function endingOfAbort(error: OpensteerError): AgentOperationEnding | null {
   return AgentOperationEndingSchema.safeParse(error.details?.ending).data ?? null;
 }
 
-/** What the agent reads for an operation whose outcome is unknown, by its recorded cause. */
-function unknownWords(ending: AgentOperationEnding | null | undefined): string {
+/**
+ * What the agent reads for an operation whose outcome is unknown, by its recorded cause: the live
+ * answer and every replay of it.
+ */
+export function unknownOperationNext(ending: AgentOperationEnding | null | undefined): string {
   return agentOperationEndingSentence(ending ?? "contact-lost");
 }
 
@@ -570,6 +581,18 @@ export class AgentSessionService {
     entry.controller.abort(error);
   }
 
+  /** Why a recheck was refused, from what it read: the session's end, else the connection's. */
+  async #refusedBy(row: AgentOperationRow): Promise<AgentOperationEnding | null> {
+    const session = await this.#store.database
+      .selectFrom("agentSessions")
+      .select(["status", "endReason"])
+      .where("id", "=", row.sessionId)
+      .executeTakeFirst();
+    if (session?.status === "ended" && session.endReason) return sessionEnding[session.endReason];
+    const reason = await connectionEndReason(this.#store.database, row.userId, row.connectionId);
+    return reason ? connectionCleanupEnding(reason) : null;
+  }
+
   async #admit(
     operation: Pick<DirectOperation<unknown>, "ownerUserId" | "target" | "effect">,
     bindingId: string,
@@ -608,7 +631,7 @@ export class AgentSessionService {
             : { status: "failed", ...base, next: "It failed. Check the current state." };
         }
         case "unknown":
-          return { status: "unknown", ...base, next: unknownWords(row.ending) };
+          return { status: "unknown", ...base, next: unknownOperationNext(row.ending) };
         case "refused":
           throw new AgentOperationFailure(agentOperationRefusal(row.decision), {
             ...base,
@@ -821,7 +844,11 @@ export class AgentSessionService {
             )
               return;
           } else
-            await refuseUnsentAgentOperation(this.#store.database, row.id, current.grantRevision);
+            // Nothing handed off yet: the same cause as the branch above, never an access change.
+            await refuseUnsentAgentOperation(this.#store.database, row.id, current.grantRevision, {
+              message: "This browser restarted before anything was sent.",
+              reason: "changed",
+            });
         }
         const last = await readAgentOperation(this.#store.database, row.id);
         if (!last || !unsettled(last.state)) return;
@@ -959,12 +986,16 @@ export class AgentSessionService {
     });
     const recheck = async () => {
       signal.throwIfAborted();
-      const live = await this.#admit(operation, bindingId).catch((error: unknown) => {
-        if (error instanceof OpensteerError) throw new OperationOutcomeUnknown(error.message);
+      const live = await this.#admit(operation, bindingId).catch(async (error: unknown) => {
+        if (error instanceof OpensteerError)
+          throw new OperationOutcomeUnknown(error.message, await this.#refusedBy(row));
         throw error;
       });
       if (live.agentConnection!.grantRevision !== row.grantRevision || live.mode !== row.mode)
-        throw new OperationOutcomeUnknown("The connected agent's access changed during this work.");
+        throw new OperationOutcomeUnknown(
+          "The connected agent's access changed during this work.",
+          "narrowed",
+        );
       signal.throwIfAborted();
     };
     try {
@@ -1053,7 +1084,7 @@ export class AgentSessionService {
         const ending = ended
           ? endingOfAbort(ended)
           : error instanceof OperationOutcomeUnknown
-            ? agentOperationEndingOf(error.message)
+            ? (error.ending ?? agentOperationEndingOf(error.message))
             : null;
         const settled = await settleAgentOperation(
           this.#store.database,
@@ -1074,7 +1105,11 @@ export class AgentSessionService {
             { ...base, status: "unknown" },
           );
         if (!settled || outcome === "unknown")
-          return { status: "unknown", ...base, next: unknownWords(settled ? ending : null) };
+          return {
+            status: "unknown",
+            ...base,
+            next: unknownOperationNext(settled ? ending : null),
+          };
         throw new AgentOperationFailure(error, { ...base, status: "failed" });
       }
       let summary: Readonly<Record<string, unknown>> | null = null;

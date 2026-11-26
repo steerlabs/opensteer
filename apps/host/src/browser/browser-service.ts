@@ -933,6 +933,9 @@ interface StandardCdpEntry {
   close(reason: string): void;
 }
 
+/** How long a person's close of a page is remembered as the cause of work on it ending. */
+const personClosedMemoryMs = 10 * 60_000;
+
 export class BrowserService {
   readonly #deploymentId: DeploymentId;
   readonly #personal: boolean;
@@ -1496,9 +1499,19 @@ export class BrowserService {
     };
   }
 
-  /** Whether the person closed this page lately: the cause an agent's work on it reads. */
-  closedByPerson(sessionId: string, surfaceId: string): boolean {
-    return this.#closedByPerson.has(`${sessionId} ${surfaceId}`);
+  /**
+   * Whether the person closed this page at or after `since` (a command's send time on it) and
+   * lately: the cause an agent's work on it reads. Its age is checked here, on every read.
+   */
+  closedByPerson(sessionId: string, surfaceId: string, since: number): boolean {
+    const key = `${sessionId} ${surfaceId}`;
+    const at = this.#closedByPerson.get(key);
+    if (at === undefined) return false;
+    if (Date.now() - at > personClosedMemoryMs) {
+      this.#closedByPerson.delete(key);
+      return false;
+    }
+    return at >= since;
   }
 
   async pooledScriptPageWitness(ownerId: UserId, sessionId: BrowserSessionId, tabId: TabId) {
@@ -4893,7 +4906,7 @@ export class BrowserService {
       // Kept long enough for work that holds the page to meet its end; a few hundred at most.
       const now = Date.now();
       for (const [key, at] of this.#closedByPerson)
-        if (now - at > 10 * 60_000 || this.#closedByPerson.size >= 512)
+        if (now - at > personClosedMemoryMs || this.#closedByPerson.size >= 512)
           this.#closedByPerson.delete(key);
       this.#closedByPerson.set(`${binding.sessionId} ${binding.surfaceId}`, now);
     },

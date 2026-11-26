@@ -209,6 +209,7 @@ async function readConnectionStanding(
       "accessMode",
       "cleanupMinimumGrantRevision",
       "cleanupMaximumMode",
+      "cleanupReason",
       "bridgeSenders",
       "bridgeAccountId",
       connectionState().as("connectionState"),
@@ -376,6 +377,21 @@ export async function standingGrant(
 ): Promise<AgentGrant | null> {
   const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, false);
   return read?.state === "live" ? AgentGrantSchema.parse(read.connection.grant) : null;
+}
+
+/**
+ * Why a connection's work was refused, from the one statement of its standing: its cleanup's
+ * reason (the person's Disconnect, a narrowed grant, an expiry), an ended connection with none
+ * (its credential lapsed) as expired, and a live one with none as nothing.
+ */
+export async function connectionEndReason(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  agentConnectionId: string,
+): Promise<"revoked" | "expired" | "narrowed" | null> {
+  const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, false);
+  if (!read) return null;
+  return read.connection.cleanupReason ?? (read.state === "ended" ? "expired" : null);
 }
 
 /** The connection delegated work may still run for: live, and still granted Tasks. */

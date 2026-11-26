@@ -764,6 +764,41 @@ describe("Opensteer MCP spine", () => {
       await f.service.close();
     }
   });
+  it("ends a call in flight when its connection's access expires, and says it expired", async () => {
+    const f = await httpFixture();
+    const finish = new Set<() => void>();
+    f.handlers.opensteer_task_wait = async () =>
+      new Promise((resolve) => {
+        finish.add(() => resolve({ status: "timed_out", messages: [] }));
+      });
+    const caller = f.callers.get("connection")!;
+    f.callers.set("connection", { ...caller, expiresAt: Date.now() + 300 } as never);
+    try {
+      const response = await fetch(f.url, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer connection",
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-session-id": "detached",
+          "mcp-protocol-version": "2025-11-25",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "opensteer_task_wait", arguments: { taskId: f.thread.id } },
+        }),
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { result?: { isError?: boolean } };
+      expect(body.result?.isError).toBe(true);
+      expect(JSON.stringify(body.result)).toContain("This agent's access expired.");
+    } finally {
+      for (const resolve of finish) resolve();
+      await f.service.close();
+    }
+  });
   it("counts in-flight detached servers and frees revoked sessions", async () => {
     const f = await httpFixture();
     const finish = new Set<() => void>();

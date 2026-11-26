@@ -35,6 +35,7 @@ import {
   OpensteerError,
   ToolBlockedError,
   ThreadIdSchema,
+  agentOperationEndingWords,
   type Thread,
   requestHoldLimitMs,
   shortRequestHoldMs,
@@ -52,7 +53,7 @@ import {
   operationArgumentDigest,
   scriptFailedNext,
   storedScriptError,
-  unknownNext,
+  unknownOperationNext,
   withAgentOperationReceipt,
 } from "../agent-sessions/agent-session-service.js";
 import { advertisedToolInputSchema } from "../agents/agent-tools-plan.js";
@@ -112,13 +113,38 @@ function parseToolInput(tool: AgentTool, caller: AgentCaller, value: unknown) {
 const maximumSessions = 256;
 const sessionIdleLifetimeMs = 30 * 60 * 1_000;
 /**
- * How long a call that was running when its session's authority ended has to answer on its own.
- * The change that ended it (a Disconnect, a narrowed grant) also stops the work the call runs,
- * here in this process, which then returns its result at once. A call still open after this (a
- * wait nothing stops) is ended with a refusal it can read; one that still does not answer is cut.
+ * How long work a session's call runs, which the change that ended the session's authority (a
+ * Disconnect, an expiry, a narrowed grant) is stopping, has to return its own ending. Only that
+ * work waits; any other call is ended at once.
  */
 const retiringCallGraceMs = 2_000;
+/** How long a call ended with its refusal has to write it before its response is cut. */
 const retiringRefusalGraceMs = 1_000;
+/** What an ended session's open calls are told when nothing names the cause. */
+const accessEndedMessage = "This connected agent's access ended.";
+
+/**
+ * One call a session is answering: its own stop, the operation it may run, and, once the
+ * session's authority has ended, the ending that is all it may write.
+ */
+interface McpCall {
+  readonly stop: AbortController;
+  operationKey?: string;
+  ended?: OpensteerError;
+}
+
+/** Whether a tool's result is an ending: a stopped operation's unknown, or a refusal. */
+function isEnding(result: unknown): boolean {
+  if (typeof result !== "object" || result === null) return false;
+  const { isError, structuredContent } = result as {
+    readonly isError?: unknown;
+    readonly structuredContent?: { readonly status?: unknown };
+  };
+  return (
+    structuredContent?.status === "unknown" ||
+    (isError === true && structuredContent?.status === "refused")
+  );
+}
 const maximumTimerMs = 2_147_483_647;
 interface McpSession {
   readonly responses: Set<ServerResponse>;
@@ -141,8 +167,8 @@ export class OpensteerMcpService {
   readonly #activeSessions = new Set<McpSession>();
   /** Sessions whose authority ended, closing once the calls they were answering have answered. */
   readonly #retiring = new Set<McpSession>();
-  /** Each response's own stop: what a retiring session ends a call that did not answer with. */
-  readonly #calls = new WeakMap<ServerResponse, AbortController>();
+  /** The call each open response answers (`McpCall`). */
+  readonly #calls = new WeakMap<ServerResponse, McpCall>();
   readonly #reservations = new Map<string, number>();
   readonly #detachObserve: (() => void) | undefined;
   readonly options: {
@@ -212,7 +238,8 @@ export class OpensteerMcpService {
     // Before anything waits: a close missed here would leave this response open forever.
     const disconnected = new AbortController();
     response.once("close", () => disconnected.abort(new Error("MCP client disconnected")));
-    this.#calls.set(response, disconnected);
+    const call: McpCall = { stop: disconnected };
+    this.#calls.set(response, call);
     const ended = responseEnded(response);
     let authorization: AgentCaller;
     try {
@@ -242,6 +269,7 @@ export class OpensteerMcpService {
       token,
       extra: {
         disconnected: disconnected.signal,
+        call,
         caller: authorization,
       },
     };
@@ -455,7 +483,7 @@ export class OpensteerMcpService {
         : undefined;
     const expiry =
       untilExpiry !== undefined && untilExpiry <= maximumTimerMs
-        ? setTimeout(() => void this.#closeSession(session), untilExpiry)
+        ? setTimeout(() => void this.#closeSession(session, accessExpired()), untilExpiry)
         : undefined;
     expiry?.unref();
     transport.onclose = () => {
@@ -516,13 +544,16 @@ export class OpensteerMcpService {
       );
       server.registerTool(tool.name, registration, async (args, extra) => {
         const disconnected = extra.authInfo?.extra?.disconnected;
-        return this.callToolResult(extra.authInfo?.token ?? "", tool.name, args, {
-          operationKey: mcpToolCallId(
-            caller.key,
-            detachedSessionId ?? extra.sessionId,
-            extra.requestId,
-            tool.name,
-          ),
+        const call = extra.authInfo?.extra?.call as McpCall | undefined;
+        const operationKey = mcpToolCallId(
+          caller.key,
+          detachedSessionId ?? extra.sessionId,
+          extra.requestId,
+          tool.name,
+        );
+        const result = await this.callToolResult(extra.authInfo?.token ?? "", tool.name, args, {
+          operationKey,
+          ...(call ? { keyed: (key: string) => (call.operationKey = key) } : {}),
           signal:
             disconnected instanceof AbortSignal
               ? AbortSignal.any([extra.signal, disconnected])
@@ -532,6 +563,10 @@ export class OpensteerMcpService {
             ? { caller: extra.authInfo.extra.caller as AgentCaller }
             : {}),
         });
+        // The one place a result is written: once the session's authority has ended, only an
+        // ending goes out (a stopped operation's unknown, or a refusal), never a result. A
+        // result that completed in the meantime stays true in its operation's record.
+        return call?.ended && !isEnding(result) ? endedResult(call.ended) : result;
       });
     }
     // A grant may imply no tools at all; the list is still served, empty.
@@ -557,6 +592,8 @@ export class OpensteerMcpService {
       readonly signal?: AbortSignal;
       readonly caller?: AgentCaller;
       readonly longRequestHold?: boolean;
+      /** Told the key of the operation this call runs, once it is known. */
+      readonly keyed?: (key: string) => void;
     },
   ) {
     let tool = toolNamed(name);
@@ -596,6 +633,7 @@ export class OpensteerMcpService {
           caller: currentCaller,
           operationKey: identity.operationKey,
           signal,
+          ...(identity.keyed ? { keyed: identity.keyed } : {}),
         }),
         signal,
       );
@@ -717,6 +755,8 @@ export class OpensteerMcpService {
        * live re-check a signed-in caller gets before its effect.
        */
       readonly resolveCaller?: () => Promise<AgentCaller>;
+      /** Told the key of the operation this call runs, once it is known. */
+      readonly keyed?: (key: string) => void;
     },
   ): Promise<Record<string, unknown> | string> {
     if (!toolNamed(name) && name !== "discover") throw unknownTool();
@@ -734,6 +774,7 @@ export class OpensteerMcpService {
         message: "This tool is unavailable on this Host",
       });
     let key = toolOperationKey(caller, input, identity.operationKey);
+    identity.keyed?.(key);
     const database = this.options.store.database;
     let resume: Awaited<ReturnType<typeof findAgentOperation>>;
     const operationId = "operationId" in input ? input.operationId : undefined;
@@ -758,6 +799,7 @@ export class OpensteerMcpService {
           "taskId" in input ? ThreadIdSchema.optional().parse(input.taskId) : undefined;
         assertOperationArguments(row, operationArgumentDigest(name, input), taskId);
         key = row.operationKey;
+        identity.keyed?.(key);
         resume = row;
         const base = { taskId: row.taskId, operationId: row.id };
         if (row.state === "refused")
@@ -833,7 +875,7 @@ export class OpensteerMcpService {
                       ? "It failed. Check the current state."
                       : name === "computer_use" && row.effect === "read"
                         ? "Opensteer lost the result of this read, which could not send input to the device."
-                        : unknownNext,
+                        : unknownOperationNext(row.ending),
                 }),
           };
           if (tool.output === ComputerUseOutputSchema)
@@ -1124,21 +1166,28 @@ export class OpensteerMcpService {
   }
   /**
    * A session whose authority ended takes nothing new at once (its credential no longer
-   * authenticates, and it is no longer found). A call it was answering ends as what it is: the
-   * same change stops the work that call runs, whose result reaches the agent as a result, never
-   * as a cut connection; then the session closes. Streams carry no call's answer and end now.
+   * authenticates, and it is no longer found), and from then on writes only an ending on the calls
+   * it is answering (`McpCall.ended`). Streams carry no call's answer and end now.
    */
-  async #closeSession(session: McpSession) {
+  async #closeSession(session: McpSession, ended = accessEnded()) {
     this.#activeSessions.delete(session);
     for (const [id, held] of this.#sessions) if (held === session) this.#sessions.delete(id);
     this.#retiring.add(session);
-    for (const response of session.responses)
+    for (const response of session.responses) {
+      const call = this.#calls.get(response);
+      if (call) call.ended ??= ended;
       if (response.req?.method !== "POST") response.destroy();
-    void this.#retire(session).catch(() => undefined);
+    }
+    void this.#retire(session, ended).catch(() => undefined);
   }
-  async #retire(session: McpSession) {
-    const answered = async (ms: number) => {
-      const open = [...session.responses].map((response) =>
+  /**
+   * A call that runs an operation the change is stopping (handed off, here) returns that work's
+   * own ending within a short grace; every other call (a read, a wait, a request not yet an
+   * operation) is ended with the refusal at once; what still does not answer is cut.
+   */
+  async #retire(session: McpSession, ended: OpensteerError) {
+    const answered = async (responses: readonly ServerResponse[], ms: number) => {
+      const open = responses.map((response) =>
         response.writableFinished || response.destroyed ? undefined : once(response, "close"),
       );
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1151,15 +1200,31 @@ export class OpensteerMcpService {
       ]);
       clearTimeout(timer);
     };
-    await answered(retiringCallGraceMs);
+    const end = (responses: readonly ServerResponse[]) => {
+      for (const response of responses) this.#calls.get(response)?.stop.abort(ended);
+    };
+    const calls = [...session.responses];
+    const keys = calls.flatMap((response) => this.#calls.get(response)?.operationKey ?? []);
+    const stopping = new Set(
+      keys.length && this.options.store.database
+        ? (
+            await this.options.store.database
+              .selectFrom("agentOperations")
+              .select("operationKey")
+              .where("operationKey", "in", keys)
+              .where("state", "=", "handed-off")
+              .execute()
+          ).map(({ operationKey }) => operationKey)
+        : [],
+    );
+    const work = calls.filter((response) =>
+      stopping.has(this.#calls.get(response)?.operationKey ?? ""),
+    );
+    end(calls.filter((response) => !work.includes(response)));
+    if (work.length) await answered(work, retiringCallGraceMs);
     if (!this.#retiring.has(session)) return;
-    const ended = new OpensteerError({
-      code: "forbidden",
-      reason: "authority-changed",
-      message: "This connected agent's access ended.",
-    });
-    for (const response of session.responses) this.#calls.get(response)?.abort(ended);
-    if (session.responses.size) await answered(retiringRefusalGraceMs);
+    end([...session.responses]);
+    if (session.responses.size) await answered([...session.responses], retiringRefusalGraceMs);
     if (!this.#retiring.delete(session)) return;
     for (const response of session.responses) response.destroy();
     await session.server.close();
@@ -1170,13 +1235,32 @@ export class OpensteerMcpService {
         (session.expiresAt !== null && session.expiresAt <= now) ||
         (session.responses.size === 0 && now - session.lastSeenAt > sessionIdleLifetimeMs),
     );
-    for (const [, session] of expired) for (const response of session.responses) response.destroy();
-    for (const [id, session] of expired) {
-      this.#sessions.delete(id);
-      this.#activeSessions.delete(session);
-    }
-    await Promise.allSettled(expired.map(([, session]) => session.server.close()));
+    // A session whose credential expired ends as any ended session does: its calls read why.
+    for (const [, session] of expired)
+      void this.#closeSession(
+        session,
+        session.expiresAt !== null && session.expiresAt <= now ? accessExpired() : accessEnded(),
+      );
   }
+}
+
+function accessEnded(): OpensteerError {
+  return new OpensteerError({
+    code: "forbidden",
+    reason: "authority-changed",
+    message: accessEndedMessage,
+  });
+}
+function accessExpired(): OpensteerError {
+  return new OpensteerError({
+    code: "forbidden",
+    reason: "authority-changed",
+    message: agentOperationEndingWords.expired.message,
+  });
+}
+/** The refusal an ended session's call writes in place of a result. */
+function endedResult(ended: OpensteerError) {
+  return agentToolFailureResult(agentToolFailure(ended, "write", () => false, true));
 }
 
 const unknownToolMessage = "Unknown Opensteer tool";

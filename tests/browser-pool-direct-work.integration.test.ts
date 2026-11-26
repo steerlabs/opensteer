@@ -1860,6 +1860,135 @@ it("tells the agent and the person that the person closed the tab a call was usi
   }
 });
 
+/** The person's own close and reopen, by the routes the web app calls. */
+function personTabs(j: Journey, home: Home) {
+  return new TabService({
+    store: j.tabs,
+    pages: home.service.pageTabs,
+    nativeTargets: { onTargetAcquired: () => () => undefined },
+    authorizeMembership: async () => undefined,
+    onError: (error: unknown) => {
+      throw error;
+    },
+  } as never);
+}
+
+const tabClosedSentence =
+  "The person closed this tab while the command ran; whether it took effect is unknown. Open the page again if you still need it.";
+
+it("never says the person closed a tab while a command ran when they closed it before the call began", async () => {
+  const site = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end("<!doctype html><title>Page</title><p>page</p>");
+  });
+  site.listen(0, "127.0.0.1");
+  await once(site, "listening");
+  const origin = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
+  const j = await journey("direct-person-closed-before", { profile: true });
+  try {
+    const home = await j.startHome();
+    await home.service.start({ ownerId: j.task.userId, profileId: j.profile!.id });
+    const work = await directWork(j, () => home);
+    const opened = await work.use(
+      `globalThis.closed = await newPage(${JSON.stringify(`${origin}/closed`)}); globalThis.other = await newPage(${JSON.stringify(`${origin}/other`)}); return closed.tabId;`,
+    );
+    const closedId = /(?:tab|surface)_[A-Za-z0-9-]+/u.exec(text(opened))?.[0];
+    if (!closedId) throw new Error(`The script returned no tab: ${text(opened)}`);
+    // The person closes the tab and its page ends; only afterwards does the next call begin.
+    const row = await j.tabs.get(j.task.userId, closedId as TabRecord["id"]);
+    if (!row?.pageBinding) throw new Error("The closed tab had no page.");
+    await personTabs(j, home).close(
+      { kind: "person", ownerId: j.task.userId },
+      [closedId as TabRecord["id"]],
+      "person-close-before",
+    );
+    await vi.waitFor(
+      () =>
+        expect(
+          home.service.tabStateOf(row.pageBinding!.sessionId, row.pageBinding!.surfaceId),
+        ).toBeUndefined(),
+      { timeout: 10_000 },
+    );
+    // It sends on another page, then touches its stale handle to the closed one.
+    const later = await work.use(`await other.title(); return await closed.title();`);
+    expect(text(later)).not.toContain(tabClosedSentence);
+    const operation = await j.database
+      .selectFrom("agentOperations")
+      .select(["ending"])
+      .orderBy("createdAt", "desc")
+      .executeTakeFirstOrThrow();
+    expect(operation.ending).not.toBe("tab-closed");
+  } finally {
+    await j.close();
+    site.close();
+  }
+});
+
+it("never says the person closed a tab they closed and reopened before the call, when contact is later lost under a command on it", async () => {
+  const hits: string[] = [];
+  const site = createServer((request, response) => {
+    hits.push(request.url ?? "/");
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end("<!doctype html><title>Page</title><p>page</p>");
+  });
+  site.listen(0, "127.0.0.1");
+  await once(site, "listening");
+  const origin = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
+  const j = await journey("direct-person-reopened", { profile: true, channelDeadlineMs: 20_000 });
+  try {
+    const home = await j.startHome();
+    await home.service.start({ ownerId: j.task.userId, profileId: j.profile!.id });
+    const work = await directWork(j, () => home);
+    const opened = await work.use(
+      `globalThis.keeps = await newPage(${JSON.stringify(`${origin}/keeps`)}); const page = await newPage(${JSON.stringify(`${origin}/reopened`)}); return page.tabId;`,
+    );
+    const tabId = /(?:tab|surface)_[A-Za-z0-9-]+/u.exec(text(opened))?.[0] as TabRecord["id"];
+    if (!tabId) throw new Error(`The script returned no tab: ${text(opened)}`);
+    // Another page keeps the browser session open, so the reopened tab's page joins the same one.
+    // The person closes the tab and reopens it (a page of its own).
+    await personTabs(j, home).close(
+      { kind: "person", ownerId: j.task.userId },
+      [tabId],
+      "person-close-then-reopen",
+    );
+    await j.tabs.reopen(j.task.userId, tabId, "person-reopen");
+    // The reopened tab loads its address in a page of its own when it is first opened.
+    await vi.waitFor(
+      async () => {
+        const ready = await work.use(
+          `const page = await openPage(${JSON.stringify(tabId)}); return await page.title();`,
+        );
+        expect(text(ready)).toContain("Page");
+      },
+      { timeout: 15_000 },
+    );
+    // A later call uses the reopened tab, and contact is lost under its command: nothing the
+    // person did ended it.
+    const hanging = work.use(
+      `const page = await openPage(${JSON.stringify(tabId)}); await page.goto(${JSON.stringify(`${origin}/hang`)}); return await page.js("new Promise(() => {})");`,
+    );
+    await Promise.race([
+      vi.waitFor(() => expect(hits).toContain("/hang"), { timeout: 15_000 }),
+      hanging.then((result) => {
+        throw new Error(`The call ended before its command hung: ${text(result)}`);
+      }),
+    ]);
+    j.runnerDown();
+    const later = await hanging;
+    expect(later.structuredContent, text(later)).toMatchObject({ status: "unknown" });
+    expect(text(later)).not.toContain(tabClosedSentence);
+    const operation = await j.database
+      .selectFrom("agentOperations")
+      .select(["ending"])
+      .orderBy("createdAt", "desc")
+      .executeTakeFirstOrThrow();
+    expect(operation.ending).not.toBe("tab-closed");
+  } finally {
+    await j.close();
+    site.close();
+  }
+});
+
 /** The direct-work task the connection's live agent session runs now. */
 async function liveTask(j: Journey) {
   return (

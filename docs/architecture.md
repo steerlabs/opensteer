@@ -267,8 +267,11 @@ Each call is one reviewed **operation** of an **agent session**:
    `packages/core/src/agent-operation-endings.ts`) and both the agent's result and the person's
    activity say it; "lost contact" is said only when nothing else is known. A refusal's cause is
    its decision: a browser that was not ready reads as nothing sent, not as access that changed.
-   Disconnect answers a call already in flight on its own request before its MCP session closes;
-   the evidence a Disconnect reads (`terminal_evidence_at`, `contact_lost_at`) does not change.
+   Once a session's authority has ended (Disconnect, expiry, a narrowed grant), the only thing
+   written on its open calls is an ending, never a result: work the change stops returns its own
+   unknown with its cause within a short grace; any other call gets the refusal at once; a result
+   that completed in the window is not delivered (its operation's record keeps it). The evidence a
+   Disconnect reads (`terminal_evidence_at`, `contact_lost_at`) does not change.
 
 A connected agent's operations appear in its task's **activity** (`threads.activity`,
 `connections.activity`). They are not transcript items: `packages/protocol/src/transcript.ts` has

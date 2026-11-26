@@ -804,11 +804,12 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       expect(await refusedOrDisconnected(stillWaiting.result)).toBe(true);
       expect((await host.store.requests.get(stillWaiting.requestId))?.status).toBe("cancelled");
       expect((await host.store.requests.get(waitingLogin.requestId))?.status).toBe("cancelled");
-      // The call waiting for the person is answered with its own ending, on its own request,
-      // never cut: no sign-in was given.
-      expect(await waitingLogin.result).toMatchObject({
-        structuredContent: { loginStatus: "unavailable" },
-      });
+      // The call waiting for the person is answered on its own request, never cut, and with an
+      // ending only: whichever comes first, the wait's own wake or the stop, the session's
+      // authority has ended, so no result is written, and nothing of a sign-in.
+      const ended = await waitingLogin.result;
+      expect(ended.isError, JSON.stringify(ended.content)).toBe(true);
+      expect(JSON.stringify(ended)).not.toMatch(/loginRef|"completed"|password/u);
       const approvals = authority.commands.filter(({ type }) => type === "login.approve").length;
       expect(
         await testRpcData(
