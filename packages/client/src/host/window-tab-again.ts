@@ -1,5 +1,5 @@
 import type { Tab, TabTarget } from "@opensteer/core";
-import type { TabsContract } from "./tabs-contract.js";
+import type { TabsClient } from "./tabs-contract.js";
 
 /** The answers that say a window tab's own window is gone, by its view or by its row. */
 const goneWindow = new Set(["window-closed", "window-identity-lost"]);
@@ -26,7 +26,7 @@ export function opensWindowAgain(tab: Tab, viewReason: string | null): boolean {
  * throws its own refusal and closes nothing.
  */
 export async function openWindowTabAgain(
-  client: Pick<TabsContract, "openTab" | "organizeTabs" | "closeTabs">,
+  client: Pick<TabsClient, "openTab" | "organizeTabs" | "closeTabs">,
   dead: Tab,
   show: (tabId: Tab["tabId"]) => void,
 ): Promise<Tab> {
