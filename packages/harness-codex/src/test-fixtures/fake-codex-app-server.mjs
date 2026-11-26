@@ -249,13 +249,39 @@ if (scenario === "ignore-termination") {
   process.on("SIGTERM", () => undefined);
 }
 
+/**
+ * `FAKE_CODEX_HOLD` ({ method: releasePath }): a request of a held method is handled only once
+ * the test creates its file, so a test orders the answer against its own clock instead of racing
+ * a delay.
+ */
+const holds = JSON.parse(process.env.FAKE_CODEX_HOLD ?? "{}");
+
+/** Runs `answer` once `release` exists. */
+function whenReleased(release, answer) {
+  let answered = false;
+  const once = () => {
+    if (answered || !existsSync(release)) return;
+    answered = true;
+    watcher.close();
+    answer();
+  };
+  const watcher = watch(dirname(release), once);
+  // Created before the watch began.
+  once();
+}
+
 lines.on("line", (line) => {
   const message = JSON.parse(line);
   capture(message);
   if (typeof message.method === "string") {
-    const thread = requestThread(message);
-    if (thread) threadScope.run(thread, () => handleClientMethod(message));
-    else handleClientMethod(message);
+    const handle = () => {
+      const thread = requestThread(message);
+      if (thread) threadScope.run(thread, () => handleClientMethod(message));
+      else handleClientMethod(message);
+    };
+    if (message.id !== undefined && holds[message.method])
+      whenReleased(holds[message.method], handle);
+    else handle();
     return;
   }
   const request = serverRequests.get(message.id);

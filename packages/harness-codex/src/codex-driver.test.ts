@@ -55,6 +55,7 @@ import {
   codexOthersHomeDirectory,
 } from "./index.js";
 import { CodexHarnessConfigSchema, MINIMUM_CODEX_CLI_VERSION } from "./config.js";
+import { CodexStdioClient } from "./process.js";
 
 // A Run outside any task with nothing earlier to state, for a person whose
 // time zone is unknown: its thread context is one fixed line, so these turns
@@ -894,23 +895,36 @@ describe("Codex app-server harness", () => {
   it("keeps a cold inspection in starting state beyond the spawn deadline", async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-cold-inspection-"));
     temporaryDirectories.push(directory);
-    const inspected = await new CodexHarnessDriver({
-      launch: fakeLaunch("delayed-handshake"),
-    }).inspect?.({
-      config: {
-        startupTimeoutMs: 100,
-      },
-      environment: stringEnvironment({
-        ...process.env,
-        FAKE_CODEX_INITIALIZE_DELAY_MS: "250",
-      }),
-      providerState: testProviderState(directory, "ambient"),
-      signal: new AbortController().signal,
-      sourceId: "openai",
-      workingDirectory: directory,
-    });
+    // Codex answers initialize only when released; the client's clock is the test's and passes
+    // the spawn deadline first, so the spawn itself races no real-time bound either.
+    const hold = await heldRequests("initialize");
+    const initializeSent = whenSent("initialize");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const inspecting = new CodexHarnessDriver({
+        launch: fakeLaunch("happy"),
+      }).inspect?.({
+        config: {
+          startupTimeoutMs: 100,
+        },
+        environment: stringEnvironment({
+          ...process.env,
+          FAKE_CODEX_HOLD: hold.environment,
+        }),
+        providerState: testProviderState(directory, "ambient"),
+        signal: new AbortController().signal,
+        sourceId: "openai",
+        workingDirectory: directory,
+      });
+      await initializeSent;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await hold.release("initialize");
+      const inspected = await inspecting;
 
-    expect(inspected?.status).toBe("ready");
+      expect(inspected?.status).toBe("ready");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("observes plan usage from the Codex rate limit read", async () => {
@@ -1178,16 +1192,27 @@ describe("Codex app-server harness", () => {
       workingDirectory: directory,
     };
     const driver = new CodexHarnessDriver({ launch: fakeLaunch("cold-preparation") });
-    await driver.prepare(context);
-    const preparedMessages = await readFile(capturePath, "utf8");
-    expect(preparedMessages).toContain('"method":"initialize"');
-    expect(preparedMessages).not.toContain('"method":"account/read"');
-    await expect(driver.inspect(context)).resolves.toMatchObject({
-      status: "authentication-required",
-      setupMethods: expect.arrayContaining([
-        expect.objectContaining({ methodId: "codex-subscription" }),
-      ]),
-    });
+    // The cold first initialize takes 350 ms of Codex's own time; the client's clock is the
+    // test's and passes the 100 ms spawn deadline first, so no spawn races a real-time bound.
+    const initializeSent = whenSent("initialize");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const preparing = driver.prepare(context);
+      await initializeSent;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await preparing;
+      const preparedMessages = await readFile(capturePath, "utf8");
+      expect(preparedMessages).toContain('"method":"initialize"');
+      expect(preparedMessages).not.toContain('"method":"account/read"');
+      await expect(driver.inspect(context)).resolves.toMatchObject({
+        status: "authentication-required",
+        setupMethods: expect.arrayContaining([
+          expect.objectContaining({ methodId: "codex-subscription" }),
+        ]),
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("cancels preparation while Codex has not answered initialize", async () => {
@@ -2937,13 +2962,56 @@ describe("Codex app-server harness", () => {
   });
 
   it("lets provider initialization outlive the process spawn deadline", async () => {
-    const fixture = await setup("delayed-handshake", {
-      environmentOverrides: { FAKE_CODEX_INITIALIZE_DELAY_MS: "250" },
+    // Codex answers initialize only when released, and the client's clock is the test's: the
+    // clock passes the spawn deadline before that answer, and no answer races a real-time bound
+    // (the startup requests after initialize keep that deadline, 100 ms here).
+    const hold = await heldRequests("initialize");
+    const fixture = await setup("happy", {
+      environmentOverrides: { FAKE_CODEX_HOLD: hold.environment },
       startupTimeoutMs: 100,
     });
-    const session = await fixture.adapter.startSession(fixture.context);
-    await session.stop();
-    await fixture.adapter.close();
+    const initializeSent = whenSent("initialize");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const starting = fixture.adapter.startSession(fixture.context);
+      await initializeSent;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await hold.release("initialize");
+      const session = await starting;
+      vi.useRealTimers();
+      await session.stop();
+    } finally {
+      vi.useRealTimers();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("bounds the startup requests after initialization by the startup deadline, in their own words", async () => {
+    const hold = await heldRequests("experimentalFeature/list");
+    const fixture = await setup("happy", {
+      environmentOverrides: { FAKE_CODEX_HOLD: hold.environment },
+      startupTimeoutMs: 100,
+    });
+    const featureListSent = whenSent("experimentalFeature/list");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let settled = false;
+      const starting = fixture.adapter.startSession(fixture.context).finally(() => {
+        settled = true;
+      });
+      void starting.catch(() => undefined);
+      await featureListSent;
+      await vi.advanceTimersByTimeAsync(99);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(starting).rejects.toThrow(
+        "Codex app-server request experimentalFeature/list timed out after 100ms",
+      );
+    } finally {
+      vi.useRealTimers();
+      await hold.release("experimentalFeature/list");
+      await fixture.adapter.close();
+    }
   });
 
   it("interrupts only the named child turn and leaves the Codex Run live", async () => {
@@ -3166,14 +3234,13 @@ describe("Codex app-server harness", () => {
     ["invalid-json", undefined],
     ["exit", "code 17"],
     ["oversized-line", "line exceeded"],
-    ["request-timeout", "timed out"],
   ] as const)(
     "turns %s into one terminal run failure and an unusable session",
     async (scenario, message) => {
-      const fixture = await setup(scenario, {
-        ...(scenario === "oversized-line" ? { maxProtocolLineBytes: 16 * 1024 } : {}),
-        ...(scenario === "request-timeout" ? { requestTimeoutMs: 100 } : {}),
-      });
+      const fixture = await setup(
+        scenario,
+        scenario === "oversized-line" ? { maxProtocolLineBytes: 16 * 1024 } : {},
+      );
       const session = await fixture.adapter.startSession(fixture.context);
       const observer = observe(session.events);
       await session.execute(fixture.turn("Trigger the failure"));
@@ -3190,6 +3257,36 @@ describe("Codex app-server harness", () => {
       await fixture.adapter.close();
     },
   );
+
+  it("turns an unanswered request into one terminal run failure and an unusable session", async () => {
+    // Codex never answers turn/start here. The client's clock is the test's, so only that
+    // request's deadline (100 ms) ends it, and no request before it races a real-time bound.
+    const fixture = await setup("request-timeout", { requestTimeoutMs: 100 });
+    const turnSent = whenSent("turn/start");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const session = await fixture.adapter.startSession(fixture.context);
+      const observer = observe(session.events);
+      const executing = session.execute(fixture.turn("Trigger the failure"));
+      await turnSent;
+      await vi.advanceTimersByTimeAsync(100);
+      vi.useRealTimers();
+      await executing;
+      const failed = await observer.waitFor("run.failed");
+      expect(failed.data.message).toContain("timed out");
+      await observer.done;
+      expect(observer.error).toBeDefined();
+      await expect(
+        session.execute(fixture.turn("Do not restart or fall back")),
+      ).rejects.toMatchObject({
+        code: expect.stringMatching(/harness_error|timeout/),
+      });
+      await session.stop();
+    } finally {
+      vi.useRealTimers();
+      await fixture.adapter.close();
+    }
+  });
 
   it("reports an exhausted Codex plan as the shared usage-limit failure code", async () => {
     const fixture = await setup("usage-limit");
@@ -4677,6 +4774,42 @@ interface Fixture {
   readonly context: HarnessSessionContext;
   capture(): Promise<JsonRecord[]>;
   turn(text: string): HarnessRunInput;
+}
+
+/** Requests the fake app-server holds until the test releases them (`FAKE_CODEX_HOLD`). */
+async function heldRequests(...methods: string[]) {
+  const directory = await mkdtemp(join(tmpdir(), "codex-held-"));
+  temporaryDirectories.push(directory);
+  const files = Object.fromEntries(
+    methods.map((method, index) => [method, join(directory, `release-${index}`)]),
+  );
+  return {
+    environment: JSON.stringify(files),
+    release: async (method: string) => await writeFile(files[method]!, ""),
+  };
+}
+
+/**
+ * Resolves once the client has sent `method` to Codex: its own deadline, if it has one, is armed
+ * by then. Observes the client's calls, so it needs no clock.
+ */
+function whenSent(method: string): Promise<void> {
+  const sent = Promise.withResolvers<void>();
+  for (const name of ["request", "lifecycleRequest"] as const) {
+    const original = CodexStdioClient.prototype[name] as (
+      this: CodexStdioClient,
+      ...args: unknown[]
+    ) => Promise<unknown>;
+    vi.spyOn(CodexStdioClient.prototype, name).mockImplementation(function (
+      this: CodexStdioClient,
+      ...args: unknown[]
+    ) {
+      const answer = original.apply(this, args);
+      if (args[0] === method) sent.resolve();
+      return answer;
+    });
+  }
+  return sent.promise;
 }
 
 async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixture> {
