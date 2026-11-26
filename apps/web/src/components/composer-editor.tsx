@@ -1,4 +1,4 @@
-import { Extension } from "@tiptap/core";
+import { Extension, type Editor } from "@tiptap/core";
 import { closeHistory, history, redo, undo } from "@tiptap/pm/history";
 import { Fragment, Slice } from "@tiptap/pm/model";
 import {
@@ -116,7 +116,11 @@ export function ComposerEditor({
   /** The key being handled belongs to an input method, which keeps Enter and Backspace. */
   const imeKey = useRef(false);
   const [content] = useState(() => composerContent(value));
-  const editor = useEditor(
+  // Typed `Editor`, but TipTap destroys an editor whose component has not mounted 1 ms after
+  // creating it and creates another once it has: a render that yields before it commits (the
+  // desktop's first signed-in render is a time-sliced Suspense retry) commits an editor with no
+  // view, or none at all. Its view is reached only through `liveView`, at the moment of use.
+  const editor: Editor | null = useEditor(
     {
       content,
       editable: !readOnly,
@@ -186,22 +190,31 @@ export function ComposerEditor({
 
   // Focus is taken once: when the field appears, or when it first becomes editable.
   const focusPending = useRef(autoFocus);
-  const takeFocus = () => {
+  const takeFocus = (view: EditorView) => {
     focusPending.current = false;
-    editor.view.focus();
-    const end = docPosAt(editor.state.doc, composerSource(editor.state.doc).length);
-    editor.view.dispatch(editor.state.tr.setSelection(TextSelection.create(editor.state.doc, end)));
+    view.focus();
+    const end = docPosAt(view.state.doc, composerSource(view.state.doc).length);
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, end)));
   };
 
+  // The field is this editor's view, once it has one. An editor TipTap replaced arrives here
+  // again with its own view: it shows the draft as it is now, and takes focus still owed.
   useLayoutEffect(() => {
-    const dom = editor.view.dom;
-    fieldRef?.(dom);
-    if (focusPending.current && !readOnly) takeFocus();
+    const view = liveView(editor);
+    if (!view) return;
+    if (composerSource(view.state.doc) !== value) {
+      known.current = value;
+      applySource(view, value, { history: false, sync: true });
+    }
+    fieldRef?.(view.dom);
+    if (focusPending.current && !readOnly) takeFocus(view);
     return () => fieldRef?.(null);
   }, [editor]);
 
   useLayoutEffect(() => {
-    const dom = editor.view.dom;
+    const view = liveView(editor);
+    if (!view) return;
+    const dom = view.dom;
     const attributes = {
       role: "textbox",
       "aria-multiline": "true",
@@ -216,24 +229,39 @@ export function ComposerEditor({
   });
 
   useEffect(() => {
+    const view = liveView(editor);
+    if (!editor || !view) return;
     editor.setEditable(!readOnly, false);
-    if (!readOnly && focusPending.current) takeFocus();
+    if (!readOnly && focusPending.current) takeFocus(view);
   }, [editor, readOnly]);
 
   // A value that is not what the editor last reported is a reset from outside:
   // a sent draft clearing, a message handed back. It starts a new generation.
   useLayoutEffect(() => {
-    if (value === known.current) return;
+    const view = liveView(editor);
+    if (!view || value === known.current) return;
     known.current = value;
-    if (composerSource(editor.state.doc) === value) return;
+    if (composerSource(view.state.doc) === value) return;
     generation.current += 1;
-    applySource(editor.view, value, { history: false, sync: true });
+    applySource(view, value, { history: false, sync: true });
   }, [editor, value]);
 
+  // Asked of a field whose editor has no view yet (TipTap is replacing it), reads come from the
+  // words it holds and writes wait: the handle is rebuilt for the editor that replaces it.
   useImperativeHandle(ref, (): ComposerEditorControl => {
-    const view = () => editor.view;
+    const view = () => liveView(editor);
     const snapshot = (): ComposerSnapshot => {
-      const { doc, selection } = view().state;
+      const state = view()?.state ?? editor?.state;
+      if (!state) {
+        const end = known.current.length;
+        return {
+          text: known.current,
+          selection: { start: end, end },
+          generation: generation.current,
+          composing: false,
+        };
+      }
+      const { doc, selection } = state;
       return {
         text: composerSource(doc),
         selection: {
@@ -241,33 +269,41 @@ export function ComposerEditor({
           end: sourceOffsetAt(doc, selection.to),
         },
         generation: generation.current,
-        composing: view().composing,
+        composing: view()?.composing ?? false,
       };
     };
     const show = (next: ComposerSnapshot) => {
-      applySource(view(), next.text, { history: false, sync: true });
-      selectSource(view(), next.selection);
+      const current = view();
+      if (!current) return;
+      applySource(current, next.text, { history: false, sync: true });
+      selectSource(current, next.selection);
     };
     return {
-      focus: () => view().focus(),
-      blur: () => view().dom.blur(),
-      containsFocus: () => view().hasFocus(),
+      focus: () => view()?.focus(),
+      blur: () => view()?.dom.blur(),
+      containsFocus: () => view()?.hasFocus() ?? false,
       readSnapshot: snapshot,
       replace: (selection, text) => {
-        const current = composerSource(view().state.doc);
-        const range = snapped(view(), selection);
-        applySource(view(), current.slice(0, range.start) + text + current.slice(range.end), {
+        const current = view();
+        if (!current) return;
+        const source = composerSource(current.state.doc);
+        const range = snapped(current, selection);
+        applySource(current, source.slice(0, range.start) + text + source.slice(range.end), {
           history: true,
           sync: false,
         });
         const caret = range.start + text.length;
-        selectSource(view(), { start: caret, end: caret });
+        selectSource(current, { start: caret, end: caret });
       },
-      setSelection: (selection) => selectSource(view(), selection),
+      setSelection: (selection) => {
+        const current = view();
+        if (current) selectSource(current, selection);
+      },
       preview: show,
       restore: show,
       flushPendingInput: (expected) => {
-        const observer: unknown = Reflect.get(view(), "domObserver");
+        const current = view();
+        const observer: unknown = current ? Reflect.get(current, "domObserver") : null;
         if (
           typeof observer === "object" &&
           observer !== null &&
@@ -275,13 +311,15 @@ export function ComposerEditor({
           typeof observer.flush === "function"
         )
           observer.flush();
-        const current = snapshot();
-        return current.generation === expected
-          ? Promise.resolve(current)
+        const read = snapshot();
+        return read.generation === expected
+          ? Promise.resolve(read)
           : Promise.reject(new Error("The draft was replaced while it was being read."));
       },
       caretRun: () => {
-        const { doc, selection } = view().state;
+        const state = view()?.state ?? editor?.state;
+        if (!state) return null;
+        const { doc, selection } = state;
         if (!selection.empty) return null;
         const caret = sourceOffsetAt(doc, selection.from);
         const text = composerSource(doc);
@@ -291,8 +329,10 @@ export function ComposerEditor({
         return { start, caret, text: text.slice(start, caret) };
       },
       coordsAt: (offset) => {
+        const current = view();
+        if (!current) return null;
         try {
-          const coords = view().coordsAtPos(docPosAt(view().state.doc, offset));
+          const coords = current.coordsAtPos(docPosAt(current.state.doc, offset));
           return { left: coords.left, top: coords.top };
         } catch {
           // A field that is not laid out has nowhere to draw.
@@ -305,6 +345,14 @@ export function ComposerEditor({
   // The editable element is the box a press lands in, as a textarea was; the
   // wrapper Tiptap mounts it in takes no part in layout.
   return <EditorContent className="composer-editor" editor={editor} />;
+}
+
+/**
+ * The editor's view while it has one: TipTap's own `isDestroyed` is true for an editor with no
+ * view, whether never mounted or destroyed. Nothing here reads `editor.view` any other way.
+ */
+function liveView(editor: Editor | null): EditorView | null {
+  return editor && !editor.isDestroyed ? editor.view : null;
 }
 
 /** Keys, history and the two small plugins the atoms need. */

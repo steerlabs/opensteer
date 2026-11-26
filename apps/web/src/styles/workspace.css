@@ -4251,7 +4251,14 @@ html[data-tab-sorting] * {
 
 .operation-request {
   display: grid;
+  /* One column no wider than the card: a script's unbroken line scrolls inside its own box
+     rather than widen the card and push Deny and Allow once out of reach. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-8);
+}
+
+.operation-request__calls {
+  min-width: 0;
 }
 
 .operation-request__by {

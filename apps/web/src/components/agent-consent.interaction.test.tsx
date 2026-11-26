@@ -1,7 +1,6 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter } from "react-router";
 import { createId } from "@opensteer/core";
 import { HostClientRequestError, type HostSnapshot } from "@opensteer/client/host";
 import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
@@ -87,11 +86,10 @@ async function mount(client: MockHostClient, id: string | null = requestId) {
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
+  // As app.tsx renders it: the consent page stands before the app's router, with none around it.
   await act(async () =>
     root!.render(
-      <MemoryRouter>
-        <McpAuthorization client={client} desktopBridge={{ openExternalUrl }} requestId={id} />
-      </MemoryRouter>,
+      <McpAuthorization client={client} desktopBridge={{ openExternalUrl }} requestId={id} />,
     ),
   );
   await vi.waitFor(() => expect(container.textContent).not.toContain("Loading connection request"));
@@ -200,6 +198,20 @@ describe("agent consent with grants", () => {
       "Open Devices",
     );
     expect(plugins).not.toHaveBeenCalled();
+  });
+
+  it("says when no plugins are installed, with the way to Devices", async () => {
+    host = consentHost();
+    Object.defineProperty(host.rpc, "plugins.installed.list", {
+      value: vi.fn(async () => ({ ok: true as const, data: { plugins: [], local: [] } as never })),
+      configurable: true,
+    });
+    const { container } = await mount(host);
+    await act(async () => buttonNamed(container, "Choose Plugins and data").click());
+    await vi.waitFor(() => expect(container.textContent).toContain("No plugins installed."));
+    expect(container.querySelector('a[href="/settings/devices"]')?.textContent).toBe(
+      "Open Devices",
+    );
   });
 
   it("says when a list could not be read, and reads it again on Try again", async () => {

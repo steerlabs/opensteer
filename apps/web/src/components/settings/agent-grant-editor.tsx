@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Link } from "react-router";
+import { Link, useInRouterContext } from "react-router";
 import {
   chromeTabGrantOptions,
   type ChromeTabGrantCatalog,
@@ -609,15 +609,24 @@ function PluginChoiceRow({
 }
 
 function EmptyChoice({ detail, title }: { readonly detail?: string; readonly title: string }) {
+  // Settings edits a grant inside the app's router; the consent page (app.tsx) stands before it,
+  // with no router, where a router Link cannot render: there it is a link to the page.
+  const inApp = useInRouterContext();
   return (
     <div className="agent-grant__empty">
       <span className="card__row-body">
         <span className="card__row-title">{title}</span>
         {detail ? <span className="card__row-detail">{detail}</span> : null}
       </span>
-      <Link className="btn btn--small" to={devicesPath}>
-        {agentWords("consent.edge.openDevices")}
-      </Link>
+      {inApp ? (
+        <Link className="btn btn--small" to={devicesPath}>
+          {agentWords("consent.edge.openDevices")}
+        </Link>
+      ) : (
+        <a className="btn btn--small" href={devicesPath}>
+          {agentWords("consent.edge.openDevices")}
+        </a>
+      )}
     </div>
   );
 }
