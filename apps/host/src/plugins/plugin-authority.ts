@@ -221,6 +221,8 @@ export class PluginAuthority {
     const grant = live.agentConnection.grant;
     if (grant.scope === "everything") return null;
     return {
+      // It may read the grant itself: it only narrows which apps the engine may list. A device
+      // app is shown only as a provider, and providers are what the one rule lends (lentNow).
       visible: grant.resources.flatMap((resource) =>
         resource.kind !== "plugin"
           ? []

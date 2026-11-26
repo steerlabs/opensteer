@@ -19,6 +19,7 @@ import {
 } from "@opensteer/database/personal-mutation";
 import {
   createRunFinishDrain,
+  grantedDeviceApprovals,
   recoverCommandAttempts,
   republishThreads,
 } from "@opensteer/database";
@@ -3581,7 +3582,9 @@ export async function createHostRuntime(
         plugins: pluginTools,
         localServers: localServerRegistry,
         apps,
-        tabs: new TabToolHandlers(tabs, agentSessions),
+        tabs: new TabToolHandlers(tabs, agentSessions, (owner, grant) =>
+          grantedDeviceApprovals(store.database, owner, grant),
+        ),
         discoverSources: { tabs, browserSources, store },
         browser: new BrowserToolHandlers({
           sessions: agentSessions,

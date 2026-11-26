@@ -94,6 +94,8 @@ export class PluginToolHandlers {
     const context = this.options.authority.admit(caller);
     const settings = await this.options.settings.settings(caller.userId);
     // Local providers are listed independently of the installed plugin engine.
+    // It may read the grant itself: it only decides whether to ask the engine for installed
+    // plugins, and names no device and no approval.
     const listInstalled =
       caller.kind !== "connection" ||
       caller.grant.scope === "everything" ||

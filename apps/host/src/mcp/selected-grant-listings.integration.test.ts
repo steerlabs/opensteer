@@ -434,22 +434,40 @@ describeStore("a selected grant's listings show only what it names", (it) => {
       createIntegrationId("connection"),
       createIntegrationId("connection"),
     ];
+    // As the Home stores them: Notes approved on the granted Mac, and the hidden Mac's approval
+    // since revoked. What the one rule lends decides what the grant is shown.
+    await seedDeviceApproval(storeFixture.database, {
+      id: approval,
+      ownerUserId: f.userId,
+      deviceId: await storeFixture.store.requireSelfDeviceId(granted),
+      name: "Notes",
+      app: { bundleId: "com.apple.Notes", displayName: "Notes" },
+    });
+    await seedDeviceApproval(storeFixture.database, {
+      id: staleApproval,
+      ownerUserId: f.userId,
+      deviceId: await storeFixture.store.requireSelfDeviceId(hidden),
+      name: "Notes",
+      app: { bundleId: "com.apple.Notes", displayName: "Notes" },
+      status: "revoked",
+    });
     const grant: AgentGrant = {
       scope: "selected",
       tasks: false,
       resources: [
+        // A stored grant names an app by its bundle id in lower case.
         {
           kind: "computer-app",
           approvalId: approval,
           deviceId: DeviceIdSchema.parse(granted),
-          app: { kind: "mac-app", bundleId: "com.apple.Notes", teamId: null },
+          app: { kind: "mac-app", bundleId: "com.apple.notes", teamId: null },
         },
         // Granted once, but the person has since revoked the app's approval on that Mac.
         {
           kind: "computer-app",
           approvalId: staleApproval,
           deviceId: DeviceIdSchema.parse(hidden),
-          app: { kind: "mac-app", bundleId: "com.apple.Notes", teamId: null },
+          app: { kind: "mac-app", bundleId: "com.apple.notes", teamId: null },
         },
         { kind: "browser-profile", profileId: profile },
       ],
