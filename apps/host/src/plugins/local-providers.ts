@@ -424,7 +424,9 @@ export class LocalProviders {
         .then((entries) =>
           this.#options.devices.withAvailability(
             entries,
-            { ...requester, ownerView: metadataOnly, offlineAtCall: !metadataOnly },
+            // A device that is only unreachable is left to the call, which says it is offline;
+            // a connected agent is told so in its listing too (reachable false, the device's words).
+            { ...requester, ownerView: metadataOnly, offlineAtCall: !metadataOnly && !connected },
             facts,
           ),
         ),
@@ -617,7 +619,27 @@ export class LocalProviders {
             connected,
           ),
         );
-    const providers = assessed
+    // A connected agent reads a data app its device cannot serve now (offline, its switch off) as
+    // a call to it says it: the device's own refusal first, for the app and each operation alike.
+    const shown = connected
+      ? await Promise.all(
+          assessed.map(async (entry) => {
+            if (!entry.blocked || entry.kind !== "device-app" || !entry.computer) return entry;
+            const device = await this.#options.devices.localDeviceAccessBlocked(
+              entry.computer.id,
+              true,
+            );
+            return device
+              ? {
+                  ...entry,
+                  blocked: device,
+                  toolBlockers: Object.fromEntries(entry.tools.map(({ name }) => [name, device])),
+                }
+              : entry;
+          }),
+        )
+      : assessed;
+    const providers = shown
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((entry) => ({ ...entry, slug: localNamespace(entry.slug, entry.id) }))
       .map((entry) => ({

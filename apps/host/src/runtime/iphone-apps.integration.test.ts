@@ -862,6 +862,11 @@ integration.sequential("iPhone integrations Host contract", () => {
       "Opensteer's integrations service is unavailable on Studio Mac.",
     );
     await world.mac.close();
+    // Discover lists it as there and not reachable now, as the call says it.
+    await waitForCondition(async () => {
+      const { item } = await discovered(agent, "Calendar on Studio Mac");
+      return (item as { reachable?: boolean }).reachable === false;
+    });
     const offline = await agentPluginCall(agent, world.macPath());
     // In the words a Mac app on an offline Mac reads.
     expect(offline.failure, JSON.stringify(offline.raw)).toBe("Studio Mac is offline.");
