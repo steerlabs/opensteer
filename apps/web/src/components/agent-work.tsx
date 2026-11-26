@@ -14,6 +14,7 @@ import {
   tabAgentLine,
   tabNeedsYouParts,
   taskActivityKey,
+  threadAgentPage,
   threadInDirectory,
   type OperationGlyph,
   type OperationRequestView,
@@ -88,19 +89,29 @@ export function useOpenSessionTask() {
     } | null,
   ) => {
     const id = waiting?.presentation?.threadId ?? waiting?.request.originatingThreadId ?? threadId;
-    if (workspace) {
-      // A task whose agent is using a Mac app opens on that app's picture, in the middle.
-      const snapshot = shell?.hostClient.getSnapshot();
-      const watch =
-        !!snapshot &&
-        taskAppWatch({
+    // Watch lands where the task's agent is working, by the person's click only. A Mac app it is
+    // acting in right now comes first: that is the only "used last" the Home says (a tab's
+    // change time is any change to the row; a Mac session tells its acting apps, not when).
+    // Then its browser page, then a Mac app it holds, then the task alone.
+    const snapshot = workspace ? shell?.hostClient.getSnapshot() : undefined;
+    const app = snapshot
+      ? taskAppWatch({
           hostConnected: snapshot.connection === "connected",
           machines: snapshot.machines,
           threadId: id,
-        }) !== null;
+        })
+      : null;
+    // Review opens the Request it is about; only Watch lands on a page.
+    const page = snapshot && !waiting ? threadAgentPage(snapshot, id) : null;
+    if (workspace && page && !app?.acting) {
+      workspace.nav.showPlaceWithConversation(
+        { kind: "tab", tabId: page.tabId },
+        workspace.nav.threadPath(id),
+      );
+    } else if (workspace) {
       workspace.nav.openConversation(workspace.nav.threadPath(id), {
         ...(waiting ? { focusRequest: waiting.request.id } : {}),
-        ...(watch ? { watch } : {}),
+        ...(app ? { watch: true } : {}),
       });
     } else {
       void navigate(`/tasks/${encodeURIComponent(id)}`);

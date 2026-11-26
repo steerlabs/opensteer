@@ -17,6 +17,8 @@ export interface TaskAppWatch {
   readonly apps: readonly ComputerAppIdentity[];
   /** The one it used last: the last it acted in, else the last it took. */
   readonly lastUsed: string;
+  /** It is acting in one of them right now. */
+  readonly acting: boolean;
 }
 
 /**
@@ -36,7 +38,12 @@ export function taskAppWatch(input: {
   const { apps, actingAppKeys } = watch.session;
   const held = new Set(apps.map((app) => computerAppIdentityKey(app)));
   const acting = actingAppKeys.findLast((key) => held.has(key));
-  return { watch, apps, lastUsed: acting ?? computerAppIdentityKey(apps.at(-1)!) };
+  return {
+    watch,
+    apps,
+    lastUsed: acting ?? computerAppIdentityKey(apps.at(-1)!),
+    acting: acting !== undefined,
+  };
 }
 
 /**

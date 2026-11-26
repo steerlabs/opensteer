@@ -1,6 +1,6 @@
 import { presentClientIssue } from "../feedback/client-issue.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BrowserWatchStore } from "./browser-watch.js";
+import { BrowserWatchStore, browserInputRefusalShownMs } from "./browser-watch.js";
 import type { WebSocketClient } from "./host-session-client.js";
 import { healthySocketMs } from "./realtime-frames.js";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
@@ -74,6 +74,75 @@ it("keeps basic input refusals local to input, preserving the viewer and its pic
   } finally {
     release();
     store.dispose();
+  }
+});
+
+it("keeps the page's refusal of the person's input readable through their next keys, then ends it", () => {
+  vi.useFakeTimers();
+  const socket = new TargetSocket();
+  const store = new BrowserWatchStore(
+    () => socket,
+    "control",
+    undefined,
+    () => 0,
+  );
+  const release = store.retain(sessionId, surfaceId);
+  try {
+    socket.open();
+    socket.receive({
+      type: "browser.snapshot",
+      sessionId,
+      access: "read-write",
+      state: "ready",
+      targetedStreamingVersion: 1,
+      dialog: null,
+      surfaces: [{ id: surfaceId, title: "Page", url: "about:blank", active: true }],
+    });
+    socket.subscribed();
+    socket.picture();
+    const key = (text: string) =>
+      store.send(sessionId, surfaceId, {
+        type: "input.key",
+        surfaceId: BrowserSurfaceIdSchema.parse(surfaceId),
+        action: "down",
+        key: text,
+        code: `Key${text.toUpperCase()}`,
+        modifiers: [],
+        text,
+      });
+    const refuse = () =>
+      socket.receive({
+        type: "browser.error",
+        error: {
+          code: "conflict",
+          reason: "browser-input-owner-conflict",
+          message: "Another producer holds input on this page.",
+          retryable: false,
+        },
+      });
+    const words = () => {
+      const issue = store.get(sessionId, surfaceId).inputError;
+      return issue ? presentClientIssue(issue).title : null;
+    };
+    key("s");
+    refuse();
+    expect(words()).toContain("Someone else is using this page.");
+    // The person keeps typing at their pace: the words are not wiped by their next keys.
+    for (const text of "olnine") {
+      key(text);
+      vi.advanceTimersByTime(200);
+    }
+    expect(words()).toContain("Someone else is using this page.");
+    // Another refusal holds them again; they end a few seconds after the last one.
+    refuse();
+    vi.advanceTimersByTime(browserInputRefusalShownMs - 1);
+    expect(words()).toContain("Someone else is using this page.");
+    vi.advanceTimersByTime(1);
+    expect(words()).toBeNull();
+  } finally {
+    release();
+    store.dispose();
+    vi.useRealTimers();
   }
 });
 
