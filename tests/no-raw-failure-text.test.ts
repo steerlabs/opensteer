@@ -145,8 +145,9 @@ const allowed: Readonly<Record<string, { readonly count: number; readonly reason
   },
   "apps/web/src/components/image-actions.tsx": { count: 1, reason: reasons.local },
   "apps/web/src/components/plugins/plugins-area.tsx": { count: 2, reason: reasons.pluginBuild },
+  // Shows a DisplayEditingRefusal's message, and keeps it to take that same message back.
   "apps/web/src/components/remote-editing/remote-editing-proxy.tsx": {
-    count: 1,
+    count: 2,
     reason: reasons.local,
   },
   "apps/web/src/components/thread-card-use-action.tsx": { count: 1, reason: reasons.answer },
