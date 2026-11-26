@@ -8,8 +8,17 @@ import {
   upsertSelfDeviceInTransaction,
 } from "@opensteer/database";
 import { computer_use as computerUseTool } from "@opensteer/agent-tools/tools";
-import { AgentGrantSchema, type RequestId, type ThreadAccessMode } from "@opensteer/core";
-import { AgentSessionService } from "../agent-sessions/agent-session-service.js";
+import {
+  AgentGrantSchema,
+  ToolFailureSchema,
+  type RequestId,
+  type ThreadAccessMode,
+} from "@opensteer/core";
+import {
+  AgentSessionService,
+  connectionCleanupEnding,
+} from "../agent-sessions/agent-session-service.js";
+import { DisplayStreamHub } from "../computer-use/display-stream-hub.js";
 import { requireDeviceAccess } from "../administration/device-access.js";
 import { agentToolFailure } from "../mcp/agent-tool-failure.js";
 import type { ConnectionCaller } from "../mcp/agent-caller.js";
@@ -5101,6 +5110,7 @@ async function createWorld(
     readonly stoppedDevices?: ReadonlySet<DeviceId>;
     readonly sleepingRunners?: ReadonlySet<RunnerId>;
     readonly connectedWork?: boolean;
+    readonly onSessionEnded?: ConstructorParameters<typeof ComputerUseService>[0]["onSessionEnded"];
   } = {},
 ) {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), "opensteer-computer-use-journey-"));
@@ -5233,6 +5243,7 @@ async function createWorld(
     machineOwners: (runnerIds) =>
       store.effectiveDeviceOwners(runnerIds.map((id) => DeviceIdSchema.parse(id))),
     onSessionsChanged: () => undefined,
+    ...(options.onSessionEnded ? { onSessionEnded: options.onSessionEnded } : {}),
     onAuthorityRevoked: ({ runId, bindingGeneration }) =>
       platform.devices.resetComputerGeneration(runId, bindingGeneration),
     ...(options.onPlaceActivity
@@ -5810,6 +5821,7 @@ integration.sequential("Computer use for a connected agent, through its session"
       appLabel?: string;
       computerReplTime?: DeviceServicesTestOptions["computerReplTime"];
       releasedMac?: boolean;
+      onSessionEnded?: ConstructorParameters<typeof ComputerUseService>[0]["onSessionEnded"];
       /**
        * The app was approved the way the person adds one from the device page: their own
        * request for the app, answered on the Mac, with no task asking for it.
@@ -5829,6 +5841,7 @@ integration.sequential("Computer use for a connected agent, through its session"
       connectedWork: true,
       stoppedDevices,
       sleepingRunners,
+      ...(options.onSessionEnded ? { onSessionEnded: options.onSessionEnded } : {}),
       ...(options.computerReplTime ? { computerReplTime: options.computerReplTime } : {}),
       ...(options.releasedMac ? { releasedMacCapabilities: true } : {}),
     });
@@ -5921,9 +5934,6 @@ integration.sequential("Computer use for a connected agent, through its session"
         endSessionComputerWork(bindingId, {
           computerUse: world.computerUse,
           devices: world.platform.devices,
-          onError: (error) => {
-            throw error;
-          },
         }),
     });
     const handlers = new DeviceToolHandlers({
@@ -7343,6 +7353,216 @@ integration.sequential("Computer use for a connected agent, through its session"
       await s.world.close();
     }
   });
+
+  for (const sent of [true, false]) {
+    it(`reports a Mac Stop on the connected agent's receipt (act sent: ${sent})`, async () => {
+      const s = await connectedAgent("full-access", { target: "mac" });
+      const mac = s.world.fakeMac;
+      const reply = Promise.withResolvers<void>();
+      const mcp = new OpensteerMcpService({
+        callers: { authenticate: async () => s.caller },
+        handlers: { computer_use: (call) => s.handlers.computer_use(call) },
+        store: s.world.store,
+        publicUrl: new URL("https://home.test"),
+      });
+      try {
+        const bound = await s.call({
+          code: 'globalThis.w = await (await app("Notes")).window(); await w.observe();',
+        });
+        expect(bound.status).toBe("completed");
+        const stop = async () => {
+          mac.stopFromPill();
+          await vi.waitFor(() => {
+            expect(s.world.computerUse.sessionsForRunner(s.computerId)).toEqual([]);
+          });
+        };
+        mac.partialActGate = reply.promise;
+        if (!sent) await stop();
+        const act = () =>
+          mcp.callToolResult(
+            "token",
+            "computer_use",
+            {
+              computerId: s.computerId,
+              app: apps.notes.bundleId,
+              code: 'print("private-before-stop"); try { await w.key("cmd+a"); } catch {} print("private-after-stop");',
+              taskId: bound.taskId,
+            },
+            { operationKey: "chip-stop" },
+          );
+        const acting = act();
+        if (sent) {
+          await Promise.race([mac.reached("act"), acting]);
+          expect(mac.completedActions).toBe(1);
+          await stop();
+        }
+        const answer = await acting;
+        expect(answer.isError).toBe(true);
+        expect(ToolFailureSchema.parse(answer.structuredContent)).toMatchObject({
+          error: {
+            code: "stopped_by_person",
+            message: "The person stopped this work.",
+            next: sent
+              ? "Part of it may have happened. Check the current state before doing anything else."
+              : "Nothing was sent. Stop this task and ask the person before starting again.",
+          },
+          status: sent ? "unknown" : "refused",
+          ending: "stopped",
+          taskId: bound.taskId,
+        });
+        expect(JSON.stringify(answer)).not.toContain("private-");
+        expect((await act()).structuredContent).toMatchObject({
+          status: sent ? "unknown" : "refused",
+          ending: "stopped",
+          taskId: bound.taskId,
+        });
+        expect(mac.actReceivedCount).toBe(Number(sent));
+        const row = await s.operation("chip-stop");
+        expect(row).toMatchObject({
+          state: sent ? "unknown" : "refused",
+          ending: "stopped",
+          resultSummary: null,
+        });
+        expect(
+          await database
+            .selectFrom("agentSessions")
+            .select("status")
+            .where("id", "=", row.sessionId)
+            .executeTakeFirstOrThrow(),
+        ).toEqual({ status: "active" });
+      } finally {
+        reply.resolve();
+        await mcp.close();
+        await s.world.close();
+      }
+    });
+  }
+
+  for (const reason of ["revoked", "narrowed"] as const) {
+    it(`closes an idle Mac hold and its Watch on ${reason} before acknowledging cleanup`, async () => {
+      let displays: DisplayStreamHub | undefined;
+      const s = await connectedAgent("full-access", {
+        target: "mac",
+        onSessionEnded: (id) => displays?.endSession(id),
+      });
+      const mac = s.world.fakeMac;
+      const closeAck = Promise.withResolvers<void>();
+      let cleanup: Promise<unknown> | undefined;
+      try {
+        expect(
+          (await s.call({ code: 'await (await (await app("Notes")).window()).observe();' })).status,
+        ).toBe("completed");
+        const [held] = s.world.computerUse.sessionsForRunner(s.computerId);
+        expect(mac.openSessions()).toEqual([held!.sessionId]);
+        const appKey = apps.notes.bundleId.toLowerCase();
+        const { route } = await s.world.computerUse.authorizeDisplay(
+          held!.sessionId,
+          s.world.owner.userId,
+          appKey,
+        );
+        displays = new DisplayStreamHub({
+          authenticator: {
+            issueDisplayDataTicket: () => ({ claims: { nonce: "test" }, ticket: "test" }),
+          } as never,
+          computerApps: {
+            displayStream: () => ({
+              mac: true,
+              fence: { ...mac.stream.fence, module: "integrations" },
+              ...(route ? { route } : {}),
+            }),
+            sendDisplay: async () => true,
+            resolveDisplay: async () => ({ kind: "mac-window", bindingId: randomUUID() }),
+          },
+          computerUse: s.world.computerUse,
+          computerViews: s.world.computerViews,
+        });
+        const watch = {
+          readyState: 1,
+          OPEN: 1,
+          bufferedAmount: 0,
+          send: vi.fn(),
+          close: vi.fn(),
+          once: vi.fn(),
+        };
+        await displays.attachViewer(
+          {
+            kind: "task-session",
+            sessionId: held!.sessionId,
+            appKey,
+          },
+          s.world.owner.userId,
+          watch as never,
+        );
+        expect(watch.close).not.toHaveBeenCalled();
+        if (reason === "revoked") await s.agents.revoke(s.world.owner.userId, s.record.id);
+        else
+          await s.agents.update(s.world.owner.userId, {
+            connectionId: s.record.id,
+            expectedRevision: 1,
+            grant: { scope: "selected", tasks: false, resources: [] },
+          });
+        mac.closeGate = closeAck.promise;
+        const driveCleanup = () =>
+          s.world.store.driveConnectionCleanups({
+            stopper: {
+              stop: async () => {},
+              stopAgentSession: (attempt, change, settle) =>
+                s.sessions.stopAgentSession(
+                  attempt.id,
+                  connectionCleanupEnding(change.reason),
+                  settle,
+                ),
+            },
+            onCleanup: async (change) =>
+              s.sessions.closeConnection(
+                change.connectionId,
+                false,
+                connectionCleanupEnding(change.reason),
+              ),
+          });
+        if (reason === "revoked") mac.closeFailureCode = "failed";
+        cleanup = driveCleanup();
+        await Promise.race([mac.reached("close"), cleanup]);
+        expect(s.world.computerUse.sessionsForRunner(s.computerId)).toEqual([]);
+        expect(watch.close).toHaveBeenCalledOnce();
+        expect(mac.openSessions()).toEqual([held!.sessionId]);
+        const evidence = () =>
+          database
+            .selectFrom("agentConnections")
+            .select("cleanupCompletedAt")
+            .where("id", "=", s.record.id)
+            .executeTakeFirstOrThrow();
+        expect(await evidence()).toEqual({ cleanupCompletedAt: null });
+        if (reason === "revoked")
+          expect(
+            await s.agents.list(s.world.owner.userId, { includeRevoked: true }),
+          ).toContainEqual(expect.objectContaining({ id: s.record.id, state: "stopping" }));
+        closeAck.resolve();
+        await cleanup;
+        if (reason === "revoked") {
+          expect(mac.openSessions()).toEqual([held!.sessionId]);
+          expect(await evidence()).toEqual({ cleanupCompletedAt: null });
+          expect(
+            await s.agents.list(s.world.owner.userId, { includeRevoked: true }),
+          ).toContainEqual(expect.objectContaining({ id: s.record.id, state: "stopping" }));
+          mac.closeFailureCode = null;
+          cleanup = driveCleanup();
+          await cleanup;
+        }
+        expect(mac.openSessions()).toEqual([]);
+        expect(await evidence()).toEqual({ cleanupCompletedAt: expect.any(Date) });
+        if (reason === "revoked")
+          expect(
+            await s.agents.list(s.world.owner.userId, { includeRevoked: true }),
+          ).toContainEqual(expect.objectContaining({ id: s.record.id, state: "stopped" }));
+      } finally {
+        closeAck.resolve();
+        await cleanup?.catch(() => undefined);
+        displays?.close();
+        await s.world.close();
+      }
+    });
+  }
 
   for (const ending of ["Stop on the task", "Disconnect"] as const) {
     it(`ends the script in flight on ${ending}, closes the phone's session, and refuses the next call`, async () => {

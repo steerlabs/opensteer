@@ -7,7 +7,7 @@ import { z } from "zod";
  * before anything was sent.
  */
 export const AgentOperationEndingSchema = z.enum([
-  /** The person stopped the task. */
+  /** The person stopped the work, on the task or on its device. */
   "stopped",
   /** The person disconnected the agent. */
   "disconnected",

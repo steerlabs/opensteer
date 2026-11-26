@@ -743,7 +743,7 @@ export class OpensteerMcpService {
       if (typeof result === "string") return { content: [{ type: "text" as const, text: result }] };
       if (tool?.output === ComputerUseOutputSchema) {
         const script = ComputerUseOutputSchema.parse(result);
-        const { status, taskId, operationId, next } = script.structuredContent ?? {};
+        const { status, taskId, operationId, next, ending } = script.structuredContent ?? {};
         if (
           currentCaller.kind !== "connection" ||
           typeof status !== "string" ||
@@ -756,6 +756,7 @@ export class OpensteerMcpService {
           taskId,
           operationId,
           ...(typeof next === "string" ? { next } : {}),
+          ...(typeof ending === "string" ? { ending } : {}),
         };
         return {
           ...script,
@@ -900,7 +901,11 @@ export class OpensteerMcpService {
         key = row.operationKey;
         identity.keyed?.(key);
         resume = row;
-        const base = { taskId: row.taskId, operationId: row.id };
+        const base = {
+          taskId: row.taskId,
+          operationId: row.id,
+          ...(row.ending ? { ending: row.ending } : {}),
+        };
         if (row.state === "refused")
           throw new AgentOperationFailure(agentOperationRefusal(row.decision, row.ending), {
             ...base,
@@ -964,6 +969,7 @@ export class OpensteerMcpService {
             ...(name === "plugin_resume" && plugin?.status === "pending"
               ? {}
               : { operationId: base.operationId }),
+            ...(row.ending ? { ending: row.ending } : {}),
             status: plugin?.status ?? status,
             ...(answer !== undefined ? { answer } : {}),
             ...(status === "completed"

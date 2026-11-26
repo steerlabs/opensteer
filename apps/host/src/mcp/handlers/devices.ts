@@ -164,6 +164,7 @@ export class DeviceToolHandlers {
               readOnly,
               recheck: context.recheck,
               ...(context.computerSubmitted ? { submitted: context.computerSubmitted } : {}),
+              ...(app && context.computerStopped ? { stopped: context.computerStopped } : {}),
             },
             code,
             context.signal,

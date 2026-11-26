@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgentOperationEndingSchema } from "./agent-operation-endings.js";
 import { AgentOperationIdSchema, ThreadIdSchema } from "./ids.js";
 export const ToolErrorSchema = z.strictObject({
   code: z.string().min(1).max(100),
@@ -22,10 +23,11 @@ export const ToolFailureSchema = z.strictObject({
   taskId: ThreadIdSchema.optional(),
   operationId: AgentOperationIdSchema.optional(),
   status: z.enum(["refused", "failed", "unknown"]).optional(),
+  ending: AgentOperationEndingSchema.optional(),
 });
 export type ToolFailure = z.infer<typeof ToolFailureSchema>;
 export type ToolFailureReceipt = Required<Pick<ToolFailure, "taskId" | "operationId">> &
-  Pick<ToolFailure, "status">;
+  Pick<ToolFailure, "status" | "ending">;
 /** Why a visible target can't be used now, in a tool failure's shape; `next` is never empty. */
 export const BlockedSchema = z.strictObject({
   code: ToolErrorSchema.shape.code,
