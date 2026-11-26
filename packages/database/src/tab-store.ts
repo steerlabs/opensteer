@@ -22,7 +22,6 @@ import {
   type TabOpenedBy,
   type ComputerAppIdentity,
   type UserId,
-  type WindowId,
 } from "@opensteer/core";
 import { BrowserFaviconSchema } from "@opensteer/protocol";
 import type { TabGroupUpdateInput, TabOrganizeInput } from "@opensteer/protocol";
@@ -961,46 +960,6 @@ export class TabStore {
       mutation.bumpResource("tab");
       mutation.changeTabs([tabId]);
       // The row as this bind left it: the witness anything later acting on this binding checks.
-      return await this.get(ownerId, tabId, false, tx);
-    });
-  }
-  /**
-   * A window tab whose window ended (its app quit) takes the app's current window, unless another
-   * tab already holds that window. The tab's generation stands: the person's same tab, same place.
-   */
-  async rebindWindow(
-    ownerId: UserId,
-    tabId: TabId,
-    generation: number,
-    from: WindowId,
-    to: { windowId: WindowId; windowApp: ComputerAppIdentity; title: string },
-  ): Promise<TabRecord | null> {
-    return commitPersonalMutation(this.database, async (tx, mutation) => {
-      await this.#lock(tx, ownerId, [], [tabId]);
-      const row = await this.get(ownerId, tabId, false, tx);
-      if (!row || row.kind !== "window" || row.generation !== generation || row.windowId !== from)
-        return null;
-      const holder = await tx
-        .selectFrom("personalTabs")
-        .select("id")
-        .where("ownerId", "=", ownerId)
-        .where("kind", "=", "window")
-        .where("computerId", "=", row.computerId)
-        .where("windowId", "=", to.windowId)
-        .executeTakeFirst(databaseOperationOptions());
-      if (holder) return null;
-      await tx
-        .updateTable("personalTabs")
-        .set({
-          windowId: to.windowId,
-          windowApp: sql<ComputerAppIdentity>`${JSON.stringify(to.windowApp)}::jsonb`,
-          title: to.title.slice(0, 1024),
-          updatedAt: new Date(),
-        })
-        .where("id", "=", tabId)
-        .execute(databaseOperationOptions());
-      mutation.bumpResource("tab");
-      mutation.changeTabs([tabId]);
       return await this.get(ownerId, tabId, false, tx);
     });
   }

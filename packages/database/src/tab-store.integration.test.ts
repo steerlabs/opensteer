@@ -548,47 +548,6 @@ integration("workspace tabs", () => {
     });
     expect(await title()).toBe("");
   });
-  it("rebinds a window tab to its app's current window only from the window it holds, never onto one another tab holds", async () => {
-    const { tabs, write, ownerId } = await fixture();
-    const app = { bundleId: "test.app", displayName: "Test", teamId: null };
-    const dead = WindowIdSchema.parse(`win_${randomUUID()}`),
-      next = WindowIdSchema.parse(`win_${randomUUID()}`),
-      held = WindowIdSchema.parse(`win_${randomUUID()}`);
-    const window = write("window", { windowId: dead, windowApp: app, title: "Before quit" });
-    const other = write("window", { windowId: held, windowApp: app });
-    await tabs.open(window, "window");
-    await tabs.open(other, "other");
-    const generation = (await tabs.get(ownerId, window.id))!.generation;
-    // Another tab holds that window: nothing changes.
-    expect(
-      await tabs.rebindWindow(ownerId, window.id, generation, dead, {
-        windowId: held,
-        windowApp: app,
-        title: "Taken",
-      }),
-    ).toBeNull();
-    // A stale caller (the tab took another window since) changes nothing.
-    expect(
-      await tabs.rebindWindow(ownerId, window.id, generation, next, {
-        windowId: next,
-        windowApp: app,
-        title: "Stale",
-      }),
-    ).toBeNull();
-    const rebound = await tabs.rebindWindow(ownerId, window.id, generation, dead, {
-      windowId: next,
-      windowApp: app,
-      title: "After relaunch",
-    });
-    expect(rebound).toMatchObject({
-      id: window.id,
-      generation,
-      windowId: next,
-      windowApp: app,
-      title: "After relaunch",
-    });
-    expect(await tabs.get(ownerId, window.id)).toMatchObject({ windowId: next });
-  });
   it("removes open and closed app records inside the app deletion transaction without disturbing other kinds", async () => {
     const { tabs, database, ownerId, write } = await fixture();
     const app = write("app", {
