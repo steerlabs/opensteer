@@ -540,17 +540,70 @@ describe("phone display Host sockets", () => {
     send(129, "move");
     send(130, "up");
     await a.roundTrip();
+    // A full lane never sent it: the viewer says so ("unavailable"), never that it was too large.
     expect(a.json()).toContainEqual({
       type: "display.input.result",
       sequence: 129,
       outcome: "refused",
-      reason: "too-large",
+      reason: "unavailable",
     });
     expect(a.json().some((m) => m.sequence === 130 && m.outcome === "refused")).toBe(false);
     const relayed = f.sent.filter((m) => m.type === "host.integrations.display.input");
     expect(relayed.at(-1)?.events).toEqual([
       { kind: "pointer", phase: "up", x: 0.5, y: 0.5, t: 130 },
     ]);
+  });
+
+  it("gives the release room only to releases, bounded; past it the stream takes no input and lets go once", async () => {
+    // Review probe: a release bundled with anything took the release's room, without limit.
+    const f = await fixture(true, { editing: true });
+    const a = await f.viewer(true);
+    await f.state();
+    const pointer = (sequence: number, phase: string) => ({
+      kind: "pointer",
+      phase,
+      x: 0.5,
+      y: 0.5,
+      t: sequence,
+    });
+    const send = (sequence: number, events: unknown[]) =>
+      a.send({ type: "display.input", geometry: 1, sequence, events });
+    // Shift stays held throughout: the overflow's reset is what lets go of it.
+    send(1, [
+      {
+        kind: "key",
+        action: "down",
+        key: "Shift",
+        code: "ShiftLeft",
+        modifiers: [],
+        location: 1,
+        repeat: false,
+      },
+    ]);
+    for (let sequence = 2; sequence <= 128; sequence++) send(sequence, [pointer(sequence, "move")]);
+    send(129, [pointer(129, "move"), pointer(129, "up")]);
+    for (let sequence = 130; sequence <= 161; sequence++) send(sequence, [pointer(sequence, "up")]);
+    await a.roundTrip();
+    const refused = (sequence: number) =>
+      a.json().some((m) => m.sequence === sequence && m.outcome === "refused");
+    expect(refused(129), "a release bundled with a move is an ordinary batch").toBe(true);
+    expect([130, 161].map(refused)).toEqual([false, false]);
+    const resets = () =>
+      f.sent.filter((m) => m.type === "host.integrations.display.input-reset").length;
+    expect(resets()).toBe(0);
+    send(162, [pointer(162, "up")]);
+    await a.roundTrip();
+    expect(refused(162)).toBe(true);
+    expect(resets(), "one reset lets go of everything held").toBe(1);
+    send(163, [pointer(163, "down")]);
+    await a.roundTrip();
+    expect(a.json()).toContainEqual({
+      type: "display.input.result",
+      sequence: 163,
+      outcome: "refused",
+      reason: "unavailable",
+    });
+    expect(resets()).toBe(1);
   });
 
   it("frees the lane when the phone refuses the press holding it, never a later one", async () => {
@@ -754,7 +807,7 @@ describe("phone display Host sockets", () => {
       type: "display.input.result",
       sequence: 128,
       outcome: "refused",
-      reason: "too-large",
+      reason: "unavailable",
     });
   });
 
