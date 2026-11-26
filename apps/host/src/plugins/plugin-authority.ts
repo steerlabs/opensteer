@@ -100,6 +100,8 @@ export interface PluginSessionScope {
   readonly plugin: string;
   readonly version: string;
   readonly write: boolean;
+  /** A program's calls, each its own listing: what is lent is read again for each. */
+  readonly program?: boolean;
 }
 interface CallerScope {
   session?: PluginSessionScope;

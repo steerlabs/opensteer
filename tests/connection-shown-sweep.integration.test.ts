@@ -15,6 +15,7 @@ import {
   scriptedHelper,
   setComputerApp,
 } from "../apps/host/src/runtime/computer-apps.test-support.js";
+import { testRpcData } from "../apps/host/src/server/test-host-api-request.js";
 import {
   connectCallerMachine,
   createMachineAccessDatabase,
@@ -767,5 +768,76 @@ integration("what a connection is shown", () => {
     expect(
       sent.filter((sql) => /^select [^;]*from "devices" where "id" = \$1/su.test(sql)),
     ).toEqual([]);
+  });
+
+  /** What is lent is read once per listing: never across a wait for the person, never kept
+   * from one call of a program to the next. */
+  const removedOrChanged = "This local tool was removed or changed; search again.";
+  const removeMac = (w: World) =>
+    w.host.store.database
+      .updateTable("devices")
+      .set({ removedAt: new Date() })
+      .where("id", "=", w.mac as never)
+      .execute();
+
+  it("reads a call held for the person whose app went away meanwhile exactly like a call to an app that never existed", async () => {
+    const w = await world();
+    const agent = keep(
+      await connectAgent(
+        w.host,
+        grantOf(w.profileId, { calendar: w.calendar }),
+        "approval-required",
+      ),
+    );
+    const path = pathForms(namespaceOf(w.calendar), "create_event")[0]!;
+    const held = agent.call("plugin_call", { calls: { path, input: dentist } });
+    await waitForCondition(async () => (await w.waitingRequests()).length > 0);
+    const [request] = await w.waitingRequests();
+    await removeMac(w);
+    await testRpcData(
+      w.host.origin,
+      "commands.dispatch",
+      {
+        type: "request.respond",
+        idempotencyKey: randomUUID(),
+        requestId: request!.id,
+        expectedRevision: (await w.host.store.requests.revision(request!.id as never))!,
+        response: { kind: "form", answers: { decision: ["allow"] } },
+      },
+      { headers: w.host.ownerHeaders },
+    );
+    const reply = await held;
+    // After the wait what is lent is read again: the app is not lent, and reads as one that
+    // never existed (rule 5), never with a device's raw error.
+    const invented = `con_${randomUUID()}`;
+    const absentPath = pathForms(namespaceOf(invented), "create_event")[0]!;
+    // An app that never existed is refused before anyone is asked.
+    const absent = await agent.call("plugin_call", { calls: { path: absentPath, input: dentist } });
+    // Its error is the one an app that never existed gets; the reply also carries the receipt of
+    // the operation the person was asked about, which failed with nothing sent.
+    const error = (value: unknown) =>
+      (value as { structuredContent?: { error?: unknown } }).structuredContent?.error;
+    expect(error(reply)).toEqual(error(absent));
+    expect((reply as { structuredContent?: { status?: string } }).structuredContent?.status).toBe(
+      "failed",
+    );
+    expect(JSON.stringify(reply)).not.toContain("Active self Runner");
+    expect(w.helper.invocations).toEqual([]);
+  });
+
+  it("tells a program's later call whose app went away after its first call that it was removed or changed", async () => {
+    const w = await world();
+    const agent = keep(await connectAgent(w.host, grantOf(w.profileId, { calendar: w.calendar })));
+    const namespace = `tools[${JSON.stringify(namespaceOf(w.calendar))}]`;
+    const path = pathForms(namespaceOf(w.calendar), "list_calendars")[0]!;
+    // The first call reaches the Mac, which is removed while it answers.
+    w.helper.answer = (() =>
+      removeMac(w).then(() => ({ calendars: [] }))) as unknown as typeof w.helper.answer;
+    const reply = await agent.call("plugin_execute", {
+      namespace,
+      code: `const first = await ${path}({}); let second; try { second = await ${path}({}); } catch (error) { second = String(error.message ?? error); } return { first, second };`,
+    });
+    expect(JSON.stringify(reply), JSON.stringify(reply)).toContain(removedOrChanged);
+    expect(w.helper.invocations).toHaveLength(1);
   });
 });

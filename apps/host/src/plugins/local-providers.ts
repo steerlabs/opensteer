@@ -1,4 +1,4 @@
-import { lentNow, lentRequester } from "../mcp/lent-now.js";
+import { forgetLent, lentNow, lentRequester } from "../mcp/lent-now.js";
 import {
   deviceAppBlocked,
   deviceAppUnavailable,
@@ -138,6 +138,9 @@ export class LocalProviders {
     const session = this.#options.authority.session?.(input.caller);
     if (!caller || (caller.kind === "connection" && !session))
       throw failure("Local tools are called only from a task or its programs.");
+    // Each call a program makes is its own listing: what is lent is read again, never kept from
+    // the program's earlier calls (lentNow).
+    if (session?.program || caller.kind === "program") forgetLent(caller);
     const { providers, callables } = await this.#list(
       caller,
       input.plugin,

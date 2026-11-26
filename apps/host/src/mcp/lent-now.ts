@@ -44,6 +44,15 @@ export function lentNow(caller: AgentCaller, reader: LendingReader): Promise<Len
 }
 
 /**
+ * What is lent is read once per listing, and never outlives a wait: after the person answered a
+ * held Request, and before each call a program makes, the next read asks the rule again. A call
+ * that does not wait reads it once, as before.
+ */
+export function forgetLent(caller: AgentCaller): void {
+  read.delete(caller);
+}
+
+/**
  * The person's devices this lineage may learn of: a selected grant, the devices of what it is lent
  * now; a grant of everything, every device of the person (a device is not an approval); the
  * person's own work and their own agents, every device.

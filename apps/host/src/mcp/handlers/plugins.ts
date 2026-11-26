@@ -44,6 +44,7 @@ import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { delay } from "@opensteer/shared/delay";
 import { directResult, requireDirectWork } from "./direct.js";
 import type { AgentSessionService } from "../../agent-sessions/agent-session-service.js";
+import { forgetLent } from "../lent-now.js";
 
 const owner = { caller: "personal", mode: "automatic" } as const;
 
@@ -484,6 +485,17 @@ export class PluginToolHandlers {
       calls,
       execute: async (operation) => {
         await operation.recheck();
+        // It waited for the person: what is lent is read again, not kept from before the wait, and
+        // an app that is no longer there reads as one that never was (rule 5), before anything runs.
+        if (operation.requestId) {
+          forgetLent(caller);
+          if (
+            !(await providers()).some(
+              (item) => item.id === target.plugin && item.version === target.version,
+            )
+          )
+            throw unavailable();
+        }
         if (continuationMode && !threadAccessModeAtMost(continuationMode, operation.mode))
           throw unavailable();
         if ("executionId" in input)
@@ -502,7 +514,13 @@ export class PluginToolHandlers {
               input,
               operation.signal,
             ),
-          { operation, plugin: target.plugin, version: target.version, write: !target.readOnly },
+          {
+            operation,
+            plugin: target.plugin,
+            version: target.version,
+            write: !target.readOnly,
+            program: "code" in input,
+          },
         );
       },
       summarize: (result) => ({ executionId: result.executionId, status: result.status }),
