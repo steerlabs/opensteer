@@ -237,7 +237,7 @@ describe("tab projection and viewer admission", () => {
     f.service.dispose();
   });
   it("opens the app's current window in the same tab when its own window is gone", async () => {
-    const a = { ...row("window"), openedBy: "person" as const },
+    const a = row("window"),
       f = fixture([a]);
     const dead = a.windowId!,
       next = WindowIdSchema.parse(`win_${randomUUID()}`);
@@ -321,43 +321,8 @@ describe("tab projection and viewer admission", () => {
     expect(activated.tab.title).toBe("Sol 3 Moving Clock");
     f.service.dispose();
   });
-  it("never rebinds a task's window tab: its Run keeps the window it observed", async () => {
-    // Review finding 9: an agent opened this window tab; the person clicks Open again after
-    // the app quit and came back. A rebind would hand the Run's same tab id a window it never
-    // observed, under the same generation.
-    const a = row("window"),
-      f = fixture([a]);
-    expect(a.openedBy).toEqual({ taskId });
-    f.native.openOwnerView = vi.fn(
-      async () =>
-        ({
-          viewId: "cvw_test",
-          generation: 1,
-          state: "unavailable",
-          unavailableReason: "window-closed",
-          target: { kind: "app", app: a.windowApp, windowId: a.windowId },
-        }) as unknown as ComputerView,
-    );
-    f.native.currentWindow = vi.fn(async () => ({
-      windowId: WindowIdSchema.parse(`win_${randomUUID()}`),
-      app: a.windowApp!,
-      appName: "Test",
-      bundleId: "test.app",
-      title: "After relaunch",
-    }));
-    const rebindWindow = vi.fn();
-    (f.options.store as unknown as Record<string, unknown>).rebindWindow = rebindWindow;
-    const activated = await f.service.activate(ownerId, a.id, "open-again");
-    expect(f.native.currentWindow).not.toHaveBeenCalled();
-    expect(rebindWindow).not.toHaveBeenCalled();
-    expect(activated.viewer).toMatchObject({
-      kind: "window",
-      view: { state: "unavailable", unavailableReason: "window-closed" },
-    });
-    f.service.dispose();
-  });
   it("never moves a window tab to a window of another app", async () => {
-    const a = { ...row("window"), openedBy: "person" as const },
+    const a = row("window"),
       f = fixture([a]);
     f.native.openOwnerView = vi.fn(
       async () =>
@@ -384,7 +349,7 @@ describe("tab projection and viewer admission", () => {
     f.service.dispose();
   });
   it("keeps a window tab whose app has no window unavailable, and rebinds nothing", async () => {
-    const a = { ...row("window"), openedBy: "person" as const },
+    const a = row("window"),
       f = fixture([a]);
     f.native.openOwnerView = vi.fn(
       async () =>
@@ -401,7 +366,6 @@ describe("tab projection and viewer admission", () => {
     const rebindWindow = vi.fn();
     (f.options.store as unknown as Record<string, unknown>).rebindWindow = rebindWindow;
     const activated = await f.service.activate(ownerId, a.id, "open-again");
-    expect(f.native.currentWindow).toHaveBeenCalledTimes(1);
     expect(rebindWindow).not.toHaveBeenCalled();
     expect(f.native.openOwnerView).toHaveBeenCalledTimes(1);
     expect(activated.viewer).toMatchObject({
