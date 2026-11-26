@@ -3529,10 +3529,9 @@ export async function createHostRuntime(
           .closeBrowserScriptsForBinding(bindingId)
           .catch((error: unknown) => reportAgentSessionError(error));
         // A connected agent's computer work ends with its session: the app, then the script.
-        endSessionComputerWork(bindingId, {
+        return endSessionComputerWork(bindingId, {
           computerUse,
           devices,
-          onError: (error) => reportComputerUseSweepError(error),
         });
       },
       onError: (error) => reportAgentSessionError(error),
@@ -3677,6 +3676,12 @@ export async function createHostRuntime(
         await agentTools.closeLineage(connectionId, minimumGrantRevision);
       },
       stopper: {
+        stopAgentSession: (attempt, cleanup, settle) =>
+          agentSessions.stopAgentSession(
+            attempt.id,
+            connectionCleanupEnding(cleanup.reason),
+            settle,
+          ),
         stopDirectOperation: (attempt, cleanup) =>
           agentSessions.stopDirectOperation(attempt.id, connectionCleanupEnding(cleanup.reason)),
         async stop(attempt, cleanup) {
@@ -3767,12 +3772,8 @@ export async function createHostRuntime(
       },
       onFailure: (error, connectionId) =>
         app.log.warn({ err: error, connectionId }, "A connected agent's work did not stop"),
-      afterStop: (connectionId, reason, cause) =>
-        agentSessions.closeConnection(
-          connectionId,
-          reason === "disconnect",
-          connectionCleanupEnding(cause),
-        ),
+      afterStop: (connectionId, _reason, cause) =>
+        agentSessions.closeConnection(connectionId, false, connectionCleanupEnding(cause)),
     });
     const driveConnectionCleanups = () =>
       connectionEffects.driveCleanups().finally(() => connectionMaintenance?.wake());

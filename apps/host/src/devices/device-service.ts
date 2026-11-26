@@ -224,6 +224,7 @@ export interface ComputerSessionCaller {
   /** Re-admits the operation's session and target; called before every command. */
   readonly recheck: () => Promise<void>;
   readonly submitted?: () => void;
+  readonly stopped?: () => never;
 }
 
 /**
@@ -258,18 +259,19 @@ export function agentSessionComputerKey(sessionId: AgentSessionId): RunId {
  * which tell the Mac or phone to close, and its script context. Anything but a session binding is
  * left alone.
  */
-export function endSessionComputerWork(
+export async function endSessionComputerWork(
   bindingId: string,
   ports: {
-    readonly computerUse: { closeForRun(runId: RunId): void } | undefined;
+    readonly computerUse: { closeForAgentSession(runId: RunId): Promise<void> } | undefined;
     readonly devices: Pick<DeviceService, "endComputerSession">;
-    readonly onError: (error: unknown) => void;
   },
-): void {
+): Promise<void> {
   const session = AgentSessionIdSchema.safeParse(bindingId.replace(/^session:/u, ""));
   if (!bindingId.startsWith("session:") || !session.success) return;
-  ports.computerUse?.closeForRun(agentSessionComputerKey(session.data));
-  void ports.devices.endComputerSession(session.data).catch(ports.onError);
+  await Promise.all([
+    ports.computerUse?.closeForAgentSession(agentSessionComputerKey(session.data)),
+    ports.devices.endComputerSession(session.data),
+  ]);
 }
 
 function computerOwner(caller: ComputerCaller): UserId {
@@ -2177,7 +2179,17 @@ export class DeviceService {
         { runId: key, generation: 0, reportUnknownEffects: true, connectedAgent: true },
         code,
         work.signal,
-        (request) => this.#invokeComputerRepl(caller, request),
+        async (request) => {
+          try {
+            return await this.#invokeComputerRepl(caller, request);
+          } catch (error) {
+            // The device Stop is scoped to this Mac. Latch its ending at the operation door
+            // even if the script catches the device's legacy error and returns normally.
+            if (error instanceof ComputerUseError && error.code === "stopped-by-user")
+              session.stopped?.();
+            throw error;
+          }
+        },
       );
       if (result.structuredContent?.error?.code !== "outcome-unknown") work.sleep.throwIfAborted();
       return result;
