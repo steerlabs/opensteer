@@ -200,13 +200,18 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
 })
 `;
 
-export function openapiImport(name: string, origin: string, raw: unknown, signal: AbortSignal) {
+export function openapiImport(name: string, url: URL, raw: unknown, signal: AbortSignal) {
+  const { origin } = url;
+  // Relative servers use the fetched document's path. Its query can contain credentials.
+  const base = new URL(url);
+  base.search = "";
+  const documentUrl = base.href;
   return Effect.gen(function* () {
     const document = documentSchema.safeParse(raw);
     if (!document.success) return { error: "This address did not return an OpenAPI document." };
     const plan = planOpenapiImport(document.data);
     const settings = {
-      source: { document: plan.document },
+      source: { document: plan.document, documentUrl },
       allowedOrigin: origin,
       securitySchemes: plan.securitySchemes,
       methods: plan.bindings,
@@ -261,6 +266,7 @@ export function openapiImport(name: string, origin: string, raw: unknown, signal
     const generated = yield* openapiAppSource({
       name,
       document: plan.document,
+      documentUrl,
       methods: auth,
       allowedOrigins: [origin],
     });

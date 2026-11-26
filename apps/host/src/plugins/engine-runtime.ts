@@ -982,7 +982,7 @@ export async function startEngine(
                     );
                   const imported = yield* openapiImport(
                     input.name,
-                    url.origin,
+                    url,
                     yield* response.json,
                     signal,
                   );

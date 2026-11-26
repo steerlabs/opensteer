@@ -577,6 +577,7 @@ export const target = (account: Account) => {
 export const openapiAppSource = (
   options: ProtocolAppOptions & {
     readonly document: Readonly<Record<string, unknown>>;
+    readonly documentUrl?: string;
     readonly baseUrl?: string | undefined;
     /**
      * The origins operations are sent to, which receive the credentials and are the provider's
@@ -658,7 +659,10 @@ ${
           // API's source; the settings after it stay one per line. The whole file is ASCII, so a
           // non-ASCII base URL or description cannot double the memory of the document's text.
           content: asciiJson(
-            `{\n  "source": { "document": ${JSON.stringify(options.document)} },\n${json({
+            `{\n  "source": ${JSON.stringify({
+              document: options.document,
+              ...(options.documentUrl === undefined ? {} : { documentUrl: options.documentUrl }),
+            })},\n${json({
               allowedOrigin: origins.length === 1 ? origins[0] : origins,
               securitySchemes: {},
               methods: {},

@@ -40,7 +40,31 @@ test.skipIf(process.platform === "win32")(
     const clone = await cloneTestDatabase("host");
     const directory = await realpath(await mkdtemp(join(tmpdir(), "opensteer-packaged-plugins-")));
     context.onTestFinished(() => rm(directory, { recursive: true, force: true }));
-    const registry = await pluginFixtureRegistry();
+    const registry = await pluginFixtureRegistry(undefined, undefined, (request, response) => {
+      if (request.url === "/api/v3/openapi.json") {
+        response.setHeader("content-type", "application/json");
+        response.end(
+          JSON.stringify({
+            openapi: "3.0.4",
+            info: { title: "Petstore", version: "1" },
+            servers: [{ url: "/api/v3" }],
+            paths: {
+              "/pets": {
+                get: {
+                  operationId: "listPets",
+                  responses: { "200": { description: "The pets" } },
+                },
+              },
+            },
+          }),
+        );
+        return true;
+      }
+      if (request.url !== "/api/v3/pets") return false;
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ pets: ["Fido"] }));
+      return true;
+    });
     context.onTestFinished(() => registry.close());
     const staged = join(directory, "runtime");
     const main = join(directory, "host-entry.ts");
@@ -100,7 +124,11 @@ test.skipIf(process.platform === "win32")(
     });
     const host = await ownTestDatabaseProducer(clone.url, async () => {
       const runtime = await bundled.createHostRuntime(config, {
-        pluginEngine: { npmRegistry: registry.origin, catalogUrl: registry.origin + "/catalog" },
+        pluginEngine: {
+          npmRegistry: registry.origin,
+          catalogUrl: registry.origin + "/catalog",
+          selfOrigin: { origin: registry.origin, address: registry.address },
+        },
       });
       return { runtime, close: () => runtime.close() };
     });
@@ -183,6 +211,20 @@ test.skipIf(process.platform === "win32")(
       (await plugins.execute({ code: "return await tools.fixture.read({ amount: 4 });" }, caller))
         .result,
     ).toMatchObject({ status: "completed", execution: { value: 5 } });
+    const openapi = await deadline(
+      plugins.install(
+        { kind: "openapi", name: "Petstore", url: `${registry.origin}/api/v3/openapi.json` },
+        caller,
+      ),
+      "Packaged Host did not answer the OpenAPI install",
+    );
+    expect(openapi.status, JSON.stringify(openapi)).toBe("installed");
+    if (openapi.status !== "installed") throw new Error("Petstore did not install");
+    const tools = await plugins.search({ namespace: openapi.plugin.slug }, caller);
+    expect(tools.items).toHaveLength(1);
+    const called = await plugins.call({ calls: { path: tools.items[0]!.path, input: {} } }, caller);
+    expect(JSON.stringify(called)).toContain("Fido");
+    expect(registry.requests).toContain(`${registry.address}/api/v3/pets`);
     const health = await plugins.health({}, caller);
     expect(health.pid).toBe(started.pid);
     const children = pluginFixtureProcesses(health.pid);
