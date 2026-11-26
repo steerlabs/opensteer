@@ -1117,26 +1117,14 @@ export class TabService implements TabServicePort {
   ) {
     return this.#row(actor, tabId);
   }
-  /** The window this tab shows was retitled on its Mac while the person watched it. */
-  async retitleWindow(
-    ownerId: UserId,
-    tabId: TabId,
-    windowId: WindowId,
-    title: string,
-  ): Promise<void> {
-    try {
-      if (await this.options.store.retitleWindow(ownerId, tabId, windowId, title))
-        this.changed(ownerId, [tabId]);
-    } catch (error) {
-      this.options.onError(error);
-    }
-  }
   /** The app's current window, bound to this window tab in place of the one that ended. */
   async #rebindWindow(
     actor: TabActor & { kind: "person" },
     row: TabRecord,
     runnerId: RunnerId,
   ): Promise<TabRecord | null> {
+    // Only the person's own tab: a task's tab id stays bound to the window its Run observed.
+    if (row.openedBy !== "person") return null;
     // Never by bundle: resolving an app launches it, and a quit app stays quit until the
     // person opens it; then Open again finds its window.
     const current = this.options.nativeTargets.currentWindow
