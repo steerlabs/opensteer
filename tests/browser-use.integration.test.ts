@@ -545,6 +545,32 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     `),
       ),
     ).toBe("Popup");
+    const blankLink = await run(`
+      await page.evaluate(() => {
+        const link = document.createElement("a");
+        link.id = "blank-popup";
+        link.target = "_blank";
+        link.href = "/popup?from=link";
+        link.textContent = "Open link";
+        document.body.prepend(link);
+      });
+      print("before blank click");
+      await page.locator("#blank-popup").click();
+      print("after blank click");
+      let popup;
+      for (let attempt = 0; !popup && attempt < 20; attempt++) {
+        popup = (await pages()).find((tab) => tab.url.endsWith("/popup?from=link"));
+        if (!popup) await page.waitForTimeout(100);
+      }
+      if (!popup) throw new Error("The popup was not listed.");
+      print(await (await openPage(popup.tabId)).url());
+    `);
+    expect(blankLink.isError, JSON.stringify(blankLink.content)).not.toBe(true);
+    expect(blankLink.content).toEqual([
+      { type: "text", text: "before blank click" },
+      { type: "text", text: "after blank click" },
+      { type: "text", text: `${origin}/popup?from=link` },
+    ]);
 
     const policy = hold("/policy");
     const recheck = run(

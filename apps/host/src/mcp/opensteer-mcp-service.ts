@@ -78,7 +78,7 @@ import {
 import { toolAccess } from "./tool-access.js";
 import { toolOperationKey } from "./operations.js";
 import { browserConnectCompletedNext } from "./handlers/browser.js";
-import { failedScriptOutput } from "./handlers/direct.js";
+import { endedScriptOutput } from "./handlers/direct.js";
 import type { RealtimeHub } from "@opensteer/orchestration";
 import type { AgentToolHandlers, ToolCall } from "./handlers/types.js";
 
@@ -813,16 +813,19 @@ export class OpensteerMcpService {
             this.assertToolOffered(connection, name),
           );
           const status = row.state;
-          if (status === "failed" && tool.output === ComputerUseOutputSchema) {
+          if (
+            (status === "failed" || status === "unknown") &&
+            tool.output === ComputerUseOutputSchema
+          ) {
             const error = storedScriptError(row.resultSummary);
             if (error) {
               const grant = row.target.grant;
-              return failedScriptOutput(
+              return endedScriptOutput(
                 {
                   ...base,
                   status,
                   ...(grant.kind === "browser-profile" ? { profileId: grant.profileId } : {}),
-                  next: scriptFailedNext,
+                  next: status === "unknown" ? unknownOperationNext(row.ending) : scriptFailedNext,
                 },
                 error,
               );

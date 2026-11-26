@@ -1516,11 +1516,19 @@ describeStore("an external agent's direct work through sessions", (it) => {
       s.runBrowserScript.mockImplementation(({ code, signal }) =>
         repl.execute("failure", code, signal),
       );
-      const args = { ...script, code: 'throw new Error("Browser script failed here")' };
+      const args = {
+        ...script,
+        code: 'print("prior output"); throw new Error("Browser script failed here")',
+      };
       const first = await s.call("browser_use", args);
       const receipt = first.structuredContent as Record<string, unknown>;
       expect(first).toMatchObject({
         isError: true,
+        content: [
+          { type: "text", text: "prior output" },
+          { type: "text", text: "failed: Browser script failed here" },
+          { type: "text", text: expect.stringContaining("Receipt:") },
+        ],
         structuredContent: {
           taskId: expect.any(String),
           operationId: expect.any(String),

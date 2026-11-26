@@ -51,9 +51,9 @@ export function scriptFailure(result: ReplResult): ReplFailure | undefined {
   );
 }
 
-export function failedScriptOutput(
+export function endedScriptOutput(
   receipt: {
-    status: "failed";
+    status: "failed" | "unknown";
     next: string;
     taskId: string;
     operationId: string;
@@ -64,7 +64,12 @@ export function failedScriptOutput(
 ) {
   return {
     isError: true as const,
-    content: content ?? [{ type: "text" as const, text: `${error.code}: ${error.message}` }],
+    content: content ?? [
+      {
+        type: "text" as const,
+        text: `${error.method ? `${error.method}: ` : ""}${error.code}: ${error.message}`,
+      },
+    ],
     structuredContent: { ...receipt, error },
   };
 }

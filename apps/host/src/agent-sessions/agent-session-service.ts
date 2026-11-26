@@ -243,6 +243,8 @@ export type DirectOperationResult<Result> = { readonly replayed?: true } & (
       readonly taskId: ThreadId;
       readonly operationId: AgentOperationId;
       readonly next: string;
+      readonly result?: Result;
+      readonly scriptError?: ReplFailure;
     }
 );
 
@@ -630,8 +632,15 @@ export class AgentSessionService {
             ? { status: "failed", ...base, scriptError, next: scriptFailedNext }
             : { status: "failed", ...base, next: "It failed. Check the current state." };
         }
-        case "unknown":
-          return { status: "unknown", ...base, next: unknownOperationNext(row.ending) };
+        case "unknown": {
+          const scriptError = storedScriptError(row.resultSummary);
+          return {
+            status: "unknown",
+            ...base,
+            next: unknownOperationNext(row.ending),
+            ...(scriptError ? { scriptError } : {}),
+          };
+        }
         case "refused":
           throw new AgentOperationFailure(agentOperationRefusal(row.decision), {
             ...base,
@@ -1119,10 +1128,28 @@ export class AgentSessionService {
         this.#onError(error);
       }
       const scriptError = operation.scriptFailure?.(result);
-      if (outstanding > 0) {
+      if (
+        outstanding > 0 ||
+        scriptError?.code === "outcome-unknown" ||
+        (operation.scriptFailure && signal.aborted)
+      ) {
         // A command was submitted and never answered: its effect is unknown.
-        await settleAgentOperation(this.#store.database, row.id, "unknown", null);
-        return { status: "unknown", ...base, next: unknownNext };
+        const uncertainty = scriptError?.code === "outcome-unknown" ? scriptError : undefined;
+        const ending = agentOperationEndingOf(uncertainty?.message) ?? "contact-lost";
+        await settleAgentOperation(
+          this.#store.database,
+          row.id,
+          "unknown",
+          uncertainty ? { ...summary, scriptError: uncertainty } : summary,
+          ending,
+        );
+        return {
+          status: "unknown",
+          ...base,
+          next: unknownOperationNext(ending),
+          result,
+          ...(uncertainty ? { scriptError: uncertainty } : {}),
+        };
       }
       const settled = await settleAgentOperation(
         this.#store.database,

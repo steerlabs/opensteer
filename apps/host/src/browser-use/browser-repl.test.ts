@@ -542,7 +542,10 @@ describe("browser REPL", () => {
       await run(
         `${bind} try { await page.cdp("Runtime.evaluate"); } catch (error) { print(error.code); } return "caught";`,
       ),
-    ).toMatchObject({ isError: true, structuredContent: { error: { code: "outcome-unknown" } } });
+    ).toMatchObject({
+      isError: true,
+      structuredContent: { error: { code: "outcome-unknown", method: "Runtime.evaluate" } },
+    });
   });
 
   it("lets a port acknowledge cancellation without accumulating old reservations", async () => {

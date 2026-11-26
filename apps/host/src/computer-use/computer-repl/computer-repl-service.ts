@@ -18,6 +18,7 @@ import {
   ReplRequestSchema,
   type AnyReplRequest,
   ReplReplySchema,
+  ReplFailureSchema,
   type ToWorker,
   type ReplContent,
   type ReplFailure,
@@ -56,11 +57,10 @@ interface Call<Request> {
   readonly resolve: (result: ReplResult) => void;
   readonly cleanup: () => void;
   started: boolean;
-  mutationsInFlight: number;
+  readonly mutationsInFlight: Map<number, string | undefined>;
+  uncertainty: ReplFailure | undefined;
   operationsInFlight: number;
-  abandoned: "outcome-unknown" | "operation-pending" | undefined;
-  /** An unknown outcome's own words when they name its cause (a tab the person closed). */
-  abandonedBecause?: string;
+  abandonedRead: boolean;
   requests: number;
   requestBytes: number;
   replyBytes: number;
@@ -218,14 +218,14 @@ export class ReplService<Request extends AnyReplRequest> {
     return new Promise((resolve) => {
       const cancel = () =>
         this.#finish(call, {
-          code: call.mutationsInFlight ? "outcome-unknown" : "cancelled",
+          code: call.mutationsInFlight.size ? "outcome-unknown" : "cancelled",
           message: `${this.#label} code was cancelled. A dispatched action may already have happened; observe before deciding what to do next.`,
           performed: [],
         });
       const cancelDeadline = this.#clock.schedule(
         () =>
           this.#finish(call, {
-            code: call.mutationsInFlight ? "outcome-unknown" : "deadline",
+            code: call.mutationsInFlight.size ? "outcome-unknown" : "deadline",
             message: `${this.#label} code reached its 100 second deadline. A dispatched action may already have happened; observe before deciding what to do next.`,
             performed: [],
           }),
@@ -247,9 +247,10 @@ export class ReplService<Request extends AnyReplRequest> {
           signal?.removeEventListener("abort", cancel);
         },
         started: false,
-        mutationsInFlight: 0,
+        mutationsInFlight: new Map(),
+        uncertainty: undefined,
         operationsInFlight: 0,
-        abandoned: undefined,
+        abandonedRead: false,
         requests: 0,
         requestBytes: 0,
         replyBytes: 0,
@@ -344,11 +345,8 @@ export class ReplService<Request extends AnyReplRequest> {
     }
     if (message.type === "settled") {
       call.ready = false;
-      call.abandoned ??= call.mutationsInFlight
-        ? "outcome-unknown"
-        : call.operationsInFlight
-          ? "operation-pending"
-          : undefined;
+      if (call.mutationsInFlight.size) call.uncertainty ??= this.#pendingUncertainty(call);
+      else if (call.operationsInFlight) call.abandonedRead = true;
       call.cancellation.abort();
       return;
     }
@@ -368,7 +366,7 @@ export class ReplService<Request extends AnyReplRequest> {
     const mutation = ["click", "type", "key", "setValue", "scroll", "act"].includes(
       request.operation,
     );
-    if (mutation) call.mutationsInFlight++;
+    if (mutation) call.mutationsInFlight.set(message.id, request.operation);
     try {
       const result =
         request.operation === "sleep"
@@ -422,8 +420,9 @@ export class ReplService<Request extends AnyReplRequest> {
             ? record.performed.filter((value): value is string => typeof value === "string")
             : [],
       };
-      if (call.context.reportUnknownEffects && failure.code === "outcome-unknown")
-        this.#abandon(call, failure.message);
+      if (call.context.reportUnknownEffects && failure.code === "outcome-unknown") {
+        this.#rememberUncertainty(call, failure, request.operation);
+      }
       if ("content" in record && Array.isArray(record.content)) {
         const parsed = ReplReplySchema.shape.content.safeParse(record.content);
         if (parsed.success)
@@ -445,7 +444,7 @@ export class ReplService<Request extends AnyReplRequest> {
         ...(value?.success ? { value: value.data } : {}),
       });
     } finally {
-      if (mutation) call.mutationsInFlight--;
+      if (mutation) call.mutationsInFlight.delete(message.id);
     }
   }
   async #browserRequest(call: Call<Request>, message: { id: number; json: string }): Promise<void> {
@@ -478,6 +477,14 @@ export class ReplService<Request extends AnyReplRequest> {
       request.operation === "browser.new" ||
       request.operation === "browser.command";
     const portOperation = mutation || request.operation === "browser.pages";
+    const method = ReplFailureSchema.shape.method.safeParse(
+      request.operation === "browser.command" &&
+        typeof request.args === "object" &&
+        request.args !== null &&
+        "method" in request.args
+        ? request.args.method
+        : request.operation,
+    ).data;
     const capture =
       request.operation === "browser.command" &&
       typeof request.args === "object" &&
@@ -536,7 +543,7 @@ export class ReplService<Request extends AnyReplRequest> {
       this.#browserPendingByBinding.set(call.bindingKey, bindingPending + 1);
       this.#browserPending++;
       call.operationsInFlight++;
-      if (mutation) call.mutationsInFlight++;
+      if (mutation) call.mutationsInFlight.set(message.id, method);
     }
     call.reservedReplyBytes += maxBytes;
     if (capture) {
@@ -569,7 +576,7 @@ export class ReplService<Request extends AnyReplRequest> {
           else this.#browserPendingByBinding.set(call.bindingKey, bindingCount - 1);
           this.#browserPending--;
           call.operationsInFlight--;
-          if (mutation) call.mutationsInFlight--;
+          if (mutation) call.mutationsInFlight.delete(message.id);
         }
       }
       if (this.#contexts.get(call.key)?.call !== call || call.cancellation.signal.aborted) return;
@@ -582,7 +589,9 @@ export class ReplService<Request extends AnyReplRequest> {
     } catch (error) {
       if (call.cancellation.signal.aborted && error === call.cancellation.signal.reason) return;
       const failure = this.#events!.error(error);
-      if (failure.code === "outcome-unknown") this.#abandon(call, failure.message);
+      if (failure.code === "outcome-unknown") {
+        this.#rememberUncertainty(call, failure, method);
+      }
       if (this.#contexts.get(call.key)?.call === call && !call.cancellation.signal.aborted)
         this.#post({ type: "reply", ...address, error: boundedReplFailure(failure) });
     }
@@ -620,45 +629,45 @@ export class ReplService<Request extends AnyReplRequest> {
     );
     return true;
   }
-  /** The call's outcome is unknown; its first cause the Home can name is kept to be said. */
-  #abandon(call: Call<Request>, message: string): void {
-    call.abandoned = "outcome-unknown";
-    if (call.abandonedBecause === undefined && agentOperationEndingOf(message))
-      call.abandonedBecause = message;
+  #rememberUncertainty(call: Call<Request>, failure: ReplFailure, method?: string): void {
+    const current = call.uncertainty;
+    if (
+      !current ||
+      (!agentOperationEndingOf(current.message) && agentOperationEndingOf(failure.message))
+    )
+      call.uncertainty = { ...failure, ...(method ? { method } : {}) };
+  }
+  #pendingUncertainty(call: Call<Request>, error?: ReplFailure): ReplFailure {
+    const method =
+      call.mutationsInFlight.size === 1 ? call.mutationsInFlight.values().next().value : undefined;
+    return {
+      code: "outcome-unknown",
+      message:
+        error?.code === "outcome-unknown"
+          ? error.message
+          : this.#events
+            ? "A browser action did not confirm its outcome. Observe the page before deciding what to do next."
+            : "A computer action did not confirm its outcome. Observe the app or phone before deciding what to do next.",
+      ...(method ? { method } : {}),
+      performed: [],
+    };
   }
   #finish(call: Call<Request>, error?: ReplFailure, reset = true): void {
     const resident = this.#contexts.get(call.key);
     if (resident?.call !== call) return;
-    if (this.#events && (call.mutationsInFlight || call.abandoned === "outcome-unknown"))
-      error = {
-        code: "outcome-unknown",
-        message:
-          call.abandonedBecause ??
-          "A browser action did not confirm its outcome. Observe the page before deciding what to do next.",
-        performed: [],
-      };
-    else if (
-      this.#events &&
-      (call.operationsInFlight || call.abandoned === "operation-pending") &&
-      !error
-    )
+    if (
+      (this.#events || call.context.reportUnknownEffects) &&
+      (call.mutationsInFlight.size || call.uncertainty)
+    ) {
+      error = call.uncertainty ?? this.#pendingUncertainty(call, error);
+    } else if (this.#events && (call.operationsInFlight || call.abandonedRead) && !error) {
       error = {
         code: "operation-pending",
         message:
           "Browser code ended while a browser operation was still pending. Await each operation before returning.",
         performed: [],
       };
-    if (
-      call.context.reportUnknownEffects &&
-      (call.mutationsInFlight || call.abandoned === "outcome-unknown") &&
-      error?.code !== "outcome-unknown"
-    )
-      error = {
-        code: "outcome-unknown",
-        message:
-          "A computer action did not confirm its outcome. Observe the app or phone before deciding what to do next.",
-        performed: [],
-      };
+    }
     if (!call.started) this.#queue.delete(call.id);
     resident.call = undefined;
     resident.usedAt = Date.now();
@@ -672,7 +681,7 @@ export class ReplService<Request extends AnyReplRequest> {
       const bounded = boundedReplFailure(error);
       // Accepted receipts keep their order; only the final error uses the remainder.
       const text = utf8Prefix(
-        `${bounded.code}: ${bounded.message}`,
+        `${bounded.method ? `${bounded.method}: ` : ""}${bounded.code}: ${bounded.message}`,
         Math.max(0, limits.textBytes - call.textBytes),
       );
       if (text) {

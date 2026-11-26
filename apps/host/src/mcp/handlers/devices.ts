@@ -5,6 +5,7 @@ import type { AppAccessRequestInputSchema } from "@opensteer/agent-tools/tools";
 import type { IntegrationRequester } from "@opensteer/database";
 import { isPhoneDisplayDefinitionId } from "@opensteer/core";
 import {
+  OpensteerError,
   refused,
   requestOperationCallsMaxLength,
   ThreadIdSchema,
@@ -16,13 +17,12 @@ import {
   type UserId,
 } from "@opensteer/core";
 import {
-  OperationOutcomeUnknown,
   type AgentSessionService,
   type DirectOperationResult,
   type DirectOperationContext,
 } from "../../agent-sessions/agent-session-service.js";
 import { callerLineage, type ConnectionCaller } from "../agent-caller.js";
-import { directResult, failedScriptOutput, requireDirectWork, scriptFailure } from "./direct.js";
+import { directResult, endedScriptOutput, requireDirectWork, scriptFailure } from "./direct.js";
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
 import type { ComputerInventoryAuthority } from "../../computer-use/computer-use-service.js";
 import type { DeviceService } from "../../devices/device-service.js";
@@ -167,10 +167,8 @@ export class DeviceToolHandlers {
             code,
             context.signal,
           );
-          context.signal.throwIfAborted();
-          const failure = result.structuredContent?.error;
-          if (failure?.code === "outcome-unknown")
-            throw new OperationOutcomeUnknown(failure.message);
+          if (context.signal.aborted && context.signal.reason instanceof OpensteerError)
+            context.signal.throwIfAborted();
           return result;
         },
         scriptFailure,
@@ -567,9 +565,9 @@ export class DeviceToolHandlers {
 function sessionScriptOutput(
   outcome: DirectOperationResult<Awaited<ReturnType<DeviceService["runSessionComputerCode"]>>>,
 ) {
-  if (outcome.status === "failed" && outcome.scriptError) {
+  if ((outcome.status === "failed" || outcome.status === "unknown") && outcome.scriptError) {
     const { status, taskId, operationId, next } = outcome;
-    return failedScriptOutput(
+    return endedScriptOutput(
       { status, taskId, operationId, next },
       outcome.scriptError,
       outcome.result?.content,
@@ -591,7 +589,10 @@ function sessionScriptOutput(
           structuredContent: receipt,
         };
   return {
-    content: [{ type: "text" as const, text: outcome.next }],
+    content: [
+      ...(outcome.status === "unknown" ? (outcome.result?.content ?? []) : []),
+      { type: "text" as const, text: outcome.next },
+    ],
     structuredContent: receipt,
   };
 }
