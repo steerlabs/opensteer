@@ -126,11 +126,14 @@ export function ComputerUseBlock({
     }
   }
 
-  /** One app, one access: the Host issues the request and this Mac asks about it. */
+  /**
+   * One app, one access: the Host issues the request and this Mac asks about it. True when the
+   * person allowed it; false when they declined or closed the review without answering.
+   */
   async function askOnThisMac(input: {
     readonly access: IntegrationAccess;
     readonly app: ComputerAppIdentity;
-  }): Promise<void> {
+  }): Promise<boolean> {
     const result = await hostClient.dispatch({
       idempotencyKey: mutationIdempotencyKey(`computer-use:request:${input.app.bundleId}`),
       input: {
@@ -145,7 +148,7 @@ export function ComputerUseBlock({
     if (result.type !== "integration.computer.setup.request") {
       throw new Error("The approval was not requested.");
     }
-    await approval.ask(result.request.id);
+    return approval.ask(result.request.id);
   }
 
   async function chooseAppApproval(next: ComputerUseAppApproval) {
@@ -184,9 +187,9 @@ export function ComputerUseBlock({
   }
 
   async function unblock(row: ComputerUseAppRow) {
-    await run(appKey(row.connectionId), () =>
-      askOnThisMac({ access: row.access, app: row.identity }),
-    );
+    await run(appKey(row.connectionId), async () => {
+      await askOnThisMac({ access: row.access, app: row.identity });
+    });
   }
 
   async function cancelPending(pending: ComputerUsePendingApp) {
@@ -440,6 +443,9 @@ export function ComputerUseBlock({
       {adding ? (
         <AddAppDialog
           existing={view.apps}
+          // One dialog at a time: the review takes the picker's place, which keeps its search
+          // and list for when the review closes without an approval.
+          hidden={approval.dialog !== null}
           hostClient={hostClient}
           machine={machine}
           onApprove={(input) => askOnThisMac(input)}
@@ -567,6 +573,7 @@ function PermissionSteps({
  */
 function AddAppDialog({
   existing,
+  hidden,
   hostClient,
   machine,
   onApprove,
@@ -574,12 +581,15 @@ function AddAppDialog({
   onDone,
 }: {
   readonly existing: readonly ComputerUseAppRow[];
+  /** A review it opened is on screen in its place. */
+  readonly hidden: boolean;
   readonly hostClient: HostClient;
   readonly machine: MachineSummary;
+  /** True when the person allowed the app. */
   readonly onApprove: (input: {
     readonly access: IntegrationAccess;
     readonly app: ComputerAppIdentity;
-  }) => Promise<void>;
+  }) => Promise<boolean>;
   readonly onClose: () => void;
   readonly onDone: () => Promise<void>;
 }) {
@@ -685,11 +695,16 @@ function AddAppDialog({
     setAsking({ access, bundleId: app.identity.bundleId });
     setAskError(null);
     try {
-      await act(
+      const allowed = await act(
         hostClient,
         { label: "add this app", done: "added", happened: "this app was added" },
         () => onApprove({ access, app: app.identity }),
       );
+      // Declined, or the review closed unanswered: the person is back where they chose.
+      if (!allowed) {
+        setAsking(null);
+        return;
+      }
       await onDone();
     } catch (reason) {
       setAskError({ key: app.identity.bundleId, message: failureWords(reason) ?? "" });
@@ -711,6 +726,7 @@ function AddAppDialog({
     return shared;
   }, [apps]);
 
+  if (hidden) return null;
   return (
     <Dialog
       labelledBy="computer-use-add-title"
