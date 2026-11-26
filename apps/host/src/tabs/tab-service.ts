@@ -82,6 +82,11 @@ export interface PageTabsPort {
   ): Promise<Extract<TabViewer, { kind: "page" }>>;
   bind(claims: RunToolScope, row: TabRecord): Promise<PageAgentBinding>;
   bindBrowserScript?(actor: BrowserBindingTabActor, row: TabRecord): Promise<PageAgentBinding>;
+  /**
+   * Registers the row's page as ending, inside the close's own commit (before its locks are
+   * released), so it is never reused; the answer takes it back if the commit did not close it.
+   */
+  ending?(row: TabRecord): (() => void) | undefined;
   closeViewers(ownerId: UserId, row: TabRecord, closePage?: boolean): Promise<void>;
 }
 export interface TabComputerFact {
@@ -1136,6 +1141,23 @@ export class TabService implements TabServicePort {
     const { closed, failed } = await this.#close(actor, tabIds, key, expectedGeneration);
     return { closed, failed };
   }
+  /**
+   * Registers each closing page tab's page as ending, inside the close's own transaction: by the
+   * time its locks are released, the page can no longer be reused by a reopen or bound.
+   */
+  #registerEndings(rows: readonly TabRecord[], registered: Map<TabId, () => void>): void {
+    for (const row of rows)
+      if (row.kind === "page" && !registered.has(row.id)) {
+        const undo = this.options.pages.ending?.(row);
+        if (undo) registered.set(row.id, undo);
+      }
+  }
+
+  /** Takes back every registration the commit did not close (all of them when it did not run). */
+  #settleEndings(registered: Map<TabId, () => void>, closed?: readonly TabId[]): void {
+    for (const [tabId, undo] of registered) if (!closed?.includes(tabId)) undo();
+  }
+
   async #close(
     actor: TabActor,
     tabIds: TabId[],
@@ -1146,40 +1168,51 @@ export class TabService implements TabServicePort {
     const ownerId = owner(actor);
     const failed: TabCloseResult["failed"] = [],
       permitted = new Set<TabId>(),
-      cleanup: { row: TabRecord; closePage: boolean }[] = [];
-    const result = await this.options.store.close(
-      ownerId,
-      tabIds,
-      operationKey(actor, key),
-      async (tx, rows) => {
-        const denied = (await this.options.deniedRows?.(actor, rows, tx)) ?? new Set<TabId>();
-        for (const tabId of tabIds) {
-          try {
-            const row = rows.find((row) => row.id === tabId);
-            if (!row || row.ownerId !== ownerId || denied.has(row.id)) notFound();
-            if (expectedGeneration !== undefined && row.generation !== expectedGeneration)
-              conflict();
-            await this.options.authorizeMembership(actor, tx);
-            permitted.add(tabId);
-            // A closed tab ends its page, whoever opened it and whatever holds it: the person
-            // is told it closed, so nothing of it may go on running in the browser.
-            if (!row.closedAt) cleanup.push({ row, closePage: true });
-          } catch (error) {
-            if (expectedGeneration !== undefined) throw error;
-            failed.push({
-              tabId,
-              error: normalizeToolError({
-                code: error instanceof OpensteerError ? error.code : "internal_error",
-                message: error instanceof OpensteerError ? error.message : "Unable to close tab.",
-                next: null,
-              }),
-            });
+      cleanup: { row: TabRecord; closePage: boolean }[] = [],
+      endings = new Map<TabId, () => void>();
+    const result = await this.options.store
+      .close(
+        ownerId,
+        tabIds,
+        operationKey(actor, key),
+        async (tx, rows) => {
+          const denied = (await this.options.deniedRows?.(actor, rows, tx)) ?? new Set<TabId>();
+          for (const tabId of tabIds) {
+            try {
+              const row = rows.find((row) => row.id === tabId);
+              if (!row || row.ownerId !== ownerId || denied.has(row.id)) notFound();
+              if (expectedGeneration !== undefined && row.generation !== expectedGeneration)
+                conflict();
+              await this.options.authorizeMembership(actor, tx);
+              permitted.add(tabId);
+              // A closed tab ends its page, whoever opened it and whatever holds it: the person
+              // is told it closed, so nothing of it may go on running in the browser.
+              if (!row.closedAt) cleanup.push({ row, closePage: true });
+            } catch (error) {
+              if (expectedGeneration !== undefined) throw error;
+              failed.push({
+                tabId,
+                error: normalizeToolError({
+                  code: error instanceof OpensteerError ? error.code : "internal_error",
+                  message: error instanceof OpensteerError ? error.message : "Unable to close tab.",
+                  next: null,
+                }),
+              });
+            }
           }
-        }
-      },
-      (row) => permitted.has(row.id),
-    );
+          this.#registerEndings(
+            cleanup.map(({ row }) => row),
+            endings,
+          );
+        },
+        (row) => permitted.has(row.id),
+      )
+      .catch((error: unknown) => {
+        this.#settleEndings(endings);
+        throw error;
+      });
     const meta = tabMutationMeta(result);
+    this.#settleEndings(endings, meta.replayed ? undefined : result.tabIds);
     if (!meta.replayed) {
       const ending = cleanup
         .filter(({ row }) => result.tabIds.includes(row.id))
@@ -1214,29 +1247,39 @@ export class TabService implements TabServicePort {
     only?: readonly TabId[],
   ): Promise<TabCloseResult & { groupClosed: boolean; layout: TabLayout }> {
     const permitted = new Set<TabId>(),
-      cleanup: { row: TabRecord; closePage: boolean }[] = [];
-    const result = await this.options.store.closeGroup(
-      owner(actor),
-      groupId,
-      operationKey(actor, key),
-      this.#readmitting(async (tx, rows, layout) => {
-        const item = layout.items.find(
-          (item) => item.kind === "group" && item.group.groupId === groupId,
-        );
-        if (item?.kind !== "group") return;
-        await this.options.authorizeMembership(actor, tx);
-        const denied = (await this.options.deniedRows?.(actor, rows, tx)) ?? new Set<TabId>();
-        for (const tabId of item.group.tabIds) {
-          const row = rows.find((row) => row.id === tabId);
-          if (!row || row.ownerId !== owner(actor) || denied.has(row.id)) continue;
-          permitted.add(tabId);
-          // As a close of each: the member's page ends with it.
-          cleanup.push({ row, closePage: true });
-        }
-      }, readmit),
-      (row) => permitted.has(row.id),
-      only,
-    );
+      cleanup: { row: TabRecord; closePage: boolean }[] = [],
+      endings = new Map<TabId, () => void>();
+    const result = await this.options.store
+      .closeGroup(
+        owner(actor),
+        groupId,
+        operationKey(actor, key),
+        this.#readmitting(async (tx, rows, layout) => {
+          const item = layout.items.find(
+            (item) => item.kind === "group" && item.group.groupId === groupId,
+          );
+          if (item?.kind !== "group") return;
+          await this.options.authorizeMembership(actor, tx);
+          const denied = (await this.options.deniedRows?.(actor, rows, tx)) ?? new Set<TabId>();
+          for (const tabId of item.group.tabIds) {
+            const row = rows.find((row) => row.id === tabId);
+            if (!row || row.ownerId !== owner(actor) || denied.has(row.id)) continue;
+            permitted.add(tabId);
+            // As a close of each: the member's page ends with it.
+            cleanup.push({ row, closePage: true });
+          }
+          this.#registerEndings(
+            cleanup.map(({ row }) => row),
+            endings,
+          );
+        }, readmit),
+        (row) => permitted.has(row.id),
+        only,
+      )
+      .catch((error: unknown) => {
+        this.#settleEndings(endings);
+        throw error;
+      });
     // The members this close left in its group are the ones that could not close: read from the
     // mutation's own layout, a replay answers exactly what the first call answered.
     const left = result.layout.items.find(
@@ -1254,6 +1297,7 @@ export class TabService implements TabServicePort {
     );
     // As a close of each member finishes: viewers end and the catalog moves, once.
     const meta = tabMutationMeta(result);
+    this.#settleEndings(endings, meta.replayed ? undefined : result.tabIds);
     if (!meta.replayed) {
       const ending = cleanup
         .filter(({ row }) => result.tabIds.includes(row.id))

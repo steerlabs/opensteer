@@ -292,6 +292,15 @@ function mentionsChromeExtensionUrl(value: unknown, depth: number): boolean {
   return false;
 }
 
+/** A page that is ending: registered at its tab's close, fenced, then closed. */
+interface PageEnding {
+  fence?: Promise<void>;
+  readonly initial: Promise<void>;
+  started: boolean;
+  readonly releaseFence: () => void;
+  readonly settleInitial: () => void;
+}
+
 export class BrowserCdpConnectionEnded extends Error {
   override readonly name = "BrowserCdpConnectionEnded";
 }
@@ -974,10 +983,12 @@ export class BrowserService {
   readonly #runPlaces: RunPlaceRecorder;
 
   readonly #tabDescriptorTimers = new Map<BrowserSessionId, NodeJS.Timeout>();
-  readonly #pendingPageCloses = new Map<
-    BrowserSessionId,
-    Map<BrowserSurfaceId, { fence?: Promise<void>; initial: Promise<void> }>
-  >();
+  /**
+   * The pages that are ending, by (session, surface). A tab's close registers its page here inside
+   * the close's own commit, so a page whose tab has closed is never reused, never bound and never
+   * driven: until the runtime's fence holds it, every command of its session waits.
+   */
+  readonly #pendingPageCloses = new Map<BrowserSessionId, Map<BrowserSurfaceId, PageEnding>>();
   readonly #brokers = new Map<BrowserSessionId, HostedBrowserBroker>();
   readonly #sessionAccessChecks = new Map<string, Promise<boolean>>();
   readonly #personUseGroups = new Map<
@@ -1929,9 +1940,10 @@ export class BrowserService {
             losses.push({ surfaceId: document.surfaceId, documentId: document.documentId });
           continue;
         }
-        // The person closed this tab while parked: its page closes now, nothing is lost.
-        if (this.#workspaceTabs)
-          await broker.requestCdp(
+        // The person closed this tab while parked: its page closes now, nothing is lost. When it
+        // was the session's last page, the session closes with that answer, an ordinary close.
+        if (this.#workspaceTabs) {
+          const closed = await broker.requestCdp(
             {
               type: "cdp.command",
               requestId: randomUUID(),
@@ -1945,6 +1957,23 @@ export class BrowserService {
             },
             signal,
           );
+          if (
+            z.object({ outcome: z.enum(["tab-closed", "session-closed"]) }).safeParse(closed.result)
+              .data?.outcome === "session-closed"
+          ) {
+            await this.#sessionEndedByAnswer(
+              pool,
+              sessionId,
+              { slotId: fence.slot, term: fence.term },
+              AbortSignal.any([
+                ...(signal ? [signal] : []),
+                this.#closing.signal,
+                AbortSignal.timeout(browserOpenWorkMs),
+              ]),
+            );
+            return [];
+          }
+        }
       }
       return losses.length
         ? [{ sessionId, reason: "document-changed", surfaces: losses, endSession: false }]
@@ -3571,6 +3600,49 @@ export class BrowserService {
     );
   }
 
+  /** The page's ending, registered once; not started until its close runs. */
+  #pageEnding(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId): PageEnding {
+    let pending = this.#pendingPageCloses.get(sessionId);
+    if (!pending) {
+      pending = new Map();
+      this.#pendingPageCloses.set(sessionId, pending);
+    }
+    const existing = pending.get(surfaceId);
+    if (existing) return existing;
+    const fence = Promise.withResolvers<void>();
+    const initial = Promise.withResolvers<void>();
+    const entry: PageEnding = {
+      fence: fence.promise,
+      initial: initial.promise,
+      started: false,
+      releaseFence: () => {
+        delete entry.fence;
+        fence.resolve();
+      },
+      settleInitial: () => initial.resolve(),
+    };
+    pending.set(surfaceId, entry);
+    return entry;
+  }
+
+  /** Takes back an ending that never started (its close did not commit, or has nothing to end). */
+  #dropPageEnding(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId, entry?: PageEnding) {
+    const pending = this.#pendingPageCloses.get(sessionId);
+    const current = pending?.get(surfaceId);
+    if (!pending || !current || (entry ? current !== entry : current.started)) return;
+    pending.delete(surfaceId);
+    if (!pending.size) this.#pendingPageCloses.delete(sessionId);
+    current.settleInitial();
+    current.releaseFence();
+  }
+
+  /**
+   * Ends a page by its identity (session, surface), whatever it shows: the one close of a tab's
+   * page on both paths, fenced first, and retried with backoff until the runtime confirms the
+   * page gone or the session's channel is gone (a parked guest closes it at its wake, where a
+   * page whose tab closed or moved is closed). The first attempt's end settles the caller off
+   * the pool; on the pool the caller does not wait for the guest.
+   */
   #queuePhysicalPageClose(
     sessionId: BrowserSessionId,
     surfaceId: BrowserSurfaceId,
@@ -3578,82 +3650,62 @@ export class BrowserService {
     witness?: { ownerId: UserId; row: TabRecord },
   ): Promise<void> {
     const broker = this.#brokers.get(sessionId);
-    if (!broker?.live) return Promise.resolve();
-    let pending = this.#pendingPageCloses.get(sessionId);
-    if (!pending) {
-      pending = new Map();
-      this.#pendingPageCloses.set(sessionId, pending);
+    if (!broker?.live) {
+      this.#dropPageEnding(sessionId, surfaceId);
+      return Promise.resolve();
     }
-    const existing = pending.get(surfaceId);
-    if (existing) return existing.initial;
-    const fence = Promise.withResolvers<void>();
-    const initial = Promise.withResolvers<void>();
-    const entry: { fence?: Promise<void>; initial: Promise<void> } = {
-      fence: fence.promise,
-      initial: initial.promise,
-    };
-    pending.set(surfaceId, entry);
-    const releaseFence = () => {
-      delete entry.fence;
-      fence.resolve();
+    const entry = this.#pageEnding(sessionId, surfaceId);
+    if (entry.started) return entry.initial;
+    entry.started = true;
+    let reported = false;
+    const failed = (error: unknown) => {
+      if (reported) return;
+      reported = true;
+      onFailure?.();
+      this.#onError(error);
     };
     const close = async () => {
-      if (broker.pooled) {
-        initial.resolve();
-        await this.#closePooledPage(broker, sessionId, surfaceId, witness);
-        return;
-      }
       let backoff = 250;
-      let reported = false;
-      const failed = (error: unknown) => {
-        if (reported) return;
-        reported = true;
-        onFailure?.();
-        this.#onError(error);
-      };
-      while (!this.#closed && broker.live) {
+      while (!this.#closed && this.#brokers.get(sessionId) === broker && broker.live) {
         try {
-          if (entry.fence) {
-            try {
-              await broker.requestCdp({
-                type: "cdp.command",
-                requestId: randomUUID(),
-                command: { method: browserHostMethods.fenceTab, parameters: { surfaceId } },
-              });
-              releaseFence();
-            } catch (error) {
-              // A runtime without the separate fence can still close the page. Keep
-              // the forwarding barrier up until one of those operations succeeds.
-              failed(error);
+          if (broker.pooled) {
+            entry.settleInitial();
+            await this.#closePooledPage(broker, sessionId, surfaceId, witness, entry.releaseFence);
+          } else {
+            if (entry.fence) {
+              try {
+                await broker.requestCdp({
+                  type: "cdp.command",
+                  requestId: randomUUID(),
+                  command: { method: browserHostMethods.fenceTab, parameters: { surfaceId } },
+                });
+                entry.releaseFence();
+              } catch (error) {
+                // A runtime without the separate fence can still close the page. Keep
+                // the forwarding barrier up until one of those operations succeeds.
+                failed(error);
+              }
             }
+            const response = await this.#requestPhysicalTabClose(broker, surfaceId, true);
+            z.object({ outcome: z.enum(["tab-closed", "session-closed"]) }).parse(response.result);
           }
-          const response = await this.#requestPhysicalTabClose(broker, surfaceId, true);
-          z.object({ outcome: z.enum(["tab-closed", "session-closed"]) }).parse(response.result);
-          releaseFence();
+          entry.releaseFence();
           return;
         } catch (error) {
           failed(error);
         } finally {
-          initial.resolve();
+          entry.settleInitial();
         }
         await delay(backoff, undefined, { signal: this.#closing.signal, ref: false });
         backoff = Math.min(backoff * 2, 5_000);
       }
     };
     void close()
-      .finally(() => {
-        pending.delete(surfaceId);
-        if (!pending.size) this.#pendingPageCloses.delete(sessionId);
-        initial.resolve();
-        releaseFence();
-      })
+      .finally(() => this.#dropPageEnding(sessionId, surfaceId, entry))
       .catch((error: unknown) => {
-        if (!this.#closed) {
-          if (broker.pooled) onFailure?.();
-          this.#onError(error);
-        }
+        if (!this.#closed) this.#onError(error);
       });
-    return initial.promise;
+    return entry.initial;
   }
 
   /** One bounded close of a page no tab shows; true only when the browser confirmed it. */
@@ -3691,11 +3743,17 @@ export class BrowserService {
     }
   }
 
+  /**
+   * One bounded attempt to end a pooled page by its identity (session, surface), whatever document
+   * it shows: the person closed the tab, not a document of it. The attempt is recorded before its
+   * frames (a PooledBrowserRelay).
+   */
   async #closePooledPage(
     broker: HostedBrowserBroker,
     sessionId: BrowserSessionId,
     surfaceId: BrowserSurfaceId,
-    witness?: { ownerId: UserId; row: TabRecord },
+    witness?: { ownerId: UserId; row?: TabRecord },
+    fenced?: () => void,
   ) {
     if (!witness || !this.#pools.size || !(this.#repository instanceof OpensteerStore))
       throw unavailable("The pooled browser page has no durable close witness.");
@@ -3703,24 +3761,19 @@ export class BrowserService {
       ?.runnerId;
     const pool = runnerId ? this.#pools.get(runnerId) : undefined;
     if (!pool) return;
-    const documentId = this.pageInventory(sessionId)?.records.get(surfaceId)?.documentId;
-    if (!documentId) return;
+    // Its page is already gone.
+    if (!this.pageInventory(sessionId)?.records.has(surfaceId)) return;
     const identity = pool.identity();
     const signal = AbortSignal.any([this.#closing.signal, AbortSignal.timeout(browserOpenWorkMs)]);
     const reservation = await pool.gate.background(signal);
     let tracked: PooledBrowserRelay | undefined;
     try {
       const recheck = async () => {
-        const row = await this.#workspaceTabs?.get(witness.ownerId, witness.row.id, true);
         if (
-          !row?.closedAt ||
-          row.generation !== witness.row.generation + 1 ||
-          !isDeepStrictEqual(row.pageBinding, witness.row.pageBinding) ||
           this.#brokers.get(sessionId) !== broker ||
-          !isDeepStrictEqual(pool.identity(), identity) ||
-          this.pageInventory(sessionId)?.records.get(surfaceId)?.documentId !== documentId
+          !isDeepStrictEqual(pool.identity(), identity)
         )
-          throw unavailable("The closed browser page changed before cleanup.");
+          throw unavailable("The pooled browser changed before the page closed.");
         signal.throwIfAborted();
       };
       await recheck();
@@ -3740,6 +3793,8 @@ export class BrowserService {
         signal,
         admission,
       );
+      // The runtime's own fence holds the page now: the session's other work goes on.
+      fenced?.();
       const result = await broker.requestCdp(
         {
           type: "cdp.command",
@@ -3756,22 +3811,54 @@ export class BrowserService {
         .object({ outcome: z.enum(["tab-closed", "session-closed"]) })
         .parse(result.result);
       relay.confirmedClosed();
-      // It was the session's last page: the guest, under the fence this close was admitted
-      // under, answered that it ended the session (V1's runtime-ended). As in a regular browser
-      // nothing of it is left running: it closes with that answer at once, an ordinary end, and
-      // no reattach looks for it or notes it as lost.
-      if (outcome === "session-closed") {
-        pool.endedByAnswer(sessionId);
+      if (outcome === "session-closed")
+        await this.#sessionEndedByAnswer(
+          pool,
+          sessionId,
+          { slotId: identity.slotId, term: identity.term },
+          signal,
+        );
+    } finally {
+      if (tracked) await tracked.close();
+      else reservation.release();
+    }
+  }
+
+  /**
+   * The guest answered a close of the Home's own that it ended the session with its last page
+   * (V1's runtime-ended, under the fence the close was admitted under): an ordinary close, recorded
+   * through the pool's one closed-writer, the one record of it for the direct close and for the
+   * close at a wake. The coordinator is told first, so the channel's end is no loss and no
+   * reattach looks for it; the write is retried within the close's bound, and if it is never
+   * written the mark is taken back, so loss recovery sees the session again.
+   */
+  async #sessionEndedByAnswer(
+    pool: BrowserPoolCoordinator,
+    sessionId: BrowserSessionId,
+    target: BrowserPoolSessionTarget,
+    signal: AbortSignal,
+  ): Promise<void> {
+    pool.endedByAnswer(sessionId);
+    let backoff = 250;
+    for (;;) {
+      try {
         await this.#transitionBrowserSession({
           sessionId,
           state: "closed",
           evidence: { kind: "runtime-ended" },
-          target: { slotId: identity.slotId, term: identity.term },
+          target,
         });
+        return;
+      } catch (error) {
+        this.#onError(error);
+        try {
+          await delay(backoff, undefined, { signal, ref: false });
+        } catch {
+          pool.forgetEndedByAnswer(sessionId);
+          return;
+        }
+        backoff = Math.min(backoff * 2, 5_000);
       }
-    } finally {
-      if (tracked) await tracked.close();
-      else reservation.release();
     }
   }
 
@@ -4777,6 +4864,14 @@ export class BrowserService {
         });
       return this.#bindWorkspacePage(actor.authority, row, actor.signal, actor.browserSend);
     },
+    ending: (row) => {
+      const binding = row.pageBinding;
+      if (!binding || !this.#brokers.get(binding.sessionId)?.live) return undefined;
+      const entry = this.#pageEnding(binding.sessionId, binding.surfaceId);
+      return () => {
+        if (!entry.started) this.#dropPageEnding(binding.sessionId, binding.surfaceId, entry);
+      };
+    },
     closeViewers: async (ownerId, row, closePage) => {
       const binding = row.pageBinding;
       if (!binding) return;
@@ -4978,18 +5073,22 @@ export class BrowserService {
             code: "conflict",
             message: "This page has no restorable browser identity.",
           });
-        if (this.#pendingPageCloses.get(binding.sessionId)?.has(binding.surfaceId))
-          throw new OpensteerError({
-            code: "conflict",
-            message: "This browser tab is still closing.",
-          });
+        // A closed tab's page is never reused: a page that is ending (its tab closed, maybe
+        // reopened since) stays ending, and the tab loads its address again in a page of its own.
+        const ending = this.#pendingPageCloses.get(binding.sessionId)?.has(binding.surfaceId);
         const previous = await this.#repository.getBrowserSessionForOwner(
           binding.sessionId,
           ownerId,
         );
         if (agent && previous) await this.admitAgentBrowser(agent, "read-write", [previous]);
         const broker = this.#brokers.get(binding.sessionId);
-        if (previous && !this.#ended(previous) && broker?.live && broker.pageOf(row.id)) {
+        if (
+          !ending &&
+          previous &&
+          !this.#ended(previous) &&
+          broker?.live &&
+          broker.pageOf(row.id)
+        ) {
           this.#workspacePageGenerations.set(`${previous.id}:${row.id}`, row.generation);
           return previous;
         }
@@ -7343,6 +7442,16 @@ export class BrowserService {
         if (lease && !(await fillAllowed())) return expired;
         assertAttached(bindingWasEnded);
         this.#noteAgentCommand(record.id, input.agentBindingId);
+        // A tab of this session is ending: nothing is sent until the runtime's own fence holds
+        // its page (then no binding, lookup or attach reaches it), as a CDP connection's frames.
+        const closing = this.#pendingPageCloses.get(record.id);
+        if (closing?.size) {
+          const fences = [...closing.values()].flatMap(({ fence }) => (fence ? [fence] : []));
+          if (fences.length)
+            await withTimeout(Promise.all(fences), agentRequestTimeoutMs, {
+              timeoutError: () => new BrowserCdpConnectionEnded("A browser tab is still closing."),
+            });
+        }
         assertAttached(bindingWasEnded);
         const replyBudget = confirmed && {
           maxBytes: Math.min(confirmed.maxBytes, maxBrowserTextBytes - 4096),

@@ -875,6 +875,11 @@ export class BrowserPoolCoordinator {
     if (this.#lost.delete(sessionId)) this.#publish(this.#slot);
   }
 
+  /** The session's ordinary close could not be written: loss recovery may see it again. */
+  forgetEndedByAnswer(sessionId: BrowserSessionId): void {
+    if (this.#endedByAnswer.delete(sessionId)) this.#kick();
+  }
+
   /** A pooled session's Runner channel was lost: the loop reattaches it inside its window. */
   channelLost(sessionId: BrowserSessionId, documents?: ReadonlyMap<string, string>): void {
     if (this.#closed || this.#endedByAnswer.has(sessionId)) return;

@@ -11,8 +11,11 @@ A page tab is one entry in the Host's single tab list, beside window, phone and 
 its `tabId` is durable and its live page is a replaceable
 runtime binding. Trigger and watch browsers write no tabs. Only a page's latest session can close it,
 late updates never resurrect a closed tab, and Reopen restores the same `tabId` under a new
-generation. Closing removes the tab from the list and from person viewing, never stopping a Run that
-holds the page; that Run keeps it until ordinary release, and binding the closed tab anew fails.
+generation, in a page of its own that loads its address again, never the closed tab's page. Closing
+a tab ends its page, as a regular browser does, whoever opened it and whatever holds it: the tab
+leaves the list at once, its page is fenced and closed, retried until the browser confirms it gone,
+and a session's last page ends its session. An agent using the page gets an ordinary error on its
+next use, and binding the closed tab anew fails.
 Only committed navigation becomes a restore URL, except that failed navigation keeps its attempted
 address. Overlong addresses are never truncated; legacy Chromium error URLs cannot be reopened.
 

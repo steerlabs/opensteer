@@ -1375,3 +1375,63 @@ it("ends the page of a tab the person closes on the Home's own browser runtime, 
     await fixture.dispose();
   }
 });
+
+it("never reuses a closed tab's page on the Home's own runtime: a reopen while the close is under way loads the address again in a page of its own", async () => {
+  const fixture = await startSessionPersonFixture();
+  const pages = fixture.host.runtime.browser.pageTabs;
+  const closeViewers = pages.closeViewers;
+  try {
+    const { host, profile, site } = fixture;
+    const actor = { kind: "person" as const, ownerId: host.ownerId };
+    const opened = await host.runtime.tabs.open(
+      actor,
+      { kind: "page", url: `${site.origin}/?reopen-gap`, profileId: profile.id },
+      "gap-open",
+    );
+    const tabId = opened.tab.tabId;
+    const first = await vi.waitFor(
+      () => {
+        const found = fixture.chromiumPages().find((open) => open.url().includes("reopen-gap"));
+        if (!found) throw new Error("The person's tab has no page in Chromium yet.");
+        return found;
+      },
+      { timeout: 15_000 },
+    );
+    // The close has committed; its page step waits while the person reopens the tab.
+    const reached = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    pages.closeViewers = async (...args) => {
+      reached.resolve();
+      await release.promise;
+      return closeViewers.apply(pages, args);
+    };
+    const closing = host.runtime.tabs.close(actor, [tabId], "gap-close");
+    await reached.promise;
+    await host.runtime.tabs.reopen(actor, tabId, "gap-reopen");
+    await host.runtime.tabs.activate(host.ownerId, tabId, "gap-activate");
+    // A page of its own loads the address again; the closed tab's page is not reused.
+    const second = await vi.waitFor(
+      () => {
+        const found = fixture
+          .chromiumPages()
+          .find((open) => open !== first && !open.isClosed() && open.url().includes("reopen-gap"));
+        if (!found) throw new Error("The reopened tab has no page of its own.");
+        return found;
+      },
+      { timeout: 15_000 },
+    );
+    release.resolve();
+    expect((await closing).closed).toEqual([tabId]);
+    await vi.waitFor(() => expect(first.isClosed()).toBe(true), { timeout: 5_000 });
+    expect(second.isClosed()).toBe(false);
+    const row = await host.store.database
+      .selectFrom("personalTabs")
+      .select(["closedAt"])
+      .where("id", "=", tabId)
+      .executeTakeFirstOrThrow();
+    expect(row.closedAt).toBeNull();
+  } finally {
+    pages.closeViewers = closeViewers;
+    await fixture.dispose();
+  }
+});
