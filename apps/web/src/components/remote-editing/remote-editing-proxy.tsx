@@ -136,15 +136,40 @@ export function RemoteEditingProxy({
   const refuse = useCallback((words: string) => {
     if (alive.current) setError(words);
   }, []);
+  // What this view sent and the device has not answered, and the refusal of input that never
+  // left it is showing: that refusal ("still catching up") is true only until the device has
+  // answered everything it was waiting on, and goes then.
+  const sending = useRef(0);
+  const refusalShown = useRef<string | null>(null);
+  const tracked = useCallback(<T,>(sent: Promise<T>): Promise<T> => {
+    sending.current += 1;
+    const settled = (taken: boolean) => {
+      sending.current -= 1;
+      const shown = refusalShown.current;
+      if (!taken || sending.current > 0 || !shown) return;
+      refusalShown.current = null;
+      if (alive.current) setError((currentError) => (currentError === shown ? null : currentError));
+    };
+    return sent.then(
+      (result) => {
+        settled(true);
+        return result;
+      },
+      (reason: unknown) => {
+        settled(false);
+        throw reason;
+      },
+    );
+  }, []);
   // A refusal of input that never left says what happened in its own words; anything else is
   // said by the shared presenter, never as the exception's text.
   const failure = useCallback(
-    (reason: unknown) =>
-      refuse(
-        reason instanceof DisplayEditingRefusal
-          ? reason.message
-          : presentFailure(reason, "edit remotely"),
-      ),
+    (reason: unknown) => {
+      if (reason instanceof DisplayEditingRefusal) {
+        refusalShown.current = reason.message;
+        refuse(reason.message);
+      } else refuse(presentFailure(reason, "edit remotely"));
+    },
     [refuse],
   );
   /**
@@ -175,7 +200,7 @@ export function RemoteEditingProxy({
           : null;
       setError(null);
       try {
-        void current.current.wire.send(operation).then(
+        void tracked(current.current.wire.send(operation)).then(
           (result) => {
             if (!arm) {
               if (result?.outcome === "unknown")
@@ -210,7 +235,7 @@ export function RemoteEditingProxy({
         failure(reason);
       }
     },
-    [failure, refused],
+    [failure, refused, tracked],
   );
   const feed = useCallback(
     (event: EditingProxyEvent, native?: Event) => {
@@ -247,7 +272,7 @@ export function RemoteEditingProxy({
           } else {
             setError(null);
             try {
-              void sendBatch(group).then(
+              void tracked(sendBatch(group)).then(
                 (result) => {
                   if (result?.outcome === "unknown")
                     refuse("May have been pasted: check before pasting again.");

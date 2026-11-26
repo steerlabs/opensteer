@@ -309,6 +309,30 @@ describe("real shared proxy element", () => {
     await act(async () => undefined);
     expect(container.textContent).toMatch(/Couldn.t confirm this change/);
   });
+  it("takes back a refusal of input that never left once the device has answered what was waiting", async () => {
+    // Real Mac, one long burst: "This device is still catching up. Try again." appeared at once and
+    // was still there more than 20 s later, after the device had caught up and typing worked.
+    const { DisplayEditingRefusal } = await import("@opensteer/client/integrations");
+    const { container, element, wire } = setup();
+    const waiting: (() => void)[] = [];
+    wire.send.mockImplementation(
+      () => new Promise<undefined>((resolve) => waiting.push(() => resolve(undefined))),
+    );
+    input(element(), "a");
+    input(element(), "ab");
+    wire.send.mockImplementationOnce(async () => {
+      throw new DisplayEditingRefusal("capacity", "This device is still catching up. Try again.");
+    });
+    input(element(), "abc");
+    await act(async () => undefined);
+    // True while the device is still answering what it was sent.
+    expect(container.textContent).toContain("This device is still catching up. Try again.");
+    await act(async () => waiting.shift()!());
+    expect(container.textContent).toContain("This device is still catching up. Try again.");
+    // Everything waiting has been answered: the device takes input again, and the words go.
+    await act(async () => waiting.shift()!());
+    expect(container.textContent).not.toContain("still catching up");
+  });
   it("uses remote caret and field hints, then replaces sensitive fields with a password proxy", () => {
     const { element, render } = setup();
     expect(element().style.left).toBe("120px");
