@@ -718,7 +718,9 @@ it("keeps a running browser's sessions through a Home crash and reattaches them"
     const next = await j.crashHome(home);
     await until(() => expect(next.coordinator.gate.phase).toBe("open"));
     expect((await j.row(sessionId))?.state).toBe("ready");
-    expect(next.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(original);
+    await until(() =>
+      expect(next.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(original),
+    );
     expect(page.page.isClosed()).toBe(false);
     expect(await page.value()).toBe('["unsent draft",99]');
     expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toEqual([]);
@@ -746,8 +748,10 @@ for (const away of ["within", "past"] as const)
       await until(() => expect(next.coordinator.gate.phase).toBe("open"));
       if (away === "within") {
         expect((await j.row(sessionId))?.state).toBe("ready");
-        expect(next.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(
-          original,
+        await until(() =>
+          expect(next.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).toBe(
+            original,
+          ),
         );
         expect(page.page.isClosed()).toBe(false);
         expect(await page.value()).toBe('["unsent draft",99]');
@@ -755,7 +759,7 @@ for (const away of ["within", "past"] as const)
         // The reconnect is over: nothing of it holds the next sleep off.
         expect(await next.coordinator.tryPark()).toBe("parked");
       } else {
-        expect((await j.row(sessionId))?.state).toBe("failed");
+        await until(async () => expect((await j.row(sessionId))?.state).toBe("failed"));
         expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject(
           [{ sessionId, surfaceId: tabId, reason: "not-adopted" }],
         );
@@ -1352,11 +1356,11 @@ it("never closes a pooled row the runtime ended on its own, closing status and c
     } finally {
       frames.mockRestore();
     }
-    // Neither closing nor closed: the person did not stop it. Its window ends it as a loss,
-    // with its note, and no end request was ever needed.
+    // Neither closing nor closed: the person did not stop it. The reattach answers with the
+    // loss, and no end request was ever needed.
     await until(async () => expect((await j.row(sessionId))?.state).toBe("failed"));
     expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
-      { sessionId },
+      { sessionId, reason: "session-gone" },
     ]);
     expect(asked).toBe(0);
   } finally {
@@ -2453,7 +2457,7 @@ it("keeps the person's pages through a Runner restart and reattaches them under 
     await until(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
     expect((await j.row(sessionId))?.state).toBe("ready");
     expect(page.page.isClosed()).toBe(false);
-    const waiting = home.coordinator.gate.reserve(AbortSignal.timeout(15_000));
+    const waiting = home.coordinator.gate.reserve(AbortSignal.timeout(15_000), { sessionId });
     j.runnerUp();
     const held = await waiting;
     held.release();
@@ -2488,7 +2492,7 @@ it("keeps the person's pages when the Runner's channel closes cleanly, code 1000
     await until(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
     expect((await j.row(sessionId))?.state).toBe("ready");
     expect(page.page.isClosed()).toBe(false);
-    const waiting = home.coordinator.gate.reserve(AbortSignal.timeout(15_000));
+    const waiting = home.coordinator.gate.reserve(AbortSignal.timeout(15_000), { sessionId });
     j.runnerUp();
     const held = await waiting;
     held.release();
@@ -2699,7 +2703,7 @@ it("waits on the reconnecting pool gate instead of refusing openTab as unavailab
   const j = await journey("runner-away-open-tab", { chromium: false });
   try {
     const home = await j.startHome();
-    const { sessionId } = await home.service.openTab(j.task.userId, j.command("seed"));
+    const seed = await home.service.openTab(j.task.userId, j.command("seed"));
 
     // 1. Mid-resolve drop: the Runner goes away right after listEligibleBrowserRunners returns,
     // before #resolveIdentityOpen checks #resolveTarget(placement). openTab must wait on the
@@ -2721,7 +2725,7 @@ it("waits on the reconnecting pool gate instead of refusing openTab as unavailab
       await until(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
       await until(() => expect(home.coordinator.gate.demand).toBe(true));
       j.runnerUp();
-      expect(await opening).toMatchObject({ tabId: expect.any(String), sessionId });
+      expect(await opening).toMatchObject({ tabId: expect.any(String), sessionId: seed.sessionId });
     } finally {
       runnerSpy.mockRestore();
     }
@@ -2781,6 +2785,55 @@ it("waits on the reconnecting pool gate instead of refusing openTab as unavailab
       await nonPersonal.close().catch(() => undefined);
     }
   } finally {
+    j.runnerUp();
+    await j.close();
+  }
+});
+
+it("opens an unbound tab in the reconnecting Guest session with its cookies", async () => {
+  const j = await journey("guest-open-reconnecting", { channelDeadlineMs: 60_000 });
+  const reattaching = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  try {
+    let home = await j.startHome();
+    const seed = await home.service.openTab(j.task.userId, j.command("guest-seed"));
+    const { cdp } = await j.draft();
+    expect(
+      await cdp.send("Network.setCookie", {
+        name: "signedIn",
+        value: "fixture",
+        url: "https://account.example.test/",
+      }),
+    ).toMatchObject({ success: true });
+    j.runnerDown();
+    home = await j.crashHome(home);
+    const attach = j.guest.attach.bind(j.guest);
+    vi.spyOn(j.guest, "attach").mockImplementationOnce(async (...args) => {
+      reattaching.resolve();
+      await resume.promise;
+      return attach(...args);
+    });
+    j.runnerUp();
+    await reattaching.promise;
+    expect(home.coordinator.gate.phase).toBe("open");
+    let opened = false;
+    const opening = home.service.openTab(j.task.userId, j.command("guest-new")).finally(() => {
+      opened = true;
+    });
+    void opening.catch(() => undefined);
+    await until(() => expect(opened || home.coordinator.gate.demand).toBe(true));
+    expect(opened).toBe(false);
+    resume.resolve();
+    expect(await opening).toMatchObject({ tabId: expect.any(String), sessionId: seed.sessionId });
+    const newest = j.launched()!.context.pages().at(-1);
+    if (!newest) throw new Error("The tab did not open.");
+    expect(
+      await (
+        await newest.cdp()
+      ).send("Network.getCookies", { urls: ["https://account.example.test/"] }),
+    ).toMatchObject({ cookies: [{ name: "signedIn", value: "fixture" }] });
+  } finally {
+    resume.resolve();
     j.runnerUp();
     await j.close();
   }

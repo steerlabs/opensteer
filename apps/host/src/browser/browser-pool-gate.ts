@@ -1,4 +1,4 @@
-import { OpensteerError } from "@opensteer/core";
+import { OpensteerError, type BrowserSessionId } from "@opensteer/core";
 import { BrowserPoolAdmissionClosed } from "@opensteer/database";
 
 /** The controller explicitly refused this start/wake attempt. */
@@ -62,12 +62,17 @@ export class BrowserPoolGate {
   #refusalGeneration = 0;
   #lastRefusalReason: string | undefined;
   #lastRefusalSavedStateKept = false;
+  readonly #sessionPending: (id: BrowserSessionId) => boolean;
   readonly #idle: (() => void)[] = [];
   readonly #settlers = new Set<() => Promise<void>>();
   /** The loop is asked to act: someone waits with demand, or a hold needs holders gone. */
   onChange: () => void = () => {};
   /** Admission, reservations, or viewers changed: the idle-park rule updates its timer. */
   onIdleStateChanged: () => void = () => {};
+
+  constructor(sessionPending: (id: BrowserSessionId) => boolean = () => false) {
+    this.#sessionPending = sessionPending;
+  }
 
   /** The loop's facts. `released` is for good: nothing moves it again. */
   set(facts: {
@@ -232,9 +237,9 @@ export class BrowserPoolGate {
   /** Demand: asks the loop to wake a parked browser and waits for it. */
   reserve(
     signal: AbortSignal,
-    options?: { readonly failOnRefusal?: boolean },
+    options?: { readonly failOnRefusal?: boolean; readonly sessionId?: BrowserSessionId },
   ): Promise<BrowserPoolReservation> {
-    return this.#wait(signal, true, options?.failOnRefusal === true);
+    return this.#wait(signal, true, options?.failOnRefusal === true, options?.sessionId);
   }
 
   /** Taken when a send without a consumer is queued. Before D it vetoes the park. */
@@ -269,6 +274,7 @@ export class BrowserPoolGate {
     signal: AbortSignal,
     demand: boolean,
     failOnRefusal = false,
+    sessionId?: BrowserSessionId,
   ): Promise<BrowserPoolReservation> {
     if (demand) this.#waiting++;
     const seenRefusal = this.#refusalGeneration;
@@ -294,7 +300,8 @@ export class BrowserPoolGate {
             this.#lastRefusalReason ?? "refused",
             this.#lastRefusalSavedStateKept,
           );
-        if (this.admits) return this.#take(demand, waited);
+        if (this.admits && (!sessionId || !this.#sessionPending(sessionId)))
+          return this.#take(demand, waited);
         if (this.#preparing && (demand || !this.#repairing)) this.#demanded = true;
         // Demand asks the loop once, as it begins to wait: the loop keeps a change that came
         // during a step for the turn after it, so asking again at every change of the gate

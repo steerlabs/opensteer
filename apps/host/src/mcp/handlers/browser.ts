@@ -340,7 +340,8 @@ export class BrowserToolHandlers {
   }
 
   async #pooledTarget(caller: ConnectionCaller, target: BrowserTarget) {
-    if (target.profileId === null) return;
+    const { profileId } = target;
+    if (profileId === null) return;
     const pool = this.#ports.pooledBrowser?.(target.runnerId);
     if (!pool) return;
     const actor = { kind: "connection", caller } as const;
@@ -358,7 +359,7 @@ export class BrowserToolHandlers {
       // Null: its session is being reattached and its document is not known yet.
       const document = pool.pageDocument(sessionId, tabId);
       if (document === undefined) throw tabNotFound();
-      return { tab: JSON.stringify([row.generation, sessionId, lineageId]), document };
+      return { tab: JSON.stringify([row.generation, sessionId, lineageId]), document, sessionId };
     };
     const seen = target.tabId ? await witness(target.tabId) : null;
     // A document not known when the call began is bound at the first check that knows it, once
@@ -366,6 +367,11 @@ export class BrowserToolHandlers {
     let document = seen?.document ?? null;
     return {
       ...pool,
+      reserve: (signal: AbortSignal) =>
+        pool.reserve(
+          signal,
+          seen ? { sessionId: seen.sessionId } : { ownerId: caller.userId, profileId },
+        ),
       generation: seen
         ? JSON.stringify([...(JSON.parse(seen.tab) as unknown[]), seen.document])
         : null,

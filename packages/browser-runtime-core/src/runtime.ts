@@ -10,6 +10,7 @@ import {
   type StandardCdpAttachment,
 } from "@opensteer/browser-core";
 import {
+  browserPoolSessionGoneReason,
   type RuntimeBrowserAttachTicketClaims as BrowserAttachTicketClaims,
   type BrowserEngine,
   type BrowserSessionId,
@@ -1259,12 +1260,22 @@ export class BrowserRuntime implements NativePresentationSource {
         const previous = operationKey ? this.initialOperations.get(operationKey) : undefined;
         const active = previous && this.sessions.get(previous.sessionId);
         if (this.pool) {
+          const held = this.sessions.get(claims.sessionId);
+          if (
+            claims.reattach &&
+            this.pool.acceptsTraffic &&
+            !held &&
+            !this.poolOpening.has(claims.sessionId) &&
+            !this.poolSessionHasPages(claims.sessionId)
+          )
+            throw new BrowserRuntimeError("not_found", "The browser session has ended.", {
+              reason: browserPoolSessionGoneReason,
+            });
           if (this.poolEnded.has(claims.sessionId))
             throw new BrowserRuntimeError("not_found", "The browser session has ended.");
           opening = true;
           this.poolOpening.set(claims.sessionId, (this.poolOpening.get(claims.sessionId) ?? 0) + 1);
           const attachment = claims.pool?.attachment;
-          const held = this.sessions.get(claims.sessionId);
           if (!attachment || (held?.poolAttachment && attachment <= held.poolAttachment))
             throw new BrowserRuntimeError("forbidden", "The pooled browser attachment is stale.");
           if (held && (this.pool.canAdopt(claims.sessionId) || held.channelLostUntil !== undefined))
@@ -1571,10 +1582,24 @@ export class BrowserRuntime implements NativePresentationSource {
       await session.controller.detachForPool().catch(() => undefined);
     }
     const router = session.host.router;
+    const [root, ...others] = session.ledger.resumeAfterRelayRestart();
+    if (
+      !root &&
+      this.pool?.acceptsTraffic &&
+      !this.poolSessionHasPages(session.sessionId) &&
+      [...session.ledger.policyRecords()].every(({ live }) => live?.page.isClosed())
+    ) {
+      this.requirePoolTraffic(claims, true);
+      endPresentations(session);
+      await this.endActiveSession(session, true);
+      this.requirePoolTraffic(claims, true);
+      throw new BrowserRuntimeError("not_found", "The browser page closed.", {
+        reason: browserPoolSessionGoneReason,
+      });
+    }
     let registered = false;
     let controller: BrowserController | undefined;
     try {
-      const [root, ...others] = session.ledger.resumeAfterRelayRestart();
       if (!root) throw new BrowserRuntimeError("not_found", "The browser page closed.");
       router.registerSession(
         session.sessionId,
@@ -1615,6 +1640,11 @@ export class BrowserRuntime implements NativePresentationSource {
       undefined,
       this.poolTrafficFor(session, generation),
     );
+  }
+
+  private poolSessionHasPages(sessionId: string): boolean {
+    const { pages, creations } = this.pages.holdingsOf(sessionId);
+    return pages !== 0 || creations !== 0;
   }
 
   /** Ends a detached session whose lost channel did not come back by `at`. */

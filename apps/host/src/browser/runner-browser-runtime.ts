@@ -9,12 +9,14 @@ import { OpensteerError, type RunnerId } from "@opensteer/core";
 import { sameProfileBinding } from "@opensteer/database";
 import type { RunnerAuxiliaryStream, RunnerStreamLossReason } from "@opensteer/orchestration";
 import {
+  browserPoolSessionGoneReason,
   RunnerAuxiliaryFrameFenceSchema,
   RunnerAuxiliaryRequestIdSchema,
   sameRunnerAuxiliaryFence,
   type BrowserPlacementSelector,
   type InitialPageReady,
   type LocalProfileBinding,
+  type ProtocolError,
   type RunnerAuxiliaryFrameFence,
   type RunnerAuxiliaryRequestId,
 } from "@opensteer/protocol";
@@ -1620,8 +1622,11 @@ function capabilityReference(lease: BrowserCapabilityLease): BrowserCapabilityRe
 
 const protocolRejection = new WeakSet<Error>();
 
-function protocolFailure(error: { readonly message: string; readonly retryable: boolean }): Error {
-  const failure = relayError(error.message, error.retryable);
+function protocolFailure(error: ProtocolError): Error {
+  const failure =
+    error.code === "not_found" && error.reason === browserPoolSessionGoneReason
+      ? new OpensteerError({ code: "not_found", reason: error.reason, message: error.message })
+      : relayError(error.message, error.retryable);
   protocolRejection.add(failure);
   return failure;
 }

@@ -41,6 +41,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { pooledSessionWithoutChannelMs } from "@opensteer/browser-runtime-core";
+import { browserPoolSessionGoneReason } from "@opensteer/protocol";
 import {
   BrowserPoolControllerJournal,
   expectationOf,
@@ -107,9 +108,15 @@ export interface BrowserPoolAdopter {
     readonly attempt: number;
     /** The attempt stops when this aborts; nothing of it is left running. */
     readonly signal?: AbortSignal;
+    /** Publish a usable channel while other sessions in the same attempt may still be waiting. */
+    readonly back?: (sessionId: BrowserSessionId) => void;
+    /** A running guest confirmed this session ended. Record the evidence as it arrives. */
+    readonly gone?: (sessionId: BrowserSessionId) => Promise<void>;
   }): Promise<readonly BrowserPoolSessionLoss[]>;
   /** Whether this session has a live channel here now. */
   live(sessionId: BrowserSessionId): boolean;
+  /** Whether this Home has a route to the running runtime, independent of its sessions. */
+  reachable?(): boolean;
   /** The pages the Home keeps for this session: the notes of its end name them. */
   pagesOf(sessionId: BrowserSessionId): Promise<readonly string[]>;
   /** Ready sessions of this runtime with no channel here: the loop reattaches or ends them. */
@@ -265,7 +272,7 @@ interface Retained {
  * next idle period if vetoed.
  */
 export class BrowserPoolCoordinator {
-  readonly gate = new BrowserPoolGate();
+  readonly gate = new BrowserPoolGate((sessionId) => this.reattaching(sessionId));
   readonly #options: BrowserPoolCoordinatorOptions;
   readonly #journal: BrowserPoolControllerJournal;
   #slot: BrowserPoolSlot | undefined;
@@ -759,7 +766,7 @@ export class BrowserPoolCoordinator {
     this.#relaySuspectedAt = undefined;
     const wasUnreachable = this.#relayUnreachable;
     this.#relayUnreachable = false;
-    this.#options.onStateChanged?.();
+    this.#publish(this.#slot);
     if (wasUnreachable && !this.#unreachable) void this.#announce(this.#changed.signal);
     this.#kick();
   }
@@ -849,17 +856,22 @@ export class BrowserPoolCoordinator {
     this.#kick();
   }
 
-  /** The session has no channel and is inside its window: the loop is reattaching it. */
-  reattaching(sessionId: BrowserSessionId): boolean {
-    return this.#lost.has(sessionId);
+  /** Whether a session, or any session of this guest, is waiting for its channel. */
+  reattaching(sessionId?: BrowserSessionId): boolean {
+    return sessionId === undefined ? this.#lost.size > 0 : this.#lost.has(sessionId);
   }
 
   /** A pooled session's Runner channel was lost: the loop reattaches it inside its window. */
   channelLost(sessionId: BrowserSessionId, documents?: ReadonlyMap<string, string>): void {
     if (this.#closed) return;
-    // Each close is its own loss, with its own window and documents: one that arrives while the
-    // previous attach is being finished replaces that entry, so the attach cannot delete it.
-    this.#lost.set(sessionId, { since: Date.now(), ...(documents ? { documents } : {}) });
+    // A close during reattach replaces the entry so that attempt cannot delete it. The
+    // session's window still runs from its first loss, until an attempt brings it back.
+    const previous = this.#lost.get(sessionId);
+    const known = documents ?? previous?.documents;
+    this.#lost.set(sessionId, {
+      since: previous?.since ?? Date.now(),
+      ...(known ? { documents: known } : {}),
+    });
     this.#publish(this.#slot);
     // The reconnect step reads every loss again after its backoff: a channel lost while it runs
     // does not end that backoff, or a channel that keeps dropping would be dialled in a loop.
@@ -1302,7 +1314,7 @@ export class BrowserPoolCoordinator {
           ? "parking"
           : slot?.phase === "waking"
             ? "waking"
-            : this.#lost.size
+            : this.#lost.size && !(this.#relayAdapter?.attached() ?? this.#adopter?.reachable?.())
               ? "reconnecting"
               : null;
     this.gate.set({
@@ -1351,12 +1363,14 @@ export class BrowserPoolCoordinator {
 
   /** Ready sessions of this runtime with no channel here; each one's window starts when seen. */
   async #withoutChannel(): Promise<BrowserSessionId[]> {
+    const scanned = new Map(this.#lost);
     const found = [...((await this.#adopter?.withoutChannel(this.#own)) ?? [])];
     const now = Date.now();
     for (const sessionId of found)
       if (!this.#lost.has(sessionId)) this.#lost.set(sessionId, { since: now });
-    for (const sessionId of this.#lost.keys())
-      if (!found.includes(sessionId)) this.#lost.delete(sessionId);
+    for (const [sessionId, loss] of scanned)
+      if (!found.includes(sessionId) && this.#lost.get(sessionId) === loss)
+        this.#lost.delete(sessionId);
     this.#publish(this.#slot);
     return found;
   }
@@ -1390,7 +1404,7 @@ export class BrowserPoolCoordinator {
       this.#recovered = false;
       return;
     }
-    // The losses this attempt answers: one recorded since is a new loss and stays.
+    // A newer close stays pending even if this attempt briefly had a live channel.
     const answering = new Map(within.map((sessionId) => [sessionId, this.#lost.get(sessionId)]));
     const advanced = await this.#advance(slot, {
       phase: slot.phase,
@@ -1399,19 +1413,40 @@ export class BrowserPoolCoordinator {
     // The attempt stops at the first window to end: nothing is left running after it.
     const window = AbortSignal.any([
       signal,
-      AbortSignal.timeout(Math.max(0, Math.min(...within.map(remaining)))),
+      AbortSignal.timeout(Math.max(0, Math.min(...within.map(remaining)) - (Date.now() - now))),
     ]);
+    const gone = new Set<BrowserSessionId>();
+    const back = (sessionId: BrowserSessionId) => {
+      if (this.#lost.get(sessionId) !== answering.get(sessionId)) return;
+      this.#lost.delete(sessionId);
+      this.#publish(this.#slot);
+    };
     await this.#adopter?.reattach({
       sessions: within,
       documents: [],
       fence: fenceOf(advanced),
       attempt: advanced.attachmentGeneration,
       signal: window,
+      back,
+      gone: async (sessionId) => {
+        // Commit the guest's answer before releasing waiters. A Stop that already moved the
+        // row to closing still owns its ending.
+        await this.#advance(
+          advanced,
+          { phase: "running" },
+          {
+            losses: await this.#lossesOf(advanced, [sessionId], browserPoolSessionGoneReason),
+            closing: null,
+          },
+        );
+        gone.add(sessionId);
+        this.#lost.delete(sessionId);
+        this.#publish(this.#slot);
+      },
     });
-    const back = within.filter((sessionId) => this.#adopter?.live(sessionId));
-    for (const sessionId of back)
-      if (this.#lost.get(sessionId) === answering.get(sessionId)) this.#lost.delete(sessionId);
-    if (back.length < within.length) throw new Error("A session is not back yet.");
+    const live = within.filter((sessionId) => this.#adopter?.live(sessionId));
+    for (const sessionId of live) back(sessionId);
+    if (live.length + gone.size < within.length) throw new Error("A session is not back yet.");
   }
 
   /**

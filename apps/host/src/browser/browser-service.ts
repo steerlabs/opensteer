@@ -8,6 +8,7 @@ import {
   isExtensionMutationCommand,
   type BrowserRuntime,
 } from "@opensteer/browser-runtime-core";
+import { browserPoolSessionGoneReason } from "@opensteer/protocol";
 import type {
   StandardCdpAttemptReconciliation,
   StandardCdpLeaseReconciliation,
@@ -1395,7 +1396,37 @@ export class BrowserService {
     if (!pool) return undefined;
     return {
       identity: () => pool.identity(),
-      reserve: (signal: AbortSignal) => pool.gate.reserve(signal),
+      reserve: async (
+        signal: AbortSignal,
+        scope:
+          | { readonly sessionId: BrowserSessionId }
+          | { readonly ownerId: UserId; readonly profileId: BrowserProfileId },
+      ) => {
+        const reservation = await pool.gate.reserve(
+          signal,
+          "sessionId" in scope ? scope : undefined,
+        );
+        if ("profileId" in scope && pool.reattaching()) {
+          const { runtimeId } = pool.identity();
+          try {
+            await this.#readyBrowserSessions(
+              scope.ownerId,
+              (row) =>
+                row.profileId === scope.profileId &&
+                row.runnerId === runnerId &&
+                row.runtimeId === runtimeId,
+              {
+                pool,
+                signal: reservation.ended ? AbortSignal.any([signal, reservation.ended]) : signal,
+              },
+            );
+          } catch (error) {
+            reservation.release();
+            throw error;
+          }
+        }
+        return reservation;
+      },
       /**
        * The page's document: live, or while the browser is away the one last known. Null: its
        * session is being reattached and no document is known (after a Home crash); undefined:
@@ -1403,11 +1434,30 @@ export class BrowserService {
        */
       pageDocument: (sessionId: BrowserSessionId, tabId: TabId): string | null | undefined =>
         this.pageInventory(sessionId)?.records.get(tabId)?.documentId ??
-        (pool.gate.retiringOrAdopting
+        (pool.gate.retiringOrAdopting || pool.reattaching(sessionId)
           ? (pool.knownDocument(sessionId, tabId) ??
             (pool.reattaching(sessionId) ? null : undefined))
           : undefined),
     };
+  }
+
+  /** Read again after a matching session reattaches or ends. Other identities can go ahead. */
+  async #readyBrowserSessions(
+    ownerId: UserId,
+    matches: (row: BrowserSessionRecord) => boolean,
+    wait?: { readonly pool: BrowserPoolCoordinator; readonly signal: AbortSignal },
+  ): Promise<BrowserSessionRecord[]> {
+    for (;;) {
+      wait?.signal.throwIfAborted();
+      const ready = (await this.#repository.listBrowserSessions(ownerId)).filter(
+        (row) => row.state === "ready" && matches(row),
+      );
+      if (!wait) return ready;
+      wait.signal.throwIfAborted();
+      const pending = ready.find((row) => wait.pool.reattaching(row.id));
+      if (!pending) return ready;
+      (await wait.pool.gate.reserve(wait.signal, { sessionId: pending.id })).release();
+    }
   }
 
   async #pooledScriptWitnesses(ownerId: UserId, sessionId: BrowserSessionId, tabId: TabId) {
@@ -1524,6 +1574,10 @@ export class BrowserService {
             })),
           ),
       live: (sessionId) => this.#brokers.get(sessionId)?.live === true,
+      reachable: () => {
+        const pool = this.#pool(runnerId);
+        return pool !== undefined && this.isPlacementReady(runnerId, pool.identity().runtimeId);
+      },
       pagesOf: async (sessionId) => {
         if (!(this.#repository instanceof OpensteerStore)) return [];
         const owner = await readBrowserPoolOwner(this.#repository.database);
@@ -1616,7 +1670,7 @@ export class BrowserService {
           timeoutError: () => new Error("A pooled browser did not let go in time."),
         });
       },
-      reattach: async ({ sessions, documents, fence, attempt, signal }) => {
+      reattach: async ({ sessions, documents, fence, attempt, signal, back, gone }) => {
         if (!sessions.length || this.#closed || !(this.#repository instanceof OpensteerStore))
           return [];
         const owner = await readBrowserPoolOwner(this.#repository.database);
@@ -1639,9 +1693,16 @@ export class BrowserService {
                   attempt,
                   signal,
                 );
+                if (back && this.#brokers.get(sessionId)?.live) back(sessionId);
               } catch (error) {
-                // This session is not reattached; the runtime reports it lost, the rest proceed.
-                this.#onError(error);
+                if (
+                  gone &&
+                  error instanceof OpensteerError &&
+                  error.code === "not_found" &&
+                  error.reason === browserPoolSessionGoneReason
+                )
+                  await gone(sessionId).catch(this.#onError);
+                else this.#onError(error);
               }
             }
           }),
@@ -2968,23 +3029,23 @@ export class BrowserService {
             const { profileId, placement } = resolved;
             identityKey = resolved.identityKey;
             runnerId = placement.runnerId;
-            const sessions = await this.#repository.listBrowserSessions(ownerId);
+            const sessions = await this.#readyBrowserSessions(
+              ownerId,
+              (candidate) =>
+                (agent
+                  ? candidate.origin !== "trigger" &&
+                    (profileId !== null ||
+                      (candidate.opener?.kind === "task" &&
+                        candidate.opener.threadId === agent.threadId))
+                  : candidate.origin === "person" &&
+                    candidate.opener?.kind === "person" &&
+                    candidate.opener.userId === ownerId) &&
+                candidate.profileId === profileId &&
+                samePlacement(placement, placementOf(candidate)),
+              resolved.pool && { pool: resolved.pool.target, signal: budget.signal },
+            );
             const candidates = sessions
-              .filter(
-                (candidate) =>
-                  candidate.state === "ready" &&
-                  (agent
-                    ? candidate.origin !== "trigger" &&
-                      (profileId !== null ||
-                        (candidate.opener?.kind === "task" &&
-                          candidate.opener.threadId === agent.threadId))
-                    : candidate.origin === "person" &&
-                      candidate.opener?.kind === "person" &&
-                      candidate.opener.userId === ownerId) &&
-                  candidate.profileId === profileId &&
-                  samePlacement(placement, placementOf(candidate)) &&
-                  this.#brokers.get(candidate.id)?.live,
-              )
+              .filter((candidate) => this.#brokers.get(candidate.id)?.live)
               .sort(
                 (left, right) =>
                   left.createdAt.getTime() - right.createdAt.getTime() ||
@@ -6038,6 +6099,7 @@ export class BrowserService {
     await this.#requireAgentAccess(record.runnerId);
     return pooled.gate.reserve(
       AbortSignal.any([this.#closing.signal, AbortSignal.timeout(browserOpenWorkMs)]),
+      { sessionId: record.id },
     );
   }
 
@@ -8994,7 +9056,10 @@ export class BrowserService {
     waiters.add(waiter);
     this.#poolWaiters.set(sessionId, waiters);
     try {
-      return await gate.reserve(AbortSignal.any([reserveSignal, waiter.signal]), options);
+      return await gate.reserve(AbortSignal.any([reserveSignal, waiter.signal]), {
+        ...options,
+        sessionId,
+      });
     } finally {
       waiters.delete(waiter);
       if (!waiters.size) this.#poolWaiters.delete(sessionId);

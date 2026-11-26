@@ -485,6 +485,104 @@ it("lets a tab-targeted call made while a crashed Home reattaches its sessions w
   }
 });
 
+it("waits for the named profile before a script opens its existing tab", async () => {
+  const j = await journey("direct-profile-crash", { profile: true, channelDeadlineMs: 60_000 });
+  const reattaching = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  try {
+    let home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const [tab] = await home.service.savedPages(j.task.userId, session.id);
+    if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
+    await j.draft();
+    j.runnerDown();
+    home = await j.crashHome(home);
+    const attach = j.guest.attach.bind(j.guest);
+    vi.spyOn(j.guest, "attach").mockImplementationOnce(async (...args) => {
+      reattaching.resolve();
+      await resume.promise;
+      return attach(...args);
+    });
+    j.runnerUp();
+    await reattaching.promise;
+    expect(home.coordinator.gate.phase).toBe("open");
+    expect(home.service.pageInventory(session.id)?.ready).toBe(false);
+    const work = await directWork(j, () => home);
+    let settled = false;
+    const call = work
+      .use(
+        `const page = await openPage(${JSON.stringify(tab.id)});
+            return await page.js("document.querySelector('input').value")`,
+      )
+      .finally(() => {
+        settled = true;
+      });
+    void call.catch(() => undefined);
+    await until(() => expect(settled || home.coordinator.gate.demand).toBe(true));
+    expect(settled, settled ? text(await call) : undefined).toBe(false);
+    const other = await j.store.createBrowserProfile({
+      name: "Other saved browser",
+      ownerId: j.task.userId,
+      homeRunnerId: j.task.runnerId,
+      idempotencyKey: "other-saved-profile",
+    });
+    expect(
+      await home.service.openTab(j.task.userId, {
+        ...j.command("other-profile"),
+        identity: { kind: "profile", profileId: other.id },
+      }),
+    ).toMatchObject({ tabId: expect.any(String) });
+    expect(settled).toBe(false);
+    resume.resolve();
+    const result = await call;
+    expect(result.isError, text(result)).not.toBe(true);
+    expect(text(result)).toContain("unsent draft");
+  } finally {
+    resume.resolve();
+    j.runnerUp();
+    await j.close();
+  }
+});
+
+it("reattaches a pooled profile and serves scripts after a crashed Home finds a session's last page closed", async () => {
+  const j = await journey("direct-crash-gone-page", { profile: true, channelDeadlineMs: 60_000 });
+  try {
+    let home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const [tab] = await home.service.savedPages(j.task.userId, session.id);
+    if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
+    await j.draft();
+    const gone = await home.service.openTab(j.task.userId, j.command("gone"));
+    const gonePage = await j.draft();
+    j.runnerDown();
+    await gonePage.page.close();
+    home = await j.crashHome(home);
+    j.runnerUp();
+    await until(async () => expect((await j.row(gone.sessionId))?.state).toBe("failed"));
+    await until(() => expect(home.coordinator.gate.phase).toBe("open"));
+    expect((await j.row(session.id))?.state).toBe("ready");
+    expect(
+      await listBrowserPoolDocumentLosses(j.database, j.task.userId, gone.tabId),
+    ).toMatchObject([{ sessionId: gone.sessionId, surfaceId: gone.tabId, reason: "session-gone" }]);
+    const work = await directWork(j, () => home);
+    const result = await work.use(
+      `const page = await openPage(${JSON.stringify(tab.id)});
+       return await page.js("document.querySelector('input').value")`,
+    );
+    expect(result.isError, text(result)).not.toBe(true);
+    expect(text(result)).toContain("unsent draft");
+  } finally {
+    j.runnerUp();
+    await j.close();
+  }
+});
+
 it("ends a session whose unanswered command was settled unknown with its note when the Runner does not come back", async () => {
   const w = await unansweredAtChannelLoss("direct-unknown-gone", 1_500);
   try {
