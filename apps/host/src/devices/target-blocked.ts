@@ -83,6 +83,8 @@ export function deviceAppBlocked(
     readOnlyGrant: boolean;
     operation: string;
     canAsk: boolean;
+    /** A connected agent: it has no task to ask for access from. */
+    connection?: boolean;
   },
 ): Blocked | undefined {
   if (readiness?.code === "INTEGRATION_UNAVAILABLE" && readiness.detail)
@@ -92,6 +94,7 @@ export function deviceAppBlocked(
     input.name,
     { dataApp: input.dataApp, computerId: input.computerId },
     input.canAsk,
+    input.connection,
   );
   // The person approved this data app for reading only: that is the true reason, whoever asks.
   if (blocked?.code === "access_required" && input.readOnlyGrant)
@@ -110,14 +113,18 @@ export function localTargetBlocked(
   name: string,
   target: { dataApp: string; computerId?: string } | { server: string } = { server: name },
   canAsk = true,
+  /** A connected agent: it has no task to ask for access from. */
+  connection = false,
 ): Blocked | undefined {
   if (!readiness || readiness.code === "READY") return undefined;
   if (readiness.code === "ACCESS_GRANT_REQUIRED" && readiness.requiredAccess === null)
     throw new Error("Access-grant readiness must name its required access");
   const ownerAction =
     "dataApp" in target
-      ? "Ask the owner to manage this data app in the device's settings in Opensteer."
-      : "Ask the owner to review this server in Plugins in Opensteer, or request access from a task.";
+      ? "Ask the person to manage this data app in the device's settings in Opensteer."
+      : connection
+        ? "Ask the person to review this server in Plugins in Opensteer."
+        : "Ask the person to review this server in Plugins in Opensteer, or request access from a task.";
   switch (readiness.code) {
     case "READ_ONLY_TASK":
       return {

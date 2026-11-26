@@ -152,7 +152,10 @@ export class LocalProviders {
               caller.kind === "connection",
             )
           : undefined;
-      return { kind: "blocked", blocked: access ?? provider.blocked };
+      return {
+        kind: "blocked",
+        blocked: access ?? provider.toolBlockers[input.tool] ?? provider.blocked,
+      };
     }
     const tool = provider.tools.find(({ name }) => name === input.tool);
     const callable = callables.find(
@@ -316,8 +319,10 @@ export class LocalProviders {
     readOnlyConnections: ReadonlyMap<string, boolean>,
     canAsk: boolean,
     lookup: "discover" | "plugin_search",
+    connection: boolean,
   ): Located {
-    if (provider.blocked) return provider;
+    // Every operation that cannot run carries its own reason, whether or not anything else of its
+    // app can: a call is about that one operation (a read is never refused for a write's reason).
     const entry = inventory.find((entry) => entry.installation.id === provider.installationId);
     const stateFor = (tool: string) => {
       const row = entry?.tools.find(
@@ -365,15 +370,24 @@ export class LocalProviders {
                 readOnlyConnections.get(provider.connectionId) === true,
               operation: tool.name,
               canAsk,
+              connection,
             })
-          : localTargetBlocked(state, provider.name, { server: provider.requestName }, canAsk);
+          : localTargetBlocked(
+              state,
+              provider.name,
+              { server: provider.requestName },
+              canAsk,
+              connection,
+            );
       return [
         tool.name,
-        blocked ?? {
-          code: "unavailable",
-          message: `${provider.name} has no usable ${tool.name} operation.`,
-          next: `Use ${lookup} for current tools; continue other work.`,
-        },
+        blocked ??
+          // An operation with no state of its own is kept by what keeps its app.
+          provider.blocked ?? {
+            code: "unavailable",
+            message: `${provider.name} has no usable ${tool.name} operation.`,
+            next: `Use ${lookup} for current tools; continue other work.`,
+          },
       ] as const;
     });
     return { ...provider, toolBlockers: Object.fromEntries(blockers) };
@@ -390,6 +404,8 @@ export class LocalProviders {
     const store = this.#options.store;
     const canAsk =
       caller.kind === "run" || (caller.kind === "program" && caller.program.kind === "trigger");
+    // A connected agent has no task to ask for access from: it is told only what the person does.
+    const connected = caller.kind === "connection";
     const requester: IntegrationRequester =
       caller.kind === "owner"
         ? { ownerUserId: caller.userId, kind: "person" }
@@ -447,11 +463,10 @@ export class LocalProviders {
                 : [],
             );
             const ready = states.some(({ code }) => code === "READY");
-            // When nothing can run, the reason of what the grant reaches comes first: that the
-            // grant does not reach some operations is no reason the others cannot run.
-            const state =
-              states.find(({ code }) => code !== "READY" && code !== "ACCESS_GRANT_REQUIRED") ??
-              states.find(({ code }) => code !== "READY");
+            // When nothing can run, the app's one line (what discover and a listing say of the
+            // whole app) is its most basic reason; a call is about one operation and says that
+            // operation's own (`#withToolBlockers`).
+            const state = appReason(states);
             if (!ready && !state) continue;
             const connection = await facts.connectionFor(account.connectionId);
             if (!connection) continue;
@@ -483,12 +498,13 @@ export class LocalProviders {
                       })
                     : localTargetBlocked(
                         state,
-                        definition.id,
+                        `${entry.installation.title} on ${connection.runnerName}`,
                         {
                           dataApp: dataAppName(definition),
                           computerId: connection.deviceId,
                         },
                         canAsk,
+                        connected,
                       ),
                 unavailable: ready
                   ? undefined
@@ -563,6 +579,7 @@ export class LocalProviders {
                     server: serverName,
                   },
                   canAsk,
+                  connected,
                 ) ??
                 (!runnerId
                   ? {
@@ -597,6 +614,7 @@ export class LocalProviders {
             readOnlyConnections,
             canAsk,
             caller.kind === "connection" ? "discover" : "plugin_search",
+            connected,
           ),
         );
     const providers = assessed
@@ -613,6 +631,28 @@ export class LocalProviders {
       }));
     return { providers, callables };
   }
+}
+
+/**
+ * The order an app's one line takes its reason in, when none of its operations can run: what the
+ * device reports first, then the person's setup, then the grant, and the task's mode last. A task's
+ * read-only mode or a missing grant is never said in front of what keeps the device itself.
+ */
+const appReasonOrder = [
+  "INTEGRATION_UNAVAILABLE",
+  "USER_AUTHORIZATION_REQUIRED",
+  "REAUTHORIZATION_REQUIRED",
+  "ACCESS_GRANT_REQUIRED",
+  "READ_ONLY_TASK",
+] as const;
+function appReason<State extends { readonly code: string }>(
+  states: readonly State[],
+): State | undefined {
+  for (const code of appReasonOrder) {
+    const found = states.find((state) => state.code === code);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 function providerTarget(id: string) {

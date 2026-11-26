@@ -1352,16 +1352,28 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     const computerConnectionIds = new Set(
       connections.flatMap(({ connectionKind, id }) => (connectionKind === "computer" ? [id] : [])),
     );
-    const activeGrants = requesterConnection
+    const lent = requesterConnection
+      ? await lentApprovalGrants(this.database, input.ownerUserId, requesterConnection)
+      : null;
+    const activeGrants = lent
       ? [
           ...grants.filter(
             ({ connectionId, status }) =>
               status === "active" &&
               (connectionId === null || !computerConnectionIds.has(connectionId)),
           ),
-          ...(await lentApprovalGrants(this.database, input.ownerUserId, requesterConnection)),
+          ...lent,
         ]
       : grants.filter(({ status }) => status === "active");
+    // Under a connection's grant, a device approval exists only as the one rule lends it now
+    // (`grantedDeviceApprovals`): one it does not (outside the grant, on a removed device) is not
+    // listed at all, whatever its server's state, so nothing of it can be said (rule 5).
+    const lentIds = lent && new Set(lent.map(({ connectionId }) => connectionId));
+    const visible = (connectionId: IntegrationConnectionId | null) =>
+      !lentIds ||
+      connectionId === null ||
+      !computerConnectionIds.has(connectionId) ||
+      lentIds.has(connectionId);
     const grantedConnections =
       lineageGrant?.scope === "selected"
         ? await integrationConnectionGrantAccess(
@@ -1373,21 +1385,24 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     const entries = await Promise.all(
       installations.map(async (row) => {
         const installation = installationFromRow(row);
-        const [servers, tools] = await Promise.all([
+        const [servers, allTools] = await Promise.all([
           this.listServers(row.id),
           this.listTools(row.id, input.ownerUserId),
         ]);
+        const tools = allTools.filter(({ connectionId }) => visible(connectionId ?? null));
         const serverById = new Map(servers.map((server) => [server.id, server]));
-        const installationConnections = connections.filter((connection) =>
-          servers.some((server) => {
-            const requirement = server.connectionRequirement;
-            return (
-              requirement.kind === "computer" &&
-              connection.connectionKind === "computer" &&
-              connection.definitionId === requirement.definitionId &&
-              connection.integrationServerId === server.id
-            );
-          }),
+        const installationConnections = connections.filter(
+          (connection) =>
+            visible(connection.id) &&
+            servers.some((server) => {
+              const requirement = server.connectionRequirement;
+              return (
+                requirement.kind === "computer" &&
+                connection.connectionKind === "computer" &&
+                connection.definitionId === requirement.definitionId &&
+                connection.integrationServerId === server.id
+              );
+            }),
         );
         const hasInstallationAccess = (
           connectionId: IntegrationConnectionId | null,

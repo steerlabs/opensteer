@@ -710,7 +710,85 @@ integration.sequential("iPhone integrations Host contract", () => {
       calls: { path: invented("create_event"), input: dentist },
     });
     expect(same(write, world.macCalendar)).toBe(same(absentWrite, inventedId));
+    // The same in bracket form.
+    const uncoveredBracket = await phoneOnly.call("plugin_call", {
+      calls: { path: bracketPath(world.macCalendar, "list_calendars"), input: {} },
+    });
+    const absentBracket = await phoneOnly.call("plugin_call", {
+      calls: { path: bracketPath(inventedId, "list_calendars"), input: {} },
+    });
+    expect(same(uncoveredBracket, world.macCalendar)).toBe(same(absentBracket, inventedId));
     expect(JSON.stringify(write)).not.toMatch(/macOS|Studio Mac|person/u);
+    expect(world.macCalls).toHaveLength(0);
+  });
+
+  /** A tool's path in the bracket form the engine also takes: `tools["ns"]["tool"]`. */
+  const bracketPath = (connectionId: string, tool: string, slug = "calendar-studio-mac") =>
+    `tools[${JSON.stringify(localNamespace(slug, `app_device_${connectionId}`))}][${JSON.stringify(tool)}]`;
+
+  it("says the same reason for a tool named in bracket form", async () => {
+    const world = await calendarsTurnedOn("read-write");
+    const agent = keep(await connectAgent(host, { scope: "everything" }));
+    await macPermissionMissing(world);
+    expect(await reply(agent, bracketPath(world.macCalendar, "list_calendars"))).toEqual(
+      permissionReply,
+    );
+    expect(world.macCalls).toHaveLength(0);
+  });
+
+  it("says a read-only data app allows reading only for a change, while its device lacks a permission", async () => {
+    const world = await calendarsTurnedOn("read");
+    const agent = keep(await connectAgent(host, { scope: "everything" }));
+    await macPermissionMissing(world);
+    const change = await agentPluginCall(agent, world.macPath("create_event"), dentist);
+    expect(change.failure, JSON.stringify(change.raw)).toBe(
+      "Calendar on Studio Mac allows reading only.",
+    );
+    // Its reads still say what keeps them.
+    expect(await reply(agent, world.macPath())).toEqual(permissionReply);
+    expect(world.macCalls).toHaveLength(0);
+  });
+
+  it("reads a data app on a removed device exactly like one that does not exist, whatever its server's state", async () => {
+    const world = await calendarsTurnedOn("read-write");
+    const agent = keep(await connectAgent(host, { scope: "everything" }));
+    const macDevice = await host.store.requireSelfDeviceId(world.mac.runnerId as never);
+    const { integrationServerId } = await host.store.database
+      .selectFrom("integrationConnections")
+      .select("integrationServerId")
+      .where("id", "=", world.macCalendar as never)
+      .executeTakeFirstOrThrow();
+    // The device is removed, its approval row still says connected, and its server needs
+    // attention: nothing the one rule lends, so nothing of it is said.
+    await host.store.database
+      .updateTable("devices")
+      .set({ removedAt: new Date() })
+      .where("id", "=", macDevice)
+      .execute();
+    await host.store.database
+      .updateTable("integrationServers")
+      .set({ status: "needs-attention", statusDetail: "Server needs attention on Studio Mac" })
+      .where("id", "=", integrationServerId!)
+      .execute();
+    const inventedId = `con_${randomUUID()}`;
+    const same = (value: unknown, id: string) => JSON.stringify(value).replaceAll(id, "ID");
+    for (const path of [
+      (id: string) =>
+        `tools[${JSON.stringify(localNamespace("calendar-studio-mac", `app_device_${id}`))}].list_calendars`,
+      (id: string) => bracketPath(id, "list_calendars"),
+    ]) {
+      const removed = await agent.call("plugin_call", {
+        calls: { path: path(world.macCalendar), input: {} },
+      });
+      const absent = await agent.call("plugin_call", {
+        calls: { path: path(inventedId), input: {} },
+      });
+      expect(same(removed, world.macCalendar)).toBe(same(absent, inventedId));
+      expect(JSON.stringify(removed)).not.toMatch(/Studio Mac|attention|macOS/u);
+    }
+    // Discover does not list it either.
+    const listed = (await agent.call("discover", { query: "Calendar" })).structuredContent;
+    expect(JSON.stringify(listed)).not.toContain("Studio Mac");
     expect(world.macCalls).toHaveLength(0);
   });
 

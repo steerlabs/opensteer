@@ -1,3 +1,4 @@
+import { canonicalToolPath } from "@opensteer/plugin-engine-mcp";
 import { pluginCaller, pluginGrantTarget } from "../../plugins/plugin-authority.js";
 import { pluginTargetBlocked } from "../../plugins/target-blocked.js";
 import { requestResult } from "../request-result.js";
@@ -343,9 +344,11 @@ export class PluginToolHandlers {
         const shown = (await o.localProviders?.providers(context)) ?? [];
         for (const path of paths)
           for (const provider of shown) {
-            const prefix = `${localToolPath(localNamespace(provider.slug, provider.id))}.`;
-            if (!path.startsWith(prefix)) continue;
-            const name = path.slice(prefix.length);
+            // The path as the engine reads it, in dot or bracket form alike.
+            const namespace = `${localNamespace(provider.slug, provider.id)}.`;
+            const canonical = canonicalToolPath(path);
+            if (!canonical.startsWith(namespace)) continue;
+            const name = canonical.slice(namespace.length);
             const tool = provider.tools.find((entry) => entry.name === name);
             const blocked = tool && (provider.toolBlockers?.[name] ?? provider.blocked);
             if (

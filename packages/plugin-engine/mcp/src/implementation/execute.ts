@@ -457,7 +457,7 @@ const expressionMember =
  * `tools["my-app"].issues` becomes `my-app.issues`, and `tools` alone
  * becomes "". Other names are already canonical paths.
  */
-const canonical = (name: string) => {
+export const canonical = (name: string) => {
   const trimmed = name.trim();
   if (trimmed !== "tools" && !trimmed.startsWith("tools.") && !trimmed.startsWith("tools["))
     return trimmed;

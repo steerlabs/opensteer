@@ -15,6 +15,7 @@ export {
   searchCatalog,
   describeCatalog,
   resolveCatalogTools,
+  canonical as canonicalToolPath,
 } from "./implementation/execute.ts";
 
 export * from "./contracts/browser.ts";

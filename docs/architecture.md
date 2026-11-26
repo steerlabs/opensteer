@@ -259,8 +259,11 @@ Each call is one reviewed **operation** of an **agent session**:
    The codes a connected agent acts on: `declined_by_person` (do not retry that action),
    `stopped_by_person` (stop that task and ask before starting again), `access_changed` (the grant,
    mode or connection changed during the work), `not_found`,
-   `computer_stopped`, `computer_asleep`, `computer_offline`, and `access_denied` for any other
-   refusal.
+   `computer_stopped`, `computer_asleep`, `computer_offline`, `unavailable` (something its grant
+   holds that its device cannot serve now, such as a macOS permission the person has not given
+   there: the message is the device's reason and `next` says the move is the person's, on that
+   device), and `access_denied` for any other refusal. Each refusal of one operation is that
+   operation's own reason, never another operation's of the same app.
 9. **An ending carries its cause.** Where the Home knows why work ended without a confirmed
    outcome (the person's Stop or Disconnect, an expiry, a narrowed grant, a tab the person
    closed), the operation records it (`agent_operations.ending`, words in

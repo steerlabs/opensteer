@@ -58,7 +58,7 @@ integration("device data apps as plugin tools", () => {
     for (const close of closers.splice(0)) await close().catch(() => undefined);
   }, 60_000);
 
-  async function start() {
+  async function start(options: { readonly messages?: true } = {}) {
     const host = await startMachineAccessWireHost(databaseUrl, {
       remoteAccess: true,
       manualRunner: true,
@@ -83,6 +83,7 @@ integration("device data apps as plugin tools", () => {
       [
         createHelperAppProvider("apple-calendar", helper.port),
         createHelperAppProvider("apple-reminders", helper.port),
+        ...(options.messages ? [createHelperAppProvider("apple-messages", helper.port)] : []),
       ],
       { statusIntervalMs: 200 },
     );
@@ -103,6 +104,17 @@ integration("device data apps as plugin tools", () => {
       "apple-reminders",
     );
     const reminders = await setComputerApp(host, computer, remindersSetup, remindersSetup.id);
+    // Messages, approved on the Mac and never granted to the task below.
+    if (options.messages) {
+      const messagesSetup = await requestComputerAppSetup(
+        host,
+        computer.runnerId,
+        "read-write",
+        "messages-write",
+        "apple-messages",
+      );
+      await setComputerApp(host, computer, messagesSetup, messagesSetup.id);
+    }
     const run = await dispatchCallerRun(host, caller, { key: "device-plugins", title: "Plan" });
     closers.unshift(() => run.complete());
     const gateway = await integrationGateway(run.integrationTools);
@@ -216,6 +228,49 @@ integration("device data apps as plugin tools", () => {
       send.mockRestore();
       await pending;
     }
+  });
+
+  it("tells a Run each operation's own reason, never its task's read-only mode for a read", async () => {
+    const { host, helper, gateway, run } = await start({ messages: true });
+    helper.grants.contacts = "granted";
+    helper.grants["full-disk-access"] = "granted";
+    helper.grants.automation = "granted";
+    const queryMessages = await pluginPath(gateway, "query_messages", "query_messages");
+    const listReminders = await pluginPath(gateway, "list_reminders", "list_reminders");
+    // macOS no longer lets the helper read reminders: the Mac reports it within its interval.
+    // Reminders is granted to this task for changes too, so its write operations are listed.
+    helper.grants.reminders = "requestable";
+    await waitForCondition(async () =>
+      JSON.stringify(await gateway.call("plugin_search", { query: "list_reminders" })).includes(
+        "needs macOS full access",
+      ),
+    );
+    const answers = async () => ({
+      messages: (await pluginCall(gateway, queryMessages, {})).raw.structuredContent,
+      reminders: (await pluginCall(gateway, listReminders, {})).raw.structuredContent,
+    });
+    const expectOwnReasons = (seen: Awaited<ReturnType<typeof answers>>) => {
+      const text = JSON.stringify(seen);
+      expect(text).not.toContain("This task runs read-only.");
+      // Messages was never granted to this task: its read asks for the grant.
+      expect(JSON.stringify(seen.messages), text).toContain('"code":"access_required"');
+      expect(JSON.stringify(seen.messages), text).toContain("app_access_request");
+      // Reminders is granted: what keeps its read is the Mac's missing permission.
+      expect(JSON.stringify(seen.reminders), text).toContain(
+        "Reminders needs macOS full access to reminders for Opensteer Computer Use on Studio Mac.",
+      );
+    };
+    // At Full access, and the same once the task is supervised or accepts edits automatically.
+    expectOwnReasons(await answers());
+    for (const accessMode of ["approval-required", "auto-accept-edits"] as const) {
+      await host.store.updateThreadAccessMode({
+        threadId: run.threadId,
+        requestedBy: host.ownerId,
+        accessMode,
+      });
+      expectOwnReasons(await answers());
+    }
+    expect(helper.invocations).toEqual([]);
   });
 
   it("finds, describes and calls device tools, mixes them with a cloud plugin, and refuses what approvals do not allow", async () => {

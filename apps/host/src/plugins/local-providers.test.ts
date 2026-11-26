@@ -411,7 +411,10 @@ it.each([
     const context = { caller: "test", mode: "automatic" as const };
     const [provider] = await providers.providers(context);
     expect(provider).toMatchObject({ blocked: expected });
-    expect(provider).not.toHaveProperty("toolBlockers");
+    // Each of its operations is kept by what keeps the app, said on each as on the app.
+    expect(Object.values(provider?.toolBlockers ?? {})).toEqual(
+      provider!.tools.map(() => provider!.blocked),
+    );
     // Its tools come from Opensteer's definition, whatever keeps them now.
     if (!isComputerAppDefinition(definition)) throw new Error("Calendar is a computer app");
     expect(provider!.tools.map(({ name }) => name)).toEqual(
@@ -588,3 +591,109 @@ it.each([
   });
   if (connection) expect(JSON.stringify(called)).not.toContain("computer_access_request");
 });
+
+it.each([
+  [
+    "its device lacks a permission",
+    {
+      code: "INTEGRATION_UNAVAILABLE",
+      detail:
+        "Calendar needs macOS full access to calendars for Opensteer Computer Use on Studio Mac.",
+      requiredAccess: null,
+    },
+    {
+      code: "unavailable",
+      message:
+        "Calendar needs macOS full access to calendars for Opensteer Computer Use on Studio Mac.",
+      next: "The person finishes this on Studio Mac. Tell them what the message says, and continue without Calendar on Studio Mac until then.",
+    },
+  ],
+  [
+    "its task has no grant yet",
+    { code: "ACCESS_GRANT_REQUIRED", detail: null, requiredAccess: "read" },
+    {
+      code: "access_required",
+      message: "Calendar on Studio Mac requires an access grant.",
+      next: expect.stringContaining("app_access_request"),
+    },
+  ],
+] as const)(
+  "gives each operation of a device app none of whose operations can run its own reason when %s, never the task's read-only mode for a read",
+  async (_, readState, readReason) => {
+    const definition = deviceDefinitions.find(({ id }) => id === "apple-calendar")!;
+    const callable = computerCallable("read", definition);
+    const read = callable.tool;
+    const write = {
+      ...read,
+      id: "tool_write",
+      name: "create_event",
+      annotations: { readOnlyHint: false },
+    };
+    const state = (value: object) => ({
+      ...value,
+      serverId: callable.server.id,
+      connectionId: callable.grant.connectionId,
+    });
+    // A supervised task: its write operation is read-only, and it is listed first.
+    const readOnlyTask = state({ code: "READ_ONLY_TASK", detail: null, requiredAccess: null });
+    const store = {
+      listDiscoveryInventory: async () => [
+        {
+          installation: callable.installation,
+          servers: [callable.server],
+          accounts: [{ connectionId: callable.grant.connectionId }],
+          tools: [write, read],
+          readiness: {
+            servers: [readOnlyTask],
+            tools: [
+              { toolId: write.id, readiness: readOnlyTask },
+              { toolId: read.id, readiness: state(readState) },
+            ],
+          },
+        },
+      ],
+      listCallableTools: async () => [],
+      getDeviceComputerConnectionForCall: async () => ({
+        deviceId: "dev_mac",
+        runnerName: "Studio Mac",
+        access: "read-write",
+      }),
+    };
+    const callTool = vi.fn();
+    const providers = new LocalProviders({
+      store,
+      devices: {
+        withAvailability: async (entries: unknown) => entries,
+        localDiscoveryFacts: () => ({ connectionFor: store.getDeviceComputerConnectionForCall }),
+        localDeviceAccessBlocked: async () => undefined,
+        callTool,
+      },
+      localServers: {},
+      authority: {
+        caller: () => ({
+          kind: "run",
+          userId: createId("user"),
+          thread: { id: createId("thread") },
+        }),
+      },
+    } as unknown as ConstructorParameters<typeof LocalProviders>[0]);
+    const context = { caller: "test", mode: "automatic" as const };
+    const [provider] = await providers.providers(context);
+    // The app's one line puts what keeps its reads before the task's mode.
+    expect(provider?.blocked).toEqual(readReason);
+    const call = (tool: string) =>
+      providers.call(
+        { ...context, execution: "execution", plugin: provider!.id, tool, input: {} },
+        AbortSignal.timeout(5_000),
+        async () => {
+          throw new Error("Unexpected approval");
+        },
+      );
+    expect(await call(read.name)).toEqual({ kind: "blocked", blocked: readReason });
+    expect(await call("create_event")).toMatchObject({
+      kind: "blocked",
+      blocked: { code: "read_only_task" },
+    });
+    expect(callTool).not.toHaveBeenCalled();
+  },
+);
