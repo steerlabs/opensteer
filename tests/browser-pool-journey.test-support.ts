@@ -212,6 +212,8 @@ export async function journey(
     readonly statusEveryMs?: number;
     /** The guest's page probe during a retire; a retire waits for it. */
     readonly probePage?: (page: unknown, phase: "active" | "frozen") => Promise<readonly string[]>;
+    /** Each time the Home republishes the person's tab rows (all of them, or these). */
+    readonly onTabsChanged?: ConstructorParameters<typeof BrowserService>[0]["onTabsChanged"];
     readonly requireAgentAccess?: ConstructorParameters<
       typeof BrowserService
     >[0]["requireAgentAccess"];
@@ -376,6 +378,7 @@ export async function journey(
       tabPlaces: { write: async () => false, notice: () => {} },
       repository: personalBrowserRepository(store),
       ...(options.requireAgentAccess ? { requireAgentAccess: options.requireAgentAccess } : {}),
+      ...(options.onTabsChanged ? { onTabsChanged: options.onTabsChanged } : {}),
       ...(options.detachRunnerAgents ? { detachRunnerAgents: options.detachRunnerAgents } : {}),
       ...(profile
         ? {

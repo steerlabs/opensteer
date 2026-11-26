@@ -58,6 +58,8 @@ async function directWork(
     readonly grant?: AgentGrant;
     /** Runs after a script's bind decided its tab and bound the page, inside the call. */
     readonly afterBind?: () => Promise<void>;
+    /** A session's end ends its browser work, as the Home wires it (its binding's scripts). */
+    readonly endsBrowserWork?: boolean;
     /** Each call's own bound (two minutes). */
     readonly executionMs?: number;
   } = {},
@@ -98,10 +100,14 @@ async function directWork(
       return { kind: tab.kind, profile: tab.profileId ? { profileId: tab.profileId } : null };
     },
   };
+  let endBrowserWork: (bindingId: string, reason: string) => void = () => {};
   const sessions = new AgentSessionService({
     store: j.store,
     holdMs: 0,
     ...(options.executionMs ? { executionMs: options.executionMs } : {}),
+    ...(options.endsBrowserWork
+      ? { closeBinding: (bindingId: string, reason: string) => endBrowserWork(bindingId, reason) }
+      : {}),
   });
   const confinement = new BrowserScriptConfinement();
   const scripts = new BrowserScriptService({
@@ -109,6 +115,11 @@ async function directWork(
     store: j.store,
     tabs: confinement.tabs(scriptTabs as never),
   } as never);
+  // As the Home's runtime: the session's end closes its raw CDP and its scripts' browser work.
+  endBrowserWork = (bindingId, reason) => {
+    home().service.closeStandardCdpForBinding(bindingId, reason);
+    void scripts.closeBrowserScriptsForBinding(bindingId).catch(() => undefined);
+  };
   /** The tab row a connection reads; a test can make the next reads see a changed tab. */
   const tabRow = async (tabId: string) => {
     const tab = await row(tabId);
@@ -188,11 +199,19 @@ async function directWork(
         resources: [{ kind: "browser-profile", profileId: j.profile!.id }],
       },
     });
-    return (code: string) =>
+    const use = (code: string) =>
       other.client.callTool({
         name: "browser_use",
         arguments: { profileId: j.profile!.id, code, reason: "Read the draft" },
       });
+    return Object.assign(use, {
+      id: other.id,
+      useTab: (code: string, tabId: string) =>
+        other.client.callTool({
+          name: "browser_use",
+          arguments: { tabId, code, reason: "Read the draft" },
+        }),
+    });
   };
   return {
     sessions,
@@ -254,6 +273,192 @@ it("makes a tab a pooled browser_use script binds the agent's at the bind, befor
   } finally {
     spy.mockRestore();
     await j.close();
+  }
+});
+
+it.each([
+  ["", false],
+  [", the browser parked between them", true],
+] as const)(
+  "names a connected agent's task as the holder of a tab its earlier call opened, while a later call works in it%s",
+  async (_, park) => {
+    // Tester run 14: one call opens a tab with newPage and ends; the next names that tab and works
+    // in it for half a minute. The person's Watch found no page of the task.
+    const site = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end("<!doctype html><title>Example Domain</title><p>example</p>");
+    });
+    site.listen(0, "127.0.0.1");
+    await once(site, "listening");
+    const origin = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
+    // The person's tab rows as the Home publishes them, each with who holds each tab named at that
+    // moment: what the person's snapshot (and so Watch, which reads it once at the click) holds.
+    let home: Home | undefined;
+    const published: Promise<ReadonlyMap<string, unknown>>[] = [];
+    const j: Journey = await journey("direct-script-later-holder", {
+      profile: true,
+      onTabsChanged: (_owner, ids) => {
+        published.push(
+          (async () => {
+            const rows = (await j.tabs.snapshot(j.task.userId)).rows.filter(
+              (tab) => tab.kind === "page" && (!ids || ids.includes(tab.id)),
+            );
+            return new Map(
+              await Promise.all(
+                rows.map(
+                  async (tab) =>
+                    [
+                      tab.id,
+                      (await home!.service.pageTabs.state!(j.task.userId, tab)).usedBy,
+                    ] as const,
+                ),
+              ),
+            );
+          })().catch(() => new Map()),
+        );
+      },
+    });
+    try {
+      home = await j.startHome();
+      const work = await directWork(j, () => home!);
+      const opened = await work.use(
+        `const page = await newPage(${JSON.stringify(`${origin}/`)}); return page.tabId;`,
+      );
+      expect(opened.isError, text(opened)).not.toBe(true);
+      const tabId = /(?:tab|surface)_[A-Za-z0-9-]+/u.exec(text(opened))?.[0];
+      if (!tabId) throw new Error(`The script returned no tab: ${text(opened)}`);
+      // The pooled browser sleeps between the calls, as a Cloud Computer's does when idle.
+      if (park) expect(await home.coordinator.tryPark()).toBe("parked");
+      let done = false;
+      const working = work
+        .useTab(
+          `const page = await openPage(${JSON.stringify(tabId)}); await page.js("document.title"); await page.waitForTimeout(4000); return 1;`,
+          tabId,
+        )
+        .finally(() => {
+          done = true;
+        });
+      const { threadId } = await j.database
+        .selectFrom("agentSessions")
+        .select("threadId")
+        .where("userId", "=", j.task.userId)
+        .executeTakeFirstOrThrow();
+      await vi.waitFor(
+        async () => {
+          expect(done).toBe(false);
+          const state = await home!.service.pageTabs.state!(j.task.userId, await row(j, tabId));
+          expect(state.usedBy).toEqual([{ taskId: threadId }]);
+          // And the person's row says so: the last time it was published, it named the task.
+          const last = (await Promise.all(published)).filter((rows) => rows.has(tabId)).at(-1);
+          expect(last?.get(tabId)).toEqual([{ taskId: threadId }]);
+        },
+        { timeout: 4_000 },
+      );
+      const result = await working;
+      expect(result.isError, text(result)).not.toBe(true);
+    } finally {
+      await j.close();
+      site.close();
+    }
+  },
+);
+
+it("names a second connection's task as the holder of its tab, after the person disconnected the first", async () => {
+  // Tester run 14, its second cloud trial: the first connection worked in a tab and was
+  // disconnected; a new connection opened a tab with newPage, and its next call worked in it.
+  const site = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end("<!doctype html><title>Example Domain</title><p>example</p>");
+  });
+  site.listen(0, "127.0.0.1");
+  await once(site, "listening");
+  const origin = `http://127.0.0.1:${(site.address() as AddressInfo).port}`;
+  let home: Home | undefined;
+  const published: Promise<ReadonlyMap<string, unknown>>[] = [];
+  const j: Journey = await journey("direct-script-second-connection", {
+    profile: true,
+    onTabsChanged: (_owner, ids) => {
+      published.push(
+        (async () => {
+          const rows = (await j.tabs.snapshot(j.task.userId)).rows.filter(
+            (tab) => tab.kind === "page" && (!ids || ids.includes(tab.id)),
+          );
+          return new Map(
+            await Promise.all(
+              rows.map(
+                async (tab) =>
+                  [
+                    tab.id,
+                    (await home!.service.pageTabs.state!(j.task.userId, tab)).usedBy,
+                  ] as const,
+              ),
+            ),
+          );
+        })().catch(() => new Map()),
+      );
+    },
+  });
+  try {
+    home = await j.startHome();
+    const work = await directWork(j, () => home!, { endsBrowserWork: true });
+    const tabOf = (reply: Awaited<ReturnType<typeof work.use>>) => {
+      const id = /(?:tab|surface)_[A-Za-z0-9-]+/u.exec(text(reply))?.[0];
+      if (!id) throw new Error(`The script returned no tab: ${text(reply)}`);
+      return id;
+    };
+    // The first connection opens a tab and works in it; the person disconnects it.
+    const first = tabOf(
+      await work.use(
+        `const page = await newPage(${JSON.stringify(`${origin}/one`)}); return page.tabId;`,
+      ),
+    );
+    const firstWork = await work.useTab(
+      `const page = await openPage(${JSON.stringify(first)}); return await page.js("document.title");`,
+      first,
+    );
+    expect(firstWork.isError, text(firstWork)).not.toBe(true);
+    const connection = commands(j.fixture, j.task.userId, {
+      afterStop: (id, reason) => work.sessions.closeConnection(id, reason === "disconnect"),
+    });
+    await connection.revoke(work.agent.id);
+    await j.store.driveConnectionCleanups();
+    // A new connection opens a tab, and its next call works in it by its id.
+    const other = await work.anotherAgent();
+    const second = tabOf(
+      await other(
+        `const page = await newPage(${JSON.stringify(`${origin}/two`)}); return page.tabId;`,
+      ),
+    );
+    let done = false;
+    const working = other
+      .useTab(
+        `const page = await openPage(${JSON.stringify(second)}); await page.js("document.title"); await page.waitForTimeout(4000); return 1;`,
+        second,
+      )
+      .finally(() => {
+        done = true;
+      });
+    const { threadId } = await j.database
+      .selectFrom("agentSessions")
+      .innerJoin("agentConnections", "agentConnections.id", "agentSessions.connectionId")
+      .select("agentSessions.threadId")
+      .where("agentSessions.connectionId", "=", other.id)
+      .executeTakeFirstOrThrow();
+    await vi.waitFor(
+      async () => {
+        expect(done).toBe(false);
+        const state = await home!.service.pageTabs.state!(j.task.userId, await row(j, second));
+        expect(state.usedBy).toEqual([{ taskId: threadId }]);
+        const last = (await Promise.all(published)).filter((rows) => rows.has(second)).at(-1);
+        expect(last?.get(second)).toEqual([{ taskId: threadId }]);
+      },
+      { timeout: 4_000 },
+    );
+    const result = await working;
+    expect(result.isError, text(result)).not.toBe(true);
+  } finally {
+    await j.close();
+    site.close();
   }
 });
 
