@@ -1720,7 +1720,12 @@ it("keeps the plugin engine idle when a connected agent discovers an empty inven
           "next",
           "Installed plugins are currently unavailable.",
         );
-      else expect(partial.structuredContent).not.toHaveProperty("next");
+      // A selected grant that lists no installed plugins has nothing here: it is told so.
+      else
+        expect(partial.structuredContent).toHaveProperty(
+          "next",
+          "Nothing shared with you is here yet. What else you can use is the person's to decide.",
+        );
     }
     expect(host.runtime.plugins.state().generation).toBe(idle.generation + 1);
   } finally {
