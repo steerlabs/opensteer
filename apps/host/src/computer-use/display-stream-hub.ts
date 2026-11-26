@@ -177,6 +177,8 @@ interface Stream {
   readonly phoneOwnerControl?: 1;
   readonly pendingPower: Map<number, { viewer: Viewer; sequence: number }>;
   holder: Viewer | null;
+  /** Releases overflowed even their reserved room: this stream takes no more input. */
+  inputClosed?: boolean;
   /** The person-lane sequence of the holder's latest batch. */
   holderSequence: number;
   readonly held: Set<string>;
@@ -253,12 +255,18 @@ export interface DisplayStreamHubOptions {
 }
 
 /** One projection per authenticated phone/display; authorities spend decoder credit independently. */
-/** A release always has room in the person lane, so a press is never stranded by a full queue. */
 function releasesHeldInput(event: DisplayInputEvent): boolean {
   return event.kind === "pointer" || event.kind === "mouse"
     ? event.phase === "up" || event.phase === "cancel"
     : event.kind === "key" && event.action === "up";
 }
+/**
+ * A stream holds at most this many unanswered batches. A batch of releases only has room beyond
+ * it, so a press is never stranded by a full lane, and that room is itself bounded: a person
+ * holds at most a few modifiers, keys and buttons at once.
+ */
+const displayInputLane = 128;
+const displayReleaseRoom = 32;
 
 export class DisplayStreamHub {
   readonly #options: DisplayStreamHubOptions;
@@ -984,16 +992,12 @@ export class DisplayStreamHub {
     if (current.generation !== next.generation || next.state !== "live") {
       for (const viewer of stream.viewers) viewer.recoverySample = null;
       this.#resetInput(stream);
+      // Every pending batch already went to the producer, and its receipt will not come: what
+      // it did is unknown (rule 4), never stale. The viewer ends it as unknown on this state,
+      // which takes its input away. Only a copy, which changes nothing, hears it was refused.
       for (const pending of stream.pending.values()) {
         if (!stream.viewers.has(pending.viewer)) continue;
-        if (pending.result)
-          this.#json(pending.viewer.socket, {
-            type: "display.input.result",
-            sequence: pending.sequence,
-            outcome: "stale",
-            reason: "stale",
-          });
-        if (pending.copy)
+        if (pending.copy && !pending.cut)
           this.#json(pending.viewer.socket, {
             type: "display.clipboard",
             sequence: pending.sequence,
@@ -1189,8 +1193,18 @@ export class DisplayStreamHub {
     );
     const editing =
       viewer.editing && (stream.editingVersion === 1 || stream.target?.editingVersion === 1);
+    const releaseOnly = message.events.length > 0 && message.events.every(releasesHeldInput);
+    if (
+      releaseOnly &&
+      !stream.inputClosed &&
+      stream.pending.size >= displayInputLane + displayReleaseRoom
+    ) {
+      // Not a person's input any more: take none, and let the producer let go of all of it.
+      stream.inputClosed = true;
+      this.#resetInput(stream);
+    }
     const reason =
-      !this.#inputAvailable(stream, viewer) || stream.state.state !== "live"
+      stream.inputClosed || !this.#inputAvailable(stream, viewer) || stream.state.state !== "live"
         ? "unavailable"
         : message.geometry !== stream.generation
           ? "stale"
@@ -1205,8 +1219,9 @@ export class DisplayStreamHub {
                 (message.events.some((event) => event.kind === "cut") &&
                   (!viewer.displayCut || stream.displayCut !== 1))
               ? "unsupported"
-              : stream.pending.size >= 128 && !message.events.some(releasesHeldInput)
-                ? "too-large"
+              : stream.pending.size >= displayInputLane && !releaseOnly
+                ? // A full lane sent nothing: the viewer says so, never that it was too large.
+                  "unavailable"
                 : null;
     if (reason) {
       viewer.inputCounters.refusals[reason] = (viewer.inputCounters.refusals[reason] ?? 0) + 1;

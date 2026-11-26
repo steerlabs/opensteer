@@ -164,3 +164,70 @@ it("never wakes a tab while the page is hidden, and asks for it the moment the p
     document.dispatchEvent(new Event("visibilitychange"));
   }
 });
+
+it("ends a window tab's Opening when its window closes while it opens, and never spins after", async () => {
+  let activate!: MockInstance<MockHostClient["activateTab"]>;
+  let tabId = "";
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  await mount((source) => {
+    const window = placeList(source.getSnapshot()).find(
+      (place) => place.kind === "window" && place.availability === "ready",
+    )!;
+    tabId = window.key;
+    const real = source.activateTab.bind(source);
+    activate = vi.spyOn(source, "activateTab").mockImplementation(async (id, options) => {
+      const viewer = await real(id, options);
+      await gate;
+      return viewer;
+    });
+    return `/?panel=browser&tab=${tabId}`;
+  });
+  await vi.waitFor(() => expect(activate).toHaveBeenCalledTimes(1));
+  // The person quits the app while its view opens: the Home lists the tab's window closed.
+  await act(async () => client.closeWindowTab(tabId as never));
+  await act(async () => release());
+  for (let turn = 0; turn < 4; turn++) await act(async () => {});
+  expect(element(".owner-view").textContent).not.toContain("Opening");
+  expect(element(".owner-view").textContent).toContain("has no open window");
+  expect(document.querySelector(".owner-view .spinner")).toBeNull();
+});
+
+it("lets an activation's late answer end only its own Opening, never a newer one's", async () => {
+  let activate!: MockInstance<MockHostClient["activateTab"]>;
+  let windowKey = "";
+  let pageKey = "";
+  const gates: (() => void)[] = [];
+  await mount((source) => {
+    const places = placeList(source.getSnapshot());
+    windowKey = places.find(
+      (place) => place.kind === "window" && place.availability === "ready",
+    )!.key;
+    pageKey = places.find((place) => place.kind === "page")!.key;
+    const real = source.activateTab.bind(source);
+    activate = vi.spyOn(source, "activateTab").mockImplementation(async (id, options) => {
+      // A window tab's answer waits for its gate; until then no view of it exists. The first
+      // answer is a failure, so no view appears and only the activation decides the words.
+      if (id === windowKey) {
+        const first = gates.length === 0;
+        await new Promise<void>((resolve) => gates.push(resolve));
+        if (first) throw new Error("This activation's computer did not answer.");
+      }
+      return real(id, options);
+    });
+    return `/?panel=browser&tab=${windowKey}`;
+  });
+  await vi.waitFor(() => expect(gates).toHaveLength(1));
+  expect(element(".owner-view").textContent).toContain("Opening");
+  // The person looks at another tab and back: a second activation of the window tab starts.
+  await click(element(`.side-tab[data-place-key="${pageKey}"] .side-tab__main`));
+  await click(element(`.side-tab[data-place-key="${windowKey}"] .side-tab__main`));
+  await vi.waitFor(() => expect(gates).toHaveLength(2));
+  // The first one's late answer arrives: the second is still on its way.
+  await act(async () => gates[0]!());
+  for (let turn = 0; turn < 4; turn++) await act(async () => {});
+  expect(element(".owner-view").textContent).toContain("Opening");
+  await act(async () => gates[1]!());
+  await vi.waitFor(() => expect(element(".owner-view").textContent).not.toContain("Opening"));
+  expect(activate.mock.calls.filter(([id]) => id === windowKey)).toHaveLength(2);
+});

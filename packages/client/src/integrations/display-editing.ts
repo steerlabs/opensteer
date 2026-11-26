@@ -33,7 +33,7 @@ const refusalWords: Record<DisplayInputRefusal, string> = {
   stale: "The field changed. Try again.",
   unsupported: "This device doesn’t support this edit.",
   "too-large": "This edit is too large.",
-  unavailable: "Input is unavailable.",
+  unavailable: "This device isn’t taking input right now. Try again.",
   contended: "Another viewer is pressing. Try again.",
 };
 const unknownClipboardWords = {
@@ -57,6 +57,20 @@ interface Held {
   readonly geometry: number;
   readonly events: DisplayInputEvent[];
   readonly callers: Pick<Pending, "resolve" | "reject">[];
+}
+
+/**
+ * Input this view refused, or that the device refused, before it happened: it never left or
+ * was never applied, so it reads in its own words and may be tried again. An outcome that is
+ * unknown is never one of these.
+ */
+export class DisplayEditingRefusal extends Error {
+  readonly reason: string;
+  constructor(reason: string, message: string) {
+    super(message);
+    this.name = "DisplayEditingRefusal";
+    this.reason = reason;
+  }
 }
 
 /** The lease owns input; this adapter fences its private context and receipt lifetimes. */
@@ -147,7 +161,11 @@ export class DisplayEditingSession {
       this.#finish(pending, undefined, { outcome: "unknown", items: [] });
       return true;
     }
-    this.#finish(pending, recordTimeoutReceipt ? this.#refuse("timeout", text) : new Error(text));
+    // A batch that left and never answered may have happened: never a refusal (rule 4).
+    this.#finish(
+      pending,
+      recordTimeoutReceipt ? this.#refuse("timeout", text, false) : new Error(text),
+    );
     return false;
   }
   #cancel(reason: string): boolean {
@@ -159,10 +177,11 @@ export class DisplayEditingSession {
       if (this.#carrierEnded(pending, reason, false)) preservedReceipt = true;
     return preservedReceipt;
   }
-  #refuse(reason: string, message: string): Error {
+  /** A refusal of input that never happened says so in its own words; `settled` false is unknown. */
+  #refuse(reason: string, message: string, settled = true): Error {
     this.#count(this.diagnostics.refusals, reason);
     this.#set({ receipt: message });
-    return new Error(message);
+    return settled ? new DisplayEditingRefusal(reason, message) : new Error(message);
   }
   #message(message: DisplayEditingMessage): void {
     if (this.#disposed || !this.#scope) return;
@@ -364,7 +383,9 @@ export class DisplayEditingSession {
       return new Promise((resolve, reject) => held.callers.push({ resolve, reject }));
     }
     if (this.#pending.size >= 128)
-      return Promise.reject(this.#refuse("capacity", "Waiting for this device to respond."));
+      return Promise.reject(
+        this.#refuse("capacity", "This device is still catching up. Try again."),
+      );
     // Presses and edits never wait, and follow the movement before them.
     this.#sendHeld(true);
     return this.#transmit(geometry, events, copy, atomic);

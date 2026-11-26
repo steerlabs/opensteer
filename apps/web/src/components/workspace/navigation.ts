@@ -353,9 +353,10 @@ export interface WorkspaceNavigation {
   readonly leaveLauncher: (from: string | null) => void;
   /**
    * The place in the middle is no longer listed: its successor takes its
-   * history entry, or, with none, the start page does, opened fresh.
+   * history entry, or, with none, the start page does, opened fresh. A choice
+   * already made away from the ended place, not yet rendered, stands.
    */
-  readonly succeedPlace: (successor: SurfaceDestination | null) => void;
+  readonly succeedPlace: (successor: SurfaceDestination | null, ended?: SurfaceDestination) => void;
   /** The monitor button: the last place chosen, or the launcher. */
   readonly showComputer: (available: (destination: SurfaceDestination) => boolean) => void;
   readonly hideComputer: () => void;
@@ -565,7 +566,8 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
     [choosePlace],
   );
   const succeedPlace = useCallback(
-    (successor: SurfaceDestination | null) => {
+    (successor: SurfaceDestination | null, ended?: SurfaceDestination) => {
+      if (ended && new URLSearchParams(latest.current.search).get("tab") !== ended.tabId) return;
       if (successor)
         choosePlace({ kind: "place", destination: successor }, undefined, { replace: true });
       else showLauncher({ replace: true });

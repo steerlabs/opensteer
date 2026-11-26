@@ -540,17 +540,70 @@ describe("phone display Host sockets", () => {
     send(129, "move");
     send(130, "up");
     await a.roundTrip();
+    // A full lane never sent it: the viewer says so ("unavailable"), never that it was too large.
     expect(a.json()).toContainEqual({
       type: "display.input.result",
       sequence: 129,
       outcome: "refused",
-      reason: "too-large",
+      reason: "unavailable",
     });
     expect(a.json().some((m) => m.sequence === 130 && m.outcome === "refused")).toBe(false);
     const relayed = f.sent.filter((m) => m.type === "host.integrations.display.input");
     expect(relayed.at(-1)?.events).toEqual([
       { kind: "pointer", phase: "up", x: 0.5, y: 0.5, t: 130 },
     ]);
+  });
+
+  it("gives the release room only to releases, bounded; past it the stream takes no input and lets go once", async () => {
+    // Review probe: a release bundled with anything took the release's room, without limit.
+    const f = await fixture(true, { editing: true });
+    const a = await f.viewer(true);
+    await f.state();
+    const pointer = (sequence: number, phase: string) => ({
+      kind: "pointer",
+      phase,
+      x: 0.5,
+      y: 0.5,
+      t: sequence,
+    });
+    const send = (sequence: number, events: unknown[]) =>
+      a.send({ type: "display.input", geometry: 1, sequence, events });
+    // Shift stays held throughout: the overflow's reset is what lets go of it.
+    send(1, [
+      {
+        kind: "key",
+        action: "down",
+        key: "Shift",
+        code: "ShiftLeft",
+        modifiers: [],
+        location: 1,
+        repeat: false,
+      },
+    ]);
+    for (let sequence = 2; sequence <= 128; sequence++) send(sequence, [pointer(sequence, "move")]);
+    send(129, [pointer(129, "move"), pointer(129, "up")]);
+    for (let sequence = 130; sequence <= 161; sequence++) send(sequence, [pointer(sequence, "up")]);
+    await a.roundTrip();
+    const refused = (sequence: number) =>
+      a.json().some((m) => m.sequence === sequence && m.outcome === "refused");
+    expect(refused(129), "a release bundled with a move is an ordinary batch").toBe(true);
+    expect([130, 161].map(refused)).toEqual([false, false]);
+    const resets = () =>
+      f.sent.filter((m) => m.type === "host.integrations.display.input-reset").length;
+    expect(resets()).toBe(0);
+    send(162, [pointer(162, "up")]);
+    await a.roundTrip();
+    expect(refused(162)).toBe(true);
+    expect(resets(), "one reset lets go of everything held").toBe(1);
+    send(163, [pointer(163, "down")]);
+    await a.roundTrip();
+    expect(a.json()).toContainEqual({
+      type: "display.input.result",
+      sequence: 163,
+      outcome: "refused",
+      reason: "unavailable",
+    });
+    expect(resets()).toBe(1);
   });
 
   it("frees the lane when the phone refuses the press holding it, never a later one", async () => {
@@ -754,7 +807,7 @@ describe("phone display Host sockets", () => {
       type: "display.input.result",
       sequence: 128,
       outcome: "refused",
-      reason: "too-large",
+      reason: "unavailable",
     });
   });
 
@@ -964,12 +1017,11 @@ describe("phone display Host sockets", () => {
     await viewer.roundTrip();
     await f.state("live", 2);
     await viewer.roundTrip();
-    expect(viewer.json()).toContainEqual({
-      type: "display.input.result",
-      sequence: 0,
-      outcome: "stale",
-      reason: "stale",
-    });
+    // The paste went to the phone and its receipt will not come: unknown, never stale (rule 4).
+    // The viewer ends it as unknown on the new generation.
+    expect(
+      viewer.json().filter((m) => m.type === "display.input.result" && m.sequence === 0),
+    ).toEqual([]);
     viewer.send({
       type: "display.input",
 
@@ -2895,6 +2947,35 @@ describe("phone display Host sockets", () => {
 });
 
 describe("Mac owner input over authenticated display sockets", () => {
+  it("never answers a forwarded paste stale when the window hides before its receipt (rule 4)", async () => {
+    // Review finding 7: the paste reached the Mac; its receipt will not come. The viewer
+    // ends it as unknown on the state change, never as "The field changed. Try again."
+    const f = await fixture(true, { mac: true, macOwnerInput: true, macHelperInput: true });
+    const viewer = await f.macViewer(true);
+    const data = await f.phone();
+    data.socket.send(f.frame(1, true));
+    await viewer.received(() => viewer.media().length === 1);
+    viewer.send({
+      type: "display.input",
+      geometry: 1,
+      sequence: 4,
+      events: [{ kind: "paste", text: "hello", contextId: "00000000-0000-4000-8000-000000000001" }],
+    });
+    await viewer.roundTrip();
+    expect(f.sent.filter((m) => m.type === "host.integrations.mac-owner.input")).toHaveLength(1);
+    await f.state("protected", 1, "target-unavailable");
+    await viewer.roundTrip();
+    expect(
+      viewer.json().filter((m) => m.type === "display.input.result" && m.sequence === 4),
+    ).toEqual([]);
+    expect(
+      viewer
+        .json()
+        .filter((m) => m.type === "display.state")
+        .at(-1),
+    ).toMatchObject({ state: "protected" });
+  });
+
   it("re-resolves the same binding after readiness loss and ignores a legacy Take over", async () => {
     const negotiation = { mac: true, macOwnerInput: true, macHelperInput: true };
     const f = await fixture(true, negotiation);

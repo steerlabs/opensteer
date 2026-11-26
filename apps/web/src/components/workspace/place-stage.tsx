@@ -166,6 +166,8 @@ function SelectedPlace({
     readonly tabId: string;
     readonly state: "activating" | "failed";
     readonly message?: string;
+    /** The ask this state belongs to: only its own answer may end it. */
+    readonly request?: unknown;
   } | null>(null);
   const [retry, setRetry] = useState(0);
   // The person's Open of this tab: spent by its first activation, renewed by Try again or Reopen.
@@ -218,7 +220,6 @@ function SelectedPlace({
   useLayoutEffect(() => {
     if (!needsActivation || placeKey === null || reconnect.getSnapshot() !== "idle") return;
     let cancelled = false;
-    setActivation({ tabId: placeKey, state: "activating" });
     let pending = pendingActivation.current;
     if (pending?.tabId !== placeKey) {
       const asked: {
@@ -241,9 +242,20 @@ function SelectedPlace({
       done.then(settled, settled);
     }
     const answered = pending;
+    setActivation({ tabId: placeKey, state: "activating", request: answered });
+    // An activation this run began ends with its answer even when the run was left: a tab that
+    // turned unavailable on its way (its app quit) asks nothing more, and must not say Opening.
+    // Only its own: a newer ask of the same tab keeps saying Opening until its own answer.
+    const ended = () =>
+      setActivation((current) =>
+        current?.request === answered && current.state === "activating" ? null : current,
+      );
     pending.done.then(
       () => {
-        if (cancelled) return;
+        if (cancelled) {
+          ended();
+          return;
+        }
         setActivation(null);
         setAsk({
           tabId: placeKey,
@@ -256,7 +268,8 @@ function SelectedPlace({
       },
       () => {
         // The tab's own fact; why the browser didn't start is never shown as raw text.
-        if (!cancelled)
+        if (cancelled) ended();
+        else
           setActivation({ tabId: placeKey, state: "failed", message: "This tab could not open." });
       },
     );

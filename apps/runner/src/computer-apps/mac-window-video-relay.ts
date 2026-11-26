@@ -16,6 +16,7 @@ import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
 import { WebSocket } from "ws";
 import type { ComputerUseHandler } from "./computer-use-handler.js";
 import { ComputerUseBridgeError } from "./computer-use-bridge-client.js";
+import { inputBytes, OrderedInputLane, releaseOnly } from "./ordered-input-lane.js";
 
 type VideoOperation = Extract<
   HostIntegrationsOperation,
@@ -58,7 +59,24 @@ interface Entry {
   closed: boolean;
   terminal: boolean;
   endLogged?: boolean;
+  /** This stream's owner input, relayed to the helper one batch at a time in arrival order. */
+  readonly input: OrderedInputLane<OwnerInput>;
 }
+type OwnerInput = Extract<VideoOperation, { type: "host.integrations.mac-owner.input" }>;
+/**
+ * The Home holds at most 128 unanswered batches a stream; a lane as deep never refuses what it
+ * admitted, and the byte bound keeps a run of large pastes from growing without end. Releases
+ * have 32 batches and 64 KiB more: a person holds at most a few modifiers, keys and buttons at
+ * once, and each lets go in a small batch. A batch older than the client's own give-up (10 s),
+ * less a margin, is not sent: the person was already told to try again.
+ */
+const ownerInputLane = {
+  maxBatches: 128,
+  maxBytes: 4 * 1_048_576,
+  maxReleaseBatches: 32,
+  maxReleaseBytes: 64 * 1_024,
+  maxAgeMs: 8_000,
+} as const;
 
 /** Binary media never enters the integrations or Desktop JSON request queues. */
 export class MacWindowVideoRelay {
@@ -180,6 +198,7 @@ export class MacWindowVideoRelay {
         media: null,
         closed: false,
         terminal: false,
+        input: this.#ownerInputLane(message.streamId),
       };
       this.#streams.set(entry.id, entry);
       const released = this.#demandAccepted;
@@ -209,53 +228,18 @@ export class MacWindowVideoRelay {
         )
       )
         return;
-      if (message.type === "host.integrations.mac-owner.input-reset") {
-        void this.#computerUse
-          .videoRequest(
-            "display.input-reset",
-            {
-              streamId: message.streamId,
-              source: message.source,
-            },
-            Date.now() + 5_000,
-          )
-          .catch(() => this.#close(entry, "owner-input-reset-failed"));
-      } else {
-        void this.#computerUse
-          .videoRequest(
-            "display.input",
-            {
-              streamId: message.streamId,
-              source: message.source,
-              geometry: message.geometry,
-              sequence: message.sequence,
-              events: message.events,
-            },
-            Date.now() + 5_000,
-          )
-          .then((result) =>
-            this.#emit({
-              type: "runner.integrations.mac-owner.event",
-              streamId: message.streamId,
-              source: message.source,
-              message: { type: "display.input.result", ...result },
-            }),
-          )
-          .catch((error: unknown) =>
-            this.#emit({
-              type: "runner.integrations.mac-owner.event",
-              streamId: message.streamId,
-              source: message.source,
-              message: {
-                type: "display.input.result",
-                sequence: message.sequence,
-                outcome: "refused",
-                reason: inputFailure(error),
-              },
-            }),
-          )
-          .catch(() => this.#close(entry, "owner-input-failed"));
-      }
+      if (message.type === "host.integrations.mac-owner.input-reset")
+        entry.input.reset(displaySourceKey(message.source));
+      else if (
+        !entry.input.input({
+          source: displaySourceKey(message.source),
+          bytes: inputBytes(message.events),
+          value: message,
+          release: releaseOnly(message.events),
+        })
+      )
+        // A full lane refuses as the helper's own full lane does: nothing was sent.
+        this.#answerOwnerInput(entry, message, "unavailable");
       return;
     }
     if (
@@ -464,7 +448,79 @@ export class MacWindowVideoRelay {
       .videoRequest("display.stop", { streamId: entry.id }, Date.now() + 5_000)
       .catch(() => undefined);
   }
+  #ownerInputLane(streamId: DisplayStreamId): OrderedInputLane<OwnerInput> {
+    const entry = () => this.#streams.get(streamId);
+    return new OrderedInputLane<OwnerInput>({
+      ...ownerInputLane,
+      send: async (message) => {
+        const result = await this.#computerUse
+          .videoRequest(
+            "display.input",
+            {
+              streamId: message.streamId,
+              source: message.source,
+              geometry: message.geometry,
+              sequence: message.sequence,
+              events: message.events,
+            },
+            Date.now() + 5_000,
+          )
+          .then(
+            (answer) => ({ type: "display.input.result" as const, ...answer }),
+            (error: unknown) => ({
+              type: "display.input.result" as const,
+              sequence: message.sequence,
+              outcome: "refused" as const,
+              reason: inputFailure(error),
+            }),
+          );
+        await this.#emit({
+          type: "runner.integrations.mac-owner.event",
+          streamId: message.streamId,
+          source: message.source,
+          message: result,
+        }).catch(() => {
+          const current = entry();
+          if (current) this.#close(current, "owner-input-failed");
+        });
+      },
+      reset: async (source) => {
+        const current = entry();
+        const held = current?.sources.find(
+          (each): each is Extract<DisplaySource, { kind: "owner-view" }> =>
+            each.kind === "owner-view" && displaySourceKey(each) === source,
+        );
+        if (!current || !held) return;
+        await this.#computerUse
+          .videoRequest(
+            "display.input-reset",
+            { streamId: current.id, source: held },
+            Date.now() + 5_000,
+          )
+          .catch(() => this.#close(current, "owner-input-reset-failed"));
+      },
+      notSent: (message) => {
+        const current = entry();
+        if (current) this.#answerOwnerInput(current, message, "unavailable");
+      },
+    });
+  }
+  /** Answers a batch that never reached the helper. */
+  #answerOwnerInput(entry: Entry, message: OwnerInput, reason: DisplayInputRefusal): void {
+    void this.#emit({
+      type: "runner.integrations.mac-owner.event",
+      streamId: message.streamId,
+      source: message.source,
+      message: {
+        type: "display.input.result",
+        sequence: message.sequence,
+        outcome: "refused",
+        reason,
+      },
+    }).catch(() => this.#close(entry, "owner-input-failed"));
+  }
   #ended(entry: Entry, reason: string): void {
+    entry.input.end();
     if (entry.endLogged) return;
     entry.endLogged = true;
     try {

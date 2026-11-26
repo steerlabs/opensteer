@@ -61,7 +61,7 @@ export function usePlaceSuccession(hostClient: HostClient): void {
     shown.current = null;
     if (last?.address !== address || last.viewer !== viewer) return;
     const next = tabSuccessor(last.strip, strip, destination.tabId);
-    nav.succeedPlace(next ? { kind: "tab", tabId: next } : null);
+    nav.succeedPlace(next ? { kind: "tab", tabId: next } : null, destination);
   }, [destination, hostClient, known, nav, strip, viewer]);
 }
 
