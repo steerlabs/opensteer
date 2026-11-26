@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { OrderedInputLane } from "./ordered-input-lane.js";
 
 /**
@@ -34,17 +34,11 @@ function harness(options: { refuse?: (value: number) => boolean } = {}) {
     notSent: (value) => answers.push(`not-sent ${value}`),
   });
   /** The helper answers what it holds, one at a time, until nothing waits. */
-  const drain = async () => {
-    for (let turn = 0; turn < 50; turn++) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      const next = pending.shift();
-      if (!next) {
-        if (!lane.busy) return;
-        continue;
-      }
-      next();
-    }
-  };
+  const drain = () =>
+    vi.waitFor(() => {
+      pending.shift()?.();
+      if (pending.length || lane.busy) throw new Error("The lane is still relaying.");
+    });
   return { lane, sent, answers, drain, mostInFlight: () => mostInFlight };
 }
 const batch = (value: number, source = "owner:a") => ({ source, bytes: 10, value });
