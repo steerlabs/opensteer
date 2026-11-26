@@ -5066,6 +5066,8 @@ export class BrowserService {
     initial: TabRecord,
     agent?: CdpAuthority,
     signal?: AbortSignal,
+    /** The pooled operation this restore runs in: its sends are that operation's. */
+    browserSend?: PooledBrowserSend,
   ): Promise<BrowserSessionRecord> {
     if (!this.#workspaceTabs)
       throw new OpensteerError({ code: "not_found", message: "Workspace tabs are unavailable." });
@@ -5116,7 +5118,8 @@ export class BrowserService {
               .map((other) => other.id)
           : [];
         this.#pagesAwaitingNavigation.add(row.id);
-        const budget = this.#poolStartBudget(signal);
+        const started = this.#poolStartBudget(signal);
+        const budget = started && browserSend ? { ...started, browserSend } : started;
         let bound: TabRecord | undefined;
         try {
           const finish = await this.#prepareStart(
@@ -5208,7 +5211,42 @@ export class BrowserService {
     const current = await this.#requireWorkspaceGeneration(agent.ownerId, row);
     const old = current.pageBinding;
     if (pooled) {
-      const session = old && (await this.#usableAgentSession(agent, old.sessionId, false));
+      // A tab with no page to bind (its close let go of it and it was reopened, or its session
+      // ended) loads its address again in a page of its own, within this operation, as the bind
+      // off the pool does: never a stale refusal for a tab that simply has no page yet.
+      const recorded = old
+        ? await this.#repository.getBrowserSessionForOwner(old.sessionId, agent.ownerId)
+        : null;
+      if (!old || !recorded || this.#ended(recorded)) {
+        const session = await this.#restoreWorkspacePage(
+          agent.ownerId,
+          current,
+          agent,
+          signal,
+          pooled,
+        );
+        if (
+          session.runnerId !== pooled.target.runnerId ||
+          session.runtimeId !== pooled.target.runtimeId ||
+          !this.#brokers.get(session.id)?.live
+        )
+          throw new BrowserCdpConnectionEnded("This browser page is stale.");
+        // Its page is the agent's once the Home has its document, as for every pooled bind.
+        await this.#flushTabDescriptors(session.id);
+        await withTimeout(
+          (async () => {
+            while (!(await this.pooledScriptPageWitness(agent.ownerId, session.id, row.id)))
+              await delay(50, undefined, signal ? { signal } : {});
+          })(),
+          browserOpenWorkMs,
+          { timeoutError: () => new BrowserCdpConnectionEnded("This browser page is stale.") },
+        );
+        const { backend } = await this.#admitAgentBackend({ ...agent, sessionId: session.id });
+        await this.#recordAgentTabPlace(agent, session, row.id);
+        this.#noteBoundTab(session.id, row.id, agent.agentBindingId);
+        return { tabId: row.id, sessionId: session.id, backend, reloaded: true };
+      }
+      const session = await this.#usableAgentSession(agent, old.sessionId, false);
       if (
         !session ||
         session.runnerId !== pooled.target.runnerId ||

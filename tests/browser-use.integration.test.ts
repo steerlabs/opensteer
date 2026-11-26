@@ -1370,3 +1370,33 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     expect(lines[4]).toBe("fresh:Home browser fixture");
   },
 );
+
+it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
+  "loads a tab the person closed and reopened when a connected agent opens it first, off the pool",
+  async () => {
+    const home = await browserUseHome();
+    const { scripts, tabs, browser, tabStore, origin, first, profile, text } = home;
+    const { authority } = await connectedAgent(home);
+    const address = `${origin}/person`;
+    const { tab: person } = await tabs.open(
+      { kind: "person", ownerId: first.userId },
+      { kind: "page", profileId: profile.id, url: address },
+      "person-tab",
+    );
+    await vi.waitFor(
+      async () => {
+        await browser.flushPendingTabDescriptors();
+        expect((await tabStore.get(first.userId, person.tabId as never))?.url).toBe(address);
+      },
+      { timeout: 10_000 },
+    );
+    await tabs.close({ kind: "person", ownerId: first.userId }, [person.tabId], "close");
+    await tabs.reopen({ kind: "person", ownerId: first.userId }, person.tabId, "reopen");
+    const opened = await scripts.runBrowserScript({
+      authority,
+      contextKey: "reopened",
+      code: `const page = await openPage(${JSON.stringify(person.tabId)}); return [await page.evaluate(() => location.href)];`,
+    });
+    expect(JSON.parse(text(opened))).toEqual([address]);
+  },
+);

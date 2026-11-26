@@ -2111,3 +2111,43 @@ it("ends a connected agent's call on the pool when its grant changes in the midd
     await held.close();
   }
 });
+
+it("loads a tab the person closed and reopened when the agent opens it first, on the pool: its address in a page of its own, never unknown", async () => {
+  const held = await heldPersonTab("direct-reopened-agent-first");
+  const { j, home, session, own, person, origin, work } = held;
+  try {
+    const address = `${origin}/before-close`;
+    const before = home.service.pageInventory(session.id)?.records.get(own.id)?.documentId;
+    await person.cdp.send("Page.navigate", { url: address });
+    await navigated(home, session.id, own.id, before);
+    await vi.waitFor(
+      async () => {
+        await home.service.flushPendingTabDescriptors();
+        expect((await j.tabs.get(j.task.userId, own.id))?.url).toBe(address);
+      },
+      { timeout: 10_000 },
+    );
+    // The person closes the tab and reopens it at once: it has no page until it is used.
+    const tabs = new TabService({
+      store: j.tabs,
+      pages: home.service.pageTabs,
+      nativeTargets: { onTargetAcquired: () => () => undefined },
+      authorizeMembership: async () => undefined,
+      onError: (error: unknown) => {
+        throw error;
+      },
+    } as never);
+    await tabs.close({ kind: "person", ownerId: j.task.userId }, [own.id], "close");
+    await j.tabs.reopen(j.task.userId, own.id, "reopen");
+    expect((await j.tabs.get(j.task.userId, own.id))?.pageBinding).toBeNull();
+    // The agent opens it before the person does: its address loads again.
+    const opened = await work.use(
+      `const page = await openPage(${JSON.stringify(own.id)}); return [await page.evaluate(() => location.href)];`,
+    );
+    expect(opened.isError, text(opened)).not.toBe(true);
+    expect(lines(opened)).toEqual([address]);
+    expect((await j.tabs.get(j.task.userId, own.id))?.pageBinding?.sessionId).not.toBe(session.id);
+  } finally {
+    await held.close();
+  }
+});
