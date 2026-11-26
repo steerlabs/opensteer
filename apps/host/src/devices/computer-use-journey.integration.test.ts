@@ -105,6 +105,7 @@ import { releasedRunnerCapabilities } from "../computer-apps/released-runner.tes
 
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { sql } from "kysely";
+import pg from "pg";
 import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -6513,6 +6514,166 @@ integration.sequential("Computer use for a connected agent, through its session"
       });
       expect(narrowed).toBe(true);
       expect(tools.filter(({ grant }) => grant.connectionId === s.approvalId)).toEqual([]);
+    } finally {
+      await s.world.close();
+    }
+  });
+
+  /**
+   * The grant store's listing for `requester`, with `change` made right after the lending was
+   * read and before the listing reads where the connection stands again; every statement it
+   * sends is kept.
+   */
+  const listedAcrossChange = async (
+    s: Awaited<ReturnType<typeof connectedAgent>>,
+    requester: Parameters<typeof s.world.platform.devices.store.grants.listCallableTools>[0],
+    change: () => Promise<unknown>,
+  ) => {
+    const store = s.world.platform.devices.store.grants;
+    const watched = store as unknown as {
+      resolveCallableTools: (input: unknown, grants?: unknown) => Promise<unknown>;
+    };
+    const resolve = watched.resolveCallableTools.bind(store);
+    let changed = false;
+    watched.resolveCallableTools = async (input, grants) => {
+      const resolved = await resolve(input, grants);
+      if (grants !== undefined && !changed) {
+        changed = true;
+        await change();
+      }
+      return resolved;
+    };
+    const sent: string[] = [];
+    const prototype: { query(...args: unknown[]): unknown } = pg.Client.prototype;
+    const query = prototype.query;
+    const spy = vi.spyOn(prototype, "query").mockImplementation(function (
+      this: pg.Client,
+      ...args: unknown[]
+    ) {
+      const first = args[0];
+      sent.push(
+        typeof first === "string"
+          ? first
+          : first && typeof first === "object" && "text" in first
+            ? String(first.text)
+            : "",
+      );
+      return Reflect.apply(query, this, args);
+    });
+    try {
+      const listed = await store.listCallableTools(requester).then(
+        (tools) => ({ tools }),
+        (error: unknown) => ({ error }),
+      );
+      expect(changed).toBe(true);
+      return { ...listed, sent };
+    } finally {
+      spy.mockRestore();
+      delete (watched as { resolveCallableTools?: unknown }).resolveCallableTools;
+    }
+  };
+
+  it("refuses the listing of a connection revoked between the lending and the standing, in the words a revoked connection reads", async () => {
+    const s = await connectedAgent("full-access", {
+      target: "mac",
+      personApproved: true,
+      scope: "everything",
+    });
+    try {
+      const requester = { ownerUserId: s.world.owner.userId, connectionId: s.record.id };
+      const across = await listedAcrossChange(s, requester, () =>
+        s.agents.revoke(s.world.owner.userId, s.record.id),
+      );
+      const fresh = await s.world.platform.devices.store.grants.listCallableTools(requester).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(fresh).toBeInstanceOf(Error);
+      expect(across).not.toHaveProperty("tools");
+      expect(String((across as { error: unknown }).error)).toBe(String(fresh));
+    } finally {
+      await s.world.close();
+    }
+  });
+
+  it("answers the listing of a connection whose mode was lowered between the lending and the standing from the new mode", async () => {
+    const s = await connectedAgent("full-access", {
+      target: "mac",
+      personApproved: true,
+      scope: "everything",
+    });
+    try {
+      const requester = { ownerUserId: s.world.owner.userId, connectionId: s.record.id };
+      const across = await listedAcrossChange(s, requester, async () => {
+        const { grantRevision } = await database
+          .selectFrom("agentConnections")
+          .select("grantRevision")
+          .where("id", "=", s.record.id)
+          .executeTakeFirstOrThrow();
+        await s.agents.update(s.world.owner.userId, {
+          connectionId: s.record.id,
+          expectedRevision: grantRevision,
+          accessMode: "approval-required",
+        });
+      });
+      // Read again in full (the owner's check follows the one-statement read of where the
+      // connection stands), and the same answer a listing under the new mode gives.
+      const lending = across.sent.findIndex((sql) =>
+        /from "integration_connections" inner join "integration_servers".*inner join "devices"/su.test(
+          sql,
+        ),
+      );
+      expect(lending).toBeGreaterThan(0);
+      const reread = across.sent.findIndex(
+        (sql, index) =>
+          index > lending && /^select "id", "label", "grant", "grant_revision"/u.test(sql),
+      );
+      expect(reread).toBeGreaterThan(lending);
+      expect(across.sent[reread + 1]).toMatch(/from "deployments"/u);
+      const fresh = await s.world.platform.devices.store.grants.listCallableTools(requester);
+      const names = (tools: readonly { readonly tool: { readonly name: string } }[]) =>
+        tools.map(({ tool }) => tool.name).sort();
+      expect(names((across as { tools: typeof fresh }).tools)).toEqual(names(fresh));
+    } finally {
+      await s.world.close();
+    }
+  });
+
+  it("refuses the listing of a session whose task was stopped between the lending and the standing", async () => {
+    const s = await connectedAgent("full-access", {
+      target: "mac",
+      personApproved: true,
+      scope: "everything",
+    });
+    try {
+      const read = await s.call(
+        {
+          code: 'const w = await (await app("Notes")).window(); print(await w.observe())',
+          readOnly: true,
+        },
+        "session-before-stop",
+      );
+      expect(read, JSON.stringify(read)).toMatchObject({ status: "completed" });
+      const session = await database
+        .selectFrom("agentSessions")
+        .select(["id", "threadId"])
+        .where("connectionId", "=", s.record.id)
+        .where("status", "=", "active")
+        .executeTakeFirstOrThrow();
+      const across = await listedAcrossChange(
+        s,
+        { ownerUserId: s.world.owner.userId, agentBindingId: `session:${session.id}` },
+        () =>
+          s.sessions.stopSession({
+            ownerUserId: s.world.owner.userId,
+            threadId: session.threadId,
+            sessionId: session.id,
+          }),
+      );
+      expect(across).not.toHaveProperty("tools");
+      expect(String((across as { error: unknown }).error)).toContain(
+        "Task authority is no longer available",
+      );
     } finally {
       await s.world.close();
     }

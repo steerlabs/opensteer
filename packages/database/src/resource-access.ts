@@ -230,24 +230,18 @@ async function readConnectionStanding(
 }
 
 /**
- * Whether a connection still stands exactly as an admission read it, in the one statement of its
- * standing: live, with the same grant revision, mode, consent and sender rule. Only the subjects
- * whose authority is that row alone (the connection acting itself, or its session) may keep an
- * earlier admission on this; anything else is admitted again.
+ * Whether a connection acting itself still stands exactly as an admission read it, in the one
+ * statement of its standing: live, with the same grant revision, mode, consent and sender rule.
+ * That row is the whole of such an admission, so it may be kept on this. Every other subject is
+ * admitted again in full: a session's admission is also its session and its task (stopped, ended,
+ * its mode lowered), and delegated work's is its task and Run.
  */
 export async function connectionStandsAsAdmitted(
   database: Kysely<DatabaseSchema>,
   execution: Pick<ExecutionAuthority, "agentConnection" | "ownerUserId" | "subject">,
 ): Promise<boolean> {
   const { agentConnection: admitted, subject } = execution;
-  if (
-    !admitted ||
-    !(
-      (subject.kind === "connection" && !subject.delegated) ||
-      (subject.kind === "binding" && subject.bindingId.startsWith("session:"))
-    )
-  )
-    return false;
+  if (!admitted || subject.kind !== "connection" || subject.delegated) return false;
   const read = await readConnectionStanding(
     database,
     execution.ownerUserId,
@@ -259,6 +253,7 @@ export async function connectionStandsAsAdmitted(
     read.connection.grantRevision === admitted.grantRevision &&
     read.connection.accessMode === admitted.accessMode &&
     read.connection.consentVersion === admitted.consentVersion &&
+    // Who may speak to a chat: "owner" or "anyone", or none for an MCP connection.
     (read.connection.bridgeSenders ?? null) === (admitted.bridgeSenders ?? null)
   );
 }
