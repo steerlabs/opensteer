@@ -235,6 +235,7 @@ import { TriggerToolHandlers } from "./handlers/triggers.js";
 import { agentToolHandlers } from "./handlers/index.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
 import { AgentCallerResolver, type AgentCaller } from "./agent-caller.js";
+import { commandSubject } from "@opensteer/database";
 import type { RunToolTokenService } from "../agents/run-tool-tokens.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
 import type { WatchControlTokenService } from "../triggers/watch-capability.js";
@@ -335,7 +336,12 @@ export class ProductToolsTestClient {
               },
             },
           } as never,
-          admit: async () => ({ answer: "now", face: 0, execution: null }),
+          admit: async (caller: AgentCaller) => ({
+            answer: "now",
+            face: 0,
+            // As the real door admits one of your own agents: as its credential says.
+            execution: { subject: commandSubject(caller.key) } as never,
+          }),
           scope: async () => ({ scope: null, grant: null, mode: "full-access" }),
           secretDigestKey: Buffer.alloc(32, 0x33),
         });
@@ -372,7 +378,12 @@ export class ProductToolsTestClient {
               door: (_caller, registry) => ({
                 registry,
                 scope: async () => ({ scope: null, grant: null, mode: "full-access" }),
-                admit: async () => ({ answer: "now", face: 0, execution: null }),
+                admit: async (caller: AgentCaller) => ({
+                  answer: "now",
+                  face: 0,
+                  // As the real door admits one of your own agents: as its credential says.
+                  execution: { subject: commandSubject(caller.key) } as never,
+                }),
                 secretDigestKey: Buffer.alloc(32, 0x33),
               }),
             },

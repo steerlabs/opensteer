@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { AgentGrant, ThreadAccessMode } from "@opensteer/core";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { AdministrationService } from "../administration/administration-service.js";
 import { startBrowserRuntime } from "../browser/browser-runtime.test-support.js";
 import { connectAgent } from "../runtime/connected-agent.test-support.js";
 import { openRealtime } from "../runtime/machine-access-protocol.test-support.js";
@@ -296,6 +297,84 @@ integration("a connected agent's first use of a fresh Home", () => {
       if (when === "after") expect(made, seen).toHaveLength(1);
       await host.store.database.deleteFrom("browserProfiles").execute();
     }
+  });
+
+  it.each(["browser.profile.create", "browser.profile.delete"] as const)(
+    "re-admits %s where it is written as the door admitted it: a task lowered below Full access in between refuses it",
+    async (type) => {
+      const agent = await agentWith({ scope: "everything" }, "full-access");
+      // A profile, and the connection's own direct session in a task, at Full access.
+      expect((await agent.call("opensteer_command", create)).structuredContent).toMatchObject({
+        status: "done",
+      });
+      const [made] = await profiles();
+      const used = (await agent.call("browser_use", { code: "return 1" })).structuredContent;
+      expect(used, JSON.stringify(used)).toMatchObject({ status: "completed" });
+      const { threadId } = await host.store.database
+        .selectFrom("agentSessions")
+        .select("threadId")
+        .where("connectionId", "=", agent.id)
+        .where("status", "=", "active")
+        .executeTakeFirstOrThrow();
+      // The door admits the command as that session; its handler is held before it writes.
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const execute = AdministrationService.prototype.execute;
+      const held = vi
+        .spyOn(AdministrationService.prototype, "execute")
+        .mockImplementationOnce(async function (this: AdministrationService, ...args) {
+          entered.resolve();
+          await release.promise;
+          return execute.apply(this, args);
+        });
+      after.push(async () => {
+        release.resolve();
+        held.mockRestore();
+      });
+      const command =
+        type === "browser.profile.create"
+          ? { type, input: { name: "Second browser" } }
+          : { type, profileId: made!.id };
+      const answering = agent.call("opensteer_command", { command });
+      await entered.promise;
+      // The person lowers that task below Full access while the command is held.
+      await host.store.updateThreadAccessMode({
+        threadId: threadId!,
+        requestedBy: host.ownerId,
+        accessMode: "approval-required",
+      });
+      release.resolve();
+      const answer = (await answering).structuredContent;
+      const seen = JSON.stringify(answer);
+      // Refused before anything happened, as the door would now answer: nothing changed.
+      expect(answer, seen).toMatchObject({ error: { code: "access_changed" } });
+      expect(
+        (await profiles()).map(({ id }) => id),
+        seen,
+      ).toEqual([made!.id]);
+    },
+  );
+
+  it("tells a Full access connection when no computer can hold a profile, as refused, never as maybe done", async () => {
+    const agent = await agentWith({ scope: "everything" }, "full-access");
+    // No computer of this Home can hold a browser profile now.
+    const homes = vi.spyOn(host.store, "listEligibleBrowserRunners").mockResolvedValueOnce([]);
+    after.push(async () => homes.mockRestore());
+    const answer = (await agent.call("opensteer_command", create)).structuredContent;
+    const seen = JSON.stringify(answer);
+    expect(answer, seen).toMatchObject({
+      error: { message: "No computer can hold your browser profiles." },
+    });
+    expect(homes).toHaveBeenCalled();
+    expect(await profiles()).toEqual([]);
+    // Its attempt is settled as refused: nothing happened, so nothing is left unknown.
+    expect(
+      await host.store.database
+        .selectFrom("commandAttempts")
+        .select("state")
+        .where("connectionId", "=", agent.id)
+        .execute(),
+    ).toEqual([{ state: "failed" }]);
   });
 
   it("keeps a selected connection's answers about what it was not given as they are", async () => {

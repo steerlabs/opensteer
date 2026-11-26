@@ -47,6 +47,7 @@ const administrationTypes = [
   "iphone.screen.attach",
   "iphone.screen.detach",
   "machine.access.session.stop",
+  "browser.profile.create",
   "browser.profile.rename",
   "browser.profile.delete",
   "browser.history.remove",
@@ -905,7 +906,11 @@ describeStore("one admission for Home commands", (it) => {
           type: command.type,
           request: { accessMode },
           authoritySource: { kind: "mcp", callerKey },
-          ...commandAdmission({ ownerUserId: f.userId, callerKey, command }),
+          ...commandAdmission({
+            ownerUserId: f.userId,
+            subject: commandSubject(callerKey),
+            command,
+          }),
         },
       );
     };
@@ -977,13 +982,13 @@ describeStore("one admission for Home commands", (it) => {
       .where("id", "=", target.id)
       .execute();
     await expect(
-      database
-        .transaction()
-        .execute((tx) =>
-          commandAdmission({ ownerUserId: f.userId, callerKey: runKey, command: rename }).admit!(
-            tx,
-          ),
-        ),
+      database.transaction().execute((tx) =>
+        commandAdmission({
+          ownerUserId: f.userId,
+          subject: commandSubject(runKey),
+          command: rename,
+        }).admit!(tx),
+      ),
     ).rejects.toMatchObject({ code: "forbidden", reason: "authority-changed" });
     // (c) A tab moves to a profile the grant does not name.
     await setMode("full-access");
@@ -1018,7 +1023,8 @@ describeStore("one admission for Home commands", (it) => {
       database
         .transaction()
         .execute((tx) =>
-          commandAdmission({ ownerUserId: f.userId, callerKey: key, command: close }).admit!(tx),
+          commandAdmission({ ownerUserId: f.userId, subject: commandSubject(key), command: close })
+            .admit!(tx),
         ),
     ).rejects.toMatchObject({ code: "not_found", message: "That item is unavailable." });
   });
@@ -1367,7 +1373,11 @@ describeStore("one admission for Home commands", (it) => {
           type,
           request: { probe: type },
           authoritySource: { kind: "mcp", callerKey },
-          ...commandAdmission({ ownerUserId: f.userId, callerKey, command }),
+          ...commandAdmission({
+            ownerUserId: f.userId,
+            subject: commandSubject(callerKey),
+            command,
+          }),
         };
         // Admitted when it was sent.
         expect([
@@ -1405,7 +1415,13 @@ describeStore("one admission for Home commands", (it) => {
               .execute(),
           ),
           `${type} after ${label}`,
-        ).rejects.toMatchObject(refusalAfter[change]);
+        ).rejects.toMatchObject(
+          // A new thing has nothing to be outside of: a grant narrowed to a selection is asked
+          // to make one (D1), so its commit is refused as a changed authority, not as absent.
+          change === "narrowed" && commandTable[type].scope === "new"
+            ? refusalAfter.lowered
+            : refusalAfter[change],
+        );
         expect(
           await database
             .selectFrom("commands")
@@ -1435,7 +1451,7 @@ describeStore("one admission for Home commands", (it) => {
       type: command.type,
       request,
       authoritySource: { kind: "mcp", callerKind: "run", callerKey },
-      ...commandAdmission({ ownerUserId: f.userId, callerKey, command }),
+      ...commandAdmission({ ownerUserId: f.userId, subject: commandSubject(callerKey), command }),
     });
     let writes = 0;
     const rename = (request: Record<string, unknown>) =>
@@ -1480,7 +1496,11 @@ describeStore("one admission for Home commands", (it) => {
     } as unknown as Command;
     // Admitted before the store has looked: some face of it could be now, so it may go on, and
     // only the Request (the store's view) says what the answer does.
-    const admission = commandAdmission({ ownerUserId: f.userId, callerKey, command });
+    const admission = commandAdmission({
+      ownerUserId: f.userId,
+      subject: commandSubject(callerKey),
+      command,
+    });
     await database.transaction().execute(async (transaction) => {
       await admission.admit(transaction);
       await admission.face(transaction, { face: "preference" });
@@ -1495,7 +1515,7 @@ describeStore("one admission for Home commands", (it) => {
       Object.keys(
         commandAdmission({
           ownerUserId: f.userId,
-          callerKey,
+          subject: commandSubject(callerKey),
           command,
           face: 0,
         } as Parameters<typeof commandAdmission>[0]),
@@ -1522,7 +1542,7 @@ describeStore("one admission for Home commands", (it) => {
       request: { requestId: "probe" },
       authoritySource: { kind: "mcp", callerKey },
       // Nothing claimed: only the store's report decides the face.
-      ...commandAdmission({ ownerUserId: f.userId, callerKey, command }),
+      ...commandAdmission({ ownerUserId: f.userId, subject: commandSubject(callerKey), command }),
     });
     const rename = (name: string, report: boolean) => {
       const admitted = identity();

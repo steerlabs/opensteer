@@ -118,6 +118,7 @@ import {
   isExtensionUrl,
   normalizePageOpenUrl,
   OpensteerError,
+  raisedBeforeEffect,
   agentGrantAllows,
   threadAccessModeAtMost,
   RunnerIdSchema,
@@ -2209,18 +2210,23 @@ export class BrowserService {
     const main = this.#personal ? homes.find((home) => home.kind === "main") : undefined;
     const selected = preferred ?? main ?? (homes.length === 1 ? homes[0] : undefined);
     if (selected) return selected.id;
+    // A read, before anything is written or told: nothing has happened when it refuses.
     if (homes.length === 0)
-      throw new OpensteerError({
-        code: "runner_offline",
-        reason: "browser-placement-unavailable",
-        message: "No computer can hold your browser profiles.",
-      });
+      throw raisedBeforeEffect(
+        new OpensteerError({
+          code: "runner_offline",
+          reason: "browser-placement-unavailable",
+          message: "No computer can hold your browser profiles.",
+        }),
+      );
     if (legacy) return null;
-    throw new OpensteerError({
-      code: "conflict",
-      reason: "browser-placement-ambiguous",
-      message: "Choose a computer for this browser profile.",
-    });
+    throw raisedBeforeEffect(
+      new OpensteerError({
+        code: "conflict",
+        reason: "browser-placement-ambiguous",
+        message: "Choose a computer for this browser profile.",
+      }),
+    );
   }
 
   /**

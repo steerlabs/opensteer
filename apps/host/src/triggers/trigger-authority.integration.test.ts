@@ -29,6 +29,7 @@ import {
 } from "@opensteer/core";
 import {
   commandAdmission,
+  commandSubject,
   createDatabase,
   migrateToLatest,
   OpensteerStore,
@@ -1326,7 +1327,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       const mutation = service.manage(f.ownerId, TriggerControlInputSchema.parse(input), actor.id, {
         commandIdentity: commandAdmission({
           ownerUserId: f.ownerId,
-          callerKey: `thread:${actor.id}`,
+          subject: commandSubject(`thread:${actor.id}`),
           command: admitCommandPayload,
         }),
       });

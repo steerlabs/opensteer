@@ -24,6 +24,11 @@ import type { CommandRegistry, PersonCommandHandler } from "./registry.js";
 import { sampleCommand } from "@opensteer/protocol/test-support/command-samples";
 import { proposedCommand } from "./requests.js";
 
+/** A stand-in door's admission names the subject it admitted, as the real one's does. */
+const standInExecution = {
+  subject: { kind: "binding", bindingId: "stand-in" },
+} as unknown as NonNullable<import("@opensteer/database").CommandAdmission["execution"]>;
+
 const userId = "usr_owner" as UserId;
 const session = { id: "ses_1", user: { id: userId } } as unknown as AuthenticatedSession;
 const context = { session } as unknown as HostApiServerContext;
@@ -165,7 +170,11 @@ describe("dispatchCommand", () => {
     // the door's person path reads no admission, no scope and opens no Request, so it costs
     // what the route cost and cannot become an ask.
     const { registry, calls } = spyRegistry();
-    const admit = vi.fn(async () => ({ answer: "ask" as const, face: 0, execution: null }));
+    const admit = vi.fn(async () => ({
+      answer: "ask" as const,
+      face: 0,
+      execution: standInExecution,
+    }));
     const scope = vi.fn(async () => null);
     const propose = vi.fn();
     const command = {
@@ -201,10 +210,10 @@ describe("dispatchCommand", () => {
         reach: true,
         ownWork: true,
       });
-      return { ...rule, face, execution: null };
+      return { ...rule, face, execution: standInExecution };
     };
     /** An admission that lets everything through: the door alone must still hold the line. */
-    const always = async () => ({ answer: "now" as const, face: 0, execution: null });
+    const always = async () => ({ answer: "now" as const, face: 0, execution: standInExecution });
 
     it.each([
       ["the rule", byRule],
@@ -281,7 +290,7 @@ describe("dispatchCommand", () => {
     const settled: string[] = [];
     const door = {
       registry,
-      admit: async () => ({ answer: "now" as const, face: 0, execution: null }),
+      admit: async () => ({ answer: "now" as const, face: 0, execution: standInExecution }),
       scope: signedIn,
       secretDigestKey,
       attempts: {
@@ -298,7 +307,7 @@ describe("dispatchCommand", () => {
 
   it("reads a folder install under a connection's grant like a kind the schema does not know (rule 5)", async () => {
     const { registry } = spyRegistry();
-    const asked = async () => ({ answer: "ask" as const, face: 0, execution: null });
+    const asked = async () => ({ answer: "ask" as const, face: 0, execution: standInExecution });
     const install = (source: Record<string, unknown>) =>
       ({
         type: "plugins.install",
@@ -331,7 +340,7 @@ describe("dispatchCommand", () => {
 
   it("refuses an agent's command that carries a value only the person types, nested included", async () => {
     const { registry, calls } = spyRegistry();
-    const admitted = async () => ({ answer: "ask" as const, face: 0, execution: null });
+    const admitted = async () => ({ answer: "ask" as const, face: 0, execution: standInExecution });
     for (const type of types) {
       const row = commandTable[type] as CommandRow;
       for (const path of row.secretFields ?? [])
@@ -372,7 +381,7 @@ describe("dispatchCommand", () => {
         answer: "ask" as const,
         face: 0,
         reason: "approval" as const,
-        execution: null,
+        execution: standInExecution,
       }),
       propose: async () => {
         proposed.push("opened");
@@ -454,7 +463,11 @@ describe("dispatchCommand", () => {
 
   it("answers not found before anything else is said, secrets included", async () => {
     const { registry, calls } = spyRegistry();
-    const outside = async () => ({ answer: "not_found" as const, face: 0, execution: null });
+    const outside = async () => ({
+      answer: "not_found" as const,
+      face: 0,
+      execution: standInExecution,
+    });
     const fixed = { code: "not_found", message: "That item is unavailable." };
     // An unknown type reads like something that does not exist, never a crash.
     await expect(
@@ -506,7 +519,7 @@ describe("dispatchCommand", () => {
           ),
           {
             registry: anyRegistry as never,
-            admit: async () => ({ answer: "now", face: 0, execution: null }),
+            admit: async () => ({ answer: "now", face: 0, execution: standInExecution }),
             scope: signedIn,
             secretDigestKey,
           },
@@ -550,7 +563,7 @@ describe("dispatchCommand", () => {
       },
       {
         registry: anyRegistry as never,
-        admit: async () => ({ answer: "now", face: 1, execution: null }),
+        admit: async () => ({ answer: "now", face: 1, execution: standInExecution }),
         scope: signedIn,
         secretDigestKey,
       },
@@ -620,7 +633,7 @@ describe("dispatchCommand", () => {
       const agent = connection("full-access", grant);
       const door = {
         registry: spyRegistry().registry,
-        admit: async () => ({ answer: "now" as const, face: 0, execution: null }),
+        admit: async () => ({ answer: "now" as const, face: 0, execution: standInExecution }),
         scope: async () => ({ scope: grant.scope, grant, mode: "full-access" as const }),
         secretDigestKey,
       };

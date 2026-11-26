@@ -1,9 +1,9 @@
 import { TriggerToolHandlers } from "../mcp/handlers/triggers.js";
 import { opensteer_automation_control } from "@opensteer/agent-tools/tools";
-import type { RunCaller } from "../mcp/agent-caller.js";
+import type { AgentCaller, RunCaller } from "../mcp/agent-caller.js";
 import { idempotencyKey, operationId } from "../mcp/operations.js";
 import { createId } from "@opensteer/core";
-import type { TriggerStore } from "@opensteer/database";
+import { commandSubject, type TriggerStore } from "@opensteer/database";
 import { TriggerRevisionSchema, TriggerSchema } from "@opensteer/triggers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TriggerScheduleLoop, TriggerService } from "./trigger-service.js";
@@ -36,7 +36,11 @@ describe("TriggerService", () => {
         door: (_caller, registry) => ({
           registry,
           scope: async () => ({ scope: null, grant: null, mode: "full-access" }),
-          admit: async () => ({ answer: "now", face: 0, execution: null }),
+          admit: async (caller: AgentCaller) => ({
+            answer: "now",
+            face: 0,
+            execution: { subject: commandSubject(caller.key) } as never,
+          }),
           secretDigestKey: Buffer.alloc(32, 0x33),
         }),
       },
@@ -352,12 +356,14 @@ describe("TriggerService", () => {
             grant: null,
             mode: liveMode === "full-access" ? "full-access" : "approval-required",
           }),
-          admit: async (_c, cmd) =>
-            cmd.type === "trigger.run"
-              ? liveMode === "full-access"
-                ? { answer: "now", face: 0, execution: null }
-                : { answer: "ask", face: 0, reason: "mode", execution: null }
-              : { answer: "now", face: 0, execution: null },
+          admit: async (caller, cmd) =>
+            cmd.type === "trigger.run" && liveMode !== "full-access"
+              ? { answer: "ask", face: 0, reason: "mode", execution: null }
+              : {
+                  answer: "now",
+                  face: 0,
+                  execution: { subject: commandSubject(caller.key) } as never,
+                },
           secretDigestKey: Buffer.alloc(32, 0x33),
         }),
       },
@@ -438,7 +444,11 @@ describe("TriggerService", () => {
         door: (_caller, registry) => ({
           registry,
           scope: async () => ({ scope: null, grant: null, mode: "full-access" }),
-          admit: async () => ({ answer: "now", face: 0, execution: null }),
+          admit: async (caller: AgentCaller) => ({
+            answer: "now",
+            face: 0,
+            execution: { subject: commandSubject(caller.key) } as never,
+          }),
           secretDigestKey: Buffer.alloc(32, 0x33),
         }),
       },
@@ -522,10 +532,14 @@ describe("TriggerService", () => {
       } as unknown as TriggerStore,
       threads: {} as never,
     });
-    const admit = vi.fn(async (_c: unknown, cmd: { type: string }) =>
+    const admit = vi.fn(async (caller: { key: string }, cmd: { type: string }) =>
       cmd.type === "trigger.run"
         ? ({ answer: "ask", face: 0, reason: "mode", execution: null } as const)
-        : ({ answer: "now", face: 0, execution: null } as const),
+        : ({
+            answer: "now",
+            face: 0,
+            execution: { subject: commandSubject(caller.key) } as never,
+          } as const),
     );
     const handlers = new TriggerToolHandlers(
       service,

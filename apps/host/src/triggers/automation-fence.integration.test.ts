@@ -1,6 +1,7 @@
 import {
   AgentConnectionStore,
   commandAdmission,
+  commandSubject,
   TriggerStore,
   type BlockedCommandClaim,
   type ClaimedCommand,
@@ -68,7 +69,7 @@ describeStore(
             actorConnectionId: agent.id,
             commandIdentity: commandAdmission({
               ownerUserId: f.userId,
-              callerKey: `connection:${agent.id}`,
+              subject: commandSubject(`connection:${agent.id}`),
               command,
             }),
             anchorThreadId: f.threadId,

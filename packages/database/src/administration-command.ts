@@ -3,7 +3,7 @@ import { createId, OpensteerError, type UserId } from "@opensteer/core";
 import { commandFace, type Command } from "@opensteer/protocol/command-table";
 import {
   assertCommandAdmitted,
-  commandSubject,
+  type AuthoritySubject,
   type CommandStoredFace,
 } from "./resource-access.js";
 import type { Kysely, Transaction } from "kysely";
@@ -62,12 +62,19 @@ export type AdministrationCommandIdentity = CommandIdentity;
  */
 export function commandAdmission(input: {
   readonly ownerUserId: UserId;
-  readonly callerKey: string;
+  /**
+   * The subject the door admitted the command as (a connection's live direct session, or its
+   * credential's): read again here, never derived again from the caller.
+   */
+  readonly subject: AuthoritySubject;
   readonly command: Command;
 }): Pick<CommandIdentity, "admit" | "face" | "faced"> &
   Required<Pick<CommandIdentity, "admit" | "face">> {
-  const subject = commandSubject(input.callerKey);
-  const admitted = { ownerUserId: input.ownerUserId, subject, command: input.command };
+  const admitted = {
+    ownerUserId: input.ownerUserId,
+    subject: input.subject,
+    command: input.command,
+  };
   // A caller never says which face it is: only the input, or the store's own report, can.
   const storeDecides = commandFace(input.command) === undefined;
   let reportedIn: Transaction<DatabaseSchema> | null = null;

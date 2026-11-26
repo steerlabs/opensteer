@@ -33,6 +33,7 @@ import {
   assertLineageCompatibleReuse,
   beginAgentSession,
   commandAdmission,
+  commandSubject,
   type OpensteerStore,
 } from "@opensteer/database";
 import {
@@ -1665,7 +1666,7 @@ describeStore("connection grants and lineage", (it) => {
         actorConnectionId: agent.id,
         commandIdentity: commandAdmission({
           ownerUserId: f.userId,
-          callerKey: `connection:${agent.id}`,
+          subject: commandSubject(`connection:${agent.id}`),
           command: {
             type: "trigger.create",
             idempotencyKey: afterLowering.idempotencyKey,
