@@ -136,6 +136,8 @@ export async function runRunnerDaemon(
     /** Credentials the supervisor delivered off the environment. */
     readonly secrets?: Readonly<Record<string, string>>;
     readonly phoneScreens?: PhoneScreenDriver;
+    /** The app this Runner runs inside: the Opensteer desktop app says so; a Runner alone does not. */
+    readonly app?: "opensteer";
   } = {},
 ): Promise<void> {
   const config = consumeRunnerConfig(environment, options.secrets);
@@ -198,6 +200,7 @@ export async function runRunnerDaemon(
           ...(options.phoneScreens ? { phoneScreens: options.phoneScreens } : {}),
         });
     const device = await describeRunnerDevice({
+      ...(options.app ? { app: options.app } : {}),
       platform: process.platform,
       runnerKind: config.runnerKind,
     });

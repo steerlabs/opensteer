@@ -54,6 +54,8 @@ void delivered
   .then(async (secrets) => {
     if (secrets === null) return;
     await runRunnerDaemon(process.env, shutdown.signal, {
+      // This Runner is the Opensteer app's on this Mac: the Home names it a computer.
+      app: "opensteer",
       control: (control) => {
         notifySleeping = control.notifySleeping;
         notifyAwake = control.notifyAwake;
