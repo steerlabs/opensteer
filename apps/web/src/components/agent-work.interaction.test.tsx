@@ -114,6 +114,81 @@ describe("a task a connected agent works itself", () => {
     expect(outcomes().filter((label) => label === "Failed")).toHaveLength(failedBefore + 1);
   });
 
+  it("shows a Mac app by the name the person approved where they watch, the trusted name elsewhere", async () => {
+    // The tester's case: Safari approved from the Mac's own picker, with no grant naming it, so the
+    // Home's trusted name for the operation's target is the bare bundle id.
+    const deviceId = "dev_00000000-0000-4000-8000-0000000000d1";
+    const safari = {
+      grant: {
+        kind: "computer-app" as const,
+        approvalId: "con_00000000-0000-4000-8000-0000000000c1",
+        deviceId,
+        app: { kind: "mac-app" as const, bundleId: "com.apple.Safari", teamId: null },
+      },
+      name: "com.apple.Safari",
+      untrustedTitle: "Safari",
+      device: { id: deviceId, name: "Managed’s Virtual Machine" },
+    };
+    await mount(task(mockAgentWorkThreads.working), {
+      ...options,
+      hostClient: (source: MockHostClient) => {
+        source.mockAgentWork();
+        const activity = source.rpc["threads.activity"].bind(source.rpc);
+        Object.defineProperty(source.rpc, "threads.activity", {
+          configurable: true,
+          value: async (input: Parameters<typeof activity>[0]) => {
+            const read = await activity(input);
+            if (!read.ok || input.threadId !== mockAgentWorkThreads.working) return read;
+            return {
+              ...read,
+              data: {
+                ...read.data,
+                operations: read.data.operations.map((operation) =>
+                  operation.outcome === null && operation.state === "handed-off"
+                    ? { ...operation, tool: "computer_use", target: safari }
+                    : operation,
+                ),
+              },
+            };
+          },
+        });
+        Object.defineProperty(source.rpc, "integration.computer.apps.approved", {
+          configurable: true,
+          value: async () => ({
+            ok: true as const,
+            data: {
+              apps: [
+                {
+                  connectionId: safari.grant.approvalId,
+                  machineId: deviceId,
+                  target: {
+                    kind: "app" as const,
+                    app: { bundleId: "com.apple.Safari", displayName: "Safari", teamId: null },
+                  },
+                  name: "Safari",
+                  iconPng: null,
+                },
+              ],
+            },
+          }),
+        });
+        return source;
+      },
+    });
+    // The task's activity, where the person watches the operation.
+    const rows = () =>
+      [...document.querySelectorAll(".session-op__action")].map((row) => row.textContent ?? "");
+    await vi.waitFor(() => expect(rows()).toContain("Use Safari on Managed’s Virtual Machine"));
+    expect(rows().join("\n")).not.toContain("com.apple.Safari");
+    // Now, where the person sees what each agent is working in.
+    const opener = document.querySelector<HTMLButtonElement>(".agents-now__trigger")!;
+    vi.spyOn(opener, "getClientRects").mockReturnValue([new DOMRect()] as unknown as DOMRectList);
+    await act(async () => opener.click());
+    const panel = () => document.querySelector(".agents-now-panel")?.textContent ?? "";
+    await vi.waitFor(() => expect(panel()).toContain("Safari · Managed’s Virtual Machine"));
+    expect(panel()).not.toContain("com.apple.Safari");
+  });
+
   it("shows its activity, has no composer, and Stop ends that agent's session", async () => {
     await mount(task(mockAgentWorkThreads.working), options);
     await vi.waitFor(() => expect(document.querySelector(".session-bar")).not.toBeNull());

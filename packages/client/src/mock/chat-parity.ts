@@ -159,6 +159,8 @@ export const chatParityOutside = {
     "Reads earlier sessions of a connected agent that works tasks itself. The connected agent Settings tests cover paging those sessions; the chat script starts Runs instead.",
   "threads.activity":
     "Reads operations on a task a connected agent works itself. The connected agent Settings tests cover the operations and pending Request; the chat script starts Runs instead.",
+  "integration.computer.apps.approved":
+    "Reads the names of the Mac apps the person approved, to show a connected agent's work by them; the agent-work tests cover it, and the chat script uses no Mac app.",
   "browser.profile.create":
     "Makes the browser profile a connected agent's new grant names, as Browser profiles makes one; this script runs no browser.",
 } as const;

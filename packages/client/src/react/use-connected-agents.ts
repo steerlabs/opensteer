@@ -10,6 +10,8 @@ import {
 } from "../host/connected-agent-view.js";
 import { unwrapRpcResult } from "../host/host-session-client.js";
 import { useHostSelector } from "./use-host-snapshot.js";
+import { namesMacApp, shownOperations } from "../host/approved-app-names.js";
+import { useApprovedAppNames } from "./use-approved-app-names.js";
 import { connectedAgentsClient, type ConnectedAgentsSnapshot } from "../host/connected-agents.js";
 import {
   readChromeTabGrantCatalog,
@@ -176,23 +178,37 @@ export function useConnectedAgentActivity(
   const [result, setResult] = useState<{
     client: HostClient;
     key: string;
-    activity: ConnectedAgentActivity;
+    page: Parameters<typeof connectedAgentActivity>[0] | null;
   }>();
   const key = `${connectionId}:${revision ?? ""}`;
   useEffect(() => {
     const controller = new AbortController();
-    const receive = (activity: ConnectedAgentActivity) => {
-      if (!controller.signal.aborted) setResult({ client, key, activity });
+    const receive = (page: Parameters<typeof connectedAgentActivity>[0] | null) => {
+      if (!controller.signal.aborted) setResult({ client, key, page });
     };
     void client.rpc["connections.activity"]({ connectionId }, { signal: controller.signal })
       .then(unwrapRpcResult)
-      .then(
-        (page) => receive(connectedAgentActivity(page)),
-        () => receive({ kind: "unavailable" }),
-      );
+      .then(receive, () => receive(null));
     return () => controller.abort();
   }, [client, connectionId, key]);
-  return result?.client === client && result.key === key ? result.activity : undefined;
+  const current = result?.client === client && result.key === key ? result : undefined;
+  // The person reads Recent activity: a Mac app there goes by the name they approved.
+  const names = useApprovedAppNames(
+    client,
+    current?.page?.operations.some(({ target }) => namesMacApp(target)) ?? false,
+  );
+  return useMemo(
+    () =>
+      current === undefined
+        ? undefined
+        : current.page === null
+          ? { kind: "unavailable" as const }
+          : connectedAgentActivity({
+              ...current.page,
+              operations: shownOperations(current.page.operations, names),
+            }),
+    [current, names],
+  );
 }
 
 export function useTaskActivity(
@@ -214,7 +230,17 @@ export function useTaskActivity(
     void readTaskActivity(client, threadId, controller.signal).then(receive, () => receive());
     return () => controller.abort();
   }, [client, threadId, revision]);
-  return revision !== null && result?.client === client && result.threadId === threadId
-    ? result.operations
-    : undefined;
+  const operations =
+    revision !== null && result?.client === client && result.threadId === threadId
+      ? result.operations
+      : undefined;
+  // The person watches this task: a Mac app in its activity goes by the name they approved.
+  const names = useApprovedAppNames(
+    client,
+    operations?.some(({ target }) => namesMacApp(target)) ?? false,
+  );
+  return useMemo(
+    () => (operations ? shownOperations(operations, names) : undefined),
+    [operations, names],
+  );
 }

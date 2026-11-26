@@ -1,4 +1,6 @@
 import { readTaskActivity, taskActivityKey } from "../host/agent-work.js";
+import { namesMacApp, shownOperations } from "../host/approved-app-names.js";
+import { useApprovedAppNames } from "./use-approved-app-names.js";
 import type { ChatScreenHost } from "../host/chat-screen-host.js";
 import type { HostSnapshot, ThreadSummary, WaitingRequestView } from "../host/client.js";
 import { connectedAgentsNow } from "../host/connected-agents-now.js";
@@ -77,7 +79,10 @@ export function useActiveConnectedAgentSessions(
 /** Reuse the task's existing activity read when a surface also needs places and actions. */
 export function useConnectedAgentWork(
   hostClient: HostSnapshotSource & {
-    readonly rpc: Pick<ChatScreenHost["rpc"], "threads.activity">;
+    readonly rpc: Pick<
+      ChatScreenHost["rpc"],
+      "threads.activity" | "integration.computer.apps.approved"
+    >;
   },
   connectionId?: string,
   readActivity = true,
@@ -122,12 +127,24 @@ export function useConnectedAgentWork(
     return () => controller.abort();
   }, [hostClient, activeTasks, activityRead, readActivity]);
   const activity = read?.client === hostClient ? read.byTask : undefined;
+  // What each agent is working in, as the person sees it: a Mac app by the name they approved.
+  const names = useApprovedAppNames(
+    hostClient,
+    activity !== undefined &&
+      [...activity.values()].some((operations) =>
+        operations.some(({ target }) => namesMacApp(target)),
+      ),
+  );
   const view = useMemo(
     () =>
       activity
-        ? connectedAgentsNow({ tasks, waitingRequests, operations: [...activity.values()].flat() })
+        ? connectedAgentsNow({
+            tasks,
+            waitingRequests,
+            operations: shownOperations([...activity.values()].flat(), names),
+          })
         : base,
-    [activity, base, tasks, waitingRequests],
+    [activity, base, names, tasks, waitingRequests],
   );
   return { view, tasks, activity, refresh };
 }

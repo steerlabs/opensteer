@@ -29,6 +29,7 @@ export const chatScreenReads = [
   "connections.list",
   "connections.activity",
   "threads.activity",
+  "integration.computer.apps.approved",
   "channel.connection.check",
 ] as const;
 

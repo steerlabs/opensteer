@@ -30,6 +30,7 @@ export * from "./use-connected-agent-row-distinctions.js";
 export * from "./use-connected-agent-sessions.js";
 export * from "./use-session-stop.js";
 export * from "./use-connected-agents.js";
+export * from "./use-approved-app-names.js";
 export { useVoice, useVoiceOn, useVoiceValue, VoiceContext } from "./use-voice.js";
 
 export * from "./use-thread-server-approvals.js";
