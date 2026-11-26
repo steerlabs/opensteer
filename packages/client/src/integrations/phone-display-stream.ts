@@ -174,6 +174,8 @@ interface Connection {
   replayRestarts: boolean;
   /** A keyframe request awaiting its keyframe: how often it was asked, and the next ask. */
   keyframe: { attempts: number; timer: ReturnType<typeof setTimeout> | null } | null;
+  /** A frame reached this socket. */
+  framed: boolean;
 }
 
 interface Entry {
@@ -612,6 +614,7 @@ export class DisplayStreams {
       replayThrough: null,
       replayRestarts: false,
       keyframe: null,
+      framed: false,
     };
     entry.connection = connection;
     this.#set(entry, { connection: "connecting", closeCode: null, keyframeFailed: false });
@@ -641,6 +644,7 @@ export class DisplayStreams {
         return;
       }
       if (received.kind === "frame") {
+        connection.framed = true;
         if (received.header.key) this.#keyframeArrived(entry, connection);
         this.#deliver(entry, connection, received);
       } else if (received.message.type === "display.state") {
@@ -653,6 +657,17 @@ export class DisplayStreams {
         // The Host ends the person lane on a new picture or when the stream
         // stops being live, releasing whatever this viewer held.
         const previous = entry.snapshot.display;
+        // Which state the Host said, and when: names a passing state in the next run's log.
+        if (
+          previous?.state !== received.message.state ||
+          previous.reason !== received.message.reason
+        )
+          this.#log(entry, {
+            transition: "display-state",
+            displayState: received.message.state,
+            ...(received.message.reason ? { displayReason: received.message.reason } : {}),
+            framed: connection.framed,
+          });
         if (
           received.message.state !== "live" ||
           (previous !== null && previous.generation !== received.message.generation)
