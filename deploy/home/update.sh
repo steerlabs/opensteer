@@ -8,8 +8,9 @@ release_recipe() {
     rm -f -- "$2"
 }
 
-# release_waiting OLD NEW BUNDLE: a release whose installer (BUNDLE) and images (NEW) name different
-# releases changes nothing. The same mismatch at a later check is recorded as waiting since the
+# release_waiting OLD NEW SEEN: a release whose installer and images (NEW) name different releases
+# (SEEN says how: the installer's version, or the installers the manifest and the account name)
+# changes nothing. The same mismatch at a later check is recorded as waiting since the
 # first, for the Home's problems; an update that goes through clears it.
 release_waiting() {
   local waiting="$home_dir/update.waiting" seen="$1 $2 $3"
@@ -61,7 +62,7 @@ settled() {
 # the running one (nothing outside it is written), then switched to by cutover.
 update_home() (
   [[ $# -le 2 ]] || fail "Usage: opensteer-home update [MANIFEST.json]"
-  local feed old_version new_version bundle_version change identity remembered since why first unit pod pinned=false unwritten='The release could not be written. Nothing was changed.'
+  local feed named old_version new_version bundle_version change identity remembered since why first unit pod pinned=false unwritten='The release could not be written. Nothing was changed.'
   if [[ -f "$home_dir/managed" ]]; then
     pinned=true
     [[ $# == 1 ]] || fail 'Managed Homes update only from the Account feed.'
@@ -104,6 +105,18 @@ update_home() (
   release_to_env "$manifest" "$manifest.env" "$pinned"
   old_version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$from/images.env")
   new_version=$(sed -n 's/^OPENSTEER_HOME_VERSION=//p' "$manifest.env")
+  # A managed Home's release is one thing: the feed's manifest names the installer its images were
+  # published with (`recipe`, as a self-hosted Home's manifest does), and only when that is the one
+  # its account pins do they update together. Either half published before the other, in any
+  # order, changes nothing until the other is there.
+  if $pinned; then
+    release_recipe "$manifest" "$manifest.named"
+    named=$(jq -r .sha256 "$manifest.named" 2>/dev/null) || named=''
+    if [[ $named != "$(jq -r .sha256 "$manifest.recipe")" ]]; then
+      release_waiting "$old_version" "$new_version" "${named:-no-recipe} $(jq -r .sha256 "$manifest.recipe")"
+      return 0
+    fi
+  fi
   # A release is its version, its image digests and its recipe together.
   change=$(release_change "$(release_named "$from")" "$manifest.env")
   case $change in

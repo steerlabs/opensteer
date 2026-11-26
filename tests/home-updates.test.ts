@@ -266,12 +266,17 @@ it("runs a scheduled update from the account's feed and decides by the release's
       "",
     ].join("\n");
   const update = (running: string, feedRelease: { version: string; digit: string }) => {
-    // The account's pin names the release the feed offers: the two halves agree.
+    // The account's pin names the release the feed offers, and the feed's manifest names the
+    // same installer: the two halves agree.
     account({ releaseManifestUrl: moved, recipe: pin });
     writeFileSync(join(home, "releases", "running", "images.env"), running);
     writeFileSync(
       join(work, "release.json"),
-      JSON.stringify({ version: feedRelease.version, images: images(feedRelease.digit) }),
+      JSON.stringify({
+        version: feedRelease.version,
+        images: images(feedRelease.digit),
+        recipe: pin,
+      }),
     );
     // The fetch records which address it used; going any further than the decision stops here.
     return run(

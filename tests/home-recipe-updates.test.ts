@@ -132,6 +132,7 @@ const dockerStub = (work: string, log: string) => `docker() {
 
 /** Stands in for curl: the account's release-feed answer, and the installer at its address. */
 function network(answer: object | null, bundle?: string) {
+  accountRecipe = (answer as { recipe?: { url: string; sha256: string } } | null)?.recipe;
   writeFileSync(
     join(work, "curl"),
     `#!/usr/bin/env bash
@@ -147,6 +148,12 @@ esac
   );
   chmodSync(join(work, "curl"), 0o755);
 }
+
+/**
+ * The installer the account pins now. Its feed's manifest names it too (both halves of one
+ * release published), unless a test gives the manifest its own `recipe`.
+ */
+let accountRecipe: { url: string; sha256: string } | undefined;
 
 /** The account pins this installer, and its feed serves `newer`'s images. */
 function pinned(files: Record<string, string>, version?: string) {
@@ -208,7 +215,15 @@ function update(
   /** More stand-ins, after the usual ones: a fault to inject. */
   fault = "",
 ) {
-  writeFileSync(join(work, "release.json"), JSON.stringify(release));
+  const managed = existsSync(join(home, "managed"));
+  writeFileSync(
+    join(work, "release.json"),
+    JSON.stringify(
+      managed && accountRecipe && !("recipe" in release)
+        ? { ...release, recipe: accountRecipe }
+        : release,
+    ),
+  );
   return spawnSync(
     "bash",
     [
@@ -258,6 +273,7 @@ const lastUpdate = () =>
     : undefined;
 
 beforeEach(() => {
+  accountRecipe = undefined;
   work = realpathSync(mkdtempSync(join(tmpdir(), "opensteer-home-release-")));
   home = join(work, "home");
   log = join(work, "log");
@@ -413,6 +429,64 @@ it("takes a release whose images it runs already but whose recipe it does not", 
   const result = update(newer);
   expect(result.status, result.stderr).toBe(0);
   expect(result.stdout).toContain("Same images, another recipe");
+  expect(inCurrent("recipe.sha256").trim()).toBe(b.sha256);
+});
+
+/** The feed's manifest of release A, the one this Home runs, naming A's own installer. */
+const releaseA = () => ({
+  version: "1.2.3",
+  images: images("a"),
+  recipe: { url: recipeUrl, sha256: "a".repeat(64) },
+});
+
+it("does not mix releases: a managed Home whose account pins B's installer while its feed still serves A changes nothing", () => {
+  // The account moved to B (built under the same version, as every head build is); the feed did not.
+  pinned(release("B"), "1.2.3");
+  const first = update(releaseA());
+  expect(first.status, first.stderr).toBe(0);
+  expect(first.stdout).toContain(
+    "The release is still being published (its recipe and its images name different releases): not updating now; the next check tries again.",
+  );
+  expect(first.stdout).not.toContain("Same images, another recipe");
+  // Nothing fetched, prepared, stopped or started; A runs as it did.
+  untouched();
+  expect(said()).not.toContain("release B");
+  expect(said()).not.toContain("start_pod");
+  expect(inCurrent("recipe.sha256")).toBe(`${"a".repeat(64)}\n`);
+  // The next check that finds the same: recorded as waiting since the first.
+  const again = update(releaseA());
+  expect(again.status, again.stderr).toBe(0);
+  untouched();
+  expect(lastUpdate()).toMatchObject({
+    result: "waiting",
+    fromVersion: "1.2.3",
+    toVersion: "1.2.3",
+  });
+});
+
+it("does not mix releases: a managed Home whose feed serves D's images while its account still pins C's installer changes nothing", () => {
+  const c = pinned(release("C"), "1.2.4");
+  const d = installer(release("D"), "1.2.4");
+  expect(d.sha256).not.toBe(c.sha256);
+  for (const recipe of [{ url: recipeUrl, sha256: d.sha256 }, undefined]) {
+    const result = update({ ...newer, recipe });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("The release is still being published");
+    untouched();
+    expect(said()).not.toMatch(/release [CD] /u);
+  }
+});
+
+it("takes a managed release once its feed and its account name the same installer: one update", () => {
+  const b = pinned(release("B"));
+  const result = update({
+    ...newer,
+    recipe: { url: "https://elsewhere.example.test/b.sh", sha256: b.sha256 },
+  });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain("Updated Home to 1.2.4.");
+  expect(said().match(/release B release-gate/gu)).toHaveLength(1);
+  // The account's pin is the one fetched; the manifest's address is never used.
   expect(inCurrent("recipe.sha256").trim()).toBe(b.sha256);
 });
 
