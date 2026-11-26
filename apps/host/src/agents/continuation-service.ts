@@ -706,10 +706,12 @@ export function commandContinuation(request: Request): string {
     case "done-by-person":
       return `The person did what you proposed themselves, with their own command (${asked}); your proposal itself did not run.`;
     case "approved-done":
-      return `The person approved ${asked}, and it was made.${!command.proposer.connectionId && command.outcome?.status === "done" && command.outcome.result !== undefined ? ` Result: ${JSON.stringify(command.outcome.result).slice(0, 4_000)}` : ""}`;
+      return `The person approved ${asked}, and it was made.${!command.proposer.connectionId && command.outcome?.status === "done" && command.outcome.result !== undefined ? ` Result: ${JSON.stringify(command.outcome.result).slice(0, command.type === "plugins.install" ? 8_000 : 4_000)}` : ""}`;
     case "approved-failed":
       return `The person approved ${asked}, but it did not happen (${command.outcome?.status === "failed" ? command.outcome.code : "failed"}): ${command.outcome?.status === "failed" ? command.outcome.message : ""}`;
     case "approved-unknown":
+      if (command.outcome?.status === "unknown" && command.outcome.progress)
+        return `The person approved ${asked}. ${command.outcome.progress.message}`;
       return `The person approved ${asked}, but the Home does not know whether it took effect. Check the current state with a safe read before doing anything else; never repeat it blindly.`;
     default:
       return `The person approved ${asked}; it is still being made.`;

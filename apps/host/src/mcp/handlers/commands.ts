@@ -448,10 +448,12 @@ export class CommandTools {
                   Object.entries(part.command).filter(([key]) => !part.homeAdded?.includes(key)),
                 ),
                 reason: part.agentReason,
-                ...(part.outcome?.status === "failed" &&
-                part.outcome.result !== undefined &&
-                (!grantBound || part.proposer.connectionId === connectionId)
-                  ? { message: part.outcome.message }
+                ...(!grantBound || part.proposer.connectionId === connectionId
+                  ? part.outcome?.status === "failed" && part.outcome.result !== undefined
+                    ? { message: part.outcome.message }
+                    : part.outcome?.status === "unknown" && part.outcome.progress
+                      ? { progress: part.outcome.progress }
+                      : {}
                   : {}),
               },
             } as unknown as AgentReadRequest;

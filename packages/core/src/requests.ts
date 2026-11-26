@@ -631,7 +631,16 @@ export const commandRequestOutcomeSchema = z.discriminatedUnion("status", [
     result: z.json().optional(),
   }),
   /** It may have happened; the Home does not know and never runs it again. */
-  z.object({ status: z.literal("unknown") }),
+  z.object({
+    status: z.literal("unknown"),
+    /** Evidence of incomplete work. The outer status keeps older clients from treating it as done. */
+    progress: z
+      .object({
+        kind: z.enum(["partial", "pending", "unconfirmed"]),
+        message: z.string().max(2_000),
+      })
+      .optional(),
+  }),
 ]);
 export const CommandRequestPartSchema = z.object({
   type: z.string().min(1).max(100),

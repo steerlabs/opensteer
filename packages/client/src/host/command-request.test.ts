@@ -274,6 +274,10 @@ describe("a command Request as the person reviews it", () => {
     const unknown = settled("fulfilled", { status: "unknown" });
     expect(unknown.state).toBe("unknown");
     expect(unknown.line).not.toMatch(/fail/iu);
+    const message = "1 tab closed. 1 tab could not be closed.";
+    expect(
+      settled("fulfilled", { status: "unknown", progress: { kind: "partial", message } }),
+    ).toMatchObject({ line: message, approve: null });
     expect(settled("declined").line).toBe(commandRequestWords.declined);
     expect(settled("cancelled").line).toBe(commandRequestWords.closed);
     for (const status of ["fulfilled", "declined", "cancelled"] as const)

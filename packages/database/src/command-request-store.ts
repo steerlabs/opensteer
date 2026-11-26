@@ -20,6 +20,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
+import { outsideProse } from "@opensteer/protocol/command-review";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import {
   assertRequestRevision,
@@ -95,20 +96,31 @@ export function settledPresentation(
   outcome: CommandRequestOutcome,
 ): RequestPresentation {
   const sentence = part.sentence ?? part.summary;
+  const reportedFailure = commandRequestReportedFailure(outcome);
   const [title, said] =
     outcome.status === "done"
       ? ["Done", "You approved this, and it was done."]
       : outcome.status === "failed"
         ? [
             "Did not happen",
-            commandRequestReportedFailure(outcome) ??
-              "You approved this, but the Home refused it, so nothing changed.",
+            reportedFailure
+              ? outsideProse(reportedFailure)
+              : "You approved this, but the Home refused it, so nothing changed.",
           ]
         : outcome.status === "unknown"
-          ? [
-              "May have happened",
-              "You approved this, but the Home could not tell whether it finished. It may have happened: check before doing it again. The Home will not run it again.",
-            ]
+          ? outcome.progress
+            ? [
+                outcome.progress.kind === "partial"
+                  ? "Partly done"
+                  : outcome.progress.kind === "pending"
+                    ? "Still pending"
+                    : "May have happened",
+                `You approved this. ${outsideProse(outcome.progress.message)}`,
+              ]
+            : [
+                "May have happened",
+                "You approved this, but the Home could not tell whether it finished. It may have happened: check before doing it again. The Home will not run it again.",
+              ]
           : ["Approved", approvalRunningWords];
   const rest = presentation.detail?.split("\n\n") ?? [];
   if (rest[0] === approvalRunningWords) rest.shift();

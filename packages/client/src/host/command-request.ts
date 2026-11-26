@@ -242,7 +242,12 @@ export function commandRequestView(
   if (!part) return null;
   const state = stateOf(request);
   const pending = state === "pending";
-  const reportedFailure = state === "refused" ? commandRequestReportedFailure(part.outcome) : null;
+  const reportedOutcome =
+    state === "refused"
+      ? commandRequestReportedFailure(part.outcome)
+      : part.outcome?.status === "unknown"
+        ? part.outcome.progress?.message
+        : undefined;
   const personOnly =
     part.secretPaths.length > 0
       ? {
@@ -291,8 +296,8 @@ export function commandRequestView(
         ? personOnly.screen
           ? commandRequestWords.personOnly
           : commandRequestWords.noScreen
-        : reportedFailure
-          ? outsideProse(reportedFailure)
+        : reportedOutcome
+          ? outsideProse(reportedOutcome)
           : commandRequestWords[state],
     approve: pending && !personOnly ? { label: commandRequestWords.approve } : null,
     doneMyself: pending && personOnly?.screen ? { label: commandRequestWords.doneMyself } : null,

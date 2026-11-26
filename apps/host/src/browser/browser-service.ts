@@ -11676,7 +11676,13 @@ export class HostedBrowserBroker {
       if (!pending) return false;
       clearTimeout(pending.timeout);
       this.#pendingStateImports.delete(message.operationId);
-      if (message.error) pending.reject(agentProtocolError(message.error));
+      if (message.error)
+        pending.reject(
+          // Persistence can fail after Chromium has already accepted the cookie write.
+          pending.submitted && !message.error.unsent
+            ? new OperationOutcomeUnknown(browserSignInOutcomeUnknownWords)
+            : agentProtocolError(message.error),
+        );
       else pending.resolve();
       return false;
     }

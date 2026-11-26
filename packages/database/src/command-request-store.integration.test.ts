@@ -181,6 +181,32 @@ describeStore("command Requests in the store", (it) => {
     });
   });
 
+  it("strips invisible characters before storing the approved failure's card", async ({
+    storeFixture,
+  }) => {
+    const { f, store, open } = await setup(storeFixture);
+    const requestId = idOf(await open({ askKey: "diagnostic" }));
+    await store.beginApproval({
+      requestId,
+      expectedRevision: (await storeFixture.store.requests.revision(requestId))!,
+      resolvedBy: f.userId,
+      accept: () => undefined,
+      approvalKey: randomUUID(),
+      approved: { command: {} },
+    });
+    await store.settle(requestId, {
+      status: "failed",
+      code: "bad_request",
+      message: "Unsupported path /p\u202eets\u200b",
+      result: { type: "plugins.install" },
+    });
+    expect(await storeFixture.store.requests.get(requestId)).toMatchObject({
+      presentation: {
+        detail: expect.stringContaining("You approved this, but unsupported path /pets"),
+      },
+    });
+  });
+
   it("closes a connection's ask once its grant is narrowed below the one it asked with (X9)", async ({
     storeFixture,
   }) => {

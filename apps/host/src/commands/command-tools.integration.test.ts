@@ -1419,7 +1419,10 @@ it("reports a failed plugin build to the person and the connected agent that ask
   const install = vi.spyOn(host.runtime.plugins, "install").mockImplementation(async () => {
     building.resolve();
     await finish.promise;
-    return { status: "build-error", error: { message } };
+    return {
+      status: "build-error",
+      error: { message: message.replace("operations", "oper\u202eations\u200b") },
+    };
   });
   try {
     const url = new URL(mcpResourcePath, host.origin);

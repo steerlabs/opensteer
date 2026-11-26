@@ -6,7 +6,12 @@ import {
   type CommandAttemptInput,
   type DatabaseSchema,
 } from "@opensteer/database";
-import { commandEffect, type CommandRow } from "@opensteer/protocol/command-table";
+import {
+  commandEffect,
+  type CommandRow,
+  type CommandType,
+} from "@opensteer/protocol/command-table";
+import { outsideProse } from "@opensteer/protocol/command-review";
 import { PluginCommandResultSchema } from "@opensteer/protocol";
 import { BrowserSignInOutcomeSchema } from "@opensteer/protocol/browser-sources";
 import { isRecord } from "@opensteer/shared/isRecord";
@@ -37,58 +42,135 @@ export type CommandEffectOutcome<T> =
   /** The handler confirmed it did not take effect, or it refused before effect. */
   | { readonly status: "failed"; readonly error: unknown; readonly receipt?: FailedReceipt }
   /** It may have happened: never failed, never completed, never retried by the Home. */
-  | { readonly status: "unknown"; readonly error: unknown };
+  | { readonly status: "unknown"; readonly error: unknown; readonly receipt?: IncompleteReceipt };
 
 type DoneReceipt = Extract<CommandRequestOutcome, { status: "done" }>;
 type FailedReceipt = Extract<CommandRequestOutcome, { status: "failed" }> & {
   readonly code: OpensteerError["code"];
 };
 
+type UnknownReceipt = Extract<CommandRequestOutcome, { status: "unknown" }>;
+type IncompleteReceipt = UnknownReceipt & {
+  readonly progress: NonNullable<UnknownReceipt["progress"]>;
+};
+
+type Receipt = DoneReceipt | FailedReceipt | IncompleteReceipt;
+type ResultRecord = Record<string, unknown> & { readonly type: string };
+
+function failed(
+  message: string,
+  result: NonNullable<FailedReceipt["result"]>,
+  code: FailedReceipt["code"] = "conflict",
+): FailedReceipt {
+  return { status: "failed", code, message, result };
+}
+
+function incomplete(
+  kind: IncompleteReceipt["progress"]["kind"],
+  message: string,
+): IncompleteReceipt {
+  return { status: "unknown", progress: { kind, message } };
+}
+
+function chromeSignInReceipt({ type, outcome }: ResultRecord) {
+  const answer = BrowserSignInOutcomeSchema.safeParse(outcome).data;
+  // The delivery path throws on an uncertain cookie write. Omit the source name from the receipt.
+  if (answer?.status !== "problem") return;
+  return failed("The Chrome sign-in was not copied.", {
+    type,
+    outcome: { status: answer.status, problem: answer.problem },
+  });
+}
+
+function tabCloseReceipt({ type, closed, failed: failures, groupClosed }: ResultRecord) {
+  if (!Array.isArray(closed) || !Array.isArray(failures)) return;
+  const closedCount = closed.length;
+  const failedCount = failures.length;
+  const groupRemains = type === "tab.group.close" && groupClosed === false;
+  if (!failedCount && !groupRemains) return;
+  const result = { type, closedCount, failedCount };
+  if (!closedCount)
+    return failed(
+      groupRemains ? "The tab group stayed open." : "None of the requested tabs could be closed.",
+      result,
+    );
+  const count = closedCount === 1 ? "1 tab closed." : `${closedCount} tabs closed.`;
+  const remaining =
+    failedCount === 0
+      ? ""
+      : failedCount === 1
+        ? " 1 tab could not be closed."
+        : ` ${failedCount} tabs could not be closed.`;
+  return incomplete(
+    "partial",
+    `${count}${remaining}${groupRemains ? " The tab group stayed open." : ""}`,
+  );
+}
+
 /**
- * A handler may return evidence of what happened. Persist only those explicit, bounded receipts.
- * A nested status alone is insufficient evidence of failure, and arbitrary outputs may contain
- * the person's secrets. A build error guarantees no plugin version became active.
+ * The handler's explicit evidence. Arbitrary outputs may hold secrets, and a resource's nested
+ * status is not necessarily evidence about the command. The schema coverage test checks this table.
  */
-function commandResultReceipt(
-  type: string,
-  output: unknown,
-): DoneReceipt | FailedReceipt | undefined {
-  if (!isRecord(output) || output.type !== type) return undefined;
-  if (type === "machine.access.update" && output.outcome === "conflict")
+export const commandResultReceipts: Partial<
+  Record<CommandType, (output: ResultRecord) => Receipt | undefined>
+> = {
+  "machine.access.update": ({ type, outcome }) =>
+    outcome === "conflict"
+      ? failed("The device's access settings changed before this command ran.", { type, outcome })
+      : undefined,
+  "browser.session.sign-in": chromeSignInReceipt,
+  "browser.sign-in.respond": chromeSignInReceipt,
+  "browser.password-sign-in.respond": ({ type, status }) => {
+    switch (status) {
+      case "declined":
+        return failed("The sign-in was declined.", { type, status });
+      case "pending":
+        return incomplete(
+          "pending",
+          "The sign-in Request is still pending. Check it before trying again.",
+        );
+      case "cancelled":
+      case "withdrawn":
+        return incomplete(
+          "unconfirmed",
+          `The sign-in Request was ${status}. Check whether the sign-in took effect.`,
+        );
+      // Fulfilled is the only status that confirms completion.
+      default:
+        return undefined;
+    }
+  },
+  "tab.close": tabCloseReceipt,
+  "tab.group.close": tabCloseReceipt,
+  "plugins.install": (output) => {
+    const command = PluginCommandResultSchema.safeParse(output).data;
+    if (command?.type !== "plugins.install") return undefined;
+    const { type, result } = command;
+    if (result.status === "build-error") {
+      const message =
+        outsideProse(result.message).toWellFormed() || "No build diagnostic was available.";
+      return failed(
+        `The plugin did not build: ${message}`.slice(0, 2_000).toWellFormed(),
+        { type, result: { status: result.status, message } },
+        "bad_request",
+      );
+    }
+    const { status, pluginId, versionId } = result;
+    // These are import diagnostics about omitted operations, with no account credentials.
+    const warnings = result.warnings
+      ?.slice(0, 16)
+      .map((warning) => outsideProse(warning).slice(0, 200).toWellFormed());
     return {
-      status: "failed",
-      code: "conflict",
-      message: "The device's access settings changed before this command ran.",
-      result: { type, outcome: "conflict" },
+      status: "done",
+      result: { type, result: { status, pluginId, versionId, ...(warnings ? { warnings } : {}) } },
     };
-  if (type === "browser.session.sign-in" || type === "browser.sign-in.respond") {
-    // The transfer path throws when it lost the response after sending the cookies. Its
-    // returned problems say no copy took effect. Omit the source name from the receipt.
-    const answer = BrowserSignInOutcomeSchema.safeParse(output.outcome).data;
-    if (answer?.status === "problem")
-      return {
-        status: "failed",
-        code: "conflict",
-        message: "The Chrome sign-in was not copied.",
-        result: { type, outcome: { status: answer.status, problem: answer.problem } },
-      };
-  }
-  if (type !== "plugins.install") return undefined;
-  const command = PluginCommandResultSchema.safeParse(output).data;
-  if (command?.type !== "plugins.install") return undefined;
-  const { result } = command;
-  if (result.status === "build-error")
-    return {
-      status: "failed",
-      code: "bad_request",
-      message: `The plugin did not build: ${result.message}`.slice(0, 2_000),
-      result: { type, result },
-    };
-  const { status, pluginId, versionId } = result;
-  return {
-    status: "done",
-    result: { type, result: { status, pluginId, versionId } },
-  };
+  },
+};
+
+function commandResultReceipt(type: string, output: unknown): Receipt | undefined {
+  if (!isRecord(output) || output.type !== type || !Object.hasOwn(commandResultReceipts, type))
+    return undefined;
+  return commandResultReceipts[type as CommandType]?.({ ...output, type });
 }
 
 /**
@@ -140,10 +222,7 @@ export async function runCommandEffect<T>(input: {
   // the row stays `running` until the Home's startup recovery settles it `unknown`: still true to
   // rule 4 (it may have happened, and nothing runs it again), and to rule 3 (a Disconnect waiting
   // on it shows no end until there is evidence). No retry loop.
-  const settle = async (
-    state: "done" | "failed" | "unknown",
-    receipt?: DoneReceipt | FailedReceipt,
-  ) => {
+  const settle = async (state: "done" | "failed" | "unknown", receipt?: Receipt) => {
     if (!id || !input.attempts) return;
     const attempts = input.attempts;
     const warn = (error: unknown) =>
@@ -175,6 +254,10 @@ export async function runCommandEffect<T>(input: {
       error: new OpensteerError({ code: receipt.code, message: receipt.message }),
       receipt,
     };
+  }
+  if (receipt?.status === "unknown") {
+    await settle("unknown", receipt);
+    return { status: "unknown", receipt, error: new Error(receipt.progress.message) };
   }
   await settle("done", receipt);
   return { status: "done", output, ...(receipt ? { receipt } : {}) };
