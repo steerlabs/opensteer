@@ -2388,28 +2388,25 @@ describeStore("an external agent's direct work through sessions", (it) => {
     }
   });
 
-  for (const cut of ["Disconnect", "a narrowed grant"] as const)
-    it(`writes no data on a read in flight when ${cut} ends the session: its refusal, at once`, async ({
+  for (const cut of ["Disconnect", "a narrowed grant", "a widened grant", "a raised mode"] as const)
+    it(`answers a read in flight when ${cut} moves the session's access with the Home's words alone, at once`, async ({
       storeFixture,
     }) => {
       const store = Promise.withResolvers<void>();
       const reading = Promise.withResolvers<void>();
-      const s = await setUp(
-        storeFixture,
-        `read-in-flight-${cut === "Disconnect" ? "revoked" : "narrowed"}`,
-        {
-          discoverSources: {
-            tabs: {
-              // A slow store read, which answers inside the window the change opens.
-              project: async () => {
-                reading.resolve();
-                await store.promise;
-                return { tabs: [], layout: { revision: 0, items: [] } };
-              },
+      const s = await setUp(storeFixture, `read-in-flight-${cut.replaceAll(" ", "-")}`, {
+        ...(cut === "a raised mode" ? { accessMode: "approval-required" as const } : {}),
+        discoverSources: {
+          tabs: {
+            // A slow store read, which answers inside the window the change opens.
+            project: async () => {
+              reading.resolve();
+              await store.promise;
+              return { tabs: [], layout: { revision: 0, items: [] } };
             },
           },
         },
-      );
+      });
       const discovered = s.call("discover", {});
       await reading.promise;
       const change = commands(storeFixture, s.f.userId, {
@@ -2422,29 +2419,69 @@ describeStore("an external agent's direct work through sessions", (it) => {
       });
       const startedAt = Date.now();
       if (cut === "Disconnect") await change.revoke(s.agent.id);
+      else if (cut === "a raised mode")
+        await change.update(s.agent.id, { accessMode: "full-access" });
       else
         await change.update(s.agent.id, {
-          grant: { scope: "selected", tasks: false, resources: [] },
+          grant: {
+            scope: "selected",
+            tasks: false,
+            resources:
+              cut === "a widened grant"
+                ? [
+                    { kind: "browser-profile", profileId: profile },
+                    { kind: "browser-profile", profileId: other },
+                  ]
+                : [],
+          },
         });
-      store.resolve();
+      // A widening or a raised mode stops nothing: the change reaches the session with the
+      // agent's next request on it, which finds its authority moved.
+      const next =
+        cut === "a widened grant" || cut === "a raised mode"
+          ? s.call("browser_profile_list", {})
+          : undefined;
+      // The slow store has not answered: the read is answered once the change reaches its
+      // session (at once for a read, which is no work the change stops), never by the store.
       const result = await discovered;
-      // The refusal, written at once (no wait for work the change stops: a read is none), and none
-      // of what the read found: not even the profile it would have listed.
+      await next;
+      store.resolve();
+      // What happened to the connection in the Home's words, and none of what the read found: not
+      // even the profile it would have listed.
       expect(Date.now() - startedAt).toBeLessThan(1_500);
       expect(result).toMatchObject({
         isError: true,
-        structuredContent: { error: { message: "This connected agent's access ended." } },
+        structuredContent: {
+          error:
+            cut === "Disconnect"
+              ? {
+                  code: "access_changed",
+                  message: "The person disconnected this agent.",
+                  next: null,
+                }
+              : {
+                  code: "access_changed",
+                  message: "The person changed this agent's access.",
+                  next: "Call again; it now answers under the changed access.",
+                },
+        },
       });
-      expect(JSON.stringify(result)).not.toContain("Work");
+      expect(Object.keys(result.structuredContent as object)).toEqual(["error"]);
+      expect(JSON.stringify(result)).not.toMatch(/Work|Other|items/u);
     });
 
-  for (const state of ["completed", "unknown"] as const)
-    it(`writes only the ending of a ${state} script that returns after Disconnect`, async ({
+  for (const [state, cut] of [
+    ["completed", "Disconnect"],
+    ["completed", "a narrowed grant"],
+    ["failed", "Disconnect"],
+    ["unknown", "Disconnect"],
+  ] as const)
+    it(`answers a ${state} script that returns after ${cut} with its receipt alone`, async ({
       storeFixture,
     }) => {
-      const s = await setUp(storeFixture, "completes-in-window");
+      const s = await setUp(storeFixture, `in-window-${state}-${cut.replaceAll(" ", "-")}`);
       const held = s.holdNext();
-      if (state === "unknown") {
+      if (state !== "completed") {
         const execute = s.runBrowserScript.getMockImplementation()!;
         s.runBrowserScript.mockImplementationOnce(async (input) => {
           await execute(input);
@@ -2452,46 +2489,128 @@ describeStore("an external agent's direct work through sessions", (it) => {
             content: [{ type: "text", text: "private-script-output" }],
             isError: true,
             structuredContent: {
-              error: { code: "outcome-unknown", message: "private-reply", performed: [] },
+              error:
+                state === "unknown"
+                  ? { code: "outcome-unknown", message: "private-reply", performed: [] }
+                  : { code: "script_error", message: "private-failure", performed: [] },
             },
           };
         });
       }
-      const running = s.call("browser_use", { ...script, operationKey: "completes-in-window" });
+      const running = s.call("browser_use", { ...script, operationKey: "in-window" });
       try {
         await held.started;
-        // Disconnect closes the agent's MCP session before its stop reaches the work: the work
-        // completes in between (here, with no stop at all).
-        const disconnect = commands(storeFixture, s.f.userId);
-        await disconnect.revoke(s.agent.id);
+        // The change reaches the session before its stop reaches the work: the work ends in
+        // between (here, with no stop at all).
+        const change = commands(storeFixture, s.f.userId);
+        if (cut === "Disconnect") await change.revoke(s.agent.id);
+        else
+          await change.update(s.agent.id, {
+            grant: { scope: "selected", tasks: false, resources: [] },
+          });
         held.release();
         const result = await running;
-        expect(result).toMatchObject(
+        const row = await storeFixture.database
+          .selectFrom("agentOperations")
+          .innerJoin("agentSessions", "agentSessions.id", "agentOperations.sessionId")
+          .select(["agentOperations.id", "agentOperations.state", "agentSessions.threadId"])
+          .where("agentOperations.operationKey", "=", "in-window")
+          .executeTakeFirstOrThrow();
+        expect(row.state).toBe(state);
+        const why = cut === "Disconnect" ? "ended" : "changed";
+        expect(result.structuredContent).toEqual(
           state === "completed"
             ? {
-                isError: true,
-                structuredContent: { error: { message: "This connected agent's access ended." } },
+                status: "completed",
+                taskId: row.threadId,
+                operationId: row.id,
+                next: `It completed. Its result was withheld because this agent's access ${why}. Do not repeat it.`,
               }
-            : {
-                structuredContent: {
+            : state === "failed"
+              ? {
+                  status: "failed",
+                  taskId: row.threadId,
+                  operationId: row.id,
+                  next: `It failed. Its details were withheld because this agent's access ${why}. Check the current state before trying again.`,
+                  isError: true,
+                }
+              : {
                   status: "unknown",
-                  next: expect.stringContaining("The Home lost track"),
+                  taskId: row.threadId,
+                  operationId: row.id,
+                  next: "The Home lost track of whether this took effect. Check the current state before doing anything else; never repeat it blindly.",
                 },
-              },
         );
-        expect(JSON.stringify(result)).not.toMatch(/private-script-output|private-reply|"done"/u);
-        expect(
-          await storeFixture.database
-            .selectFrom("agentOperations")
-            .select(["state", "outcome"])
-            .where("operationKey", "=", "completes-in-window")
-            .executeTakeFirstOrThrow(),
-        ).toEqual({ state, outcome: state });
+        // No byte of the work's own answer.
+        expect(JSON.stringify(result)).not.toMatch(
+          /private-script-output|private-reply|private-failure|"done"|summary|profileId/u,
+        );
       } finally {
         held.release();
         await running.catch(() => undefined);
       }
     });
+
+  it("replays a stored operation only while its target is in the grant; outside it, it reads as no operation at all", async ({
+    storeFixture,
+  }) => {
+    const s = await setUp(storeFixture, "replay-target", {
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [
+          { kind: "browser-profile", profileId: profile },
+          { kind: "browser-profile", profileId: other },
+        ],
+      },
+    });
+    const execute = s.runBrowserScript.getMockImplementation()!;
+    s.runBrowserScript.mockImplementationOnce(async (input) => {
+      await execute(input);
+      return {
+        content: [{ type: "text", text: "private-script-output" }],
+        isError: true,
+        structuredContent: {
+          error: {
+            code: "outcome-unknown",
+            message: "private-reply",
+            performed: ["private-receipt"],
+          },
+        },
+      };
+    });
+    const first = await s.call("browser_use", { ...script, operationKey: "replayed" });
+    const operationId = (first.structuredContent as { operationId: string }).operationId;
+    // Inside the grant, the replay returns what it returns today.
+    const inside = await s.call("browser_use", { ...script, operationId });
+    expect(JSON.stringify(inside)).toContain("private-reply");
+    // The person narrows the grant: the profile is no longer in it; the other one still is.
+    await commands(storeFixture, s.f.userId).update(s.agent.id, {
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: other }],
+      },
+    });
+    const fresh = await s.call("browser_use", { ...script, operationKey: "fresh" });
+    expect(fresh).toMatchObject({
+      isError: true,
+      structuredContent: { error: { code: "not_found" } },
+    });
+    const replayed = await s.call("browser_use", { ...script, operationId });
+    const unknownOperation = await s.call("browser_use", {
+      ...script,
+      operationId: createId("agentOperation"),
+    });
+    // Exactly as an operation that does not exist: nothing of the row, no advice.
+    expect(replayed).toEqual(unknownOperation);
+    expect(JSON.stringify(replayed)).not.toMatch(/private-|outcome-unknown|bpr_/u);
+    // A repeat by its key alone is refused as the fresh call is.
+    const repeated = await s.call("browser_use", { ...script, operationKey: "replayed" });
+    expect(repeated).toEqual(
+      await s.call("browser_use", { ...script, operationKey: "another-fresh" }),
+    );
+  });
 
   it("records the cause a recheck read when the Disconnect reached the database before its stop", async ({
     storeFixture,

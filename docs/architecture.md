@@ -267,11 +267,18 @@ Each call is one reviewed **operation** of an **agent session**:
    `packages/core/src/agent-operation-endings.ts`) and both the agent's result and the person's
    activity say it; "lost contact" is said only when nothing else is known. A refusal's cause is
    its decision: a browser that was not ready reads as nothing sent, not as access that changed.
-   Once a session's authority has ended (Disconnect, expiry, a narrowed grant), the only thing
-   written on its open calls is an ending, never a result: work the change stops returns its own
-   unknown with its cause within a short grace; any other call gets the refusal at once; a result
-   that completed in the window is not delivered (its operation's record keeps it). The evidence a
-   Disconnect reads (`terminal_evidence_at`, `contact_lost_at`) does not change.
+   Once a session's authority has ended or changed, a call's answer is its receipt, never its
+   content: the operation's true status (completed, failed, unknown, refused), its `taskId` and
+   `operationId`, and the Home's own words for why the content is not there (no script output,
+   result body, diagnostics or target names); a call with no operation (a read, a wait,
+   `discover`) gets the Home's words alone, at once. The words follow what happened to the
+   connection, as read from its standing: the person disconnected it, it expired, or it still
+   stands with its grant or mode changed either way ("The person changed this agent's access.",
+   `access_changed`, "Call again; it now answers under the changed access."). Work the change stops
+   returns its own ending within a short grace. A replay by `operationId` or by its key returns
+   nothing of its row unless the connection may still reach the row's target under its grant now;
+   outside it, it reads exactly as an operation that does not exist. The evidence a Disconnect
+   reads (`terminal_evidence_at`, `contact_lost_at`) does not change.
 
 A connected agent's operations appear in its task's **activity** (`threads.activity`,
 `connections.activity`). They are not transcript items: `packages/protocol/src/transcript.ts` has

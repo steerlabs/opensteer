@@ -396,6 +396,25 @@ export async function connectionEndReason(
   return read.connection.cleanupReason ?? (read.state === "ended" ? "expired" : null);
 }
 
+/**
+ * Where a connection stands after a change, from the one statement of its standing: still
+ * standing (its grant or mode may have moved either way), revoked by the person, or expired
+ * (ended without a revocation); null when there is no such connection.
+ */
+export async function connectionAfterChange(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  agentConnectionId: string,
+): Promise<"live" | "revoked" | "expired" | "ended" | null> {
+  const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, false, true);
+  if (!read) return null;
+  if (read.state === "live") return "live";
+  if (read.connection.cleanupReason === "revoked") return "revoked";
+  // A chat ends with its account or its computer, not by expiring.
+  if (read.state !== "ended" || read.connection.bridgeAccountId !== null) return "ended";
+  return "expired";
+}
+
 /** The connection delegated work may still run for: live, and still granted Tasks. */
 export async function liveDelegatingConnection(
   database: Kysely<DatabaseSchema>,

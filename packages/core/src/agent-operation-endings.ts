@@ -59,3 +59,37 @@ export function agentOperationEndingOf(words: string | undefined): AgentOperatio
     if (words === agentOperationEndingSentence(ending)) return ending;
   return null;
 }
+
+/**
+ * What happened to a connected agent's access while a call of its session was open, as the Home
+ * read it from the connection: the person disconnected it, it expired, it ended otherwise, or it
+ * still stands with its grant or mode changed (narrowed, widened, raised or lowered).
+ */
+export type AgentAccessChange = "disconnected" | "expired" | "ended" | "changed";
+
+/** The Home's words for a call answered after its session's access changed: no content. */
+export const agentAccessChangeWords: Readonly<
+  Record<AgentAccessChange, { readonly message: string; readonly next: string | null }>
+> = {
+  disconnected: { message: "The person disconnected this agent.", next: null },
+  expired: { message: "This agent's access expired.", next: null },
+  ended: { message: "This connected agent's access ended.", next: null },
+  changed: {
+    message: "The person changed this agent's access.",
+    next: "Call again; it now answers under the changed access.",
+  },
+};
+
+/**
+ * The receipt's words for an operation that ended while its session's access changed, whose
+ * content is withheld: what became of it, and that it must not be repeated blindly.
+ */
+export function agentWithheldNext(
+  status: "completed" | "failed",
+  change: AgentAccessChange,
+): string {
+  const why = change === "changed" ? "changed" : "ended";
+  return status === "completed"
+    ? `It completed. Its result was withheld because this agent's access ${why}. Do not repeat it.`
+    : `It failed. Its details were withheld because this agent's access ${why}. Check the current state before trying again.`;
+}

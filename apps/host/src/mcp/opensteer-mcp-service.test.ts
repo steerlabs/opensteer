@@ -1256,6 +1256,8 @@ describe("Opensteer MCP spine", () => {
         argumentDigest: operationArgumentDigest(tool, args),
         taskId: args.taskId,
         state: "completed",
+        // A row's target as the Home records it; one the whole connection reaches.
+        target: { grant: { kind: "device" }, name: "this resource", device: null },
       })),
     };
     const replay = new OpensteerMcpService({

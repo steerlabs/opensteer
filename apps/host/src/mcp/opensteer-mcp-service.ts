@@ -36,14 +36,21 @@ import {
   OpensteerError,
   ToolBlockedError,
   ThreadIdSchema,
+  agentAccessChangeWords,
   agentOperationEndingOf,
   agentOperationEndingWords,
+  agentWithheldNext,
+  type AgentAccessChange,
   type Thread,
+  type UserId,
   requestHoldLimitMs,
   shortRequestHoldMs,
   consentAllowsDirectWork,
 } from "@opensteer/core";
 import {
+  admitExecution,
+  authorizeTarget,
+  connectionAfterChange,
   findAgentOperation,
   lineageAllowsPersonalContext,
   type OpensteerStore,
@@ -122,67 +129,114 @@ const sessionIdleLifetimeMs = 30 * 60 * 1_000;
 const retiringCallGraceMs = 2_000;
 /** How long a call ended with its refusal has to write it before its response is cut. */
 const retiringRefusalGraceMs = 1_000;
-/** What an ended session's open calls are told when nothing names the cause. */
-const accessEndedMessage = "This connected agent's access ended.";
 
 /**
  * One call a session is answering: its own stop, the operation it may run, and, once the
- * session's authority has ended, the ending that is all it may write.
+ * session's authority has ended or changed, what happened to it: from then on the call's answer
+ * is its receipt, never its content.
  */
 interface McpCall {
   readonly stop: AbortController;
   operationKey?: string;
-  ended?: OpensteerError;
+  ended?: Promise<AgentAccessChange>;
 }
 
-/** Write only the receipt and the Home's own words once a call's authority has ended. */
-function resultAfterAccessEnded(
+/**
+ * The one rule for a call answered after its session's authority ended or changed: its answer is
+ * its receipt, never its content. The receipt is the operation's true status, its taskId and
+ * operationId when it has them, and the Home's own words for why the content is not there; no
+ * script output, result body, diagnostics or target names. A call with no operation (a read, a
+ * wait, discover) gets the Home's words alone.
+ */
+function receiptAfterAccessChange(
   result: Awaited<ReturnType<OpensteerMcpService["callToolResult"]>>,
-  ended: OpensteerError,
+  change: AgentAccessChange,
 ) {
-  const receipt = result.structuredContent;
-  if (result.isError === true && receipt?.status === "refused") return result;
-  if (receipt?.status !== "unknown") return endedResult(ended);
-
-  const taskId = ThreadIdSchema.safeParse(receipt.taskId).data;
-  const operationId = AgentOperationIdSchema.safeParse(receipt.operationId).data;
-  const identity = { status: "unknown" as const, taskId, operationId };
-  const ending =
-    "next" in receipt && typeof receipt.next === "string"
-      ? agentOperationEndingOf(receipt.next)
-      : null;
-  if (ending) return agentToolRecordResult({ ...identity, next: unknownOperationNext(ending) });
-
+  const words = agentAccessChangeWords[change];
+  const receipt = result.structuredContent as Record<string, unknown> | undefined;
+  const taskId = ThreadIdSchema.safeParse(receipt?.taskId).data;
+  const operationId = AgentOperationIdSchema.safeParse(receipt?.operationId).data;
+  const status = receipt?.status;
+  if (!taskId || !operationId)
+    return agentToolFailureResult({
+      code: "access_changed",
+      message: words.message,
+      next: words.next,
+    });
+  const identity = { taskId, operationId };
+  // The Home's own ending sentences, kept where the work said one of them; nothing else of it.
   const error = z
-    .object({ code: z.string(), message: z.string(), next: z.string() })
-    .safeParse(receipt.error).data;
-  if (
+    .object({ code: z.string(), message: z.string(), next: z.string().nullable() })
+    .safeParse(receipt?.error).data;
+  const ownEnding =
     error &&
     Object.values(agentOperationEndingWords).some(
       ({ message, next }) => error.message === message && error.next === next,
     )
-  )
-    return agentToolFailureResult(
-      {
-        ...error,
-        code: error.code === "stopped_by_person" ? "stopped_by_person" : "access_changed",
-      },
-      undefined,
-      identity,
-    );
-  return agentToolFailureResult(
-    {
-      code: "access_changed",
-      message: ended.message,
-      next: "Part of it may have happened. Check the current state before doing anything else.",
-    },
-    undefined,
-    identity,
-  );
+      ? error
+      : undefined;
+  switch (status) {
+    case "completed":
+    case "failed":
+      return agentToolRecordResult({
+        status,
+        ...identity,
+        next: agentWithheldNext(status, change),
+        ...(status === "failed" ? { isError: true } : {}),
+      });
+    case "refused":
+      return agentToolFailureResult(
+        ownEnding
+          ? {
+              ...ownEnding,
+              code: ownEnding.code === "stopped_by_person" ? ownEnding.code : "access_changed",
+            }
+          : { code: "access_changed", message: words.message, next: "Nothing was sent." },
+        undefined,
+        { ...identity, status: "refused" },
+      );
+    case "unknown": {
+      const ending =
+        typeof receipt?.next === "string" ? agentOperationEndingOf(receipt.next) : null;
+      if (ending)
+        return agentToolRecordResult({
+          status: "unknown",
+          ...identity,
+          next: unknownOperationNext(ending),
+        });
+      return agentToolFailureResult(
+        ownEnding
+          ? {
+              ...ownEnding,
+              code: ownEnding.code === "stopped_by_person" ? ownEnding.code : "access_changed",
+            }
+          : {
+              code: "access_changed",
+              message: words.message,
+              next: "Part of it may have happened. Check the current state before doing anything else.",
+            },
+        undefined,
+        { ...identity, status: "unknown" },
+      );
+    }
+    default:
+      // Still waiting for the person: its Request stands only while the connection does.
+      return agentToolRecordResult({
+        status: typeof status === "string" ? status : "pending",
+        ...identity,
+        next:
+          change === "changed"
+            ? `${words.message} Call again with this operationId; it now answers under the changed access.`
+            : `${words.message} Its Request no longer stands.`,
+      });
+  }
 }
 const maximumTimerMs = 2_147_483_647;
 interface McpSession {
   readonly responses: Set<ServerResponse>;
+  /** Whose Home, and the connected agent whose lineage this session is under, if any. */
+  readonly owner: UserId;
+  readonly connectionId: string | null;
   /** The authority its tool list was built for; a change closes the session. */
   readonly authority: string;
   /** When the connection's credential expires, in epoch milliseconds. */
@@ -316,7 +370,7 @@ export class OpensteerMcpService {
       let existing = this.#sessions.get(sessionId);
       // A session's tools were listed for one authority; a changed grant or mode retires it.
       if (existing && existing.authority !== sessionAuthority(authorization)) {
-        await this.#closeSession(existing);
+        await this.#closeSession(existing, "changed");
         existing = undefined;
       }
       if (
@@ -352,7 +406,7 @@ export class OpensteerMcpService {
         const current = await this.options.callers.authenticate(token).catch(() => null);
         if (!current || sessionAuthority(current) !== session.authority) {
           this.#release(authorization.key);
-          await this.#closeSession(session);
+          await this.#closeSession(session, current ? "changed" : undefined);
           sendJsonRpcError(response, 401, "Agent tools authorization is invalid or expired");
           return;
         }
@@ -498,6 +552,8 @@ export class OpensteerMcpService {
     }
     session = {
       responses: new Set(),
+      owner: input.userId,
+      connectionId: callerLineage(input)?.agentConnectionId ?? null,
       authority: sessionAuthority(input),
       expiresAt: input.kind === "connection" ? (input.expiresAt ?? null) : null,
       token: input.token,
@@ -518,7 +574,7 @@ export class OpensteerMcpService {
         : undefined;
     const expiry =
       untilExpiry !== undefined && untilExpiry <= maximumTimerMs
-        ? setTimeout(() => void this.#closeSession(session, accessExpired()), untilExpiry)
+        ? setTimeout(() => void this.#closeSession(session, "expired"), untilExpiry)
         : undefined;
     expiry?.unref();
     transport.onclose = () => {
@@ -601,7 +657,7 @@ export class OpensteerMcpService {
         // The one place a result is written: once the session's authority has ended, only an
         // ending goes out (a stopped operation's unknown, or a refusal), never a result. A
         // result that completed in the meantime stays true in its operation's record.
-        return call?.ended ? resultAfterAccessEnded(result, call.ended) : result;
+        return call?.ended ? receiptAfterAccessChange(result, await call.ended) : result;
       });
     }
     // A grant may imply no tools at all; the list is still served, empty.
@@ -822,13 +878,21 @@ export class OpensteerMcpService {
     if (operationId && (!connectionDirectTools.has(name) || !database))
       throw new OpensteerError({ code: "not_found", message: "Operation is unavailable." });
     if (caller.kind === "connection" && connectionDirectTools.has(name) && database) {
-      const row = await findAgentOperation(database, {
+      let row = await findAgentOperation(database, {
         userId: caller.userId,
         agentConnectionId: caller.connectionId,
         identity: operationId ? { id: operationId } : { key },
       });
       if (operationId && !row)
         throw new OpensteerError({ code: "not_found", message: "Operation is unavailable." });
+      // A replay is a call: nothing of its row is returned unless the connection may still reach
+      // its target under the grant it holds now. Outside it, a named operation reads exactly as an
+      // unknown one does, and a repeat by its key alone is refused as a fresh call is, below.
+      if (row && !(await this.#reachable(caller, row))) {
+        if (operationId)
+          throw new OpensteerError({ code: "not_found", message: "Operation is unavailable." });
+        row = undefined;
+      }
       if (row) {
         const taskId =
           "taskId" in input ? ThreadIdSchema.optional().parse(input.taskId) : undefined;
@@ -1184,7 +1248,8 @@ export class OpensteerMcpService {
         .map(async (session) => {
           const current = await this.options.callers.authenticate(session.token).catch(() => null);
           if (current && sessionAuthority(current) === session.authority) return;
-          await this.#closeSession(session);
+          // Still authenticated: its grant or mode moved, either way. Otherwise, as it stands.
+          await this.#closeSession(session, current ? "changed" : undefined);
         }),
     );
   }
@@ -1199,7 +1264,9 @@ export class OpensteerMcpService {
             (minimumGrantRevision === undefined || Number(revision) < minimumGrantRevision)
           );
         })
-        .map((session) => this.#closeSession(session)),
+        .map((session) =>
+          this.#closeSession(session, minimumGrantRevision !== undefined ? "changed" : undefined),
+        ),
     );
   }
   /**
@@ -1207,23 +1274,60 @@ export class OpensteerMcpService {
    * authenticates, and it is no longer found), and from then on writes only an ending on the calls
    * it is answering (`McpCall.ended`). Streams carry no call's answer and end now.
    */
-  async #closeSession(session: McpSession, ended = accessEnded()) {
+  async #closeSession(session: McpSession, change?: AgentAccessChange) {
     this.#activeSessions.delete(session);
     for (const [id, held] of this.#sessions) if (held === session) this.#sessions.delete(id);
     this.#retiring.add(session);
+    // What happened, as the caller knows it, or as the connection now stands.
+    const known = change ? Promise.resolve(change) : this.#changeOf(session);
     for (const response of session.responses) {
       const call = this.#calls.get(response);
-      if (call) call.ended ??= ended;
+      if (call) call.ended ??= known;
       if (response.req?.method !== "POST") response.destroy();
     }
-    void this.#retire(session, ended).catch(() => undefined);
+    void this.#retire(session, known).catch(() => undefined);
+  }
+  /** Whether a connection may still reach a stored operation's target, under its grant now. */
+  async #reachable(
+    caller: Extract<AgentCaller, { kind: "connection" }>,
+    row: { readonly target: { readonly grant: import("@opensteer/core").AgentGrantTarget } },
+  ): Promise<boolean> {
+    if (row.target.grant.kind === "device") return true;
+    const database = this.options.store.database;
+    if (!database) return false;
+    const execution = await admitExecution(database, {
+      ownerUserId: caller.userId,
+      subject: { kind: "connection", agentConnectionId: caller.connectionId },
+    }).catch(() => null);
+    return execution !== null && authorizeTarget(execution, row.target.grant) !== null;
+  }
+  /** What happened to a session's access, read from its connection's standing. */
+  async #changeOf(session: McpSession): Promise<AgentAccessChange> {
+    const database = this.options.store.database;
+    if (!session.connectionId || !database) return "ended";
+    const after = await connectionAfterChange(database, session.owner, session.connectionId).catch(
+      () => null,
+    );
+    return after === "live"
+      ? "changed"
+      : after === "revoked"
+        ? "disconnected"
+        : after === "expired"
+          ? "expired"
+          : "ended";
   }
   /**
    * A call that runs an operation the change is stopping (handed off, here) returns that work's
    * own ending within a short grace; every other call (a read, a wait, a request not yet an
    * operation) is ended with the refusal at once; what still does not answer is cut.
    */
-  async #retire(session: McpSession, ended: OpensteerError) {
+  async #retire(session: McpSession, known: Promise<AgentAccessChange>) {
+    const change = await known;
+    const ended = new OpensteerError({
+      code: "forbidden",
+      reason: "authority-changed",
+      message: agentAccessChangeWords[change].message,
+    });
     const answered = async (responses: readonly ServerResponse[], ms: number) => {
       const open = responses.map((response) =>
         response.writableFinished || response.destroyed ? undefined : once(response, "close"),
@@ -1277,28 +1381,9 @@ export class OpensteerMcpService {
     for (const [, session] of expired)
       void this.#closeSession(
         session,
-        session.expiresAt !== null && session.expiresAt <= now ? accessExpired() : accessEnded(),
+        session.expiresAt !== null && session.expiresAt <= now ? "expired" : "ended",
       );
   }
-}
-
-function accessEnded(): OpensteerError {
-  return new OpensteerError({
-    code: "forbidden",
-    reason: "authority-changed",
-    message: accessEndedMessage,
-  });
-}
-function accessExpired(): OpensteerError {
-  return new OpensteerError({
-    code: "forbidden",
-    reason: "authority-changed",
-    message: agentOperationEndingWords.expired.message,
-  });
-}
-/** The refusal an ended session's call writes in place of a result. */
-function endedResult(ended: OpensteerError) {
-  return agentToolFailureResult(agentToolFailure(ended, "write", () => false, true));
 }
 
 const unknownToolMessage = "Unknown Opensteer tool";
