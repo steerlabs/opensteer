@@ -5,10 +5,11 @@ import {
   threadComputerSessions,
   type WatchableComputerSession,
 } from "@opensteer/client/integrations";
-import { useHostSelector } from "@opensteer/client/react";
+import { useHostSelector, useSessionStop } from "@opensteer/client/react";
 import { computerAppIdentityKey } from "@opensteer/integration-core/computer-app";
 import type { ComputerAppIdentity, MachineSummary } from "@opensteer/protocol";
 import { ComputerWatchView } from "../computer-watch.js";
+import { presentFailure } from "../use-action.js";
 
 /** A Mac app a task's agent holds on one of the person's computers, and which one to show. */
 export interface TaskAppWatch {
@@ -52,8 +53,62 @@ export function taskAppWatch(input: {
  * launcher again. The person's own view of the same window shares the capture, and is how they
  * take over.
  */
+/**
+ * The task's own Stop, in its Watch pane: one Stop with one meaning. A connected agent's task
+ * stops as its footer's Stop does (its session, said as the person's stop); a Run of the person's
+ * own agents stops as the Run's Stop does. Never only the Mac's hold on the app.
+ */
+function TaskStopButton({
+  agentSessionId,
+  hostClient,
+  runId,
+  threadId,
+}: {
+  readonly agentSessionId: string | null;
+  readonly hostClient: HostClient;
+  readonly runId: string;
+  readonly threadId: string;
+}) {
+  const session = useSessionStop(hostClient, threadId, agentSessionId);
+  const [run, setRun] = useState<{ readonly busy: boolean; readonly error: string | null }>({
+    busy: false,
+    error: null,
+  });
+  const busy = agentSessionId ? session.running : run.busy;
+  const stop = () => {
+    if (agentSessionId) {
+      void session.run();
+      return;
+    }
+    setRun({ busy: true, error: null });
+    void hostClient.stopRun(threadId, runId).then(
+      () => setRun({ busy: false, error: null }),
+      (error: unknown) => setRun({ busy: false, error: presentFailure(error, "stop this task") }),
+    );
+  };
+  return (
+    <>
+      <button
+        aria-label="Stop this task"
+        className="btn btn--small computer-watch__stop"
+        disabled={busy}
+        onClick={stop}
+        type="button"
+      >
+        {busy ? "Stopping…" : "Stop"}
+      </button>
+      {run.error ? (
+        <span className="computer-watch__state" role="alert">
+          {run.error}
+        </span>
+      ) : null}
+    </>
+  );
+}
+
 export function TaskAppWatchPane({
   agentName,
+  agentSessionId,
   fallback,
   hostClient,
   hostConnected,
@@ -65,6 +120,8 @@ export function TaskAppWatchPane({
 }: {
   /** The connected agent's name, when a connected agent works this task. */
   readonly agentName: string | null;
+  /** The connected agent's session working this task, which its Stop ends. */
+  readonly agentSessionId: string | null;
   /** What the centre shows when nothing is being used: the launcher. */
   readonly fallback: ReactNode;
   readonly hostClient: HostClient;
@@ -111,6 +168,16 @@ export function TaskAppWatchPane({
         machineId={machine.id}
         machines={machines}
         sessionId={watch.session.sessionId}
+        stop={
+          threadId ? (
+            <TaskStopButton
+              agentSessionId={agentSessionId}
+              hostClient={hostClient}
+              runId={watch.session.runId}
+              threadId={threadId}
+            />
+          ) : undefined
+        }
         trailing={trailing}
         visible={visible}
       />

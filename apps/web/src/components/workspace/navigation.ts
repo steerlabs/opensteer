@@ -499,9 +499,14 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
       // A path may carry its own query (All tasks' filter); the place shown stays beside it.
       const [pathname = path, query = ""] = path.split("?", 2);
       if (options?.watch) {
+        // An entry of its own, even at the address already shown (a start page opened in this
+        // task): the person's Watch always lands on the picture, never on that start page.
         choosePlace({ kind: "launcher" }, pathname, {
           replace: options.replace === true,
-          state: options.focusRequest ? { focusRequest: options.focusRequest } : undefined,
+          state: {
+            watch: true,
+            ...(options.focusRequest ? { focusRequest: options.focusRequest } : {}),
+          },
         });
         return;
       }

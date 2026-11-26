@@ -120,7 +120,86 @@ it("lands Watch in On your computer now on the live picture of the app the agent
   expect(sockets.some(({ closed }) => !closed)).toBe(true);
   // View only, with Stop.
   expect(pane()!.querySelector(".computer-watch__stage")).not.toBeNull();
-  expect(button("Stop the agent using Notes", pane()!)).toBeDefined();
+  expect(button("Stop this task", pane()!)).toBeDefined();
+});
+
+it("lands Watch on the picture again after the person opened New tab in the same task", async () => {
+  await opened(() => "/", {
+    mock: mockConnectedAgents("seeded"),
+    prepare(source) {
+      source.mockAgentWork({ livePanel: "three" });
+      source.mockComputerUseSessionTask(mockAgentWorkThreads.shopping);
+    },
+  });
+  const watchAgain = async () => {
+    const opener = document.querySelector<HTMLButtonElement>(".agents-now__trigger")!;
+    vi.spyOn(opener, "getClientRects").mockReturnValue([new DOMRect()] as unknown as DOMRectList);
+    await act(async () => opener.click());
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"].agents-now-panel')!;
+    await act(async () => button("Watch ChatGPT", dialog)!.click());
+  };
+  await watchAgain();
+  await vi.waitFor(() => expect(pane()).not.toBeNull());
+  await act(async () =>
+    document
+      .querySelector<HTMLButtonElement>(
+        '.side-section--tabs .side-head__action[aria-label="New tab"]',
+      )!
+      .click(),
+  );
+  await vi.waitFor(() => expect(launcher()).not.toBeNull());
+  // The same task, its start page open: the person's Watch click lands on the picture.
+  await watchAgain();
+  await vi.waitFor(() => expect(pane()).not.toBeNull());
+  expect(launcher()).toBeNull();
+  expect(history.at(-1)?.path).toBe(`/tasks/${mockAgentWorkThreads.shopping}`);
+});
+
+it("stops a connected agent's task from its Watch pane with the task's own Stop, not the Mac's", async () => {
+  await opened(() => "/", {
+    mock: mockConnectedAgents("seeded"),
+    prepare(source) {
+      source.mockAgentWork({ livePanel: "three" });
+      source.mockComputerUseSessionTask(mockAgentWorkThreads.shopping);
+    },
+  });
+  const dispatch = vi.spyOn(client, "dispatch");
+  const opener = document.querySelector<HTMLButtonElement>(".agents-now__trigger")!;
+  vi.spyOn(opener, "getClientRects").mockReturnValue([new DOMRect()] as unknown as DOMRectList);
+  await act(async () => opener.click());
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"].agents-now-panel')!;
+  await act(async () => button("Watch ChatGPT", dialog)!.click());
+  await vi.waitFor(() => expect(pane()).not.toBeNull());
+  dispatch.mockClear();
+  // One Stop in the pane, and it is the task's.
+  expect(pane()!.querySelectorAll(".computer-watch__stop")).toHaveLength(1);
+  await act(async () => button("Stop this task", pane()!)!.click());
+  await vi.waitFor(() =>
+    expect(dispatch.mock.calls.map(([command]) => command.type)).toContain("agent.session.stop"),
+  );
+  expect(dispatch.mock.calls.map(([command]) => command)).toContainEqual(
+    expect.objectContaining({
+      type: "agent.session.stop",
+      threadId: mockAgentWorkThreads.shopping,
+    }),
+  );
+  expect(dispatch.mock.calls.map(([command]) => command.type)).not.toContain(
+    "integration.computer.session.stop",
+  );
+});
+
+it("stops a Run's task from its Watch pane as the Run's own Stop does, not only its Mac session", async () => {
+  await opened(() => middle(usingNotes));
+  const { session } = sessionOf(client, usingNotes)!;
+  const stopRun = vi.spyOn(client, "stopRun");
+  const dispatch = vi.spyOn(client, "dispatch");
+  await vi.waitFor(() => expect(pane()).not.toBeNull());
+  expect(pane()!.querySelectorAll(".computer-watch__stop")).toHaveLength(1);
+  await act(async () => button("Stop this task", pane()!)!.click());
+  await vi.waitFor(() => expect(stopRun).toHaveBeenCalledWith(usingNotes, session.runId));
+  expect(dispatch.mock.calls.map(([command]) => command.type)).not.toContain(
+    "integration.computer.session.stop",
+  );
 });
 
 it("offers the person's own view of the same app as the way to take over", async () => {
@@ -195,8 +274,16 @@ it("keeps New tab a start page on a task whose agent is using an app", async () 
 
 it("goes back to the launcher, with nothing left behind, when the session ends while watched", async () => {
   const { sockets } = await opened(() => middle(usingNotes));
+  const { session } = sessionOf(client, usingNotes)!;
   await vi.waitFor(() => expect(sockets.length).toBeGreaterThan(0));
-  await act(async () => button("Stop the agent using Notes", pane()!)!.click());
+  // The agent lets go of the app (or the Mac's own Stop ends its session).
+  await act(async () => {
+    await client.dispatch({
+      type: "integration.computer.session.stop",
+      sessionId: session.sessionId,
+      idempotencyKey: "session-ends-while-watched",
+    } as never);
+  });
   await vi.waitFor(() => expect(sessionOf(client, usingNotes)).toBeNull());
   await vi.waitFor(() => expect(launcher()).not.toBeNull());
   expect(pane()).toBeNull();

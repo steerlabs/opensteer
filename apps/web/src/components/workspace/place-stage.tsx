@@ -358,13 +358,11 @@ function SelectedPlace({
     // a Mac app shows that app where the launcher would be: Watch, the monitor button, a reload.
     if (startPageOpening(entryState) !== "") return startPage;
     const threadId = conversationAt(pathname);
+    const slot = threadId ? agentSessionSlot(directory.snapshot, threadId) : null;
     return (
       <TaskAppWatchPane
-        agentName={
-          threadId
-            ? (agentSessionSlot(directory.snapshot, threadId)?.connection.label ?? null)
-            : null
-        }
+        agentName={slot?.connection.label ?? null}
+        agentSessionId={slot?.status === "active" ? slot.sessionId : null}
         fallback={startPage}
         hostClient={hostClient}
         hostConnected={hostConnected}
