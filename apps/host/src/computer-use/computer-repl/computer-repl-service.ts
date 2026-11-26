@@ -668,7 +668,21 @@ export class ReplService<Request extends AnyReplRequest> {
       (this.#events || call.context.reportUnknownEffects) &&
       (call.mutationsInFlight.size || call.uncertainty)
     ) {
-      error = call.uncertainty ?? this.#pendingUncertainty(call, error);
+      const uncertainty = call.uncertainty ?? this.#pendingUncertainty(call, error);
+      error = error
+        ? {
+            ...uncertainty,
+            ...(error.message === uncertainty.message
+              ? {}
+              : {
+                  message: `${utf8Prefix(uncertainty.message, 1024)}\nScript error: ${error.message}`,
+                  ...(agentOperationEndingOf(uncertainty.message)
+                    ? { next: uncertainty.message }
+                    : {}),
+                }),
+            performed: error.performed.length ? error.performed : uncertainty.performed,
+          }
+        : uncertainty;
     } else if (this.#events && (call.operationsInFlight || call.abandonedRead) && !error) {
       error = {
         code: "operation-pending",

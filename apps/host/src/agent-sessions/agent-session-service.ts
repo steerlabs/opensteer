@@ -1192,12 +1192,15 @@ export class AgentSessionService {
       ) {
         // A command was submitted and never answered: its effect is unknown.
         const uncertainty = scriptError?.code === "outcome-unknown" ? scriptError : undefined;
-        const ending = agentOperationEndingOf(uncertainty?.message) ?? "contact-lost";
+        const ending =
+          agentOperationEndingOf(uncertainty?.message) ??
+          agentOperationEndingOf(uncertainty?.next ?? undefined) ??
+          "contact-lost";
         const settled = await settleAgentOperation(
           this.#store.database,
           row.id,
           "unknown",
-          uncertainty ? { ...summary, scriptError: uncertainty } : summary,
+          scriptError ? { ...summary, scriptError } : summary,
           ending,
         );
         if (!settled) return recorded();
@@ -1206,7 +1209,7 @@ export class AgentSessionService {
           ...base,
           next: unknownOperationNext(ending),
           result,
-          ...(uncertainty ? { scriptError: uncertainty } : {}),
+          ...(scriptError ? { scriptError } : {}),
         };
       }
       const settled = await settleAgentOperation(
