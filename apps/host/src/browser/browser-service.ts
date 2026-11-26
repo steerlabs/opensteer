@@ -9817,7 +9817,8 @@ export class BrowserService {
                 !profileId ||
                 !agentGrantAllows(grant, { kind: "browser-profile", profileId }, access),
             )
-          : !grant.resources.some((resource) => resource.kind === "browser-profile"))
+          : // It may read the grant itself: browser profiles, no device and no approval.
+            !grant.resources.some((resource) => resource.kind === "browser-profile"))
       ) {
         if (input.agentBindingId.startsWith("session:") && profiles.length)
           throw new OpensteerError({ code: "not_found", message: "Tab not found." });

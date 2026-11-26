@@ -1,3 +1,4 @@
+import type { KnownDevice } from "../administration/device-access.js";
 import type { DeviceDriverResolver, DeviceDriverRoute } from "../computer-use/device-drivers.js";
 import {
   HostIntegrationsWindowResolveSchema,
@@ -281,7 +282,11 @@ export interface ComputerAppHubOptions {
     readonly runnerId: RunnerId;
     readonly connectionGeneration: number;
   }) => Promise<void>;
-  readonly requireDeviceAgentAccess?: (deviceId: DeviceId) => Promise<void>;
+  readonly requireDeviceAgentAccess?: (
+    deviceId: DeviceId,
+    /** What a listing already read of the device. */
+    known?: KnownDevice,
+  ) => Promise<void>;
   readonly onDeviceInvalidated?: (binding: DeviceDriverIdentity) => void;
   readonly onDeviceInputWithdrawn?: (deviceId: DeviceId) => void;
   readonly onDeviceRemoved?: (deviceId: DeviceId, removed: boolean) => void;
@@ -1986,8 +1991,8 @@ export class ComputerAppHub {
     }
   }
 
-  async requireDeviceAgentAccess(deviceId: DeviceId): Promise<void> {
-    await this.#options.requireDeviceAgentAccess?.(deviceId);
+  async requireDeviceAgentAccess(deviceId: DeviceId, known?: KnownDevice): Promise<void> {
+    await this.#options.requireDeviceAgentAccess?.(deviceId, known);
   }
 
   async requireAgentAccess(runnerId: RunnerId): Promise<void> {

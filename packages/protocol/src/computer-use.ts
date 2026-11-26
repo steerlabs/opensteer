@@ -203,6 +203,18 @@ export const ComputerUseTargetSchema = z.union([
 ]);
 export type ComputerUseTarget = z.infer<typeof ComputerUseTargetSchema>;
 
+/**
+ * How far one scroll goes: steps of the device's own scrolling, three lines each in a Mac app and
+ * one bounded swipe each on a phone. A refusal says so, so a model can correct the number.
+ */
+const scrollAmountWords =
+  "a scroll's amount is how many steps it scrolls (three lines each in a Mac app, one swipe each on a phone), a whole number from 1 to 20";
+export const ScrollAmountSchema = z
+  .number(scrollAmountWords)
+  .int(scrollAmountWords)
+  .min(1, scrollAmountWords)
+  .max(20, scrollAmountWords);
+
 const computerUseActionVariants = [
   z.strictObject({
     button: z.enum(["left", "right", "middle"]).default("left"),
@@ -238,7 +250,7 @@ const computerUseActionVariants = [
     value: z.string().max(100_000),
   }),
   z.strictObject({
-    amount: z.number().int().min(1).max(20),
+    amount: ScrollAmountSchema,
     direction: z.enum(["up", "down", "left", "right"]),
     target: ComputerUseTargetSchema,
     type: z.literal("scroll"),

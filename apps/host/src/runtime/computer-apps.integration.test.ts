@@ -407,13 +407,21 @@ integration("computer apps", () => {
       "Studio Mac did not confirm this. Check whether it happened before trying again.",
     );
 
-    // Unreachable, its tools stay listed as they are and the call says why.
+    // Online with its integrations service down: its tools stay listed, and the listing says
+    // why in the words the call says it.
     const away = await gateway.call("plugin_search", { namespace: messagesNamespace });
     expect(away).toMatchObject({ unavailableApps: [] });
     expect((away.items as { path: string }[]).map(({ path }) => path)).toContain(queryMessages);
-    expect(JSON.stringify(away)).not.toContain("blocked");
     const unreachable = await pluginCall(gateway, queryMessages, { sql: "SELECT 1" });
     expect(unreachable.failure).toContain("Studio Mac");
+    const called = unreachable.raw.structuredContent as {
+      result?: { execution?: { value?: { error?: unknown } } };
+      error?: unknown;
+    };
+    expect((away.namespaces as { blocked?: unknown }[]).find(({ blocked }) => blocked)).toEqual({
+      ...(away.namespaces as object[])[0],
+      blocked: called.result?.execution?.value?.error ?? called.error,
+    });
     await computer.reconnectModule();
     await waitForCondition(async () => {
       const searched = await gateway.call("plugin_search", { query: "query_messages" });
@@ -721,21 +729,25 @@ integration("computer apps", () => {
       // 1. Full access not yet allowed: its tools are listed, and its namespace says why once.
       const calendarNamespace = () => gateway.call("plugin_search", { namespace: calendarSlug });
       const fullAccess =
-        "apple-calendar is unavailable: Calendar needs macOS full access to calendars for Opensteer Computer Use on Studio Mac.";
+        "Calendar needs macOS full access to calendars for Opensteer Computer Use on Studio Mac.";
       await waitForCondition(async () =>
         JSON.stringify(await calendarNamespace()).includes("needs macOS full access"),
       );
       const blocked = await calendarNamespace();
       record("calendar before its grant", blocked);
       expect((blocked.items as unknown[]).length).toBeGreaterThan(0);
-      expect(JSON.stringify(blocked.items)).not.toContain("blocked");
+      // A tool kept for its app's reason carries nothing of its own; a change, kept for a reason
+      // of its own as well (this task holds Calendar for reading), says that one, as its call does.
+      const items = blocked.items as { path: string; blocked?: { message: string } }[];
+      expect(items.find(({ path }) => path.endsWith(".list_events"))?.blocked).toBeUndefined();
+      expect(items.filter((item) => item.blocked?.message === fullAccess)).toEqual([]);
       expect(blocked).toMatchObject({
         namespaces: [
           {
             blocked: {
               code: "unavailable",
               message: fullAccess,
-              next: "Continue without it and tell the person what the message says.",
+              next: "The person finishes this on Studio Mac. Tell them what the message says, and continue without Calendar on Studio Mac until then.",
             },
           },
         ],

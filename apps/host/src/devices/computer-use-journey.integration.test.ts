@@ -6435,6 +6435,47 @@ integration.sequential("Computer use for a connected agent, through its session"
     }
   });
 
+  it("tells a connected agent holding a Mac app when the Mac's apps are off or the Mac is offline, never that the app does not exist", async () => {
+    const s = await connectedAgent("full-access", { target: "mac", personApproved: true });
+    try {
+      const observe = () =>
+        s.call({
+          code: 'const w = await (await app("Notes")).window(); print(await w.observe())',
+          readOnly: true,
+        });
+      const absent = "No app or phone screen shared with this agent matches";
+      const policy = (apps: boolean) =>
+        database
+          .updateTable("devices")
+          .set({
+            accessPolicy: sql`${JSON.stringify({ ...machineAccessPolicyDefault, apps })}::jsonb`,
+            accessPolicyRevision: sql`access_policy_revision + 1`,
+          })
+          .where("id", "=", s.computerId)
+          .execute();
+      await policy(false);
+      const off = await observe().catch((error: unknown) => agentToolFailure(error, "read"));
+      expect(JSON.stringify(off)).toContain(
+        `Apps access is off on ${mac}. The person can turn it on in Opensteer.`,
+      );
+      expect(JSON.stringify(off)).not.toContain(absent);
+      await policy(true);
+      s.world.fakeMac.detach();
+      const offline = await observe().catch((error: unknown) => agentToolFailure(error, "read"));
+      expect(offline).toMatchObject({
+        error: {
+          code: "computer_offline",
+          message: `${mac} is offline.`,
+          next: "The person can bring it online; other work can continue.",
+        },
+      });
+      expect(JSON.stringify(offline)).not.toContain(absent);
+      expect(s.world.fakeMac.frames.some(({ operation }) => operation === "bind")).toBe(false);
+    } finally {
+      await s.world.close();
+    }
+  });
+
   it.each(["everything", "selected"] as const)(
     "never reaches a %s connection's stored target on a Mac app the person removed and approved again",
     async (scope) => {

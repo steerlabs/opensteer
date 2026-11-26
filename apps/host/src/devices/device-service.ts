@@ -127,7 +127,7 @@ import {
   type ComputerInventoryAuthority,
   type ComputerUseSessionAuthority,
 } from "../computer-use/computer-use-service.js";
-import { DeviceAccessRefusal } from "../administration/device-access.js";
+import { DeviceAccessRefusal, type KnownDevice } from "../administration/device-access.js";
 import type { DeviceDriverIdentity } from "@opensteer/core";
 import type { LocalServerService } from "../local-servers/local-server-service.js";
 import { deviceAccessBlocked } from "./target-blocked.js";
@@ -505,9 +505,9 @@ export class DeviceService {
   }
 
   /** Why this device refuses agents now, worded for a connected agent when `connection` is set. */
-  async localDeviceAccessBlocked(deviceId: DeviceId, connection = false) {
+  async localDeviceAccessBlocked(deviceId: DeviceId, connection = false, known?: KnownDevice) {
     try {
-      await this.#deviceApps.requireAgentAccess(deviceId);
+      await this.#deviceApps.requireAgentAccess(deviceId, known);
     } catch (error) {
       const blocked = deviceAccessBlocked(error, connection);
       if (!blocked) throw error;
@@ -547,8 +547,10 @@ export class DeviceService {
   /**
    * An inventory as an agent should read it: each tool of an app, a phone or
    * a server a computer runs that is there but cannot be used now says why.
-   * With `offlineAtCall`, a device or computer that is only unreachable is
-   * left to the call, which says it is offline; its tools stay listed.
+   * With `offlineAtCall`, a device or computer that is offline is left to the
+   * device's own refusal, which the listing and the call both say; one that is
+   * online but cannot serve its apps (its helper or integrations service is not
+   * running) says so here, as its call does.
    */
   async withAvailability<Entry extends DiscoveryInventoryEntry>(
     inventory: readonly Entry[],
@@ -604,9 +606,12 @@ export class DeviceService {
           operation?: string,
         ) => {
           // The owner can fix a disconnected device before agents request access.
-          // A task still sees its outstanding authorization requirement first.
+          // A task still sees its outstanding authorization requirement first. What keeps a
+          // device's app (a permission missing, its helper not running) comes before the task's
+          // read-only mode (pluginToolReason's order).
           if (
             readiness.code !== "READY" &&
+            !(readiness.code === "READ_ONLY_TASK" && computerServers.has(readiness.serverId)) &&
             !(
               input.ownerView &&
               readiness.code === "ACCESS_GRANT_REQUIRED" &&
@@ -640,10 +645,9 @@ export class DeviceService {
             connection.deviceId,
             definitionId,
           );
-          const reachable = runnerConnected && attached;
           if (
             input.offlineAtCall &&
-            !reachable &&
+            !runnerConnected &&
             !isPhoneDisplayDefinitionId(definitionId) &&
             !(connection.deviceProfile === "iphone" && connection.runnerUpdateRequired)
           )
@@ -669,7 +673,10 @@ export class DeviceService {
               ? connection.runnerUpdateRequired
                 ? `Update Opensteer on ${connection.runnerName} to use its apps.`
                 : runnerConnected
-                  ? `Apps aren’t connected. Reopen Opensteer on ${connection.runnerName}.`
+                  ? input.ownerView
+                    ? `Apps aren’t connected. Reopen Opensteer on ${connection.runnerName}.`
+                    : // To an agent, in the words its call says it (`callTool`, offline).
+                      iphoneAppsUnavailableDetail(connection.runnerName)
                   : `${connection.runnerName} is offline. Open Opensteer there, and update if prompted.`
               : computerAppAvailabilityDetail({
                   // A Computer use account is one app, which is what comes back.

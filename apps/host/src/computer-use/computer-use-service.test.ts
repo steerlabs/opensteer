@@ -1513,6 +1513,28 @@ describe("ComputerUseService call lifecycle", () => {
     expect(test.sent).toEqual([]);
     await test.service.shutdown();
   });
+
+  it("says what a scroll's amount means and its range when one is out of it", async () => {
+    const test = harness();
+
+    await expect(
+      act(
+        test.service,
+        callable,
+        {
+          actions: [{ amount: 650, direction: "down", target: { x: 150, y: 650 }, type: "scroll" }],
+          snapshot: "obs-1",
+        },
+        context,
+      ),
+    ).rejects.toMatchObject({
+      code: "failed",
+      message:
+        "Those actions are not usable — actions[0].amount: a scroll's amount is how many steps it scrolls (three lines each in a Mac app, one swipe each on a phone), a whole number from 1 to 20. Correct those fields as computer_use describes, observe this window again, and act on its snapshot.",
+    });
+    expect(test.sent).toEqual([]);
+    await test.service.shutdown();
+  });
 });
 
 /*

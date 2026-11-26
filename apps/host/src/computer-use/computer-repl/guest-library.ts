@@ -145,6 +145,7 @@ export const computerGuestLibrary = String.raw`
       "Window: tabId, windowId, title; observe({screenshot,emit}), click(target,{button,count}), type(text,{into}), key(keys), setValue(index,value), scroll(target,direction,amount), act(actions).",
       "Phone: tabId, id, name, computerId, definitionId, platform, navigation, actions, access, blocked; observe(), act(actions), tap(target), longPress(target,durationMs), swipe(from,to,durationMs), drag(from,to,durationMs), type(text,{into}), clear(target), navigate(to), installedApps({query,limit,offset}), launch(appId), scroll(target,direction,amount), wake(), wait(ms), release().",
       "Await actions. Observe before using indices or coordinates. Targets can be an index or [x,y]. Use only actions offered by that phone.",
+      "A scroll's amount is how many steps it scrolls (three lines each in a Mac app, one swipe each on a phone), a whole number from 1 to 20.",
     ].join("\n"));
   }
 })();

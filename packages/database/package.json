@@ -9,6 +9,7 @@
     "./test-support/lock-order": "./src/lock-order-checker.test-support.ts",
     "./test-support/database": "./src/test-database.test-support.ts",
     "./test-support/store": "./src/store.integration.test-support.ts",
+    "./test-support/device-approvals": "./src/device-approvals.test-support.ts",
     "./test-support/personal": "./src/personal-fixture.test-support.ts",
     "./test-support/released-home": "./src/released-home.test-support.ts",
     "./connection": "./src/connection.ts",
