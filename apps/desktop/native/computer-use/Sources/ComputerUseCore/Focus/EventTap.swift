@@ -11,6 +11,13 @@ import Foundation
 final class EventTap: @unchecked Sendable {
   typealias Handler = (CGEventType, CGEvent) -> CGEvent?
 
+  /// What touches a tap's port once it exists. Real taps use CoreGraphics; a test records the
+  /// order on a plain port, which needs no Input Monitoring or Accessibility.
+  struct PortOps: Sendable {
+    var enable: @Sendable (CFMachPort, Bool) -> Void = { CGEvent.tapEnable(tap: $0, enable: $1) }
+    var invalidate: @Sendable (CFMachPort) -> Void = { CFMachPortInvalidate($0) }
+  }
+
   enum Scope {
     /// Events on their way to one process.
     case process(pid_t)
@@ -19,6 +26,7 @@ final class EventTap: @unchecked Sendable {
   }
 
   private let context: Context
+  private let ops: PortOps
   private let lock = NSLock()
   private var port: CFMachPort?
   private var source: CFRunLoopSource?
@@ -28,7 +36,8 @@ final class EventTap: @unchecked Sendable {
     _ scope: Scope, place: CGEventTapPlacement, options: CGEventTapOptions,
     types: [UInt32], handler: @escaping Handler
   ) {
-    context = Context(handler)
+    ops = PortOps()
+    context = Context(handler, ops: ops)
     let mask = types.reduce(CGEventMask(0)) { $0 | (1 << CGEventMask($1)) }
     // The registration, not the EventTap owner, keeps callbacks alive until
     // their run-loop source is removed after any callback already executing.
@@ -51,11 +60,28 @@ final class EventTap: @unchecked Sendable {
     port = created
     context.install(created)
     self.source = source
-    EventTapThread.shared.add(source, enabling: created)
+    EventTapThread.shared.add(source, enabling: created, ops: ops)
+  }
+
+  /// A tap over a port made elsewhere, with recorded port operations: the ordering test's seam.
+  init(port: CFMachPort, source: CFRunLoopSource, ops: PortOps, handler: @escaping Handler) {
+    self.ops = ops
+    context = Context(handler, ops: ops)
+    _ = Unmanaged.passRetained(context)
+    self.port = port
+    context.install(port)
+    self.source = source
+    EventTapThread.shared.add(source, enabling: port, ops: ops)
   }
 
   deinit { stop() }
 
+  /// Safe from any thread, and twice. The handler is never called once this returns: the
+  /// context stops first, so the tap passes events through until it is gone. Everything else
+  /// that touches the port (disable, invalidate, removing its source) happens on the tap thread,
+  /// behind the add it follows: a tap stopped before its add ran was enabled after its port was
+  /// invalidated, and the helper crashed (EXC_BAD_ACCESS in SLEventTapEnable). Nothing waits:
+  /// no caller needs more than its handler silenced.
   func stop() {
     lock.lock()
     let port = self.port
@@ -64,14 +90,10 @@ final class EventTap: @unchecked Sendable {
     self.source = nil
     context.stop()
     lock.unlock()
-    guard let port else { return }
-    CGEvent.tapEnable(tap: port, enable: false)
-    CFMachPortInvalidate(port)
-    if let source {
-      let context = context
-      EventTapThread.shared.remove(source) {
-        Unmanaged.passUnretained(context).release()
-      }
+    guard let port, let source else { return }
+    let context = context
+    EventTapThread.shared.remove(source, port: port, ops: ops) {
+      Unmanaged.passUnretained(context).release()
     }
   }
 
@@ -83,11 +105,15 @@ final class EventTap: @unchecked Sendable {
 
   final class Context: @unchecked Sendable {
     private let handler: Handler
+    private let ops: PortOps
     private let lock = NSLock()
     private var stopped = false
     private var port: CFMachPort?
 
-    init(_ handler: @escaping Handler) { self.handler = handler }
+    init(_ handler: @escaping Handler, ops: PortOps = PortOps()) {
+      self.handler = handler
+      self.ops = ops
+    }
 
     func install(_ port: CFMachPort) {
       lock.lock()
@@ -109,7 +135,7 @@ final class EventTap: @unchecked Sendable {
       lock.unlock()
       guard !stopped else { return event }
       if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        if let port { CGEvent.tapEnable(tap: port, enable: true) }
+        if let port { ops.enable(port, true) }
         return event
       }
       return handler(type, event)
@@ -138,21 +164,27 @@ final class EventTapThread: @unchecked Sendable {
     ready.wait()
   }
 
-  func add(_ source: CFRunLoopSource, enabling port: CFMachPort) {
+  func add(_ source: CFRunLoopSource, enabling port: CFMachPort, ops: EventTap.PortOps) {
     perform {
       CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
-      CGEvent.tapEnable(tap: port, enable: true)
+      ops.enable(port, true)
     }
   }
 
-  func remove(_ source: CFRunLoopSource, then retired: @escaping () -> Void) {
+  /// Runs after every block queued before it, the tap's own add included.
+  func remove(
+    _ source: CFRunLoopSource, port: CFMachPort, ops: EventTap.PortOps,
+    then retired: @escaping () -> Void
+  ) {
     perform {
+      ops.enable(port, false)
+      ops.invalidate(port)
       CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
       retired()
     }
   }
 
-  private func perform(_ body: @escaping () -> Void) {
+  func perform(_ body: @escaping () -> Void) {
     guard let runLoop else { return }
     CFRunLoopPerformBlock(runLoop, CFRunLoopMode.commonModes.rawValue, body)
     CFRunLoopWakeUp(runLoop)
