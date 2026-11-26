@@ -797,6 +797,7 @@ function candidate() {
            esac
          }
          ${dockerStub(work, log)}
+         sync() { :; } # macOS syncs every disk at each call; when a release flushes is its own test
          check_release_stamps() { :; }
          prepare_release`,
         "prepare",
