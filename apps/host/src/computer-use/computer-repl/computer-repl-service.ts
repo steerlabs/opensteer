@@ -732,6 +732,10 @@ export class ReplService<Request extends AnyReplRequest> {
   resetGeneration(runId: string, generation: number): void {
     this.#dispose(`${runId}:${generation}`);
   }
+  /** Whether a call runs in the context now. */
+  busy(runId: string, generation: number): boolean {
+    return this.#contexts.get(`${runId}:${generation}`)?.call !== undefined;
+  }
   endGeneration(runId: string, generation: number): void {
     const key = `${runId}:${generation}`;
     this.#revoked.add(key);

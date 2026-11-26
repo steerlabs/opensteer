@@ -295,17 +295,6 @@ export class BrowserCdpConnectionEnded extends Error {
   override readonly name = "BrowserCdpConnectionEnded";
 }
 
-/**
- * A browser script's command, refused before anything was sent, because its connection's grant
- * revision is not the one its tab was bound under. Its attachment has ended with a reauthorize
- * end; its handle binds the tab again, which decides it.
- */
-export class BrowserScriptAuthorityChanged extends BrowserCdpConnectionEnded {
-  constructor() {
-    super("This browser page's authority changed.");
-  }
-}
-
 function browserCommandOutcomeUnknown(): OpensteerError {
   return new OpensteerError({
     code: "conflict",
@@ -5230,9 +5219,9 @@ export class BrowserService {
           pageBinding: binding,
           ...(descriptor.favicon !== undefined ? { favicon: descriptor.favicon } : {}),
         };
-        await tabs.open(write, `person-page:${record.id}:${descriptor.id}`, async (tx) => {
-          await authorizeTabTarget({ kind: "person", ownerId }, write, tx);
-        });
+        await tabs.open(write, `person-page:${record.id}:${descriptor.id}`, async (tx) =>
+          authorizeTabTarget({ kind: "person", ownerId }, write, tx),
+        );
         if (opens) {
           opens.openers.delete(descriptor.id);
           if (!opens.inFlight && !opens.openers.size) this.#taskPageOpens.delete(record.id);
@@ -6635,14 +6624,12 @@ export class BrowserService {
       readonly sessionId?: BrowserSessionId;
       readonly scriptTabId?: TabId;
       readonly scriptThreadId?: ThreadId;
-      /** The connection's grant revision the script's tab was bound under (null: no connection). */
-      readonly scriptGrantRevision?: number | null;
       readonly browserSend?: PooledBrowserSend;
       readonly expectedPooledWitness?: string;
       readonly signal?: AbortSignal;
     },
     onEvent: (event: Extract<BrowserServerMessage, { type: "cdp.event" }>["event"]) => void,
-    onClosed?: (ended?: { readonly reauthorize: true }) => void,
+    onClosed?: () => void,
   ): Promise<{
     readonly session: HostedBrowserSession;
     readonly pooledWitness?: string;
@@ -6707,13 +6694,11 @@ export class BrowserService {
       readonly sessionId?: BrowserSessionId;
       readonly scriptTabId?: TabId;
       readonly scriptThreadId?: ThreadId;
-      /** The connection's grant revision the script's tab was bound under (null: no connection). */
-      readonly scriptGrantRevision?: number | null;
       readonly browserSend?: PooledBrowserSend;
       readonly expectedPooledWitness?: string;
     },
     onEvent: (event: Extract<BrowserServerMessage, { type: "cdp.event" }>["event"]) => void,
-    onClosed?: (ended?: { readonly reauthorize: true }) => void,
+    onClosed?: () => void,
     pooledRelay?: PooledBrowserRelay,
     lane?: {
       readonly heldProfileId?: BrowserProfileId | null;
@@ -6923,7 +6908,7 @@ export class BrowserService {
           onEvent(buffered);
       }
     };
-    const close = (ended?: { readonly reauthorize: true }) => {
+    const close = () => {
       if (attachmentClosed) return;
       attachmentClosed = true;
       this.#deviceAttachments.delete(deviceAttachmentId);
@@ -6956,7 +6941,7 @@ export class BrowserService {
           .catch(() => undefined);
       }
       if (pooledRelay) void pooledRelay.close().catch(this.#onError);
-      onClosed?.(ended);
+      onClosed?.();
     };
     const unsubscribe = broker.subscribeCdp((event) => {
       if (event.scriptAttachmentId !== scriptAttachmentId) return;
@@ -7210,21 +7195,9 @@ export class BrowserService {
         assertAttached(bindingWasEnded);
         let writeAccessGeneration = this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
         let canManageExtensions = false;
-        let grantRevision: number | null = null;
         const admitted = await this.#admitAgentBackend(input, "cdp", false, undefined, (facts) => {
           canManageExtensions = facts.manageExtensions;
-          grantRevision = facts.grantRevision;
         });
-        // A script's tab was decided under the grant revision its bind read (rule 1). Under
-        // another, nothing is sent: the attachment ends as a park ends it, and the handle binds
-        // the tab again, which decides it. The revision is the one this admission already read.
-        if (
-          input.scriptTabId !== undefined &&
-          grantRevision !== (input.scriptGrantRevision ?? null)
-        ) {
-          close({ reauthorize: true });
-          throw new BrowserScriptAuthorityChanged();
-        }
         if (admitted.record.id !== record.id)
           throw new BrowserCdpConnectionEnded(
             "This Run selected another browser. Bind the exact tab with Browser Harness openPage(tabId).",

@@ -59,17 +59,6 @@ export class BrowserUseCdpError extends Error {
   }
 }
 
-/**
- * A port's command sent nothing because the authority its handle was bound under changed, and
- * the handle's attachment has ended with a reauthorize end. The REPL rebinds it (the bind decides
- * the tab again) and sends the command once more.
- */
-export class BrowserUseReauthorize extends Error {
-  constructor() {
-    super("The browser page attachment has ended.");
-  }
-}
-
 class BrowserBridgeError extends Error {
   readonly code: string;
   constructor(code: string, message: string) {
@@ -84,8 +73,7 @@ class BrowserBridgeError extends Error {
  * Metadata fields are bounded by the same budget. Commands return JSON (use "null" for no value).
  * On abort, stop work that has not been dispatched. Settle only when the operation has finished
  * or cancellation is confirmed. Rejecting an abort race while the underlying operation runs
- * does not acknowledge cancellation. onEnd reports closure or detachment of the bound target;
- * a reauthorize end detaches it so that its next use rebinds through openPage's own decision.
+ * does not acknowledge cancellation. onEnd reports closure or detachment of the bound target.
  * Only explicit Opensteer refusals and BrowserUseCdpError messages are public.
  * A port must recheck access before each command, including commands on a cached binding.
  */
@@ -101,15 +89,11 @@ export interface BrowserUsePort<Target extends BrowserUseTarget = BrowserUseTarg
     call: BrowserUseCall,
   ): Promise<string>;
   release?(target: Target): void;
-  /**
-   * Binds a detached handle's tab again. After a park, only to the page its witness names; after
-   * a reauthorize end, whose page was never put away, only to the same live page.
-   */
-  rebind?(previous: Target, call: BrowserUseCall, reauthorize?: boolean): Promise<Target>;
+  rebind?(previous: Target, call: BrowserUseCall): Promise<Target>;
   subscribe(
     target: Target,
     onEvent: (event: BrowserUseEvent) => void,
-    onEnd: (ended?: { readonly reauthorize: true }) => void,
+    onEnd: () => void,
     budget: BrowserUseBudget,
   ): () => void;
 }
@@ -120,10 +104,6 @@ type Binding<Target> = {
   value: ReplReply["value"];
   unsubscribe?: () => void;
   detached?: true;
-  /** Detached because its authority changed: its next use binds the tab again. */
-  reauthorize?: true;
-  /** Events it heard before that detach, delivered only once its rebind is allowed. */
-  held?: BufferedEvent[];
   reattaching?: Promise<Target>;
   originalTarget?: Target;
 };
@@ -133,14 +113,13 @@ type BrowserContext<Target> = {
   byTab: Map<string, Binding<Target>>;
   targets: Map<string, Binding<Target>>;
   opens: Map<string, Promise<ReplReply>>;
-  events: BufferedEvent[];
+  events: { encoded: string; bytes: number; dialog: boolean }[];
   eventBytes: number;
   dirty: boolean;
   unacknowledged: string | undefined;
   eventTurnBytes: number;
   eventTurnCount: number;
 };
-type BufferedEvent = { handle: string; encoded: string; bytes: number; dialog: boolean };
 type BrowserInvocation = ReplInvocation<BrowserReplRequest>;
 const depth = browserReplLimits.depth;
 const eventBudget = {
@@ -282,20 +261,13 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
     );
   }
 
-  /**
-   * Detaches, before a call runs, each handle of the context whose authority is no longer the one
-   * it was bound under, as a park detaches a handle: unsubscribed and its attachment gone. Its next
-   * use binds the tab again, which decides it; what it heard waits for that decision.
-   */
-  reauthorize(contextKey: string, stale: (target: Target) => boolean): void {
-    const state = this.#contexts.get(contextKey);
-    if (!state) return;
-    for (const binding of state.targets.values())
-      if (!binding.detached && stale(binding.target)) this.#detachForAuthority(state, binding);
-  }
-
   disposeContext(contextKey: string): void {
     this.#repl.resetGeneration(contextKey, 0);
+  }
+
+  /** Whether a call runs in the context now. */
+  busy(contextKey: string): boolean {
+    return this.#repl.busy(contextKey, 0);
   }
 
   close(): Promise<void> {
@@ -343,35 +315,6 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
     this.#repl.eventsAvailable(context);
   }
 
-  /**
-   * Detaches a handle whose authority changed. What it heard and has not yet delivered is held
-   * with it: delivered once its rebind is allowed, and gone with it when that bind is refused.
-   */
-  #detachForAuthority(state: BrowserContext<Target>, binding: Binding<Target>): void {
-    binding.detached = true;
-    binding.reauthorize = true;
-    this.#unsubscribe(binding);
-    delete binding.unsubscribe;
-    const kept: BufferedEvent[] = [];
-    for (const event of state.events)
-      (event.handle === binding.handle ? (binding.held ??= []) : kept).push(event);
-    state.events.length = 0;
-    state.events.push(...kept);
-    state.eventBytes = kept.reduce((sum, { bytes }) => sum + bytes, 0);
-  }
-
-  /** Keeps the buffer within its limits, dropping the oldest events other than dialogs first. */
-  #bound(state: BrowserContext<Target>): void {
-    while (
-      state.events.length > browserReplLimits.events ||
-      state.eventBytes > browserReplLimits.eventBytes
-    ) {
-      const index = state.events.findIndex((item) => !item.dialog);
-      const [removed] = state.events.splice(Math.max(0, index), 1);
-      state.eventBytes -= removed!.bytes;
-    }
-  }
-
   #subscribe(
     context: ComputerReplContext,
     state: BrowserContext<Target>,
@@ -381,10 +324,8 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
     binding.unsubscribe = this.#port.subscribe(
       target,
       (event) => this.#event(context, state, handle, event),
-      (ended) => {
-        if (ended?.reauthorize && this.#port.rebind && this.#contexts.get(context.runId) === state)
-          this.#detachForAuthority(state, binding);
-        else if (target.pooledWitness && this.#port.rebind) {
+      () => {
+        if (target.pooledWitness && this.#port.rebind) {
           binding.detached = true;
           this.#unsubscribe(binding);
           delete binding.unsubscribe;
@@ -410,17 +351,12 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
     const reattach = async () => {
       let replacement: Target | undefined;
       try {
-        const reauthorize = binding.reauthorize === true;
-        if (reauthorize || (call.browserSend && target.pooledWitness))
-          replacement = await (reauthorize
-            ? this.#port.rebind?.(target, call, true)
-            : this.#port.rebind?.(target, call));
+        if (call.browserSend && target.pooledWitness)
+          replacement = await this.#port.rebind?.(target, call);
         if (
           !replacement ||
           replacement.tabId !== target.tabId ||
-          (reauthorize
-            ? replacement.targetId !== target.targetId
-            : replacement.pooledWitness !== target.pooledWitness) ||
+          replacement.pooledWitness !== target.pooledWitness ||
           this.#contexts.get(context.runId) !== state
         )
           throw new BrowserBridgeError("page-ended", "This browser page handle is stale.");
@@ -428,18 +364,9 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
         binding.originalTarget ??= target;
         binding.target = replacement;
         delete binding.detached;
-        delete binding.reauthorize;
         this.#subscribe(context, state, binding);
         if (binding.detached)
           throw new BrowserBridgeError("page-ended", "This browser page handle is stale.");
-        const held = binding.held;
-        delete binding.held;
-        if (held?.length) {
-          state.events.push(...held);
-          state.eventBytes += held.reduce((sum, { bytes }) => sum + bytes, 0);
-          this.#bound(state);
-          this.#repl.eventsAvailable(context);
-        }
         return replacement;
       } catch (error) {
         if (replacement) this.#port.release?.(replacement);
@@ -493,9 +420,16 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
     const encoded = `[${JSON.stringify(handle)},${JSON.stringify(event.method)},${JSON.stringify(event.sessionId ?? null)},${event.paramsJson}]`;
     const bytes = Buffer.byteLength(encoded) + 12;
     if (bytes > browserReplLimits.eventBytes) return;
-    state.events.push({ handle, encoded, bytes, dialog });
+    state.events.push({ encoded, bytes, dialog });
     state.eventBytes += bytes;
-    this.#bound(state);
+    while (
+      state.events.length > browserReplLimits.events ||
+      state.eventBytes > browserReplLimits.eventBytes
+    ) {
+      const index = state.events.findIndex((item) => !item.dialog);
+      const [removed] = state.events.splice(Math.max(0, index), 1);
+      state.eventBytes -= removed!.bytes;
+    }
     this.#repl.eventsAvailable(context);
   }
 
@@ -662,46 +596,19 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
             "This page handle has ended. Bind the tab again with openPage(tabId).",
           );
         const { method, params, sessionId } = request.args;
-        const send = (target: Target) => {
-          const original = binding.originalTarget;
-          return this.#port.command(
-            target,
-            method,
-            original && params?.targetId === original.targetId
-              ? { ...params, targetId: target.targetId }
-              : params,
-            original && sessionId === original.sessionId ? target.sessionId : sessionId,
-            call,
-          );
-        };
-        let encoded: string;
-        try {
-          encoded = await send(
-            binding.detached
-              ? await this.#currentTarget(request.context, state, binding, call)
-              : binding.target,
-          );
-        } catch (error) {
-          if (!(error instanceof BrowserUseReauthorize)) throw error;
-          // Nothing was sent, and the handle was detached: its rebind decides the tab again, and
-          // the command goes once more to what that bind allows.
-          if (!binding.reauthorize)
-            throw new BrowserBridgeError(
-              "page-ended",
-              "This page handle has ended. Bind the tab again with openPage(tabId).",
-            );
-          const target = await this.#currentTarget(request.context, state, binding, call);
-          try {
-            encoded = await send(target);
-          } catch (again) {
-            if (again instanceof BrowserUseReauthorize)
-              throw new BrowserBridgeError(
-                "page-ended",
-                "This page handle has ended. Bind the tab again with openPage(tabId).",
-              );
-            throw again;
-          }
-        }
+        const target = binding.detached
+          ? await this.#currentTarget(request.context, state, binding, call)
+          : binding.target;
+        const original = binding.originalTarget;
+        const encoded = await this.#port.command(
+          target,
+          method,
+          original && params?.targetId === original.targetId
+            ? { ...params, targetId: target.targetId }
+            : params,
+          original && sessionId === original.sessionId ? target.sessionId : sessionId,
+          call,
+        );
         signal.throwIfAborted();
         if (screenshot && typeof encoded === "string" && encoded.length > call.maxBytes)
           throw screenshotTooLarge();

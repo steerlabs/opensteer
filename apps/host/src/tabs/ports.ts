@@ -35,11 +35,6 @@ import type { PooledBrowserSend } from "../agent-sessions/agent-session-service.
 import type { ConnectionCaller } from "../mcp/agent-caller.js";
 export type { PageAgentBinding } from "@opensteer/protocol/browser-agent";
 import type { CdpAuthority } from "../browser/standard-cdp-tickets.js";
-/**
- * A browser script's bind of its tab: the page, and the connection's grant revision the bind's
- * decision read (null for work of no connection). A command under another revision binds again.
- */
-export type ScriptPageBinding = PageAgentBinding & { readonly grantRevision: number | null };
 export type BrowserBindingTabActor = {
   kind: "browser-binding";
   authority: CdpAuthority;

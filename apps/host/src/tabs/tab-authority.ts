@@ -308,16 +308,15 @@ function tabTargetAuthority(
     }
   };
 }
-/** Decides the actor's write to the target; the connection's grant revision it decided under. */
 export async function authorizeTabTarget(
   actor: TabActor,
   target: TabTarget | TabWrite,
   database: TabDatabase,
-): Promise<{ readonly grantRevision: number | null }> {
+): Promise<void> {
   if (actor.kind === "person") {
     await authorizeTabActor(actor, database, "read-write");
     if (!(await (await tabReadAuthority(actor, database))(target, "read-write"))) deny();
-    return { grantRevision: null };
+    return;
   }
   const lineage = await admitTabActor(actor, database, "read-write");
   if (
@@ -332,7 +331,6 @@ export async function authorizeTabTarget(
       message: "Use about:blank or an HTTP(S) URL without credentials.",
     });
   if (!(await tabTargetAuthority(actor, database, lineage)(target, "read-write"))) deny();
-  return { grantRevision: lineage?.grantRevision ?? null };
 }
 export async function canReadTab(
   actor: TabActor,

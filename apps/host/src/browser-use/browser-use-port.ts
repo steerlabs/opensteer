@@ -5,23 +5,18 @@ import {
   BrowserCdpCommandSchema,
   browserScriptScreenshotMaxBytes,
   browserHostMethods,
+  type PageAgentBinding,
 } from "@opensteer/protocol";
 import { z } from "zod";
 import {
   OperationOutcomeUnknown,
   type PooledBrowserSend,
 } from "../agent-sessions/agent-session-service.js";
-import {
-  BrowserCdpConnectionEnded,
-  BrowserScriptAuthorityChanged,
-  type BrowserService,
-} from "../browser/browser-service.js";
-import type { ScriptPageBinding } from "../tabs/ports.js";
+import { BrowserCdpConnectionEnded, type BrowserService } from "../browser/browser-service.js";
 import type { CdpAuthority } from "../browser/standard-cdp-tickets.js";
 import { browserReplLimits, browserTargetSchema } from "./browser-repl-messages.js";
 import {
   BrowserUseCdpError,
-  BrowserUseReauthorize,
   type BrowserUseBudget,
   type BrowserUseCall,
   type BrowserUsePage,
@@ -30,7 +25,7 @@ import {
 } from "./browser-repl-service.js";
 
 interface AdmittedPage {
-  binding: ScriptPageBinding;
+  binding: PageAgentBinding;
   threadId: ThreadId;
 }
 
@@ -51,10 +46,8 @@ interface Target extends BrowserUseTarget {
   relay: Relay;
   port: BrowserUsePort<Target>;
   closed: boolean;
-  /** The connection's grant revision this page's bind decided under. */
-  readonly grantRevision: number | null;
   listen?: (event: RelayEvent) => void;
-  onEnd?: (ended?: { readonly reauthorize: true }) => void;
+  onEnd?: () => void;
 }
 
 const resumed = z.object({ targetId: z.string(), dialog: browserTargetSchema.shape.dialog });
@@ -152,14 +145,14 @@ export function createBrowserUsePort({
     let root: string | undefined;
     const detached = new Set<string>();
     let closed = false;
-    const stop = (ended?: { readonly reauthorize: true }) => {
+    const stop = () => {
       closed = true;
       if (!target) return;
       target.closed = true;
       const notify = target.onEnd;
       delete target.listen;
       delete target.onEnd;
-      notify?.(ended);
+      notify?.();
     };
     let relay: Relay | undefined;
     let closing = false;
@@ -175,7 +168,6 @@ export function createBrowserUsePort({
           sessionId: binding.sessionId,
           scriptTabId: binding.tabId,
           scriptThreadId: threadId,
-          scriptGrantRevision: binding.grantRevision,
           ...(call.browserSend ? { browserSend: call.browserSend } : {}),
           ...(expectedPooledWitness ? { expectedPooledWitness } : {}),
         },
@@ -241,7 +233,6 @@ export function createBrowserUsePort({
               relay: attachedRelay,
               port,
               closed,
-              grantRevision: binding.grantRevision,
               get pooledWitness(): string {
                 return attachedRelay.pooledWitness ?? initialWitness;
               },
@@ -251,35 +242,17 @@ export function createBrowserUsePort({
               relay: attachedRelay,
               port,
               closed,
-              grantRevision: binding.grantRevision,
             };
       target = bound;
       call.signal.throwIfAborted();
       return bound;
     } catch (error) {
       close();
-      if (error instanceof BrowserScriptAuthorityChanged) throw error;
       translate(error, {
         tabId: binding.tabId,
         sessionId: binding.sessionId,
         ...(call.browserSend ? { browserSend: call.browserSend } : {}),
       });
-    }
-  }
-  /**
-   * Binds what `admit` decided. When the connection's grant changed between that decision and
-   * the attach (the attach refused before sending anything), `admit` decides once more.
-   */
-  async function bindDecided(
-    admit: (again: boolean) => Promise<AdmittedPage>,
-    call: BrowserUseCall,
-    expectedPooledWitness?: string,
-  ): Promise<Target> {
-    try {
-      return await bind(await admit(false), call, expectedPooledWitness);
-    } catch (error) {
-      if (!(error instanceof BrowserScriptAuthorityChanged)) throw error;
-      return await bind(await admit(true), call, expectedPooledWitness);
     }
   }
   const port: BrowserUsePort<Target> = {
@@ -308,7 +281,7 @@ export function createBrowserUsePort({
       call.signal.throwIfAborted();
       try {
         const args = call.browserSend ? ([call.browserSend] as const) : ([] as const);
-        return await bindDecided(() => tabs.bind(tabId, call.signal, ...args), call);
+        return await bind(await tabs.bind(tabId, call.signal, ...args), call);
       } catch (error) {
         translate(error, {
           tabId,
@@ -320,32 +293,20 @@ export function createBrowserUsePort({
       call.signal.throwIfAborted();
       try {
         const args = call.browserSend ? ([call.browserSend] as const) : ([] as const);
-        let opened: string | undefined;
-        return await bindDecided(async (again) => {
-          if (again && opened) return tabs.bind(opened, call.signal, ...args);
-          const admitted = await tabs.open(input, randomUUID(), call.signal, ...args);
-          opened = admitted.binding.tabId;
-          return admitted;
-        }, call);
+        return await bind(await tabs.open(input, randomUUID(), call.signal, ...args), call);
       } catch (error) {
         translate(error, call.browserSend ? { browserSend: call.browserSend } : undefined);
       }
     },
-    // A parked pooled page comes back only with its witness. A handle the Home detached because
-    // its connection's grant changed binds again the same way, through the whole tab authority;
-    // its page was never put away, so it is the one it was only in the same session under the
-    // same target (followed through its navigations, as a live handle follows them).
-    async rebind(previous, call, reauthorize = false) {
-      const { relay } = previous;
-      const pooledWitness = reauthorize ? undefined : previous.pooledWitness;
+    async rebind(previous, call) {
+      const { pooledWitness, relay } = previous;
       const tabId = TabIdSchema.parse(previous.tabId);
       const afterSubmit = call.browserSend?.hasSubmitted?.() === true;
       if (
-        !reauthorize &&
-        (!pooledWitness ||
-          !call.browserSend ||
-          (await browser.pooledScriptPageWitness?.(authority.ownerId, relay.session.id, tabId)) !==
-            pooledWitness)
+        !call.browserSend ||
+        !pooledWitness ||
+        (await browser.pooledScriptPageWitness?.(authority.ownerId, relay.session.id, tabId)) !==
+          pooledWitness
       ) {
         logAttachmentEnded({
           tabId,
@@ -356,35 +317,17 @@ export function createBrowserUsePort({
         throw afterSubmit ? endedAfterSubmit() : ended();
       }
       try {
-        const args = call.browserSend ? ([call.browserSend] as const) : ([] as const);
-        const replacement = await bindDecided(
-          async () => {
-            const admitted = await tabs.bind(tabId, call.signal, ...args);
-            if (admitted.binding.sessionId !== relay.session.id || admitted.binding.reloaded) {
-              logAttachmentEnded({
-                tabId,
-                sessionId: relay.session.id,
-                reason: admitted.binding.reloaded ? "rebind-reloaded" : "rebind-session-changed",
-                ...(afterSubmit ? { afterSubmit } : {}),
-              });
-              throw afterSubmit ? endedAfterSubmit() : ended();
-            }
-            return admitted;
-          },
-          call,
-          pooledWitness,
-        );
-        if (reauthorize && replacement.targetId !== previous.targetId) {
-          port.release?.(replacement);
+        const admitted = await tabs.bind(tabId, call.signal, call.browserSend);
+        if (admitted.binding.sessionId !== relay.session.id || admitted.binding.reloaded) {
           logAttachmentEnded({
             tabId,
             sessionId: relay.session.id,
-            reason: "rebind-target-changed",
+            reason: admitted.binding.reloaded ? "rebind-reloaded" : "rebind-session-changed",
             ...(afterSubmit ? { afterSubmit } : {}),
           });
           throw afterSubmit ? endedAfterSubmit() : ended();
         }
-        return replacement;
+        return await bind(admitted, call, pooledWitness);
       } catch (error) {
         translate(error, {
           tabId,
@@ -436,16 +379,7 @@ export function createBrowserUsePort({
               }
             : call;
         if (budget.maxImageBytes !== undefined && budget.maxImageBytes < 1) throw tooLarge();
-        let dispatched;
-        try {
-          dispatched = await target.relay.dispatch(parsed.data, budget);
-        } catch (error) {
-          // Nothing was sent: the Home detached this handle (its attachment closed, the REPL
-          // told), and its rebind decides the tab again.
-          if (error instanceof BrowserScriptAuthorityChanged) throw new BrowserUseReauthorize();
-          throw error;
-        }
-        const { result } = dispatched;
+        const { result } = await target.relay.dispatch(parsed.data, budget);
         const value = await result;
         checkReply(value, call, method);
         return JSON.stringify(value);

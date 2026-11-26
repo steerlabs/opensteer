@@ -522,12 +522,11 @@ export class ChromeSharedTabs {
             target.client.close();
           }
         });
-        const aborted = () => onEnd();
-        target.client.signal.addEventListener("abort", aborted, { once: true });
+        target.client.signal.addEventListener("abort", onEnd, { once: true });
         if (target.client.signal.aborted) onEnd();
         return () => {
           remove();
-          target.client.signal.removeEventListener("abort", aborted);
+          target.client.signal.removeEventListener("abort", onEnd);
           target.client.close();
         };
       },

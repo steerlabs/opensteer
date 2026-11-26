@@ -344,6 +344,8 @@ async function startSessionPersonFixture() {
       setLoseOpenReply: (value: { url: string; requestId?: string; observed: boolean }) => {
         loseOpenReply = value;
       },
+      /** The pages of the Home's own Chromium now. */
+      chromiumPages: () => chromiumBrowser?.context.pages() ?? [],
       dispose,
     };
   } catch (error) {
@@ -1235,3 +1237,77 @@ async function signInFixture() {
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 }
+
+it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
+  "ends a connected agent's call off the pool when its grant changes in the middle of it: nothing more reaches the page",
+  async () => {
+    const fixture = await startSessionPersonFixture();
+    let narrow: (() => Promise<void>) | undefined;
+    // The page the script opens asks for this address: the person narrows the connection
+    // before it is answered, while the script's call is still running.
+    const narrowing = createServer((_request, response) => {
+      const change = narrow;
+      narrow = undefined;
+      void (change ? change() : Promise.resolve()).then(() => {
+        response.writeHead(200, { "content-type": "text/html" });
+        response.end("<!doctype html><title>Narrowed</title>");
+      });
+    });
+    narrowing.listen(0, "127.0.0.1");
+    await once(narrowing, "listening");
+    const address = `http://127.0.0.1:${(narrowing.address() as AddressInfo).port}/narrow`;
+    try {
+      const { host, profile, endpoint, connection, connectAgent } = fixture;
+      const agent = await connection.create({
+        userId: host.ownerId,
+        label: "Research assistant",
+        clientName: "Research assistant",
+        resource: endpoint.href,
+        expiresAt: new Date(Date.now() + 60 * 60_000),
+        accessMode: "full-access",
+        grant: { scope: "everything" },
+      });
+      const token = connectionCredentialPrefix + randomBytes(32).toString("base64url");
+      expect(await connection.activate(agent.id, credentialHash(token))).toBe(true);
+      const call = await connectAgent(token);
+      narrow = async () => {
+        const { grantRevision } = await host.store.database
+          .selectFrom("agentConnections")
+          .select("grantRevision")
+          .where("id", "=", agent.id)
+          .executeTakeFirstOrThrow();
+        await connection.update(host.ownerId, {
+          connectionId: agent.id,
+          expectedRevision: grantRevision,
+          grant: {
+            scope: "selected",
+            tasks: false,
+            resources: [{ kind: "browser-profile", profileId: profile.id }],
+          },
+        });
+      };
+      const result = await call("browser_use", {
+        profileId: profile.id,
+        code: `const page = await newPage(${JSON.stringify(address)}); await page.waitForLoad(); await page.evaluate(() => { document.title = "after-narrowing"; }); return "ran";`,
+        operationKey: "mid-call",
+      });
+      expect(narrow).toBeUndefined();
+      // The call ends at its next command: what it had done (the page it opened) may have taken
+      // effect, so it ends unknown (rule 4), and nothing more is sent.
+      expect(JSON.stringify(result.content)).toContain(String.raw`\"status\":\"unknown\"`);
+      expect(JSON.stringify(result.content)).not.toContain('"ran"');
+      const page = fixture.chromiumPages().find((open) => open.url() === address);
+      if (!page) throw new Error("The script's page is not open.");
+      const title = await (
+        await page.cdp()
+      ).send<{ result: { value: string } }>("Runtime.evaluate", {
+        expression: "document.title",
+        returnByValue: true,
+      });
+      expect(title.result.value).not.toBe("after-narrowing");
+    } finally {
+      narrowing.close();
+      await fixture.dispose();
+    }
+  },
+);

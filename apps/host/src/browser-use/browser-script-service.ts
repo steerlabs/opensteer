@@ -132,6 +132,8 @@ export class BrowserScriptService {
     BrowserUsePort<ManagedTarget> | { shared: true; value: BrowserUsePort<SharedTarget> }
   >();
   readonly #repl: BrowserReplService<Target>;
+  /** The connection's grant revision each context last ran under (null: no connection). */
+  readonly #revisions = new Map<string, number | null>();
   #closed = false;
 
   constructor(services: Services) {
@@ -166,13 +168,11 @@ export class BrowserScriptService {
             return target.port.command(target, method, params, sessionId, call);
           return target.port.command(target, method, params, sessionId, call);
         },
-        rebind: (target, call, reauthorize) => {
+        rebind: (target, call) => {
           byContext(call.contextKey);
           if ("share" in target || !target.port.rebind)
             throw refused("conflict", "This browser page is stale.");
-          return reauthorize
-            ? target.port.rebind(target, call, true)
-            : target.port.rebind(target, call);
+          return target.port.rebind(target, call);
         },
         release: (target) => {
           if ("share" in target) target.port.release?.(target);
@@ -263,13 +263,17 @@ export class BrowserScriptService {
       }
       binding.contexts.add(key);
     }
-    // A page handle bound under another grant revision is detached before the call runs, and
-    // nothing it heard reaches the script until its next use binds the tab again (rule 1, with
-    // the revision this admission read).
-    this.#repl.reauthorize(
-      key,
-      (target) => !("share" in target) && target.grantRevision !== grantRevision,
-    );
+    // No handle survives a grant change, and nothing is kept to decide later: a context that
+    // last ran under another revision of its connection's grant is disposed before this call, as
+    // ten idle minutes dispose it (its handles, events, globals; the tabs stay open). This call
+    // runs in a fresh one, where pages() and openPage decide every tab again. The revision is
+    // the one this call's admission read. A call still running in it is refused below as busy,
+    // and the context is decided again at the next call.
+    if (!this.#repl.busy(key)) {
+      if (this.#revisions.has(key) && this.#revisions.get(key) !== grantRevision)
+        this.#repl.disposeContext(key);
+      this.#revisions.set(key, grantRevision);
+    }
     return this.#repl.execute(
       key,
       code,
@@ -288,6 +292,7 @@ export class BrowserScriptService {
       for (const key of binding.contexts) {
         this.#repl.disposeContext(key);
         this.#ports.delete(key);
+        this.#revisions.delete(key);
       }
     }
     await this.#services.browser.detachAgentSessionsForBinding(agentBindingId);
@@ -298,6 +303,7 @@ export class BrowserScriptService {
     for (const binding of this.#bindings.values()) binding.lifetime.abort();
     this.#bindings.clear();
     this.#ports.clear();
+    this.#revisions.clear();
     await this.#repl.close();
   }
 }
