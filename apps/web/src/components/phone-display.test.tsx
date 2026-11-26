@@ -117,6 +117,7 @@ vi.mock("./workspace/workspace-context.js", () => ({
 vi.mock("./workspace/tab-closer.js", () => ({ useTabCloser: () => () => undefined }));
 const { ComputerWatchView } = await import("./computer-watch.js");
 const { OwnerView } = await import("./workspace/owner-view.js");
+const { passingWindowWordsMs } = await import("./phone-display.js");
 const { PhoneControlBar } = await import("./phone-display.js");
 
 /** Opens a window or phone tab the way a person does and answers this device's view of it. */
@@ -1034,6 +1035,37 @@ describe("Mac owner viewer", () => {
       expect(macStatus().words).toBe("Waiting for the window…");
       await act(async () => vi.advanceTimersByTimeAsync(displayFirstFrameTimeoutMs));
       expect(macStatus().words).toContain("has no open window");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the last picture through a passing pause of the Mac's capture, and says it waits only past a bound", async () => {
+    await macOwner();
+    expect(shown()).toBe(true);
+    vi.useFakeTimers();
+    try {
+      act(() => sockets[0]!.deliver({ ...passingWindowState, generation: 2 }));
+      // The picture stays, with nothing over it: a pause this short is not worth a word.
+      expect(shown()).toBe(true);
+      expect(macStatus()).toEqual({ words: "", openAgain: false });
+      await act(async () => vi.advanceTimersByTimeAsync(passingWindowWordsMs - 1));
+      expect(macStatus().words).toBe("");
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+      // Past the bound it says so, over the same picture, with no Open again.
+      expect(shown()).toBe(true);
+      expect(macStatus().words).toMatch(/^Waiting for .+…$/u);
+      expect(macStatus().openAgain).toBe(false);
+      act(() =>
+        sockets[0]!.deliver({
+          type: "display.state",
+          state: "live",
+          generation: 2,
+          width: 360,
+          height: 780,
+        }),
+      );
+      expect(macStatus().words).toBe("");
     } finally {
       vi.useRealTimers();
     }
