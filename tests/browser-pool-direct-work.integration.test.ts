@@ -1987,12 +1987,14 @@ it("never says the person closed a tab they closed and reopened before the call,
       { timeout: 15_000 },
     );
     // A later call uses the reopened tab, and contact is lost under its command: nothing the
-    // person did ended it.
+    // person did ended it. The cut waits for the page itself to show the command ran: cut on
+    // the navigation's hit alone, it could land after the command existed but before it was
+    // sent, whose honest answer is failed with nothing sent (workbench-1, 1 run in 3).
     const hanging = work.use(
-      `const page = await openPage(${JSON.stringify(tabId)}); await page.goto(${JSON.stringify(`${origin}/hang`)}); return await page.js("new Promise(() => {})");`,
+      `const page = await openPage(${JSON.stringify(tabId)}); await page.goto(${JSON.stringify(`${origin}/hang`)}); return await page.js("(fetch('/sent'), new Promise(() => {}))");`,
     );
     await Promise.race([
-      vi.waitFor(() => expect(hits).toContain("/hang"), { timeout: 15_000 }),
+      vi.waitFor(() => expect(hits).toContain("/sent"), { timeout: 15_000 }),
       hanging.then((result) => {
         throw new Error(`The call ended before its command hung: ${text(result)}`);
       }),
